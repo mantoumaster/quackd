@@ -93,3 +93,13 @@ def hello_duck() -> DuckFile:
 @pytest.fixture
 def kick_duck() -> DuckFile:
     return load_duck(str(DUCKS / "find-and-kick.duck"))
+
+
+@pytest.fixture(autouse=True)
+def _colour_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--no-color` works by setting NO_COLOR, because Typer builds a console of its own for
+    every `--help` it renders and reads the variable when it does. Setting a variable is a
+    side effect on the process, so the next test must not inherit it, and a developer's own
+    FORCE_COLOR must not reach the suite either."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)

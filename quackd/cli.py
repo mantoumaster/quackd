@@ -9,54 +9,50 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import glob
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import typer
 from dotenv import load_dotenv
-from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from quackd import __version__
+from quackd import __version__, ui
 
 app = typer.Typer(
     name="quackd",
-    help="Give your small robot a brain. Any LLM, one .duck file. 🦆🧠",
+    # the emoji only where the stream can carry it: a cp1252 pipe on Windows renders them as
+    # `??`, and the front door is the worst place to look broken
+    help="Give your small robot a brain. Any LLM, one .duck file."
+    + (" 🦆🧠" if ui.glyphs_for(ui.console) is ui.UNICODE else ""),
     no_args_is_help=True,
     rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+    # A crash must not print this process's local variables: they hold an API key, a robot's
+    # address and its bridge token. `main` installs a Rich traceback without them instead.
+    pretty_exceptions_enable=False,
 )
-
-
-def _tolerate_narrow_encodings() -> None:
-    """Stop a non-UTF-8 stdout turning quackd's own output into a crash.
-
-    Windows uses the ANSI codepage when Python writes to a pipe, and quackd prints ✓ and 🦆 and
-    the status emoji in `doctor`. On cp1252 those raise UnicodeEncodeError and take the command
-    with them — `quackd doctor` and `quackd validate`, which are the first two commands
-    docs/microduck-hardware-checklist.md puts in front of a Windows user, and the last step of
-    CI's own Windows job. Replacing what the codepage cannot carry costs a glyph; raising costs
-    the command.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
-        if encoding.startswith("utf") or not hasattr(stream, "reconfigure"):
-            continue
-        with contextlib.suppress(Exception):
-            stream.reconfigure(errors="replace")
-
-
-_tolerate_narrow_encodings()
-console = Console()
-err_console = Console(stderr=True)
 
 
 def _version_callback(value: bool) -> None:
     if value:
-        console.print(f"quackd {__version__}")
+        ui.console.print(f"quackd {__version__}")
         raise typer.Exit()
+
+
+def _no_color_callback(value: bool) -> bool:
+    """Eager, and it sets the variable rather than only the consoles.
+
+    Typer builds a console of its own for every `--help` it renders and reads `NO_COLOR`
+    when it does, so the variable is what makes `quackd --no-color run --help` plain as
+    well. Eager means it has run by the time the subcommand is parsed."""
+    if value:
+        os.environ["NO_COLOR"] = "1"
+    return value
 
 
 @app.callback()
@@ -64,9 +60,21 @@ def _main(
     version: bool = typer.Option(
         False, "--version", "-V", callback=_version_callback, is_eager=True, help="Show version."
     ),
+    no_color: bool = typer.Option(
+        False,
+        "--no-color",
+        is_eager=True,
+        callback=_no_color_callback,
+        help="Plain output with no colour. NO_COLOR=1 does the same, and FORCE_COLOR=1 keeps "
+        "the colour when the output is a pipe.",
+    ),
 ) -> None:
     """quackd — pilot a small robot (real or simulated) with any LLM."""
+    # `.env` first, so a NO_COLOR line in it counts, and then the consoles: Rich reads the
+    # environment and the stream's encoding when a console is built, and quackd's are built
+    # at import, which is before any of this was known.
     load_dotenv()
+    ui.configure(no_color=no_color)
 
 
 def _expand(patterns: list[str]) -> list[str]:
@@ -81,7 +89,7 @@ def _verbose_line(msg: str) -> None:
     """A `--verbose` line, as plain text. A message can carry brackets Rich reads as markup:
     the executor's own `[dry-run] would run ...`, and the flock planner logging a model's raw
     tool arguments. Rich deletes `[bold]` silently and raises on an unpaired `[/think]`."""
-    err_console.print(msg, style="dim", markup=False, highlight=False, soft_wrap=True)
+    ui.err_console.print(msg, style="dim", markup=False, highlight=False, soft_wrap=True)
 
 
 def _print_outcome(
@@ -101,13 +109,13 @@ def _print_outcome(
     colour = {"success": "green", "failure": "red", "budget": "yellow", "aborted": "red"}.get(
         outcome, "red"
     )
-    console.print(f"[{colour}]{outcome.upper()}[/{colour}] — {escape(reason)}")
+    ui.console.print(f"[{colour}]{outcome.upper()}[/{colour}] — {escape(reason)}")
     if detail:
-        console.print(detail)
-    console.print(f"run dir: {run_dir}" + (f" · gif: {gif_path}" if gif_path else ""))
+        ui.console.print(detail)
+    ui.console.print(f"run dir: {run_dir}" + (f" · gif: {gif_path}" if gif_path else ""))
     if trace_dropped:
         # a console that raised on every event produced a silent trace and no sign of it
-        err_console.print(
+        ui.err_console.print(
             f"trace: {trace_dropped} line(s) could not be shown (the console raised); "
             "transcript.jsonl has them",
             style="yellow",
@@ -115,9 +123,12 @@ def _print_outcome(
         )
 
 
-def _fail(msg: str, code: int = 1) -> None:
-    # escape: messages contain things like quackd[anthropic], which Rich would eat as markup
-    err_console.print(f"[red]error:[/red] {escape(msg)}")
+def _fail(msg: str, code: int = 1, *, hint: str | None = None) -> None:
+    """One line saying what went wrong, and one dim line saying where to look next.
+
+    The message routinely names an extra (`quackd[anthropic]`) or a model's own brackets, so
+    it travels as text rather than as markup Rich would eat."""
+    ui.err_console.print(ui.fail_line(msg, hint=hint))
     raise typer.Exit(code=code)
 
 
@@ -218,12 +229,12 @@ def validate(
                 verdict += f" [dim]for {', '.join(m.id for m in manifests)}[/dim]"
             table.add_row(path, duck.name, str(len(duck.frontmatter.verbs.allow)), verdict)
     if not quiet or failures:
-        console.print(table)
+        ui.console.print(table)
     if failures:
         for line in details:
-            console.print(escape(line), soft_wrap=True)
+            ui.console.print(escape(line), soft_wrap=True)
         raise typer.Exit(code=1)
-    console.print(f"[green]{len(_expand(duckfiles))} file(s) valid.[/green]")
+    ui.console.print(f"[green]{len(_expand(duckfiles))} file(s) valid.[/green]")
 
 
 # ── list-verbs ──────────────────────────────────────────────────────────────────────────
@@ -264,7 +275,7 @@ def list_verbs(
             v.param_summary(),
             escape(v.description),
         )
-    console.print(table)
+    ui.console.print(table)
 
 
 @app.command("list-adapters")
@@ -285,7 +296,7 @@ def list_adapters_cmd() -> None:
                 " [green]installed[/green]" if row["installed"] else " [dim]not installed[/dim]"
             )
         table.add_row(row["name"], " · ".join(row["backends"]), row["status"], extra)
-    console.print(table)
+    ui.console.print(table)
 
 
 # ── run / record ────────────────────────────────────────────────────────────────────────
@@ -297,7 +308,7 @@ def _confirm_prompt(name: str, params: dict[str, Any]) -> bool:
 
 def _acknowledge_prompt(why: str) -> bool:
     """Asked once, before anything moves, when the human is the only safety left."""
-    err_console.print(f"[yellow]⚠️  {why}[/yellow]")
+    ui.err_console.print(f"[yellow]⚠️  {why}[/yellow]")
     return typer.confirm("Are you watching the robot right now?", default=False)
 
 
@@ -442,7 +453,7 @@ def _run_impl(
     trace_on = trace if trace is not None else trace_enabled_default()
     console_trace = (
         ConsoleTrace(
-            err_console,
+            ui.err_console,
             thinking_chars=thinking_limit_default(),
             prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
         )
@@ -478,7 +489,7 @@ def _run_impl(
         acknowledge=None if yes else _acknowledge_prompt,
         trace=console_trace,
     )
-    console.print(
+    ui.console.print(
         f"🦆 [bold]{duck.name}[/bold] · provider=[cyan]{llm.name}[/cyan] "
         f"({llm.model or 'model: first served'}) · "
         f"robot=[cyan]{spec.key}[/cyan]"
@@ -487,16 +498,16 @@ def _run_impl(
     )
     if robot_memory is not None:
         m = robot_memory.summary()
-        console.print(
+        ui.console.print(
             f"[dim]memory: {m['notes']} notes, {m['episodes']} earlier runs "
             f"({m['path']}) · --no-memory to run fresh[/dim]"
         )
-    console.print("[dim]Ctrl-C or q stops the duck. Press it twice to quit at once.[/dim]")
+    ui.console.print("[dim]Ctrl-C or q stops the duck. Press it twice to quit at once.[/dim]")
 
     def killed(msg: str) -> None:
         """Always printed, unlike `log`, which is --verbose only. Someone who has just hit
         Ctrl-C on a walking robot needs to see that it registered."""
-        err_console.print(f"[yellow]{msg}[/yellow]")
+        ui.err_console.print(f"[yellow]{msg}[/yellow]")
 
     async def main() -> Any:
         from quackd.agent.loop import AgentLoop
@@ -625,7 +636,7 @@ def _run_flock_impl(
         robots' intents into one line and attribute them to whichever spoke last."""
         if name not in views:
             views[name] = ConsoleTrace(
-                err_console,
+                ui.err_console,
                 thinking_chars=thinking_limit_default(),
                 prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
                 prefix=f"{name:<{prefix_width}}  ",
@@ -660,13 +671,13 @@ def _run_flock_impl(
 
         coordinator.on_event = on_event
 
-    console.print(
+    ui.console.print(
         f"🦆x{count} [bold]{duck.name}[/bold] · provider=[cyan]{llm.name}[/cyan] "
         f"({llm.model or 'model: first served'}) · flock (sim2d, EXPERIMENTAL)"
         + (f" · seed={seed}" if seed is not None else "")
         + (" · [yellow]DRY RUN[/yellow]" if dry_run else "")
     )
-    console.print("[dim]Ctrl-C or q stops every duck.[/dim]")
+    ui.console.print("[dim]Ctrl-C or q stops every duck.[/dim]")
     try:
         result = asyncio.run(
             run_flock(
@@ -1011,7 +1022,7 @@ def _replay(
                 continue
         if kind == "frame":
             if frames:
-                console.print(f"        frame {data.get('path', '')}", style="dim", markup=False)
+                ui.console.print(f"        frame {data.get('path', '')}", style="dim", markup=False)
             continue
         if kind == "verb" and legacy:
             kind = "verb_end"
@@ -1069,7 +1080,7 @@ def trace_cmd(
         records = Transcript.read(path, lenient=True)
         cut += int(records[-1].get("_skipped", 0)) if records else 0
         view = ConsoleTrace(
-            console,
+            ui.console,
             thinking_chars=(
                 parse_thinking_limit(thinking) if thinking is not None else _thinking_default()
             ),
@@ -1080,7 +1091,7 @@ def trace_cmd(
         end = _replay(records, view, from_step=from_step, frames=frames) or end
 
     if cut:
-        err_console.print(
+        ui.err_console.print(
             f"trace: {cut} unreadable line(s) skipped, the run was cut while it was writing",
             style="yellow",
             markup=False,
@@ -1138,7 +1149,7 @@ def doctor(
     if address and not robot:
         _fail("--address needs --robot, so quackd knows what it is connecting to")
         return
-    ok = run_doctor(console, robot=robot, address=address, camera_url=camera_url, token=token)
+    ok = run_doctor(ui.console, robot=robot, address=address, camera_url=camera_url, token=token)
     if not ok:
         raise typer.Exit(code=1)
 
@@ -1226,12 +1237,12 @@ def memory_show(
             print(mem.path.read_text(encoding="utf-8"), end="")
         return
     info = mem.summary()
-    console.print(
+    ui.console.print(
         f"[bold]{info['robot']}[/bold] · {info['notes']} notes · {info['episodes']} runs · "
         f"[dim]{info['path']}[/dim]"
     )
     text = mem.recall(max_notes=50, max_episodes=10)
-    console.print(escape(text) if text else "[dim](nothing remembered yet)[/dim]")
+    ui.console.print(escape(text) if text else "[dim](nothing remembered yet)[/dim]")
 
 
 @memory_app.command("add")
@@ -1244,7 +1255,7 @@ def memory_add(
     """Save a note by hand, the same way the pilot's `remember` does."""
     mem = _memory_for(robot, memory_dir)
     entry = mem.remember(text, tags=tag)
-    console.print(f"remembered for [bold]{mem.robot_key}[/bold]: {escape(entry.text)}")
+    ui.console.print(f"remembered for [bold]{mem.robot_key}[/bold]: {escape(entry.text)}")
 
 
 @memory_app.command("clear")
@@ -1257,12 +1268,12 @@ def memory_clear(
     mem = _memory_for(robot, memory_dir)
     n = len(mem.entries())
     if n == 0:
-        console.print(f"[dim]{mem.robot_key}: nothing to forget[/dim]")
+        ui.console.print(f"[dim]{mem.robot_key}: nothing to forget[/dim]")
         return
     if not yes and not typer.confirm(f"forget {n} entries for {mem.robot_key}?"):
         raise typer.Exit()
     mem.clear()
-    console.print(f"forgot {n} entries for [bold]{mem.robot_key}[/bold]")
+    ui.console.print(f"forgot {n} entries for [bold]{mem.robot_key}[/bold]")
 
 
 # ── lan (quackd[lan]) ───────────────────────────────────────────────────────────────────
@@ -1290,7 +1301,7 @@ def discover(
             print(json.dumps(robot.row()))
         return
     if not robots:
-        console.print(f"[dim]no quackd robots answered in {timeout:g} s[/dim]")
+        ui.console.print(f"[dim]no quackd robots answered in {timeout:g} s[/dim]")
         return
     t = Table(title=f"quackd robots on the LAN ({len(robots)})")
     for column in ("manifest id", "adapter", "model", "embodiment", "verbs", "address", "digest"):
@@ -1305,7 +1316,7 @@ def discover(
             ", ".join(robot.addresses) or robot.host,
             robot.digest,
         )
-    console.print(t)
+    ui.console.print(t)
 
 
 @app.command()
@@ -1336,13 +1347,13 @@ def announce(
         ann = lan_announce.announce(manifest, adapter=spec.adapter, port=port)
     except (AdapterError, LanNotInstalled, ValueError) as e:
         _fail(str(e))
-    console.print(
+    ui.console.print(
         f"announcing {ann.record.name} ({manifest.summary()}) at "
         f"{', '.join(ann.record.addresses)} · digest {manifest.digest()}"
     )
     try:
         if for_s is None:
-            console.print("[dim]Ctrl-C to withdraw[/dim]")
+            ui.console.print("[dim]Ctrl-C to withdraw[/dim]")
             while True:
                 time.sleep(1.0)
         else:
@@ -1351,8 +1362,39 @@ def announce(
         pass
     finally:
         ann.close()
-        console.print("withdrawn")
+        ui.console.print("withdrawn")
+
+
+def _leave_quietly() -> None:
+    """Stop, with nothing further to say.
+
+    Python flushes stdout as it exits, which raises a second time on a pipe that has already
+    gone, so stdout is pointed at the void before leaving."""
+    with contextlib.suppress(Exception):
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    raise SystemExit(0)
+
+
+def main() -> None:
+    """The console entry point: `app()`, and the two things a command that prints for a
+    living owes its terminal.
+
+    A traceback must not spill this process's locals, because they hold an API key, a
+    robot's address and its bridge token. And a reader is allowed to walk away: `quackd
+    list-verbs | head` closes the pipe halfway down the table, and Python's answer to that
+    is a second wall of text about a broken pipe on top of the output that was asked for."""
+    from rich.traceback import install
+
+    install(console=ui.err_console, show_locals=False, suppress=[typer])
+    try:
+        app()
+    except BrokenPipeError:
+        _leave_quietly()
+    except OSError as e:  # Windows raises EINVAL rather than EPIPE on a pipe that has gone
+        if e.errno not in (errno.EPIPE, errno.EINVAL):
+            raise
+        _leave_quietly()
 
 
 if __name__ == "__main__":
-    app()
+    main()

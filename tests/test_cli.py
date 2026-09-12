@@ -233,9 +233,11 @@ def test_a_verbose_line_survives_a_bracket_a_planner_logged(monkeypatch) -> None
     from rich.console import Console
 
     from quackd import cli as cli_mod
+    from quackd import ui
 
     buf = io.StringIO()
-    monkeypatch.setattr(cli_mod, "err_console", Console(file=buf, force_terminal=False, width=200))
+    # the consoles live on `ui` so `--no-color` can replace them; `cli` reads them from there
+    monkeypatch.setattr(ui, "err_console", Console(file=buf, force_terminal=False, width=200))
     cli_mod._verbose_line("planner: [/think] chose [bold]walk")
     out = buf.getvalue()
     assert "[/think]" in out and "[bold]walk" in out
