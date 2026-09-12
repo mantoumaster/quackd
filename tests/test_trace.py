@@ -19,6 +19,7 @@ from quackd.trace import (
     capture_sink,
     capturing,
     counting,
+    fan_out,
     flock_caption,
     fmt_value,
     parse_thinking_limit,
@@ -522,6 +523,27 @@ def test_the_console_flushes_a_pending_burst_before_the_next_line() -> None:
     )
     out = buffer.getvalue().splitlines()
     assert "move x3" in out[0] and "walked" in out[1]
+
+
+def test_fan_out_feeds_every_sink_and_one_bad_view_never_starves_the_others() -> None:
+    """The loop takes a single observer and a run wants two: the narration and the status
+    line that says what it is waiting for. A console that raises must not take the status
+    with it, and the Tracer must still count exactly one drop for the event."""
+    seen_a: list[str] = []
+    seen_b: list[str] = []
+
+    def broken(_event: TraceEvent) -> None:
+        raise ValueError("a terminal that cannot print")
+
+    sink = fan_out(lambda e: seen_a.append(e.kind), None, broken, lambda e: seen_b.append(e.kind))
+    tracer = Tracer(observers=[sink])
+    tracer.emit("llm", text="hello")
+    assert seen_a == ["llm"] and seen_b == ["llm"], "a raise stopped a later sink"
+    assert tracer.dropped == 1, "the failure has to reach the Tracer, once"
+
+
+def test_fan_out_of_nothing_is_a_sink_that_does_nothing() -> None:
+    fan_out()(TraceEvent("llm", 0.0, {}))  # must not raise
 
 
 # ── capturing one call (the MCP server) ─────────────────────────────────────────────────

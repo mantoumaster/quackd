@@ -263,6 +263,35 @@ def _indent(text: str) -> str:
     return ("\n" + _PAD).join(text.splitlines()) if text else ""
 
 
+@dataclass(frozen=True)
+class TraceLine:
+    """One line of the story, before anybody decides what it looks like.
+
+    Plain readers paste `label` into an eight-column gutter and get exactly the strings the
+    MCP tool result has always carried. A terminal reads `mark` instead and draws a glyph,
+    which it could not do from a formatted string without parsing its own output.
+    """
+
+    label: str
+    """The word in the gutter: `verb`, `gate`, `->`. Empty for a block of somebody's prose."""
+    body: str
+    """What the line says, carrying no padding of its own."""
+    style: str
+    """A colour word. Views map it; the ones that only want text ignore it."""
+    multiline: bool = False
+    """Indent every line after the first under the gutter. True only where the body is
+    somebody else's prose: the system prompt, an observation, thinking, a note."""
+    mark: str | None = None
+    """What kind of moment this is, for a view that draws glyphs: `start` · `send` · `ok` ·
+    `fail` · `warn` · `other` · `note` · `flock` · `end`. None means the line speaks for
+    itself."""
+
+
+def _flatten(line: TraceLine) -> Line:
+    """A `TraceLine` as the gutter-padded string every plain reader expects."""
+    return (_label(line.label) + (_indent(line.body) if line.multiline else line.body), line.style)
+
+
 def fmt_value(value: Any) -> str:
     if value is None:
         return "null"
@@ -366,33 +395,30 @@ def flock_caption(kind: str, d: Mapping[str, Any]) -> tuple[str, str] | None:
     return None
 
 
-def render_lines(
+def render_events(
     event: TraceEvent, *, thinking_chars: int | None = 2000, prompt: bool = True
-) -> list[Line]:
-    """One event as zero or more (text, style) lines. The loop's own `verb` record, the
-    `frame` record and `run_end` render nothing: the first duplicates `verb_end`, the second
-    is a file on disk, and the CLI prints the outcome itself."""
+) -> list[TraceLine]:
+    """One event as zero or more lines. The loop's own `verb` record, the `frame` record and
+    `run_end` render nothing: the first duplicates `verb_end`, the second is a file on disk,
+    and the CLI prints the outcome itself."""
     d = event.data
     k = event.kind
     if k == "run_start":
         adapter = d.get("adapter")
         robot = f"{adapter}:{d.get('transport')}" if adapter else str(d.get("transport"))
-        head = (
-            f"{_label('run')}{d.get('duck')} provider={d.get('provider')} "
-            f"model={d.get('model')} robot={robot}"
-        )
+        head = f"{d.get('duck')} provider={d.get('provider')} model={d.get('model')} robot={robot}"
         if d.get("dry_run"):
             head += " DRY RUN"
         if "connect_s" in d:
             head += f" connected in {d['connect_s']:.2f} s"
-        lines: list[Line] = [(head, "bold")]
-        lines.append((f"{_label('tools')}{', '.join(d.get('tools') or [])}", "dim"))
+        lines: list[TraceLine] = [TraceLine("run", head, "bold", mark="start")]
+        lines.append(TraceLine("tools", ", ".join(d.get("tools") or []), "dim"))
         memory = d.get("memory")
         if memory:
             lines.append(
-                (
-                    f"{_label('memory')}{memory.get('notes')} notes, "
-                    f"{memory.get('episodes')} earlier runs",
+                TraceLine(
+                    "memory",
+                    f"{memory.get('notes')} notes, {memory.get('episodes')} earlier runs",
                     "dim",
                 )
             )
@@ -400,32 +426,38 @@ def render_lines(
         if prompt and system:
             n_lines = system.count("\n") + 1
             lines.append(
-                (
-                    f"{_label('prompt')}system prompt, {len(system)} chars, {n_lines} lines "
+                TraceLine(
+                    "prompt",
+                    f"system prompt, {len(system)} chars, {n_lines} lines "
                     "(also in transcript.jsonl as run_start):",
                     "dim",
                 )
             )
-            lines.append((_PAD + _indent(system), "dim"))
+            lines.append(TraceLine("", system, "dim", multiline=True))
         return lines
     if k == "observation":
         if "error" in d:
-            return [(f"{_label('obs')}ERROR {d['error']}", "red")]
-        return [(_label("obs") + _indent(str(d.get("text", ""))), "")]
+            return [TraceLine("obs", f"ERROR {d['error']}", "red", mark="fail")]
+        return [TraceLine("obs", str(d.get("text", "")), "", multiline=True)]
     if k == "llm_request":
         text = (
-            f"{_label('llm>')}step {d.get('step')}: {d.get('messages')} messages "
+            f"step {d.get('step')}: {d.get('messages')} messages "
             f"({d.get('images', 0)} with image) to {d.get('provider')} {d.get('model')}"
         )
         if d.get("reprompt"):
             text += " (re-prompt: it made no tool call)"
-        return [(text, "dim")]
+        return [TraceLine("llm>", text, "dim")]
     if k == "llm":
         if "error" in d:
             return [
-                (f"{_label('llm<')}ERROR {d['error']} after {d.get('latency_s', 0):.1f} s", "red")
+                TraceLine(
+                    "llm<",
+                    f"ERROR {d['error']} after {d.get('latency_s', 0):.1f} s",
+                    "red",
+                    mark="fail",
+                )
             ]
-        out: list[Line] = []
+        out: list[TraceLine] = []
         thinking = d.get("thinking")
         if thinking and thinking_chars != 0:
             text = str(thinking)
@@ -433,22 +465,21 @@ def render_lines(
                 text = text[:thinking_chars] + (
                     f"... (+{len(text) - thinking_chars} chars in transcript.jsonl)"
                 )
-            out.append((_label("think") + _indent(text), "dim italic"))
+            out.append(TraceLine("think", text, "dim italic", multiline=True))
         if d.get("text"):
-            out.append((_label("llm<") + _indent(str(d["text"])), ""))
+            out.append(TraceLine("llm<", str(d["text"]), "", multiline=True))
         calls = d.get("tool_calls") or []
         if not calls:
-            out.append((f"{_label('tool')}(no tool call)", "yellow"))
+            out.append(TraceLine("tool", "(no tool call)", "yellow", mark="warn"))
         for call in calls:
             out.append(
-                (f"{_label('tool')}{call.get('name')}({fmt_params(call.get('arguments'))})", "bold")
+                TraceLine(
+                    "tool", f"{call.get('name')}({fmt_params(call.get('arguments'))})", "bold"
+                )
             )
         usage = d.get("usage") or {}
         total = d.get("usage_total") or {}
-        tokens = (
-            f"{_label('tokens')}in={usage.get('input_tokens', 0)} "
-            f"out={usage.get('output_tokens', 0)}"
-        )
+        tokens = f"in={usage.get('input_tokens', 0)} out={usage.get('output_tokens', 0)}"
         if usage.get("reasoning_tokens"):
             tokens += f" reasoning={usage['reasoning_tokens']}"
         if total:
@@ -460,22 +491,22 @@ def render_lines(
             tokens += f" latency={d['latency_s']:.1f} s"
         if d.get("stop_reason"):
             tokens += f" stop={d['stop_reason']}"
-        out.append((tokens, "dim"))
+        out.append(TraceLine("tokens", tokens, "dim"))
         return out
     if k == "enforce":
-        text = f"{_label('enforce')}{d.get('issue')}: {d.get('action')}"
+        text = f"{d.get('issue')}: {d.get('action')}"
         if d.get("text"):  # the re-prompt's own words, which the record already carried
             text += f" ({d['text']})"
-        return [(text, "yellow")]
+        return [TraceLine("enforce", text, "yellow", mark="warn")]
     if k == "verb_start":
-        text = f"{_label('verb')}{d.get('name')}({fmt_params(d.get('params'))})"
+        text = f"{d.get('name')}({fmt_params(d.get('params'))})"
         if d.get("nested"):
-            text = f"{_label('verb')}  {d.get('name')}({fmt_params(d.get('params'))}) [nested]"
+            text = f"  {d.get('name')}({fmt_params(d.get('params'))}) [nested]"
         if d.get("source") and d.get("source") != "agent":
             text += f" from {d['source']}"
-        return [(text, "bold")]
+        return [TraceLine("verb", text, "bold", mark="start")]
     if k == "gate":
-        text = f"{_label('gate')}{d.get('gate')}: {d.get('outcome')}"
+        text = f"{d.get('gate')}: {d.get('outcome')}"
         if d.get("reason"):
             text += f" {d['reason']}"
         if d.get("params"):
@@ -485,43 +516,73 @@ def render_lines(
         if d.get("last"):
             text += f" [last: {d['last']}]"
         refused = d.get("outcome") in ("refused", "denied", "exceeded", "fired")
-        return [(text, "red" if refused else "yellow")]
+        return [
+            TraceLine(
+                "gate", text, "red" if refused else "yellow", mark="fail" if refused else "warn"
+            )
+        ]
     if k == "intent":
-        return [intent_line([event])]
+        return [intent_trace_line([event])]
     if k == "verb_end":
         outcome = str(d.get("outcome", "ok" if d.get("ok") else "fail"))
         verdict = "ok" if _ok(outcome) else ("FAIL" if outcome == "fail" else outcome.upper())
         n = sum((d.get("intents") or {}).values())
         tail = f" ({_seconds(d)}, {n} intent{'s' if n != 1 else ''})"
-        text = f"{_label('<-')}{d.get('name')} {verdict}: {d.get('summary')}{tail}"
+        text = f"{d.get('name')} {verdict}: {d.get('summary')}{tail}"
         if d.get("nested"):
-            text = f"{_label('<-')}  {d.get('name')} {verdict}: {d.get('summary')}{tail}"
-        return [(text, "green" if _ok(outcome) else _BAD.get(outcome, "yellow"))]
-    if k == "declare":
+            text = f"  {d.get('name')} {verdict}: {d.get('summary')}{tail}"
+        good = _ok(outcome)
         return [
-            (
-                f"{_label('declare')}{d.get('outcome')}: {d.get('reason')}",
-                "bold green" if d.get("outcome") == "success" else "bold red",
+            TraceLine(
+                "<-",
+                text,
+                "green" if good else _BAD.get(outcome, "yellow"),
+                mark="ok" if good else ("fail" if outcome in _BAD else "other"),
+            )
+        ]
+    if k == "declare":
+        won = d.get("outcome") == "success"
+        return [
+            TraceLine(
+                "declare",
+                f"{d.get('outcome')}: {d.get('reason')}",
+                "bold green" if won else "bold red",
+                mark="ok" if won else "fail",
             )
         ]
     if k == "memory":
-        return [(f"{_label('memory')}{d.get('summary')}", "cyan")]
+        return [TraceLine("memory", str(d.get("summary")), "cyan", mark="note")]
     if k == "note":
-        return [(_label("note") + _indent(str(d.get("text", ""))), "dim")]
+        return [TraceLine("note", str(d.get("text", "")), "dim", multiline=True, mark="note")]
     if (caption := flock_caption(k, d)) is not None:
         word, detail = caption
-        return [(f"{_label(word.lower())}{detail}", _FLOCK_STYLE.get(k, "cyan"))]
+        return [TraceLine(word.lower(), detail, _FLOCK_STYLE.get(k, "cyan"), mark="flock")]
     if k == "member_end":
-        return [(f"{_label('end')}{d.get('status')} after {d.get('steps')} steps", "bold")]
+        return [
+            TraceLine("end", f"{d.get('status')} after {d.get('steps')} steps", "bold", mark="end")
+        ]
     if k == "tool_call":
         args = {key: value for key, value in d.items() if key not in ("tool", "robot")}
-        return [(f"{_label('tool')}{d.get('tool')} {fmt_params(args)} on {d.get('robot')}", "bold")]
+        return [
+            TraceLine("tool", f"{d.get('tool')} {fmt_params(args)} on {d.get('robot')}", "bold")
+        ]
     if k == "tool_result":
-        text = f"{_label('done')}{'ok' if d.get('ok') else 'FAIL'} in {_seconds(d)}"
+        text = f"{'ok' if d.get('ok') else 'FAIL'} in {_seconds(d)}"
         if d.get("budget"):
             text += f" budget: {d['budget']}"
-        return [(text, "dim")]
+        return [TraceLine("done", text, "dim", mark="ok" if d.get("ok") else "fail")]
     return []
+
+
+def render_lines(
+    event: TraceEvent, *, thinking_chars: int | None = 2000, prompt: bool = True
+) -> list[Line]:
+    """The same lines, padded into the gutter: what every plain reader has always seen, and
+    what the MCP tool result carries (`tests/golden/trace_lines.json` holds it to that)."""
+    return [
+        _flatten(line)
+        for line in render_events(event, thinking_chars=thinking_chars, prompt=prompt)
+    ]
 
 
 def _ranges(events: list[TraceEvent]) -> str:
@@ -552,17 +613,18 @@ def _ranges(events: list[TraceEvent]) -> str:
     return ", ".join(parts)
 
 
-def intent_line(events: list[TraceEvent]) -> Line:
+def intent_trace_line(events: list[TraceEvent]) -> TraceLine:
     """One line for a burst of intents of one kind: the intent itself when there is one, a
     count with the parameter ranges when a steering loop sent dozens."""
     first = events[0]
     kind = first.data.get("intent")
     if len(events) == 1:
         params = fmt_params(first.data.get("params"), drop_none=True)
-        text = f"{_label('->')}{kind}({params})" if params else f"{_label('->')}{kind}"
+        text = f"{kind}({params})" if params else f"{kind}"
         if not first.data.get("accepted", True):
-            return (f"{text} REFUSED: {first.data.get('reason') or 'no reason given'}", "red")
-        return (text, "dim")
+            reason = first.data.get("reason") or "no reason given"
+            return TraceLine("->", f"{text} REFUSED: {reason}", "red", mark="fail")
+        return TraceLine("->", text, "dim", mark="send")
     if (first_t := first.data.get("robot_t")) is not None and (
         last_t := events[-1].data.get("robot_t")
     ) is not None:
@@ -570,10 +632,38 @@ def intent_line(events: list[TraceEvent]) -> Line:
     else:
         span = events[-1].t - first.t
     ranges = _ranges(events)
-    text = f"{_label('->')}{kind} x{len(events)} over {span:.1f} s"
+    text = f"{kind} x{len(events)} over {span:.1f} s"
     if ranges:
         text += f" ({ranges})"
-    return (text, "dim")
+    return TraceLine("->", text, "dim", mark="send")
+
+
+def intent_line(events: list[TraceEvent]) -> Line:
+    """The burst line, padded into the gutter."""
+    return _flatten(intent_trace_line(events))
+
+
+def fan_out(*sinks: Sink | None) -> Sink:
+    """One sink feeding several, ignoring the Nones.
+
+    `AgentLoop` takes a single observer and a run wants two: the view that narrates and the
+    status line that says what it is waiting for. A sink that raises must not starve the
+    others, so every one is called and the first failure is re-raised afterwards, which
+    leaves the `Tracer` counting exactly one drop for the event."""
+    live = [sink for sink in sinks if sink is not None]
+
+    def forward(event: TraceEvent) -> None:
+        failure: Exception | None = None
+        for sink in live:
+            try:
+                sink(event)
+            except Exception as e:
+                if failure is None:
+                    failure = e
+        if failure is not None:
+            raise failure
+
+    return forward
 
 
 PROGRESS_S = 2.0
@@ -624,6 +714,12 @@ class LineTrace:
             text = self.prefix + text.replace("\n", "\n" + self.prefix)
         self._write(text, style)
 
+    def _show(self, line: TraceLine, event: TraceEvent | None) -> None:
+        """One line, as this view draws it. The default is the gutter every plain reader
+        expects; a terminal overrides this to draw glyphs and colour instead. `event` is the
+        one the line came from, or None for a coalesced burst, which belongs to several."""
+        self._out(*_flatten(line))
+
     def __call__(self, event: TraceEvent) -> None:
         if event.kind == "intent" and event.data.get("accepted", True):
             if self._pending and self._pending[0].data.get("intent") != event.data.get("intent"):
@@ -635,17 +731,15 @@ class LineTrace:
                 self.flush()
             return
         self.flush()
-        for text, style in render_lines(
-            event, thinking_chars=self.thinking_chars, prompt=self.prompt
-        ):
-            self._out(text, style)
+        for line in render_events(event, thinking_chars=self.thinking_chars, prompt=self.prompt):
+            self._show(line, event)
 
     def flush(self) -> None:
         if not self._pending:
             return
         # write first, clear after: a write that fails (the Tracer swallows and counts it)
         # should leave the burst for the next flush rather than losing it
-        self._out(*intent_line(self._pending))
+        self._show(intent_trace_line(self._pending), None)
         self._pending = []
 
 
@@ -731,6 +825,7 @@ __all__ = [
     "LineTrace",
     "Sink",
     "TraceEvent",
+    "TraceLine",
     "TracedTransport",
     "Tracer",
     "call_lines",
@@ -738,12 +833,15 @@ __all__ = [
     "capture_sink",
     "capturing",
     "counting",
+    "fan_out",
     "flock_caption",
     "fmt_params",
     "intent_line",
+    "intent_trace_line",
     "parse_thinking_limit",
     "prompt_shown_default",
     "render_call",
+    "render_events",
     "render_lines",
     "thinking_limit_default",
     "trace_enabled_default",
