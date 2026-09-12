@@ -27,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a failure and a script can read which file and why. `--no-color` sets `NO_COLOR` as well as
   quackd's own consoles, because Typer builds a console of its own for every `--help` it
   renders. `FORCE_COLOR=1` is the other direction, for a pipe you are colouring on purpose.
-- **`-h` works**, everywhere `--help` does.
+- **`-h` works**, everywhere `--help` does, and `--help` groups what it shows. `quackd run`
+  offers twenty four flags in one flat list; they are now sorted into Task, Model, Robot,
+  Output and Memory, the commands are grouped the same way, and the root help ends with
+  three worked examples.
 - **A line saying what the run is waiting for.** A run spends nearly all its wall clock
   inside two calls, a model deciding and a verb steering a robot, and said nothing until
   each of them finished. With `--no-trace` it said nothing at all between the header and the

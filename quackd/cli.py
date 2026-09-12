@@ -36,6 +36,15 @@ app = typer.Typer(
     # A crash must not print this process's local variables: they hold an API key, a robot's
     # address and its bridge token. `main` installs a Rich traceback without them instead.
     pretty_exceptions_enable=False,
+    # blank lines rather than spaces: Typer renders the epilog as paragraphs and would
+    # otherwise run three examples together into one
+    epilog=(
+        "[bold]Try[/bold]" + "\n\n"
+        "quackd run find-and-kick --provider fake" + "\n\n"
+        "quackd run --goal 'walk in a square' --provider anthropic --robot microduck:mujoco"
+        + "\n\n"
+        "quackd doctor  |  quackd list-verbs  |  quackd trace"
+    ),
 )
 
 
@@ -83,6 +92,7 @@ _JSON = typer.Option(
     "--json",
     help="One JSON object per line on stdout, and nothing else: for a script rather than "
     "for a person. Exit codes are unchanged.",
+    rich_help_panel="Output",
 )
 
 NEWLINE = "\n"
@@ -196,7 +206,7 @@ def _robot_specs(robot: str | None, robots: str | None, duck: Any) -> list:
 # ── validate ────────────────────────────────────────────────────────────────────────────
 
 
-@app.command()
+@app.command(rich_help_panel="Inspect")
 def validate(
     duckfiles: list[str] = typer.Argument(..., help=".duck files, globs, or bundled names."),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Only print failures."),
@@ -322,7 +332,7 @@ def _validate_row(row: dict[str, Any]) -> list[Any]:
 _SAFETY_STYLE = {"safe": "ok", "confirm": "warn", "dangerous": "fail"}
 
 
-@app.command("list-verbs")
+@app.command("list-verbs", rich_help_panel="Inspect")
 def list_verbs(
     robot: str | None = typer.Option(
         None, "--robot", "-r", help="A robot's vocabulary (<adapter>:<backend>); default Microduck."
@@ -388,7 +398,7 @@ def list_verbs(
     ui.console.print(table)
 
 
-@app.command("list-adapters")
+@app.command("list-adapters", rich_help_panel="Inspect")
 def list_adapters_cmd(as_json: bool = _JSON) -> None:
     """List the robot adapters this build knows, their backends and status."""
     from quackd.adapters.factory import list_adapters
@@ -868,6 +878,7 @@ _GOAL = typer.Option(
     "--goal",
     "-g",
     help='A plain-language goal instead of a .duck file, e.g. --goal "find the ball and kick it".',
+    rich_help_panel="Task",
 )
 _GIFSIZE = typer.Option(
     256,
@@ -875,38 +886,50 @@ _GIFSIZE = typer.Option(
     min=64,
     max=1024,  # `sim3d.scene.OFFSCREEN_PX`; spelled here because cli.py must not import sim3d
     help="Simulators: pixel size of each GIF pane, 64 to 1024.",
+    rich_help_panel="Output",
 )
 _FLOCK = typer.Option(
     None,
     "--flock",
     help="EXPERIMENTAL: run N cooperating ducks (2-4) in sim2d. Overrides the file's flock block.",
+    rich_help_panel="Robot",
 )
 _MEMORY = typer.Option(
     True,
     "--memory/--no-memory",
     help="Carry notes and run outcomes between runs of the same robot (see `quackd memory`).",
+    rich_help_panel="Memory",
 )
 _MEMORY_DIR = typer.Option(
     None,
     "--memory-dir",
     help="Where memory files live (default: $QUACKD_MEMORY_DIR or ~/.quackd/memory).",
+    rich_help_panel="Memory",
 )
 _PROVIDER = typer.Option(
     "fake",
     "--provider",
     "-p",
     help="fake · anthropic · openai · gemini · grok · local · ollama · vllm · llamacpp · lmstudio",
+    rich_help_panel="Model",
 )
 _BASEURL = typer.Option(
     None,
     "--base-url",
     help="OpenAI-compatible server, e.g. http://localhost:8000/v1 (local presets).",
+    rich_help_panel="Model",
 )
-_APIKEY = typer.Option(None, "--api-key", help="API key override (local servers do not need one).")
+_APIKEY = typer.Option(
+    None,
+    "--api-key",
+    help="API key override (local servers do not need one).",
+    rich_help_panel="Model",
+)
 _VISION = typer.Option(
     None,
     "--vision/--no-vision",
     help="Send camera frames to the model (default: on for cloud, off for local).",
+    rich_help_panel="Model",
 )
 _ROBOT = typer.Option(
     None,
@@ -914,31 +937,56 @@ _ROBOT = typer.Option(
     "-r",
     help="<adapter>:<backend>, e.g. microduck:sim2d (default) · microduck:mock · "
     "microduck:jsonrpc. See `quackd list-adapters`.",
+    rich_help_panel="Robot",
 )
 _ROBOTS = typer.Option(
     None,
     "--robots",
     help="A flock or fleet: name=<adapter>:<backend>,... (simulator only for flocks).",
+    rich_help_panel="Robot",
 )
-_MODEL = typer.Option(None, "--model", "-m", help="Override the provider's model.")
-_SEED = typer.Option(None, "--seed", help="Simulator seed (deterministic runs).")
-_DRY = typer.Option(False, "--dry-run", help="Print every intent, send nothing.")
-_MAXSTEPS = typer.Option(None, "--max-steps", help="Override the duck's max_steps budget.")
-_RUNS = typer.Option("runs", "--runs-dir", help="Where run directories go.")
-_YES = typer.Option(False, "--yes", "-y", help="Auto-confirm gated verbs (careful on hardware).")
+_MODEL = typer.Option(
+    None, "--model", "-m", help="Override the provider's model.", rich_help_panel="Model"
+)
+_SEED = typer.Option(
+    None, "--seed", help="Simulator seed (deterministic runs).", rich_help_panel="Task"
+)
+_DRY = typer.Option(
+    False, "--dry-run", help="Print every intent, send nothing.", rich_help_panel="Task"
+)
+_MAXSTEPS = typer.Option(
+    None, "--max-steps", help="Override the duck's max_steps budget.", rich_help_panel="Task"
+)
+_RUNS = typer.Option(
+    "runs", "--runs-dir", help="Where run directories go.", rich_help_panel="Output"
+)
+_YES = typer.Option(
+    False,
+    "--yes",
+    "-y",
+    help="Auto-confirm gated verbs (careful on hardware).",
+    rich_help_panel="Task",
+)
 _LIVE = typer.Option(
     False,
     "--live",
     help="Simulators: watch the run in real time. sim2d opens a pygame window (needs "
     r"quackd\[live]); mujoco opens MuJoCo's own viewer.",
+    rich_help_panel="Output",
 )
-_ADDR = typer.Option(None, "--address", help="jsonrpc: unix:///run/robotd.sock or tcp://host:port")
+_ADDR = typer.Option(
+    None,
+    "--address",
+    help="jsonrpc: unix:///run/robotd.sock or tcp://host:port",
+    rich_help_panel="Robot",
+)
 _TOKEN = typer.Option(
     None,
     "--token",
     help="The bridge token for a robot that wants one. The Open Duck's installer writes one "
     "on the robot and QUACKD_DUCK_TOKEN carries it when the flag is absent. The ToddlerBot's "
     "daemon has no installer and reads QUACKD_TODDLERBOT_TOKEN instead.",
+    rich_help_panel="Robot",
 )
 _CAMERA_URL = typer.Option(
     None,
@@ -947,6 +995,7 @@ _CAMERA_URL = typer.Option(
     "(http://host:9872/snapshot.jpg), or webrtc://host:8443 to pull mediad's video track off a "
     r"Microduck, which is the only camera upstream offers and needs quackd\[microduck-camera]. "
     "Needed when you reach the robot through a tunnel and its own URL is not routable.",
+    rich_help_panel="Robot",
 )
 _FOV = typer.Option(
     None,
@@ -954,6 +1003,7 @@ _FOV = typer.Option(
     help="Horizontal field of view of the camera actually on your robot, in degrees. The "
     "default is the simulator's 90; a Pi Camera Module 2 is about 62. Getting it wrong "
     "scales every bearing and distance, so detections say so until you set it.",
+    rich_help_panel="Robot",
 )
 _VERBOSE = typer.Option(
     False,
@@ -961,6 +1011,7 @@ _VERBOSE = typer.Option(
     "-v",
     help="The compact view on stderr: one line per verb plus the executor's notes. The trace "
     "(on by default) shows all of that and more, so this only adds anything with --no-trace.",
+    rich_help_panel="Output",
 )
 _TRACE = typer.Option(
     None,
@@ -968,6 +1019,7 @@ _TRACE = typer.Option(
     help="Show everything behind the scenes on stderr: the prompt, each observation, what the "
     "model thought and answered, every executor decision, every intent sent to the robot, "
     "every result, tokens and timings. On by default; QUACKD_TRACE=0 turns it off too.",
+    rich_help_panel="Output",
 )
 _TRACE_MCP = typer.Option(
     None,
@@ -976,16 +1028,18 @@ _TRACE_MCP = typer.Option(
     "stderr: the verb, every gate that fired, every intent sent to the robot, every result "
     "and the budget. Over MCP the pilot is the client, so its own reasoning is not quackd's "
     "to show. On by default; QUACKD_TRACE=0 turns it off too.",
+    rich_help_panel="Output",
 )
 _TRACE_PROMPT = typer.Option(
     None,
     "--trace-prompt/--no-trace-prompt",
     help="Print the system prompt once at the start of the trace. On by default; "
     "QUACKD_TRACE_PROMPT=0 turns it off too. It is in the transcript either way.",
+    rich_help_panel="Output",
 )
 
 
-@app.command()
+@app.command(rich_help_panel="Run a duck")
 def run(
     duckfile: str | None = _DUCK_ARG,
     goal: str | None = _GOAL,
@@ -1049,7 +1103,7 @@ def run(
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Run a duck")
 def record(
     duckfile: str | None = _DUCK_ARG,
     goal: str | None = _GOAL,
@@ -1172,7 +1226,7 @@ _TRACE_RUN = typer.Argument(
 )
 
 
-@app.command("trace")
+@app.command("trace", rich_help_panel="Run a duck")
 def trace_cmd(
     run: str | None = _TRACE_RUN,
     runs_dir: str = _RUNS,
@@ -1267,7 +1321,7 @@ def trace_cmd(
 # ── doctor / serve-mcp ──────────────────────────────────────────────────────────────────
 
 
-@app.command()
+@app.command(rich_help_panel="Inspect")
 def doctor(
     robot: str | None = typer.Option(
         None, "--robot", "-r", help="Also show one robot's manifest (<adapter>:<backend>)."
@@ -1304,7 +1358,7 @@ def doctor(
         raise typer.Exit(code=1)
 
 
-@app.command("serve-mcp")
+@app.command("serve-mcp", rich_help_panel="Serve")
 def serve_mcp(
     robot: str | None = _ROBOT,
     robots: str | None = typer.Option(
@@ -1357,7 +1411,7 @@ memory_app = typer.Typer(
     help="What a robot remembers between runs: notes the pilot saved, and how runs ended.",
     no_args_is_help=True,
 )
-app.add_typer(memory_app, name="memory")
+app.add_typer(memory_app, name="memory", rich_help_panel="Memory")
 
 
 def _memory_for(robot: str | None, memory_dir: str | None) -> Any:
@@ -1479,7 +1533,7 @@ def memory_clear(
 # ── lan (quackd[lan]) ───────────────────────────────────────────────────────────────────
 
 
-@app.command()
+@app.command(rich_help_panel="LAN")
 def discover(
     timeout: float = typer.Option(3.0, "--timeout", help="Seconds to listen for answers."),
     as_json: bool = typer.Option(False, "--json", help="One JSON object per robot."),
@@ -1520,7 +1574,7 @@ def discover(
     ui.console.print(t)
 
 
-@app.command()
+@app.command(rich_help_panel="LAN")
 def announce(
     robot: str = typer.Option(
         ..., "--robot", "-r", help="<adapter>:<backend> to advertise (static manifest, no robot)."
