@@ -94,6 +94,12 @@ to proxy it through. Every call is billed to you.
 - **Anthropic** needs the `anthropic-dangerous-direct-browser-access: true` header, which
   the page sends. That header is exactly what its name says: your key is in a web page.
 - **Gemini** and **OpenAI** work with their normal browser CORS.
+- **Some OpenAI reasoning models** refuse function tools on `/v1/chat/completions` and
+  name `/v1/responses` in the 400. Every verb here is a function tool, so the page reads
+  that answer, moves the run to the Responses API and stays there for the rest of it.
+  `gpt-6-astra` is one such model and needs nothing set. This is the same switch
+  `quackd/agent/providers/openai.py` makes for the CLI, kept in step by
+  `test_the_browser_and_python_agree_on_which_400_means_responses`.
 - **Local models** need no key. Ollama must be told to accept the page:
   `OLLAMA_ORIGINS=* ollama serve`. Any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
   works the same way — change the base URL. Browsers treat `http://localhost` as trustworthy,

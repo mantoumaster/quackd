@@ -27,6 +27,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   readable as the record of what 0.4 through 0.8 actually shipped. Nothing about the other
   seven adapters changed.
 
+### Fixed
+
+- **The browser demo can drive a model that will not take function tools on Chat
+  Completions.** 0.8 taught the Python provider to read that 400, move the whole run to the
+  Responses API and stay there. The demo at <https://www.quackd.org/simulator> has an OpenAI
+  client of its own — the page calls the vendor straight from the browser and there is no
+  server here to proxy it through — and that client never learned any of it. So picking
+  `gpt-6-astra` in the page ended the run at the first call with the raw vendor message in
+  the transcript, on a demo whose whole job is to take one step in front of whoever clicked
+  it. The browser now does what Python does: Chat Completions first, and on the 400 that
+  names both function tools and Responses, the rest of the run goes to `/v1/responses` with
+  that API's shapes — flat tools, the system prompt as `instructions`, and each replayed
+  turn as `function_call` and `function_call_output` items keyed by `call_id`. It matches on
+  what the API said rather than on a model name, so an unrelated 400 still reaches the
+  transcript intact and never moves the run. Both halves are now tested against the same
+  quoted 400, the browser's under `node` with a stubbed `fetch` rather than by reading its
+  source. A guard runs the two predicates over the same seven vendor messages and fails if
+  they ever disagree, which reading them for the right words could not do: that passes
+  happily on an `and` quietly turned into an `or`, and an `or` would move a run on any 400
+  that said `responses`. The Chat Completions path the rewrite lifted out and re-keyed is
+  still every `gpt-5` run and every local server, and it now has the guard it never had.
+
 ## [0.8.0] — 2026-09-09
 
 Two things, mainly. A run narrates itself now: the system prompt once, then per turn the
