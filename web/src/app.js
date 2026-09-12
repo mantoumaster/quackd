@@ -11,6 +11,7 @@
  * turning it off does not take the keyboard away, because the keyboard was never the layer.
  */
 
+import { CATALOGUE, STATUS_ORDER } from "./catalogue.js";
 import { MAX_VX, MAX_VY, Microduck, UPSTREAM } from "./microduck.js";
 import { DEFAULT_CONTRACT, Runtime, pilot } from "./pilot.js";
 import { PROVIDERS, makeProvider } from "./providers.js";
@@ -40,7 +41,8 @@ const ui = {
   goalForm: $("goal-form"), goal: $("goal"), run: $("run"), stopRun: $("stop-run"),
   reset: $("reset"), toggle: $("quackd-on"), toggleLabel: $("toggle-label"),
   toggleNote: $("toggle-note"), keyBox: $("key-box"),
-  provider: $("provider"), model: $("model"), key: $("key"), baseUrl: $("base-url"),
+  provider: $("provider"), model: $("model"), modelText: $("model-text"),
+  key: $("key"), baseUrl: $("base-url"),
   providerNote: $("provider-note"), record: $("record"), save: $("save"), share: $("share"),
   clear: $("clear"),
 };
@@ -248,11 +250,14 @@ function refuse(goal) {
 async function run(goal) {
   let provider;
   try {
+    const model = chosenModel();
     provider = makeProvider({
       provider: ui.provider.value,
       key: ui.key.value.trim(),
-      model: ui.model.value.trim(),
+      model,
       baseUrl: ui.baseUrl.value.trim(),
+      // The catalogue knows which OpenAI models refuse function tools on Chat Completions, so
+      // the run opens on the API that will answer instead of paying a 400 to find out.
     });
   } catch (error) {
     say({ kind: "end", outcome: "error", reason: error.message });
@@ -596,9 +601,52 @@ for (const [id, spec] of Object.entries(PROVIDERS)) {
   ui.provider.append(option);
 }
 
+/**
+ * Rebuild #model for one vendor, grouped by status and defaulted to the vendor's own default.
+ *
+ * The field used to be free text with one id pre-filled, so every other model this build knows
+ * was something you had to have read the source to name, and a typo reached the vendor before
+ * anything said so. The list is `catalogue.js`, generated from the Python that is the single
+ * source of truth, so the page offers exactly what `quackd list-models` does.
+ *
+ * createElement throughout. A label is vendor copy — "Z.ai GLM 5.2 (hosted by Mistral)" — and
+ * innerHTML would make a `<` in one of them markup.
+ */
+function fillModels(provider) {
+  const catalogue = CATALOGUE[provider];
+  ui.model.replaceChildren();
+  if (!catalogue) return;
+  for (const status of STATUS_ORDER) {
+    const entries = catalogue.entries.filter((entry) => entry.status === status);
+    if (!entries.length) continue;
+    const group = document.createElement("optgroup");
+    group.label = status;
+    for (const entry of entries) {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = entry.label;
+      group.append(option);
+    }
+    ui.model.append(group);
+  }
+  ui.model.value = catalogue.default;
+}
+
+/** Whichever of the two model controls is the live one. */
+function chosenModel() {
+  return ui.model.hidden ? ui.modelText.value.trim() : ui.model.value;
+}
+
 function applyProvider() {
-  const spec = PROVIDERS[ui.provider.value];
-  ui.model.value = spec.defaultModel;
+  const provider = ui.provider.value;
+  const spec = PROVIDERS[provider];
+  // A vendor quackd keeps a list for gets the list; a local server gets the free-text box,
+  // because it serves whatever you pulled and there is no list to keep.
+  const fromCatalogue = Boolean(CATALOGUE[provider]);
+  fillModels(provider);
+  ui.model.hidden = !fromCatalogue;
+  ui.modelText.hidden = fromCatalogue;
+  if (!fromCatalogue) ui.modelText.value = spec.defaultModel;
   // Cleared on every change, in both directions. Disabling the field left the value readable,
   // so a key pasted for Anthropic was still there when the visitor switched to a local server
   // and went out as a bearer token to whatever host they had typed in the box below.
