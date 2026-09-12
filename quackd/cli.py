@@ -1209,18 +1209,28 @@ def doctor(
     ),
     camera_url: str | None = _CAMERA_URL,
     token: str | None = _TOKEN,
+    as_json: bool = _JSON,
 ) -> None:
     """Check the environment: keys, optional extras, adapters, upstream assumptions.
 
     With `--robot X --address Y` it also connects, which is the only way to see what a
     robot actually reports before a run does."""
-    from quackd.doctor import run_doctor
+    from quackd.doctor import collect, render
 
     if address and not robot:
         _fail("--address needs --robot, so quackd knows what it is connecting to")
         return
-    ok = run_doctor(ui.console, robot=robot, address=address, camera_url=camera_url, token=token)
-    if not ok:
+    if as_json:
+        report = collect(robot, address=address, camera_url=camera_url, token=token)
+        print(json.dumps(report.to_dict()))
+        raise typer.Exit(code=0 if report.ok else 1)
+    ui.install_logging()
+    # the probes are the slow part: five local servers at 1.5 s each, and a real robot after
+    # them. It used to sit silent for ten seconds with no sign it was doing anything.
+    with ui.spinner("checking this machine") as say:
+        report = collect(robot, address=address, camera_url=camera_url, token=token, progress=say)
+    render(ui.console, report)
+    if not report.ok:
         raise typer.Exit(code=1)
 
 

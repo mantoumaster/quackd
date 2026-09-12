@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quackd's own consoles, because Typer builds a console of its own for every `--help` it
   renders. `FORCE_COLOR=1` is the other direction, for a pipe you are colouring on purpose.
 - **`-h` works**, everywhere `--help` does.
+- **`quackd doctor --json`**, and a verdict at the end of the human version. doctor knew
+  whether this machine could run anything and said so only through its exit code, which
+  nobody reads off a screen. It now closes with one line: what works here, how many extras
+  are installed, how many assumptions are unverified, and which cloud providers are one key
+  away from working. The `--json` half exists because `collect` and `render` are now two
+  functions rather than one: the collector answers in dataclasses with no styling in them,
+  and it could not have been serialised before, because every cell it produced *was* a
+  markup string.
 
 ### Changed
 
@@ -40,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`quackd validate` counts in English** (`12 files valid`, `1 of 3 files failed`), names
   where to look next when it fails, and no longer lets a long file path squeeze the column
   that carries the answer down to nothing.
+- **`quackd doctor` reads as a report rather than a wall.** It was thirteen tables stacked
+  with nothing between them, seven of which were one-per-adapter lists of unverified
+  upstream assumptions each followed by its own dim footer. The assumptions are now one
+  sectioned table and the footers are one table of pins, which turns sixteen blocks into
+  two and puts the eight upstreams side by side where they can be compared. The sections are
+  ruled off and named, and the five local LLM servers are probed behind a spinner rather
+  than ten seconds of silence.
 - **Extras in `--help` keep their brackets.** `--live` advertised an install called `quackd`
   rather than `quackd[live]`, because Rich had read the extra as markup and eaten it. Same
   for `quackd[microduck-camera]` and `quackd[lan]`.

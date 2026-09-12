@@ -132,6 +132,13 @@ _PLAIN = {
     "—": "-",  # an em dash the codepage has not got
     "–": "-",  # noqa: RUF001 - nor an en dash
     "§": "S",  # and no section sign
+    "°": " deg",
+    "±": "+/-",
+    "…": "...",
+    "→": "->",
+    "←": "<-",
+    "≈": "~",
+    "×": "x",  # noqa: RUF001 - the multiplication sign
 }
 
 
@@ -384,6 +391,14 @@ def fail_line(
     return _deferred(build, glyphs)
 
 
+def plain(text: str, *, style: str | None = None) -> RenderableType:
+    """Prose this project wrote, spelled for whichever console draws it.
+
+    Upstream notes carry a section sign and an em dash and quackd's own status strings carry
+    emoji, and on a Windows codepage every one of them arrives as a question mark."""
+    return _deferred(lambda g: Text(degrade(text, g), style=style or ""), None)
+
+
 def status_text(word: str, glyphs: Glyphs) -> Text:
     """A registry status string (`built-in ...` behind an emoji), spelled for this stream.
 
@@ -392,16 +407,23 @@ def status_text(word: str, glyphs: Glyphs) -> Text:
     return Text(degrade(word, glyphs))
 
 
+ADAPTERS_TITLE = "adapters (--robot <adapter>:<backend>)"
+
+
 def adapters_table(
-    rows: Sequence[Mapping[str, Any]], *, glyphs: Glyphs | None = None
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    title: str | None = ADAPTERS_TITLE,
+    glyphs: Glyphs | None = None,
 ) -> RenderableType:
     """The adapter roster. `list-adapters` and `doctor` each had a copy of this, and the two
-    had already drifted apart in their columns."""
-    return _deferred(lambda g: _adapters_table(rows, g), glyphs)
+    had already drifted apart in their columns. `title=None` for a caller that has already
+    said what this is."""
+    return _deferred(lambda g: _adapters_table(rows, g, title), glyphs)
 
 
-def _adapters_table(rows: Sequence[Mapping[str, Any]], g: Glyphs) -> Table:
-    out = table("adapters (--robot <adapter>:<backend>)")
+def _adapters_table(rows: Sequence[Mapping[str, Any]], g: Glyphs, title: str | None) -> Table:
+    out = table(title)
     out.add_column("adapter", style=STYLES["key"], no_wrap=True)
     out.add_column("backends")
     out.add_column("status")
