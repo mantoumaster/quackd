@@ -315,6 +315,31 @@ def events() -> list[tuple[str, TraceEvent]]:
         ("frame_renders_nothing", _e("frame", 1.4, path="frames/0001.png")),
         ("run_end_renders_nothing", _e("run_end", 1.4, outcome="success")),
         ("unknown_renders_nothing", _e("bus", 1.4, msg={"kind": "BID"})),
+        # ── the arms a first pass at this corpus missed ──
+        ("intent_no_accepted_field", _e("intent", 0.7, intent="stop", params={})),
+        (
+            "llm_short_thinking",
+            _e("llm", 0.3, thinking="short enough to fit", tool_calls=[], usage={}),
+        ),
+        (
+            "verb_end_legacy_not_ok",
+            _e("verb_end", 0.8, name="kick", ok=False, summary="missed"),
+        ),
+        (
+            "verb_end_clocks_a_fifth_apart",
+            _e(
+                "verb_end",
+                0.8,
+                name="walk",
+                ok=True,
+                outcome="ok",
+                summary="walked",
+                elapsed_s=10.0,
+                transport_s=11.0,
+                clock="sim",
+                intents={},
+            ),
+        ),
         # ── fmt_value's own edges, carried on a line the renderer prints verbatim ──
         (
             "fmt_value_edges",
@@ -376,6 +401,27 @@ def golden() -> dict[str, Any]:
             [
                 _e("intent", i * 0.1, intent="do", params={"skill": f"s{i}"}, accepted=True)
                 for i in range(6)
+            ]
+        )
+    )
+    out["burst_no_params"] = list(
+        intent_line(
+            [_e("intent", i * 0.1, intent="stop", params={}, accepted=True) for i in range(3)]
+        )
+    )
+    out["burst_repeated_label"] = list(
+        intent_line(
+            [
+                _e("intent", i * 0.1, intent="do", params={"skill": "kick"}, accepted=True)
+                for i in range(4)
+            ]
+        )
+    )
+    out["burst_two_labels"] = list(
+        intent_line(
+            [
+                _e("intent", i * 0.1, intent="do", params={"skill": f"s{i % 2}"}, accepted=True)
+                for i in range(4)
             ]
         )
     )

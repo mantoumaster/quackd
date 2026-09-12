@@ -39,6 +39,7 @@ from typing import Any
 
 from rich import box
 from rich.console import Console, RenderableType
+from rich.measure import Measurement
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -197,7 +198,7 @@ def make_console(*, stderr: bool = False, no_color: bool = False) -> Console:
         theme=THEME,
         highlight=False,
         emoji=False,
-        no_color=no_color or "NO_COLOR" in os.environ,
+        no_color=no_color or bool(os.environ.get("NO_COLOR")),
     )
 
 
@@ -248,6 +249,13 @@ class Deferred:
     def __rich_console__(self, target: Console, options: Any) -> Iterator[RenderableType]:
         yield self._build(glyphs_for(target))
 
+    def __rich_measure__(self, target: Console, options: Any) -> Measurement:
+        """How wide this wants to be, which is whatever it turns out to be.
+
+        Without this Rich has to assume the worst and gives the cell the whole terminal, so
+        one deferred cell stretched its entire table to the window's width."""
+        return Measurement.get(target, options, self._build(glyphs_for(target)))
+
 
 def _deferred(build: Callable[[Glyphs], RenderableType], glyphs: Glyphs | None) -> RenderableType:
     return build(glyphs) if glyphs is not None else Deferred(build)
@@ -276,9 +284,12 @@ def table(title: str | None = None, **kwargs: Any) -> Table:
 
 def kv_grid(rows: Iterable[tuple[str, Any]], *, key_style: str | None = None) -> Table:
     """Aligned `key   value` lines with no box: the body of a panel, or a section with two
-    columns that does not need ruling off."""
+    columns that does not need ruling off.
+
+    `key_style=""` means the keys carry their own styling and must not be dimmed; None means
+    the default. `or` would have collapsed the two, which dimmed a check list's ticks."""
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style=key_style or STYLES["muted"], no_wrap=True)
+    grid.add_column(style=STYLES["muted"] if key_style is None else key_style, no_wrap=True)
     grid.add_column(overflow="fold")
     for key, value in rows:
         grid.add_row(Text(key), _renderable(value))

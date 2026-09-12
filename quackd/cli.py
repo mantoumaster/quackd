@@ -310,7 +310,7 @@ def _ok_line(message: str) -> Any:
 
 def _validate_row(row: dict[str, Any]) -> list[Any]:
     """One line of the table, with everything a manifest or a parser wrote kept as text."""
-    verbs = "—" if row["verbs"] is None else str(row["verbs"])
+    verbs = "-" if row["verbs"] is None else str(row["verbs"])
 
     def result(g: ui.Glyphs) -> Text:
         if not row["ok"]:
@@ -324,7 +324,7 @@ def _validate_row(row: dict[str, Any]) -> list[Any]:
             out.append(f" for {', '.join(row['robots'])}", style=ui.STYLES["muted"])
         return out
 
-    return [Text(row["file"]), Text(row["name"] or "—"), verbs, ui.Deferred(result)]
+    return [Text(row["file"]), Text(row["name"] or "-"), verbs, ui.Deferred(result)]
 
 
 # ── list-verbs ──────────────────────────────────────────────────────────────────────────
@@ -1058,7 +1058,10 @@ def run(
     token: str | None = _TOKEN,
     fov_deg: float | None = _FOV,
     gif: bool = typer.Option(
-        True, "--gif/--no-gif", help="Simulators: write run.gif into the run dir."
+        True,
+        "--gif/--no-gif",
+        help="Simulators: write run.gif into the run dir.",
+        rich_help_panel="Output",
     ),
     gif_size: int = _GIFSIZE,
     verbose: bool = _VERBOSE,
@@ -1627,6 +1630,15 @@ def announce(
         ui.console.print(Text("withdrawn", style=ui.STYLES["muted"]))
 
 
+def _stdout_alive() -> bool:
+    """Whether stdout can still be written to. A closed pipe fails the flush."""
+    try:
+        sys.stdout.flush()
+    except OSError:
+        return False
+    return not sys.stdout.closed
+
+
 def _leave_quietly() -> None:
     """Stop, with nothing further to say.
 
@@ -1637,6 +1649,19 @@ def _leave_quietly() -> None:
     raise SystemExit(0)
 
 
+def _rich_traceback(kind: type[BaseException], exc: BaseException, tb: Any) -> None:
+    """A crash, rendered, without this process's locals in it: they hold an API key, a
+    robot's address and its bridge token.
+
+    Built here rather than installed once, because the console `--no-color` rebuilt does not
+    exist until the root callback has run and an excepthook fires long after that."""
+    from rich.traceback import Traceback
+
+    ui.err_console.print(
+        Traceback.from_exception(kind, exc, tb, show_locals=False, suppress=[typer])
+    )
+
+
 def main() -> None:
     """The console entry point: `app()`, and the two things a command that prints for a
     living owes its terminal.
@@ -1645,15 +1670,16 @@ def main() -> None:
     robot's address and its bridge token. And a reader is allowed to walk away: `quackd
     list-verbs | head` closes the pipe halfway down the table, and Python's answer to that
     is a second wall of text about a broken pipe on top of the output that was asked for."""
-    from rich.traceback import install
-
-    install(console=ui.err_console, show_locals=False, suppress=[typer])
+    sys.excepthook = _rich_traceback
     try:
         app()
     except BrokenPipeError:
         _leave_quietly()
-    except OSError as e:  # Windows raises EINVAL rather than EPIPE on a pipe that has gone
-        if e.errno not in (errno.EPIPE, errno.EINVAL):
+    except OSError as e:
+        # Windows answers a write to a pipe nobody is reading with EINVAL rather than EPIPE,
+        # and EINVAL is far too common an errno to swallow on its own word: only when stdout
+        # is the stream that has actually stopped accepting writes is this a reader leaving.
+        if e.errno not in (errno.EPIPE, errno.EINVAL) or _stdout_alive():
             raise
         _leave_quietly()
 

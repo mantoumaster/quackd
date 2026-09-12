@@ -399,6 +399,38 @@
  "frame_renders_nothing": [],
  "run_end_renders_nothing": [],
  "unknown_renders_nothing": [],
+ "intent_no_accepted_field": [
+  [
+   "->      stop",
+   "dim"
+  ]
+ ],
+ "llm_short_thinking": [
+  [
+   "think   short enough to fit",
+   "dim italic"
+  ],
+  [
+   "tool    (no tool call)",
+   "yellow"
+  ],
+  [
+   "tokens  in=0 out=0",
+   "dim"
+  ]
+ ],
+ "verb_end_legacy_not_ok": [
+  [
+   "<-      kick FAIL: missed (0.0 s, 0 intents)",
+   "red"
+  ]
+ ],
+ "verb_end_clocks_a_fifth_apart": [
+  [
+   "<-      walk ok: walked (10.0 s, 0 intents)",
+   "green"
+  ]
+ ],
  "fmt_value_edges": [
   [
    "verb    do(none=null, yes=true, no=false, ratio=0.667, short='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', long='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...', big={'k0': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k1': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k2': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k...)",
@@ -493,6 +525,18 @@
   "->      do x6 over 0.5 s (skill 's0'/'s1'/'s2'...)",
   "dim"
  ],
+ "burst_no_params": [
+  "->      stop x3 over 0.2 s",
+  "dim"
+ ],
+ "burst_repeated_label": [
+  "->      do x4 over 0.3 s (skill 'kick')",
+  "dim"
+ ],
+ "burst_two_labels": [
+  "->      do x4 over 0.3 s (skill 's0'/'s1')",
+  "dim"
+ ],
  "whole_call": [
   "run     find-and-kick provider=anthropic model=claude-opus-5 robot=microduck:sim2d DRY RUN connected in 0.05 s",
   "tools   walk, kick, quack",
@@ -562,6 +606,12 @@
   "tool    robot_run_verb verb='go_to', params={'target': 'ball'} on duck",
   "done    ok in 1.1 s budget: step 1/40",
   "done    FAIL in 20.0 s sim, 0.2 s wall",
+  "->      stop",
+  "think   short enough to fit",
+  "tool    (no tool call)",
+  "tokens  in=0 out=0",
+  "<-      kick FAIL: missed (0.0 s, 0 intents)",
+  "<-      walk ok: walked (10.0 s, 0 intents)",
   "verb    do(none=null, yes=true, no=false, ratio=0.667, short='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', long='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...', big={'k0': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k1': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k2': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k...)"
  ],
  "transcript_example": [

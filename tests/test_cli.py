@@ -656,12 +656,18 @@ def test_no_color_reaches_the_help_typer_renders_for_itself() -> None:
 
 
 def test_the_help_groups_the_flags_and_keeps_the_brackets_of_an_extra() -> None:
-    """`rich_markup_mode` reads `quackd[lan]` as markup and used to print it as `quackd`,
-    which named an install that does not exist."""
-    out = " ".join(CliRunner().invoke(app, ["run", "--help"]).output.split())
+    """Twenty five flags in one flat list is a list nobody reads. And `rich_markup_mode`
+    reads `quackd[lan]` as markup, which printed an install that does not exist."""
+    wide = {"COLUMNS": "200"}
+    out = " ".join(CliRunner().invoke(app, ["run", "--help"], env=wide).output.split())
     assert "quackd[live]" in out, "an extra a reader is meant to type must survive"
-    out_root = " ".join(CliRunner().invoke(app, ["--help"]).output.split())
-    assert "--no-color" in out_root
+    for group in ("Task", "Model", "Robot", "Output", "Memory"):
+        assert group in out, group
+    root = " ".join(CliRunner().invoke(app, ["--help"], env=wide).output.split())
+    assert "--no-color" in root
+    for group in ("Inspect", "Run a duck", "Serve", "LAN", "Memory"):
+        assert group in root, group
+    assert "quackd run find-and-kick --provider fake" in root, "the epilog offers a first command"
 
 
 def test_dash_h_is_the_same_as_help() -> None:
@@ -694,11 +700,12 @@ def test_a_confirmation_prompt_is_asked_with_the_status_line_out_of_the_way(
     assert seen == ["down", "up", "down", "up"]
 
 
-def test_the_status_line_runs_with_the_trace_off_and_prints_nothing_into_a_pipe(
+def test_a_run_into_a_pipe_adds_no_status_line_to_what_a_script_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """It is the only thing between the header and the verdict once --no-trace is on, and it
-    must still add nothing at all to output a script is reading."""
+    """The status line is wired in whether the trace is on or off, and a terminal is the only
+    place it may appear. Under a runner or a pipe nothing of it reaches the output."""
     out = _trace_run(tmp_path, monkeypatch, "--no-trace")
     assert "SUCCESS" in out
-    assert "waiting on" not in out and "observing" not in out
+    for chatter in ("waiting on", "observing", "choosing a verb", "finishing"):
+        assert chatter not in out, chatter

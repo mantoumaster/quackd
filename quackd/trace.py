@@ -934,7 +934,9 @@ class ConsoleTrace(LineTrace):
             for line in render_events(
                 event, thinking_chars=self.thinking_chars, prompt=self.prompt
             ):
-                if line.label == "run" or (line.label == "tools" and self.header):
+                # the panel already carries the robot, the tools and the memory; what is
+                # left for a line is the prompt, which is a block of its own
+                if line.label == "run" or (self.header and line.label in ("tools", "memory")):
                     continue
                 self._show(line, event)
             return

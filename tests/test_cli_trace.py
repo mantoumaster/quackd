@@ -90,7 +90,9 @@ def test_trace_from_step_skips_earlier_turns(tmp_path: Path) -> None:
     assert code == 0
     assert "step 2/40" in out
     assert "step 0/40" not in out and "step 1/40" not in out
-    assert "find-and-kick" in out  # the header still says what is being replayed
+    # the panel, not the run directory that also contains the name: a replay has no other
+    # header, so this is the only thing saying what is being replayed
+    assert "provider fake (scripted:find-and-kick)" in out
 
 
 def test_trace_no_prompt_and_thinking_flags(tmp_path: Path) -> None:

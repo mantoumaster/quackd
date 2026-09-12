@@ -230,9 +230,16 @@ class TransportRow:
     name: str
     status: str
     note: str = ""
+    found: bool = False
+    """Something this transport needs is here: a robotd socket on the machine, say."""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "status": self.status, "note": self.note}
+        return {
+            "name": self.name,
+            "status": self.status,
+            "note": self.note,
+            "found": self.found,
+        }
 
 
 @dataclass
@@ -251,16 +258,20 @@ class PinRow:
 
     upstream: str
     pin: str
-    read_on: str
-    verified: int
-    unverified: int
-    never_run: str
-    doc: str
+    extra_pin: str = ""
+    """A second commit where an upstream has one: microduck_rl pins its policies apart from
+    its model, and they move independently."""
+    read_on: str = ""
+    verified: int = 0
+    unverified: int = 0
+    never_run: str = ""
+    doc: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "upstream": self.upstream,
             "pin": self.pin,
+            "extra_pin": self.extra_pin,
             "read_on": self.read_on,
             "verified": self.verified,
             "unverified": self.unverified,
@@ -274,6 +285,9 @@ class DoctorReport:
     version: str
     python: str
     platform: str
+    api_version: str = ""
+    """The duck-ipc-proto version quackd speaks. The one number here that is about the wire
+    rather than about this machine, and the first thing to check against a robot."""
     core: list[Check] = field(default_factory=list)
     bundled_ducks: int = 0
     providers: list[ProviderRow] = field(default_factory=list)
@@ -311,6 +325,7 @@ class DoctorReport:
             "version": self.version,
             "python": self.python,
             "platform": self.platform,
+            "api_version": self.api_version,
             "core": [c.to_dict() for c in self.core],
             "bundled_ducks": self.bundled_ducks,
             "providers": [p.to_dict() for p in self.providers],
@@ -411,7 +426,8 @@ def probe(
     report = ProbeReport(address=address, ok=True)
     add = report.rows.append
     add(ProbeRow("connected", "yes", "ok"))
-    add(ProbeRow("health", "ok" if health.ok else health.reason, "ok" if health.ok else "fail"))
+    why = "ok" if health.ok else str(health.reason or "not ok, and it did not say why")
+    add(ProbeRow("health", why, "ok" if health.ok else "fail"))
     for key, value in (health.extras or {}).items():
         add(ProbeRow(f"  {key}", "" if value is None else str(value)))
     gained = sorted(set(live.verb_names()) - set(static.verb_names()))
@@ -523,6 +539,7 @@ def collect(
         version=__version__,
         python=platform.python_version(),
         platform=f"{platform.system()} {platform.release()}",
+        api_version=str(up.API_VERSION.name),
     )
 
     say("checking the core packages")
@@ -592,7 +609,7 @@ def collect(
                 report.robot.probe = probe(robot, manifest, address, camera_url, token)
 
     for name, status in TRANSPORT_STATUS.items():
-        note = ""
+        note, found = "", False
         if name == "jsonrpc":
             root = os.environ.get(up.RUNTIME_DIR_ENV.name, "/run")
             sock = Path(root) / "robotd.sock"
@@ -603,11 +620,12 @@ def collect(
                 )
             elif sock.exists():
                 note = f"{sock} present"
+                found = True
             else:
                 note = f"{sock} not found (not on a robot?)"
         if name == "websocket":
             note = up.WEBSOCKET_GATEWAY.note
-        report.transports.append(TransportRow(name, status, note))
+        report.transports.append(TransportRow(name, status, note, found))
 
     say("checking the optional extras")
     for label, (module, extra) in EXTRAS.items():
@@ -624,6 +642,7 @@ def collect(
             PinRow(
                 upstream=name,
                 pin=api.PIN[:7],
+                extra_pin=getattr(api, "POLICIES_PIN", "")[:7],
                 read_on=api.READ_ON,
                 verified=len(api.refs_by_status("VERIFIED")),
                 unverified=len(unverified),
@@ -784,9 +803,12 @@ def _pins_table(report: DoctorReport) -> Any:
             ", ",
             (f"{pin.unverified} not", ui.STYLES["warn"] if pin.unverified else ui.STYLES["muted"]),
         )
+        pinned = Text(pin.pin)
+        if pin.extra_pin:
+            pinned.append(f", policies {pin.extra_pin}", style=ui.STYLES["muted"])
         table.add_row(
             Text(pin.upstream),
-            Text(pin.pin),
+            pinned,
             Text(pin.read_on, style=ui.STYLES["muted"]),
             refs,
             ui.plain(pin.never_run, style=ui.STYLES["muted"]),
@@ -803,7 +825,7 @@ def _transports_table(report: DoctorReport) -> Any:
         table.add_row(
             Text(row.name),
             _status_cell(row.status),
-            ui.plain(row.note, style=ui.STYLES["muted"]),
+            ui.plain(row.note, style=ui.STYLES["ok"] if row.found else ui.STYLES["muted"]),
         )
     return table
 
@@ -824,6 +846,11 @@ def verdict(report: DoctorReport) -> Any:
         reason = report.robot.error
     elif report.robot and report.robot.probe and report.robot.probe.error:
         reason = report.robot.probe.error
+    elif report.robot and report.robot.probe:
+        # the probe fails on health OR on a camera that sent no frame, and blaming health
+        # for a camera sends the reader to the wrong end of the robot
+        bad = [r for r in report.robot.probe.rows if r.state == "fail"]
+        reason = f"{bad[0].what}: {bad[0].value}" if bad else "the robot did not report healthy"
     else:
         reason = "the robot did not report healthy"
     counters = [
@@ -844,6 +871,7 @@ def render(console: Console, report: DoctorReport) -> None:
         Text.assemble(
             (f"quackd {report.version}", ui.STYLES["key"]),
             (f"  Python {report.python}  {report.platform}", ui.STYLES["muted"]),
+            (f"  duck-ipc-proto API v{report.api_version}", ui.STYLES["muted"]),
         )
     )
 

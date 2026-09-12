@@ -299,8 +299,9 @@ def test_cli_flock_trace_prefixes_every_line_with_its_duck_and_tells_the_flocks_
     assert on.exit_code == 0, on.output
     shown = " ".join(on.output.split())
     for needle in (
-        "duck-0",  # a member's own name in front of its own lines
-        "verb search_scan(",  # the verb it chose
+        # the name in front of the line, not merely somewhere in the output: without the
+        # prefix three robots narrating at once are one interleaving nobody can read
+        "duck-0 ▶ verb search_scan(",
         "send move x",  # what went to that robot
         "flock ◆ auction first bid duck-",  # the coordinator's story
         "flock ◆ claim duck-",

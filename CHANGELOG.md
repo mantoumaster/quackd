@@ -28,8 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quackd's own consoles, because Typer builds a console of its own for every `--help` it
   renders. `FORCE_COLOR=1` is the other direction, for a pipe you are colouring on purpose.
 - **`-h` works**, everywhere `--help` does, and `--help` groups what it shows. `quackd run`
-  offers twenty four flags in one flat list; they are now sorted into Task, Model, Robot,
-  Output and Memory, the commands are grouped the same way, and the root help ends with
+  offered twenty seven flags in one flat list. They are sorted into Task, Model, Robot,
+  Output and Memory now, the commands are grouped the same way, and the root help ends with
   three worked examples.
 - **A line saying what the run is waiting for.** A run spends nearly all its wall clock
   inside two calls, a model deciding and a verb steering a robot, and said nothing until
@@ -83,13 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`quackd validate` counts in English** (`12 files valid`, `1 of 3 files failed`), names
   where to look next when it fails, and no longer lets a long file path squeeze the column
   that carries the answer down to nothing.
-- **`quackd doctor` reads as a report rather than a wall.** It was thirteen tables stacked
-  with nothing between them, seven of which were one-per-adapter lists of unverified
-  upstream assumptions each followed by its own dim footer. The assumptions are now one
-  sectioned table and the footers are one table of pins, which turns sixteen blocks into
-  two and puts the eight upstreams side by side where they can be compared. The sections are
-  ruled off and named, and the five local LLM servers are probed behind a spinner rather
-  than ten seconds of silence.
+- **`quackd doctor` reads as a report rather than a wall.** Thirteen tables arrived stacked
+  with nothing between them, and eight of them were per-upstream lists of unverified
+  assumptions, each followed by its own dim footer. Those sixteen blocks are now two: one
+  sectioned table of assumptions, and one table of pins that puts the eight upstreams side
+  by side where they can be compared, with the doc paths on a line under it. The sections
+  are ruled off and named, and the five local LLM servers are probed behind a spinner
+  rather than ten seconds of silence.
 - **Extras in `--help` keep their brackets.** `--live` advertised an install called `quackd`
   rather than `quackd[live]`, because Rich had read the extra as markup and eaten it. Same
   for `quackd[microduck-camera]` and `quackd[lan]`.
