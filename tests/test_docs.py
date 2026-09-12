@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from quackd.agent.providers.factory import CLOUD_NAMES, KEY_ENV, default_model_for
 from quackd.transport import upstream_api as up
 from quackd.verbs.registry import default_registry
 
@@ -79,10 +80,8 @@ def test_readme_promises() -> None:
         "pronounced",
         "Any LLM, one <code>.duck</code> file",
         "Non goals for now",
-        "--provider openai",
-        "--provider gemini",
-        "--provider grok",
         "--provider ollama",
+        "quackd list-models",
         "docs/local-llms.md",
         "| Local models (",
         "--flock",
@@ -92,9 +91,49 @@ def test_readme_promises() -> None:
         "QUACKD_TRACE",
     ):
         assert needle in README, needle
+    # every vendor, from the code rather than a list here, so a vendor cannot be added to quackd
+    # and left out of the one table that tells anyone it exists
+    for name in CLOUD_NAMES:
+        assert f"--provider {name}" in README, f"the README never shows --provider {name}"
+        assert f"`{KEY_ENV[name]}`" in README, f"the README never names {KEY_ENV[name]}"
     assert "quadruped" not in README.lower()
     for hype in ("revolutionary", "world's first", "fully autonomous", "swarm intelligence"):
         assert hype not in README.lower(), hype
+
+
+def test_the_readme_defaults_row_names_every_catalogue_default() -> None:
+    """A default that is written down twice is a default that goes stale in one of them.
+
+    This cannot stop the row being wrong the day a vendor moves, but it can stop the row being
+    wrong the day quackd itself moves, which is what happened to `gpt-5`, `grok-4` and
+    `gemini-2.5-pro`: the code changed under a sentence nobody re-read."""
+    row = next((line for line in README.splitlines() if line.startswith("| Model |")), None)
+    assert row, "the README's Configuration table has no Model row"
+    for name in CLOUD_NAMES:
+        default = default_model_for(name)
+        assert f"`{default}`" in row, f"the Model row does not name {name}'s default, {default}"
+
+
+def test_every_provider_key_is_named_where_keys_are_configured() -> None:
+    """A vendor whose key variable is only in the source is a vendor nobody can authenticate."""
+    env_example = (REPO / ".env.example").read_text(encoding="utf-8")
+    for name in CLOUD_NAMES:
+        assert f"\n{KEY_ENV[name]}=" in env_example, f".env.example has no {KEY_ENV[name]} line"
+
+
+def test_the_catalogue_is_documented_where_it_is_configured() -> None:
+    """The same rule the trace is held to, for the thing that now decides every run's model."""
+    for path, needles in (
+        ("README.md", ("quackd list-models", "catalogue")),
+        ("docs/faq.md", ("quackd list-models", "catalogue")),
+        (".env.example", ("QUACKD_MODEL", "list-models")),
+        ("docs/local-llms.md", ("catalogue",)),
+        # the one place the answer is that there is no answer, which is worth saying out loud
+        ("docs/mcp.md", ("selects no model", "QUACKD_MODEL")),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
 
 
 #: The one dash the README is allowed: the leading one of a blockquote attribution,
@@ -271,7 +310,19 @@ def test_adr_links_resolve() -> None:
 
 # ── counts, so a release cannot ship a number the code disagrees with ────────────────────
 
-_NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
+_NUMBER_WORDS = {
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "eleven",
+    12: "twelve",
+}
 
 
 def _prose(text: str) -> str:
@@ -311,6 +362,26 @@ def test_no_document_claims_the_wrong_number_of_adapters(name: str) -> None:
             assert claim not in prose, (
                 f"{name} says {claim!r}; quackd ships {right} ({', '.join(ADAPTER_NAMES)})"
             )
+
+
+def test_no_living_document_claims_the_wrong_number_of_cloud_providers() -> None:
+    """The same failure the adapter count already has a guard for, one layer up.
+
+    "The four cloud providers see the camera frame as an image" was written once and was true
+    for a year. Eleven is a number that will move again, and every document that spells it is a
+    document nobody will re-read on the day it does."""
+    right = _NUMBER_WORDS[len(CLOUD_NAMES)]
+    shapes = ("{w} cloud providers", "{w} cloud vendors", "{w} vendors")
+    for path in _living_docs():
+        prose = _prose(path.read_text(encoding="utf-8")).lower()
+        for count, word in _NUMBER_WORDS.items():
+            if count == len(CLOUD_NAMES):
+                continue
+            for shape in shapes:
+                claim = shape.format(w=word)
+                assert claim not in prose, (
+                    f"{path.name} says {claim!r}; quackd has {right} ({', '.join(CLOUD_NAMES)})"
+                )
 
 
 def test_the_pypi_summary_names_every_robot() -> None:

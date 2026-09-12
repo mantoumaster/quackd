@@ -5,6 +5,13 @@
 Claude Desktop becomes the pilot; quackd's executor still sits between the model and every
 robot (allowlist, budgets, confirm gates, heartbeat), one executor per robot.
 
+**In MCP mode quackd selects no model at all.** `serve-mcp` takes no `--provider` and no
+`--model`, it never consults the model catalogue the CLI ships, and `QUACKD_MODEL` is ignored
+here even when it is set — because the client's own model is the pilot. Whichever model you are
+chatting with in Claude Code or Claude Desktop is the one flying the robot, and quackd contributes
+the robot, the verbs and the executor rather than a choice of brain. Everything about `--model`,
+`quackd list-models` and the catalogue belongs to `quackd run`.
+
 Works with the built-in simulator out of the box — no hardware, no extra install.
 
 For a duck that really walks, add the physics extra and name the physics backend:
@@ -78,7 +85,8 @@ up or a contract's `abort_when` fired, and every further call except `stop` is r
 and `no_sound_intent` when `robot_say` reaches a body with nothing to say it with.
 
 Over MCP the pilot is the client, so the model's own reasoning and token counts live in
-Claude Code or Claude Desktop, not here. quackd shows what quackd can see.
+Claude Code or Claude Desktop, not here. So does the model itself: quackd never chose one, never
+read a key for one, and never counted a token against one. quackd shows what quackd can see.
 
 On a simulator the robot's own clock and the wall clock are different numbers, and the line
 shows both when they disagree. On hardware there is one clock and one number.

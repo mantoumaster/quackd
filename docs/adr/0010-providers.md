@@ -1,6 +1,6 @@
 # ADR-0010: One provider protocol, vendor SDKs as optional extras
 
-**Status:** accepted · **Date:** 2026-08-28 · Amended by [ADR-0029](0029-tracing.md) (0.8: the Anthropic request now carries `thinking: {"type": "adaptive", "display": "summarized"}`, because without the display the thinking blocks come back empty and the trace has nothing to show. Read "no `thinking` param" below as what 0.2 sent. `QUACKD_THINKING_DISPLAY=omitted` opts out, and a model that rejects the parameter gets one retry without it)
+**Status:** accepted · **Date:** 2026-08-28 · Amended by [ADR-0029](0029-tracing.md) (0.8: the Anthropic request now carries `thinking: {"type": "adaptive", "display": "summarized"}`, because without the display the thinking blocks come back empty and the trace has nothing to show. Read "no `thinking` param" below as what 0.2 sent. `QUACKD_THINKING_DISPLAY=omitted` opts out, and a model that rejects the parameter gets one retry without it) · Amended by [ADR-0031](0031-model-catalogue.md) (unreleased: the default model ids in the table below are what the first release shipped, and the verification the three "(verify)" marks promised never happened — all three ids are wrong by 2026-09-12. `--model` for a cloud vendor now takes an id from `catalogue.py` and an unlisted one is refused before a key is read; seven more OpenAI-compatible vendors join the matrix, each one subclass as Grok is; and `serve-mcp` selects no model at all, because the client's own model is the pilot)
 
 ## Context
 

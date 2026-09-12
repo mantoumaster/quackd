@@ -47,7 +47,7 @@
   <sub><strong>The same sentence, the same duck, with and without quackd.</strong> <b>Left:</b> you type <em>walk in a square</em>, a pilot picks the robot's own verbs one at a time, and the contract decides which it may use. Nobody wrote a square. It walks a leg, reads the pose it actually reached and corrects, because a real gait delivers about 0.42 of what you ask for. <b>Right:</b> the identical world, robot and walking policy, minus quackd. A Microduck takes a twist, which is three numbers, so an English sentence has nowhere to go and it stands there. Physics is MuJoCo in the Microduck's own scene, the gait is the policy Pollen trained, the pilot is <em>scripted</em> so this needs no API key, and each inset is the path walked so far. See <a href="docs/assets/README.md">docs/assets</a>.</sub>
 </p>
 
-**quackd** connects a small robot to a large language model and turns a request like *"find the ball and kick it"* into the right sequence of the robot's own skills. The model picks one skill at a time from the list the robot's manifest declares, quackd runs it, looks at the camera, and asks again until the job is done or clearly impossible. Claude, OpenAI, Gemini and Grok work over their APIs. Open source models work on your own machine through Ollama, vLLM, llama.cpp or LM Studio, with no key.
+**quackd** connects a small robot to a large language model and turns a request like *"find the ball and kick it"* into the right sequence of the robot's own skills. The model picks one skill at a time from the list the robot's manifest declares, quackd runs it, looks at the camera, and asks again until the job is done or clearly impossible. Claude, OpenAI, Gemini, Grok, Mistral, DeepSeek, Cohere, Qwen, Kimi, GLM and Meta work over their APIs. Open source models work on your own machine through Ollama, vLLM, llama.cpp or LM Studio, with no key.
 
 The first robot is the [Microduck](https://pollen-robotics.com/microduck/) from Pollen Robotics, a biped that already knows how to walk, turn, kick, scoop something off the floor, look around and quack. Six more bodies follow it through adapters that declare what each can do: an [Open Duck Mini v2](https://github.com/apirrone/Open_Duck_Mini) you can print and build yourself, an SO-101 class arm through LeRobot, any wheeled base over rosbridge, an XLeRobot dual-arm cart, an AlohaMini with two arms on a lift, and a ToddlerBot humanoid.
 
@@ -205,7 +205,7 @@ Version 0.7, simulator and mocks. What has been built, and how far each piece ha
 | Manifests and core verbs (`quackd list-adapters`, `quackd list-verbs --robot`) | ✅ seven adapters, eight core verbs that appear only where the manifest meets their requirements, speed limits from the manifest, `manifest.schema.json` generated and drift tested |
 | MCP server (`quackd serve-mcp`) | ✅ Claude Code and Claude Desktop, fleets with `--robots` (eight `robot_*` tools, tested in process against the simulator and the mocks), no Claude Desktop session on record |
 | Memory between runs (`quackd memory`, `remember`) | ✅ one JSONL file per `adapter:backend`, notes and run outcomes into the next prompt, tested end to end offline, 🧪 the `remember` tool itself exercised by one local model on one machine and by no cloud model ([docs/memory.md](docs/memory.md)) |
-| Providers: anthropic, openai, gemini, grok, fake | ✅ implemented, tested offline, real model hero recording pending an API key |
+| Providers: eleven cloud vendors, fake | ✅ implemented, tested offline against stubbed SDK clients, with one hand curated catalogue of 115 model ids that `--model` is checked against before any call (`quackd list-models`), real model hero recording pending an API key |
 | Local models (Ollama, vLLM, llama.cpp, LM Studio, any OpenAI compatible server) | ✅ implemented and tested against the OpenAI wire format, 🧪 one live run by a contributor (Qwen 2.5 Coder 14B on LM Studio, two seeds), no transcript in the repo, more welcome |
 | Flock mode (multiple cooperating robots, sim2d) | ✅ deterministic auction and bus, one planner LLM call at most, ground truth checked in tests, 🧪 experimental and simulator only. The capability aware role auction (spotter/kicker) is unit tested but has no bundled two-robot demo today |
 | LAN discovery (`quackd discover`, `quackd announce`, `quackd[lan]`) | ✅ record format and both commands on fakes in the suite, 🧪 real zeroconf exercised once on one machine, never between two ([docs/lan.md](docs/lan.md)) |
@@ -267,7 +267,7 @@ The robot is an *adapter* that declares a *manifest*: what body it has, which in
 ```mermaid
 flowchart LR
     HUMAN["Human<br/>goal in human language"]
-    LLM["LLM<br/>Claude · OpenAI · Gemini · Grok · local (Ollama, vLLM, llama.cpp) · fake"]
+    LLM["LLM<br/>Claude · OpenAI · Gemini · Grok · seven more cloud vendors · local (Ollama, vLLM, llama.cpp) · fake"]
     subgraph quackd
         LOOP["agent loop<br/>observe → think → enforce → act"]
         EXEC["safety executor<br/>allowlist · confirm gates · budgets · abort rules · heartbeat"]
@@ -308,7 +308,7 @@ Requirements: Python 3.11 or newer and [`uv`](https://docs.astral.sh/uv/). Windo
 
 ```bash
 uvx quackd --version                                   # nothing to install, uvx fetches it
-uv pip install "quackd[anthropic]"                     # or: openai, gemini, grok, all, yolo, live
+uv pip install "quackd[anthropic]"                     # or: openai, gemini, grok, mistral, deepseek, cohere, qwen, kimi, glm, meta, all, yolo, live
 uv pip install "quackd[lerobot]"                       # Python 3.12+; or: rosbridge, xlerobot, alohamini, lan. Never imported by default
 git clone https://github.com/rokbenko/quackd && cd quackd && uv sync --extra dev   # contributors
 ```
@@ -338,6 +338,13 @@ Cloud or local, same command.
 | OpenAI | `quackd[openai]` | `OPENAI_API_KEY` | `uvx --from "quackd[openai]" quackd run find-and-kick --provider openai` |
 | Gemini | `quackd[gemini]` | `GEMINI_API_KEY` | `uvx --from "quackd[gemini]" quackd run find-and-kick --provider gemini` |
 | Grok | `quackd[grok]` | `XAI_API_KEY` | `uvx --from "quackd[grok]" quackd run find-and-kick --provider grok` |
+| Mistral | `quackd[mistral]` | `MISTRAL_API_KEY` | `uvx --from "quackd[mistral]" quackd run find-and-kick --provider mistral` |
+| DeepSeek | `quackd[deepseek]` | `DEEPSEEK_API_KEY` | `uvx --from "quackd[deepseek]" quackd run find-and-kick --provider deepseek` |
+| Cohere | `quackd[cohere]` | `COHERE_API_KEY` | `uvx --from "quackd[cohere]" quackd run find-and-kick --provider cohere` |
+| Qwen | `quackd[qwen]` | `DASHSCOPE_API_KEY` | `uvx --from "quackd[qwen]" quackd run find-and-kick --provider qwen` |
+| Kimi | `quackd[kimi]` | `MOONSHOT_API_KEY` | `uvx --from "quackd[kimi]" quackd run find-and-kick --provider kimi` |
+| GLM | `quackd[glm]` | `ZAI_API_KEY` | `uvx --from "quackd[glm]" quackd run find-and-kick --provider glm` |
+| Meta | `quackd[meta]` | `META_API_KEY` | `uvx --from "quackd[meta]" quackd run find-and-kick --provider meta` |
 | fake (scripted) | none | none | `uvx quackd run find-and-kick --provider fake` |
 | Ollama (local) | `quackd[openai]` | none | `uvx --from "quackd[openai]" quackd run find-and-kick --provider ollama --model qwen3:8b` |
 | vLLM (local) | `quackd[openai]` | none | `uvx --from "quackd[openai]" quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B` |
@@ -347,16 +354,17 @@ Cloud or local, same command.
 
 Every row above runs the cartoon, which is the default robot. To put the same model on the physics simulator instead, ask for both extras and name the backend: `uvx --from "quackd[mujoco,anthropic]" quackd run find-and-kick --provider anthropic --robot microduck:mujoco`. The extras are independent, so `quackd[anthropic]` alone gives you the model and no physics. Nobody stands in the physics arena, so `follow-me`, whose whole task is to follow somebody, cannot succeed there and nothing stops you pointing it at that backend anyway.
 
-The four cloud providers see the camera frame as an image. Local models get the text detections by default and the frame too with `--vision`. The scripted pilot only reads the detection summary. Local setup, tool calling flags per server and what to expect from small models: [docs/local-llms.md](docs/local-llms.md).
+A cloud model that takes an image sees the camera frame. Where a vendor does not document image input, `quackd list-models` marks that model `no frames` and quackd sends it the detections as text instead. Local models get the text detections by default and the frame too with `--vision`, which also overrides a `no frames` mark. The scripted pilot only reads the detection summary. Local setup, tool calling flags per server and what to expect from small models: [docs/local-llms.md](docs/local-llms.md).
 
 | Command | What it does |
 |---|---|
-| `quackd run <duck>` or `quackd run --goal "..."` | Run a task. `--provider`, `--robot <adapter>:<backend>`, `--robots name=<adapter>:<backend>,...` for a flock of mixed bodies, `--address` for a real robot, `--model`, `--seed`, `--max-steps`, `--dry-run`, `--yes`, `--live`, `--gif-size`, `--camera-url` for a robot whose camera is a separate service, `--fov-deg` for your camera's field of view (without it, distances on hardware are a rough guess), `--token` for a robot that wants one, `--flock N` (2 to 4, sim2d), `--no-memory` and `--memory-dir` for what it carries between runs, `--no-trace` to stop it narrating what happens behind the scenes, `--no-trace-prompt` to keep the narration and drop the system prompt |
+| `quackd run <duck>` or `quackd run --goal "..."` | Run a task. `--provider`, `--robot <adapter>:<backend>`, `--robots name=<adapter>:<backend>,...` for a flock of mixed bodies, `--address` for a real robot, `--model` (a catalogue id for a cloud vendor, see `quackd list-models`), `--seed`, `--max-steps`, `--dry-run`, `--yes`, `--live`, `--gif-size`, `--camera-url` for a robot whose camera is a separate service, `--fov-deg` for your camera's field of view (without it, distances on hardware are a rough guess), `--token` for a robot that wants one, `--flock N` (2 to 4, sim2d), `--no-memory` and `--memory-dir` for what it carries between runs, `--no-trace` to stop it narrating what happens behind the scenes, `--no-trace-prompt` to keep the narration and drop the system prompt |
 | `quackd validate ducks/*.duck` | Check task files against the spec and a robot's manifest (`--robot`, repeatable, `--robots` for a fleet, or the file's own `robots:` if it has one). Exits 1 with field level errors such as `requires kick, but arm-01 (lerobot-so101) does not provide it` |
 | `quackd serve-mcp` | Expose a robot (`--robot <adapter>:<backend>`), or a fleet with `--robots name=<adapter>:<backend>,...`, as MCP tools over stdio. `--duckfile` starts with a contract loaded on the default robot, `--yes` allows confirm gated verbs, `--seed`, `--address`, `--dry-run`, `--no-memory`, `--memory-dir` and `--no-trace` |
 | `quackd doctor` | Keys, extras, adapters, local LLM servers, and every upstream assumption on this machine (`--robot` for one robot's manifest, `--address` to ask a real robot what it is running) |
 | `quackd list-verbs` | The vocabulary with parameters and safety classes (`--robot` for another robot) |
 | `quackd list-adapters` | The robot adapters this build knows, their backends and status |
+| `quackd list-models` | Every model this build knows for every cloud vendor: the id `--model` takes, a label, one of five statuses (`current`, `legacy`, `preview`, `specialised`, `open`) and notes, which mark each vendor's default, the OpenAI models that need the Responses API, and the models quackd sends text detections to rather than a frame. `--provider NAME` prints one vendor. Local presets have no rows, because they take any id their server serves |
 | `quackd discover` | The quackd robots answering on the LAN (zeroconf, needs `quackd[lan]`). `--timeout` seconds to listen, `--json` one object per robot. See [docs/lan.md](docs/lan.md) |
 | `quackd announce --robot <adapter>:<backend>` | Advertise a robot's identity on the LAN (a static manifest, no robot connection). `--name` sets the manifest id, `--for` seconds to stay announced, default until Ctrl+C |
 | `quackd memory show\|add\|clear` | What one robot remembers between runs: the notes a pilot saved and how recent runs ended. `--robot` picks the body, `--raw` prints the file, `--memory-dir` points elsewhere, `clear --yes` skips the prompt. See [docs/memory.md](docs/memory.md) |
@@ -540,11 +548,11 @@ browser test.
 
 | What | How |
 |---|---|
-| API keys | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` in the environment or a `.env` file (see [`.env.example`](.env.example)) |
-| Model | `--model` or `QUACKD_MODEL`. Defaults: `claude-opus-5`, `gpt-5`, `gemini-2.5-pro`, `grok-4`. The OpenAI, Gemini and Grok IDs are unverified, override them if yours differ |
+| API keys | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `COHERE_API_KEY` (or `CO_API_KEY`), `DASHSCOPE_API_KEY`, `MOONSHOT_API_KEY`, `ZAI_API_KEY`, `META_API_KEY` (or `MODEL_API_KEY`) in the environment or a `.env` file (see [`.env.example`](.env.example)) |
+| Model | `--model` or `QUACKD_MODEL`, an id from the catalogue. An id a cloud vendor does not list is refused before any call, and the refusal prints the ids that vendor does take. `quackd list-models` prints them all. The defaults are `claude-opus-5`, `gpt-5.6-sol`, `gemini-3.8-flash`, `grok-4.6`, `mistral-medium-3-5`, `deepseek-flash`, `command-a-plus-05-2026`, `qwen3.8-max`, `kimi-k3`, `glm-5.3` and `muse-spark-1.3` |
 | Claude reasoning effort | `QUACKD_EFFORT` (`low` to `max`, default `medium`). `QUACKD_ANTHROPIC_FALLBACKS=0` disables server side refusal fallbacks. `QUACKD_THINKING_DISPLAY=omitted` stops Claude returning a summary of its reasoning, and `QUACKD_GEMINI_THOUGHTS=0` does the same for Gemini |
-| OpenAI API and effort | Some models refuse function tools on `/v1/chat/completions` at every reasoning effort and name `/v1/responses` in the 400. Every verb is a function tool, so quackd reads that answer, moves the run to the Responses API and stays there. `gpt-6-astra` is one such model and needs no flag. `QUACKD_OPENAI_API=responses` starts there without waiting to be told, and `QUACKD_OPENAI_REASONING_EFFORT` sets the effort on either API. The browser demo makes the same switch on the same 400, with nothing to set |
-| Local models | `--provider ollama`, `vllm`, `llamacpp`, `lmstudio` or `local --base-url http://host:port/v1`. No key. `--model` or the first served model. `--vision` sends frames. `QUACKD_TOOL_CHOICE=auto`, `required` or `none` for picky servers. See [docs/local-llms.md](docs/local-llms.md) |
+| OpenAI API and effort | Some models refuse function tools on `/v1/chat/completions` at every reasoning effort and name `/v1/responses` in the 400. Every verb is a function tool, so quackd reads that answer, moves the run to the Responses API and stays there. The catalogue already knows which models those are, so `quackd list-models` marks them `Responses API` and a run on one opens there without spending a call to find out. Reading the 400 is what still covers a model the catalogue has not been told about. `QUACKD_OPENAI_API=responses` starts there in every case, and `QUACKD_OPENAI_REASONING_EFFORT` sets the effort on either API. The browser demo does the same on both counts, with nothing to set |
+| Local models | `--provider ollama`, `vllm`, `llamacpp`, `lmstudio` or `local --base-url http://host:port/v1`. No key. `--model` takes any id the server serves, and without it quackd uses the first model the server lists. The catalogue is for cloud vendors only, so nothing here is refused for being unlisted. `--vision` sends frames. `QUACKD_TOOL_CHOICE=auto`, `required` or `none` for picky servers. See [docs/local-llms.md](docs/local-llms.md) |
 | Robot | `--robot <adapter>:<backend>`, or a `robots:` line in the `.duck`, the flag wins. Default `microduck:sim2d`. `quackd list-adapters` lists the seven that ship, `quackd list-verbs --robot X` what each can do |
 | Physics simulator | `--robot microduck:mujoco`, with `quackd[mujoco]`. The model and the policies are fetched once into `~/.quackd/cache`, where `QUACKD_CACHE_DIR` moves them and `QUACKD_MICRODUCK_ASSETS` points at your own `microduck_rl` checkout instead. `QUACKD_MUJOCO_BODY=puppet` runs the kinematic stand-in, which downloads nothing and is the body the tests build. `--live` opens MuJoCo's own viewer |
 | Determinism | `--seed N` makes a simulator run repeatable |
@@ -587,7 +595,7 @@ The physics simulator costs what physics costs. Measured here on one Windows lap
 - No robot here has text to speech. The Microduck has seven duck sounds, so `quack("hello")` and `say` pick a tone. The arm, the base, the XLeRobot, the AlohaMini and the ToddlerBot do not get `say` at all.
 - `grab` is open loop upstream and unreliable here on purpose. `fetch` says so in its file.
 - A manifest can be smaller than the robot. The LeRobot arm's `real` backend claims no camera and no `pick` until it connects, and even then `pick` appears only when a policy object was injected in code. A rosbridge base over `ws` has no camera verbs unless the address names an image topic, and a ToddlerBot has no `move` unless a walk checkpoint is staged.
-- Default model IDs for OpenAI, Gemini and Grok were not verified at release.
+- The model catalogue is hand curated. It was read off the eleven vendors' own documentation on 2026-09-12 and it is a snapshot of that day, not a live list. A vendor can retire, rename or add an id between quackd releases, and this build would then refuse an id that is real and offer one that is gone. `quackd list-models` prints exactly what this build knows, which is the only thing `--model` accepts for a cloud vendor.
 - Local model quality is unmeasured. The JSON text fallback and the one retry exist because small models often miss native tool calls. One contributor reports `find-and-kick` succeeding against Qwen 2.5 Coder 14B through LM Studio on two seeds, and no transcript from it is in this repository.
 - Flock mode is simulator only, ships one choreography and exactly two roles (spotter and kicker, unit tested but with no bundled multi-role starter), and knows only the Microduck, so an Open Duck cannot join one yet. Separation uses sim ground truth, and two robots share no frame of reference on hardware.
 - LAN discovery and the MQTT bus have each been exercised once, on one machine. Nothing has crossed to a second machine, the MQTT bus is a library with no `--bus` flag, and a flock across machines also needs a clock across machines, which does not exist yet.
@@ -607,7 +615,7 @@ Why a task can refuse a body, whether two robots can share a task, and more: [do
 - **v1:** a starter task on a real duck, on video. An Open Duck Mini can get there first, and a Microduck once it ships.
 - **v2, learned verbs.** LLM written rewards ([Eureka](https://eureka-research.github.io/) and [DrEureka](https://eureka-research.github.io/dr-eureka/) style) train new policies in `microduck_rl` that register as one more verb. The registry hook exists today. The training loop does not.
 
-**Help wanted:** a recorded browser session with [`web/`](web/), because the page boots and a held `W` walks the duck but nobody has watched a model drive a whole run, a key barge in out of one, or the Record button work, on any machine but the one that wrote it, a real model recording in either simulator (see [docs/assets](docs/assets/README.md)), a transcript from a local model run on any server, a run against any real hardware (an Open Duck Mini is the most reachable, see its [checklist](docs/open-duck-hardware-checklist.md)), verified default model IDs, and new `.duck` files.
+**Help wanted:** a recorded browser session with [`web/`](web/), because the page boots and a held `W` walks the duck but nobody has watched a model drive a whole run, a key barge in out of one, or the Record button work, on any machine but the one that wrote it, a real model recording in either simulator (see [docs/assets](docs/assets/README.md)), a transcript from a local model run on any server, a run against any real hardware (an Open Duck Mini is the most reachable, see its [checklist](docs/open-duck-hardware-checklist.md)), and new `.duck` files.
 
 <br>
 

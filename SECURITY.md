@@ -45,7 +45,11 @@ Also in scope:
   changes the assessment: anybody can be linked to a page that asks them to paste an API key.
   The key is read from an input, sent from the browser straight to the vendor, and never
   stored, never logged and never proxied: there is no server here to proxy it through, and
-  nothing in `web/src` writes to browser storage. What that leaves is the page itself. It
+  nothing in `web/src` writes to browser storage. The vendors a key can reach are exactly the
+  entries of `PROVIDERS` in `web/src/providers.js`, each one contacted only once the visitor
+  picks it, and the model list offered beside them is generated from the same catalogue the CLI
+  ships (`web/src/catalogue.js`, written by `web/build_catalogue.py`), so the page cannot name
+  an address or a model this repository does not. What that leaves is the page itself. It
   loads three payloads from `cdn.jsdelivr.net` at pinned versions, plus a stylesheet from
   `fonts.googleapis.com` and the two webfonts it names from `fonts.gstatic.com`, all with no
   subresource integrity and no content security policy, and any script running in the page can

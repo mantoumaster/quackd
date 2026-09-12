@@ -83,11 +83,39 @@ is light on purpose (no vendor SDKs). Use `uvx --from "quackd[anthropic]" quackd
 `uv pip install "quackd[anthropic]"`. Without the extra, quackd prints exactly that command.
 `--provider fake` needs nothing.
 
-**Which models are the defaults?** `anthropic` → `claude-opus-5`; `openai` → `gpt-5`;
-`gemini` → `gemini-2.5-pro`; `grok` → `grok-4`. The non-Anthropic IDs were not verified
-against vendor docs at release (no keys in CI) — override with `--model` or `QUACKD_MODEL`
-if yours differs. Anthropic extras: `QUACKD_EFFORT` (default `medium`) and
+**Which models can I pick?** Whatever the catalogue lists for the vendor you named. It is one
+hand-written table of 115 ids across eleven cloud vendors, and `quackd list-models` prints it,
+`--provider mistral` (or any other name) narrowing it to one vendor. Every row carries a status
+— `current`, `legacy`, `preview`, `specialised` or `open` — and a notes column that marks three
+things worth knowing before you pass an id: `default`, `Responses API` for the OpenAI models
+that refuse function tools on Chat Completions, and `no frames` for a model whose vendor does
+not document image input, which gets the detections as text instead of the camera frame unless
+`--vision` says otherwise. The default is simply the first row for that vendor, so leaving
+`--model` off is the same as passing it. Local presets are deliberately outside all of this:
+`ollama`, `vllm`, `llamacpp`, `lmstudio` and `local` take any id the server serves, or the first
+model it lists when you name none. Anthropic extras: `QUACKD_EFFORT` (default `medium`) and
 `QUACKD_ANTHROPIC_FALLBACKS=0` to disable server-side refusal fallbacks.
+
+**Why is my model rejected?** Because that vendor's catalogue does not list the id, and quackd
+checks before it reads a key or opens a connection, so nothing was sent anywhere:
+
+```
+$ quackd run hello-world --provider openai --model gpt-5 --robot microduck:mock
+error: openai: unknown model 'gpt-5' from --model. Valid ids: gpt-5.6-sol (default), gpt-6-astra,
+gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.2, gpt-5.1,
+gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5.3-codex,
+chat-latest. See `quackd list-models --provider openai`.
+
+$ quackd run hello-world --provider openai --model grok-4.6 --robot microduck:mock
+error: openai: unknown model 'grok-4.6' from --model ('grok-4.6' is a grok model: pass --provider
+grok). Valid ids: ... See `quackd list-models --provider openai`.
+```
+
+Ids are unique across the catalogue, so an id that belongs to somebody else is named as such
+rather than just refused, which is the mistake worth catching early. `QUACKD_MODEL` goes through
+the same check and gets the same refusal, with `QUACKD_MODEL` in place of `--model`, so a stale
+line in your `.env` cannot quietly start a run either. The one thing this never applies to is a
+local preset, whose `--model` is free text.
 
 **Are local LLMs supported (llama.cpp, vLLM, Ollama, LM Studio)?** Yes. They all speak
 OpenAI's Chat Completions API, so `--provider ollama`, `vllm`, `llamacpp`, `lmstudio`, or
@@ -240,9 +268,14 @@ what the body adds under it varies: the Microduck's `robotd` has fall detection,
 clamps and a deadman, while an Open Duck Mini v2 declares `none` and the watching human is
 its fall detector — see [safety.md](safety.md).
 
-**Does my data ever leave my machine?** Only if you choose a cloud provider. Claude,
-OpenAI, Gemini and Grok each send the camera frame and prompt to that provider's API over
-the network, under its own terms; the `fake` pilot and any local model (`ollama`, `vllm`,
+**Does my data ever leave my machine?** Only if you choose a cloud provider. All eleven of
+them (Claude, OpenAI, Gemini, Grok, Mistral, DeepSeek, Cohere, Qwen, Kimi, GLM and Meta) send
+the prompt to that vendor's API over the network, under its own terms, and the camera frame
+with it wherever the model takes an image — `quackd list-models` marks the ones that do not
+with `no frames`, and those get the text detections instead. One vendor is worth reading the
+labels for: two of Meta's Muse Spark models are a *contributor tier*, discounted in exchange
+for Meta training on your prompts, and `quackd list-models` says so on those rows. The `fake`
+pilot and any local model (`ollama`, `vllm`,
 `llamacpp`, `lmstudio`) never do and need no API key, though a local model is still served
 over its own local HTTP endpoint, not literally air-gapped. Since 0.6 one thing also stays
 behind on your machine: `~/.quackd/memory/<robot>.jsonl`, a plain text file of sentences
