@@ -663,8 +663,20 @@ def test_the_system_prompt_is_a_block_between_two_rules() -> None:
     )
     out = buffer.getvalue()
     assert "system prompt, 20 chars, 3 lines" in out
-    assert "   line one" in out and "   line three" in out
+    # the exact lines: a substring check passes on any indent at all, and the point of the
+    # block is that seventy lines of somebody else's prose do not eat the terminal's width
+    lines = out.splitlines()
+    assert "   line one" in lines and "   line three" in lines
+    assert "" in lines, "a blank line carries no padding: that is what a redirect diffs on"
     assert out.rstrip().endswith("─" * 10), "the block is closed off so the run visibly starts"
+
+
+def test_the_system_prompt_is_respelled_for_the_stream_like_every_other_line() -> None:
+    view, raw = narrow_trace()
+    prompt = "## Rules (enforced by the executor — not optional)"
+    view(TraceEvent("run_start", 0.0, {"duck": "d", "transport": "mock", "system_prompt": prompt}))
+    out = shown(raw, view)
+    assert "executor - not optional" in out and "?" not in out
 
 
 def test_a_live_run_does_not_repeat_the_header_the_cli_just_printed() -> None:

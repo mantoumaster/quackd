@@ -881,9 +881,14 @@ class ConsoleTrace(LineTrace):
     def _block(self, body: str) -> None:
         """The system prompt: forty to seventy lines of somebody else's words, indented under
         the rule that introduced them and closed off so the run is visibly starting after."""
-        pad = " " * (_GUTTER + _LABEL)
+        pad_text = " " * _GUTTER
         for raw in body.splitlines():
-            self._write_line(Text(pad + raw.strip("\n"), style=self._ui.STYLES["muted"]))
+            # respelled like every other line, and no padding on a blank one:
+            # seventy lines of trailing whitespace is most of what a diff of a
+            # redirected trace turns out to be
+            shown = self._plain(raw.rstrip())
+            body_line = pad_text + shown if shown else ""
+            self._write_line(Text(body_line, style=self._ui.STYLES["muted"]))
         self._rule()
 
     def _run_panel(self, event: TraceEvent) -> None:
