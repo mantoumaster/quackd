@@ -12,6 +12,7 @@ import pytest
 from quackd.agent.providers.anthropic import AnthropicProvider
 from quackd.agent.providers.anthropic import render_messages as a_messages
 from quackd.agent.providers.base import Decision, Exchange, Observation, ProviderError, ToolCall
+from quackd.agent.providers.catalogue import default_model_for, find_model
 from quackd.agent.providers.factory import make_provider
 from quackd.agent.providers.gemini import GeminiProvider, clean_schema, render_contents
 from quackd.agent.providers.grok import GrokProvider
@@ -262,6 +263,11 @@ def _no_effort_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("QUACKD_OPENAI_REASONING_EFFORT", raising=False)
 
 
+#: An OpenAI model the catalogue does not route to Responses, so the 400 reader is what moves
+#: a run that uses it. Spelled once because the test below depends on that staying true.
+UNHINTED = "gpt-5.6-sol"
+
+
 async def test_openai_switches_to_responses_when_chat_refuses_function_tools(
     _no_effort_env: None,
 ) -> None:
@@ -274,9 +280,14 @@ async def test_openai_switches_to_responses_when_chat_refuses_function_tools(
     The other remedy that 400 offers is a dead end and is deliberately not taken: measured on
     gpt-6-astra, `reasoning_effort="none"` comes back as unsupported for that model, and the
     tools are refused at low, medium, high and xhigh alike.
+
+    The model here must be one the catalogue does NOT mark `responses`, or the provider would
+    start there and this would assert nothing. That is the point of the pair: a hinted model
+    skips the failed call, and an unhinted one still learns from the 400.
     """
     client = RefusesToolsOnChat(responses_result("walk", json.dumps({"vx": 0.2})))
-    p = OpenAIProvider(model="gpt-6-astra", client=client)
+    assert find_model("openai", UNHINTED).api is None, "this test needs a model that starts on chat"
+    p = OpenAIProvider(model=UNHINTED, client=client)
     turn = await p.step("SYS", history(), TOOLS)
     assert turn.tool_calls == [ToolCall(id="call_r1", name="walk", arguments={"vx": 0.2})]
     assert p.api == "responses", "the switch must stick for the rest of the run"
@@ -288,6 +299,43 @@ async def test_openai_switches_to_responses_when_chat_refuses_function_tools(
     kw = client.responses_calls[0]
     assert kw["instructions"] == "SYS" and "messages" not in kw
     assert kw["tools"][0]["name"] == "walk", "Responses tools are flat, not nested"
+
+
+async def test_a_catalogue_hinted_model_starts_on_responses_and_pays_no_failed_call(
+    _no_effort_env: None,
+) -> None:
+    """The other half of the pair above: what the catalogue already knows, nobody pays to learn.
+
+    `gpt-6-astra` is marked `responses`, so the run must open on Responses. The stub raises the
+    refusal on chat, so a provider that guessed wrong would leave a chat call behind, and the
+    assertion below is that it leaves none. For a model that is Responses *only* this is not an
+    optimisation at all: its refusal is worded differently, `_wants_the_responses_api` does not
+    match it, and reading the 400 would never get there.
+    """
+    assert find_model("openai", "gpt-6-astra").api == "responses"
+    client = RefusesToolsOnChat(responses_result("walk", json.dumps({"vx": 0.2})))
+    p = OpenAIProvider(model="gpt-6-astra", client=client)
+    turn = await p.step("SYS", history(), TOOLS)
+    assert turn.tool_calls == [ToolCall(id="call_r1", name="walk", arguments={"vx": 0.2})]
+    assert client.chat_calls == [], "the catalogue said so, nothing had to be spent finding out"
+    assert len(client.responses_calls) == 1
+
+
+async def test_an_explicit_api_outranks_the_catalogue_and_the_environment(
+    _no_effort_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`api=` wins over the hint, and the hint wins over the environment.
+
+    That order is not arbitrary. `QUACKD_OPENAI_API=chat` set for one model must not send a model
+    with no Chat Completions at all to an endpoint that will refuse it, so the environment loses
+    to the catalogue. A caller who passes `api=` is holding something more specific than either.
+    """
+    monkeypatch.setenv("QUACKD_OPENAI_API", "chat")
+    assert OpenAIProvider(model="gpt-6-astra", client=FakeOpenAI(None)).api == "responses"
+    assert OpenAIProvider(model="gpt-6-astra", client=FakeOpenAI(None), api="chat").api == "chat"
+    assert OpenAIProvider(model=UNHINTED, client=FakeOpenAI(None)).api == "chat"
+    monkeypatch.setenv("QUACKD_OPENAI_API", "responses")
+    assert OpenAIProvider(model=UNHINTED, client=FakeOpenAI(None)).api == "responses"
 
 
 async def test_openai_responses_round_trip_shapes(_no_effort_env: None) -> None:
@@ -358,7 +406,8 @@ def test_openai_history_without_images_has_no_extra_user_turn() -> None:
 
 def test_grok_is_openai_with_xai_endpoint() -> None:
     p = GrokProvider(client=FakeOpenAI(None))
-    assert p.name == "grok" and p.base_url == "https://api.x.ai/v1" and p.model == "grok-4"
+    assert p.name == "grok" and p.base_url == "https://api.x.ai/v1"
+    assert p.model == default_model_for("grok"), "no model means the catalogue's first entry"
 
 
 def test_missing_keys_are_clear(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -397,7 +446,7 @@ async def test_gemini_request_and_response_mapping() -> None:
     client = FakeGemini(response)
     turn = await GeminiProvider(client=client).step("SYS", history(), TOOLS)
     kw = client.kwargs
-    assert kw["model"] == "gemini-2.5-pro"
+    assert kw["model"] == default_model_for("gemini")
     assert kw["config"]["system_instruction"] == "SYS"
     assert kw["config"]["tool_config"] == {"function_calling_config": {"mode": "ANY"}}
     decl = kw["config"]["tools"][0]["function_declarations"][0]

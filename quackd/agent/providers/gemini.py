@@ -21,8 +21,8 @@ from quackd.agent.providers.base import (
     ToolCall,
     Usage,
 )
+from quackd.agent.providers.catalogue import default_model_for
 
-DEFAULT_MODEL = "gemini-2.5-pro"
 UNSUPPORTED_SCHEMA_KEYS = {"additionalProperties", "title", "default", "$schema", "$id"}
 
 
@@ -151,13 +151,14 @@ class GeminiProvider:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,
         *,
         client: Any = None,
         api_key: str | None = None,
         include_thoughts: bool | None = None,
     ) -> None:
-        self.model = model
+        # No model means whatever the catalogue lists first for this vendor.
+        self.model = model or default_model_for(self.name) or ""
         self.calls = 0
         if include_thoughts is None:
             include_thoughts = os.environ.get(

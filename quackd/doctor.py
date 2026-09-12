@@ -22,15 +22,28 @@ from rich.table import Table
 from quackd import __version__
 from quackd.adapters.base import AdapterError
 from quackd.adapters.factory import describe, list_adapters, parse_robot_spec
-from quackd.agent.providers.factory import DEFAULT_MODELS, KEY_ENV, LOCAL_NAMES, PROVIDER_NAMES
+from quackd.agent.providers.base import ProviderError
+from quackd.agent.providers.factory import (
+    EXTRA_FOR,
+    KEY_ENV,
+    LOCAL_NAMES,
+    PROVIDER_NAMES,
+    SDK_FOR,
+    default_model,
+    resolve_model,
+)
 from quackd.agent.providers.local import PRESETS
 from quackd.duckfile.parser import list_bundled_ducks
 from quackd.transport import upstream_api as up
 from quackd.transport.factory import TRANSPORT_STATUS
 
+# The optional extras table, which is about packages rather than providers: the providers table
+# builds its own rows from SDK_FOR and EXTRA_FOR. One wheel now serves nine vendors, so naming
+# them all here would be a list to keep in step for no gain; `quackd list-models` and the
+# providers table above already say which vendor wants which install.
 EXTRAS = {
     "anthropic": ("anthropic", "quackd[anthropic]"),
-    "openai": ("openai", "quackd[openai] / quackd[grok]"),
+    "openai": ("openai", "quackd[openai] and every OpenAI-compatible vendor"),
     "gemini": ("google.genai", "quackd[gemini]"),
     "yolo": ("ultralytics", "quackd[yolo]"),
     "live": ("pygame", "quackd[live]"),
@@ -260,19 +273,33 @@ def run_doctor(
     t.add_row("bundled ducks", str(len(list_bundled_ducks())))
     console.print(t)
 
-    t = Table(title="providers")
+    t = Table(title="providers (every model id: quackd list-models)")
     t.add_column("provider")
     t.add_column("extra")
     t.add_column("key")
-    t.add_column("default model")
+    # folded, not elided: a model id with an ellipsis through it cannot be pasted into --model
+    t.add_column("default model", overflow="fold")
     for name in PROVIDER_NAMES:
         if name == "fake":
             t.add_row("fake", "[green]built-in[/green]", "—", "scripted")
             continue
-        module, extra = EXTRAS["openai" if name in ("grok", *LOCAL_NAMES) else name]
+        module, extra = SDK_FOR[name], f"quackd[{EXTRA_FOR[name]}]"
         ver = _installed(module)
         key = os.environ.get(KEY_ENV[name], "")
-        model = os.environ.get("QUACKD_MODEL") or DEFAULT_MODELS.get(name) or "auto (first served)"
+        # What this provider would actually be given, not what the table used to guess. A
+        # QUACKD_MODEL meant for one vendor is refused by the others, and doctor is where a
+        # reader should find that out rather than three commands later.
+        try:
+            model = resolve_model(name, default_model(name), source="QUACKD_MODEL") or (
+                "auto (first served)"
+            )
+            if os.environ.get("QUACKD_MODEL"):
+                model = f"[green]{escape(model)}[/green]"
+        except ProviderError:
+            model = (
+                f"[yellow]QUACKD_MODEL={escape(os.environ['QUACKD_MODEL'])}, "
+                f"which {name} does not list[/yellow]"
+            )
         if name in LOCAL_NAMES:
             key_cell = f"[green]{_mask(key)}[/green]" if key else "[dim]optional[/dim]"
         else:

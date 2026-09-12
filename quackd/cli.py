@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import glob
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,13 @@ from rich.markup import escape
 from rich.table import Table
 
 from quackd import __version__
+from quackd.agent.providers.catalogue import (
+    CLOUD_NAMES,
+    LOCAL_NAMES,
+    PROVIDER_NAMES,
+    models_for,
+    vendor_of,
+)
 
 app = typer.Typer(
     name="quackd",
@@ -286,6 +294,62 @@ def list_adapters_cmd() -> None:
             )
         table.add_row(row["name"], " · ".join(row["backends"]), row["status"], extra)
     console.print(table)
+
+
+# ── list-models ───────────────────────────────────────────────────────────────────────────
+
+
+@app.command("list-models")
+def list_models_cmd(
+    provider: str | None = typer.Option(
+        None, "--provider", "-p", help="One vendor only. Omitted: every vendor."
+    ),
+) -> None:
+    """List the model ids each cloud provider accepts for --model, and which is the default."""
+    if provider is not None:
+        provider = provider.lower()
+        if provider not in PROVIDER_NAMES:
+            _fail(f"unknown provider {provider!r}; choose one of {', '.join(PROVIDER_NAMES)}")
+            return
+    if provider is None or provider in CLOUD_NAMES:
+        table = Table(title="models (--model, QUACKD_MODEL)")
+        table.add_column("provider")
+        # An id is meant to be copied into `--model`, so it may wrap but must never be elided:
+        # Rich's default would put an ellipsis through the middle of the one column that has to
+        # survive an 80 column pipe intact.
+        table.add_column("id", style="bold", overflow="fold")
+        table.add_column("label", overflow="fold")
+        table.add_column("status")
+        table.add_column("notes")
+        for name in [provider] if provider in CLOUD_NAMES else list(CLOUD_NAMES):
+            for i, m in enumerate(models_for(str(name))):
+                # Words, not glyphs: this table is read through a cp1252 pipe on Windows, where a
+                # tick mark is the difference between a column and a row of question marks.
+                notes = []
+                if i == 0:
+                    notes.append("default")
+                if m.api == "responses":
+                    notes.append("Responses API")
+                if not m.vision:
+                    notes.append("no frames")
+                table.add_row(
+                    str(name) if i == 0 else "", m.id, escape(m.label), m.status, ", ".join(notes)
+                )
+        console.print(table)
+
+    if provider is None or provider in LOCAL_NAMES:
+        console.print(
+            f"[dim]{', '.join(LOCAL_NAMES)}: no catalogue. `--model` takes any id the server "
+            "serves, and without one quackd takes the first entry of /v1/models.[/dim]"
+        )
+    if provider is None or provider == "fake":
+        console.print("[dim]fake: scripted, and `--model` is ignored.[/dim]")
+
+    pinned = os.environ.get("QUACKD_MODEL")
+    if pinned:
+        whose = vendor_of(pinned)
+        where = f"a {whose} model" if whose else "not a model any vendor here lists"
+        console.print(f"[dim]QUACKD_MODEL={escape(pinned)} is {where}.[/dim]")
 
 
 # ── run / record ────────────────────────────────────────────────────────────────────────
@@ -744,11 +808,25 @@ _MEMORY_DIR = typer.Option(
     "--memory-dir",
     help="Where memory files live (default: $QUACKD_MEMORY_DIR or ~/.quackd/memory).",
 )
+
+
+def _complete_model(ctx: typer.Context, incomplete: str) -> list[tuple[str, str]]:
+    """Model ids for the `--provider` already on the line, for shell completion.
+
+    Click parses what is left of the cursor before calling this, so the provider is in
+    `ctx.params` by the time `--model` is being completed. It has to be left of the cursor to
+    count: `--model <TAB> --provider grok` cannot know, and offers the default's ids instead.
+    A provider with no catalogue (`fake`, the local presets) offers nothing, which is correct
+    rather than empty: only the server it points at knows what it serves."""
+    provider = str(ctx.params.get("provider") or "fake")
+    return [(m.id, m.label) for m in models_for(provider) if m.id.startswith(incomplete)]
+
+
 _PROVIDER = typer.Option(
     "fake",
     "--provider",
     "-p",
-    help="fake · anthropic · openai · gemini · grok · local · ollama · vllm · llamacpp · lmstudio",
+    help=" · ".join(PROVIDER_NAMES),
 )
 _BASEURL = typer.Option(
     None,
@@ -773,7 +851,14 @@ _ROBOTS = typer.Option(
     "--robots",
     help="A flock or fleet: name=<adapter>:<backend>,... (simulator only for flocks).",
 )
-_MODEL = typer.Option(None, "--model", "-m", help="Override the provider's model.")
+_MODEL = typer.Option(
+    None,
+    "--model",
+    "-m",
+    help="A model id from the provider's catalogue (`quackd list-models`). Omitted: that "
+    "vendor's default. Local presets take any id the server serves.",
+    autocompletion=_complete_model,
+)
 _SEED = typer.Option(None, "--seed", help="Simulator seed (deterministic runs).")
 _DRY = typer.Option(False, "--dry-run", help="Print every intent, send nothing.")
 _MAXSTEPS = typer.Option(None, "--max-steps", help="Override the duck's max_steps budget.")

@@ -27,8 +27,8 @@ from quackd.agent.providers.base import (
     ToolCall,
     Usage,
 )
+from quackd.agent.providers.catalogue import default_model_for
 
-DEFAULT_MODEL = "claude-opus-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
@@ -166,7 +166,7 @@ class AnthropicProvider:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,
         *,
         client: Any = None,
         max_tokens: int | None = None,
@@ -174,7 +174,8 @@ class AnthropicProvider:
         fallbacks: bool | None = None,
         thinking_display: str | None = None,
     ) -> None:
-        self.model = model
+        # No model means whatever the catalogue lists first for this vendor.
+        self.model = model or default_model_for(self.name) or ""
         self.max_tokens = max_tokens or int(os.environ.get("QUACKD_MAX_TOKENS", "16000"))
         self.effort = effort or os.environ.get("QUACKD_EFFORT", "medium")
         env_fb = os.environ.get("QUACKD_ANTHROPIC_FALLBACKS", "1") not in ("0", "false", "no")

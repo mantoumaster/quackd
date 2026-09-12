@@ -1,4 +1,8 @@
-"""OpenAI as the duck's brain, via the `openai` SDK (optional extra). Also the base for Grok.
+"""OpenAI as the duck's brain, via the `openai` SDK (optional extra).
+
+Also the base class for every vendor that speaks OpenAI's API rather than one of its own,
+which by now is most of them: Grok, Mistral, DeepSeek, Cohere, Qwen, Kimi, GLM, Meta, and the
+local servers. They change the class knobs and nothing else.
 
 Chat Completions with function tools, `tool_choice="required"` and
 `parallel_tool_calls=False` for one call per turn. Tool results go back as `tool` messages;
@@ -11,6 +15,11 @@ path, it is no path. `step` reads that 400, switches this provider to the Respon
 keeps it there for the rest of the run. The two APIs disagree about nearly every field name,
 so each gets its own renderer and its own parser below, and the provider owns which pair it
 is using. `QUACKD_OPENAI_API=responses` starts there without waiting to be told.
+
+Reading the 400 is the fallback, not the plan. The catalogue marks the models that need Responses
+and they start there, which saves the failed call and is the only way in for a model that is
+Responses *only*: that one is refused for being itself rather than for asking for tools, so it
+says something else entirely and the reader below does not match it.
 """
 
 from __future__ import annotations
@@ -28,8 +37,7 @@ from quackd.agent.providers.base import (
     ToolCall,
     Usage,
 )
-
-DEFAULT_MODEL = "gpt-5"
+from quackd.agent.providers.catalogue import default_model_for, find_model
 
 
 def _image_part(png: bytes) -> dict[str, Any]:
@@ -287,6 +295,9 @@ class OpenAIProvider:
     name = "openai"
     supports_vision = True
     key_env = "OPENAI_API_KEY"
+    extra = "openai"
+    """The `quackd[...]` extra a missing SDK should name. Every vendor here installs the
+    same wheel, so the extra is the only part of that message that differs."""
     base_url: str | None = None
     default_tool_choice: str | None = "required"
     """`required` forces a call on OpenAI. `auto` for servers that reject `required`,
@@ -298,7 +309,7 @@ class OpenAIProvider:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,
         *,
         client: Any = None,
         api_key: str | None = None,
@@ -306,8 +317,12 @@ class OpenAIProvider:
         tool_choice: str | None = None,
         vision: bool | None = None,
         reasoning_effort: str | None = None,
+        api: str | None = None,
     ) -> None:
-        self.model = model
+        # No model means the catalogue's default. The empty string is what the local presets
+        # pass up, and it means the opposite: ask the server (`LocalProvider.ensure_model`).
+        self.model = model or default_model_for(self.name) or ""
+        spec = find_model(self.name, self.model)
         self.calls = 0
         import os as _os
 
@@ -316,13 +331,26 @@ class OpenAIProvider:
         self.reasoning_effort = reasoning_effort or _os.environ.get(
             "QUACKD_OPENAI_REASONING_EFFORT"
         )
-        #: "chat" or "responses". `step` switches to Responses on its own when the API says
-        #: this model will not take function tools any other way, and stays switched.
-        self.api = (_os.environ.get("QUACKD_OPENAI_API") or "chat").strip().lower()
+        #: "chat" or "responses". A model the catalogue marks `responses` starts there, which
+        #: saves the failed call `step` would otherwise pay to learn it, and is the only way in
+        #: for a model that is Responses only: its refusal is worded differently and
+        #: `_wants_the_responses_api` does not match it. Otherwise `step` still switches on its
+        #: own when the API says so, and stays switched. An explicit `api=` outranks both, and
+        #: both outrank the environment: `QUACKD_OPENAI_API=chat` must not send a model that
+        #: has no Chat Completions to one anyway.
+        self.api = (
+            (api or (spec.api if spec else None) or _os.environ.get("QUACKD_OPENAI_API") or "chat")
+            .strip()
+            .lower()
+        )
         if base_url is not None:
             self.base_url = base_url
+        # The catalogue knows which models take an image. A model that does not gets the
+        # detections as text instead of a 400, the way a local model already does.
         if vision is not None:
             self.supports_vision = vision
+        elif spec is not None:
+            self.supports_vision = spec.vision
         self.tool_choice = tool_choice if tool_choice is not None else self.default_tool_choice
         if client is None:
             import os
@@ -333,8 +361,7 @@ class OpenAIProvider:
             try:
                 from openai import AsyncOpenAI
             except ImportError as e:
-                extra = "grok" if self.name == "grok" else "openai"
-                raise ProviderNotInstalled(self.name, extra) from e
+                raise ProviderNotInstalled(self.name, self.extra) from e
             client = AsyncOpenAI(api_key=key, base_url=self.base_url)
         self.client = client
 

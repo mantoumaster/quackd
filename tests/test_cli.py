@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
+from quackd.agent.providers.factory import CLOUD_NAMES, default_model_for, model_ids
 from quackd.cli import app
 
 from .conftest import DUCKS
@@ -468,6 +471,115 @@ def test_run_unknown_provider_is_a_clean_error(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "unknown provider" in result.output
+
+
+def test_run_refuses_a_model_outside_the_catalogue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of the catalogue: the refusal arrives before anything is spent.
+
+    The key is deliberately removed, so if the model were checked after the provider was built
+    this would fail about `OPENAI_API_KEY` instead. Nothing may be written either: a run
+    directory for a run that never started is a run that has to be explained later.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "hello-world",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-nope",
+            "--robot",
+            "microduck:mock",
+            "--runs-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1
+    flat = " ".join(result.output.split())
+    assert "gpt-nope" in flat and "unknown model" in flat
+    assert default_model_for("openai") in flat, "the refusal must offer what to pass instead"
+    assert "list-models" in flat
+    assert "Traceback" not in result.output
+    assert list(tmp_path.iterdir()) == [], "a refused run left a directory behind"
+
+
+def test_run_names_the_vendor_when_the_model_belongs_to_another_one(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "hello-world",
+            "--provider",
+            "openai",
+            "--model",
+            "grok-4.6",
+            "--robot",
+            "microduck:mock",
+            "--runs-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "--provider grok" in " ".join(result.output.split())
+
+
+@pytest.fixture
+def _wide(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rich sizes a table to the terminal and folds a long id across rows to fit. That is right
+    for a reader and useless for a substring assertion, so these tests ask for a wide one."""
+    monkeypatch.setenv("COLUMNS", "220")
+
+
+def test_list_models_prints_every_vendor_and_marks_the_defaults(_wide: None) -> None:
+    result = runner.invoke(app, ["list-models"])
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    for name in CLOUD_NAMES:
+        assert name in flat
+        assert default_model_for(name) in flat, name
+    assert "default" in flat
+    assert "no catalogue" in flat, "the local presets must say why they are not in the table"
+    assert "ignored" in flat, "fake must say that --model does nothing"
+
+
+def test_list_models_can_be_asked_about_one_vendor(_wide: None) -> None:
+    result = runner.invoke(app, ["list-models", "--provider", "openai"])
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "claude-opus-5" not in flat, "asking for one vendor printed another"
+    assert "gpt-5.6-sol" in flat
+    local = runner.invoke(app, ["list-models", "--provider", "ollama"])
+    assert local.exit_code == 0 and "first entry" in " ".join(local.output.split())
+    bad = runner.invoke(app, ["list-models", "--provider", "nope"])
+    assert bad.exit_code == 1 and "unknown provider" in bad.output
+
+
+def test_list_models_says_where_a_pinned_model_belongs(
+    _wide: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUACKD_MODEL", "grok-4.6")
+    flat = " ".join(runner.invoke(app, ["list-models"]).output.split())
+    assert "QUACKD_MODEL=grok-4.6 is a grok model" in flat
+    monkeypatch.setenv("QUACKD_MODEL", "not-a-model")
+    flat = " ".join(runner.invoke(app, ["list-models"]).output.split())
+    assert "not a model any vendor here lists" in flat
+
+
+def test_model_completion_follows_the_provider_already_on_the_line() -> None:
+    """Shell completion for `--model` depends on `--provider`, which Click has already parsed."""
+    from quackd.cli import _complete_model
+
+    openai = _complete_model(SimpleNamespace(params={"provider": "openai"}), "gpt-5.6")
+    assert [i for i, _ in openai] == [m for m in model_ids("openai") if m.startswith("gpt-5.6")]
+    assert all(label for _, label in openai), "completion offers a label beside each id"
+    assert _complete_model(SimpleNamespace(params={"provider": "grok"}), "gpt") == []
+    # `fake` and the local presets have nothing to offer, and that is the default provider
+    assert _complete_model(SimpleNamespace(params={}), "") == []
+    assert _complete_model(SimpleNamespace(params={"provider": "ollama"}), "") == []
 
 
 def test_run_refuses_a_duck_the_robot_cannot_do(tmp_path: Path) -> None:
