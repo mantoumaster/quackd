@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import errno
 import glob
+import json
 import os
 import sys
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import Any
 import typer
 from dotenv import load_dotenv
 from rich.markup import escape
-from rich.table import Table
+from rich.text import Text
 
 from quackd import __version__, ui
 
@@ -75,6 +76,16 @@ def _main(
     # at import, which is before any of this was known.
     load_dotenv()
     ui.configure(no_color=no_color)
+
+
+_JSON = typer.Option(
+    False,
+    "--json",
+    help="One JSON object per line on stdout, and nothing else: for a script rather than "
+    "for a person. Exit codes are unchanged.",
+)
+
+_ADAPTER_HINT = "quackd list-adapters shows the seven that ship and their backends"
 
 
 def _expand(patterns: list[str]) -> list[str]:
@@ -159,6 +170,7 @@ def _robot_specs(robot: str | None, robots: str | None, duck: Any) -> list:
 def validate(
     duckfiles: list[str] = typer.Argument(..., help=".duck files, globs, or bundled names."),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Only print failures."),
+    as_json: bool = _JSON,
     robot: list[str] | None = typer.Option(
         None,
         "--robot",
@@ -177,21 +189,19 @@ def validate(
     from quackd.verbs.registry import default_registry
 
     registry = default_registry()
-    table = Table(title="quackd validate", show_lines=False)
-    table.add_column("file")
-    table.add_column("name")
-    table.add_column("verbs", justify="right")
-    table.add_column("result")
-    failures = 0
-    details: list[str] = []  # one plain line per problem, so long messages survive any width
+    rows: list[dict[str, Any]] = []
     for path in _expand(duckfiles):
+        row: dict[str, Any] = {"file": path, "name": None, "verbs": None, "robots": [], "ok": True}
+        rows.append(row)
         try:
             duck = load_duck(path)
         except DuckParseError as e:
-            failures += 1
-            table.add_row(path, "—", "—", f"[red]✗ {escape(e.reason)}[/red]")
-            details.append(f"{path}: {e.reason}")
+            row.update(ok=False, problems=[e.reason], summary=[e.reason])
             continue
+        row["name"] = duck.name
+        row["verbs"] = len(duck.frontmatter.verbs.allow)
+        if duck.frontmatter.flock is not None:
+            row["flock"] = len(duck.frontmatter.flock.member_names)
         try:
             if robot or robots:
                 specs = (
@@ -205,39 +215,81 @@ def validate(
                 specs = []
             manifests = [describe(spec) for spec in specs]
         except AdapterError as e:
-            failures += 1
-            table.add_row(path, duck.name, "—", f"[red]✗ {escape(str(e))}[/red]")
+            row.update(ok=False, problems=[str(e)], summary=[str(e)])
             continue
+        row["robots"] = [m.id for m in manifests]
         problems = validate_duck(duck, manifests, registry=registry)
         if problems:
-            failures += 1
-            table.add_row(
-                path,
-                duck.name,
-                str(len(duck.frontmatter.verbs.allow)),
-                "[red]✗ " + escape("; ".join(p.message for p in problems)) + "[/red]",
+            # `str(p)` names the field it came from and is what the plain lines under the
+            # table carry; `p.message` is the sentence, which is what fits in a cell
+            row.update(
+                ok=False,
+                problems=[str(p) for p in problems],
+                summary=[p.message for p in problems],
             )
-            details.extend(f"{path}: {p}" for p in problems)
-            continue
-        if not quiet:
-            verdict = "[green]✓ valid[/green]"
-            if duck.frontmatter.flock is not None:
-                verdict = (
-                    f"[green]✓ valid (flock of {len(duck.frontmatter.flock.member_names)})[/green]"
-                )
-            if manifests:
-                verdict += f" [dim]for {', '.join(m.id for m in manifests)}[/dim]"
-            table.add_row(path, duck.name, str(len(duck.frontmatter.verbs.allow)), verdict)
-    if not quiet or failures:
+
+    failures = [row for row in rows if not row["ok"]]
+    if as_json:
+        for row in rows:
+            print(json.dumps({**row, "problems": row.get("problems", [])}))
+        raise typer.Exit(code=1 if failures else 0)
+
+    shown = failures if quiet else rows
+    if shown:
+        table = ui.table("quackd validate")
+        # nothing here is no_wrap: a path can be any length, and a column that refuses to
+        # wrap takes the width out of the one column that carries the answer
+        table.add_column("file", overflow="fold")
+        table.add_column("name")
+        table.add_column("verbs", justify="right")
+        table.add_column("result", ratio=2)
+        for row in shown:
+            table.add_row(*_validate_row(row))
         ui.console.print(table)
     if failures:
-        for line in details:
-            ui.console.print(escape(line), soft_wrap=True)
-        raise typer.Exit(code=1)
-    ui.console.print(f"[green]{len(_expand(duckfiles))} file(s) valid.[/green]")
+        # under the table as plain lines, so a long message survives any terminal width
+        for row in failures:
+            for problem in row.get("problems", []):
+                ui.console.print(Text(f"  {row['file']}: {problem}"), soft_wrap=True)
+        _fail(f"{len(failures)} of {len(rows)} {_files(len(rows))} failed", hint=_VALIDATE_HINT)
+    ui.console.print(_ok_line(f"{len(rows)} {_files(len(rows))} valid"))
+
+
+_VALIDATE_HINT = "quackd list-verbs --robot <adapter>:<backend> shows what a body can do"
+
+
+def _files(n: int) -> str:
+    return "file" if n == 1 else "files"
+
+
+def _ok_line(message: str) -> Any:
+    return ui.Deferred(
+        lambda g: Text.assemble((f"{g.ok} ", ui.STYLES["ok"]), (message, ui.STYLES["ok"]))
+    )
+
+
+def _validate_row(row: dict[str, Any]) -> list[Any]:
+    """One line of the table, with everything a manifest or a parser wrote kept as text."""
+    verbs = "—" if row["verbs"] is None else str(row["verbs"])
+
+    def result(g: ui.Glyphs) -> Text:
+        if not row["ok"]:
+            out = Text(f"{g.fail} ", style=ui.STYLES["fail"])
+            out.append("; ".join(row.get("summary", [])) or "invalid", style=ui.STYLES["fail"])
+            return out
+        out = Text(f"{g.ok} valid", style=ui.STYLES["ok"])
+        if row.get("flock"):
+            out.append(f" (flock of {row['flock']})", style=ui.STYLES["ok"])
+        if row["robots"]:
+            out.append(f" for {', '.join(row['robots'])}", style=ui.STYLES["muted"])
+        return out
+
+    return [Text(row["file"]), Text(row["name"] or "—"), verbs, ui.Deferred(result)]
 
 
 # ── list-verbs ──────────────────────────────────────────────────────────────────────────
+
+_SAFETY_STYLE = {"safe": "ok", "confirm": "warn", "dangerous": "fail"}
 
 
 @app.command("list-verbs")
@@ -245,6 +297,7 @@ def list_verbs(
     robot: str | None = typer.Option(
         None, "--robot", "-r", help="A robot's vocabulary (<adapter>:<backend>); default Microduck."
     ),
+    as_json: bool = _JSON,
 ) -> None:
     """List every verb a robot provides, with params and safety class."""
     from quackd.adapters.base import AdapterError
@@ -254,49 +307,68 @@ def list_verbs(
     try:
         registry = registry_for(parse_robot_spec(robot)) if robot else default_registry()
     except AdapterError as e:
-        _fail(str(e))
+        _fail(str(e), hint=_ADAPTER_HINT)
         return
     aliases: dict[str, list[str]] = {}
     for alias, target in registry.aliases().items():
         aliases.setdefault(target, []).append(alias)
-    table = Table(title=f"verbs ({robot or 'microduck'})")
-    table.add_column("name", style="bold")
+    verbs = registry.verbs()
+    if as_json:
+        for v in verbs:
+            print(
+                json.dumps(
+                    {
+                        "name": v.name,
+                        "aliases": aliases.get(v.name, []),
+                        "kind": v.kind,
+                        "core": v.core,
+                        "safety": v.safety_class,
+                        "params": v.param_summary(),
+                        "description": v.description,
+                    }
+                )
+            )
+        return
+    table = ui.table(f"verbs ({robot or 'microduck'})")
+    # no_wrap on the name: a narrow terminal must never elide the one column you look up
+    table.add_column("name", style=ui.STYLES["key"], no_wrap=True)
     table.add_column("aliases")
     table.add_column("kind")
     table.add_column("safety")
     table.add_column("params")
     table.add_column("description")
-    for v in registry.verbs():
+    for v in verbs:
+        kind = Text(v.kind)
+        if v.core:
+            kind.append(" core", style=ui.STYLES["muted"])
         table.add_row(
-            v.name,
-            ", ".join(aliases.get(v.name, [])),
-            f"{v.kind}{' (core)' if v.core else ''}",
-            v.safety_class,
-            v.param_summary(),
-            escape(v.description),
+            Text(v.name),
+            Text(", ".join(aliases.get(v.name, [])), style=ui.STYLES["muted"]),
+            kind,
+            Text(v.safety_class, style=ui.STYLES[_SAFETY_STYLE.get(v.safety_class, "muted")]),
+            Text(v.param_summary(), style=ui.STYLES["muted"]),
+            Text(v.description),
         )
+    core = sum(1 for v in verbs if v.core)
+    table.caption = Text(
+        f"{len(verbs)} verbs, {core} core. --robot <adapter>:<backend> for another body",
+        style=ui.STYLES["muted"],
+    )
+    table.caption_justify = "left"
     ui.console.print(table)
 
 
 @app.command("list-adapters")
-def list_adapters_cmd() -> None:
+def list_adapters_cmd(as_json: bool = _JSON) -> None:
     """List the robot adapters this build knows, their backends and status."""
     from quackd.adapters.factory import list_adapters
 
-    table = Table(title="adapters (--robot <adapter>:<backend>)")
-    table.add_column("adapter", style="bold")
-    table.add_column("backends")
-    table.add_column("status")
-    table.add_column("extra")
-    for row in list_adapters():
-        # escape: an extra reads quackd[lerobot], which Rich would eat as markup
-        extra = escape(row["extra"])
-        if row["extra"] != "built-in":
-            extra += (
-                " [green]installed[/green]" if row["installed"] else " [dim]not installed[/dim]"
-            )
-        table.add_row(row["name"], " · ".join(row["backends"]), row["status"], extra)
-    ui.console.print(table)
+    rows = list_adapters()
+    if as_json:
+        for row in rows:
+            print(json.dumps(row))
+        return
+    ui.console.print(ui.adapters_table(rows))
 
 
 # ── run / record ────────────────────────────────────────────────────────────────────────
@@ -794,7 +866,7 @@ _LIVE = typer.Option(
     False,
     "--live",
     help="Simulators: watch the run in real time. sim2d opens a pygame window (needs "
-    "quackd[live]); mujoco opens MuJoCo's own viewer.",
+    r"quackd\[live]); mujoco opens MuJoCo's own viewer.",
 )
 _ADDR = typer.Option(None, "--address", help="jsonrpc: unix:///run/robotd.sock or tcp://host:port")
 _TOKEN = typer.Option(
@@ -809,7 +881,7 @@ _CAMERA_URL = typer.Option(
     "--camera-url",
     help="Where frames come from, overriding whatever the robot advertises. An HTTP snapshot "
     "(http://host:9872/snapshot.jpg), or webrtc://host:8443 to pull mediad's video track off a "
-    "Microduck, which is the only camera upstream offers and needs quackd[microduck-camera]. "
+    r"Microduck, which is the only camera upstream offers and needs quackd\[microduck-camera]. "
     "Needed when you reach the robot through a tunnel and its own URL is not routable.",
 )
 _FOV = typer.Option(
@@ -1055,8 +1127,6 @@ def trace_cmd(
 
     On stdout, because a replay is what you pipe to a pager or a file, and unaffected by
     QUACKD_TRACE: that switch is about narrating live, and asking for a replay is asking."""
-    import json
-
     from quackd.agent.transcript import Transcript
     from quackd.trace import ConsoleTrace, parse_thinking_limit
     from quackd.trace import prompt_shown_default as _prompt_default
@@ -1284,9 +1354,7 @@ def discover(
     timeout: float = typer.Option(3.0, "--timeout", help="Seconds to listen for answers."),
     as_json: bool = typer.Option(False, "--json", help="One JSON object per robot."),
 ) -> None:
-    """List the quackd robots answering on the LAN (zeroconf, needs quackd[lan])."""
-    import json
-
+    r"""List the quackd robots answering on the LAN (zeroconf, needs quackd\[lan])."""
     from rich.table import Table
 
     from quackd.lan import LanNotInstalled
@@ -1332,7 +1400,7 @@ def announce(
         None, "--for", help="Seconds to stay announced (default: until Ctrl-C)."
     ),
 ) -> None:
-    """Advertise a robot's identity on the LAN (zeroconf, needs quackd[lan])."""
+    r"""Advertise a robot's identity on the LAN (zeroconf, needs quackd\[lan])."""
     import time
 
     from quackd.adapters.base import AdapterError

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -246,7 +247,7 @@ def test_a_verbose_line_survives_a_bracket_a_planner_logged(monkeypatch) -> None
 def test_validate_starter_ducks() -> None:
     result = runner.invoke(app, ["validate", *[str(p) for p in sorted(DUCKS.glob("*.duck"))]])
     assert result.exit_code == 0, result.output
-    assert "12 file(s) valid" in result.output
+    assert "12 files valid" in result.output
 
 
 def test_validate_expands_globs_itself() -> None:
@@ -562,3 +563,106 @@ def test_a_gif_pane_larger_than_the_offscreen_buffer_is_refused_before_anything_
     result = runner.invoke(app, ["run", "hello-world", "--gif-size", "4096"])
     assert result.exit_code == 2
     assert "1024" in result.output
+
+
+# ── --json and --no-color: the output a script reads ────────────────────────────────────
+
+
+def _objects(output: str) -> list[dict]:
+    """The JSON lines, and nothing else may be on stdout with them."""
+    lines = [line for line in output.splitlines() if line.strip()]
+    assert all(line.startswith("{") for line in lines), output
+    return [json.loads(line) for line in lines]
+
+
+def test_validate_json_is_one_object_per_file_and_still_exits_one() -> None:
+    """A script wants the rows and the exit code, not a table it has to unpick."""
+    runner = CliRunner()
+    ok = _objects(runner.invoke(app, ["validate", "hello-world", "--json"]).output)
+    assert ok == [
+        {
+            "file": "hello-world",
+            "name": "hello-world",
+            "verbs": 3,
+            "robots": [],
+            "ok": True,
+            "problems": [],
+        }
+    ]
+    result = runner.invoke(
+        app, ["validate", "find-and-kick", "--robot", "open_duck:mock", "--json"]
+    )
+    assert result.exit_code == 1, "the exit code is the same with or without --json"
+    (row,) = _objects(result.output)
+    assert row["ok"] is False and row["robots"] == ["open-duck-01"]
+    assert "does not provide it" in row["problems"][0]
+
+
+def test_validate_json_reports_a_flock_as_a_count() -> None:
+    (row,) = _objects(CliRunner().invoke(app, ["validate", "flock-kick", "--json"]).output)
+    assert row["flock"] == 3
+
+
+def test_list_verbs_json_carries_what_the_table_shows() -> None:
+    rows = _objects(CliRunner().invoke(app, ["list-verbs", "--json"]).output)
+    by_name = {row["name"]: row for row in rows}
+    assert {"move", "kick", "quack", "observe"} <= set(by_name)
+    assert by_name["move"]["aliases"] == ["walk"]
+    assert by_name["move"]["core"] is True
+    assert by_name["observe"]["safety"] == "safe"
+    assert "vx: float" in by_name["move"]["params"]
+
+
+def test_list_adapters_json_is_the_registry_rows() -> None:
+    rows = _objects(CliRunner().invoke(app, ["list-adapters", "--json"]).output)
+    assert [row["name"] for row in rows][:2] == ["microduck", "lerobot"]
+    assert rows[0]["installed"] is True
+    assert "sim2d" in rows[0]["backends"]
+
+
+def test_json_never_carries_a_rich_tag() -> None:
+    """These strings are pasted into a shell prompt or a dashboard. `[green]` in one of them
+    would be the table's styling leaking into the answer."""
+    for argv in (["list-adapters", "--json"], ["list-verbs", "--json"]):
+        for row in _objects(CliRunner().invoke(app, argv).output):
+            blob = json.dumps(row)
+            for tag in ("[green]", "[dim]", "[red]", "[/"):
+                assert tag not in blob, (argv, tag)
+
+
+def test_no_color_strips_the_colour_and_keeps_the_words() -> None:
+    """Rich renders colour through the Win32 console on a legacy terminal rather than as
+    escape codes, so this asks the consoles what they were told rather than grepping bytes."""
+    from quackd import ui
+
+    runner = CliRunner()
+    assert runner.invoke(app, ["list-adapters"]).exit_code == 0
+    assert ui.console.no_color is False
+    plain = runner.invoke(app, ["--no-color", "list-adapters"])
+    assert plain.exit_code == 0
+    assert ui.console.no_color is True and ui.err_console.no_color is True
+    assert "microduck" in plain.output and "sim2d" in plain.output
+
+
+def test_no_color_reaches_the_help_typer_renders_for_itself() -> None:
+    """Typer builds a console of its own for every --help, which is why the flag sets the
+    variable as well as the consoles."""
+    import os
+
+    CliRunner().invoke(app, ["--no-color", "run", "--help"])
+    assert os.environ.get("NO_COLOR") == "1"
+
+
+def test_the_help_groups_the_flags_and_keeps_the_brackets_of_an_extra() -> None:
+    """`rich_markup_mode` reads `quackd[lan]` as markup and used to print it as `quackd`,
+    which named an install that does not exist."""
+    out = " ".join(CliRunner().invoke(app, ["run", "--help"]).output.split())
+    assert "quackd[live]" in out, "an extra a reader is meant to type must survive"
+    out_root = " ".join(CliRunner().invoke(app, ["--help"]).output.split())
+    assert "--no-color" in out_root
+
+
+def test_dash_h_is_the_same_as_help() -> None:
+    runner = CliRunner()
+    assert runner.invoke(app, ["-h"]).exit_code == 0
+    assert "Usage" in runner.invoke(app, ["-h"]).output

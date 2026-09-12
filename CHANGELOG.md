@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The CLI has a house style, and a way out of it.** quackd's colours had grown inline: a
+  `[green]` in one command, a `Table` in another, an emoji in a third, with nothing saying
+  which green meant *this worked* and which meant *this is installed*. `quackd/ui.py` is now
+  that vocabulary in one place, and three rules run through it. Text a model, a robot or a
+  manifest wrote is never read as markup, so a note saying the ball is `[behind]` the sofa
+  and an error naming `quackd[anthropic]` both arrive intact. Glyphs come from a table with
+  an ASCII half chosen from the stream's own encoding, and the panels pick their half when
+  they are drawn rather than when they are built, because a replay goes to stdout, a run
+  narrates to stderr, and a test hands round a buffer of its own. And chrome goes to stderr
+  while answers go to stdout, so `quackd list-adapters > adapters.txt` gets the table and
+  nothing else. On a Windows pipe, where every decoration used to arrive as a question mark,
+  the adapter roster now reads `[ok] built-in: sim2d` and `[exp] jsonrpc`.
+- **`--no-color`, and `--json` on `validate`, `list-verbs` and `list-adapters`.** The tables
+  are for a person. `--json` prints one object per line on stdout and nothing else, keeping
+  the exit code it would have had, so `quackd validate ducks/*.duck --json` still exits 1 on
+  a failure and a script can read which file and why. `--no-color` sets `NO_COLOR` as well as
+  quackd's own consoles, because Typer builds a console of its own for every `--help` it
+  renders. `FORCE_COLOR=1` is the other direction, for a pipe you are colouring on purpose.
+- **`-h` works**, everywhere `--help` does.
+
+### Changed
+
+- **A closed pipe is not an error.** `quackd list-verbs | head` answered with a wall of
+  traceback about a broken pipe printed on top of the output that was asked for. The console
+  entry point is now `quackd.cli:main`, which leaves quietly, and Typer's pretty exceptions
+  are off because they print local variables and this process's locals hold an API key, a
+  robot's address and its bridge token. A Rich traceback without locals is installed instead,
+  so a real crash still reads well.
+- **`quackd validate` counts in English** (`12 files valid`, `1 of 3 files failed`), names
+  where to look next when it fails, and no longer lets a long file path squeeze the column
+  that carries the answer down to nothing.
+- **Extras in `--help` keep their brackets.** `--live` advertised an install called `quackd`
+  rather than `quackd[live]`, because Rich had read the extra as markup and eaten it. Same
+  for `quackd[microduck-camera]` and `quackd[lan]`.
+
 ### Removed
 
 - **The Reachy Mini adapter.** `--robot reachy_mini:{sim2d,mock,sdk}`, `quackd[reachy]`, the
