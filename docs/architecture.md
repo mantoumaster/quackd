@@ -145,25 +145,42 @@ The transcript is one *sink* of an event stream, not a thing the loop writes dir
   It shows the system prompt once, then per turn: the observation, what the model thought,
   the tool it called, tokens and latency, each gate that fired, each intent, and the result.
   A burst of intents from a steering loop is one line with its parameter ranges, because
-  `go_to` recomputes its twist every 100 ms: `-> move x26 over 2.5 s (vx 0.1..0.2, vy 0, wz -0.01..0.88)`.
+  `go_to` recomputes its twist every 100 ms: `→  send    move x42 over 4.1 s (vx 0.1..0.2, vy 0, wz -0.055..0.01)`.
   A burst still going after two seconds is flushed as it stands and the next line continues
   it, so a long approach narrates itself instead of printing nothing until it ends.
 - **The MCP tool result**, as a `trace` list on every call that reaches an executor, capped
   at thirty lines, with the uncapped version on the server's stderr. Over MCP the pilot is
   the client, so its reasoning and its token counts are not quackd's to show. What quackd can
   see it says: the verb, the gates, the intents, the result and the budget.
-- **A flock's terminal**, one view per member with its name on every line and the
-  coordinator's decisions under `flock`. Each robot's own transcript is its record.
+- **A flock's terminal**, one view per member with its name and its own colour on every line,
+  and the coordinator's decisions under `flock`. Each robot's own transcript is its record.
 
 `quackd trace` replays a finished run from its transcript afterwards, through the same
 renderer, on stdout.
 
 `--no-trace` or `QUACKD_TRACE=0` removes the views. The transcript is unaffected, because a
-run that cannot be argued about afterwards is the thing this project cannot give up.
-`--no-trace-prompt` or `QUACKD_TRACE_PROMPT=0` keeps the narration and drops the system
-prompt, which is forty to seventy lines and worth reading once.
+run that cannot be argued about afterwards is the thing this project cannot give up. A
+one-line status stays on stderr either way, saying what the run is waiting for, because a
+model deciding and a verb steering a robot are most of a run's wall clock and both used to
+be silence. `--no-trace-prompt` or `QUACKD_TRACE_PROMPT=0` keeps the narration and drops the
+system prompt, which is forty to seventy lines and worth reading once.
 `QUACKD_TRACE_THINKING` is how much of the model's thinking each turn shows: a number of
 characters, `all`, or `0`. The transcript always has all of it.
+
+### What the terminal adds, and what it may not change
+
+The MCP result carries the renderer's lines verbatim and a model reads them, so those bytes
+are frozen: `->`, `<-`, an eight-column label, ASCII throughout, held to it case by case by
+`tests/golden/trace_lines.json`. A person at a terminal is a different reader, so the same
+events are drawn differently there ([ADR-0031](adr/0031-terminal-theme.md)): the arrow is a
+glyph in a gutter and the column says the word it stood for (`send`, `result`), each step is
+ruled off with the budget lifted out of the observation, the system prompt is an indented
+block between two rules, and an outcome is a shape as well as a colour.
+
+Which glyphs are used is decided by the stream being written to, not by the platform. A
+redirected stderr on Windows is cp1252 and gets `->`, `+` and `x`; a terminal that can draw
+an arrow gets one. Nothing is ever printed as markup, because a model that thinks about
+`[/think]` must not raise a formatting error.
 
 The trace shows intents as verbs issue them. A keepalive inside an adapter, a daemon's own
 deadman resend and an adapter's stop-on-close are that adapter's business and appear only in

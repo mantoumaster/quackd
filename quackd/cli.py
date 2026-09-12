@@ -733,11 +733,17 @@ def _run_flock_impl(
         """One view per robot, its name on every line. A shared view would coalesce two
         robots' intents into one line and attribute them to whichever spoke last."""
         if name not in views:
+            # a colour per member as well as a name, because three robots moving at once
+            # interleave and the eye finds a colour faster than it reads a prefix
+            order = member_names.index(name) if name in member_names else -1
             views[name] = ConsoleTrace(
                 ui.err_console,
                 thinking_chars=thinking_limit_default(),
                 prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
                 prefix=f"{name:<{prefix_width}}  ",
+                prefix_style=ui.MEMBER_STYLES[order % len(ui.MEMBER_STYLES)]
+                if order >= 0
+                else ui.STYLES["key"],
             )
         return views[name]
 
@@ -1177,7 +1183,7 @@ def trace_cmd(
     width = max((len(p.parent.name) for p in transcripts), default=0) if len(transcripts) > 1 else 0
     end: dict[str, Any] | None = None
     cut = 0
-    for path in transcripts:
+    for i, path in enumerate(transcripts):
         records = Transcript.read(path, lenient=True)
         cut += int(records[-1].get("_skipped", 0)) if records else 0
         view = ConsoleTrace(
@@ -1188,6 +1194,10 @@ def trace_cmd(
             prompt=prompt if prompt is not None else _prompt_default(),
             progress_s=None,  # a replay is not live: one line per burst, as the record has it
             prefix=f"{path.parent.name:<{width}}  " if width else "",
+            prefix_style=ui.MEMBER_STYLES[i % len(ui.MEMBER_STYLES)] if width else "",
+            # a replay has no CLI header in front of it, so this is where the run says what
+            # it was: which duck, which model, which robot, and how long connecting took
+            header=True,
         )
         end = _replay(records, view, from_step=from_step, frames=frames) or end
 

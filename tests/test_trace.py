@@ -485,10 +485,11 @@ def test_run_start_shows_the_prompt_once_and_can_be_asked_not_to() -> None:
 # ── the console ─────────────────────────────────────────────────────────────────────────
 
 
-def console_trace() -> tuple[ConsoleTrace, io.StringIO]:
+def console_trace(**kwargs: Any) -> tuple[ConsoleTrace, io.StringIO]:
     buffer = io.StringIO()
     console = Console(file=buffer, width=200, force_terminal=False, no_color=True)
-    return ConsoleTrace(console, thinking_chars=None), buffer
+    kwargs.setdefault("thinking_chars", None)
+    return ConsoleTrace(console, **kwargs), buffer
 
 
 def test_square_brackets_in_what_the_model_wrote_survive_verbatim() -> None:
@@ -544,6 +545,196 @@ def test_fan_out_feeds_every_sink_and_one_bad_view_never_starves_the_others() ->
 
 def test_fan_out_of_nothing_is_a_sink_that_does_nothing() -> None:
     fan_out()(TraceEvent("llm", 0.0, {}))  # must not raise
+
+
+# ── the terminal view ───────────────────────────────────────────────────────────────────
+
+
+def narrow_trace(**kwargs: Any) -> tuple[ConsoleTrace, io.BytesIO]:
+    """A view on a Windows codepage: what `2> trace.log` gives you there."""
+    raw = io.BytesIO()
+    console = Console(
+        file=io.TextIOWrapper(raw, encoding="cp1252", errors="replace"),
+        width=200,
+        force_terminal=False,
+    )
+    return ConsoleTrace(console, **kwargs), raw
+
+
+def shown(raw: io.BytesIO, view: ConsoleTrace) -> str:
+    view.console.file.flush()
+    return raw.getvalue().decode("cp1252")
+
+
+def test_the_terminal_puts_the_arrow_in_the_gutter_and_a_word_in_the_column() -> None:
+    """The plain renderer's `->` is a contract with a model. A person gets the arrow as a
+    glyph and the column says what it stood for."""
+    view, buffer = console_trace()
+    view(TraceEvent("verb_start", 0.0, {"name": "go_to", "params": {"target": "ball"}}))
+    view(TraceEvent("intent", 0.1, {"intent": "move", "params": {"vx": 0.2}, "accepted": True}))
+    view(
+        TraceEvent(
+            "verb_end", 0.2, {"name": "go_to", "ok": True, "outcome": "ok", "summary": "there"}
+        )
+    )
+    out = buffer.getvalue()
+    assert "▶  verb    go_to(target='ball')" in out
+    assert "→  send    move(vx=0.2)" in out
+    assert "✓  result  go_to ok: there" in out
+    assert "->" not in out and "<-" not in out, "the arrows are glyphs here, not text"
+
+
+def test_a_failure_is_a_shape_as_well_as_a_colour() -> None:
+    view, buffer = console_trace()
+    view(TraceEvent("gate", 0.0, {"gate": "allowlist", "outcome": "refused", "reason": "no"}))
+    view(
+        TraceEvent(
+            "verb_end", 0.1, {"name": "kick", "outcome": "fail", "summary": "missed", "ok": False}
+        )
+    )
+    view(TraceEvent("verb_end", 0.2, {"name": "s", "outcome": "preempted", "summary": "role"}))
+    out = buffer.getvalue()
+    assert "✗  gate" in out and "✗  result  kick FAIL" in out
+    assert "•  result  s PREEMPTED" in out, "a handover is not a fault and must not look like one"
+
+
+def test_every_glyph_becomes_ascii_on_a_stream_that_cannot_carry_it() -> None:
+    """A redirected stderr on Windows is cp1252, and this is exactly the output people
+    redirect. ADR-0029 protected that with ASCII everywhere; it is protected here by asking
+    the stream."""
+    view, raw = narrow_trace()
+    view(TraceEvent("verb_start", 0.0, {"name": "go_to", "params": {}}))
+    view(TraceEvent("intent", 0.1, {"intent": "move", "params": {"vx": 0.2}, "accepted": True}))
+    done = {"name": "go_to", "ok": True, "outcome": "ok", "summary": "x"}
+    view(TraceEvent("verb_end", 0.2, done))
+    out = shown(raw, view)
+    assert out.isascii() and "?" not in out
+    assert ">  verb" in out and "-> send" in out and "+  result" in out
+
+
+def test_what_a_robot_wrote_is_respelled_rather_than_lost() -> None:
+    """`bearing 28° left` arrived as `bearing 28? left` on a codepage without a degree sign.
+    A stand-in that says the same thing is strictly better than a question mark."""
+    view, raw = narrow_trace()
+    view(TraceEvent("note", 0.0, {"text": "ball at bearing 28° left ±2°"}))
+    out = shown(raw, view)
+    assert "28 deg left +/-2 deg" in out and "?" not in out
+
+
+def test_each_step_is_ruled_off_and_the_budget_is_only_said_once() -> None:
+    """The loop writes `[step 3/40 · step 3/40, llm calls ...]` at the top of every
+    observation: the one line saying where the run is up to, buried in a paragraph, and
+    saying the step twice."""
+    view, buffer = console_trace()
+    text = "[step 3/40 · step 3/40, llm calls 3/40, 0.1/5 min]\nstate: posture=standing"
+    view(TraceEvent("observation", 0.0, {"step": 3, "text": text}))
+    out = buffer.getvalue()
+    assert "step 3/40, llm calls 3/40, 0.1/5 min" in out
+    assert out.count("step 3/40") == 1, "the step was announced twice"
+    assert "state: posture=standing" in out
+    assert "[step" not in out, "the header became the rule and must not also be a line"
+
+
+def test_an_observation_that_failed_is_a_line_not_a_rule() -> None:
+    view, buffer = console_trace()
+    view(TraceEvent("observation", 0.0, {"error": "camera timed out"}))
+    assert "ERROR camera timed out" in buffer.getvalue()
+
+
+def test_a_flock_member_is_never_given_a_rule_of_its_own() -> None:
+    """Three members narrate at once; a rule each would be three rules per step and none of
+    them would mean the run had moved on."""
+    view, buffer = console_trace(prefix="duck-1  ")
+    view(TraceEvent("observation", 0.0, {"text": "[step 1/9 · llm calls 1/9]\nstate: up"}))
+    view(TraceEvent("verb_start", 0.1, {"name": "kick", "params": {}}))
+    out = buffer.getvalue()
+    assert "───" not in out and "[step 1/9" in out, "the budget stays in the member's own line"
+    assert all(line.startswith("duck-1  ") for line in out.splitlines() if line.strip())
+
+
+def test_the_system_prompt_is_a_block_between_two_rules() -> None:
+    view, buffer = console_trace()
+    view(
+        TraceEvent(
+            "run_start",
+            0.0,
+            {"duck": "d", "transport": "mock", "system_prompt": "line one\n\nline three"},
+        )
+    )
+    out = buffer.getvalue()
+    assert "system prompt, 20 chars, 3 lines" in out
+    assert "   line one" in out and "   line three" in out
+    assert out.rstrip().endswith("─" * 10), "the block is closed off so the run visibly starts"
+
+
+def test_a_live_run_does_not_repeat_the_header_the_cli_just_printed() -> None:
+    view, buffer = console_trace()
+    view(
+        TraceEvent(
+            "run_start",
+            0.0,
+            {
+                "duck": "d",
+                "provider": "fake",
+                "transport": "mock",
+                "connect_s": 0.5,
+                "tools": ["a"],
+            },
+        )
+    )
+    out = buffer.getvalue()
+    assert "connected in 0.50 s" in out
+    assert "tools   a" in out
+    assert "provider=fake" not in out, "the panel in front of this already said it"
+
+
+def test_a_replay_introduces_the_run_because_nothing_else_did() -> None:
+    view, buffer = console_trace(header=True)
+    view(
+        TraceEvent(
+            "run_start",
+            0.0,
+            {
+                "duck": "find-and-kick",
+                "provider": "anthropic",
+                "model": "claude-opus-5",
+                "adapter": "microduck",
+                "transport": "sim2d",
+                "tools": ["kick"],
+                "connect_s": 0.5,
+                "memory": {"notes": 3, "episodes": 5},
+            },
+        )
+    )
+    out = buffer.getvalue()
+    for needle in (
+        "find-and-kick",
+        "anthropic (claude-opus-5)",
+        "microduck:sim2d",
+        "3 notes, 5 earlier runs",
+        "connected in 0.50 s",
+    ):
+        assert needle in out, needle
+
+
+def test_the_terminal_view_never_reads_what_a_model_wrote_as_markup() -> None:
+    """The same promise the plain view makes, made again by the renderer that replaced it."""
+    view, buffer = console_trace()
+    view(
+        TraceEvent(
+            "llm",
+            0.0,
+            {
+                "thinking": "[/think] and [dry-run] and [bold]",
+                "text": "the ball is [behind] the sofa",
+                "tool_calls": [],
+                "usage": {},
+            },
+        )
+    )
+    out = buffer.getvalue()
+    for tag in ("[/think]", "[dry-run]", "[bold]", "[behind]"):
+        assert tag in out, tag
 
 
 # ── capturing one call (the MCP server) ─────────────────────────────────────────────────

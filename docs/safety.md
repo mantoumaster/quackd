@@ -48,7 +48,7 @@ always sends `stop` and closes the transport. Works on Windows (signal handler, 
 parameters it chose:
 
 ```
-gate    dry_run: skipped would run search_scan, sent nothing (target='ball', step_deg=45, max_steps=8)
+⚠  gate    dry_run: skipped would run walk_to, sent nothing (target='ball', stop_distance=0.22, timeout_s=20)
 ```
 
 A parameter the model left unset shows as `null` rather than being dropped, because on a dry

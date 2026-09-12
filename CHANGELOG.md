@@ -48,6 +48,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The trace is drawn for the person reading it.** The arrow is a glyph in a gutter now and
+  the column says the word it stood for, so `-> sound(...)` reads `→  send    sound(...)`
+  and a result is `✓` or `✗` or, for a handover that ended a verb early on purpose, `•`.
+  Each step is ruled off with the budget line lifted out of the observation it was buried
+  in, and said once rather than twice. The system prompt is an indented block between two
+  rules instead of forty lines of the same dim colour. A flock gives each member a colour as
+  well as a name. [ADR-0031](docs/adr/0031-terminal-theme.md) records the decision and
+  amends [ADR-0029](docs/adr/0029-tracing.md), whose "lines are ASCII first" rule now
+  applies where it was earned: the MCP tool result carries exactly the bytes it always did,
+  frozen case by case by a new golden, and the terminal asks the stream it is writing to
+  which half of the glyph table it can carry. A redirected stderr on Windows still gets
+  `->`, `+` and `x`, and the degree signs and dashes that used to arrive as question marks
+  now arrive as words.
 - **A closed pipe is not an error.** `quackd list-verbs | head` answered with a wall of
   traceback about a broken pipe printed on top of the output that was asked for. The console
   entry point is now `quackd.cli:main`, which leaves quietly, and Typer's pretty exceptions

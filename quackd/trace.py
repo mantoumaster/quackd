@@ -20,11 +20,14 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
+import re
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from rich.text import Text
 
 from quackd.transport.base import Ack, Intent
 
@@ -743,8 +746,43 @@ class LineTrace:
         self._pending = []
 
 
+_BRACKETED = re.compile(r"^\[(.+)\]$")
+_SEP = " · "
+
+
+def _one_step(budget: str) -> str:
+    """`step 3/40 · step 3/40, llm calls 3/40, 0.1/5 min` said the step twice, because the
+    observation header and the budget line it embeds both begin with it."""
+    head, sep, rest = budget.partition(_SEP)
+    return rest if sep and rest.startswith(head) else budget
+
+
+_GUTTER = 3
+"""A glyph and a space in front of the label column. Two cells for the glyph, because the
+ASCII half spells an arrow `->`; every other glyph in both halves is one cell wide."""
+
+
 class ConsoleTrace(LineTrace):
-    """The CLI view: every line to a Rich console, as plain text with a style, never markup."""
+    """The CLI's view: the same events, wearing what a terminal can wear.
+
+    The plain renderer is a contract with a model (the MCP tool result carries it verbatim)
+    and its arrows and its padded label column are frozen. A person reading a live run is
+    not that reader. Here the arrow becomes a glyph in a gutter, the label column says a
+    word instead, each step is ruled off, the system prompt is a block rather than forty
+    lines of the same dim colour, and a failure is a shape as well as a red.
+
+    Glyphs come from `ui.glyphs_for`, so the whole thing degrades to ASCII on the stream it
+    is actually being written to. That is the part ADR-0029 was protecting when it said
+    lines are ASCII first: a redirected stderr on Windows is cp1252, and this is exactly the
+    output people redirect. It is still protected; it is just no longer paid for by every
+    terminal that can do better. Nothing is printed as markup, because a model that thinks
+    about `[/think]` must not raise a formatting error.
+    """
+
+    LABELS = {"->": "send", "<-": "result"}
+    """The plain views keep the arrows, which is what the MCP result and every reader of
+    `render_lines` has always seen. Here the arrow is the glyph, so the column says the
+    word it stood for."""
 
     def __init__(
         self,
@@ -755,6 +793,8 @@ class ConsoleTrace(LineTrace):
         progress_s: float | None = PROGRESS_S,
         max_burst: int = MAX_BURST,
         prefix: str = "",
+        prefix_style: str = "",
+        header: bool = False,
     ) -> None:
         # `None` means unlimited here exactly as it does in `render_lines`: one sentinel, one
         # meaning. The environment is read by the caller, where `QUACKD_TRACE` already is,
@@ -767,10 +807,138 @@ class ConsoleTrace(LineTrace):
             max_burst=max_burst,
             prefix=prefix,
         )
+        from quackd import ui
+
         self.console = console
+        self.prefix_style = prefix_style
+        self.header = header
+        """Draw `run_start` as the panel a run opens with. True for `quackd trace`, which has
+        no other header, and False for a live run, where the CLI printed one before it
+        connected and a second would say the same thing twice."""
+        self._ui = ui
+        self._glyphs = ui.glyphs_for(console)
+        self._budget = ""
+        """The bracketed step line lifted out of the last observation and drawn as a rule."""
+
+    # ── drawing ─────────────────────────────────────────────────────────────────────
 
     def _print(self, text: str, style: str) -> None:
+        """The plain line, for anything that reaches `LineTrace`'s own path."""
         self.console.print(text, style=style or None, markup=False, highlight=False, soft_wrap=True)
+
+    def _plain(self, text: str) -> str:
+        """Spelled for the stream in hand. On a codepage that has no degree sign or arrow
+        those characters are lost either way, so an ASCII stand-in is strictly better than
+        the question mark they would otherwise arrive as."""
+        return self._ui.degrade(text, self._glyphs)
+
+    def _write_line(self, text: Any) -> None:
+        # never markup: a model that thinks about `[/think]` must not raise a format error,
+        # and soft_wrap so a long observation is never cropped
+        self.console.print(text, markup=False, highlight=False, soft_wrap=True)
+
+    def _rule(self, title: str = "") -> None:
+        from rich.rule import Rule
+
+        style = self._ui.STYLES["rule"]
+        head = Text(self._plain(title), style=self._ui.STYLES["muted"]) if title else ""
+        self._write_line(
+            Rule(head, align="left", style=style, characters="-" if self._ascii else "─")
+        )
+
+    @property
+    def _ascii(self) -> bool:
+        return self._glyphs is self._ui.ASCII
+
+    def _show(self, line: TraceLine, event: TraceEvent | None) -> None:
+        """One line, as a terminal wears it: a glyph, a word, and the line itself."""
+        if not self.prefix:
+            # a flock prints three of everything, so the ruled-off forms are solo only
+            if line.label == "prompt":
+                self._rule(line.body)
+                return
+            if line.label == "" and line.multiline:
+                self._block(line.body)
+                return
+        body = line.body
+        if line.label == "obs" and self._budget and not self.prefix:
+            body = body.split("\n", 1)[1] if "\n" in body else ""
+        label = self.LABELS.get(line.label, line.label)
+        glyph = self._glyphs.mark(line.mark)
+        head = f"{glyph:<{_GUTTER - 1}} {label:<{_LABEL}}"
+        for i, raw in enumerate(body.splitlines() or [""]):
+            text = Text(overflow="fold")
+            if self.prefix:
+                text.append(self.prefix, style=self.prefix_style or None)
+            if i == 0:
+                text.append(f"{glyph:<{_GUTTER - 1}} ", style=line.style or None)
+                text.append(f"{label:<{_LABEL}}", style=self._ui.STYLES["muted"])
+            else:
+                text.append(" " * len(head))
+            text.append(self._plain(raw), style=line.style or None)
+            self._write_line(text)
+
+    def _block(self, body: str) -> None:
+        """The system prompt: forty to seventy lines of somebody else's words, indented under
+        the rule that introduced them and closed off so the run is visibly starting after."""
+        pad = " " * (_GUTTER + _LABEL)
+        for raw in body.splitlines():
+            self._write_line(Text(pad + raw.strip("\n"), style=self._ui.STYLES["muted"]))
+        self._rule()
+
+    def _run_panel(self, event: TraceEvent) -> None:
+        d = event.data
+        adapter = d.get("adapter")
+        robot = f"{adapter}:{d.get('transport')}" if adapter else str(d.get("transport"))
+        rows: list[tuple[str, Any]] = [
+            ("provider", f"{d.get('provider')} ({d.get('model') or 'the first model it served'})"),
+            ("robot", robot),
+        ]
+        if d.get("dry_run"):
+            rows.append(("mode", Text("DRY RUN", style=self._ui.STYLES["warn"])))
+        if memory := d.get("memory"):
+            rows.append(
+                ("memory", f"{memory.get('notes')} notes, {memory.get('episodes')} earlier runs")
+            )
+        if tools := d.get("tools"):
+            rows.append(("tools", ", ".join(tools)))
+        hint = f"connected in {d['connect_s']:.2f} s" if "connect_s" in d else ""
+        self._write_line(self._ui.run_header(str(d.get("duck")), rows, hint=hint))
+
+    # ── reading ─────────────────────────────────────────────────────────────────────
+
+    def __call__(self, event: TraceEvent) -> None:
+        if event.kind == "observation" and "error" not in event.data:
+            # the loop puts `[step 3/40 · llm calls 3/40, 0.1/5 min]` at the top of every
+            # observation. It is the one line that says where the run is up to, and it was
+            # buried in the middle of a paragraph of state.
+            first = str(event.data.get("text") or "").split("\n", 1)[0].strip()
+            found = _BRACKETED.match(first)
+            self._budget = _one_step(found.group(1)) if found else ""
+            if self._budget and not self.prefix:
+                self.flush()
+                self._rule(self._budget)
+        else:
+            self._budget = ""
+        if event.kind == "run_start" and not self.prefix:
+            self.flush()
+            if self.header:
+                # a replay has no other header, so this is where the run introduces itself
+                self._run_panel(event)
+            elif "connect_s" in event.data:
+                # a live run was introduced by the CLI before it connected; all this adds is
+                # how long connecting took, which the panel could not have known
+                self._show(
+                    TraceLine("run", f"connected in {event.data['connect_s']:.2f} s", "dim"), event
+                )
+            for line in render_events(
+                event, thinking_chars=self.thinking_chars, prompt=self.prompt
+            ):
+                if line.label == "run" or (line.label == "tools" and self.header):
+                    continue
+                self._show(line, event)
+            return
+        super().__call__(event)
 
 
 MCP_TRACE_MAX_LINES = 30

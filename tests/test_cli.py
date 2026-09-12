@@ -75,8 +75,8 @@ def test_the_trace_is_on_by_default(tmp_path: Path, monkeypatch) -> None:
     out = _trace_run(tmp_path, monkeypatch)
     assert "system prompt" in out  # what the model was told
     assert "quack(text='hello!')" in out  # what it chose
-    assert "-> sound" in out  # what went to the robot
-    assert "<- quack ok" in out  # what came back
+    assert "send sound" in out  # what went to the robot
+    assert "result quack ok" in out  # what came back
     assert "SUCCESS" in out  # and the outcome still reaches stdout
 
 
@@ -85,7 +85,7 @@ def test_no_trace_prompt_hides_only_the_prompt(tmp_path: Path, monkeypatch) -> N
     run of an afternoon. Hiding it must not cost the verbs and the intents."""
     out = _trace_run(tmp_path, monkeypatch, "--no-trace-prompt")
     assert "system prompt" not in out and "You are the brain" not in out
-    assert "-> sound" in out and "<- quack ok" in out
+    assert "send sound" in out and "result quack ok" in out
 
 
 def test_the_env_hides_the_prompt_and_the_flag_wins(tmp_path: Path, monkeypatch) -> None:
@@ -96,19 +96,19 @@ def test_the_env_hides_the_prompt_and_the_flag_wins(tmp_path: Path, monkeypatch)
 
 def test_no_trace_leaves_the_header_and_the_outcome(tmp_path: Path, monkeypatch) -> None:
     out = _trace_run(tmp_path, monkeypatch, "--no-trace")
-    assert "-> sound" not in out and "system prompt" not in out
+    assert "send sound" not in out and "system prompt" not in out
     assert "SUCCESS" in out and "hello-world" in out
 
 
 def test_the_env_can_turn_the_trace_off_too(tmp_path: Path, monkeypatch) -> None:
     """A `.env` line has to work, so the default is read when the command runs, not when the
     module is imported."""
-    assert "-> sound" not in _trace_run(tmp_path, monkeypatch, env="0")
-    assert "-> sound" in _trace_run(tmp_path, monkeypatch, env=None)
+    assert "send sound" not in _trace_run(tmp_path, monkeypatch, env="0")
+    assert "send sound" in _trace_run(tmp_path, monkeypatch, env=None)
 
 
 def test_the_flag_beats_the_env(tmp_path: Path, monkeypatch) -> None:
-    assert "-> sound" in _trace_run(tmp_path, monkeypatch, "--trace", env="0")
+    assert "send sound" in _trace_run(tmp_path, monkeypatch, "--trace", env="0")
 
 
 def test_verbose_is_the_compact_view_and_does_not_double_the_trace(
@@ -116,10 +116,10 @@ def test_verbose_is_the_compact_view_and_does_not_double_the_trace(
 ) -> None:
     """With the trace on, the executor's own log lines would say every verb a second time."""
     traced = _trace_run(tmp_path, monkeypatch, "--verbose")
-    assert "-> sound" in traced
+    assert "send sound" in traced
     assert "→ quack" not in traced, "the old compact line must not double the trace"
     compact = _trace_run(tmp_path, monkeypatch, "--verbose", "--no-trace")
-    assert "→ quack" in compact and "-> sound" not in compact
+    assert "→ quack" in compact and "send sound" not in compact
 
 
 def test_record_writes_a_gif_and_a_transcript(tmp_path: Path, monkeypatch) -> None:
@@ -137,7 +137,7 @@ def test_record_no_trace_still_writes_every_event(tmp_path: Path, monkeypatch) -
     """The switch is about the console and nothing else (ADR-0029). The transcript is the
     record, and a run recorded quietly must be as complete as a noisy one."""
     out = _trace_record(tmp_path, monkeypatch, "--no-trace")
-    assert "-> sound" not in out and "SUCCESS" in out
+    assert "send sound" not in out and "SUCCESS" in out
     kinds = _kinds(tmp_path)
     assert "intent" in kinds and "verb_end" in kinds
 

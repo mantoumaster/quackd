@@ -299,10 +299,11 @@ def test_cli_flock_trace_prefixes_every_line_with_its_duck_and_tells_the_flocks_
     assert on.exit_code == 0, on.output
     shown = " ".join(on.output.split())
     for needle in (
-        "duck-0 verb search_scan(",  # a member's own verb, under its own name
-        "-> move x",  # what went to that robot
-        "flock auction first bid duck-",  # the coordinator's story
-        "flock claim duck-",
+        "duck-0",  # a member's own name in front of its own lines
+        "verb search_scan(",  # the verb it chose
+        "send move x",  # what went to that robot
+        "flock ◆ auction first bid duck-",  # the coordinator's story
+        "flock ◆ claim duck-",
         "end stopped after",  # and each member's ending
     ):
         assert needle in shown, (needle, shown[:400])
@@ -310,6 +311,6 @@ def test_cli_flock_trace_prefixes_every_line_with_its_duck_and_tells_the_flocks_
     off = runner.invoke(app, [*args, "--no-trace"])
     assert off.exit_code == 0, off.output
     quiet = " ".join(off.output.split())
-    for needle in ("duck-0 verb", "-> move x", "flock auction", "end stopped after"):
+    for needle in ("verb search_scan(", "send move x", "auction first bid", "end stopped"):
         assert needle not in quiet, needle
     assert "kicker " in quiet, "the outcome is not part of the trace and must survive"

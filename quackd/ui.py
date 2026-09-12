@@ -62,6 +62,10 @@ THEME = Theme(STYLES)
 """The same names, installed on quackd's own consoles, so `[ok]` markup works for anyone who
 wants it. Nothing in this file relies on it."""
 
+MEMBER_STYLES = ("cyan", "magenta", "green", "yellow")
+"""One per robot in a flock. Three of them narrate at once and the eye finds a colour faster
+than it reads a name; the coordinator's own lines are bold and wear none of these."""
+
 MARKS = ("start", "send", "ok", "fail", "warn", "other", "note", "flock", "end")
 """The kinds of moment a trace line can be, and the glyph fields that answer for them."""
 
