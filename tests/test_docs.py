@@ -372,7 +372,12 @@ def test_no_living_document_claims_the_wrong_number_of_cloud_providers() -> None
     document nobody will re-read on the day it does."""
     right = _NUMBER_WORDS[len(CLOUD_NAMES)]
     shapes = ("{w} cloud providers", "{w} cloud vendors", "{w} vendors")
-    for path in _living_docs():
+    # `_living_docs` stops at `docs/`, and the browser demo keeps its own count of the same
+    # vendors in its README and in the header of the file that decides which it offers. Those
+    # were both wrong the first time this list was written, which is the argument for including
+    # them: a count is only checkable where somebody thought to look.
+    web = [REPO / "web" / "README.md", REPO / "web" / "src" / "providers.js"]
+    for path in [*_living_docs(), *web]:
         prose = _prose(path.read_text(encoding="utf-8")).lower()
         for count, word in _NUMBER_WORDS.items():
             if count == len(CLOUD_NAMES):

@@ -774,7 +774,8 @@ input, select {
   background-size: 12px 8px;
 }
 /* A <select> is intrinsically as wide as its widest <option>, and the longest label in the
-   catalogue is "Leanstral 1.5 (Lean 4 proofs, Mistral labs)" at 42 characters. Left alone the
+   catalogue is "Muse Spark 1.3 (contributor tier, Meta trains on your prompts)" at 62
+   characters, on a vendor this page does offer. Left alone the
    closed control sizes to that and shoves the key field out of the band on every vendor, not
    just Mistral. `.row > *` already says `flex: 1; min-width: 0`, so the row's own share is the
    width; this is the part that keeps the chosen value legible when that share is narrow. The
@@ -1298,7 +1299,7 @@ details[open] summary { margin-bottom: var(--s-2); }
 
      `min-width: 0` is new and is what keeps that true now the model field is a list rather than
      a box. A <select> is intrinsically as wide as its widest <option>, and the widest here is
-     "Leanstral 1.5 (Lean 4 proofs, Mistral labs)"; without this the row's own automatic minimum
+     "Muse Spark 1.3 (contributor tier, Meta trains on your prompts)"; without this the row's minimum
      is the sum of both selects' min-content and the band grows a line instead of the row
      shrinking. The chosen value ellipsises (see #model above) and the open dropdown is drawn by
      the browser at whatever width it likes, so nothing is unreadable. */

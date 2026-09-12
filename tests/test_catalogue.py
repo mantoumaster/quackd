@@ -21,7 +21,11 @@ from typing import Any
 import pytest
 
 from quackd.agent.providers import catalogue as cat
-from quackd.agent.providers.base import ProviderError, ProviderMissingKey
+from quackd.agent.providers.base import (
+    ProviderError,
+    ProviderMissingKey,
+    ProviderNotInstalled,
+)
 from quackd.agent.providers.factory import (
     CLOUD_NAMES,
     EXTRA_FOR,
@@ -54,6 +58,23 @@ GONE = {
     "glm-4.5v",  # the one GLM vision model with no function calling
     "claude-mythos-5-1",  # invitation only
     "gpt-5.6-cyber",  # its own approval programme
+}
+
+
+#: What each vendor accepts for "you must call a tool", from its own documentation. Not a
+#: preference: Mistral 400s on OpenAI's `required` and spells it `any`, Z.ai documents `auto` as
+#: the only value it takes, and Cohere's compatibility endpoint documents no such parameter, so
+#: the field is omitted. Pinned here because the browser's copy of this table is only checked
+#: against the vendors the page can reach, and GLM is not one of them.
+TOOL_CHOICE = {
+    "grok": "required",
+    "mistral": "any",
+    "deepseek": "required",
+    "cohere": None,
+    "qwen": "auto",
+    "kimi": "auto",
+    "glm": "auto",
+    "meta": "auto",
 }
 
 
@@ -313,7 +334,7 @@ def test_each_openai_shaped_vendor_is_wired_the_same_way(name: str) -> None:
     assert vendor.base_url and vendor.base_url.startswith("https://"), (
         "a key goes to this address, so it is not going over plain http"
     )
-    assert vendor.default_tool_choice in (None, "auto", "required", "any")
+    assert vendor.default_tool_choice == TOOL_CHOICE[name]
     assert vendor(client=FakeOpenAI()).model == default_model_for(name)
 
 
@@ -336,11 +357,35 @@ def test_the_two_vendors_with_a_second_key_name_accept_it(
     name: str, fallback: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Both vendors' own examples export a different variable than their docs head with, and a
-    reader who has one exported should not be told they have none."""
+    reader who has one exported should not be told they have none.
+
+    Built with no `client=`, deliberately. `OpenAIProvider` reads a key only when it has to make
+    one, so passing a stub skips `_fallback_key` entirely and this test would pass with both
+    overrides deleted. Without the SDK installed the constructor then gets as far as the import
+    and raises `ProviderNotInstalled`, which is itself the proof: it got past the key.
+    """
     monkeypatch.delenv(KEY_ENV[name], raising=False)
     monkeypatch.setenv(fallback, "sk-test")
     module = importlib.import_module(f"quackd.agent.providers.{name}")
-    getattr(module, OPENAI_COMPATIBLE[name])(client=FakeOpenAI())
+    vendor = getattr(module, OPENAI_COMPATIBLE[name])
+    try:
+        vendor()
+    except ProviderMissingKey:  # pragma: no cover - the failure this test is here to catch
+        pytest.fail(f"{name} has {fallback} exported and still says {KEY_ENV[name]} is unset")
+    except ProviderNotInstalled:
+        pass
+
+
+@pytest.mark.parametrize("name", sorted(OPENAI_COMPATIBLE))
+def test_a_vendor_with_neither_key_name_still_says_which_one_it_wants(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: with nothing exported, the error names the variable the docs head with."""
+    for env in set(KEY_ENV.values()) | {"CO_API_KEY", "MODEL_API_KEY"}:
+        monkeypatch.delenv(env, raising=False)
+    module = importlib.import_module(f"quackd.agent.providers.{name}")
+    with pytest.raises(ProviderMissingKey, match=KEY_ENV[name]):
+        getattr(module, OPENAI_COMPATIBLE[name])()
 
 
 def test_the_catalogue_costs_nothing_to_import() -> None:

@@ -16,7 +16,7 @@
  * no such parameter at all and is therefore asked rather than told, and the rest take
  * `auto` or `required`.
  *
- * Ten cloud vendors are in the catalogue and nine are offered here. Anthropic, OpenAI and
+ * Eleven cloud vendors are in the catalogue and ten are offered here. Anthropic, OpenAI and
  * Gemini each have a client of their own; Grok, Mistral, DeepSeek, Cohere, Qwen, Kimi and
  * Meta are all OpenAI-shaped, so they are the same client with a different base URL. GLM is
  * the one that is missing: Z.ai answers a CORS preflight with no `Access-Control-Allow-*`
@@ -41,6 +41,19 @@ import { CATALOGUE } from "./catalogue.js";
  * from the Python that is the single source of truth for model names. Local keeps its own,
  * because a local server serves whatever you pulled and quackd has no list for it.
  */
+/**
+ * Vendors quackd can drive from a terminal and this page cannot, with the reason and the day it
+ * was measured.
+ *
+ * Written down rather than inferred from which keys are missing below, because "absent" and
+ * "forgotten" look identical in a diff. A test holds this map to exactly the set of catalogue
+ * vendors `PROVIDERS` leaves out, so dropping a vendor from the page without saying why fails
+ * the suite, and re-adding one without deleting its excuse fails it too.
+ */
+export const NOT_FROM_A_BROWSER = {
+  glm: "Z.ai answers a CORS preflight with no Access-Control-Allow-* header, measured 2026-09-12",
+};
+
 export const PROVIDERS = {
   anthropic: {
     label: "Anthropic (Claude)",

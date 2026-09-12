@@ -976,17 +976,33 @@ def test_every_vendor_the_page_cannot_offer_is_named_in_its_README() -> None:
     """
     from quackd.agent.providers.catalogue import CLOUD_NAMES
 
-    offered = set(re.findall(r"^  (\w+): \{$", _js("providers.js"), re.M))
-    assert "openai" in offered, "the PROVIDERS regex found nothing, so this test is vacuous"
-    readme = (WEB / "README.md").read_text(encoding="utf-8")
-    unexplained = [
-        vendor for vendor in CLOUD_NAMES if vendor not in offered and vendor not in readme.lower()
-    ]
-    assert not unexplained, (
-        f"these vendors are in the catalogue, are not in PROVIDERS in web/src/providers.js, and "
-        f"are not named in web/README.md: {unexplained}. A vendor the page cannot offer needs a "
-        f"line saying so, with the reason and the date it was measured"
+    both = _drive_providers(
+        """
+const { PROVIDERS, NOT_FROM_A_BROWSER } = await import(MODULE);
+console.log(JSON.stringify({ offered: Object.keys(PROVIDERS), excused: NOT_FROM_A_BROWSER }));
+"""
     )
+    offered = {name for name in both["offered"] if name in CLOUD_NAMES}
+    assert "openai" in offered, "PROVIDERS came back empty, so this test is vacuous"
+    absent = set(CLOUD_NAMES) - offered
+    excused = both["excused"]
+    # Matching the map to the gap is what makes this falsifiable. Searching the README for the
+    # vendor's name would not: every catalogue name is already somewhere in that file, including
+    # the ones the page does offer, so the check would pass whatever was deleted from PROVIDERS.
+    assert set(excused) == absent, (
+        f"web/src/providers.js offers {sorted(offered)} of {len(CLOUD_NAMES)} catalogue vendors "
+        f"and excuses {sorted(excused)}. A vendor the page drops needs a line in "
+        f"NOT_FROM_A_BROWSER saying why, and one it gains needs that line removed"
+    )
+    readme = (WEB / "README.md").read_text(encoding="utf-8").lower()
+    for vendor, reason in excused.items():
+        assert reason.strip(), f"{vendor} is excused with an empty reason"
+        assert re.search(r"\d{4}-\d{2}-\d{2}", reason), (
+            f"{vendor}'s reason has no date, and a third party's CORS policy is only true on a day"
+        )
+        assert vendor in readme, (
+            f"web/README.md never mentions {vendor}, which the page cannot call"
+        )
 
 
 def test_the_dropdown_can_show_every_model_the_catalogue_holds() -> None:

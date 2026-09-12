@@ -818,7 +818,10 @@ def _complete_model(ctx: typer.Context, incomplete: str) -> list[tuple[str, str]
     count: `--model <TAB> --provider grok` cannot know, and offers the default's ids instead.
     A provider with no catalogue (`fake`, the local presets) offers nothing, which is correct
     rather than empty: only the server it points at knows what it serves."""
-    provider = str(ctx.params.get("provider") or "fake")
+    # folded, because `make_provider` and `list-models` both fold: `--provider GROK` runs, and
+    # completion that went silent on it would read as a vendor with no models rather than a
+    # shift key.
+    provider = str(ctx.params.get("provider") or "fake").lower()
     return [(m.id, m.label) for m in models_for(provider) if m.id.startswith(incomplete)]
 
 

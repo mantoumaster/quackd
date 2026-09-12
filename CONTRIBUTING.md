@@ -152,8 +152,18 @@ rows in `KEY_ENV`, `EXTRA_FOR` and `SDK_FOR` in `providers/factory.py`, then eit
 `one file and the entries that have to agree`: it walks `PROVIDER_NAMES` and fails on the
 missing row, and it opens `pyproject.toml` to check the extra exists and installs the SDK
 that provider imports. Before it existed a missing row was a `KeyError` out of `quackd
-doctor`, which is the command people run when something is already wrong. Four things the
-tracing depends on, none of them optional:
+doctor`, which is the command people run when something is already wrong.
+
+Then the browser, which has its own copy of the model list and its own reason to refuse one.
+Run `python web/build_catalogue.py` and commit `web/src/catalogue.js`, or the generator-drift
+test in `tests/test_web.py` fails. Then decide whether the page can call the vendor at all: it
+calls from the visitor's browser, so a vendor that refuses a cross-origin preflight goes in
+`NOT_FROM_A_BROWSER` in `web/src/providers.js` with the reason and the date, and a vendor that
+answers one goes in `PROVIDERS` with its base URL, its key link and the `tool_choice` its own
+docs allow. A test holds that pair to exactly the vendors `PROVIDERS` leaves out, so neither
+half can be skipped quietly.
+
+Four things the tracing depends on, none of them optional:
 
 1. Fill `ProviderTurn.thinking` with the model's own reasoning when the API returns it, and
    `Usage.reasoning_tokens` with what it charged for. The trace shows the first and the

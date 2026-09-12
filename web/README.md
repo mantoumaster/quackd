@@ -254,12 +254,12 @@ run, a barge-in *out of* a live run, the recording (Record, Save clip, Share), t
 thrown mid-run, or the page on any browser, screen or machine but the one. The model dropdown
 is newer than both sessions and has never been opened in a browser: that it groups by status,
 fits the band beside the provider select at both layout tiers, and hands its place to the
-free-text box on Local are all read rather than seen. The nine vendors were exercised under
-Node against a stubbed `fetch` — right base URL, right default model, right `tool_choice` —
-which is not the same as a key and a real answer. Nobody has run this page against any vendor
-but the three that were here before. Two clean boots are
-not a browser test, and none of it was recorded, so the honest reading is that the page starts
-and the hand works, and everything downstream of a model answering is still only read.
+free-text box on Local are all read rather than seen. Every vendor the page offers was exercised
+under Node against a stubbed `fetch` — right base URL, right default model, right `tool_choice`
+— which is not the same as a key and a real answer. Nobody has run this page against any vendor
+but the three that were here before. Two clean boots are not a browser test, and none of it was
+recorded, so the honest reading is that the page starts and the hand works, and everything
+downstream of a model answering is still only read.
 
 `tests/test_web.py` is the floor under that. It runs in the ordinary suite, with no browser:
 every id the JavaScript looks up exists in the page, nothing it hides is pinned visible by a
@@ -310,7 +310,7 @@ Deliberately, and none of it is a bug. This list is the canonical one: `README.m
 | `src/microduck.js` | the robot: MJCF, the 50 Hz loop, the policy, the gait floor |
 | `src/pilot.js` | quackd itself: the clock, the verbs, the contract, the loop |
 | `src/catalogue.js` | GENERATED. the model list, from `quackd/agent/providers/catalogue.py` |
-| `src/providers.js` | one tool call from any of nine cloud vendors or a local server |
+| `src/providers.js` | one tool call from any cloud vendor the page offers or a local server |
 | `src/view.js` | three.js built from the compiled model's own geoms |
 | `src/record.js` | canvas capture, and the post the Share button writes |
 | `src/app.js` | the page: the switch, the keyboard, the barge-in, the transcript |

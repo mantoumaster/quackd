@@ -159,7 +159,7 @@ def make_provider(
     if name == "anthropic":
         from quackd.agent.providers.anthropic import AnthropicProvider
 
-        return AnthropicProvider(model=model)
+        return AnthropicProvider(model=model, vision=vision)
     if name == "openai":
         from quackd.agent.providers.openai import OpenAIProvider
 
@@ -167,7 +167,7 @@ def make_provider(
     if name == "gemini":
         from quackd.agent.providers.gemini import GeminiProvider
 
-        return GeminiProvider(model=model, api_key=api_key)
+        return GeminiProvider(model=model, api_key=api_key, vision=vision)
     if name in OPENAI_COMPATIBLE:
         module = importlib.import_module(f"quackd.agent.providers.{name}")
         vendor = getattr(module, OPENAI_COMPATIBLE[name])
