@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quackd's own consoles, because Typer builds a console of its own for every `--help` it
   renders. `FORCE_COLOR=1` is the other direction, for a pipe you are colouring on purpose.
 - **`-h` works**, everywhere `--help` does.
+- **A line saying what the run is waiting for.** A run spends nearly all its wall clock
+  inside two calls, a model deciding and a verb steering a robot, and said nothing until
+  each of them finished. With `--no-trace` it said nothing at all between the header and the
+  verdict, however long that took. A transient line at the bottom of stderr now names what
+  is being waited on, which step it is, and how many seconds it has been there. It reads the
+  same event stream the trace does, it exists only when stderr is a terminal somebody is
+  watching, and it steps out of the way for a confirmation prompt, because a live region
+  redirects stdout and would otherwise swallow the question until after it was answered.
+  `quackd doctor`, `quackd discover`, `quackd announce` and GIF encoding get a spinner for
+  the same reason.
 - **A run opens and closes with a panel.** The header used to be one line of middle dots and
   the verdict three lines under it, and on a long run the two ends of the story were the two
   things hardest to find in a screenful of trace. They are now bordered, the verdict is

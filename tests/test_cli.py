@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from quackd.cli import app
@@ -666,3 +668,37 @@ def test_dash_h_is_the_same_as_help() -> None:
     runner = CliRunner()
     assert runner.invoke(app, ["-h"]).exit_code == 0
     assert "Usage" in runner.invoke(app, ["-h"]).output
+
+
+def test_a_confirmation_prompt_is_asked_with_the_status_line_out_of_the_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live region redirects stdout and a y/N prompt writes without a newline, so under a
+    running status the question is invisible until after it has been answered."""
+    from quackd import cli as cli_mod
+    from quackd import ui
+
+    seen: list[str] = []
+
+    class Watching:
+        @contextlib.contextmanager
+        def paused(self):  # type: ignore[no-untyped-def]
+            seen.append("down")
+            yield
+            seen.append("up")
+
+    monkeypatch.setattr(ui, "_ACTIVE", [Watching()])
+    monkeypatch.setattr(cli_mod.typer, "confirm", lambda *a, **k: True)
+    assert cli_mod._confirm_prompt("kick", {"leg": "right"}) is True
+    assert cli_mod._acknowledge_prompt("nothing here detects a fall") is True
+    assert seen == ["down", "up", "down", "up"]
+
+
+def test_the_status_line_runs_with_the_trace_off_and_prints_nothing_into_a_pipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It is the only thing between the header and the verdict once --no-trace is on, and it
+    must still add nothing at all to output a script is reading."""
+    out = _trace_run(tmp_path, monkeypatch, "--no-trace")
+    assert "SUCCESS" in out
+    assert "waiting on" not in out and "observing" not in out

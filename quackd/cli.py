@@ -405,13 +405,17 @@ def list_adapters_cmd(as_json: bool = _JSON) -> None:
 
 
 def _confirm_prompt(name: str, params: dict[str, Any]) -> bool:
-    return typer.confirm(f"⚠️  run {name}({params})?", default=False)
+    # under a running status line the question is invisible: a live region redirects stdout
+    # and a prompt writes without a newline, so it stays buffered until it is too late
+    with ui.pause_status():
+        return typer.confirm(f"run {name}({params})?", default=False)
 
 
 def _acknowledge_prompt(why: str) -> bool:
     """Asked once, before anything moves, when the human is the only safety left."""
-    ui.err_console.print(f"[yellow]⚠️  {why}[/yellow]")
-    return typer.confirm("Are you watching the robot right now?", default=False)
+    with ui.pause_status():
+        ui.err_console.print(Text(why, style=ui.STYLES["warn"]))
+        return typer.confirm("Are you watching the robot right now?", default=False)
 
 
 def _run_impl(
@@ -454,6 +458,7 @@ def _run_impl(
     from quackd.safety import KillSwitch, allow_all
     from quackd.trace import (
         ConsoleTrace,
+        fan_out,
         prompt_shown_default,
         thinking_limit_default,
         trace_enabled_default,
@@ -563,6 +568,11 @@ def _run_impl(
         else None
     )
 
+    # on whether or not the trace is: with --no-trace this is the only thing between the
+    # header and the verdict, and a model can think for a minute
+    status = ui.RunStatus()
+    ui.install_logging()
+
     def log(msg: str) -> None:
         # the compact view: one line per verb and the executor's notes. The trace shows all
         # of that and more, so with it on this prints nothing rather than every verb twice.
@@ -589,7 +599,7 @@ def _run_impl(
         memory=robot_memory,
         fov_deg=fov_deg,
         acknowledge=None if yes else _acknowledge_prompt,
-        trace=console_trace,
+        trace=fan_out(console_trace, status.sink),
     )
     ui.console.print(
         ui.run_header(
@@ -604,7 +614,7 @@ def _run_impl(
     def killed(msg: str) -> None:
         """Always printed, unlike `log`, which is --verbose only. Someone who has just hit
         Ctrl-C on a walking robot needs to see that it registered."""
-        ui.err_console.print(f"[yellow]{msg}[/yellow]")
+        ui.err_console.print(Text(msg, style=ui.STYLES["warn"]))
 
     async def main() -> Any:
         from quackd.agent.loop import AgentLoop
@@ -619,13 +629,18 @@ def _run_impl(
 
     _ = run_duck  # imported for symmetry; AgentLoop is used directly so the kill switch can bind
     try:
-        result = asyncio.run(main())
+        with status:
+            status.update(f"connecting to {spec.key}")
+            result = asyncio.run(main())
     except (TransportError, ProviderError) as e:
         # the trace has already shown the call that failed; this is the one-line verdict
         _fail(str(e))
         return
     if recorder is not None:
-        gif_path = recorder.save_gif(result.run_dir / "run.gif")
+        # after the status line rather than under it: Rich 13.7 refuses a second live region
+        # on one console, and a long run can be a thousand frames to quantise
+        with ui.spinner(f"encoding {len(recorder.frames)} frames into run.gif"):
+            gif_path = recorder.save_gif(result.run_dir / "run.gif")
         result.gif_path = gif_path
     _print_outcome(
         result.outcome,
@@ -674,6 +689,7 @@ def _run_flock_impl(
     from quackd.trace import (
         ConsoleTrace,
         Sink,
+        fan_out,
         flock_caption,
         prompt_shown_default,
         thinking_limit_default,
@@ -745,8 +761,15 @@ def _run_flock_impl(
                 if order >= 0
                 else ui.STYLES["key"],
             )
-        return views[name]
+        return fan_out(views[name], status.sink)
 
+    def status_only(_name: str) -> Sink | None:
+        """With --no-trace nothing narrates, but the status line still has to say which duck
+        is doing what, or a flock is a minute of nothing at all."""
+        return status.sink
+
+    status = ui.RunStatus()
+    ui.install_logging()
     holder: dict[str, Any] = {}
 
     def on_ready(transport0: Any, coordinator: Any) -> None:
@@ -784,23 +807,25 @@ def _run_flock_impl(
         rows.append(("mode", Text("DRY RUN: nothing is sent", style=ui.STYLES["warn"])))
     ui.console.print(ui.run_header(duck.name, rows, hint="Ctrl-C or q stops every duck."))
     try:
-        result = asyncio.run(
-            run_flock(
-                duck,
-                provider=llm,
-                seed=seed if seed is not None else 0,
-                runs_dir=runs_dir,
-                n_override=n_override,
-                dry_run=dry_run,
-                max_steps=max_steps,
-                live=live,
-                gif_size=gif_size,
-                on_recorder=on_ready,
-                log=log,
-                robots=robots,
-                trace=view_for if trace_on else None,
+        with status:
+            status.update(f"starting {count} ducks")
+            result = asyncio.run(
+                run_flock(
+                    duck,
+                    provider=llm,
+                    seed=seed if seed is not None else 0,
+                    runs_dir=runs_dir,
+                    n_override=n_override,
+                    dry_run=dry_run,
+                    max_steps=max_steps,
+                    live=live,
+                    gif_size=gif_size,
+                    on_recorder=on_ready,
+                    log=log,
+                    robots=robots,
+                    trace=view_for if trace_on else status_only,
+                )
             )
-        )
     except ValueError as e:
         _fail(str(e))
         return
@@ -812,7 +837,9 @@ def _run_flock_impl(
         for pending in views.values():
             pending.flush()
     if "rec" in holder:
-        result.gif_path = holder["rec"].save_gif(result.run_dir / "run.gif")
+        rec = holder["rec"]
+        with ui.spinner(f"encoding {len(rec.frames)} frames into run.gif"):
+            result.gif_path = rec.save_gif(result.run_dir / "run.gif")
     counters = [f"kicker {result.kicker}"]
     if result.spotter:
         counters.insert(0, f"spotter {result.spotter}")
@@ -1458,34 +1485,37 @@ def discover(
     as_json: bool = typer.Option(False, "--json", help="One JSON object per robot."),
 ) -> None:
     r"""List the quackd robots answering on the LAN (zeroconf, needs quackd\[lan])."""
-    from rich.table import Table
-
     from quackd.lan import LanNotInstalled
     from quackd.lan import discover as lan_discover
 
     try:
-        robots = lan_discover.discover(timeout)
+        # it listens for the whole timeout whether anything answers or not, so say so
+        with ui.spinner(f"listening for quackd robots ({timeout:g} s)"):
+            robots = lan_discover.discover(timeout)
     except LanNotInstalled as e:
-        _fail(str(e))
+        _fail(str(e), hint="pip install 'quackd[lan]' adds zeroconf")
     if as_json:
         for robot in robots:
             print(json.dumps(robot.row()))
         return
     if not robots:
-        ui.console.print(f"[dim]no quackd robots answered in {timeout:g} s[/dim]")
+        ui.console.print(
+            Text(f"no quackd robots answered in {timeout:g} s", style=ui.STYLES["muted"])
+        )
         return
-    t = Table(title=f"quackd robots on the LAN ({len(robots)})")
-    for column in ("manifest id", "adapter", "model", "embodiment", "verbs", "address", "digest"):
+    t = ui.table(f"quackd robots on the LAN ({len(robots)})")
+    t.add_column("manifest id", style=ui.STYLES["key"], no_wrap=True)
+    for column in ("adapter", "model", "embodiment", "verbs", "address", "digest"):
         t.add_column(column)
     for robot in robots:
         t.add_row(
-            robot.manifest_id,
-            robot.adapter,
-            robot.model,
-            robot.embodiment,
-            str(robot.n_verbs),
-            ", ".join(robot.addresses) or robot.host,
-            robot.digest,
+            Text(robot.manifest_id),
+            Text(robot.adapter),
+            Text(robot.model),
+            Text(robot.embodiment),
+            Text(str(robot.n_verbs)),
+            Text(", ".join(robot.addresses) or robot.host),
+            Text(robot.digest, style=ui.STYLES["muted"]),
         )
     ui.console.print(t)
 
@@ -1519,21 +1549,28 @@ def announce(
     except (AdapterError, LanNotInstalled, ValueError) as e:
         _fail(str(e))
     ui.console.print(
-        f"announcing {ann.record.name} ({manifest.summary()}) at "
-        f"{', '.join(ann.record.addresses)} · digest {manifest.digest()}"
+        ui.run_header(
+            ann.record.name,
+            [
+                ("robot", manifest.summary()),
+                ("at", ", ".join(ann.record.addresses)),
+                ("digest", manifest.digest()),
+            ],
+            hint="Ctrl-C to withdraw" if for_s is None else f"withdrawing in {for_s:g} s",
+        )
     )
     try:
-        if for_s is None:
-            ui.console.print("[dim]Ctrl-C to withdraw[/dim]")
-            while True:
-                time.sleep(1.0)
-        else:
-            time.sleep(for_s)
+        with ui.spinner(f"announcing {ann.record.name}"):
+            if for_s is None:
+                while True:
+                    time.sleep(1.0)
+            else:
+                time.sleep(for_s)
     except KeyboardInterrupt:
         pass
     finally:
         ann.close()
-        ui.console.print("withdrawn")
+        ui.console.print(Text("withdrawn", style=ui.STYLES["muted"]))
 
 
 def _leave_quietly() -> None:
