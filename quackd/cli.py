@@ -14,12 +14,12 @@ import glob
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import typer
 from dotenv import load_dotenv
-from rich.markup import escape
 from rich.text import Text
 
 from quackd import __version__, ui
@@ -85,6 +85,8 @@ _JSON = typer.Option(
     "for a person. Exit codes are unchanged.",
 )
 
+NEWLINE = "\n"
+
 _ADAPTER_HINT = "quackd list-adapters shows the seven that ship and their backends"
 
 
@@ -107,23 +109,19 @@ def _print_outcome(
     outcome: str,
     reason: str,
     *,
-    detail: str,
+    counters: Sequence[str],
     run_dir: Path | str,
     gif_path: Path | str | None = None,
     trace_dropped: int = 0,
 ) -> None:
-    """The closing lines of a run: the verdict, one line of counters, where it all went.
+    """How the run ended, in the one place a person looks after looking away.
 
-    `quackd trace` prints them from the transcript, so a replay ends exactly the way the run
-    itself did rather than in a second dialect somebody has to keep in step. `detail` is the
-    counter line because a flock counts different things than a solo run does."""
-    colour = {"success": "green", "failure": "red", "budget": "yellow", "aborted": "red"}.get(
-        outcome, "red"
+    `quackd trace` prints it from the transcript too, so a replay ends exactly the way the
+    run itself did rather than in a second dialect somebody has to keep in step. `counters`
+    is a list because a flock counts different things than a solo run does."""
+    ui.console.print(
+        ui.verdict(outcome, reason, counters=counters, run_dir=run_dir, gif_path=gif_path)
     )
-    ui.console.print(f"[{colour}]{outcome.upper()}[/{colour}] — {escape(reason)}")
-    if detail:
-        ui.console.print(detail)
-    ui.console.print(f"run dir: {run_dir}" + (f" · gif: {gif_path}" if gif_path else ""))
     if trace_dropped:
         # a console that raised on every event produced a silent trace and no sign of it
         ui.err_console.print(
@@ -132,6 +130,38 @@ def _print_outcome(
             style="yellow",
             markup=False,
         )
+
+
+def _header_rows(
+    *, provider: Any, robot: str, seed: int | None, dry_run: bool, memory: Any
+) -> list[tuple[str, Any]]:
+    """The four things worth knowing before a run starts, and nothing else."""
+    rows: list[tuple[str, Any]] = [
+        ("provider", f"{provider.name} ({provider.model or 'the first model it serves'})"),
+        ("robot", robot + (f"  seed {seed}" if seed is not None else "")),
+    ]
+    if dry_run:
+        rows.append(
+            (
+                "mode",
+                Text(
+                    "DRY RUN: every intent is printed and nothing is sent", style=ui.STYLES["warn"]
+                ),
+            )
+        )
+    if memory is not None:
+        m = memory.summary()
+        rows.append(
+            (
+                "memory",
+                Text.assemble(
+                    f"{m['notes']} notes, {m['episodes']} earlier runs  ",
+                    (f"{m['path']}", ui.STYLES["muted"]),
+                    ("  --no-memory to run fresh", ui.STYLES["muted"]),
+                ),
+            )
+        )
+    return rows
 
 
 def _fail(msg: str, code: int = 1, *, hint: str | None = None) -> None:
@@ -562,19 +592,14 @@ def _run_impl(
         trace=console_trace,
     )
     ui.console.print(
-        f"🦆 [bold]{duck.name}[/bold] · provider=[cyan]{llm.name}[/cyan] "
-        f"({llm.model or 'model: first served'}) · "
-        f"robot=[cyan]{spec.key}[/cyan]"
-        + (f" · seed={seed}" if seed is not None else "")
-        + (" · [yellow]DRY RUN[/yellow]" if dry_run else "")
-    )
-    if robot_memory is not None:
-        m = robot_memory.summary()
-        ui.console.print(
-            f"[dim]memory: {m['notes']} notes, {m['episodes']} earlier runs "
-            f"({m['path']}) · --no-memory to run fresh[/dim]"
+        ui.run_header(
+            duck.name,
+            _header_rows(
+                provider=llm, robot=spec.key, seed=seed, dry_run=dry_run, memory=robot_memory
+            ),
+            hint="Ctrl-C or q stops the duck. Press it twice to quit at once.",
         )
-    ui.console.print("[dim]Ctrl-C or q stops the duck. Press it twice to quit at once.[/dim]")
+    )
 
     def killed(msg: str) -> None:
         """Always printed, unlike `log`, which is --verbose only. Someone who has just hit
@@ -605,10 +630,11 @@ def _run_impl(
     _print_outcome(
         result.outcome,
         result.reason,
-        detail=(
-            f"steps={result.steps} llm_calls={result.llm_calls} "
-            f"tokens={result.usage.input_tokens}+{result.usage.output_tokens}"
-        ),
+        counters=[
+            f"steps {result.steps}",
+            f"llm calls {result.llm_calls}",
+            f"tokens {result.usage.input_tokens}+{result.usage.output_tokens}",
+        ],
         run_dir=result.run_dir,
         gif_path=result.gif_path,
         trace_dropped=result.trace_dropped,
@@ -743,13 +769,14 @@ def _run_flock_impl(
 
         coordinator.on_event = on_event
 
-    ui.console.print(
-        f"🦆x{count} [bold]{duck.name}[/bold] · provider=[cyan]{llm.name}[/cyan] "
-        f"({llm.model or 'model: first served'}) · flock (sim2d, EXPERIMENTAL)"
-        + (f" · seed={seed}" if seed is not None else "")
-        + (" · [yellow]DRY RUN[/yellow]" if dry_run else "")
-    )
-    ui.console.print("[dim]Ctrl-C or q stops every duck.[/dim]")
+    rows: list[tuple[str, Any]] = [
+        ("provider", f"{llm.name} ({llm.model or 'the first model it serves'})"),
+        ("flock", f"{count} ducks in sim2d" + (f"  seed {seed}" if seed is not None else "")),
+        ("status", Text("EXPERIMENTAL", style=ui.STYLES["warn"])),
+    ]
+    if dry_run:
+        rows.append(("mode", Text("DRY RUN: nothing is sent", style=ui.STYLES["warn"])))
+    ui.console.print(ui.run_header(duck.name, rows, hint="Ctrl-C or q stops every duck."))
     try:
         result = asyncio.run(
             run_flock(
@@ -780,14 +807,18 @@ def _run_flock_impl(
             pending.flush()
     if "rec" in holder:
         result.gif_path = holder["rec"].save_gif(result.run_dir / "run.gif")
-    spotter = f"spotter={result.spotter} " if result.spotter else ""
+    counters = [f"kicker {result.kicker}"]
+    if result.spotter:
+        counters.insert(0, f"spotter {result.spotter}")
+    counters += [
+        f"auctions {result.auctions}",
+        f"bids {result.bids}",
+        f"ball moved {result.ball_displacement_m:.2f} m in {result.sim_elapsed_s:.1f} s sim",
+    ]
     _print_outcome(
         result.outcome,
         result.reason,
-        detail=(
-            f"{spotter}kicker={result.kicker} auctions={result.auctions} bids={result.bids} "
-            f"ball moved {result.ball_displacement_m:.2f} m in {result.sim_elapsed_s:.1f}s sim"
-        ),
+        counters=counters,
         run_dir=result.run_dir,
         gif_path=result.gif_path,
         trace_dropped=result.trace_dropped,
@@ -1174,20 +1205,22 @@ def trace_cmd(
         return
     usage = end.get("usage") or {}
     if "kicker" in end:  # a flock counts different things, and its summary is the only source
-        spotter = f"spotter={end['spotter']} " if end.get("spotter") else ""
-        detail = (
-            f"{spotter}kicker={end.get('kicker')} auctions={end.get('auctions')} "
-            f"bids={end.get('bids')}"
-        )
+        counters = [f"spotter {end['spotter']}"] if end.get("spotter") else []
+        counters += [
+            f"kicker {end.get('kicker')}",
+            f"auctions {end.get('auctions')}",
+            f"bids {end.get('bids')}",
+        ]
     else:
-        detail = (
-            f"steps={int(end.get('steps') or 0)} llm_calls={int(end.get('llm_calls') or 0)} "
-            f"tokens={usage.get('input_tokens', 0)}+{usage.get('output_tokens', 0)}"
-        )
+        counters = [
+            f"steps {int(end.get('steps') or 0)}",
+            f"llm calls {int(end.get('llm_calls') or 0)}",
+            f"tokens {usage.get('input_tokens', 0)}+{usage.get('output_tokens', 0)}",
+        ]
     _print_outcome(
         str(end.get("outcome", "error")),
         str(end.get("reason", "")),
-        detail=detail,
+        counters=counters,
         run_dir=run_dir,
         gif_path=gif if (gif := run_dir / "run.gif").exists() else None,
         trace_dropped=int(end.get("trace_dropped") or 0),
@@ -1318,11 +1351,55 @@ def memory_show(
         return
     info = mem.summary()
     ui.console.print(
-        f"[bold]{info['robot']}[/bold] · {info['notes']} notes · {info['episodes']} runs · "
-        f"[dim]{info['path']}[/dim]"
+        Text.assemble(
+            (str(info["robot"]), ui.STYLES["key"]),
+            (f"  {_plural(info['notes'], 'note')}, {_plural(info['episodes'], 'run')}  ", ""),
+            (str(info["path"]), ui.STYLES["muted"]),
+        )
     )
-    text = mem.recall(max_notes=50, max_episodes=10)
-    ui.console.print(escape(text) if text else "[dim](nothing remembered yet)[/dim]")
+    notes, episodes = mem.notes(), mem.episodes()
+    if not notes and not episodes:
+        ui.console.print(Text("nothing remembered yet", style=ui.STYLES["muted"]))
+        return
+    if notes:
+        table = ui.table("notes the pilot saved")
+        table.add_column("date", no_wrap=True)
+        table.add_column("tags", style=ui.STYLES["muted"])
+        table.add_column("note", ratio=1)
+        for entry in reversed(notes[-50:]):
+            table.add_row(Text(entry.date), Text(", ".join(entry.tags)), Text(entry.text))
+        ui.console.print(table)
+    if episodes:
+        table = ui.table("how recent runs ended")
+        table.add_column("date", no_wrap=True)
+        table.add_column("duck", no_wrap=True)
+        table.add_column("outcome", no_wrap=True)
+        table.add_column("what happened", ratio=1)
+        for entry in reversed(episodes[-10:]):
+            outcome = str(entry.outcome or "")
+            what = Text(_episode_detail(entry))
+            if entry.highlights:
+                joined = "; ".join(entry.highlights)
+                what.append(NEWLINE + joined, style=ui.STYLES["muted"])
+            table.add_row(
+                Text(entry.date),
+                Text(str(entry.duck or "")),
+                Text(outcome, style=ui.STYLES["ok" if outcome == "success" else "warn"]),
+                what,
+            )
+        ui.console.print(table)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _episode_detail(entry: Any) -> str:
+    """An episode's text without the duck and outcome it already has columns for."""
+    prefix = f"{entry.duck}: {entry.outcome} — "
+    if entry.duck and entry.outcome and entry.text.startswith(prefix):
+        return str(entry.text[len(prefix) :])
+    return str(entry.text)
 
 
 @memory_app.command("add")
@@ -1335,7 +1412,11 @@ def memory_add(
     """Save a note by hand, the same way the pilot's `remember` does."""
     mem = _memory_for(robot, memory_dir)
     entry = mem.remember(text, tags=tag)
-    ui.console.print(f"remembered for [bold]{mem.robot_key}[/bold]: {escape(entry.text)}")
+    ui.console.print(
+        Text.assemble(
+            ("remembered for ", ""), (mem.robot_key, ui.STYLES["key"]), (": ", ""), entry.text
+        )
+    )
 
 
 @memory_app.command("clear")
@@ -1348,12 +1429,14 @@ def memory_clear(
     mem = _memory_for(robot, memory_dir)
     n = len(mem.entries())
     if n == 0:
-        ui.console.print(f"[dim]{mem.robot_key}: nothing to forget[/dim]")
+        ui.console.print(Text(f"{mem.robot_key}: nothing to forget", style=ui.STYLES["muted"]))
         return
     if not yes and not typer.confirm(f"forget {n} entries for {mem.robot_key}?"):
         raise typer.Exit()
     mem.clear()
-    ui.console.print(f"forgot {n} entries for [bold]{mem.robot_key}[/bold]")
+    ui.console.print(
+        Text.assemble((f"forgot {n} entries for ", ""), (mem.robot_key, ui.STYLES["key"]))
+    )
 
 
 # ── lan (quackd[lan]) ───────────────────────────────────────────────────────────────────

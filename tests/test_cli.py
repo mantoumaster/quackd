@@ -413,7 +413,7 @@ def test_transport_flag_is_gone(tmp_path: Path) -> None:
     assert "No such option" in old.output  # type: ignore[attr-defined]
     new = _run_hello(tmp_path, "--robot", "microduck:mock")
     assert new.exit_code == 0, new.output  # type: ignore[attr-defined]
-    assert "robot=microduck:mock" in new.output  # type: ignore[attr-defined]
+    assert "microduck:mock" in new.output  # type: ignore[attr-defined]
 
 
 def test_robot_flag_errors_are_clean(tmp_path: Path) -> None:

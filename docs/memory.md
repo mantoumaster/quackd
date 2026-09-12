@@ -87,8 +87,8 @@ quackd memory clear --robot microduck:sim2d     # asks first; --yes to skip
 quackd run find-and-kick --no-memory            # one fresh run, file untouched
 ```
 
-`quackd run` prints one dim line at start (`memory: 3 notes, 5 earlier runs (…)`) so you
-always know what the pilot was told.
+`quackd run` names it in the header panel it opens with (`memory  3 notes, 5 earlier runs`
+and the file it came from) so you always know what the pilot was told.
 
 ## Over MCP
 

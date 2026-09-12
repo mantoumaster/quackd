@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quackd's own consoles, because Typer builds a console of its own for every `--help` it
   renders. `FORCE_COLOR=1` is the other direction, for a pipe you are colouring on purpose.
 - **`-h` works**, everywhere `--help` does.
+- **A run opens and closes with a panel.** The header used to be one line of middle dots and
+  the verdict three lines under it, and on a long run the two ends of the story were the two
+  things hardest to find in a screenful of trace. They are now bordered, the verdict is
+  coloured by its outcome, and the run directory and the GIF are links where the terminal
+  allows it. `quackd trace` prints the same verdict from the transcript, so a replay still
+  ends the way the run did.
+- **`quackd memory show` is two tables**, notes and recent runs, rather than the block of
+  dim text the model is given. The outcome has its own column and its own colour, and an
+  episode no longer repeats the duck and the outcome inside the sentence that follows them.
 - **`quackd doctor --json`**, and a verdict at the end of the human version. doctor knew
   whether this machine could run anything and said so only through its exit code, which
   nobody reads off a screen. It now closes with one line: what works here, how many extras

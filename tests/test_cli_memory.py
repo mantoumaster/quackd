@@ -32,7 +32,7 @@ def test_add_then_show(tmp_path: Path) -> None:
     shown = runner.invoke(app, ["memory", "show", *_mem(tmp_path)])
     assert shown.exit_code == 0, shown.output
     assert "the charger is under the desk" in shown.output
-    assert "1 notes" in shown.output
+    assert "1 note," in shown.output
 
 
 def test_show_raw_prints_the_file_as_is(tmp_path: Path) -> None:
@@ -79,10 +79,10 @@ def test_a_run_writes_an_episode_and_the_next_run_is_told(tmp_path: Path) -> Non
     common = ["run", "hello-world", "--provider", "fake", "--runs-dir", str(runs)]
     first = runner.invoke(app, [*common, *_mem(tmp_path)])
     assert first.exit_code == 0, first.output
-    assert "memory: 0 notes, 0 earlier runs" in first.output
+    assert "0 notes, 0 earlier runs" in first.output
     second = runner.invoke(app, [*common, *_mem(tmp_path)])
     assert second.exit_code == 0, second.output
-    assert "memory: 0 notes, 1 earlier runs" in second.output
+    assert "0 notes, 1 earlier runs" in second.output
 
 
 def test_no_memory_writes_nothing_at_all(tmp_path: Path) -> None:
@@ -103,5 +103,5 @@ def test_no_memory_writes_nothing_at_all(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "memory:" not in result.output
+    assert "earlier runs" not in result.output
     assert not memory_dir.exists(), "--no-memory must not even create the directory"

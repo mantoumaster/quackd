@@ -222,7 +222,7 @@ def test_cli_flock_run_and_guards(tmp_path: Path) -> None:
         ["run", "flock-kick", "--provider", "fake", "--seed", "3", "--runs-dir", str(tmp_path)],
     )
     assert ok.exit_code == 0, ok.output
-    assert "flock" in ok.output and "kicker=" in ok.output
+    assert "flock" in ok.output and "kicker " in ok.output
     run_dir = next(tmp_path.iterdir())
     assert (run_dir / "flock.jsonl").exists() and (run_dir / "run.gif").exists()
 
@@ -312,4 +312,4 @@ def test_cli_flock_trace_prefixes_every_line_with_its_duck_and_tells_the_flocks_
     quiet = " ".join(off.output.split())
     for needle in ("duck-0 verb", "-> move x", "flock auction", "end stopped after"):
         assert needle not in quiet, needle
-    assert "kicker=" in quiet, "the outcome is not part of the trace and must survive"
+    assert "kicker " in quiet, "the outcome is not part of the trace and must survive"

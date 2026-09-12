@@ -49,7 +49,7 @@ def test_trace_replays_a_finished_run(tmp_path: Path) -> None:
     assert "system prompt" in out
     assert "-> move" in out and "<- walk_to ok" in out
     assert "[scripted]" in out  # the model's reasoning, as the run showed it
-    assert "SUCCESS" in out and "steps=" in out
+    assert "SUCCESS" in out and "llm calls" in out
 
 
 def test_trace_with_no_argument_picks_the_newest_run(tmp_path: Path) -> None:
@@ -176,5 +176,5 @@ def test_trace_on_a_flock_run_names_every_member(tmp_path: Path) -> None:
         assert f"{name} verb" in out, (name, out[:400])
         assert f"{name} end stopped after" in out
     # the outcome comes from summary.json, since no member wrote a run_end
-    assert "SUCCESS" in out and "kicker=duck-" in out
-    assert "steps=0" not in out, "a flock counts auctions and bids, not steps and tokens"
+    assert "SUCCESS" in out and "kicker duck-" in out
+    assert "llm calls" not in out, "a flock counts auctions and bids, not steps and tokens"
