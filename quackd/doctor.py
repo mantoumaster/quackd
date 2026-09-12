@@ -761,12 +761,22 @@ def _assumptions_table(report: DoctorReport) -> Any:
     return table
 
 
+def _read_more(report: DoctorReport) -> Any:
+    """Where to read about each upstream.
+
+    A line rather than a column: eight table titles used to carry these paths, and a title
+    is full width. Folded into a sixth column of the pins table, a path loses its tail on
+    any terminal under 120, and a path you cannot copy is not a path."""
+    parts = ["read more:", *(f"{pin.upstream} {pin.doc}" for pin in report.pins)]
+    return ui.Deferred(lambda g: ui.joined(parts, g))
+
+
 def _pins_table(report: DoctorReport) -> Any:
     table = ui.table("where each upstream was read, and what nobody has run it against")
     table.add_column("upstream", style=ui.STYLES["key"], no_wrap=True)
     table.add_column("pinned at", no_wrap=True)
     table.add_column("read on", no_wrap=True)
-    table.add_column("refs")
+    table.add_column("refs", no_wrap=True)
     table.add_column("never run against")
     for pin in report.pins:
         refs = Text.assemble(
@@ -874,6 +884,7 @@ def render(console: Console, report: DoctorReport) -> None:
     _section(console, f"upstream assumptions (UNVERIFIED: {len(report.assumptions)})")
     console.print(_assumptions_table(report))
     console.print(_pins_table(report))
+    console.print(_read_more(report))
 
     console.print()
     console.print(verdict(report))

@@ -114,6 +114,10 @@ def test_render_says_everything_the_report_holds() -> None:
         "upstream assumptions",
         "SUCCESS",
         "microduck (biped",
+        # eight table titles used to carry these paths; losing them was losing where to read
+        "read more:",
+        "docs/adapters/lerobot.md",
+        "docs/adr/0030-mujoco-physics-backend.md",
     ):
         assert needle in out, needle
 
