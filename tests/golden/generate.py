@@ -11,6 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from tests.golden.trace_cases import golden as trace_lines_golden
 from tests.test_goldens import GOLDEN, duck_hashes, flock_golden, sim_case
 
 
@@ -25,6 +26,7 @@ def main() -> int:
         [sim_case(seed, n) for seed in range(10) for n in (1, 3)],
     )
     _dump("duck_hashes.json", duck_hashes())
+    _dump("trace_lines.json", trace_lines_golden())
     with tempfile.TemporaryDirectory() as tmp:
         _dump("flock_kick_seed3.json", flock_golden(3, Path(tmp)))
     print(f"wrote goldens to {GOLDEN}")

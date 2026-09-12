@@ -1,0 +1,587 @@
+{
+ "run_start_full": [
+  [
+   "run     find-and-kick provider=anthropic model=claude-opus-5 robot=microduck:sim2d DRY RUN connected in 0.05 s",
+   "bold"
+  ],
+  [
+   "tools   walk, kick, quack",
+   "dim"
+  ],
+  [
+   "memory  3 notes, 5 earlier runs",
+   "dim"
+  ],
+  [
+   "prompt  system prompt, 66 chars, 3 lines (also in transcript.jsonl as run_start):",
+   "dim"
+  ],
+  [
+   "        You are the brain of a duck.\n        Rules follow.\n        - call exactly one tool",
+   "dim"
+  ]
+ ],
+ "run_start_bare": [
+  [
+   "run     hello-world provider=fake model=None robot=mock",
+   "bold"
+  ],
+  [
+   "tools   ",
+   "dim"
+  ]
+ ],
+ "observation": [
+  [
+   "obs     [step 0/5]\n        state: standing",
+   ""
+  ]
+ ],
+ "observation_error": [
+  [
+   "obs     ERROR camera timed out",
+   "red"
+  ]
+ ],
+ "observation_empty": [
+  [
+   "obs     ",
+   ""
+  ]
+ ],
+ "llm_request": [
+  [
+   "llm>    step 2: 7 messages (1 with image) to openai gpt-5",
+   "dim"
+  ]
+ ],
+ "llm_request_reprompt": [
+  [
+   "llm>    step 2: 8 messages (0 with image) to openai gpt-5 (re-prompt: it made no tool call)",
+   "dim"
+  ]
+ ],
+ "llm_full": [
+  [
+   "think   the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I ... (+1060 chars in transcript.jsonl)",
+   "dim italic"
+  ],
+  [
+   "llm<    going for it.\n        the ball is close",
+   ""
+  ],
+  [
+   "tool    go_to(target='ball', stop_distance=0.25)",
+   "bold"
+  ],
+  [
+   "tool    kick(leg='right')",
+   "bold"
+  ],
+  [
+   "tokens  in=1200 out=40 reasoning=300 (run total in=5000 out=130) latency=1.2 s stop=tool_use",
+   "dim"
+  ]
+ ],
+ "llm_no_tool_call": [
+  [
+   "llm<    I think I should stop",
+   ""
+  ],
+  [
+   "tool    (no tool call)",
+   "yellow"
+  ],
+  [
+   "tokens  in=0 out=0",
+   "dim"
+  ]
+ ],
+ "llm_error": [
+  [
+   "llm<    ERROR ProviderError: rate limited after 3.0 s",
+   "red"
+  ]
+ ],
+ "llm_bare": [
+  [
+   "tool    stop()",
+   "bold"
+  ],
+  [
+   "tokens  in=0 out=0",
+   "dim"
+  ]
+ ],
+ "enforce": [
+  [
+   "enforce no tool call: re-prompting once",
+   "yellow"
+  ]
+ ],
+ "enforce_text": [
+  [
+   "enforce no tool call: re-prompting once (You must call exactly one tool.)",
+   "yellow"
+  ]
+ ],
+ "verb_start": [
+  [
+   "verb    go_to(target='ball')",
+   "bold"
+  ]
+ ],
+ "verb_start_nested": [
+  [
+   "verb      walk_to(target='ball') [nested]",
+   "bold"
+  ]
+ ],
+ "verb_start_mcp": [
+  [
+   "verb    quack() from mcp",
+   "bold"
+  ]
+ ],
+ "gate_refused": [
+  [
+   "gate    allowlist: refused not allowed here",
+   "red"
+  ]
+ ],
+ "gate_denied": [
+  [
+   "gate    confirm: denied",
+   "red"
+  ]
+ ],
+ "gate_allowed": [
+  [
+   "gate    confirm: allowed",
+   "yellow"
+  ]
+ ],
+ "gate_dry_run": [
+  [
+   "gate    dry_run: skipped would run go_to, sent nothing (target=null, stop_distance=0.25, fast=true, r=0.667)",
+   "yellow"
+  ]
+ ],
+ "gate_precondition": [
+  [
+   "gate    precondition: refused must be standing [state: fallen] [last: kick]",
+   "red"
+  ]
+ ],
+ "gate_budget": [
+  [
+   "gate    budget: exceeded max_steps (5)",
+   "red"
+  ]
+ ],
+ "gate_fired": [
+  [
+   "gate    abort_when: fired battery < 10%",
+   "red"
+  ]
+ ],
+ "intent_one": [
+  [
+   "->      move(vx=0.1)",
+   "dim"
+  ]
+ ],
+ "intent_bare": [
+  [
+   "->      stop",
+   "dim"
+  ]
+ ],
+ "intent_refused": [
+  [
+   "->      sound(tag='greet') REFUSED: the mock refuses sound",
+   "red"
+  ]
+ ],
+ "intent_refused_silent": [
+  [
+   "->      do REFUSED: no reason given",
+   "red"
+  ]
+ ],
+ "verb_end_ok": [
+  [
+   "<-      go_to ok: reached the ball (12.5 s, 121 intents)",
+   "green"
+  ]
+ ],
+ "verb_end_fail": [
+  [
+   "<-      kick FAIL: missed (1.0 s, 1 intent)",
+   "red"
+  ]
+ ],
+ "verb_end_preempted": [
+  [
+   "<-      search_scan PREEMPTED: role change to kicker (0.0 s, 0 intents)",
+   "yellow"
+  ]
+ ],
+ "verb_end_nested": [
+  [
+   "<-        go_to ok: there (2.0 s, 2 intents)",
+   "green"
+  ]
+ ],
+ "verb_end_two_clocks": [
+  [
+   "<-      walk ok: walked (20.0 s sim, 1.4 s wall, 200 intents)",
+   "green"
+  ]
+ ],
+ "verb_end_one_clock": [
+  [
+   "<-      walk ok: walked (1.0 s, 0 intents)",
+   "green"
+  ]
+ ],
+ "verb_end_legacy_ok_flag": [
+  [
+   "<-      quack ok: quacked (0.0 s, 0 intents)",
+   "green"
+  ]
+ ],
+ "declare_success": [
+  [
+   "declare success: ball displaced",
+   "bold green"
+  ]
+ ],
+ "declare_failure": [
+  [
+   "declare failure: never found it",
+   "bold red"
+  ]
+ ],
+ "memory": [
+  [
+   "memory  remembered: the ball lives by the sofa",
+   "cyan"
+  ]
+ ],
+ "note": [
+  [
+   "note    planner: it can see the ball\n        bearing +12 deg, 0.8 m away\n        next: go_to, then kick",
+   "dim"
+  ]
+ ],
+ "flock_auction": [
+  [
+   "auction first bid duck-1 0.42 m",
+   "cyan"
+  ]
+ ],
+ "flock_claim": [
+  [
+   "claim   duck-1 (0.62 m), spotter duck-2",
+   "bold"
+  ]
+ ],
+ "flock_claim_no_spotter": [
+  [
+   "claim   duck-1 (0.62 m)",
+   "bold"
+  ]
+ ],
+ "flock_miss": [
+  [
+   "miss    duck-0: the ball rolled away, re-searching",
+   "red"
+  ]
+ ],
+ "flock_miss_bare": [
+  [
+   "miss    duck-0, re-searching",
+   "red"
+  ]
+ ],
+ "flock_kick_done": [
+  [
+   "kicked  by duck-2, the spotter judges",
+   "bold"
+  ]
+ ],
+ "flock_verdict": [
+  [
+   "verdict moved 0.51 m by duck-1",
+   "bold"
+  ]
+ ],
+ "flock_verdict_no_distance": [
+  [
+   "verdict unchanged by duck-1",
+   "bold"
+  ]
+ ],
+ "flock_separation": [
+  [
+   "hold    duck-0 0.30 m away, ordered back",
+   "yellow"
+  ]
+ ],
+ "flock_auction_void": [
+  [
+   "auction 2 void: nobody eligible",
+   "yellow"
+  ]
+ ],
+ "flock_auction_waiting": [
+  [
+   "auction waiting for a bid: spotter, kicker",
+   "yellow"
+  ]
+ ],
+ "flock_member_dead": [
+  [
+   "dead    duck-2, last heartbeat at 3.0 s",
+   "red"
+  ]
+ ],
+ "flock_member_excluded": [
+  [
+   "out     duck-1 (no kick verb)",
+   "red"
+  ]
+ ],
+ "flock_wedges_rotated": [
+  [
+   "search  round 2, wedges rotated 45 deg",
+   "cyan"
+  ]
+ ],
+ "flock_bid_rejected_why": [
+  [
+   "bid     duck-0 for kicker rejected: too far",
+   "yellow"
+  ]
+ ],
+ "flock_bid_rejected_missing": [
+  [
+   "bid     duck-0 for kicker rejected: missing kick, walk_to",
+   "yellow"
+  ]
+ ],
+ "member_end": [
+  [
+   "end     stopped after 7 steps",
+   "bold"
+  ]
+ ],
+ "tool_call": [
+  [
+   "tool    robot_run_verb verb='go_to', params={'target': 'ball'} on duck",
+   "bold"
+  ]
+ ],
+ "tool_result": [
+  [
+   "done    ok in 1.1 s budget: step 1/40",
+   "dim"
+  ]
+ ],
+ "tool_result_sim": [
+  [
+   "done    FAIL in 20.0 s sim, 0.2 s wall",
+   "dim"
+  ]
+ ],
+ "verb_renders_nothing": [],
+ "frame_renders_nothing": [],
+ "run_end_renders_nothing": [],
+ "unknown_renders_nothing": [],
+ "fmt_value_edges": [
+  [
+   "verb    do(none=null, yes=true, no=false, ratio=0.667, short='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', long='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...', big={'k0': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k1': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k2': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k...)",
+   "bold"
+  ]
+ ],
+ "run_start_full@no-prompt": [
+  [
+   "run     find-and-kick provider=anthropic model=claude-opus-5 robot=microduck:sim2d DRY RUN connected in 0.05 s",
+   "bold"
+  ],
+  [
+   "tools   walk, kick, quack",
+   "dim"
+  ],
+  [
+   "memory  3 notes, 5 earlier runs",
+   "dim"
+  ]
+ ],
+ "llm_full@thinking-cut": [
+  [
+   "think   the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn... (+2960 chars in transcript.jsonl)",
+   "dim italic"
+  ],
+  [
+   "llm<    going for it.\n        the ball is close",
+   ""
+  ],
+  [
+   "tool    go_to(target='ball', stop_distance=0.25)",
+   "bold"
+  ],
+  [
+   "tool    kick(leg='right')",
+   "bold"
+  ],
+  [
+   "tokens  in=1200 out=40 reasoning=300 (run total in=5000 out=130) latency=1.2 s stop=tool_use",
+   "dim"
+  ]
+ ],
+ "llm_full@thinking-none": [
+  [
+   "llm<    going for it.\n        the ball is close",
+   ""
+  ],
+  [
+   "tool    go_to(target='ball', stop_distance=0.25)",
+   "bold"
+  ],
+  [
+   "tool    kick(leg='right')",
+   "bold"
+  ],
+  [
+   "tokens  in=1200 out=40 reasoning=300 (run total in=5000 out=130) latency=1.2 s stop=tool_use",
+   "dim"
+  ]
+ ],
+ "llm_full@thinking-all": [
+  [
+   "think   the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. ",
+   "dim italic"
+  ],
+  [
+   "llm<    going for it.\n        the ball is close",
+   ""
+  ],
+  [
+   "tool    go_to(target='ball', stop_distance=0.25)",
+   "bold"
+  ],
+  [
+   "tool    kick(leg='right')",
+   "bold"
+  ],
+  [
+   "tokens  in=1200 out=40 reasoning=300 (run total in=5000 out=130) latency=1.2 s stop=tool_use",
+   "dim"
+  ]
+ ],
+ "burst_numeric": [
+  "->      move x4 over 0.3 s (vx 0.2, wz -0.4..0.2)",
+  "dim"
+ ],
+ "burst_robot_clock": [
+  "->      move x2 over 20.0 s (vx 0.2)",
+  "dim"
+ ],
+ "burst_labels": [
+  "->      do x6 over 0.5 s (skill 's0'/'s1'/'s2'...)",
+  "dim"
+ ],
+ "whole_call": [
+  "run     find-and-kick provider=anthropic model=claude-opus-5 robot=microduck:sim2d DRY RUN connected in 0.05 s",
+  "tools   walk, kick, quack",
+  "memory  3 notes, 5 earlier runs",
+  "run     hello-world provider=fake model=None robot=mock",
+  "tools   ",
+  "obs     [step 0/5]\n        state: standing",
+  "obs     ERROR camera timed out",
+  "obs     ",
+  "llm>    step 2: 7 messages (1 with image) to openai gpt-5",
+  "llm>    step 2: 8 messages (0 with image) to openai gpt-5 (re-prompt: it made no tool call)",
+  "think   the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I ... (+1060 chars in transcript.jsonl)",
+  "llm<    going for it.\n        the ball is close",
+  "tool    go_to(target='ball', stop_distance=0.25)",
+  "tool    kick(leg='right')",
+  "tokens  in=1200 out=40 reasoning=300 (run total in=5000 out=130) latency=1.2 s stop=tool_use",
+  "llm<    I think I should stop",
+  "tool    (no tool call)",
+  "tokens  in=0 out=0",
+  "llm<    ERROR ProviderError: rate limited after 3.0 s",
+  "tool    stop()",
+  "tokens  in=0 out=0",
+  "enforce no tool call: re-prompting once",
+  "enforce no tool call: re-prompting once (You must call exactly one tool.)",
+  "verb    go_to(target='ball')",
+  "verb      walk_to(target='ball') [nested]",
+  "verb    quack() from mcp",
+  "gate    allowlist: refused not allowed here",
+  "gate    confirm: denied",
+  "gate    confirm: allowed",
+  "gate    dry_run: skipped would run go_to, sent nothing (target=null, stop_distance=0.25, fast=true, r=0.667)",
+  "gate    precondition: refused must be standing [state: fallen] [last: kick]",
+  "gate    budget: exceeded max_steps (5)",
+  "gate    abort_when: fired battery < 10%",
+  "->      move(vx=0.1)",
+  "->      stop",
+  "->      sound(tag='greet') REFUSED: the mock refuses sound",
+  "->      do REFUSED: no reason given",
+  "<-      go_to ok: reached the ball (12.5 s, 121 intents)",
+  "<-      kick FAIL: missed (1.0 s, 1 intent)",
+  "<-      search_scan PREEMPTED: role change to kicker (0.0 s, 0 intents)",
+  "<-        go_to ok: there (2.0 s, 2 intents)",
+  "<-      walk ok: walked (20.0 s sim, 1.4 s wall, 200 intents)",
+  "<-      walk ok: walked (1.0 s, 0 intents)",
+  "<-      quack ok: quacked (0.0 s, 0 intents)",
+  "declare success: ball displaced",
+  "declare failure: never found it",
+  "memory  remembered: the ball lives by the sofa",
+  "note    planner: it can see the ball\n        bearing +12 deg, 0.8 m away\n        next: go_to, then kick",
+  "auction first bid duck-1 0.42 m",
+  "claim   duck-1 (0.62 m), spotter duck-2",
+  "claim   duck-1 (0.62 m)",
+  "miss    duck-0: the ball rolled away, re-searching",
+  "miss    duck-0, re-searching",
+  "kicked  by duck-2, the spotter judges",
+  "verdict moved 0.51 m by duck-1",
+  "verdict unchanged by duck-1",
+  "hold    duck-0 0.30 m away, ordered back",
+  "auction 2 void: nobody eligible",
+  "auction waiting for a bid: spotter, kicker",
+  "dead    duck-2, last heartbeat at 3.0 s",
+  "out     duck-1 (no kick verb)",
+  "search  round 2, wedges rotated 45 deg",
+  "bid     duck-0 for kicker rejected: too far",
+  "bid     duck-0 for kicker rejected: missing kick, walk_to",
+  "end     stopped after 7 steps",
+  "tool    robot_run_verb verb='go_to', params={'target': 'ball'} on duck",
+  "done    ok in 1.1 s budget: step 1/40",
+  "done    FAIL in 20.0 s sim, 0.2 s wall",
+  "verb    do(none=null, yes=true, no=false, ratio=0.667, short='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', long='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...', big={'k0': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k1': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k2': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'k...)"
+ ],
+ "transcript_example": [
+  "run     find-and-kick provider=fake model=scripted:find-and-kick robot=sim2d",
+  "tools   search_scan, walk_to, kick, quack, get_frame, stop, declare_success, declare_failure",
+  "obs     [step 0/40 \u00b7 step 0/40, llm calls 0/40, 0.0/5 min]\n        state: posture=standing policy=stand battery=100% pose=(-0.25, -0.16, 1.89 rad)\n        camera: person at bearing 11\u00b0 left ~0.59 m\n        Choose exactly one tool.",
+  "tool    search_scan(target='ball')",
+  "tokens  in=689 out=16 stop=tool_use",
+  "obs     [step 1/40 \u00b7 step 1/40, llm calls 1/40, 0.1/5 min]\n        state: posture=standing policy=stand battery=100% pose=(-0.25, -0.16, -1.19 rad)\n        camera: ball at bearing 18\u00b0 left ~0.58 m\n        last verb `search_scan`: ok \u2014 ball found: ball at bearing 18\u00b0 left ~0.58 m (after 4 turn steps)\n        Choose exactly one tool.",
+  "tool    walk_to(target='ball', stop_distance=0.22)",
+  "tokens  in=713 out=16 stop=tool_use",
+  "obs     [step 2/40 \u00b7 step 2/40, llm calls 2/40, 0.1/5 min]\n        state: posture=standing policy=stand battery=100% pose=(-0.02, -0.45, -0.85 rad)\n        camera: ball dead ahead ~0.22 m\n        last verb `walk_to`: ok \u2014 reached the ball: ~0.22 m away, bearing +0\u00b0\n        Choose exactly one tool.",
+  "tool    kick(leg='right')",
+  "tokens  in=704 out=16 stop=tool_use",
+  "obs     [step 3/40 \u00b7 step 3/40, llm calls 3/40, 0.1/5 min]\n        state: posture=standing policy=stand battery=100% pose=(-0.02, -0.45, -0.85 rad)\n        camera: ball at bearing 11\u00b0 left ~0.73 m\n        last verb `kick`: ok \u2014 kicked with right leg, ball moved 0.53 m\n        Choose exactly one tool.",
+  "tool    quack(text='yay, got it!')",
+  "tokens  in=705 out=16 stop=tool_use",
+  "obs     [step 4/40 \u00b7 step 4/40, llm calls 4/40, 0.1/5 min]\n        state: posture=standing policy=stand battery=100% pose=(-0.02, -0.45, -0.85 rad)\n        camera: ball at bearing 11\u00b0 left ~0.73 m\n        last verb `quack`: ok \u2014 quacked [wheee] ('yay, got it!')\n        Choose exactly one tool.",
+  "tool    declare_success(reason='ball displaced by the kick')",
+  "tokens  in=703 out=16 stop=tool_use",
+  "declare success: ball displaced by the kick"
+ ]
+}
