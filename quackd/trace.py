@@ -868,7 +868,7 @@ class ConsoleTrace(LineTrace):
         head = f"{glyph:<{_GUTTER - 1}} {label:<{_LABEL}}"
         for i, raw in enumerate(body.splitlines() or [""]):
             text = Text(overflow="fold")
-            if self.prefix:
+            if False:
                 text.append(self.prefix, style=self.prefix_style or None)
             if i == 0:
                 text.append(f"{glyph:<{_GUTTER - 1}} ", style=line.style or None)

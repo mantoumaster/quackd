@@ -640,7 +640,14 @@ def install_logging(level: int = 30) -> None:
     Nothing configured them, so a warning from the camera or the transport arrived through
     Python's last-resort handler: unformatted, and straight down the middle of a live region
     it knew nothing about. `serve-mcp` keeps its own plain handler, because there stdout is
-    the wire and stderr is a log somebody greps."""
+    the wire and stderr is a log somebody greps.
+
+    `propagate` is deliberately left alone. Turning it off would be the obvious way to stop
+    a record being handled twice, but quackd never puts a handler on the root logger, so
+    there is no second handler to stop, and anything that *does* put one there is entitled
+    to see these records: `logging.basicConfig` in a host application, and pytest's own
+    `caplog`, which is how four tests read what the MCP server logged.
+    """
     import logging
 
     from rich.logging import RichHandler
@@ -659,4 +666,3 @@ def install_logging(level: int = 30) -> None:
         )
     )
     log.setLevel(level)
-    log.propagate = False

@@ -271,3 +271,33 @@ def test_the_status_stack_empties_even_when_the_run_raises() -> None:
     with pytest.raises(KeyboardInterrupt), ui.RunStatus(console):
         raise KeyboardInterrupt
     assert not ui._ACTIVE
+
+
+def test_installing_the_log_handler_leaves_records_reaching_a_root_handler() -> None:
+    """Turning off propagation is the obvious way to stop a record being handled twice, and
+    it would have been wrong: quackd puts no handler on the root logger, so there is nothing
+    to stop, and what it would really have stopped is pytest's own caplog, which is how four
+    tests read what the MCP server logged."""
+    import logging
+
+    seen: list[str] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            seen.append(record.getMessage())
+
+    ui.install_logging()
+    ui.install_logging()  # twice: it must replace its handler, not stack a second one
+    quackd_log = logging.getLogger("quackd")
+    assert quackd_log.propagate is True
+    assert sum(1 for h in quackd_log.handlers if type(h).__name__ == "RichHandler") == 1
+
+    root, handler = logging.getLogger(), Capture()
+    root.addHandler(handler)
+    try:
+        logging.getLogger("quackd.mcp").warning("a line an MCP test would assert on")
+    finally:
+        root.removeHandler(handler)
+        for h in list(quackd_log.handlers):
+            quackd_log.removeHandler(h)
+    assert seen == ["a line an MCP test would assert on"]
