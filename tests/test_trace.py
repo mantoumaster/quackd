@@ -25,6 +25,7 @@ from quackd.trace import (
     parse_thinking_limit,
     prompt_shown_default,
     render_call,
+    render_events,
     render_lines,
     thinking_limit_default,
     trace_enabled_default,
@@ -545,6 +546,33 @@ def test_fan_out_feeds_every_sink_and_one_bad_view_never_starves_the_others() ->
 
 def test_fan_out_of_nothing_is_a_sink_that_does_nothing() -> None:
     fan_out()(TraceEvent("llm", 0.0, {}))  # must not raise
+
+
+def test_every_kind_of_moment_keeps_the_mark_its_glyph_is_chosen_from() -> None:
+    """`mark` is the only thing the terminal reads to decide what a line looks like, and the
+    golden cannot see it: it freezes `render_lines`, which throws the mark away. Swapping two
+    of these would turn every refusal into a tick and no other test would notice."""
+    from tests.golden.trace_cases import events
+
+    marks = {
+        name: [line.mark for line in render_events(event) if line.mark] for name, event in events()
+    }
+    assert marks["verb_start"] == ["start"]
+    assert marks["intent_one"] == ["send"] and marks["intent_refused"] == ["fail"]
+    assert marks["verb_end_ok"] == ["ok"] and marks["verb_end_fail"] == ["fail"]
+    assert marks["verb_end_preempted"] == ["other"], "a handover is not a fault"
+    assert marks["gate_refused"] == ["fail"] and marks["gate_allowed"] == ["warn"]
+    assert marks["declare_success"] == ["ok"] and marks["declare_failure"] == ["fail"]
+    assert marks["llm_error"] == ["fail"] and marks["llm_no_tool_call"] == ["warn"]
+    assert marks["observation_error"] == ["fail"] and marks["enforce"] == ["warn"]
+    assert marks["flock_claim"] == ["flock"] and marks["member_end"] == ["end"]
+    assert marks["note"] == ["note"] and marks["memory"] == ["note"]
+    assert marks["tool_result"] == ["ok"] and marks["tool_result_sim"] == ["fail"]
+    # and nothing invents a mark the glyph table has no field for
+    from quackd import ui
+
+    for name, found in marks.items():
+        assert all(m in ui.MARKS for m in found), (name, found)
 
 
 # ── the terminal view ───────────────────────────────────────────────────────────────────
