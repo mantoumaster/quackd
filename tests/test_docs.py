@@ -20,7 +20,7 @@ def test_adapter_status_lists_every_microduck_upstream_ref() -> None:
     """The Microduck has two upstreams and adapter-status.md carries both: `robotd`'s API,
     and `microduck_rl`'s model and policies, which the physics backend fetches and runs.
 
-    Every other upstream in the project has a doc-completeness guard, the seven adapter pages
+    Every other upstream in the project has a doc-completeness guard, the six adapter pages
     through `test_adapter_doc_lists_every_upstream_ref` and `robotd` through this one. Without
     the second loop the newest table is the only one that can go stale in silence.
     """
@@ -57,7 +57,7 @@ def test_adapter_guide_and_manifest_spec_match_the_code() -> None:
 
 @pytest.mark.parametrize(
     "adapter",
-    ["reachy_mini", "lerobot", "rosbridge", "open_duck", "xlerobot", "alohamini", "toddlerbot"],
+    ["lerobot", "rosbridge", "open_duck", "xlerobot", "alohamini", "toddlerbot"],
 )
 def test_adapter_doc_lists_every_upstream_ref(adapter: str) -> None:
     api = importlib.import_module(f"quackd.adapters.{adapter}.upstream_api")
@@ -327,9 +327,7 @@ def test_the_pypi_summary_names_every_robot() -> None:
     # the summary names bodies, not adapter identifiers: microduck -> "microduck",
     # open_duck -> "open duck", rosbridge -> "ros"
     for adapter in ADAPTER_NAMES:
-        needle = {"open_duck": "open duck", "rosbridge": "ros", "reachy_mini": "reachy"}.get(
-            adapter, adapter
-        )
+        needle = {"open_duck": "open duck", "rosbridge": "ros"}.get(adapter, adapter)
         assert needle in haystack, (
             f"pyproject describes quackd without {needle!r}; it ships a {adapter} adapter"
         )
@@ -464,7 +462,6 @@ def test_no_fenced_block_names_a_stale_subset_of_the_adapters() -> None:
 #: The README's verb table names bodies, not adapter ids, so the mapping is written down.
 _VERB_TABLE_ROWS = {
     "microduck": "| Microduck |",
-    "reachy_mini": "| Reachy Mini |",
     "lerobot": "| LeRobot arm |",
     "rosbridge": "| rosbridge base |",
     "open_duck": "| Open Duck Mini v2 |",

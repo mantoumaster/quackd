@@ -278,7 +278,7 @@ def list_adapters_cmd() -> None:
     table.add_column("status")
     table.add_column("extra")
     for row in list_adapters():
-        # escape: an extra reads quackd[reachy], which Rich would eat as markup
+        # escape: an extra reads quackd[lerobot], which Rich would eat as markup
         extra = escape(row["extra"])
         if row["extra"] != "built-in":
             extra += (
@@ -648,7 +648,7 @@ def _run_flock_impl(
             if kind == "claim":
                 entity = data.get("entity")
                 if entity:
-                    rec.set_focus(entity[1], entity[0])
+                    rec.set_focus(entity[1])
                 else:
                     rec.set_focus(names.index(data["kicker"]))
             # the same function the terminal renders with, so a frame in the GIF and a

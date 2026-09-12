@@ -27,7 +27,7 @@ body:
       description: >-
         The `--robot <adapter>:<backend>` it targets, or the `robots:` line in the file.
         `quackd validate your.duck --robot <spec>` should pass for it.
-      placeholder: e.g. microduck:sim2d, or reachy_mini:sim2d
+      placeholder: e.g. microduck:sim2d, or open_duck:sim2d
     validations:
       required: true
   - type: dropdown

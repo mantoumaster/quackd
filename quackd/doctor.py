@@ -35,7 +35,6 @@ EXTRAS = {
     "yolo": ("ultralytics", "quackd[yolo]"),
     "live": ("pygame", "quackd[live]"),
     "mujoco": ("mujoco", "quackd[mujoco]"),
-    "reachy": ("reachy_mini", "quackd[reachy]"),
     "lan (zeroconf)": ("zeroconf", "quackd[lan]"),
     "lan (mqtt)": ("paho.mqtt.client", "quackd[lan]"),
     "lerobot": ("lerobot", "quackd[lerobot]"),
@@ -44,10 +43,9 @@ EXTRAS = {
     "xlerobot": ("zmq", "quackd[xlerobot]"),
     "alohamini": ("zmq", "quackd[alohamini]"),
 }
-# Robot SDKs are looked up by distribution metadata only: importing reachy_mini pulls
-# onnxruntime and GStreamer, and lerobot pulls torch, into a diagnostics command, which is
-# exactly what doctor is not.
-_METADATA_ONLY = {"reachy_mini": "reachy-mini", "lerobot": "lerobot"}
+# Robot SDKs are looked up by distribution metadata only: importing lerobot pulls torch
+# into a diagnostics command, which is exactly what doctor is not.
+_METADATA_ONLY = {"lerobot": "lerobot"}
 
 
 def _installed(module: str) -> str | None:
@@ -140,8 +138,8 @@ def _probe(
             camera: dict[str, Any] | None = None
             probe = getattr(transport, "camera_health", None)
             # Only report on a camera the adapter actually reads. `camera_url` is accepted and
-            # ignored by reachy_mini, lerobot and rosbridge, and gating their verdict on a
-            # frame from an unrelated path fails a healthy robot.
+            # ignored by lerobot and rosbridge, and gating their verdict on a frame from an
+            # unrelated path fails a healthy robot.
             if camera_url and callable(probe):
                 # Frames arrive on a timer, so ask for one and give the capture loop a moment
                 # rather than reading memory that cannot have been filled yet.
@@ -307,7 +305,7 @@ def run_doctor(
     t.add_column("status")
     t.add_column("extra")
     for row in list_adapters():
-        # escape: an extra reads quackd[reachy], which Rich would eat as markup
+        # escape: an extra reads quackd[lerobot], which Rich would eat as markup
         extra = escape(row["extra"])
         if row["extra"] != "built-in":
             extra += (
@@ -393,13 +391,11 @@ def run_doctor(
     from quackd.adapters.alohamini import upstream_api as alohamini_api
     from quackd.adapters.lerobot import upstream_api as lerobot_api
     from quackd.adapters.open_duck import upstream_api as open_duck_api
-    from quackd.adapters.reachy_mini import upstream_api as reachy
     from quackd.adapters.rosbridge import upstream_api as rosbridge_api
     from quackd.adapters.toddlerbot import upstream_api as toddlerbot_api
     from quackd.adapters.xlerobot import upstream_api as xlerobot_api
 
     for name, api, backend, target in (
-        ("reachy_mini", reachy, "sdk", "a robot"),
         ("lerobot", lerobot_api, "real", "an arm"),
         ("rosbridge", rosbridge_api, "ws", "a bridge"),
         ("open_duck", open_duck_api, "bridge", "a duck"),

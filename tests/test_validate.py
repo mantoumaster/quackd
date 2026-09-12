@@ -7,12 +7,13 @@ from quackd.adapters.microduck import microduck_manifest
 from quackd.duckfile.parser import load_duck, parse_duck_text
 from quackd.duckfile.validate import validate_duck
 
-# A stationary head with a camera and a voice, no legs: what Phase 2's adapter declares.
+# A fixed camera with a voice, no legs: a hypothetical bolted-down body, used only to
+# exercise validate_duck against a robot that cannot move or kick.
 HEAD = RobotManifest(
-    id="reachy-01",
-    vendor="pollen-robotics",
-    model="reachy-mini",
-    embodiment="stationary_head",
+    id="head-01",
+    vendor="acme",
+    model="fixed-cam",
+    embodiment="arm",
     mobility="none",
     intents=["gaze", "sound"],
     sensors=["camera"],
@@ -31,8 +32,8 @@ DUCK = microduck_manifest("mock", "duck-01")
 def test_find_and_kick_against_a_head_names_the_missing_verbs() -> None:
     problems = validate_duck(load_duck("find-and-kick"), [HEAD])
     messages = [p.message for p in problems]
-    assert "requires kick, but reachy-01 (reachy-mini) does not provide it" in messages
-    assert "requires walk_to, but reachy-01 (reachy-mini) does not provide it" in messages
+    assert "requires kick, but head-01 (fixed-cam) does not provide it" in messages
+    assert "requires walk_to, but head-01 (fixed-cam) does not provide it" in messages
     assert all(p.field == "requires" for p in problems)
     assert {p.verb for p in problems} == {
         "walk_to",
@@ -54,14 +55,14 @@ def test_v1_requires_is_what_is_checked_and_allow_is_advisory() -> None:
     )
     problems = validate_duck(duck, [HEAD])
     assert [(p.field, p.verb) for p in problems] == [("verbs.allow", "kick")]
-    assert "kick is not provided by reachy-01" in problems[0].message
+    assert "kick is not provided by head-01" in problems[0].message
 
 
 def test_flock_requires_is_a_union_and_roles_must_be_fillable() -> None:
     duck = parse_duck_text(
         "---\nduck: 1\nname: t\ndescription: d\nrequires: [observe, kick]\n"
         "verbs:\n  allow: [observe, gaze, go_to, kick, stop, express]\nsuccess: [x]\n"
-        "flock:\n  members: [reachy-01, duck-01]\n  roles:\n"
+        "flock:\n  members: [head-01, duck-01]\n  roles:\n"
         "    spotter: {requires: [observe, gaze]}\n    kicker: {requires: [go_to, kick]}\n"
         "---\n# T\nx\n"
     )

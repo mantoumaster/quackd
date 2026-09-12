@@ -160,7 +160,6 @@ async def test_factory_describes_and_makes_adapters() -> None:
     rows = list_adapters()
     assert [r["name"] for r in rows] == [
         "microduck",
-        "reachy_mini",
         "lerobot",
         "rosbridge",
         "open_duck",
@@ -169,7 +168,7 @@ async def test_factory_describes_and_makes_adapters() -> None:
         "toddlerbot",
     ]
     assert rows[0]["installed"] and "sim2d" in rows[0]["backends"]
-    assert rows[1]["extra"] == "quackd[reachy]" and "sdk" in rows[1]["backends"]
+    assert rows[1]["extra"] == "quackd[lerobot]" and "real" in rows[1]["backends"]
 
 
 async def test_health_wraps_the_heartbeat() -> None:

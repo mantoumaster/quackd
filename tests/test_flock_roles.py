@@ -43,7 +43,7 @@ def _bid(src: str, role: str, dist: float, t: float = 0.0) -> BidMsg:
 def test_role_auction_fills_most_constrained_role_first() -> None:
     now = NS(t=0.0)
     auction = RoleAuction(AuctionPolicy(window_s=0.4), lambda: now.t, ROLES)
-    auction.open(_bid("reachy-01", "spotter", 1.1))
+    auction.open(_bid("spotter-01", "spotter", 1.1))
     assert not auction.complete(set())  # nobody bid for kicker yet
     auction.add(_bid("duck-01", "spotter", 0.78))  # the duck is closer, and could spot...
     auction.add(_bid("duck-01", "kicker", 0.78))  # ...but it is the only one who can kick
@@ -52,7 +52,7 @@ def test_role_auction_fills_most_constrained_role_first() -> None:
     assert auction.due()
     decision = auction.decide({}, set())
     assert decision is not None
-    assert decision.assignments == {"kicker": "duck-01", "spotter": "reachy-01"}
+    assert decision.assignments == {"kicker": "duck-01", "spotter": "spotter-01"}
     assert decision.kicker == "duck-01" and decision.costs["spotter"] == 1.1
     assert decision.ties == [] and decision.hysteresis_applied == []
 
@@ -63,7 +63,7 @@ def test_role_auction_is_independent_of_bid_order() -> None:
         _bid("duck-02", "kicker", 0.7),
         _bid("duck-01", "spotter", 0.9),
         _bid("duck-02", "spotter", 0.7),
-        _bid("reachy-01", "spotter", 1.3),
+        _bid("spotter-01", "spotter", 1.3),
     ]
     outcomes = set()
     for seed in range(20):
@@ -81,13 +81,13 @@ def test_role_auction_is_independent_of_bid_order() -> None:
 
 def test_role_auction_holds_the_spotter_and_applies_hysteresis_per_role() -> None:
     auction = RoleAuction(AuctionPolicy(hysteresis=0.2), lambda: 0.0, ROLES)
-    auction.held = {"spotter": "reachy-01"}
+    auction.held = {"spotter": "spotter-01"}
     auction.open(_bid("duck-01", "kicker", 1.0))  # the previous kicker
     auction.add(_bid("duck-02", "kicker", 0.85))  # 15 % better: not enough
-    auction.add(_bid("reachy-01", "spotter", 0.5))  # ignored: the role is held
+    auction.add(_bid("spotter-01", "spotter", 0.5))  # ignored: the role is held
     decision = auction.decide({"kicker": "duck-01"}, set())
     assert decision is not None
-    assert decision.assignments == {"spotter": "reachy-01", "kicker": "duck-01"}
+    assert decision.assignments == {"spotter": "spotter-01", "kicker": "duck-01"}
     assert decision.hysteresis_applied == ["kicker"]
     auction.open(_bid("duck-02", "kicker", 0.7))  # 30 % better: unseats
     auction.add(_bid("duck-01", "kicker", 1.0))
@@ -102,20 +102,20 @@ def test_role_auction_is_void_when_a_role_cannot_be_filled() -> None:
     assert not auction.complete(set())
     assert auction.decide({}, set()) is None
     auction.open(_bid("duck-01", "kicker", 0.5))
-    auction.add(_bid("reachy-01", "spotter", 1.0))
-    assert auction.decide({}, {"reachy-01"}) is None  # the only spotter is excluded
+    auction.add(_bid("spotter-01", "spotter", 1.0))
+    assert auction.decide({}, {"spotter-01"}) is None  # the only spotter is excluded
     auction.open(_bid("duck-01", "dancer", 0.5))  # an unknown role is dropped on add
     assert auction.bids == {}
 
 
 def test_new_messages_round_trip_and_old_ones_keep_their_defaults() -> None:
     adapter: TypeAdapter[FlockMessage] = TypeAdapter(FlockMessage)
-    hint = Hint(target="ball", x_m=0.2, y_m=-0.4, by="reachy-01", est_dist_m=0.9, bearing_deg=12)
+    hint = Hint(target="ball", x_m=0.2, y_m=-0.4, by="spotter-01", est_dist_m=0.9, bearing_deg=12)
     for msg in (
-        HintMsg(t=1.0, src="reachy-01", task_id="t", hint=hint),
+        HintMsg(t=1.0, src="spotter-01", task_id="t", hint=hint),
         VerdictMsg(
             t=2.0,
-            src="reachy-01",
+            src="spotter-01",
             task_id="t",
             target="ball",
             kicker="duck-01",
@@ -129,7 +129,7 @@ def test_new_messages_round_trip_and_old_ones_keep_their_defaults() -> None:
             t=3.0,
             src="coordinator",
             task_id="t",
-            duck="reachy-01",
+            duck="spotter-01",
             role="JUDGE",
             kicker="duck-01",
             seq=5,

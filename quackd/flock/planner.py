@@ -72,7 +72,7 @@ async def plan_flock_task(
     trace: Tracer | None = None,
 ) -> tuple[FlockTask, dict[str, Wedge], Usage, int, bool]:
     """Returns (task, wedges, usage, llm_calls, fallback_used). Wedges are split over the
-    members that can move (`wedge_members`); a stationary head sweeps its whole range.
+    members that can move (`wedge_members`); a member with no wedge sweeps its whole range.
 
     `trace` narrates the one model call this run makes, as the same `llm_request`/`llm` pair
     a solo run emits, so a flock's transcript reads like any other run's."""

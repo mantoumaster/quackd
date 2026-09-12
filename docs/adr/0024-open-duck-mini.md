@@ -6,7 +6,7 @@
 
 The Open Duck Mini v2 is an open hardware 3D printed biped that people are building at home
 today. That makes it the first robot quackd supports whose hardware an outsider can actually
-own: the Microduck ships around Christmas 2026, and the Reachy, LeRobot and rosbridge
+own: the Microduck ships around Christmas 2026, and the LeRobot and rosbridge
 backends are all "verified names, never run against the real thing".
 
 Read from upstream source on 2026-09-03, at `apirrone/Open_Duck_Mini_Runtime` commit
@@ -69,7 +69,7 @@ the walk policy is Apache-2.0.
   upstream to verify it against, so citing it as an upstream ref would be a false citation.
   What `upstream_api.py` carries instead is every assumption the daemon makes about the
   robot, UNVERIFIED and named.
-- **`say` degrades to a sound, the way ADR-0023 decided for the Reachy.** There is no text
+- **`say` degrades to a sound, the way ADR-0023 decided.** There is no text
   to speech anywhere in the runtime. The text is logged verbatim and voiced as the closest
   of the duck's own sounds, and `extras.speech` is `"sounds"` so the prompt says the robot
   cannot pronounce words. The mood vocabulary and the antenna gestures are quackd's own,

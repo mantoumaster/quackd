@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from quackd.sim2d.render import render_duckcam, render_headcam, render_topdown
+from quackd.sim2d.render import render_duckcam, render_topdown
 
 
 class LiveWindow:
@@ -27,11 +27,7 @@ class LiveWindow:
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 raise KeyboardInterrupt
-        cam = (
-            render_duckcam(world, self.size)
-            if world.ducks
-            else render_headcam(world, self.size)  # a head-only world shows the head's view
-        )
+        cam = render_duckcam(world, self.size)
         for img, x in ((render_topdown(world, self.size), 0), (cam, self.size + 4)):
             surf = pg.image.fromstring(img.tobytes(), img.size, "RGB")
             self.screen.blit(surf, (x, 0))

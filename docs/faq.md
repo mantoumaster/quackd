@@ -1,7 +1,7 @@
 # FAQ
 
 **Which simulator should I use?** Both ship, and the cartoon is still the default. `sim2d`
-starts in a second, needs no network, runs anywhere, and is what the other seven bodies and
+starts in a second, needs no network, runs anywhere, and is what the three other bodies that have a simulator and
 every CI sweep use. It tests the *agent loop* — search, approach, act, verify — and it will
 never tell you whether a gait works, because it has no joints
 ([ADR-0007](adr/0007-sim2d-cartoon.md)). `--robot microduck:mujoco` is upstream's own Microduck
@@ -253,22 +253,24 @@ a cloud provider sees. `quackd memory show` prints it, `quackd memory clear` del
 
 **Can quackd drive something that is not a duck?** Since 0.4, yes: a robot is an adapter
 that returns a manifest, and the verbs come from the manifest. `quackd list-adapters`
-shows the eight that ship (Microduck, Reachy Mini, a LeRobot arm, any base over rosbridge,
-an Open Duck Mini v2, an XLeRobot dual-arm cart, an AlohaMini with two arms on a lift, and
-a ToddlerBot humanoid), `quackd list-verbs --robot reachy_mini:sim2d` shows what one of them can do,
+shows the seven that ship (Microduck, a LeRobot arm, any base over rosbridge, an Open
+Duck Mini v2, an XLeRobot dual-arm cart, an AlohaMini with two arms on a lift, and a
+ToddlerBot humanoid), `quackd list-verbs --robot microduck:sim2d` shows what one of them can do,
 and `quackd validate your.duck --robot lerobot:mock` tells you, field by field, whether
 your task fits that body. The rule never bends: a verb that is not in the manifest does
 not exist on that robot. Writing one: [adapters.md](adapters.md).
 
-**Why does `validate` say "requires kick, but reachy-01 (reachy-mini) does not provide
+**Why does `validate` say "requires kick, but arm-01 (lerobot-so101) does not provide
 it"?** Because it is true. A `.duck` lists what it needs (`requires`, or for a `duck: 0`
-file its whole allowlist) and a head has no legs. Either pick a body that has the verb,
-or write a task for the body you have; `reachy-spotter` is the head's own starter.
+file its whole allowlist) and an arm has no legs. Either pick a body that has the verb,
+or write a task for the body you have.
 
-**Can two different robots share a task?** In the simulator, yes: `reachy-spots-duck-kicks`
-puts a Reachy Mini head and a Microduck under one contract, the head spots and judges,
-the duck kicks ([flock.md](flock.md)). On hardware, not yet: a flock across machines
-needs a clock across machines, and nothing multi-robot has run on hardware.
+**Can two different robots share a task?** In the simulator, `flock.roles` lets a `.duck`
+declare capability-differentiated roles instead of one shared verb set — a spotter that
+observes and judges, a kicker that goes to and kicks — but two Microducks are the only
+pairing quackd ships an adapter for today, and no bundled starter exercises the split end
+to end yet ([flock.md](flock.md)). On hardware, not yet: a flock across machines needs a
+clock across machines, and nothing multi-robot has run on hardware.
 
 **Why "quackd"?** Upstream names its daemons `robotd`, `mediad`, `padd`, `tofd`… the brain
 daemon was missing. ([ADR-0002](adr/0002-name.md))

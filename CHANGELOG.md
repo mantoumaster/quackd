@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The Reachy Mini adapter.** `--robot reachy_mini:{sim2d,mock,sdk}`, `quackd[reachy]`, the
+  `reachy-spotter` and `reachy-spots-duck-kicks` starters, and the `reachy-mini` GitHub topic
+  are gone, along with its doc page and every mention that described it as a robot quackd
+  still drives. The ADRs and design records that document it keep their text, marked
+  superseded or amended. quackd ships seven adapters now: Microduck, Open Duck Mini v2, LeRobot arm, any rosbridge
+  base, XLeRobot, AlohaMini and ToddlerBot. Reachy Mini was the only "stationary head"
+  embodiment quackd ever carried, so the machinery that existed solely to pair one with a
+  Microduck goes with it: `StationaryHead` and the fixed head poses in `sim2d/world.py` and
+  `sim2d/render.py`, and the reachy-only branch of `flock/runner.py`'s `make_sim_flock`. The
+  capability-based role auction itself (`flock/auction.py`'s `RoleAuction`,
+  `flock.roles` in a `.duck` file) is separate, still-generic machinery and is untouched —
+  [ADR-0020](docs/adr/0020-heterogeneous-flocks.md) always said a two-Microduck spotter/kicker
+  flock is valid on its own; the auction simply has no second embodiment to pair a Microduck
+  against today. [ADR-0023](docs/adr/0023-reachy-mini.md) is marked Superseded rather than
+  deleted, and [ADR-0020](docs/adr/0020-heterogeneous-flocks.md) is amended in place, both left
+  readable as the record of what 0.4 through 0.8 actually shipped. Nothing about the other
+  seven adapters changed.
+
 ## [0.8.0] — 2026-09-09
 
 Two things, mainly. A run narrates itself now: the system prompt once, then per turn the

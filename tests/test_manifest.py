@@ -93,16 +93,15 @@ def test_microduck_manifest_matches_the_default_registry() -> None:
 def test_registry_from_manifest_only_builds_declared_verbs() -> None:
     wheeled = registry_from_manifest(_manifest(intents=["twist"]))
     assert wheeled.names() == ["observe", "move", "stop"]  # no say without sound
-    head = registry_from_manifest(
+    legless = registry_from_manifest(
         _manifest(
-            embodiment="stationary_head",
             mobility="none",
             intents=["gaze"],
             verbs=[VerbSpec(name="observe", core=True), VerbSpec(name="search_scan", core=True)],
         )
     )
-    assert head.names() == ["observe", "search_scan", "stop"]
-    assert "move" not in head and "walk_to" not in head
+    assert legless.names() == ["observe", "search_scan", "stop"]
+    assert "move" not in legless and "walk_to" not in legless
 
 
 def test_registry_from_manifest_refuses_what_no_code_implements() -> None:

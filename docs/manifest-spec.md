@@ -12,9 +12,9 @@ version without touching the robot.
 | Field | Type | Meaning |
 |---|---|---|
 | `manifest` | `1` | schema version |
-| `id` | slug | unique within a run or a flock: `microduck`, `open-duck-01`, `reachy-01`, `duck-01`, or the fleet name from `--robots name=...` |
-| `vendor`, `model` | string | who made it and what it is (`pollen-robotics`, `reachy-mini`) |
-| `embodiment` | `biped`, `quadruped`, `wheeled`, `arm`, `stationary_head`, `humanoid` | the body |
+| `id` | slug | unique within a run or a flock: `microduck`, `open-duck-01`, `duck-01`, or the fleet name from `--robots name=...` |
+| `vendor`, `model` | string | who made it and what it is (`huggingface`, `lerobot-so101`) |
+| `embodiment` | `biped`, `quadruped`, `wheeled`, `arm`, `humanoid` | the body |
 | `mobility` | `none`, `legged`, `wheeled` | whether it can go somewhere |
 | `intents` | list of `twist`, `skill`, `gaze`, `sound`, `joint`, `pose`, `gripper` | the command channels the backend accepts |
 | `sensors` | list of `camera`, `battery`, `odometry`, `imu`, `tof`, `microphone`, `joint_state` | what it can report |
@@ -70,12 +70,11 @@ and MCP `robot_list` returns it.
 
 ## Examples
 
-The eight shipped manifests, from `quackd list-verbs --robot ...` or `describe()`:
+The seven shipped manifests, from `quackd list-verbs --robot ...` or `describe()`:
 
 | Robot | embodiment / mobility | intents | verbs |
 |---|---|---|---|
 | `microduck:sim2d` | biped / legged | twist, skill, gaze, sound, pose | observe, report_state, stop, say, move, go_to, search_scan, approach_and, sit, stand, stand_up, kick, grab, gaze, quack |
-| `reachy_mini:sim2d` | stationary_head / none | gaze, sound, skill | observe, report_state, stop, say, search_scan, gaze, play_sound, wake_up, express |
 | `lerobot:mock` | arm / none | joint, gripper, skill | observe, report_state, stop, move_joints, gripper, place, pick |
 | `rosbridge:mock` | wheeled / wheeled | twist | observe, report_state, stop, move, go_to, search_scan, approach_and |
 | `open_duck:sim2d` | biped / legged | twist, gaze, sound, skill | report_state, stop, move, observe, go_to, search_scan, approach_and, say, quack, gaze, express |
@@ -83,7 +82,7 @@ The eight shipped manifests, from `quackd list-verbs --robot ...` or `describe()
 | `alohamini:mock` | wheeled / wheeled | twist, pose, joint, gripper | observe, report_state, stop, move, lift, move_joints, gripper, home_arms, go_to, search_scan, approach_and |
 | `toddlerbot:mock` | humanoid / legged | skill, gaze, twist | observe, report_state, stop, stand, perform, look, move, go_to, approach_and, search_scan |
 
-What each body lacks is as important as what it has: the head cannot `kick`, the arm
-cannot `move`, neither the base nor the cart can `say`, and a `.duck` that `requires` one of those fails
+What each body lacks is as important as what it has: the arm cannot `move`, neither the
+base nor the cart can `say`, and a `.duck` that `requires` one of those fails
 validation against that robot with a field-level message
 ([duck-spec.md](duck-spec.md)).

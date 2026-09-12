@@ -48,8 +48,6 @@ def test_bundled_list() -> None:
         "follow-me",
         "fetch",
         "flock-kick",
-        "reachy-spotter",
-        "reachy-spots-duck-kicks",
         "open-duck-scout",
         "open-duck-lookout",
         "microduck-lookout",
@@ -137,12 +135,12 @@ duck: 1
 name: t
 description: d
 requires: [observe, kick]
-robots: {reachy-01: reachy_mini:sim2d, duck-01: microduck:sim2d}
+robots: {lerobot-01: lerobot:mock, duck-01: microduck:sim2d}
 verbs:
   allow: [observe, gaze, go_to, kick, stop]
 success: [x]
 flock:
-  members: [reachy-01, duck-01]
+  members: [lerobot-01, duck-01]
   roles:
     spotter: {requires: [observe, gaze]}
     kicker: {requires: [go_to, kick]}
@@ -156,13 +154,13 @@ Do it.
 def test_duck_v1_parses_requires_robots_and_roles() -> None:
     fm = parse_duck_text(V1).frontmatter
     assert fm.duck == 1 and fm.effective_requires == ["observe", "kick"]
-    assert fm.robots == {"reachy-01": "reachy_mini:sim2d", "duck-01": "microduck:sim2d"}
+    assert fm.robots == {"lerobot-01": "lerobot:mock", "duck-01": "microduck:sim2d"}
     assert fm.flock is not None and fm.flock.roles is not None
     assert fm.flock.roles["kicker"].requires == ["go_to", "kick"]
     assert fm.flock.frame_hints == "auto"
     solo = parse_duck_text(
         V1.replace(
-            "robots: {reachy-01: reachy_mini:sim2d, duck-01: microduck:sim2d}",
+            "robots: {lerobot-01: lerobot:mock, duck-01: microduck:sim2d}",
             "robots: microduck:mock",
         ).split("flock:")[0]
         + "---\n# Task\nx\n"
@@ -186,7 +184,7 @@ def test_duck_v1_parses_requires_robots_and_roles() -> None:
             lambda s: s.replace("    kicker: {requires: [go_to, kick]}\n", ""),
             "both spotter and kicker",
         ),
-        (lambda s: s.replace("members: [reachy-01, duck-01]", "members: 2"), "name the members"),
+        (lambda s: s.replace("members: [lerobot-01, duck-01]", "members: 2"), "name the members"),
         (
             lambda s: s.replace("kicker: {requires: [go_to, kick]}", "kicker: {requires: [fly]}"),
             "not allowed",

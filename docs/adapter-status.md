@@ -14,9 +14,6 @@ it). A test proves UNVERIFIED names stay inside the backend that needs them.
 | | `microduck:mock` | ✅ | | |
 | | `microduck:jsonrpc` | 🧪 experimental: every method VERIFIED, never run on a duck | [`quackd/transport/upstream_api.py`](../quackd/transport/upstream_api.py) | |
 | | `microduck:websocket` | ⏳ stub: raises with a link until upstream ships it | | |
-| Reachy Mini | `reachy_mini:sim2d` | ✅ `reachy-spotter` 10 of 10 seeds | | [adapters/reachy_mini.md](adapters/reachy_mini.md) |
-| | `reachy_mini:mock` | ✅ | | |
-| | `reachy_mini:sdk` | 🧪 every SDK name VERIFIED at a pinned commit and the 1.10.0 wheel, never run on a robot | [`quackd/adapters/reachy_mini/upstream_api.py`](../quackd/adapters/reachy_mini/upstream_api.py) | |
 | LeRobot | `lerobot:mock` | ✅ | | [adapters/lerobot.md](adapters/lerobot.md) |
 | | `lerobot:real` | 🧪 every LeRobot name VERIFIED at a pinned commit, exercised with a fake arm, never run on an arm (Python 3.12+) | [`quackd/adapters/lerobot/upstream_api.py`](../quackd/adapters/lerobot/upstream_api.py) | |
 | rosbridge | `rosbridge:mock` | ✅ | | [adapters/rosbridge.md](adapters/rosbridge.md) |
@@ -95,8 +92,8 @@ Sources: [duck-ipc-proto/src/lib.rs](https://github.com/pollen-robotics/microduc
 
 `robot.init` (moves every joint), `robot.relax` (the robot collapses), `system.*`, `net.*`,
 `update.*`. The gamepad (`padd`) keeps authority on hardware; quackd does not arbitrate.
-The same principle holds on every adapter: `disable_motors` is never sent to a Reachy,
-`disable_torque` never to an arm, and a base over rosbridge gets a zero Twist, not silence.
+The same principle holds on every adapter: `disable_torque` is never sent to an arm, and a
+base over rosbridge gets a zero Twist, not silence.
 On an Open Duck the guarantee is stronger than a promise: the bridge protocol has no word
 that reaches torque, so going limp is unreachable rather than merely forbidden.
 
@@ -177,8 +174,8 @@ its allowlist moves a leg.
 
 Ran `--robot open_duck:bridge` against a duck you built, `toddlerbot:bridge` against a
 ToddlerBot on its stand, `xlerobot:zmq` against a cart, `alohamini:zmq` against an AlohaMini,
-`microduck:jsonrpc` against a real duck, `reachy_mini:sdk` against a Reachy Mini (or its
-`--mockup-sim` daemon), `lerobot:real` against an arm, or `rosbridge:ws` against a bridge?
+`microduck:jsonrpc` against a real duck, `lerobot:real` against an arm, or `rosbridge:ws`
+against a bridge?
 Open an issue with `quackd doctor` output and the first lines of
 `transcript.jsonl`. Every row above that flips from 🧪/⏳ to ✅ is one line in an
 `upstream_api.py` and one row here.

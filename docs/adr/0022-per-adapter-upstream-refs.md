@@ -6,9 +6,8 @@
 
 ADR-0006 made `quackd/transport/upstream_api.py` the only module allowed to spell a
 Microduck upstream name, tagged VERIFIED or UNVERIFIED, with a test proving UNVERIFIED
-names are reachable only from the experimental transports. 0.4 adds three more upstreams:
-the Reachy Mini SDK, LeRobot and rosbridge (roslibpy). The rule must scale without
-weakening.
+names are reachable only from the experimental transports. 0.4 adds two more upstreams:
+LeRobot and rosbridge (roslibpy). The rule must scale without weakening.
 
 ## Decision
 
@@ -33,5 +32,4 @@ weakening.
 
 - An adapter's honesty is machine-checked: its docs page must list every ref, and its
   UNVERIFIED identifiers cannot leak into shared code.
-- The Reachy file is pinned to `pollen-robotics/reachy_mini@da0097361c1567f0daf61310e940616171028fd2`
-  (read 2026-09-01); LeRobot and roslibpy pins are recorded when their files are written.
+- LeRobot and roslibpy pins are recorded when their files are written.

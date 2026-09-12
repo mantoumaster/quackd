@@ -21,9 +21,8 @@ backticked in the README.
   on the manifest itself, so a manifest that declares `go_to` on a robot with
   `mobility: none` is rejected before any registry or run exists.
 - **Extensions** are declared per adapter: Microduck `sit stand stand_up kick grab gaze
-  quack`, Reachy Mini `gaze express play_sound wake_up`, LeRobot `pick place move_joints
-  gripper`. `quack` and `say` are separate verbs (different parameter models on the same
-  intent), not aliases.
+  quack`, LeRobot `pick place move_joints gripper`. `quack` and `say` are separate verbs
+  (different parameter models on the same intent), not aliases.
 - **Composite verbs choose their strategy from the manifest.** `search_scan` turns in
   place when the robot has twist and mobility (exactly today's loop, also for bare
   transports) and sweeps the head when it only has gaze. An adapter may override that

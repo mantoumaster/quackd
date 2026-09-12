@@ -38,12 +38,6 @@ COLORWAY_RGB: dict[str, tuple[int, int, int]] = {
 }
 DUCK_BODY_HEIGHT_M = 0.18  # how tall a peer looks in another duck's camera
 
-# A stationary head is slate: OpenCV HSV saturation 8, below every detector band's floor,
-# so it can never forge a ball, person, pet or duck detection, yet humans see it in the GIF.
-HEAD = (150, 150, 155)
-HEAD_BODY_HEIGHT_M = 0.28
-HEAD_CAM_HEIGHT_M = 0.25
-
 CAM_FOV_DEG = 90.0
 CAM_HEIGHT_M = 0.20
 HORIZON = 0.45  # fraction of frame height
@@ -102,16 +96,6 @@ def render_topdown(world: World, size: int = 256) -> Image.Image:
             draw.text((cx - 10, cy + rr), d.posture, fill=TEXT)
         if d.holding:
             draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=BALL)
-    for i, head in enumerate(world.heads):
-        cx, cy = px(head.x, head.y)
-        rr = head.r * scale
-        draw.rectangle([cx - rr, cy - rr, cx + rr, cy + rr], fill=HEAD, outline=WALL)
-        ga = head.theta + head.head_yaw
-        draw.line([cx, cy, cx + rr * 2.2 * math.cos(ga), cy - rr * 2.2 * math.sin(ga)], fill=WALL)
-        draw.text((cx - 4, cy - rr - 12), f"R{i}", fill=TEXT)
-        if world.t < head.busy_until:
-            draw.line([cx - rr, cy - rr, cx - rr - 4, cy - rr - 6], fill=TEXT)
-            draw.line([cx + rr, cy - rr, cx + rr + 4, cy - rr - 6], fill=TEXT)
     return img
 
 
@@ -124,11 +108,10 @@ def _render_cam(
     heading: float,
     cam_height: float,
     skip_duck: int | None,
-    skip_head: int | None,
 ) -> Image.Image:
     """A first-person view from (ox, oy) facing `heading`. Floor objects project below the
     horizon by f·h/d, size ∝ 1/d. Peers are body-colour boxes (no beak — hue collision with
-    the ball); heads are slate boxes."""
+    the ball)."""
     w = h = size
     img = Image.new("RGB", (w, h), SKY)
     draw = ImageDraw.Draw(img)
@@ -150,11 +133,6 @@ def _render_cam(
     if world.ball.present:
         dist, bearing = world.relative_to(world.ball.x, world.ball.y, ox=ox, oy=oy, heading=heading)
         objects.append((dist, bearing, world.ball.r, 0.0, BALL, True))
-    for j, head in enumerate(world.heads):  # after the ball: no-op for head-free worlds
-        if j == skip_head:
-            continue
-        dist, bearing = world.relative_to(head.x, head.y, ox=ox, oy=oy, heading=heading)
-        objects.append((dist, bearing, head.r, HEAD_BODY_HEIGHT_M, HEAD, False))
 
     # far to near, so near things occlude
     for dist, bearing, radius, height, colour, round_ in sorted(objects, key=lambda o: -o[0]):
@@ -173,7 +151,7 @@ def _render_cam(
 
 
 def render_duckcam(world: World, size: int = 256, *, duck_index: int = 0) -> Image.Image:
-    """One duck's first-person view (byte-identical to 0.3 for a world without heads)."""
+    """One duck's first-person view (byte-identical to 0.3)."""
     d = world.ducks[duck_index]
     return _render_cam(
         world,
@@ -183,20 +161,4 @@ def render_duckcam(world: World, size: int = 256, *, duck_index: int = 0) -> Ima
         heading=d.theta + d.head_yaw,
         cam_height=CAM_HEIGHT_M,
         skip_duck=duck_index,
-        skip_head=None,
-    )
-
-
-def render_headcam(world: World, size: int = 256, *, head_index: int = 0) -> Image.Image:
-    """A stationary head's view: the same projection from its pose and gaze."""
-    head = world.heads[head_index]
-    return _render_cam(
-        world,
-        size,
-        ox=head.x,
-        oy=head.y,
-        heading=head.theta + head.head_yaw,
-        cam_height=HEAD_CAM_HEIGHT_M,
-        skip_duck=None,
-        skip_head=head_index,
     )

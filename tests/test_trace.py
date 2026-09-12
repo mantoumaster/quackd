@@ -673,8 +673,8 @@ def test_the_coordinators_events_render_as_flock_lines_in_the_recorders_words() 
             "auction first bid duck-1 0.42 m",
         ),
         (
-            TraceEvent("claim", 0.0, {"kicker": "duck-1", "dist": 0.62, "spotter": "reachy-01"}),
-            "claim   duck-1 (0.62 m), spotter reachy-01",
+            TraceEvent("claim", 0.0, {"kicker": "duck-1", "dist": 0.62, "spotter": "r-2"}),
+            "claim   duck-1 (0.62 m), spotter r-2",
         ),
         (TraceEvent("miss", 0.0, {"duck": "duck-0"}), "miss    duck-0, re-searching"),
         (TraceEvent("kick_done", 0.0, {"kicker": "duck-2"}), "kicked  by duck-2, the spotter"),

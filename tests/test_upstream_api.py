@@ -16,7 +16,6 @@ import pytest
 from quackd.adapters.alohamini import upstream_api as alohamini_api
 from quackd.adapters.lerobot import upstream_api as lerobot_api
 from quackd.adapters.open_duck import upstream_api as open_duck_api
-from quackd.adapters.reachy_mini import upstream_api as reachy_api
 from quackd.adapters.rosbridge import upstream_api as rosbridge_api
 from quackd.adapters.toddlerbot import upstream_api as toddlerbot_api
 from quackd.adapters.xlerobot import upstream_api as xlerobot_api
@@ -35,18 +34,6 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
             "doctor.py",
         },
         ("https://github.com/pollen-robotics/microduck",),
-    ),
-    (
-        reachy_api,
-        {
-            "adapters/reachy_mini/upstream_api.py",
-            "adapters/reachy_mini/sdk.py",
-            "doctor.py",
-        },
-        (
-            "https://github.com/pollen-robotics/reachy_mini",
-            "https://huggingface.co/datasets/pollen-robotics/",
-        ),
     ),
     (
         lerobot_api,
@@ -123,7 +110,6 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
 ]
 IDS = [
     "microduck",
-    "reachy_mini",
     "lerobot",
     "rosbridge",
     "open_duck",
@@ -205,20 +191,6 @@ def test_microduck_refs_are_pinned_to_a_commit() -> None:
     assert "/blob/main/" not in upstream_api.IPC_PROTO
     for ref in upstream_api.all_refs():
         assert "/blob/main/" not in ref.source, ref
-
-
-def test_reachy_verified_vocabulary_matches_the_sdk_read() -> None:
-    # pinned to what was read; the sdk backend asserts the same strings at runtime
-    assert reachy_api.MDNS_SERVICE.name == "_reachy-mini._tcp.local."
-    assert reachy_api.WS_PATH.name == "/ws/sdk"
-    assert reachy_api.EMOTIONS_DATASET.name == "pollen-robotics/reachy-mini-emotions-library"
-    assert "no TTS" in reachy_api.MEDIA_PLAY_SOUND.note
-    assert reachy_api.GET_STATUS.name == "client.get_status"  # not a ReachyMini method
-    assert (
-        reachy_api.DISABLE_MOTORS.status == "VERIFIED" and "NEVER" in reachy_api.DISABLE_MOTORS.note
-    )
-    assert reachy_api.PIN in reachy_api.LOOK_AT_WORLD.source
-    assert len(reachy_api.refs_by_status("VERIFIED")) >= 40
 
 
 def test_lerobot_and_rosbridge_vocabularies_match_what_was_read() -> None:

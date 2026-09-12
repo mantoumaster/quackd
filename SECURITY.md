@@ -8,13 +8,13 @@ on the body, and each adapter declares it in its manifest's `safety_authority`
 velocities, detects falls, and zeroes motion when commands stall. On an Open Duck Mini the
 deadman is quackd's own daemon, running on the robot and zeroing the velocity inside the
 50 Hz loop, so it is code we ship and therefore code we are answerable for. On the other
-six bodies upstream has no deadman that covers the whole body. A Reachy Mini and a rosbridge
-base declare `native: none`, and a LeRobot arm has a torque limit but holds its last goal.
+five bodies upstream has no deadman that covers the whole body. A rosbridge base
+declares `native: none`, and a LeRobot arm has a torque limit but holds its last goal.
 An XLeRobot's host watchdog zeroes its wheels and leaves the arms holding, and an
 AlohaMini's covers the base and the lift and never the arms, so both are partial by
 construction. A ToddlerBot has no watchdog, timeout or e-stop anywhere upstream at all, and
 cannot get up if it falls, so its only deadman is the one quackd's own daemon runs. On all
-six, quackd's own heartbeat and `stop` are most or all of what stops them. That makes the client-side
+five, quackd's own heartbeat and `stop` are most or all of what stops them. That makes the client-side
 layer (verb allowlists, confirm gates, budgets, the heartbeat, the kill switch)
 security-relevant, not just a convenience. A bug that lets an LLM or an MCP client bypass
 it is a security issue.

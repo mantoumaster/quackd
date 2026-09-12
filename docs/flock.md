@@ -1,29 +1,25 @@
 # Flock mode
 
 Several simulated robots cooperating on one task. Ships since v0.3, **simulator only**,
-and labelled experimental. Two demos:
+and labelled experimental.
 
 ```bash
-uvx quackd run flock-kick --provider fake --seed 3               # ducks only: split, auction, kick
-uvx quackd run reachy-spots-duck-kicks --provider fake --seed 3  # a Reachy Mini head spots, a duck kicks
+uvx quackd run flock-kick --provider fake --seed 3               # ducks split the search, auction, kick
 ```
 
-In the first, ducks split the search for a ball, the one that bids the shortest camera
-distance wins the kick, and everyone else keeps clear. In the second (0.4), two different
-bodies share the job: a stationary head that can look but not walk finds the ball and
-judges the kick from its own camera, a duck that can walk and kick does the kicking. One
-GIF, one `flock.jsonl` you can read the cooperation out of, zero API keys.
+Ducks split the search for a ball, the one that bids the shortest camera distance wins the
+kick, and everyone else keeps clear. One GIF, one `flock.jsonl` you can read the
+cooperation out of, zero API keys.
 
 ## What a flock is
 
 2 to 4 robots in one shared arena on one shared clock, each with its **own** safety
 executor enforcing the same `.duck` contract: allowlist, budgets, machine enforced abort
 rules, per robot transcript. Ducks come in the four colorways (Cream, Sky, Lavender,
-Graphite); a Reachy Mini head sits at a fixed wall pose. A deterministic **coordinator**
-referees. Add a `flock:` block to a `.duck` file or pass `--flock N` to any duck; name the
-members' robots with `robots:` in the file or `--robots name=<adapter>:<backend>,...`.
-Every member acts only through the verbs its own manifest provides
-([ADR-0020](adr/0020-heterogeneous-flocks.md)).
+Graphite). A deterministic **coordinator** referees. Add a `flock:` block to a `.duck` file
+or pass `--flock N` to any duck; name the members' robots with `robots:` in the file or
+`--robots name=<adapter>:<backend>,...`. Every member acts only through the verbs its own
+manifest provides ([ADR-0020](adr/0020-heterogeneous-flocks.md)).
 
 ## The bus
 
@@ -69,17 +65,18 @@ preempts it cleanly and does not count as a failure.
 
 ## Heterogeneous roles (0.4)
 
-A `duck: 1` file may declare `flock.roles`, and quackd knows exactly two:
+A `duck: 1` file may declare `flock.roles`, and quackd knows exactly two, `spotter` and
+`kicker`:
 
 ```yaml
 flock:
-  members: [reachy-01, duck-01]
+  members: [duck-01, duck-02]
   roles:
     spotter: {requires: [observe, gaze]}
     kicker: {requires: [go_to, kick]}
 robots:
-  reachy-01: reachy_mini:sim2d
   duck-01: microduck:sim2d
+  duck-02: microduck:sim2d
 ```
 
 - **Capability aware bids.** A robot bids only for a role whose `requires` its manifest
@@ -91,7 +88,7 @@ robots:
   previous kicker keeps its claim under the same hysteresis rule. The **spotter is held
   for the run** (its reference frame must not change between kicks); the kicker is
   re auctioned every cycle. A duck can spot too, so two ducks make a valid spotter and
-  kicker pair; a head cannot kick.
+  kicker pair, which is the only pairing quackd ships an adapter for today ([ADR-0020](adr/0020-heterogeneous-flocks.md)'s amendment).
 - **SPOT**: gaze at the sighting, take a fresh frame, keep the target in view. The
   spotter's first sighting is its reference point.
 - **KICK, with roles**: `go_to`, `kick`, step aside, and report `kick_done`. The actor
@@ -105,23 +102,28 @@ robots:
   back to search and kick again against the same reference, so a rally adds up.
 
 The spotter judges, the world vetoes: `summary.json` only says `success` when the
-spotter's verdict and the simulator's `ball_displacement_m` agree.
+spotter's verdict and the simulator's `ball_displacement_m` agree. No bundled starter
+exercises this path today: it shipped alongside a stationary-head adapter that no longer
+exists, so the mechanism above is real and tested at the unit level
+([tests/test_flock_roles.py](../tests/test_flock_roles.py)) but currently undemonstrated
+end to end. Nor can you simply write one: a `.duck` like the one above **validates** (`quackd
+validate` reports a flock of 2) and then **fails at startup** with `no live robot can take the
+spotter role`, because the coordinator checks who can fill each role before any member has
+finished connecting and reported its vocabulary. Nothing in the shipped tree reaches the
+role and auction path end to end, and that is the honest state of it.
 
 ## Frame of reference
 
 There is no computable relative frame between two robots on hardware: the Microduck has
-no absolute localisation and quackd does not know where a Reachy Mini is mounted. Two
-consequences shape the design. The spotter judges displacement in its **own camera
-frame**, against its own first sighting, which needs no shared frame at all; that is why
-a stationary spotter is the honest judge on hardware too. And **frame hints** (`HINT`
-messages) are the spotter's arena frame estimate of the target, which only exist in the
-simulator where every robot knows its pose: a receiver uses one solely to choose which
-way to turn before its own `search_scan`, every approach and every kick uses the kicker's
-own camera. `flock.frame_hints: auto` turns them on only when every member runs in
-`sim2d`; on hardware they are off. A fixed camera can be occluded by static scenery; the
-shipped head pose sees the ball at spawn on most seeds and on every seed once it turns,
-and an occluded spotter simply reports `lost` and the flock re searches. That limit is
-documented, not worked around with ground truth.
+no absolute localisation, and quackd does not assume two robots share a coordinate frame
+in general. Two consequences shape the design. The spotter judges displacement in its
+**own camera frame**, against its own first sighting, which needs no shared frame at all;
+that is why a stationary spotter would be the honest judge on hardware too. And **frame
+hints** (`HINT` messages) are the spotter's arena frame estimate of the target, which only
+exist in the simulator where every robot knows its pose: a receiver uses one solely to
+choose which way to turn before its own `search_scan`, every approach and every kick uses
+the kicker's own camera. `flock.frame_hints: auto` turns them on only when every member
+runs in `sim2d`; on hardware they are off.
 
 ## What the LLM does, and does not do
 
@@ -155,16 +157,12 @@ runs/<timestamp>-flock-kick/
   ducks/duck-0/        # per robot transcript.jsonl and frames/ (no summary.json on purpose)
 ```
 
-Three annotated lines from a real `flock.jsonl`, and three more from a heterogeneous run:
+Three annotated lines from a real `flock.jsonl`:
 
 ```jsonc
 {"sim_t": 2.4, "kind": "bus", "msg": {"kind": "BID", "src": "duck-1", "ball_dist_m": 0.62}}
 {"sim_t": 2.8, "kind": "auction_decision", "kicker": "duck-1", "bids": {"duck-1": 0.62}, "tie": false}
 {"sim_t": 8.6, "kind": "bus", "msg": {"kind": "RESULT", "src": "duck-1", "status": "kicked", "ball_moved_m": 0.59}}
-
-{"sim_t": 0.3, "kind": "bus", "msg": {"kind": "BID", "src": "reachy-01", "role": "spotter", "ball_dist_m": 1.1, "provides": ["gaze", "observe", "..."]}}
-{"sim_t": 9.3, "kind": "bus", "msg": {"kind": "RESULT", "src": "duck-01", "status": "kick_done", "ball_moved_m": 0.16}}
-{"sim_t": 9.4, "kind": "bus", "msg": {"kind": "VERDICT", "src": "reachy-01", "kicker": "duck-01", "verdict": "moved", "moved_m": 0.38}}
 ```
 
 ## Watching a flock run
@@ -214,18 +212,17 @@ only influences failure path timing, as in solo runs.
 
 ## Which robots can join
 
-Flock mode knows the **Microduck** and the **Reachy Mini**. Any other adapter is refused
-when the run starts, with the names it does know. An Open Duck Mini cannot join a flock
-yet, and that is a limit of `quackd/flock/runner.py`, not of the robot: extending it is
-future work rather than a hardware problem.
+Flock mode knows the **Microduck**. Any other adapter is refused when the run starts,
+with the names it does know. An Open Duck Mini cannot join a flock yet, and that is a
+limit of `quackd/flock/runner.py`, not of the robot: extending it is future work rather
+than a hardware problem.
 
 ## Status and future work
 
 Sim only. Nothing multi robot has run on hardware, and the acoustic channel stays
-theatrical (a quack, or a Reachy's expressive sound, marks the sighting; Wi Fi would carry
-the real data). Two choreographies ship: `flock-kick` (ducks) and
-`reachy-spots-duck-kicks` (a head and a duck), both 10 of 10 seeds with scripted pilots
-and ground truth checks. An MQTT bus implementing the same `Bus` protocol exists
+theatrical (a quack marks the sighting; Wi Fi would carry the real data). One
+choreography ships, `flock-kick` (ducks), 10 of 10 seeds with scripted pilots and ground
+truth checks. An MQTT bus implementing the same `Bus` protocol exists
 ([lan.md](lan.md)), library only and tested on a fake broker; a flock across machines
 also needs a clock across machines, which is future work, as are hardware flocks once
 Microducks ship. See [adapter-status.md](adapter-status.md) for the wider honesty

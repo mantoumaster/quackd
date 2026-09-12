@@ -61,7 +61,7 @@ name a camera and `pick` when a policy object was injected.
 - **No deadman.** Nothing in LeRobot's `Robot` stops an arm when the client goes quiet; a
   position-controlled arm holds its last goal. quackd's `stop` re-sends the present
   position as the goal and never calls `disable_torque()`, the same principle as never
-  sending `disable_motors` to a Reachy or `robot.relax` to a Microduck.
+  sending `robot.relax` to a Microduck.
 - **The native limit** is what LeRobot writes at `configure()`: the gripper's torque and
   current caps (50 %), plus `max_relative_target` when a config sets it. That is why the
   manifest says `torque_limit`.

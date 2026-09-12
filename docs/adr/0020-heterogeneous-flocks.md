@@ -1,6 +1,22 @@
 # ADR-0020: Heterogeneous flocks, spotter-judged success, and the sim head
 
-**Status:** accepted · **Date:** 2026-09-02 · Implemented in Phases 2 and 3 of 0.4 ([design](../design/multi-robot.md))
+**Status:** accepted, amended · **Date:** 2026-09-02 · Implemented in Phases 2 and 3 of 0.4 ([design](../design/multi-robot.md))
+
+**Amended 2026-09-12:** the Reachy Mini adapter was removed ([ADR-0023](0023-reachy-mini.md),
+now superseded), and it was the only "stationary head" embodiment quackd ever had. So
+`StationaryHead`, `HEAD_POSES` and the rest of the "sim head" bullet below are gone from
+`sim2d/world.py` and `sim2d/render.py`, and `flock/runner.py`'s `make_sim_flock` lost the
+branch that paired a head with a Microduck. The Consequences note about a second simulated head
+and `MAX_HEADS` goes with them. Everything else in this ADR about the auction and the role
+machinery is untouched and still true: bids still carry a capability term, and role assignment
+and spotter-judged success are still generic mechanisms keyed on a manifest's declared verbs
+rather than on any one adapter. What is gone is any way to exercise them. A two-Microduck
+`flock.roles` duck, which the "a Microduck also satisfies spotter" consequence below implies
+should work, passes `quackd validate` and then fails at startup with `no live robot can take
+the spotter role`: the coordinator judges eligibility before members report their vocabulary,
+a latent bug this ADR's own choreography never hit because its spotter was the first to bid.
+So nothing ships that reaches the role and auction path any more, now that
+`reachy-spots-duck-kicks` is gone with the adapter it needed.
 
 ## Context
 

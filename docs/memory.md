@@ -26,7 +26,7 @@ never share notes (a note about the cartoon arena is wrong for your living room)
 ~/.quackd/memory/microduck-sim2d.jsonl
 ~/.quackd/memory/microduck-mujoco.jsonl
 ~/.quackd/memory/microduck-jsonrpc.jsonl
-~/.quackd/memory/reachy-mini-mock.jsonl
+~/.quackd/memory/lerobot-mock.jsonl
 ```
 
 The key is the body, not the name you gave it, so two members of one fleet that are the

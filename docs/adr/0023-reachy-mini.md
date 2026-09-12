@@ -1,6 +1,12 @@
 # ADR-0023: Reachy Mini: `say` degrades to mood sounds, `stop` is never limp
 
-**Status:** accepted · **Date:** 2026-09-02 · Implemented in Phase 2 of 0.4 ([design](../design/multi-robot.md))
+**Status:** superseded · **Date:** 2026-09-02 · Implemented in Phase 2 of 0.4 ([design](../design/multi-robot.md))
+
+**Superseded 2026-09-12:** the Reachy Mini adapter was removed from quackd. Everything below
+is left as the record of what 0.4 through 0.8 actually shipped; none of it applies to the
+current tree. See the CHANGELOG's `[Unreleased]` entry for the removal and
+[ADR-0020](0020-heterogeneous-flocks.md)'s amendment for what the removal did and did not take
+with it.
 
 ## Context
 

@@ -119,14 +119,6 @@ widen it. **You are responsible for your robot.**
   (moves every joint). Use `robotctl` for those, with the robot on its stand.
 - A good first contract: `allow: [quack, gaze, stop]`, then add walking.
 
-**A Reachy Mini (a head that exists today):**
-
-- `wake_up` moves every joint, which is why it is confirm-gated in the manifest. Give the
-  head clearance before allowing it, and keep fingers away from the neck linkage.
-- There is no deadman and no e-stop that we verified, so quackd's heartbeat and `stop`
-  (which is `cancel_move`) are the only thing that halts a move in progress.
-- The head has no battery reading, so a `Battery below N%` abort cannot fire on it.
-
 **A LeRobot arm (an SO-101 class arm on a desk):**
 
 - An arm sweeps a volume. Clear it before `move_joints`, and keep hands out of the path.
@@ -184,7 +176,6 @@ quackd goes quiet" differs per body. Each manifest says so
 | Body | Native authority | What `stop` does | Never sent |
 |---|---|---|---|
 | Microduck (`microduck:*`) | `robotd_deadman`: velocity zeroes when intents stop | `robot.stop` | `robot.relax`, `robot.init` |
-| Reachy Mini (`reachy_mini:*`) | `none`: no client deadman or e-stop was verified; quackd's heartbeat is the authority | `cancel_move` | `disable_motors` (limp) |
 | LeRobot arm (`lerobot:*`) | `torque_limit`: the gripper's torque and current caps, plus `max_relative_target` when configured; no deadman, a position-controlled arm holds its goal | re-sends the present position as the goal (hold) | `disable_torque` (LeRobot's own `disconnect()` does, by its default, at the end of a session) |
 | rosbridge base (`rosbridge:*`) | `none`: neither rosbridge nor the driver has a deadman we verified | publishes a zero Twist; quackd also re-sends the Twist at 10 Hz while a verb runs | silence |
 | Open Duck Mini v2 (`open_duck:*`) | `none` in the robot, but quackd's own bridge daemon runs on it and zeroes the velocity after 300 ms of silence, inside the 50 Hz loop | zero velocity, head held, torque still on | anything that reaches torque, the head-control mode button, any direct servo or IMU read |
@@ -192,10 +183,10 @@ quackd goes quiet" differs per body. Each manifest says so
 | AlohaMini (`alohamini:*`) | `none`: the host's 1 s watchdog calls `stop_motion()`, which is the base and the lift and never the arms. `deadman_scope` says `base_and_lift_only` | one payload carrying all three velocity zeros **and** a lift velocity zero, because omitting either leaves the robot travelling | anything that disables arm torque. As shipped the arms are already limp, which is why the arm verbs need quackd's own host wrapper and refuse without it |
 | ToddlerBot (`toddlerbot:*`) | `none` in the robot, and nothing upstream has a watchdog, timeout or e-stop at all. quackd's own daemon runs on it and after 500 ms of silence slews to the safe pose at upstream's own 0.3 rad/s, waist first, and **holds** | holds the last verified-good measured pose. There is no velocity at this hardware boundary, so `stop` cannot mean zero velocity | torque off, ever. Silence on this body means hold forever and torque off means fall, so the deadman is a trajectory rather than a message |
 
-The verbs a body lacks are not gated, they do not exist: a head cannot `kick`, an arm
-cannot `move`, a base cannot `say`, and `validate --robot` says so before a run starts.
-`pick` on the arm and `wake_up` on the head are confirm-gated in their manifests because
-they move the whole body under a controller quackd does not write.
+The verbs a body lacks are not gated, they do not exist: an arm cannot `move`, a base
+cannot `say`, and `validate --robot` says so before a run starts.
+`pick` on the arm is confirm-gated in its manifest because it hands the whole arm to a
+controller quackd does not write.
 
 ## What quackd does not protect against
 

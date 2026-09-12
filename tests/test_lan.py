@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from quackd.adapters.factory import RobotSpec, describe
+from quackd.adapters.manifest import RobotManifest, VerbSpec
 from quackd.cli import app
 from quackd.lan import LanNotInstalled
 from quackd.lan import announce as lan_announce
@@ -29,7 +30,22 @@ from quackd.lan.txt import (
 )
 
 DUCK = describe(RobotSpec("microduck", "mock", "duck-01"))
-REACHY = describe(RobotSpec("reachy_mini", "mock", "reachy-01"))
+# A hand-rolled, deliberately different-capability manifest: LAN identity/discovery is
+# adapter-agnostic, so a second real robot isn't needed, just a second, distinct one.
+HEAD = RobotManifest(
+    id="head-01",
+    vendor="acme",
+    model="fixed-cam",
+    embodiment="arm",
+    mobility="none",
+    intents=["gaze", "sound"],
+    sensors=["camera"],
+    verbs=[
+        VerbSpec(name="observe", core=True),
+        VerbSpec(name="report_state", core=True),
+        VerbSpec(name="say", core=True),
+    ],
+)
 
 
 class FakeZeroconf:
@@ -82,10 +98,10 @@ def test_parse_txt_takes_bytes_and_drops_valueless_keys() -> None:
 
 
 def test_robot_from_txt_rejects_other_versions_and_missing_identity() -> None:
-    good = txt_record(REACHY, adapter="reachy_mini")
+    good = txt_record(HEAD, adapter="head")
     robot = robot_from_txt(good, instance="x", host="h.local.", port=0, addresses=("10.0.0.2",))
-    assert robot is not None and robot.manifest_id == "reachy-01" and robot.matches(REACHY)
-    assert not robot.matches(DUCK) and robot.n_verbs == len(REACHY.verbs)
+    assert robot is not None and robot.manifest_id == "head-01" and robot.matches(HEAD)
+    assert not robot.matches(DUCK) and robot.n_verbs == len(HEAD.verbs)
     for broken in ({**good, "v": "2"}, {k: v for k, v in good.items() if k != "mid"}):
         assert robot_from_txt(broken, instance="x", host="h", port=0, addresses=()) is None
     odd = robot_from_txt({**good, "nverbs": "many"}, instance="x", host="h", port=0, addresses=())
@@ -112,14 +128,14 @@ def test_announce_registers_a_record_and_close_withdraws_it() -> None:
 
 def test_discover_reads_back_what_was_announced_sorted_by_name() -> None:
     zc = FakeZeroconf()
-    announce(REACHY, adapter="reachy_mini", zc=zc, info_factory=lambda r: r, addresses=["10.0.0.2"])
+    announce(HEAD, adapter="head", zc=zc, info_factory=lambda r: r, addresses=["10.0.0.2"])
     announce(DUCK, adapter="microduck", zc=zc, info_factory=lambda r: r, addresses=["10.0.0.3"])
     zc.register_service(  # a stranger on the same service type, another record version
         ServiceRecord(SERVICE_TYPE, "x." + SERVICE_TYPE, 0, {"v": "9", "mid": "x"}, "s.", ())
     )
     robots = discover(0.0, zc=zc, browse=browse)
-    assert [r.manifest_id for r in robots] == ["duck-01", "reachy-01"]
-    assert robots[1].matches(REACHY) and robots[1].addresses == ("10.0.0.2",)
+    assert [r.manifest_id for r in robots] == ["duck-01", "head-01"]
+    assert robots[1].matches(HEAD) and robots[1].addresses == ("10.0.0.2",)
     assert robots[0].row()["adapter"] == "microduck"
     assert robots[1].host.endswith(".local.") and robots[1].port == 0
 
@@ -176,27 +192,25 @@ def test_cli_discover_prints_a_table_or_json(fake_lan: FakeZeroconf) -> None:
     runner = CliRunner()
     empty = runner.invoke(app, ["discover", "--timeout", "0"])
     assert empty.exit_code == 0 and "no quackd robots answered" in empty.output
-    announce(
-        REACHY, adapter="reachy_mini", zc=fake_lan, info_factory=lambda r: r, addresses=["10.0.0.2"]
-    )
+    announce(HEAD, adapter="head", zc=fake_lan, info_factory=lambda r: r, addresses=["10.0.0.2"])
     table = runner.invoke(app, ["discover", "--timeout", "0"])
     assert table.exit_code == 0, table.output
     # the rich table wraps in an 80-column terminal; the exact fields are checked as JSON
-    assert "quackd robots on the LAN (1)" in table.output and "reachy-01" in table.output
+    assert "quackd robots on the LAN (1)" in table.output and "head-01" in table.output
     as_json = runner.invoke(app, ["discover", "--timeout", "0", "--json"])
     rows = [json.loads(line) for line in as_json.output.splitlines() if line.startswith("{")]
-    assert len(rows) == 1 and rows[0]["manifest_id"] == "reachy-01"
-    assert rows[0]["adapter"] == "reachy_mini" and rows[0]["embodiment"] == "stationary_head"
-    assert rows[0]["addresses"] == ["10.0.0.2"] and rows[0]["digest"] == REACHY.digest()
+    assert len(rows) == 1 and rows[0]["manifest_id"] == "head-01"
+    assert rows[0]["adapter"] == "head" and rows[0]["embodiment"] == "arm"
+    assert rows[0]["addresses"] == ["10.0.0.2"] and rows[0]["digest"] == HEAD.digest()
 
 
 def test_cli_announce_advertises_a_static_manifest_then_withdraws(fake_lan: FakeZeroconf) -> None:
     runner = CliRunner()
     res = runner.invoke(
-        app, ["announce", "--robot", "reachy_mini:mock", "--name", "reachy-7", "--for", "0"]
+        app, ["announce", "--robot", "microduck:mock", "--name", "duck-7", "--for", "0"]
     )
     assert res.exit_code == 0, res.output
-    assert "reachy-7._quackd._tcp.local." in res.output and "10.0.0.9" in res.output
+    assert "duck-7._quackd._tcp.local." in res.output and "10.0.0.9" in res.output
     assert "withdrawn" in res.output and fake_lan.registered == []  # closed on the way out
     bad = runner.invoke(app, ["announce", "--robot", "nope:x", "--for", "0"])
     assert bad.exit_code == 1 and "unknown adapter" in bad.output

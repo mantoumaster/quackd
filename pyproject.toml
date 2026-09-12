@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "quackd"
 dynamic = ["version", "readme"]
-description = "Give your small robot a brain. Any LLM, one .duck file. Microduck, Open Duck Mini, Reachy Mini, LeRobot arms, XLeRobot carts, AlohaMini, ToddlerBot and ROS bases."
+description = "Give your small robot a brain. Any LLM, one .duck file. Microduck, Open Duck Mini, LeRobot arms, XLeRobot carts, AlohaMini, ToddlerBot and ROS bases."
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 authors = [{ name = "Rok Benko" }]
 keywords = [
-  "microduck", "open-duck-mini", "reachy-mini", "lerobot", "xlerobot", "alohamini", "toddlerbot", "humanoid", "ros", "rosbridge",
+  "microduck", "open-duck-mini", "lerobot", "xlerobot", "alohamini", "toddlerbot", "humanoid", "ros", "rosbridge",
   "robotics", "embodied-ai", "physical-ai", "llm-agents",
   "mcp", "model-context-protocol", "reinforcement-learning", "sim2real",
   "claude", "openai", "ollama", "vllm", "llama-cpp", "local-llm",
@@ -51,9 +51,6 @@ live = ["pygame>=2.5"]
 # onnxruntime is what runs the robot's own walking policy; the Microduck's meshes and that
 # policy are fetched at run time and never shipped here (docs/licenses.md).
 mujoco = ["mujoco>=3.12,<4", "onnxruntime>=1.20"]
-# Robot SDKs are extras too: the default install never imports one. reachy-mini pulls
-# onnxruntime, FastAPI and a GStreamer bundle (read from the 1.10.0 wheel, 2026-09-02).
-reachy = ["reachy-mini>=1.10,<2"]
 # LAN: zeroconf discovery and the MQTT flock bus (docs/lan.md). Never imported by default.
 lan = ["zeroconf>=0.132", "paho-mqtt>=2,<3"]
 # LeRobot needs Python 3.12 and pulls torch; the marker keeps the lock solvable on 3.11.

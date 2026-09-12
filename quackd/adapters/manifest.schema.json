@@ -126,7 +126,7 @@
       "type": "integer"
     },
     "id": {
-      "description": "Slug, unique within a run or flock (e.g. reachy-01).",
+      "description": "Slug, unique within a run or flock (e.g. arm-01).",
       "title": "Id",
       "type": "string"
     },
@@ -144,7 +144,6 @@
         "quadruped",
         "wheeled",
         "arm",
-        "stationary_head",
         "humanoid"
       ],
       "title": "Embodiment",

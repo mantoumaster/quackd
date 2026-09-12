@@ -37,21 +37,6 @@ GRAB_CONE_DEG = 30.0
 GRAB_SUCCESS_P = 0.6  # open-loop scoop: deliberately unreliable (fetch is experimental)
 HEAD_YAW_LIMIT = math.radians(60)
 
-# A stationary head (0.4): a fixed camera on a neck, no legs. It lives at one of these wall
-# poses, facing inward, and draws NOTHING from the RNG, so every world without a head keeps
-# the pre-0.4 seed sequence. The first pose was measured to see the ball at spawn on seeds
-# 0-9 (docs/design/multi-robot.md); the head's yaw range is a Reachy Mini's (180 deg).
-HEAD_R = 0.08
-HEAD_YAW_RANGE = math.pi
-HEAD_PITCH_RANGE = math.radians(40)
-HEAD_EXPRESS_S = 1.5
-MAX_HEADS = 4
-HEAD_POSES: tuple[tuple[float, float, float], ...] = (
-    (0.0, -(ARENA_HALF - 0.06), math.pi / 2),  # south wall, facing north
-    (-(ARENA_HALF - 0.06), 0.0, 0.0),  # west wall, facing east
-    (ARENA_HALF - 0.06, 0.0, math.pi),  # east wall, facing west
-    (0.0, ARENA_HALF - 0.06, -math.pi / 2),  # north wall, facing south
-)
 MAX_DUCKS = 4
 DUCK_MIN_SPAWN_SEP = 0.35  # pairwise, metres
 
@@ -105,23 +90,6 @@ class Person:
 
 
 @dataclass
-class StationaryHead:
-    """A fixed camera on a neck (a Reachy Mini in the cartoon): it looks, it never walks."""
-
-    x: float
-    y: float
-    theta: float
-    head_yaw: float = 0.0
-    head_pitch: float = 0.0
-    r: float = HEAD_R
-    busy_until: float = 0.0
-    """An expression is playing until this sim time."""
-    expressions: list[tuple[float, str]] = field(default_factory=list)
-    speech: list[tuple[float, str, str]] = field(default_factory=list)
-    """(t, text, voiced_as): what it said and which sound stood in for it."""
-
-
-@dataclass
 class World:
     seed: int = 0
     person: bool = True
@@ -135,32 +103,19 @@ class World:
     kicks_connected: int = 0
     quacks: list[tuple[float, int, str, str | None]] = field(default_factory=list)
     steps: int = 0
-    n_heads: int = 0
-    heads: list[StationaryHead] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if not 0 <= self.n_heads <= MAX_HEADS:
-            raise ValueError(f"n_heads must be 0..{MAX_HEADS}, got {self.n_heads}")
-        if not 0 <= self.n_ducks <= MAX_DUCKS or (self.n_ducks == 0 and self.n_heads == 0):
-            raise ValueError(
-                f"n_ducks must be 1..{MAX_DUCKS} (0 only together with a head), got {self.n_ducks}"
-            )
+        if not 1 <= self.n_ducks <= MAX_DUCKS:
+            raise ValueError(f"n_ducks must be 1..{MAX_DUCKS}, got {self.n_ducks}")
         self.rng = np.random.default_rng(self.seed)
-        # heads sit at fixed poses and draw nothing, so worlds without one keep the
-        # pre-0.4 draw sequence exactly (tests/golden proves it)
-        self.heads = [StationaryHead(x, y, theta) for x, y, theta in HEAD_POSES[: self.n_heads]]
         # duck 0, ball and person spawn in EXACTLY the pre-flock RNG order (determinism)
-        duck0: Duck | None = None
-        if self.n_ducks >= 1:
-            duck0 = Duck(
-                x=float(self.rng.uniform(-0.3, 0.3)),
-                y=float(self.rng.uniform(-0.3, 0.3)),
-                theta=float(self.rng.uniform(-math.pi, math.pi)),
-            )
-            duck0.rng = self.rng  # same object: single-duck draw sequence is bit-identical
-            ax, ay = duck0.x, duck0.y
-        else:
-            ax, ay = self.heads[0].x, self.heads[0].y  # a head-only world clears the head
+        duck0 = Duck(
+            x=float(self.rng.uniform(-0.3, 0.3)),
+            y=float(self.rng.uniform(-0.3, 0.3)),
+            theta=float(self.rng.uniform(-math.pi, math.pi)),
+        )
+        duck0.rng = self.rng  # same object: single-duck draw sequence is bit-identical
+        ax, ay = duck0.x, duck0.y
         for _ in range(1000):
             bx, by = self.rng.uniform(-0.75, 0.75, size=2)
             if math.hypot(bx - ax, by - ay) >= 0.5:
@@ -173,11 +128,10 @@ class World:
                 if (
                     math.hypot(px - ax, py - ay) >= 0.6
                     and math.hypot(px - self.ball.x, py - self.ball.y) >= 0.4
-                    and all(math.hypot(px - h.x, py - h.y) >= 0.4 for h in self.heads)
                 ):
                     break
             self.people.append(Person(float(px), float(py)))
-        self.ducks = [duck0] if duck0 is not None else []
+        self.ducks = [duck0]
         for i in range(1, self.n_ducks):
             extra = self._spawn_extra_duck(i)
             self.ducks.append(extra)
@@ -193,7 +147,6 @@ class World:
                 all(math.hypot(x - d.x, y - d.y) >= DUCK_MIN_SPAWN_SEP for d in self.ducks)
                 and math.hypot(x - self.ball.x, y - self.ball.y) >= 0.5
                 and all(math.hypot(x - p.x, y - p.y) >= 0.4 for p in self.people)
-                and all(math.hypot(x - h.x, y - h.y) >= DUCK_MIN_SPAWN_SEP for h in self.heads)
             ):
                 break
         duck = Duck(x=x, y=y, theta=float(rng.uniform(-math.pi, math.pi)))
@@ -236,11 +189,6 @@ class World:
         d = self.ducks[duck_index]
         heading = d.theta + (d.head_yaw if camera else 0.0)
         return self.relative_to(x, y, ox=d.x, oy=d.y, heading=heading)
-
-    def relative_head(self, x: float, y: float, *, head_index: int = 0) -> tuple[float, float]:
-        """(distance, bearing_rad) of a point in a stationary head's CAMERA frame."""
-        h = self.heads[head_index]
-        return self.relative_to(x, y, ox=h.x, oy=h.y, heading=h.theta + h.head_yaw)
 
     @property
     def ball_displacement_m(self) -> float:
@@ -332,31 +280,6 @@ class World:
     def sound(self, tag: str, text: str | None, duck_index: int = 0) -> None:
         self.quacks.append((self.t, duck_index, tag, text))
 
-    # ── stationary heads (gaze is instantaneous, like a duck's look) ────────────────
-
-    def head_look(self, x: float, y: float, z: float = 0.0, head_index: int = 0) -> bool:
-        """Point a head's camera at a body-frame point. Returns True if clamped."""
-        h = self.heads[head_index]
-        yaw = math.atan2(y, x)
-        pitch = math.atan2(z, math.hypot(x, y))
-        clamped = abs(yaw) > HEAD_YAW_RANGE or abs(pitch) > HEAD_PITCH_RANGE
-        h.head_yaw = float(np.clip(yaw, -HEAD_YAW_RANGE, HEAD_YAW_RANGE))
-        h.head_pitch = float(np.clip(pitch, -HEAD_PITCH_RANGE, HEAD_PITCH_RANGE))
-        return clamped
-
-    def express(self, name: str, head_index: int = 0) -> float:
-        """Play a named expression; the head is busy for its duration. Returns the duration."""
-        h = self.heads[head_index]
-        h.expressions.append((self.t, name))
-        h.busy_until = self.t + HEAD_EXPRESS_S
-        return HEAD_EXPRESS_S
-
-    def head_say(self, text: str, voiced_as: str, head_index: int = 0) -> None:
-        self.heads[head_index].speech.append((self.t, text, voiced_as))
-
-    def head_stop(self, head_index: int = 0) -> None:
-        self.heads[head_index].busy_until = 0.0
-
     # ── physics ─────────────────────────────────────────────────────────────────────
 
     def _integrate_duck(self, d: Duck, dt: float) -> None:
@@ -399,28 +322,11 @@ class World:
                 b.x = float(np.clip(b.x + nx * push, -lim, lim))
                 b.y = float(np.clip(b.y + ny * push, -lim, lim))
 
-    def _resolve_head_collisions(self) -> None:
-        """A head is bolted down: an overlapping duck is pushed fully out of its ring."""
-        for d in self.ducks:
-            for h in self.heads:
-                dx, dy = d.x - h.x, d.y - h.y
-                dist = math.hypot(dx, dy)
-                min_dist = d.r + h.r
-                if dist >= min_dist:
-                    continue
-                if dist < 1e-6:
-                    dx, dy, dist = -math.cos(h.theta), -math.sin(h.theta), 1.0
-                lim = ARENA_HALF - DUCK_R
-                d.x = float(np.clip(h.x + dx / dist * min_dist, -lim, lim))
-                d.y = float(np.clip(h.y + dy / dist * min_dist, -lim, lim))
-
     def step(self, dt: float = DT) -> None:
         for d in self.ducks:  # index order: deterministic
             self._integrate_duck(d, dt)
         if len(self.ducks) > 1:
             self._resolve_duck_collisions()
-        if self.heads:
-            self._resolve_head_collisions()
 
         b = self.ball
         if b.present:
@@ -450,17 +356,6 @@ class World:
                     b.x = d.x + nx * min_dist
                     b.y = d.y + ny * min_dist
                     b.vx, b.vy = 0.3 * nx, 0.3 * ny
-            for h in self.heads:  # a head is a post the ball bounces off
-                dx, dy = b.x - h.x, b.y - h.y
-                dist = math.hypot(dx, dy)
-                min_dist = h.r + b.r
-                if dist < min_dist:
-                    if dist < 1e-6:
-                        dx, dy, dist = math.cos(h.theta), math.sin(h.theta), 1.0
-                    nx, ny = dx / dist, dy / dist
-                    b.x = h.x + nx * min_dist
-                    b.y = h.y + ny * min_dist
-                    b.vx, b.vy = 0.3 * nx, 0.3 * ny
         self.t += dt
         self.steps += 1
 
@@ -488,18 +383,6 @@ class World:
         }
         if len(self.ducks) > 1:
             snap["ducks"] = self._ducks_snapshot()
-        if self.heads:
-            snap["heads"] = [
-                {
-                    "index": i,
-                    "x": round(h.x, 3),
-                    "y": round(h.y, 3),
-                    "theta": round(h.theta, 3),
-                    "head_yaw_deg": round(math.degrees(h.head_yaw), 1),
-                    "busy": self.t < h.busy_until,
-                }
-                for i, h in enumerate(self.heads)
-            ]
         return snap
 
     def _ducks_snapshot(self) -> list[dict[str, Any]]:
@@ -515,25 +398,3 @@ class World:
             }
             for i, duck in enumerate(self.ducks)
         ]
-
-    def head_snapshot(self, head_index: int = 0) -> dict[str, Any]:
-        """A head's own telemetry: no kick keys, because a head cannot kick."""
-        h = self.heads[head_index]
-        snap: dict[str, Any] = {
-            "sim_time": round(self.t, 3),
-            "ball": (
-                {"x": round(self.ball.x, 3), "y": round(self.ball.y, 3), "present": True}
-                if self.ball.present
-                else {"present": False}
-            ),
-            "ball_displacement_m": round(self.ball_displacement_m, 3),
-            "head_yaw_deg": round(math.degrees(h.head_yaw), 1),
-            "head_pitch_deg": round(math.degrees(h.head_pitch), 1),
-            "busy": self.t < h.busy_until,
-            "expressions_played": len(h.expressions),
-            "speech": len(h.speech),
-            "people": [{"x": round(p.x, 3), "y": round(p.y, 3)} for p in self.people],
-        }
-        if self.ducks:
-            snap["ducks"] = self._ducks_snapshot()
-        return snap

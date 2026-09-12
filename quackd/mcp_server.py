@@ -3,7 +3,7 @@
 This is the second wow-demo — "I asked Claude to make the duck patrol my desk" — and it
 goes through the *same* `Executor` as `.duck` runs, so allowlists, confirm gates, budgets
 and the heartbeat apply to an interactive session too. Since 0.4 one server can front
-several robots (`--robots duck=microduck:sim2d,reachy=reachy_mini:mock`): eight `robot_*`
+several robots (`--robots duck=microduck:sim2d,arm=lerobot:mock`): eight `robot_*`
 tools take a robot name and every robot has its own executor, budget, heartbeat and
 contract. stdout is the wire, and every log line goes to stderr.
 
@@ -700,8 +700,8 @@ def build_fleet_server(
         return await session.observe() if session else [str(fleet.unknown(robot)["error"])]
 
     @mcp.tool(
-        description="Say something on one robot: tones on a Microduck, an expressive sound "
-        "on a Reachy Mini. A robot without a sound intent refuses."
+        description="Say something on one robot: tones on a Microduck. A robot without a "
+        "sound intent refuses."
     )
     async def robot_say(text: str, robot: str | None = None) -> dict[str, Any]:
         session = fleet.get(robot)

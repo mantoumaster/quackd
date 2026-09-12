@@ -84,27 +84,6 @@ def patrol_strategy(obs: Observation, step: int, history: list[Exchange]) -> Too
     return ToolCall(name="search_scan", arguments={"target": "person", "max_steps": 4})
 
 
-def reachy_spotter_strategy(obs: Observation, step: int, history: list[Exchange]) -> ToolCall:
-    """A head that cannot walk: sweep, then say where the ball is, then stop."""
-    if _count_calls(history, "say") > 0:
-        return ToolCall(name="declare_success", arguments={"reason": "said where the ball is"})
-    balls = _detections(obs, "ball")
-    if balls:
-        bearing = balls[0].get("bearing_deg") or 0.0
-        dist = balls[0].get("est_distance_m")
-        where = f"ball at {abs(bearing):.0f} degrees {'left' if bearing >= 0 else 'right'}"
-        if dist is not None:
-            where += f", about {dist:.1f} m"
-        return ToolCall(name="say", arguments={"text": where})
-    last = _last(obs)
-    swept_twice = _count_calls(history, "search_scan") >= 2
-    if swept_twice and last.get("verb") == "search_scan" and not last.get("ok"):
-        return ToolCall(
-            name="declare_failure", arguments={"reason": "no ball found after two sweeps"}
-        )
-    return ToolCall(name="search_scan", arguments={"target": "ball"})
-
-
 def _where(ball: dict[str, Any]) -> str:
     bearing = ball.get("bearing_deg") or 0.0
     dist = ball.get("est_distance_m")
@@ -464,7 +443,6 @@ STRATEGIES: dict[str, Strategy] = {
     "hello-world": hello_world_strategy,
     "find-and-kick": find_and_kick_strategy,
     "patrol-and-quack": patrol_strategy,
-    "reachy-spotter": reachy_spotter_strategy,
     "open-duck-scout": open_duck_scout_strategy,
     "open-duck-lookout": open_duck_lookout_strategy,
     "microduck-lookout": microduck_lookout_strategy,

@@ -48,11 +48,6 @@ This project builds on, interoperates with, and is grateful to:
   * DrEureka (Ma et al.) — the "LLM-written rewards" idea behind the
     learned-verbs roadmap. https://eureka-research.github.io/dr-eureka/
 
-  * reachy_mini (pollen-robotics/reachy_mini) — the SDK the reachy_mini
-    adapter targets. Apache-2.0. Optional extra quackd[reachy]; nothing
-    vendored, method names cited as facts.
-    https://github.com/pollen-robotics/reachy_mini
-
   * LeRobot (huggingface/lerobot) — the robot and policy interfaces the
     lerobot adapter targets. Apache-2.0. Optional extra quackd[lerobot].
     https://github.com/huggingface/lerobot

@@ -13,8 +13,8 @@ uv pip install 'quackd[lan]'     # zeroconf + paho-mqtt
 A quackd instance can advertise the robot it fronts, and another can list what answers:
 
 ```bash
-quackd announce --robot reachy_mini:sdk --name reachy-01      # until Ctrl-C (or --for 30)
-quackd discover --timeout 3                                   # a table of what answered
+quackd announce --robot microduck:sim2d --name duck-01         # until Ctrl-C (or --for 30)
+quackd discover --timeout 3                                    # a table of what answered
 ```
 
 `announce` advertises a **static** manifest's identity and holds no robot connection. The
@@ -24,9 +24,9 @@ out of band (for now: the adapter's `describe()`) and verified against the adver
 | TXT key | Meaning |
 |---|---|
 | `v` | record version, `1` |
-| `mid` | manifest id (`reachy-01`, `duck`, ...) |
+| `mid` | manifest id (`duck`, `arm-01`, ...) |
 | `sha` | manifest digest: sha256 of the canonical sorted-key JSON excluding `id` and `backend`, first 16 hex, a capability fingerprint |
-| `adp` | adapter name (`microduck`, `reachy_mini`, ...) |
+| `adp` | adapter name (`microduck`, `lerobot`, ...) |
 | `vend`, `mdl`, `emb` | vendor, model, embodiment |
 | `nverbs` | how many verbs the manifest lists |
 
@@ -47,13 +47,14 @@ ann.close()
 ```
 
 `announce(..., zc=, info_factory=)` and `discover(..., zc=, browse=)` take fakes, which is
-how the tests run. The Reachy Mini daemon advertises itself separately as
-`_reachy-mini._tcp.local.`; quackd does not rename it, it advertises the quackd side.
+how the tests run. quackd's own advertisement is always `_quackd._tcp.local.`; if an
+upstream daemon happens to advertise itself separately under its own service name, quackd
+does not rename it or merge the two, it only ever advertises the quackd side.
 
 **Status.** The record format and both commands are tested on fakes in the suite. The real
 zeroconf path was exercised once by us on one Windows 11 machine between two processes
-(announce a `reachy_mini:mock` manifest in a child, discover it from the parent, digest
-matched); it has not been exercised between two machines.
+(announce a mock manifest in a child, discover it from the parent, digest matched); it has
+not been exercised between two machines.
 
 ## The MQTT flock bus
 

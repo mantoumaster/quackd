@@ -36,9 +36,9 @@ class AdapterNotInstalled(AdapterError):
 @runtime_checkable
 class RobotAdapter(Protocol):
     name: str
-    """Adapter name: microduck, reachy_mini, ..."""
+    """Adapter name: microduck, lerobot, ..."""
     backend: str
-    """Backend name: sim2d, mock, jsonrpc, sdk, ..."""
+    """Backend name: sim2d, mock, jsonrpc, real, ..."""
     manifest: RobotManifest | None
     """None until connect()."""
 

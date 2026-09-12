@@ -75,8 +75,9 @@ driving a legged robot that also has a head. `ducks/open-duck-lookout.duck` deli
 leaves `search_scan` out for exactly this reason.
 
 `say` has no voice behind it. There is no text to speech anywhere in the runtime, so the
-text is logged verbatim and voiced as the closest of the duck's own sounds, the way the
-Reachy's does ([ADR-0023](../adr/0023-reachy-mini.md), [ADR-0024](../adr/0024-open-duck-mini.md)).
+text is logged verbatim and voiced as the closest of the duck's own sounds — the same
+mood-mapping approach [ADR-0023](../adr/0023-reachy-mini.md) used for the now-removed
+Reachy Mini adapter ([ADR-0024](../adr/0024-open-duck-mini.md)).
 
 ## The bridge daemon
 

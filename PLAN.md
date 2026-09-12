@@ -40,9 +40,8 @@ not before.
   host and point `alohamini-lookout` at it. What most needs a real robot: whether `+x` is
   physically forward, the camera colour order, how fast the lift travels in mm/s, and whether
   the wrapper really does leave the arms holding.
-- ⏸ **A Reachy Mini, an SO-101 arm or any rosbridge base.** `reachy_mini:sdk` (or
-  `reachy-mini-daemon --mockup-sim`), `lerobot:real` against a calibrated arm, `rosbridge:ws`
-  against a bridge. A flock across two machines needs a distributed clock first.
+- ⏸ **An SO-101 arm or any rosbridge base.** `lerobot:real` against a calibrated arm,
+  `rosbridge:ws` against a bridge. A flock across two machines needs a distributed clock first.
 
 ## Open here
 
@@ -55,7 +54,7 @@ not before.
   `web/README.md` come from a scratch harness that is not in the repository, and both files it
   measured have changed since, in the abort path and in the arena's geometry, so nothing here can
   re-run it. Locally it is `python web/serve.py`, then <http://localhost:8000/simulator/>.
-- ⬜ Flock mode does not know `open_duck` yet (`flock/runner.py` knows two adapters), and a
+- ⬜ Flock mode does not know `open_duck` yet (`flock/runner.py` knows one adapter), and a
   hardware flock waits on Microducks shipping.
 - ⏸ **A real model recording**, in either simulator, to replace a scripted-pilot asset and drop
   the label (see [docs/assets](docs/assets/README.md)). Needs a key.

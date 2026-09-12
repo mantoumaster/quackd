@@ -20,7 +20,7 @@ from quackd.verbs.registry import SafetyClass, Verb
 
 MANIFEST_VERSION = 1
 
-Embodiment = Literal["biped", "quadruped", "wheeled", "arm", "stationary_head", "humanoid"]
+Embodiment = Literal["biped", "quadruped", "wheeled", "arm", "humanoid"]
 Mobility = Literal["none", "legged", "wheeled"]
 IntentName = Literal["twist", "skill", "gaze", "sound", "joint", "pose", "gripper"]
 Sensor = Literal["camera", "battery", "odometry", "imu", "tof", "microphone", "joint_state"]
@@ -97,7 +97,7 @@ class RobotManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", title="quackd robot manifest v1")
 
     manifest: Literal[1] = Field(default=1, description="Manifest schema version.")
-    id: str = Field(..., description="Slug, unique within a run or flock (e.g. reachy-01).")
+    id: str = Field(..., description="Slug, unique within a run or flock (e.g. arm-01).")
     vendor: str
     model: str
     embodiment: Embodiment

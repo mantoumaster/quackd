@@ -7,9 +7,9 @@
 Through 0.3 quackd knew exactly one body: the Microduck, addressed by `--transport`. The
 verb registry was hardcoded (`default_registry()` registered builtins plus composites), the
 executor's vocabulary was therefore the Microduck's, and the MCP server, `quackd validate`
-and the system prompt were all views of that one list. Reachy Mini hardware exists today;
-Microduck hardware does not. Generalizing means the robot must tell quackd what it is and
-what it can do, and quackd must build everything else from that.
+and the system prompt were all views of that one list. Physical robot hardware exists
+today; Microduck hardware does not. Generalizing means the robot must tell quackd what it
+is and what it can do, and quackd must build everything else from that.
 
 ## Decision
 

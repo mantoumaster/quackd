@@ -32,7 +32,7 @@ one, else the first Microduck, else the first declared.
 | `robot_list_verbs(robot?)` | That robot's verbs from its own manifest: params, safety class, `canonical` name and `aliases`, whether it is `core`, and whether its current contract allows it. |
 | `robot_run_verb(robot?, verb, params?)` | Run any verb through that robot's executor (`search_scan`, `go_to` or its alias `walk_to`, `kick`, `gaze`, `express`, …). Refusals come back as `ok: false`, and a verb the manifest does not list is a refusal too. The result carries a `trace` list of what happened behind it (see below). |
 | `robot_observe(robot?)` | The `observe` verb through the executor (it counts against the budget), returning the camera frame as a PNG image, a one-line detection summary, and the trace as a final text block. |
-| `robot_say(robot?, text)` | The `say` verb, with a `trace` like `robot_run_verb`. No robot here has text to speech, so it degrades: one of seven tones on a Microduck, an expressive sound on a Reachy Mini, one of the duck's own sounds on an Open Duck. A robot without a `sound` intent refuses with `ok: false`. |
+| `robot_say(robot?, text)` | The `say` verb, with a `trace` like `robot_run_verb`. No robot here has text to speech, so it degrades: one of seven tones on a Microduck, one of the duck's own sounds on an Open Duck. A robot without a `sound` intent refuses with `ok: false`. |
 | `robot_load_duckfile(robot?, path)` | Adopt a `.duck` contract on one robot: its `requires` (or, for `duck: 0`, its allowlist) is checked against that robot's manifest first, then allowlist and budgets are enforced for that robot only; the body is returned as instructions. Flock ducks are refused. |
 | `robot_recall(robot?)` | What that robot remembers from earlier sessions and runs: the notes a pilot saved and how its recent runs ended ([memory.md](memory.md)). Costs no step; the server's instructions ask the model to call it early. |
 | `robot_remember(robot?, text, tags?)` | Keep one short fact for future sessions on that robot. Moves nothing, costs no step; the same sentence twice updates the old note. Off with `--no-memory`. |
@@ -40,11 +40,11 @@ one, else the first Microduck, else the first declared.
 Without a loaded `.duck`, every verb that is not `dangerous` is allowed and the session runs
 on a default budget of 40 verb steps and five minutes, counted from when the server started.
 Load one to get the guard rails and the task's own budget. Contracts, budgets and abort
-flags are per robot: loading a contract on `duck` changes nothing for `reachy`.
+flags are per robot: loading a contract on `duck` changes nothing for `arm`.
 
 Simulated robots in one fleet each get their own world; a shared arena over MCP is future
-work (a flock needs a coordinator, and one MCP pilot is not one). Run a heterogeneous task
-with `quackd run reachy-spots-duck-kicks` instead ([flock.md](flock.md)).
+work (a flock needs a coordinator, and one MCP pilot is not one). Run a flock task
+with `quackd run flock-kick` instead ([flock.md](flock.md)).
 
 ## What the trace shows
 
@@ -187,7 +187,7 @@ quackd serve-mcp --duckfile find-and-kick            # start with a contract loa
 quackd serve-mcp --dry-run                           # intents are logged, never sent
 quackd serve-mcp --yes                               # allow confirm-gated verbs (no terminal to ask)
 quackd serve-mcp --robot microduck:jsonrpc --address tcp://127.0.0.1:9870   # real robot, experimental
-quackd serve-mcp --robots duck=microduck:sim2d,reachy=reachy_mini:mock       # a fleet: robot_* tools, one executor each
+quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock             # a fleet: robot_* tools, one executor each
 quackd serve-mcp --no-trace                          # stop every result carrying a trace of what happened
 quackd serve-mcp --robot open_duck:sim2d                                     # a buildable duck, no hardware needed
 ```

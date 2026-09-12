@@ -2,8 +2,8 @@
 
 The flock analogue of `agent.loop.run_duck`. Success comes from sim ground truth
 (`ball_displacement_m`), so the summary cannot claim what the world did not see. Since 0.4
-members are adapters sharing one arena: Microducks and stationary heads (Reachy Mini) on
-the same lockstep clock, each with its own manifest-built registry (ADR-0020).
+members are adapters sharing one arena: Microducks on the same lockstep clock, each with
+its own manifest-built registry (ADR-0020).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from quackd.perception.color_blob import ColorBlobDetector
 from quackd.sim2d.clock import FlockClock
 from quackd.sim2d.world import World
 from quackd.trace import Sink, Tracer
-from quackd.transport.sim2d import Sim2DTransport, make_flock
+from quackd.transport.sim2d import make_flock
 
 DEFAULT_MEMBER = "microduck:sim2d"
 
@@ -90,37 +90,20 @@ def member_specs(
 def make_sim_flock(
     specs: dict[str, RobotSpec], *, seed: int, live: bool, person: bool = True
 ) -> tuple[World, FlockClock, dict[str, Any]]:
-    """One arena, one clock, one adapter per member in sorted member order. A flock of
-    Microducks only takes the 0.3 path (`make_flock`), so its worlds stay byte-identical."""
+    """One arena, one clock, one adapter per member in sorted member order, via the 0.3
+    path (`make_flock`), so its worlds stay byte-identical."""
     from quackd.adapters.microduck import MicroduckAdapter
 
     ordered = sorted(specs)
     ducks = [n for n in ordered if specs[n].adapter == "microduck"]
-    heads = [n for n in ordered if specs[n].adapter == "reachy_mini"]
-    unknown = [n for n in ordered if n not in ducks and n not in heads]
+    unknown = [n for n in ordered if n not in ducks]
     if unknown:
-        raise ValueError(f"flock mode knows microduck and reachy_mini, not {unknown}")
+        raise ValueError(f"flock mode knows microduck, not {unknown}")
     adapters: dict[str, Any] = {}
-    if not heads:
-        transports = make_flock(len(ducks), seed=seed, live=live, person=person)
-        for i, name in enumerate(ducks):
-            adapters[name] = MicroduckAdapter(transports[i], robot_id=name)
-        return transports[0].world, transports[0].clock, adapters
-    from quackd.adapters.reachy_mini import ReachyMiniAdapter
-    from quackd.adapters.reachy_mini.sim2d import ReachyMiniSim2D
-
-    world = World(seed=seed, person=person, n_ducks=len(ducks), n_heads=len(heads))
-    clock = FlockClock(world, realtime=live)
+    transports = make_flock(len(ducks), seed=seed, live=live, person=person)
     for i, name in enumerate(ducks):
-        transport = Sim2DTransport(
-            seed, live=live and i == 0, world=world, clock=clock, duck_index=i
-        )
-        adapters[name] = MicroduckAdapter(transport, robot_id=name)
-    for j, name in enumerate(heads):
-        adapters[name] = ReachyMiniAdapter(
-            ReachyMiniSim2D(world=world, clock=clock, head_index=j), robot_id=name
-        )
-    return world, clock, adapters
+        adapters[name] = MicroduckAdapter(transports[i], robot_id=name)
+    return transports[0].world, transports[0].clock, adapters
 
 
 async def run_flock(

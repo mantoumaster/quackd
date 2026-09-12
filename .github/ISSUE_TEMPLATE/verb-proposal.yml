@@ -25,10 +25,10 @@ body:
     attributes:
       label: Which robot provides it?
       description: >-
-        For an extension, the adapter whose manifest will declare it (any of the eight
+        For an extension, the adapter whose manifest will declare it (any of the seven
         `quackd list-adapters` prints, or a new one). For a core verb, what a manifest must
         have for it to appear (a camera, a twist intent, a sound intent).
-      placeholder: e.g. reachy_mini, or for a core verb, needs a camera and a gaze intent
+      placeholder: e.g. lerobot, or for a core verb, needs a camera and a gaze intent
     validations:
       required: true
   - type: textarea
@@ -61,6 +61,6 @@ body:
       label: Which upstream methods does it need?
       description: >-
         The intent it sends and the upstream call behind it, with a link if you have read it in
-        upstream source: duck-ipc-proto for a Microduck, the reachy-mini SDK, LeRobot, or a ROS
-        message type. Unverified names ship UNVERIFIED in that adapter's upstream_api.py, never
+        upstream source: duck-ipc-proto for a Microduck, LeRobot, or a ROS message type.
+        Unverified names ship UNVERIFIED in that adapter's upstream_api.py, never
         guessed. See docs/adapters.md.

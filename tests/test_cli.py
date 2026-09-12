@@ -244,18 +244,7 @@ def test_a_verbose_line_survives_a_bracket_a_planner_logged(monkeypatch) -> None
 def test_validate_starter_ducks() -> None:
     result = runner.invoke(app, ["validate", *[str(p) for p in sorted(DUCKS.glob("*.duck"))]])
     assert result.exit_code == 0, result.output
-    assert "14 file(s) valid" in result.output
-
-
-def test_run_a_reachy_duck_by_its_own_default_robot(tmp_path: Path) -> None:
-    result = runner.invoke(
-        app,
-        ["run", "reachy-spotter", "--provider", "fake", "--seed", "1", "--runs-dir", str(tmp_path)],
-    )
-    assert result.exit_code == 0, result.output
-    assert "robot=reachy_mini:sim2d" in result.output and "SUCCESS" in result.output
-    run_dir = next(tmp_path.iterdir())
-    assert (run_dir / "run.gif").exists()  # the head cam pane, from the duck's own default robot
+    assert "12 file(s) valid" in result.output
 
 
 def test_validate_expands_globs_itself() -> None:
@@ -504,25 +493,6 @@ def test_run_refuses_a_duck_the_robot_cannot_do(tmp_path: Path) -> None:
     assert "requires kick, but open-duck-01 (open-duck-mini-v2) does not provide it" in flat
     assert "Traceback" not in result.output
     assert list(tmp_path.iterdir()) == []  # refused before a run directory was made
-
-
-def test_run_refuses_a_kick_duck_on_a_head_too(tmp_path: Path) -> None:
-    result = runner.invoke(
-        app,
-        [
-            "run",
-            "find-and-kick",
-            "--provider",
-            "fake",
-            "--robot",
-            "reachy_mini:mock",
-            "--runs-dir",
-            str(tmp_path),
-            "--no-gif",
-        ],
-    )
-    assert result.exit_code == 1 and "does not provide it" in result.output
-    assert list(tmp_path.iterdir()) == []
 
 
 def test_run_still_starts_when_the_duck_fits(tmp_path: Path) -> None:

@@ -13,7 +13,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from quackd.sim2d.render import render_duckcam, render_headcam, render_topdown
+from quackd.sim2d.render import render_duckcam, render_topdown
 
 CAPTION_H = 22
 MAX_FRAMES = 400
@@ -29,11 +29,7 @@ class FrameRecorder:
         self.every_s = float(getattr(transport, "recorder_every_s", every_s))
         self.fps = fps
         self.caption = "start"
-        self.focus_kind = "duck"
         self.focus_duck = getattr(transport, "duck_index", 0)
-        camera = getattr(transport, "camera", None)  # a head transport says ("head", i)
-        if isinstance(camera, tuple) and len(camera) == 2:
-            self.focus_kind, self.focus_duck = str(camera[0]), int(camera[1])
         self.frames: list[Image.Image] = []
         self._last_t = -1e9
         hook = getattr(transport, "add_tick_hook", None)
@@ -46,8 +42,7 @@ class FrameRecorder:
         `connect()`, after the CLI has already made the recorder."""
         return getattr(self.transport, "world", None)
 
-    def set_focus(self, duck_index: int, kind: str = "duck") -> None:
-        self.focus_kind = kind
+    def set_focus(self, duck_index: int) -> None:
         self.focus_duck = duck_index
 
     def set_caption(self, text: str) -> None:
@@ -64,8 +59,6 @@ class FrameRecorder:
             self._append()
 
     def _cam_label(self) -> str:
-        if self.focus_kind == "head":
-            return f"head cam R{self.focus_duck}"
         if self.world is None or len(self.world.ducks) <= 1:
             return "duck cam"
         duck = self.world.ducks[self.focus_duck]
@@ -85,10 +78,7 @@ class FrameRecorder:
             top, cam, label = panes(self.size)
         else:
             top = render_topdown(world, self.size)
-            if self.focus_kind == "head":
-                cam = render_headcam(world, self.size, head_index=self.focus_duck)
-            else:
-                cam = render_duckcam(world, self.size, duck_index=self.focus_duck)
+            cam = render_duckcam(world, self.size, duck_index=self.focus_duck)
             label = self._cam_label()
         frame = Image.new("RGB", (self.size * 2 + 4, self.size + CAPTION_H), (30, 30, 30))
         frame.paste(top, (0, CAPTION_H))

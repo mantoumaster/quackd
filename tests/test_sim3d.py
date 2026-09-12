@@ -189,7 +189,7 @@ def test_construction_imports_nothing_and_refuses_an_unknown_body() -> None:
     t = MujocoTransport(seed=1, body="puppet")
     assert t.world is None and t.clock is None and t.now() == 0.0
     with pytest.raises(TransportError, match="unknown mujoco body"):
-        MujocoTransport(body="reachy")
+        MujocoTransport(body="toaster")
     # the real duck is the default, because a physics backend that simulates a stand-in
     # would be a cartoon with extra steps; the tests ask for the stand-in explicitly
     assert MujocoTransport().body == "microduck"

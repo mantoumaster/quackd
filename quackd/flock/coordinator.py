@@ -110,11 +110,8 @@ class FlockCoordinator:
             self.on_event(kind, data)
 
     def _entity(self, name: str) -> tuple[str, int] | None:
-        """Which camera shows this member: ("duck", i) or ("head", i), for the recorder."""
+        """Which camera shows this member: ("duck", i), for the recorder."""
         transport = self.members[name].transport
-        camera = getattr(transport, "camera", None)
-        if isinstance(camera, tuple) and len(camera) == 2:
-            return str(camera[0]), int(camera[1])
         index = getattr(transport, "duck_index", None)
         return ("duck", int(index)) if index is not None else None
 
@@ -428,7 +425,7 @@ class FlockCoordinator:
         """Ground truth guard: while a claim is live, a non-kicker inside the separation
         ring around the kicker gets a retreat order (motion still runs through that
         duck's own executor, the coordinator never moves anyone directly). A robot that
-        cannot move (a head) never intrudes and is never ordered back."""
+        cannot move never intrudes and is never ordered back."""
         if self.kicker is None or self.kicker not in self.members:
             return
         kicker = self.members[self.kicker].transport

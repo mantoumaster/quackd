@@ -1,5 +1,5 @@
 """The default install never imports an SDK: every adapter lists, describes and constructs
-with torch, lerobot, roslibpy, reachy_mini, zmq, zeroconf and paho all absent."""
+with torch, lerobot, roslibpy, zmq, zeroconf and paho all absent."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ HEAVY = (
     "torch",
     "lerobot",
     "roslibpy",
-    "reachy_mini",
     "zmq",
     "zeroconf",
     "paho",
@@ -33,7 +32,6 @@ from quackd.adapters.factory import BACKENDS, RobotSpec, describe, list_adapters
 rows = list_adapters()
 assert [r["name"] for r in rows] == [
     "microduck",
-    "reachy_mini",
     "lerobot",
     "rosbridge",
     "open_duck",
@@ -46,7 +44,6 @@ for adapter, backends in BACKENDS.items():
     for backend in backends:
         m = describe(RobotSpec(adapter, backend))
         assert "stop" in m.verb_names(), (adapter, backend)
-make_adapter("reachy_mini:sdk")
 make_adapter("microduck:mujoco")
 make_adapter("lerobot:real", address="COM5")
 make_adapter("rosbridge:ws", address="ws://robot.local:9090")
@@ -69,5 +66,5 @@ def test_the_default_path_did_not_import_a_heavy_module() -> None:
     import quackd.adapters.rosbridge
     import quackd.flock.mqtt_bus  # noqa: F401
 
-    for name in ("torch", "lerobot", "roslibpy", "reachy_mini"):
+    for name in ("torch", "lerobot", "roslibpy"):
         assert name not in sys.modules, f"{name} was imported on the default path"

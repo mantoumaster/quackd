@@ -3,7 +3,7 @@
 A `.duck` file is a task for an LLM-piloted robot. It is deliberately **SKILL.md-shaped**:
 YAML frontmatter between `---` fences, then a Markdown body. The frontmatter is a contract
 the executor enforces; the body is the prompt. **The LLM is never trusted to self-police.**
-`.duck` is the format name the way `Dockerfile` is: a task for a Reachy Mini is a `.duck`
+`.duck` is the format name the way `Dockerfile` is: a task for a LeRobot arm is a `.duck`
 too. `duck: 1` (quackd 0.4) adds what a multi-robot task needs; `duck: 0` files parse and
 run unchanged ([ADR-0019](adr/0019-duck-spec-v1.md)).
 
@@ -48,14 +48,14 @@ Encoding UTF-8. The first non-blank, non-comment line must be `---`.
 
 `requires` is the honest minimum: a robot that lacks one of these verbs cannot do the task,
 and `quackd validate <duck> --robot <adapter>:<backend>` says so with a field-level line
-such as `requires kick, but reachy-01 (reachy-mini) does not provide it` (exit 1). Verbs in
+such as `requires kick, but arm-01 (lerobot-so101) does not provide it` (exit 1). Verbs in
 `allow` that are not required are advisory: a robot may lack them and still qualify, and
 `validate` reports them as a weaker `verbs.allow` line. For a solo task every listed robot
 must provide every required verb; for a flock, the flock as a whole must (see the roles
 below). Aliases count: a robot that provides `observe` satisfies `get_frame`.
 
 `robots` names the default robot for a solo task (`robots: microduck:sim2d`) or one per
-flock member (`robots: {reachy-01: reachy_mini:sim2d, duck-01: microduck:sim2d}`).
+flock member (`robots: {duck-01: microduck:sim2d, duck-02: microduck:sim2d}`).
 
 ### `flock` — cooperating robots (simulator only)
 
@@ -87,8 +87,8 @@ Two phrasings are recognised (case-insensitive) and enforced by the executor:
 - `Battery below N%` (also `under`, `<`) — before every verb, if the robot reports
   `battery_percent < N`, the run aborts. A body whose manifest has no `battery` sensor
   reports `None` and this rule can never fire on it, so it is silently unenforceable
-  there rather than an error. A Reachy Mini is the shipped example
-  ([adapters/reachy_mini.md](adapters/reachy_mini.md)).
+  there rather than an error. An AlohaMini is the shipped example
+  ([adapters/alohamini.md](adapters/alohamini.md)).
 - `Same verb fails N times in a row` — N consecutive failed results of one verb abort the run.
 
 Every other entry is handed to the LLM under *"Abort conditions you must respect yourself"*.

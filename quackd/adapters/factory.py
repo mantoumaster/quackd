@@ -32,12 +32,6 @@ _ADAPTERS: dict[str, tuple[tuple[str, ...], str, str | None, str | None]] = {
         None,
         None,
     ),
-    "reachy_mini": (
-        ("sim2d", "mock", "sdk"),
-        "✅ built-in: sim2d, mock · 🧪 sdk (verified names, never run on a robot)",
-        "quackd[reachy]",
-        "reachy_mini",
-    ),
     "lerobot": (
         ("mock", "real"),
         "✅ built-in: mock · 🧪 real (verified names, never run on an arm; Python 3.12+)",
@@ -129,7 +123,7 @@ def parse_robot_spec(text: str) -> RobotSpec:
 
 
 def parse_robots(text: str) -> list[RobotSpec]:
-    """`duck=microduck:sim2d,reachy=reachy_mini:mock` -> named specs, order preserved."""
+    """`duck=microduck:sim2d,arm=lerobot:mock` -> named specs, order preserved."""
     specs: list[RobotSpec] = []
     for item in [part.strip() for part in text.split(",") if part.strip()]:
         name, sep, spec_text = item.partition("=")
