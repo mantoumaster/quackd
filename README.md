@@ -385,7 +385,7 @@ A cloud model that takes an image sees the camera frame. Where a vendor does not
 
 ### Your robots, by name
 
-Reaching a real robot takes five flags, one of them a token, and retyping them on every command puts that token in your shell history. `quackd robot add` keeps them instead: which body, where it is, its token and camera, and optionally the provider and model that pilot it. A flock is a named list of those entries. Register once, and `--robot NAME` and `--flock NAME` mean the same thing in every command that takes a robot.
+Reaching a real robot takes a spec, an address, a token and a camera URL, and retyping them on every command puts that token in your shell history. `quackd robot add` keeps them instead: which body, where it is, its token and camera, and optionally the provider and model that pilot it. A flock is a named list of those entries. Register once, and `--robot NAME` and `--flock NAME` mean the same thing in every command that takes a robot.
 
 ```bash
 quackd robot add duck microduck:mock

@@ -6,7 +6,8 @@ the word, a name for a body plus how to reach it.
 
 ## Why
 
-Reaching a real robot took five flags, and one of them was a secret:
+Reaching a real robot took a spec, an address, a token and a camera URL, and one of them was a
+secret:
 
 ```bash
 quackd run fetch --robot open_duck:bridge --address tcp://10.0.0.5:9871 \

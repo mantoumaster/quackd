@@ -70,9 +70,10 @@ reader who is not told that opens a CLI full of ducks for no reason.
   opening lines of [architecture.md](../architecture.md) and [mcp.md](../mcp.md) change with
   them, because both opened by restating the old framing. The docs test that asserts the README
   carries the tagline asserts the new one.
-- GitHub's About text and the social preview card live outside the repo, so they are manual
-  follow-ups and nothing in CI can catch them. PyPI keeps showing the old description until the
-  next release uploads a new one.
+- GitHub's About text, the landing page at <https://www.quackd.org/> and the uploaded social
+  preview all live outside this repository, so they are manual follow-ups that nothing in CI can
+  catch, and [PLAN.md](../../PLAN.md) carries them. PyPI keeps showing the old description until
+  the next release uploads a new one.
 - [flock.md](../flock.md) now reads pilots-first. The auction is still the default and still what
   the kick demo runs, but a reader arriving from the tagline is looking for robots working
   together, and the pilot flock is the part that answers that.
