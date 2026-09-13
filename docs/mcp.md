@@ -1,6 +1,6 @@
-# Pilot the robot from Claude (MCP)
+# Pilot your robots from Claude (MCP)
 
-`quackd serve-mcp` exposes a robot, or a fleet of them, as
+`quackd serve-mcp` exposes a robot, or a flock of them, as
 [Model Context Protocol](https://modelcontextprotocol.io) tools over stdio. Claude Code or
 Claude Desktop becomes the pilot; quackd's executor still sits between the model and every
 robot (allowlist, budgets, confirm gates, heartbeat), one executor per robot.
@@ -30,7 +30,7 @@ stays the fast way in and is what the configs below use.
 ## Tools
 
 Nine `robot_*` tools. `robot` is the name from `--robots name=<adapter>:<backend>`, or a
-registered robot's name when the fleet came from `--flock NAME`; omit it (or pass `null`) to
+registered robot's name when the flock came from `--flock NAME`; omit it (or pass `null`) to
 address the default robot, which is the only robot when there is one, else a stored flock's
 first member, else the first Microduck, else the first declared.
 
@@ -51,7 +51,7 @@ on a default budget of 40 verb steps and five minutes, counted from when the ser
 Load one to get the guard rails and the task's own budget. Contracts, budgets and abort
 flags are per robot: loading a contract on `duck` changes nothing for `arm`.
 
-A fleet can also come from a stored flock, which is the same fleet by another door:
+A flock can also come from the registry, which is the same thing by another door:
 
 ```bash
 quackd serve-mcp --flock kitchen
@@ -62,7 +62,7 @@ value applied to all of them, and each keeps its memory under its registered nam
 ([registry.md](registry.md)). `--flock` refuses `--robot`, `--robots`, `--address`, `--token`
 and `--camera-url`, because the registry already answers all five.
 
-Simulated robots in one fleet each get their own world; a shared arena over MCP is future
+Simulated robots in one flock each get their own world; a shared arena over MCP is future
 work. A flock **task file** is still refused here, whichever kind it is: the coordinator needs
 a referee this process does not run, and a pilot flock needs one model per robot rather than
 the one model driving this session. Run either with `quackd run` instead
@@ -212,7 +212,7 @@ quackd serve-mcp --duckfile find-and-kick            # start with a contract loa
 quackd serve-mcp --dry-run                           # intents are logged, never sent
 quackd serve-mcp --yes                               # allow confirm-gated verbs (no terminal to ask)
 quackd serve-mcp --robot microduck:jsonrpc --address tcp://127.0.0.1:9870   # real robot, experimental
-quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock             # a fleet: robot_* tools, one executor each
+quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock             # a flock: robot_* tools, one executor each
 quackd serve-mcp --flock kitchen                                            # the same, from a stored flock
 quackd serve-mcp --no-trace                          # stop every result carrying a trace of what happened
 quackd serve-mcp --robot open_duck:sim2d                                     # a buildable duck, no hardware needed
@@ -256,10 +256,10 @@ against a real duck: [adapters/open_duck.md](adapters/open_duck.md) and its
 - One heartbeat per robot runs for the whole session; if a robot's transport fails, that
   robot has already been stopped and every later call to it is refused with a
   `session_aborted` gate. `stop` is the exception and is never refused, because an aborted
-  session is exactly when a pilot reaches for the brake. The other robots in the fleet
+  session is exactly when a pilot reaches for the brake. The other robots in the flock
   carry on.
 - Every robot connects at startup, in the order given; if one cannot, the server stops
-  and disconnects the ones that did, rather than fronting a fleet with a hole in it.
+  and disconnects the ones that did, rather than fronting a flock with a hole in it.
 - Confirm-gated verbs are **refused** unless the server was started with `--yes`, because
   there is no terminal to ask on. The refusal text tells the model why.
 - What stops the body when quackd goes quiet is the body's job, not the server's, and it differs per robot. Read [safety.md](safety.md) before an MCP session drives hardware.

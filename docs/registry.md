@@ -165,7 +165,7 @@ Microducks on one desk shared one file. A registered robot keys by its name, so 
 [ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)).
 
 **The manifest id is it.** `quackd validate hello-world --robot duck-a` reports the robot as
-`duck-a`, which is what `--robots name=spec` has always done for a fleet.
+`duck-a`, which is what `--robots name=spec` has always done for a flock.
 
 **The pilot can be it.** `quackd robot add scout open_duck:bridge --provider anthropic` means
 `quackd run fetch --robot scout` uses Claude without a flag. `--provider` on the line still

@@ -4,23 +4,23 @@ Several robots cooperating on one task. Labelled experimental, and there are two
 it, which differ in who decides what each robot does next.
 
 ```bash
-uvx quackd run flock-kick --provider fake --seed 3    # the coordinator: ducks bid, closest one kicks
 uvx quackd run flock-hello --provider fake            # the pilots: a duck and an arm say hello
+uvx quackd run flock-kick --provider fake --seed 3    # the coordinator: ducks bid, closest one kicks
 ```
 
 ## Two kinds of flock
 
-|  | **the coordinator** (`auction`) | **the pilots** (`pilots`) |
+|  | **the pilots** (`pilots`) | **the coordinator** (`auction`) |
 |---|---|---|
-| Who picks each robot's next verb | one deterministic referee | that robot's own LLM |
-| The clock | one lockstep sim clock | wall clock, all at once |
-| Bodies | Microducks on `sim2d` | any adapter, any backend, mixed |
-| Size | 2 to 4 (the arena holds four) | 2 to 8 |
-| Model calls | at most one, for the whole run | one per pilot per turn |
-| How the work is divided | an auction on camera distance | the pilots say what they will do |
-| How success is judged | the simulator's own telemetry | every member declares for itself |
-| Reproducible from a seed | yes | no |
-| Ships since | 0.3 | 0.9 |
+| Who picks each robot's next verb | that robot's own LLM | one deterministic referee |
+| The clock | wall clock, all at once | one lockstep sim clock |
+| Bodies | any adapter, any backend, mixed | Microducks on `sim2d` |
+| Size | 2 to 8 | 2 to 4 (the arena holds four) |
+| Model calls | one per pilot per turn | at most one, for the whole run |
+| How the work is divided | the pilots say what they will do | an auction on camera distance |
+| How success is judged | every member declares for itself | the simulator's own telemetry |
+| Reproducible from a seed | no | yes |
+| Ships since | 0.9 | 0.3 |
 
 Which one runs is the task file's to say, through `flock.allocation.method`:
 
@@ -30,14 +30,184 @@ Which one runs is the task file's to say, through `flock.allocation.method`:
 - **`--flock NAME`**, a stored flock ([registry.md](registry.md)), supplies the members from
   the registry. A task file with no `flock:` block, run that way, is a pilot flock.
 
-One half of this page each. The coordinator comes first, because most of it was written for
-that flock and all of it is still true of that flock.
+One half of this page each. The pilots come first, because that is the kind a flock of your
+own robots runs. The coordinator follows, and everything written about it is still true of it.
+
+<br>
+
+# The pilot flock
+
+One LLM pilot per robot, all at once, on wall-clock time, on any backend. Nobody referees.
+The members divide the task between them by saying what they are going to do
+([ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)).
+
+```bash
+uvx quackd run flock-hello --provider fake
+```
+
+That is the bundled demo: a simulated duck and a mock arm, no registry, no API key.
+
+## Its own robots
+
+For anything beyond the demo, register the bodies and name the group
+([registry.md](registry.md)):
+
+```bash
+quackd robot add duck microduck:mock
+quackd robot add arm lerobot:mock
+quackd robot add cart rosbridge:mock
+quackd flock create trio --robot duck --robot arm --robot cart
+quackd run flock-hello --flock trio --provider fake
+```
+
+```
++- flock-hello ----------------------------------------------------------+
+| provider   fake (scripted:flock-hello)                                 |
+| flock      duck  microduck:mock                                        |
+|            arm   lerobot:mock                                          |
+|            cart  rosbridge:mock                                        |
+| stored as  trio                                                        |
+| status     EXPERIMENTAL                                                |
+| memory     0 notes across 3 robots  --no-memory to run fresh           |
++- Ctrl-C or q stops every robot. Press it twice to quit at once. -------+
+```
+
+A task file's own `flock.members` plus `robots:` or `--robots` works too, with no registry in
+sight, which is what `flock-hello` does. What a stored flock adds is the address, token,
+camera and pilot of each body, and a name for the group.
+
+## What each pilot is
+
+A whole `AgentLoop`, the same one `quackd run` uses for a single robot: its own provider, its
+own executor and allowlist, its own budgets, its own heartbeat, its own memory, and its own
+feasibility verdict before it moves. Nothing about a member is a special case, which is the
+point: what a pilot flock can do is bounded by what one pilot can do, times the number of
+bodies.
+
+**Each member is handed the part of the contract its own body can answer for.** The task file
+allows what the flock as a whole needs. `flock-hello` allows `say`, which only the duck has,
+and `move_joints`, which only the arm has, and each pilot's prompt lists only its own:
+
+```
+duck      tools   report_state, observe, stop, say, assess_task, declare_success, declare_failure, tell, remember
+arm       tools   report_state, observe, stop, move_joints, assess_task, declare_success, declare_failure, tell, remember
+cart      tools   report_state, observe, stop, assess_task, declare_success, declare_failure, tell, remember
+```
+
+What the task *requires* is checked against the union of every body before anything connects,
+so a task nobody in the flock can do is refused with nothing written to disk.
+
+## Talking
+
+`tell` is a tool beside `assess_task`, `declare_success` and `remember`. It moves nothing and
+costs no step, one model call, and reaches the addressee in its next observation:
+
+```
+duck   #  talk    duck -> all: duck here and ready; say hello back
+arm               Messages from your flock (newest last):
+arm               - duck -> all: duck here and ready; say hello back
+arm    #  talk    arm -> all: arm here and ready; say hello back
+```
+
+A pilot never hears its own words back. `to` is a member name or `all`. Every message is a
+`TALK` on the same bus the coordinator uses, so every one of them is in `flock.jsonl`:
+
+```jsonc
+{"t": 0.094, "kind": "bus", "msg": {"src": "duck", "kind": "TALK", "to": null, "text": "duck here and ready; say hello back"}}
+```
+
+The runner speaks too, under the name `flock`, when a member's loop ends. Without that, a
+pilot waiting on somebody who has already stopped would wait until its budget ran out:
+
+```
+flock  #  talk    flock -> all: duck declared success: said hello and heard back from arm, cart
+```
+
+## What each pilot is told about the others
+
+Every pilot's system prompt gains a `## Your flock` section naming each peer and giving its
+datasheet in **the same paragraph form its own body is described in**. A pilot deciding who
+fetches and who holds is reading data rather than guessing:
+
+```
+## Your flock
+You are `duck`, one of 3 pilots on this task file. Each of you is in a different body
+and all of you are working at the same time. Nobody is in charge and nothing assigns the work:
+you divide it between you by saying what you will do.
+
+The others:
+- `arm` (lerobot:mock): lerobot-so101: mass 2.5 kg (estimate: ...), one arm with a gripper, ...
+```
+
+The same section says that `assess_task` judges **your part** of the task rather than all of
+it, and that a body with no part in it should say so and then declare success once the others
+report done. Without that, the arm in a kicking flock would answer `infeasible` and end its
+own run for nothing.
+
+## The outcome
+
+Every pilot declares for itself. The flock succeeds only when all of them declared success:
+
+```
++- + SUCCESS -------------------------------------------------------------+
+| every member declared success: duck, arm, cart                          |
+| members 3/3 succeeded - talk 3 - steps 0 - llm calls 9 - tokens 17306+144|
++-------------------------------------------------------------------------+
+```
+
+Otherwise the worst outcome wins, in the order `error`, `aborted`, `infeasible`, `budget`,
+`failure`, and the reason names every member that did not succeed, worst first. `error` beats
+`aborted` because of what that pair usually means together: one member raised and the rest
+were stopped **because it did**, so the error is the cause and the aborts are its consequence.
+
+Ctrl-C or `q` stops every body through one kill switch fanned out to every executor. A pilot
+mid-verb is cancelled and sent a stop; a pilot waiting on its model notices at its next turn,
+exactly as a solo run does. The first exception any member raises stops the others with a
+reason that names it.
+
+`quackd run` exits 1 when the flock did not succeed, and 3 when the outcome was `infeasible`.
+
+## Reading a pilot run
+
+```
+runs/<timestamp>-flock-hello/
+  flock.jsonl          # flock_start, every TALK, member_end per robot, flock_end
+  summary.json         # outcome, reason, per_member rollup, messages, usage, wall_elapsed_s
+  ducks/duck/          # a full solo-style transcript.jsonl and frames/ per robot
+  ducks/arm/
+  ducks/cart/
+```
+
+No `run.gif`, and no per-robot `summary.json`. The rollup is the flock's, and a member's
+directory must not read as a solo run. Times in `flock.jsonl` are stamped `t`, in wall
+seconds since the run started, where the coordinator's are `sim_t`.
+
+`quackd trace <run>` replays each member's transcript in turn.
+
+## Watching a pilot run
+
+Each robot gets its own view with its name and colour on every line, and the runner's own
+notices print under `flock`. `--no-trace` or `QUACKD_TRACE=0` removes the views and leaves
+every record intact.
+
+## What this is not
+
+- **N simulated members are N separate worlds.** Two `microduck:sim2d` pilots cannot see each
+  other, there is no ground truth to check a claimed success against, and there is no one GIF
+  of the run. A shared arena stays a coordinator feature.
+- **A pilot flock costs N budgets and N times the tokens.** That is what the coordinator was
+  built to avoid ([ADR-0015](adr/0015-flock-deterministic-coordinator.md)), and it is why the
+  kick demo still runs the coordinator.
+- **Nothing here has run on hardware.** The mixed-body case is exercised on `mock` backends,
+  and `tell` has been exercised by the scripted pilot and by no real model.
+- **A seed does not make it reproducible**, because there is no shared clock to fix.
+- **There is no `--bus` flag**, so nothing has carried a pilot flock between two machines.
 
 <br>
 
 # The coordinator flock
 
-Everything from here to [the pilot flock](#the-pilot-flock) is about the `auction` kind.
+Everything from here to [Status and future work](#status-and-future-work) is about the `auction` kind.
 
 ## What a flock of this kind is
 
@@ -131,7 +301,7 @@ flock:
 A figure the robot's maker never published counts as **not met**, because a robot that
 cannot say what it carries is not the one to ask to carry something. The check runs three
 times, and says the same thing each time: `quackd validate --robots` refuses a role no
-robot in the fleet can fill, before a run starts; a member only bids for roles its own
+robot in the flock can fill, before a run starts; a member only bids for roles its own
 datasheet satisfies; and the coordinator re-checks every bid from what the bid itself
 carried, so a robot it does not run is held to the same standard. A rejected bid is a
 `bid_rejected` line naming exactly what was short, in the same words a pilot's own refusal
@@ -289,185 +459,15 @@ So a role with physical `needs` validates and its matching is tested here, but n
 flock quackd can start has two different bodies in it to match. A flock of two different bodies
 is what the [pilots](#the-pilot-flock) are for, and that kind uses no roles.
 
-<br>
-
-# The pilot flock
-
-One LLM pilot per robot, all at once, on wall-clock time, on any backend. Nobody referees.
-The members divide the task between them by saying what they are going to do
-([ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)).
-
-```bash
-uvx quackd run flock-hello --provider fake
-```
-
-That is the bundled demo: a simulated duck and a mock arm, no registry, no API key.
-
-## Its own robots
-
-For anything beyond the demo, register the bodies and name the group
-([registry.md](registry.md)):
-
-```bash
-quackd robot add duck microduck:mock
-quackd robot add arm lerobot:mock
-quackd robot add cart rosbridge:mock
-quackd flock create trio --robot duck --robot arm --robot cart
-quackd run flock-hello --flock trio --provider fake
-```
-
-```
-+- flock-hello ----------------------------------------------------------+
-| provider   fake (scripted:flock-hello)                                 |
-| flock      duck  microduck:mock                                        |
-|            arm   lerobot:mock                                          |
-|            cart  rosbridge:mock                                        |
-| stored as  trio                                                        |
-| status     EXPERIMENTAL                                                |
-| memory     0 notes across 3 robots  --no-memory to run fresh           |
-+- Ctrl-C or q stops every robot. Press it twice to quit at once. -------+
-```
-
-A task file's own `flock.members` plus `robots:` or `--robots` works too, with no registry in
-sight, which is what `flock-hello` does. What a stored flock adds is the address, token,
-camera and pilot of each body, and a name for the group.
-
-## What each pilot is
-
-A whole `AgentLoop`, the same one `quackd run` uses for a single robot: its own provider, its
-own executor and allowlist, its own budgets, its own heartbeat, its own memory, and its own
-feasibility verdict before it moves. Nothing about a member is a special case, which is the
-point: what a pilot flock can do is bounded by what one pilot can do, times the number of
-bodies.
-
-**Each member is handed the part of the contract its own body can answer for.** The task file
-allows what the flock as a whole needs. `flock-hello` allows `say`, which only the duck has,
-and `move_joints`, which only the arm has, and each pilot's prompt lists only its own:
-
-```
-duck      tools   report_state, observe, stop, say, assess_task, declare_success, declare_failure, tell, remember
-arm       tools   report_state, observe, stop, move_joints, assess_task, declare_success, declare_failure, tell, remember
-cart      tools   report_state, observe, stop, assess_task, declare_success, declare_failure, tell, remember
-```
-
-What the task *requires* is checked against the union of every body before anything connects,
-so a task nobody in the flock can do is refused with nothing written to disk.
-
-## Talking
-
-`tell` is a tool beside `assess_task`, `declare_success` and `remember`. It moves nothing and
-costs no step, one model call, and reaches the addressee in its next observation:
-
-```
-duck   #  talk    duck -> all: duck here and ready; say hello back
-arm               Messages from your flock (newest last):
-arm               - duck -> all: duck here and ready; say hello back
-arm    #  talk    arm -> all: arm here and ready; say hello back
-```
-
-A pilot never hears its own words back. `to` is a member name or `all`. Every message is a
-`TALK` on the same bus the coordinator uses, so every one of them is in `flock.jsonl`:
-
-```jsonc
-{"t": 0.094, "kind": "bus", "msg": {"src": "duck", "kind": "TALK", "to": null, "text": "duck here and ready; say hello back"}}
-```
-
-The runner speaks too, under the name `flock`, when a member's loop ends. Without that, a
-pilot waiting on somebody who has already stopped would wait until its budget ran out:
-
-```
-flock  #  talk    flock -> all: duck declared success: said hello and heard back from arm, cart
-```
-
-## What each pilot is told about the others
-
-Every pilot's system prompt gains a `## Your flock` section naming each peer and giving its
-datasheet in **the same paragraph form its own body is described in**. A pilot deciding who
-fetches and who holds is reading data rather than guessing:
-
-```
-## Your flock
-You are `duck`, one of 3 pilots on this task file. Each of you is in a different body
-and all of you are working at the same time. Nobody is in charge and nothing assigns the work:
-you divide it between you by saying what you will do.
-
-The others:
-- `arm` (lerobot:mock): lerobot-so101: mass 2.5 kg (estimate: ...), one arm with a gripper, ...
-```
-
-The same section says that `assess_task` judges **your part** of the task rather than all of
-it, and that a body with no part in it should say so and then declare success once the others
-report done. Without that, the arm in a kicking flock would answer `infeasible` and end its
-own run for nothing.
-
-## The outcome
-
-Every pilot declares for itself. The flock succeeds only when all of them declared success:
-
-```
-+- + SUCCESS -------------------------------------------------------------+
-| every member declared success: duck, arm, cart                          |
-| members 3/3 succeeded - talk 3 - steps 0 - llm calls 9 - tokens 17306+144|
-+-------------------------------------------------------------------------+
-```
-
-Otherwise the worst outcome wins, in the order `error`, `aborted`, `infeasible`, `budget`,
-`failure`, and the reason names every member that did not succeed, worst first. `error` beats
-`aborted` because of what that pair usually means together: one member raised and the rest
-were stopped **because it did**, so the error is the cause and the aborts are its consequence.
-
-Ctrl-C or `q` stops every body through one kill switch fanned out to every executor. A pilot
-mid-verb is cancelled and sent a stop; a pilot waiting on its model notices at its next turn,
-exactly as a solo run does. The first exception any member raises stops the others with a
-reason that names it.
-
-`quackd run` exits 1 when the flock did not succeed, and 3 when the outcome was `infeasible`.
-
-## Reading a pilot run
-
-```
-runs/<timestamp>-flock-hello/
-  flock.jsonl          # flock_start, every TALK, member_end per robot, flock_end
-  summary.json         # outcome, reason, per_member rollup, messages, usage, wall_elapsed_s
-  ducks/duck/          # a full solo-style transcript.jsonl and frames/ per robot
-  ducks/arm/
-  ducks/cart/
-```
-
-No `run.gif`, and no per-robot `summary.json`. The rollup is the flock's, and a member's
-directory must not read as a solo run. Times in `flock.jsonl` are stamped `t`, in wall
-seconds since the run started, where the coordinator's are `sim_t`.
-
-`quackd trace <run>` replays each member's transcript in turn.
-
-## Watching a pilot run
-
-Each robot gets its own view with its name and colour on every line, exactly as the
-coordinator's members do, and the runner's own notices print under `flock`. `--no-trace` or
-`QUACKD_TRACE=0` removes the views and leaves every record intact.
-
-## What this is not
-
-- **N simulated members are N separate worlds.** Two `microduck:sim2d` pilots cannot see each
-  other, there is no ground truth to check a claimed success against, and there is no one GIF
-  of the run. A shared arena stays a coordinator feature.
-- **A pilot flock costs N budgets and N times the tokens.** That is what the coordinator was
-  built to avoid ([ADR-0015](adr/0015-flock-deterministic-coordinator.md)), and it is why the
-  kick demo still runs the coordinator.
-- **Nothing here has run on hardware.** The mixed-body case is exercised on `mock` backends,
-  and `tell` has been exercised by the scripted pilot and by no real model.
-- **A seed does not make it reproducible**, because there is no shared clock to fix.
-- **There is no `--bus` flag**, so nothing has carried a pilot flock between two machines.
-
 ## Status and future work
-
-**The coordinator**: sim only, one choreography, `flock-kick` (ducks), 10 of 10 seeds with
-scripted pilots and ground truth checks. The acoustic channel stays theatrical (a quack marks
-the sighting; Wi Fi would carry the real data).
 
 **The pilots**: one demo, `flock-hello`, on `mock` and `sim2d` bodies with the scripted pilot.
 Mixed adapters work and are tested; `tell` has been seen by no real model; nothing has run on
 hardware.
+
+**The coordinator**: sim only, one choreography, `flock-kick` (ducks), 10 of 10 seeds with
+scripted pilots and ground truth checks. The acoustic channel stays theatrical (a quack marks
+the sighting; Wi Fi would carry the real data).
 
 **Both**: nothing multi robot has run on hardware. An MQTT bus implementing the same `Bus`
 protocol exists ([lan.md](lan.md)), library only and tested on a fake broker, and carries

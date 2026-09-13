@@ -12,7 +12,7 @@ version without touching the robot.
 | Field | Type | Meaning |
 |---|---|---|
 | `manifest` | `1` | schema version |
-| `id` | slug | unique within a run or a flock: `microduck`, `open-duck-01`, `duck-01`, or the fleet name from `--robots name=...` |
+| `id` | slug | unique within a run or a flock: `microduck`, `open-duck-01`, `duck-01`, or the member name from `--robots name=...` |
 | `vendor`, `model` | string | who made it and what it is (`huggingface`, `lerobot-so101`) |
 | `embodiment` | `biped`, `quadruped`, `wheeled`, `arm`, `humanoid` | the body |
 | `mobility` | `none`, `legged`, `wheeled` | whether it can go somewhere |

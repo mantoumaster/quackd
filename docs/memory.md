@@ -33,7 +33,7 @@ never share notes (a note about the cartoon arena is wrong for your living room)
 ~/.quackd/memory/lerobot-mock.jsonl
 ```
 
-The key is the body, not the name you gave it, so two members of one fleet that are the
+The key is the body, not the name you gave it, so two members of one flock that are the
 same `adapter:backend` share a file. That is the same rule that keeps `microduck:sim2d` and
 `microduck:jsonrpc` apart, read the other way round.
 
@@ -112,7 +112,7 @@ and the file it came from) so you always know what the pilot was told.
 
 ## Over MCP
 
-`quackd serve-mcp` gives every `adapter:backend` in the fleet its own memory behind two
+`quackd serve-mcp` gives every `adapter:backend` in the flock its own memory behind two
 tools:
 `robot_recall(robot?)` returns the notes and recent episodes (the server's instructions
 tell the model to call it early), `robot_remember(text, tags?, robot?)` saves one note.
@@ -128,7 +128,9 @@ is read by the next `quackd run` on the same `adapter:backend`, and the other wa
 - **Not retrieval.** There is no embedding, no search: the newest entries win, and the cap
   keeps the prompt small. If you need a map of your house, write it as a few notes.
 - **Not shared between bodies.** By design, where a body means an `adapter:backend`. Use
-  `quackd memory add` on the other robot if a fact really transfers.
+  `quackd memory add` on the other robot if a fact really transfers. In a
+  [flock](flock.md) of pilots each member still keeps its own file, and what one needs
+  another to know during a run it says with `tell` rather than through memory.
 - **Not written by the scripted pilot.** `--provider fake` has no `remember` in its script,
   so it accumulates episodes and never a note. Notes have been exercised by one local model
   on one machine and by no cloud model at all.
