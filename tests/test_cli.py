@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -77,8 +79,8 @@ def test_the_trace_is_on_by_default(tmp_path: Path, monkeypatch) -> None:
     out = _trace_run(tmp_path, monkeypatch)
     assert "system prompt" in out  # what the model was told
     assert "quack(text='hello!')" in out  # what it chose
-    assert "-> sound" in out  # what went to the robot
-    assert "<- quack ok" in out  # what came back
+    assert "send sound" in out  # what went to the robot
+    assert "result quack ok" in out  # what came back
     assert "SUCCESS" in out  # and the outcome still reaches stdout
 
 
@@ -87,7 +89,7 @@ def test_no_trace_prompt_hides_only_the_prompt(tmp_path: Path, monkeypatch) -> N
     run of an afternoon. Hiding it must not cost the verbs and the intents."""
     out = _trace_run(tmp_path, monkeypatch, "--no-trace-prompt")
     assert "system prompt" not in out and "You are the brain" not in out
-    assert "-> sound" in out and "<- quack ok" in out
+    assert "send sound" in out and "result quack ok" in out
 
 
 def test_the_env_hides_the_prompt_and_the_flag_wins(tmp_path: Path, monkeypatch) -> None:
@@ -98,19 +100,19 @@ def test_the_env_hides_the_prompt_and_the_flag_wins(tmp_path: Path, monkeypatch)
 
 def test_no_trace_leaves_the_header_and_the_outcome(tmp_path: Path, monkeypatch) -> None:
     out = _trace_run(tmp_path, monkeypatch, "--no-trace")
-    assert "-> sound" not in out and "system prompt" not in out
+    assert "send sound" not in out and "system prompt" not in out
     assert "SUCCESS" in out and "hello-world" in out
 
 
 def test_the_env_can_turn_the_trace_off_too(tmp_path: Path, monkeypatch) -> None:
     """A `.env` line has to work, so the default is read when the command runs, not when the
     module is imported."""
-    assert "-> sound" not in _trace_run(tmp_path, monkeypatch, env="0")
-    assert "-> sound" in _trace_run(tmp_path, monkeypatch, env=None)
+    assert "send sound" not in _trace_run(tmp_path, monkeypatch, env="0")
+    assert "send sound" in _trace_run(tmp_path, monkeypatch, env=None)
 
 
 def test_the_flag_beats_the_env(tmp_path: Path, monkeypatch) -> None:
-    assert "-> sound" in _trace_run(tmp_path, monkeypatch, "--trace", env="0")
+    assert "send sound" in _trace_run(tmp_path, monkeypatch, "--trace", env="0")
 
 
 def test_verbose_is_the_compact_view_and_does_not_double_the_trace(
@@ -118,10 +120,10 @@ def test_verbose_is_the_compact_view_and_does_not_double_the_trace(
 ) -> None:
     """With the trace on, the executor's own log lines would say every verb a second time."""
     traced = _trace_run(tmp_path, monkeypatch, "--verbose")
-    assert "-> sound" in traced
+    assert "send sound" in traced
     assert "→ quack" not in traced, "the old compact line must not double the trace"
     compact = _trace_run(tmp_path, monkeypatch, "--verbose", "--no-trace")
-    assert "→ quack" in compact and "-> sound" not in compact
+    assert "→ quack" in compact and "send sound" not in compact
 
 
 def test_record_writes_a_gif_and_a_transcript(tmp_path: Path, monkeypatch) -> None:
@@ -139,7 +141,7 @@ def test_record_no_trace_still_writes_every_event(tmp_path: Path, monkeypatch) -
     """The switch is about the console and nothing else (ADR-0029). The transcript is the
     record, and a run recorded quietly must be as complete as a noisy one."""
     out = _trace_record(tmp_path, monkeypatch, "--no-trace")
-    assert "-> sound" not in out and "SUCCESS" in out
+    assert "send sound" not in out and "SUCCESS" in out
     kinds = _kinds(tmp_path)
     assert "intent" in kinds and "verb_end" in kinds
 
@@ -236,9 +238,11 @@ def test_a_verbose_line_survives_a_bracket_a_planner_logged(monkeypatch) -> None
     from rich.console import Console
 
     from quackd import cli as cli_mod
+    from quackd import ui
 
     buf = io.StringIO()
-    monkeypatch.setattr(cli_mod, "err_console", Console(file=buf, force_terminal=False, width=200))
+    # the consoles live on `ui` so `--no-color` can replace them; `cli` reads them from there
+    monkeypatch.setattr(ui, "err_console", Console(file=buf, force_terminal=False, width=200))
     cli_mod._verbose_line("planner: [/think] chose [bold]walk")
     out = buf.getvalue()
     assert "[/think]" in out and "[bold]walk" in out
@@ -247,7 +251,7 @@ def test_a_verbose_line_survives_a_bracket_a_planner_logged(monkeypatch) -> None
 def test_validate_starter_ducks() -> None:
     result = runner.invoke(app, ["validate", *[str(p) for p in sorted(DUCKS.glob("*.duck"))]])
     assert result.exit_code == 0, result.output
-    assert "12 file(s) valid" in result.output
+    assert "12 files valid" in result.output
 
 
 def test_validate_expands_globs_itself() -> None:
@@ -413,7 +417,7 @@ def test_transport_flag_is_gone(tmp_path: Path) -> None:
     assert "No such option" in old.output  # type: ignore[attr-defined]
     new = _run_hello(tmp_path, "--robot", "microduck:mock")
     assert new.exit_code == 0, new.output  # type: ignore[attr-defined]
-    assert "robot=microduck:mock" in new.output  # type: ignore[attr-defined]
+    assert "microduck:mock" in new.output  # type: ignore[attr-defined]
 
 
 def test_robot_flag_errors_are_clean(tmp_path: Path) -> None:
@@ -672,3 +676,147 @@ def test_a_gif_pane_larger_than_the_offscreen_buffer_is_refused_before_anything_
     result = runner.invoke(app, ["run", "hello-world", "--gif-size", "4096"])
     assert result.exit_code == 2
     assert "1024" in result.output
+
+
+# ── --json and --no-color: the output a script reads ────────────────────────────────────
+
+
+def _objects(output: str) -> list[dict]:
+    """The JSON lines, and nothing else may be on stdout with them."""
+    lines = [line for line in output.splitlines() if line.strip()]
+    assert all(line.startswith("{") for line in lines), output
+    return [json.loads(line) for line in lines]
+
+
+def test_validate_json_is_one_object_per_file_and_still_exits_one() -> None:
+    """A script wants the rows and the exit code, not a table it has to unpick."""
+    runner = CliRunner()
+    ok = _objects(runner.invoke(app, ["validate", "hello-world", "--json"]).output)
+    assert ok == [
+        {
+            "file": "hello-world",
+            "name": "hello-world",
+            "verbs": 3,
+            "robots": [],
+            "ok": True,
+            "problems": [],
+        }
+    ]
+    result = runner.invoke(
+        app, ["validate", "find-and-kick", "--robot", "open_duck:mock", "--json"]
+    )
+    assert result.exit_code == 1, "the exit code is the same with or without --json"
+    (row,) = _objects(result.output)
+    assert row["ok"] is False and row["robots"] == ["open-duck-01"]
+    assert "does not provide it" in row["problems"][0]
+
+
+def test_validate_json_reports_a_flock_as_a_count() -> None:
+    (row,) = _objects(CliRunner().invoke(app, ["validate", "flock-kick", "--json"]).output)
+    assert row["flock"] == 3
+
+
+def test_list_verbs_json_carries_what_the_table_shows() -> None:
+    rows = _objects(CliRunner().invoke(app, ["list-verbs", "--json"]).output)
+    by_name = {row["name"]: row for row in rows}
+    assert {"move", "kick", "quack", "observe"} <= set(by_name)
+    assert by_name["move"]["aliases"] == ["walk"]
+    assert by_name["move"]["core"] is True
+    assert by_name["observe"]["safety"] == "safe"
+    assert "vx: float" in by_name["move"]["params"]
+
+
+def test_list_adapters_json_is_the_registry_rows() -> None:
+    rows = _objects(CliRunner().invoke(app, ["list-adapters", "--json"]).output)
+    assert [row["name"] for row in rows][:2] == ["microduck", "lerobot"]
+    assert rows[0]["installed"] is True
+    assert "sim2d" in rows[0]["backends"]
+
+
+def test_json_never_carries_a_rich_tag() -> None:
+    """These strings are pasted into a shell prompt or a dashboard. `[green]` in one of them
+    would be the table's styling leaking into the answer."""
+    for argv in (["list-adapters", "--json"], ["list-verbs", "--json"]):
+        for row in _objects(CliRunner().invoke(app, argv).output):
+            blob = json.dumps(row)
+            for tag in ("[green]", "[dim]", "[red]", "[/"):
+                assert tag not in blob, (argv, tag)
+
+
+def test_no_color_strips_the_colour_and_keeps_the_words() -> None:
+    """Rich renders colour through the Win32 console on a legacy terminal rather than as
+    escape codes, so this asks the consoles what they were told rather than grepping bytes."""
+    from quackd import ui
+
+    runner = CliRunner()
+    assert runner.invoke(app, ["list-adapters"]).exit_code == 0
+    assert ui.console.no_color is False
+    plain = runner.invoke(app, ["--no-color", "list-adapters"])
+    assert plain.exit_code == 0
+    assert ui.console.no_color is True and ui.err_console.no_color is True
+    assert "microduck" in plain.output and "sim2d" in plain.output
+
+
+def test_no_color_reaches_the_help_typer_renders_for_itself() -> None:
+    """Typer builds a console of its own for every --help, which is why the flag sets the
+    variable as well as the consoles."""
+    import os
+
+    CliRunner().invoke(app, ["--no-color", "run", "--help"])
+    assert os.environ.get("NO_COLOR") == "1"
+
+
+def test_the_help_groups_the_flags_and_keeps_the_brackets_of_an_extra() -> None:
+    """Twenty five flags in one flat list is a list nobody reads. And `rich_markup_mode`
+    reads `quackd[lan]` as markup, which printed an install that does not exist."""
+    wide = {"COLUMNS": "200"}
+    out = " ".join(CliRunner().invoke(app, ["run", "--help"], env=wide).output.split())
+    assert "quackd[live]" in out, "an extra a reader is meant to type must survive"
+    for group in ("Task", "Model", "Robot", "Output", "Memory"):
+        assert group in out, group
+    root = " ".join(CliRunner().invoke(app, ["--help"], env=wide).output.split())
+    assert "--no-color" in root
+    for group in ("Inspect", "Run a duck", "Serve", "LAN", "Memory"):
+        assert group in root, group
+    assert "quackd run find-and-kick --provider fake" in root, "the epilog offers a first command"
+
+
+def test_dash_h_is_the_same_as_help() -> None:
+    runner = CliRunner()
+    assert runner.invoke(app, ["-h"]).exit_code == 0
+    assert "Usage" in runner.invoke(app, ["-h"]).output
+
+
+def test_a_confirmation_prompt_is_asked_with_the_status_line_out_of_the_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live region redirects stdout and a y/N prompt writes without a newline, so under a
+    running status the question is invisible until after it has been answered."""
+    from quackd import cli as cli_mod
+    from quackd import ui
+
+    seen: list[str] = []
+
+    class Watching:
+        @contextlib.contextmanager
+        def paused(self):  # type: ignore[no-untyped-def]
+            seen.append("down")
+            yield
+            seen.append("up")
+
+    monkeypatch.setattr(ui, "_ACTIVE", [Watching()])
+    monkeypatch.setattr(cli_mod.typer, "confirm", lambda *a, **k: True)
+    assert cli_mod._confirm_prompt("kick", {"leg": "right"}) is True
+    assert cli_mod._acknowledge_prompt("nothing here detects a fall") is True
+    assert seen == ["down", "up", "down", "up"]
+
+
+def test_a_run_into_a_pipe_adds_no_status_line_to_what_a_script_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The status line is wired in whether the trace is on or off, and a terminal is the only
+    place it may appear. Under a runner or a pipe nothing of it reaches the output."""
+    out = _trace_run(tmp_path, monkeypatch, "--no-trace")
+    assert "SUCCESS" in out
+    for chatter in ("waiting on", "observing", "choosing a verb", "finishing"):
+        assert chatter not in out, chatter

@@ -9,19 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import glob
+import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import typer
 from dotenv import load_dotenv
-from rich.console import Console
-from rich.markup import escape
-from rich.table import Table
+from rich.text import Text
 
-from quackd import __version__
+from quackd import __version__, ui
 from quackd.agent.providers.catalogue import (
     CLOUD_NAMES,
     LOCAL_NAMES,
@@ -32,39 +33,43 @@ from quackd.agent.providers.catalogue import (
 
 app = typer.Typer(
     name="quackd",
-    help="Give your small robot a brain. Any LLM, one .duck file. 🦆🧠",
+    # the emoji only where the stream can carry it: a cp1252 pipe on Windows renders them as
+    # `??`, and the front door is the worst place to look broken
+    help="Give your small robot a brain. Any LLM, one .duck file."
+    + (" 🦆🧠" if ui.glyphs_for(ui.console) is ui.UNICODE else ""),
     no_args_is_help=True,
     rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+    # A crash must not print this process's local variables: they hold an API key, a robot's
+    # address and its bridge token. `main` installs a Rich traceback without them instead.
+    pretty_exceptions_enable=False,
+    # blank lines rather than spaces: Typer renders the epilog as paragraphs and would
+    # otherwise run three examples together into one
+    epilog=(
+        "[bold]Try[/bold]" + "\n\n"
+        "quackd run find-and-kick --provider fake" + "\n\n"
+        "quackd run --goal 'walk in a square' --provider anthropic --robot microduck:mujoco"
+        + "\n\n"
+        "quackd doctor  |  quackd list-verbs  |  quackd trace"
+    ),
 )
-
-
-def _tolerate_narrow_encodings() -> None:
-    """Stop a non-UTF-8 stdout turning quackd's own output into a crash.
-
-    Windows uses the ANSI codepage when Python writes to a pipe, and quackd prints ✓ and 🦆 and
-    the status emoji in `doctor`. On cp1252 those raise UnicodeEncodeError and take the command
-    with them — `quackd doctor` and `quackd validate`, which are the first two commands
-    docs/microduck-hardware-checklist.md puts in front of a Windows user, and the last step of
-    CI's own Windows job. Replacing what the codepage cannot carry costs a glyph; raising costs
-    the command.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
-        if encoding.startswith("utf") or not hasattr(stream, "reconfigure"):
-            continue
-        with contextlib.suppress(Exception):
-            stream.reconfigure(errors="replace")
-
-
-_tolerate_narrow_encodings()
-console = Console()
-err_console = Console(stderr=True)
 
 
 def _version_callback(value: bool) -> None:
     if value:
-        console.print(f"quackd {__version__}")
+        ui.console.print(f"quackd {__version__}")
         raise typer.Exit()
+
+
+def _no_color_callback(value: bool) -> bool:
+    """Eager, and it sets the variable rather than only the consoles.
+
+    Typer builds a console of its own for every `--help` it renders and reads `NO_COLOR`
+    when it does, so the variable is what makes `quackd --no-color run --help` plain as
+    well. Eager means it has run by the time the subcommand is parsed."""
+    if value:
+        os.environ["NO_COLOR"] = "1"
+    return value
 
 
 @app.callback()
@@ -72,9 +77,34 @@ def _main(
     version: bool = typer.Option(
         False, "--version", "-V", callback=_version_callback, is_eager=True, help="Show version."
     ),
+    no_color: bool = typer.Option(
+        False,
+        "--no-color",
+        is_eager=True,
+        callback=_no_color_callback,
+        help="Plain output with no colour. NO_COLOR=1 does the same, and FORCE_COLOR=1 keeps "
+        "the colour when the output is a pipe.",
+    ),
 ) -> None:
     """quackd — pilot a small robot (real or simulated) with any LLM."""
+    # `.env` first, so a NO_COLOR line in it counts, and then the consoles: Rich reads the
+    # environment and the stream's encoding when a console is built, and quackd's are built
+    # at import, which is before any of this was known.
     load_dotenv()
+    ui.configure(no_color=no_color)
+
+
+_JSON = typer.Option(
+    False,
+    "--json",
+    help="One JSON object per line on stdout, and nothing else: for a script rather than "
+    "for a person. Exit codes are unchanged.",
+    rich_help_panel="Output",
+)
+
+NEWLINE = "\n"
+
+_ADAPTER_HINT = "quackd list-adapters shows the seven that ship and their backends"
 
 
 def _expand(patterns: list[str]) -> list[str]:
@@ -89,33 +119,29 @@ def _verbose_line(msg: str) -> None:
     """A `--verbose` line, as plain text. A message can carry brackets Rich reads as markup:
     the executor's own `[dry-run] would run ...`, and the flock planner logging a model's raw
     tool arguments. Rich deletes `[bold]` silently and raises on an unpaired `[/think]`."""
-    err_console.print(msg, style="dim", markup=False, highlight=False, soft_wrap=True)
+    ui.err_console.print(msg, style="dim", markup=False, highlight=False, soft_wrap=True)
 
 
 def _print_outcome(
     outcome: str,
     reason: str,
     *,
-    detail: str,
+    counters: Sequence[str],
     run_dir: Path | str,
     gif_path: Path | str | None = None,
     trace_dropped: int = 0,
 ) -> None:
-    """The closing lines of a run: the verdict, one line of counters, where it all went.
+    """How the run ended, in the one place a person looks after looking away.
 
-    `quackd trace` prints them from the transcript, so a replay ends exactly the way the run
-    itself did rather than in a second dialect somebody has to keep in step. `detail` is the
-    counter line because a flock counts different things than a solo run does."""
-    colour = {"success": "green", "failure": "red", "budget": "yellow", "aborted": "red"}.get(
-        outcome, "red"
+    `quackd trace` prints it from the transcript too, so a replay ends exactly the way the
+    run itself did rather than in a second dialect somebody has to keep in step. `counters`
+    is a list because a flock counts different things than a solo run does."""
+    ui.console.print(
+        ui.verdict(outcome, reason, counters=counters, run_dir=run_dir, gif_path=gif_path)
     )
-    console.print(f"[{colour}]{outcome.upper()}[/{colour}] — {escape(reason)}")
-    if detail:
-        console.print(detail)
-    console.print(f"run dir: {run_dir}" + (f" · gif: {gif_path}" if gif_path else ""))
     if trace_dropped:
         # a console that raised on every event produced a silent trace and no sign of it
-        err_console.print(
+        ui.err_console.print(
             f"trace: {trace_dropped} line(s) could not be shown (the console raised); "
             "transcript.jsonl has them",
             style="yellow",
@@ -123,9 +149,44 @@ def _print_outcome(
         )
 
 
-def _fail(msg: str, code: int = 1) -> None:
-    # escape: messages contain things like quackd[anthropic], which Rich would eat as markup
-    err_console.print(f"[red]error:[/red] {escape(msg)}")
+def _header_rows(
+    *, provider: Any, robot: str, seed: int | None, dry_run: bool, memory: Any
+) -> list[tuple[str, Any]]:
+    """The four things worth knowing before a run starts, and nothing else."""
+    rows: list[tuple[str, Any]] = [
+        ("provider", f"{provider.name} ({provider.model or 'the first model it serves'})"),
+        ("robot", robot + (f"  seed {seed}" if seed is not None else "")),
+    ]
+    if dry_run:
+        rows.append(
+            (
+                "mode",
+                Text(
+                    "DRY RUN: every intent is printed and nothing is sent", style=ui.STYLES["warn"]
+                ),
+            )
+        )
+    if memory is not None:
+        m = memory.summary()
+        rows.append(
+            (
+                "memory",
+                Text.assemble(
+                    f"{m['notes']} notes, {m['episodes']} earlier runs  ",
+                    (f"{m['path']}", ui.STYLES["muted"]),
+                    ("  --no-memory to run fresh", ui.STYLES["muted"]),
+                ),
+            )
+        )
+    return rows
+
+
+def _fail(msg: str, code: int = 1, *, hint: str | None = None) -> None:
+    """One line saying what went wrong, and one dim line saying where to look next.
+
+    The message routinely names an extra (`quackd[anthropic]`) or a model's own brackets, so
+    it travels as text rather than as markup Rich would eat."""
+    ui.err_console.print(ui.fail_line(msg, hint=hint))
     raise typer.Exit(code=code)
 
 
@@ -152,10 +213,11 @@ def _robot_specs(robot: str | None, robots: str | None, duck: Any) -> list:
 # ── validate ────────────────────────────────────────────────────────────────────────────
 
 
-@app.command()
+@app.command(rich_help_panel="Inspect")
 def validate(
     duckfiles: list[str] = typer.Argument(..., help=".duck files, globs, or bundled names."),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Only print failures."),
+    as_json: bool = _JSON,
     robot: list[str] | None = typer.Option(
         None,
         "--robot",
@@ -174,21 +236,19 @@ def validate(
     from quackd.verbs.registry import default_registry
 
     registry = default_registry()
-    table = Table(title="quackd validate", show_lines=False)
-    table.add_column("file")
-    table.add_column("name")
-    table.add_column("verbs", justify="right")
-    table.add_column("result")
-    failures = 0
-    details: list[str] = []  # one plain line per problem, so long messages survive any width
+    rows: list[dict[str, Any]] = []
     for path in _expand(duckfiles):
+        row: dict[str, Any] = {"file": path, "name": None, "verbs": None, "robots": [], "ok": True}
+        rows.append(row)
         try:
             duck = load_duck(path)
         except DuckParseError as e:
-            failures += 1
-            table.add_row(path, "—", "—", f"[red]✗ {escape(e.reason)}[/red]")
-            details.append(f"{path}: {e.reason}")
+            row.update(ok=False, problems=[e.reason], summary=[e.reason])
             continue
+        row["name"] = duck.name
+        row["verbs"] = len(duck.frontmatter.verbs.allow)
+        if duck.frontmatter.flock is not None:
+            row["flock"] = len(duck.frontmatter.flock.member_names)
         try:
             if robot or robots:
                 specs = (
@@ -202,46 +262,89 @@ def validate(
                 specs = []
             manifests = [describe(spec) for spec in specs]
         except AdapterError as e:
-            failures += 1
-            table.add_row(path, duck.name, "—", f"[red]✗ {escape(str(e))}[/red]")
+            row.update(ok=False, problems=[str(e)], summary=[str(e)])
             continue
+        row["robots"] = [m.id for m in manifests]
         problems = validate_duck(duck, manifests, registry=registry)
         if problems:
-            failures += 1
-            table.add_row(
-                path,
-                duck.name,
-                str(len(duck.frontmatter.verbs.allow)),
-                "[red]✗ " + escape("; ".join(p.message for p in problems)) + "[/red]",
+            # `str(p)` names the field it came from and is what the plain lines under the
+            # table carry; `p.message` is the sentence, which is what fits in a cell
+            row.update(
+                ok=False,
+                problems=[str(p) for p in problems],
+                summary=[p.message for p in problems],
             )
-            details.extend(f"{path}: {p}" for p in problems)
-            continue
-        if not quiet:
-            verdict = "[green]✓ valid[/green]"
-            if duck.frontmatter.flock is not None:
-                verdict = (
-                    f"[green]✓ valid (flock of {len(duck.frontmatter.flock.member_names)})[/green]"
-                )
-            if manifests:
-                verdict += f" [dim]for {', '.join(m.id for m in manifests)}[/dim]"
-            table.add_row(path, duck.name, str(len(duck.frontmatter.verbs.allow)), verdict)
-    if not quiet or failures:
-        console.print(table)
+
+    failures = [row for row in rows if not row["ok"]]
+    if as_json:
+        for row in rows:
+            print(json.dumps({**row, "problems": row.get("problems", [])}))
+        raise typer.Exit(code=1 if failures else 0)
+
+    shown = failures if quiet else rows
+    if shown:
+        table = ui.table("quackd validate")
+        # nothing here is no_wrap: a path can be any length, and a column that refuses to
+        # wrap takes the width out of the one column that carries the answer
+        table.add_column("file", overflow="fold")
+        table.add_column("name")
+        table.add_column("verbs", justify="right")
+        table.add_column("result", ratio=2)
+        for row in shown:
+            table.add_row(*_validate_row(row))
+        ui.console.print(table)
     if failures:
-        for line in details:
-            console.print(escape(line), soft_wrap=True)
-        raise typer.Exit(code=1)
-    console.print(f"[green]{len(_expand(duckfiles))} file(s) valid.[/green]")
+        # under the table as plain lines, so a long message survives any terminal width
+        for row in failures:
+            for problem in row.get("problems", []):
+                ui.console.print(Text(f"  {row['file']}: {problem}"), soft_wrap=True)
+        _fail(f"{len(failures)} of {len(rows)} {_files(len(rows))} failed", hint=_VALIDATE_HINT)
+    ui.console.print(_ok_line(f"{len(rows)} {_files(len(rows))} valid"))
+
+
+_VALIDATE_HINT = "quackd list-verbs --robot <adapter>:<backend> shows what a body can do"
+
+
+def _files(n: int) -> str:
+    return "file" if n == 1 else "files"
+
+
+def _ok_line(message: str) -> Any:
+    return ui.Deferred(
+        lambda g: Text.assemble((f"{g.ok} ", ui.STYLES["ok"]), (message, ui.STYLES["ok"]))
+    )
+
+
+def _validate_row(row: dict[str, Any]) -> list[Any]:
+    """One line of the table, with everything a manifest or a parser wrote kept as text."""
+    verbs = "-" if row["verbs"] is None else str(row["verbs"])
+
+    def result(g: ui.Glyphs) -> Text:
+        if not row["ok"]:
+            out = Text(f"{g.fail} ", style=ui.STYLES["fail"])
+            out.append("; ".join(row.get("summary", [])) or "invalid", style=ui.STYLES["fail"])
+            return out
+        out = Text(f"{g.ok} valid", style=ui.STYLES["ok"])
+        if row.get("flock"):
+            out.append(f" (flock of {row['flock']})", style=ui.STYLES["ok"])
+        if row["robots"]:
+            out.append(f" for {', '.join(row['robots'])}", style=ui.STYLES["muted"])
+        return out
+
+    return [Text(row["file"]), Text(row["name"] or "-"), verbs, ui.Deferred(result)]
 
 
 # ── list-verbs ──────────────────────────────────────────────────────────────────────────
 
+_SAFETY_STYLE = {"safe": "ok", "confirm": "warn", "dangerous": "fail"}
 
-@app.command("list-verbs")
+
+@app.command("list-verbs", rich_help_panel="Inspect")
 def list_verbs(
     robot: str | None = typer.Option(
         None, "--robot", "-r", help="A robot's vocabulary (<adapter>:<backend>); default Microduck."
     ),
+    as_json: bool = _JSON,
 ) -> None:
     """List every verb a robot provides, with params and safety class."""
     from quackd.adapters.base import AdapterError
@@ -251,118 +354,171 @@ def list_verbs(
     try:
         registry = registry_for(parse_robot_spec(robot)) if robot else default_registry()
     except AdapterError as e:
-        _fail(str(e))
+        _fail(str(e), hint=_ADAPTER_HINT)
         return
     aliases: dict[str, list[str]] = {}
     for alias, target in registry.aliases().items():
         aliases.setdefault(target, []).append(alias)
-    table = Table(title=f"verbs ({robot or 'microduck'})")
-    table.add_column("name", style="bold")
+    verbs = registry.verbs()
+    if as_json:
+        for v in verbs:
+            print(
+                json.dumps(
+                    {
+                        "name": v.name,
+                        "aliases": aliases.get(v.name, []),
+                        "kind": v.kind,
+                        "core": v.core,
+                        "safety": v.safety_class,
+                        "params": v.param_summary(),
+                        "description": v.description,
+                    }
+                )
+            )
+        return
+    table = ui.table(f"verbs ({robot or 'microduck'})")
+    # no_wrap on the name: a narrow terminal must never elide the one column you look up
+    table.add_column("name", style=ui.STYLES["key"], no_wrap=True)
     table.add_column("aliases")
     table.add_column("kind")
     table.add_column("safety")
     table.add_column("params")
     table.add_column("description")
-    for v in registry.verbs():
+    for v in verbs:
+        kind = Text(v.kind)
+        if v.core:
+            kind.append(" core", style=ui.STYLES["muted"])
         table.add_row(
-            v.name,
-            ", ".join(aliases.get(v.name, [])),
-            f"{v.kind}{' (core)' if v.core else ''}",
-            v.safety_class,
-            v.param_summary(),
-            escape(v.description),
+            Text(v.name),
+            Text(", ".join(aliases.get(v.name, [])), style=ui.STYLES["muted"]),
+            kind,
+            Text(v.safety_class, style=ui.STYLES[_SAFETY_STYLE.get(v.safety_class, "muted")]),
+            Text(v.param_summary(), style=ui.STYLES["muted"]),
+            Text(v.description),
         )
-    console.print(table)
+    core = sum(1 for v in verbs if v.core)
+    table.caption = Text(
+        f"{len(verbs)} verbs, {core} core. --robot <adapter>:<backend> for another body",
+        style=ui.STYLES["muted"],
+    )
+    table.caption_justify = "left"
+    ui.console.print(table)
 
 
-@app.command("list-adapters")
-def list_adapters_cmd() -> None:
+@app.command("list-adapters", rich_help_panel="Inspect")
+def list_adapters_cmd(as_json: bool = _JSON) -> None:
     """List the robot adapters this build knows, their backends and status."""
     from quackd.adapters.factory import list_adapters
 
-    table = Table(title="adapters (--robot <adapter>:<backend>)")
-    table.add_column("adapter", style="bold")
-    table.add_column("backends")
-    table.add_column("status")
-    table.add_column("extra")
-    for row in list_adapters():
-        # escape: an extra reads quackd[lerobot], which Rich would eat as markup
-        extra = escape(row["extra"])
-        if row["extra"] != "built-in":
-            extra += (
-                " [green]installed[/green]" if row["installed"] else " [dim]not installed[/dim]"
-            )
-        table.add_row(row["name"], " · ".join(row["backends"]), row["status"], extra)
-    console.print(table)
+    rows = list_adapters()
+    if as_json:
+        for row in rows:
+            print(json.dumps(row))
+        return
+    ui.console.print(ui.adapters_table(rows))
 
 
 # ── list-models ───────────────────────────────────────────────────────────────────────────
 
 
-@app.command("list-models")
+@app.command("list-models", rich_help_panel="Inspect")
 def list_models_cmd(
     provider: str | None = typer.Option(
         None, "--provider", "-p", help="One vendor only. Omitted: every vendor."
     ),
+    as_json: bool = _JSON,
 ) -> None:
     """List the model ids each cloud provider accepts for --model, and which is the default."""
     if provider is not None:
         provider = provider.lower()
         if provider not in PROVIDER_NAMES:
-            _fail(f"unknown provider {provider!r}; choose one of {', '.join(PROVIDER_NAMES)}")
+            _fail(
+                f"unknown provider {provider!r}",
+                hint=f"one of: {', '.join(PROVIDER_NAMES)}",
+            )
             return
-    if provider is None or provider in CLOUD_NAMES:
-        table = Table(title="models (--model, QUACKD_MODEL)")
-        table.add_column("provider")
+    vendors = [provider] if provider in CLOUD_NAMES else list(CLOUD_NAMES)
+    rows = [
+        {
+            "provider": str(name),
+            "id": m.id,
+            "label": m.label,
+            "status": m.status,
+            "default": i == 0,
+            "api": m.api,
+            "vision": m.vision,
+        }
+        for name in vendors
+        if provider is None or provider in CLOUD_NAMES
+        for i, m in enumerate(models_for(str(name)))
+    ]
+    if as_json:
+        for row in rows:
+            print(json.dumps(row))
+        return
+
+    if rows:
+        table = ui.table("models (--model, QUACKD_MODEL)")
+        table.add_column("provider", style=ui.STYLES["key"], no_wrap=True)
         # An id is meant to be copied into `--model`, so it may wrap but must never be elided:
         # Rich's default would put an ellipsis through the middle of the one column that has to
         # survive an 80 column pipe intact.
-        table.add_column("id", style="bold", overflow="fold")
+        table.add_column("id", style=ui.STYLES["key"], overflow="fold")
         table.add_column("label", overflow="fold")
         table.add_column("status")
         table.add_column("notes")
-        for name in [provider] if provider in CLOUD_NAMES else list(CLOUD_NAMES):
-            for i, m in enumerate(models_for(str(name))):
-                # Words, not glyphs: this table is read through a cp1252 pipe on Windows, where a
-                # tick mark is the difference between a column and a row of question marks.
-                notes = []
-                if i == 0:
-                    notes.append("default")
-                if m.api == "responses":
-                    notes.append("Responses API")
-                if not m.vision:
-                    notes.append("no frames")
-                table.add_row(
-                    str(name) if i == 0 else "", m.id, escape(m.label), m.status, ", ".join(notes)
-                )
-        console.print(table)
+        last = ""
+        for row in rows:
+            # Words, not glyphs: this table is read through a cp1252 pipe on Windows, where a
+            # tick mark is the difference between a column and a row of question marks.
+            marks: list[str] = []
+            if row["default"]:
+                marks.append("default")
+            if row["api"] == "responses":
+                marks.append("Responses API")
+            if not row["vision"]:
+                marks.append("no frames")
+            table.add_row(
+                Text(str(row["provider"]) if row["provider"] != last else ""),
+                Text(str(row["id"])),
+                Text(str(row["label"])),
+                Text(str(row["status"])),
+                Text(", ".join(marks), style=ui.STYLES["muted"]),
+            )
+            last = str(row["provider"])
+        ui.console.print(table)
 
+    notes: list[str] = []
     if provider is None or provider in LOCAL_NAMES:
-        console.print(
-            f"[dim]{', '.join(LOCAL_NAMES)}: no catalogue. `--model` takes any id the server "
-            "serves, and without one quackd takes the first entry of /v1/models.[/dim]"
+        notes.append(
+            f"{', '.join(LOCAL_NAMES)}: no catalogue. `--model` takes any id the server serves, "
+            "and without one quackd takes the first entry of /v1/models."
         )
     if provider is None or provider == "fake":
-        console.print("[dim]fake: scripted, and `--model` is ignored.[/dim]")
-
-    pinned = os.environ.get("QUACKD_MODEL")
-    if pinned:
+        notes.append("fake: scripted, and `--model` is ignored.")
+    if pinned := os.environ.get("QUACKD_MODEL"):
         whose = vendor_of(pinned)
         where = f"a {whose} model" if whose else "not a model any vendor here lists"
-        console.print(f"[dim]QUACKD_MODEL={escape(pinned)} is {where}.[/dim]")
+        notes.append(f"QUACKD_MODEL={pinned} is {where}.")
+    for note in notes:
+        ui.console.print(Text(note, style=ui.STYLES["muted"]), soft_wrap=True)
 
 
 # ── run / record ────────────────────────────────────────────────────────────────────────
 
 
 def _confirm_prompt(name: str, params: dict[str, Any]) -> bool:
-    return typer.confirm(f"⚠️  run {name}({params})?", default=False)
+    # under a running status line the question is invisible: a live region redirects stdout
+    # and a prompt writes without a newline, so it stays buffered until it is too late
+    with ui.pause_status():
+        return typer.confirm(f"run {name}({params})?", default=False)
 
 
 def _acknowledge_prompt(why: str) -> bool:
     """Asked once, before anything moves, when the human is the only safety left."""
-    err_console.print(f"[yellow]⚠️  {why}[/yellow]")
-    return typer.confirm("Are you watching the robot right now?", default=False)
+    with ui.pause_status():
+        ui.err_console.print(Text(why, style=ui.STYLES["warn"]))
+        return typer.confirm("Are you watching the robot right now?", default=False)
 
 
 def _run_impl(
@@ -405,6 +561,7 @@ def _run_impl(
     from quackd.safety import KillSwitch, allow_all
     from quackd.trace import (
         ConsoleTrace,
+        fan_out,
         prompt_shown_default,
         thinking_limit_default,
         trace_enabled_default,
@@ -506,13 +663,18 @@ def _run_impl(
     trace_on = trace if trace is not None else trace_enabled_default()
     console_trace = (
         ConsoleTrace(
-            err_console,
+            ui.err_console,
             thinking_chars=thinking_limit_default(),
             prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
         )
         if trace_on
         else None
     )
+
+    # on whether or not the trace is: with --no-trace this is the only thing between the
+    # header and the verdict, and a model can think for a minute
+    status = ui.RunStatus()
+    ui.install_logging()
 
     def log(msg: str) -> None:
         # the compact view: one line per verb and the executor's notes. The trace shows all
@@ -540,27 +702,22 @@ def _run_impl(
         memory=robot_memory,
         fov_deg=fov_deg,
         acknowledge=None if yes else _acknowledge_prompt,
-        trace=console_trace,
+        trace=fan_out(console_trace, status.sink),
     )
-    console.print(
-        f"🦆 [bold]{duck.name}[/bold] · provider=[cyan]{llm.name}[/cyan] "
-        f"({llm.model or 'model: first served'}) · "
-        f"robot=[cyan]{spec.key}[/cyan]"
-        + (f" · seed={seed}" if seed is not None else "")
-        + (" · [yellow]DRY RUN[/yellow]" if dry_run else "")
-    )
-    if robot_memory is not None:
-        m = robot_memory.summary()
-        console.print(
-            f"[dim]memory: {m['notes']} notes, {m['episodes']} earlier runs "
-            f"({m['path']}) · --no-memory to run fresh[/dim]"
+    ui.console.print(
+        ui.run_header(
+            duck.name,
+            _header_rows(
+                provider=llm, robot=spec.key, seed=seed, dry_run=dry_run, memory=robot_memory
+            ),
+            hint="Ctrl-C or q stops the duck. Press it twice to quit at once.",
         )
-    console.print("[dim]Ctrl-C or q stops the duck. Press it twice to quit at once.[/dim]")
+    )
 
     def killed(msg: str) -> None:
         """Always printed, unlike `log`, which is --verbose only. Someone who has just hit
         Ctrl-C on a walking robot needs to see that it registered."""
-        err_console.print(f"[yellow]{msg}[/yellow]")
+        ui.err_console.print(Text(msg, style=ui.STYLES["warn"]))
 
     async def main() -> Any:
         from quackd.agent.loop import AgentLoop
@@ -575,21 +732,27 @@ def _run_impl(
 
     _ = run_duck  # imported for symmetry; AgentLoop is used directly so the kill switch can bind
     try:
-        result = asyncio.run(main())
+        with status:
+            status.update(f"connecting to {spec.key}")
+            result = asyncio.run(main())
     except (TransportError, ProviderError) as e:
         # the trace has already shown the call that failed; this is the one-line verdict
         _fail(str(e))
         return
     if recorder is not None:
-        gif_path = recorder.save_gif(result.run_dir / "run.gif")
+        # after the status line rather than under it: Rich 13.7 refuses a second live region
+        # on one console, and a long run can be a thousand frames to quantise
+        with ui.spinner(f"encoding {len(recorder.frames)} frames into run.gif"):
+            gif_path = recorder.save_gif(result.run_dir / "run.gif")
         result.gif_path = gif_path
     _print_outcome(
         result.outcome,
         result.reason,
-        detail=(
-            f"steps={result.steps} llm_calls={result.llm_calls} "
-            f"tokens={result.usage.input_tokens}+{result.usage.output_tokens}"
-        ),
+        counters=[
+            f"steps {result.steps}",
+            f"llm calls {result.llm_calls}",
+            f"tokens {result.usage.input_tokens}+{result.usage.output_tokens}",
+        ],
         run_dir=result.run_dir,
         gif_path=result.gif_path,
         trace_dropped=result.trace_dropped,
@@ -629,6 +792,7 @@ def _run_flock_impl(
     from quackd.trace import (
         ConsoleTrace,
         Sink,
+        fan_out,
         flock_caption,
         prompt_shown_default,
         thinking_limit_default,
@@ -688,14 +852,27 @@ def _run_flock_impl(
         """One view per robot, its name on every line. A shared view would coalesce two
         robots' intents into one line and attribute them to whichever spoke last."""
         if name not in views:
+            # a colour per member as well as a name, because three robots moving at once
+            # interleave and the eye finds a colour faster than it reads a prefix
+            order = member_names.index(name) if name in member_names else -1
             views[name] = ConsoleTrace(
-                err_console,
+                ui.err_console,
                 thinking_chars=thinking_limit_default(),
                 prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
                 prefix=f"{name:<{prefix_width}}  ",
+                prefix_style=ui.MEMBER_STYLES[order % len(ui.MEMBER_STYLES)]
+                if order >= 0
+                else ui.STYLES["key"],
             )
-        return views[name]
+        return fan_out(views[name], status.sink)
 
+    def status_only(_name: str) -> Sink | None:
+        """With --no-trace nothing narrates, but the status line still has to say which duck
+        is doing what, or a flock is a minute of nothing at all."""
+        return status.sink
+
+    status = ui.RunStatus()
+    ui.install_logging()
     holder: dict[str, Any] = {}
 
     def on_ready(transport0: Any, coordinator: Any) -> None:
@@ -724,31 +901,34 @@ def _run_flock_impl(
 
         coordinator.on_event = on_event
 
-    console.print(
-        f"🦆x{count} [bold]{duck.name}[/bold] · provider=[cyan]{llm.name}[/cyan] "
-        f"({llm.model or 'model: first served'}) · flock (sim2d, EXPERIMENTAL)"
-        + (f" · seed={seed}" if seed is not None else "")
-        + (" · [yellow]DRY RUN[/yellow]" if dry_run else "")
-    )
-    console.print("[dim]Ctrl-C or q stops every duck.[/dim]")
+    rows: list[tuple[str, Any]] = [
+        ("provider", f"{llm.name} ({llm.model or 'the first model it serves'})"),
+        ("flock", f"{count} ducks in sim2d" + (f"  seed {seed}" if seed is not None else "")),
+        ("status", Text("EXPERIMENTAL", style=ui.STYLES["warn"])),
+    ]
+    if dry_run:
+        rows.append(("mode", Text("DRY RUN: nothing is sent", style=ui.STYLES["warn"])))
+    ui.console.print(ui.run_header(duck.name, rows, hint="Ctrl-C or q stops every duck."))
     try:
-        result = asyncio.run(
-            run_flock(
-                duck,
-                provider=llm,
-                seed=seed if seed is not None else 0,
-                runs_dir=runs_dir,
-                n_override=n_override,
-                dry_run=dry_run,
-                max_steps=max_steps,
-                live=live,
-                gif_size=gif_size,
-                on_recorder=on_ready,
-                log=log,
-                robots=robots,
-                trace=view_for if trace_on else None,
+        with status:
+            status.update(f"starting {count} ducks")
+            result = asyncio.run(
+                run_flock(
+                    duck,
+                    provider=llm,
+                    seed=seed if seed is not None else 0,
+                    runs_dir=runs_dir,
+                    n_override=n_override,
+                    dry_run=dry_run,
+                    max_steps=max_steps,
+                    live=live,
+                    gif_size=gif_size,
+                    on_recorder=on_ready,
+                    log=log,
+                    robots=robots,
+                    trace=view_for if trace_on else status_only,
+                )
             )
-        )
     except ValueError as e:
         _fail(str(e))
         return
@@ -760,15 +940,21 @@ def _run_flock_impl(
         for pending in views.values():
             pending.flush()
     if "rec" in holder:
-        result.gif_path = holder["rec"].save_gif(result.run_dir / "run.gif")
-    spotter = f"spotter={result.spotter} " if result.spotter else ""
+        rec = holder["rec"]
+        with ui.spinner(f"encoding {len(rec.frames)} frames into run.gif"):
+            result.gif_path = rec.save_gif(result.run_dir / "run.gif")
+    counters = [f"kicker {result.kicker}"]
+    if result.spotter:
+        counters.insert(0, f"spotter {result.spotter}")
+    counters += [
+        f"auctions {result.auctions}",
+        f"bids {result.bids}",
+        f"ball moved {result.ball_displacement_m:.2f} m in {result.sim_elapsed_s:.1f} s sim",
+    ]
     _print_outcome(
         result.outcome,
         result.reason,
-        detail=(
-            f"{spotter}kicker={result.kicker} auctions={result.auctions} bids={result.bids} "
-            f"ball moved {result.ball_displacement_m:.2f} m in {result.sim_elapsed_s:.1f}s sim"
-        ),
+        counters=counters,
         run_dir=result.run_dir,
         gif_path=result.gif_path,
         trace_dropped=result.trace_dropped,
@@ -785,6 +971,7 @@ _GOAL = typer.Option(
     "--goal",
     "-g",
     help='A plain-language goal instead of a .duck file, e.g. --goal "find the ball and kick it".',
+    rich_help_panel="Task",
 )
 _GIFSIZE = typer.Option(
     256,
@@ -792,21 +979,25 @@ _GIFSIZE = typer.Option(
     min=64,
     max=1024,  # `sim3d.scene.OFFSCREEN_PX`; spelled here because cli.py must not import sim3d
     help="Simulators: pixel size of each GIF pane, 64 to 1024.",
+    rich_help_panel="Output",
 )
 _FLOCK = typer.Option(
     None,
     "--flock",
     help="EXPERIMENTAL: run N cooperating ducks (2-4) in sim2d. Overrides the file's flock block.",
+    rich_help_panel="Robot",
 )
 _MEMORY = typer.Option(
     True,
     "--memory/--no-memory",
     help="Carry notes and run outcomes between runs of the same robot (see `quackd memory`).",
+    rich_help_panel="Memory",
 )
 _MEMORY_DIR = typer.Option(
     None,
     "--memory-dir",
     help="Where memory files live (default: $QUACKD_MEMORY_DIR or ~/.quackd/memory).",
+    rich_help_panel="Memory",
 )
 
 
@@ -830,17 +1021,25 @@ _PROVIDER = typer.Option(
     "--provider",
     "-p",
     help=" · ".join(PROVIDER_NAMES),
+    rich_help_panel="Model",
 )
 _BASEURL = typer.Option(
     None,
     "--base-url",
     help="OpenAI-compatible server, e.g. http://localhost:8000/v1 (local presets).",
+    rich_help_panel="Model",
 )
-_APIKEY = typer.Option(None, "--api-key", help="API key override (local servers do not need one).")
+_APIKEY = typer.Option(
+    None,
+    "--api-key",
+    help="API key override (local servers do not need one).",
+    rich_help_panel="Model",
+)
 _VISION = typer.Option(
     None,
     "--vision/--no-vision",
     help="Send camera frames to the model (default: on for cloud, off for local).",
+    rich_help_panel="Model",
 )
 _ROBOT = typer.Option(
     None,
@@ -848,11 +1047,32 @@ _ROBOT = typer.Option(
     "-r",
     help="<adapter>:<backend>, e.g. microduck:sim2d (default) · microduck:mock · "
     "microduck:jsonrpc. See `quackd list-adapters`.",
+    rich_help_panel="Robot",
 )
 _ROBOTS = typer.Option(
     None,
     "--robots",
     help="A flock or fleet: name=<adapter>:<backend>,... (simulator only for flocks).",
+    rich_help_panel="Robot",
+)
+_SEED = typer.Option(
+    None, "--seed", help="Simulator seed (deterministic runs).", rich_help_panel="Task"
+)
+_DRY = typer.Option(
+    False, "--dry-run", help="Print every intent, send nothing.", rich_help_panel="Task"
+)
+_MAXSTEPS = typer.Option(
+    None, "--max-steps", help="Override the duck's max_steps budget.", rich_help_panel="Task"
+)
+_RUNS = typer.Option(
+    "runs", "--runs-dir", help="Where run directories go.", rich_help_panel="Output"
+)
+_YES = typer.Option(
+    False,
+    "--yes",
+    "-y",
+    help="Auto-confirm gated verbs (careful on hardware).",
+    rich_help_panel="Task",
 )
 _MODEL = typer.Option(
     None,
@@ -861,33 +1081,37 @@ _MODEL = typer.Option(
     help="A model id from the provider's catalogue (`quackd list-models`). Omitted: that "
     "vendor's default. Local presets take any id the server serves.",
     autocompletion=_complete_model,
+    rich_help_panel="Model",
 )
-_SEED = typer.Option(None, "--seed", help="Simulator seed (deterministic runs).")
-_DRY = typer.Option(False, "--dry-run", help="Print every intent, send nothing.")
-_MAXSTEPS = typer.Option(None, "--max-steps", help="Override the duck's max_steps budget.")
-_RUNS = typer.Option("runs", "--runs-dir", help="Where run directories go.")
-_YES = typer.Option(False, "--yes", "-y", help="Auto-confirm gated verbs (careful on hardware).")
 _LIVE = typer.Option(
     False,
     "--live",
     help="Simulators: watch the run in real time. sim2d opens a pygame window (needs "
-    "quackd[live]); mujoco opens MuJoCo's own viewer.",
+    r"quackd\[live]); mujoco opens MuJoCo's own viewer.",
+    rich_help_panel="Output",
 )
-_ADDR = typer.Option(None, "--address", help="jsonrpc: unix:///run/robotd.sock or tcp://host:port")
+_ADDR = typer.Option(
+    None,
+    "--address",
+    help="jsonrpc: unix:///run/robotd.sock or tcp://host:port",
+    rich_help_panel="Robot",
+)
 _TOKEN = typer.Option(
     None,
     "--token",
     help="The bridge token for a robot that wants one. The Open Duck's installer writes one "
     "on the robot and QUACKD_DUCK_TOKEN carries it when the flag is absent. The ToddlerBot's "
     "daemon has no installer and reads QUACKD_TODDLERBOT_TOKEN instead.",
+    rich_help_panel="Robot",
 )
 _CAMERA_URL = typer.Option(
     None,
     "--camera-url",
     help="Where frames come from, overriding whatever the robot advertises. An HTTP snapshot "
     "(http://host:9872/snapshot.jpg), or webrtc://host:8443 to pull mediad's video track off a "
-    "Microduck, which is the only camera upstream offers and needs quackd[microduck-camera]. "
+    r"Microduck, which is the only camera upstream offers and needs quackd\[microduck-camera]. "
     "Needed when you reach the robot through a tunnel and its own URL is not routable.",
+    rich_help_panel="Robot",
 )
 _FOV = typer.Option(
     None,
@@ -895,6 +1119,7 @@ _FOV = typer.Option(
     help="Horizontal field of view of the camera actually on your robot, in degrees. The "
     "default is the simulator's 90; a Pi Camera Module 2 is about 62. Getting it wrong "
     "scales every bearing and distance, so detections say so until you set it.",
+    rich_help_panel="Robot",
 )
 _VERBOSE = typer.Option(
     False,
@@ -902,6 +1127,7 @@ _VERBOSE = typer.Option(
     "-v",
     help="The compact view on stderr: one line per verb plus the executor's notes. The trace "
     "(on by default) shows all of that and more, so this only adds anything with --no-trace.",
+    rich_help_panel="Output",
 )
 _TRACE = typer.Option(
     None,
@@ -909,6 +1135,7 @@ _TRACE = typer.Option(
     help="Show everything behind the scenes on stderr: the prompt, each observation, what the "
     "model thought and answered, every executor decision, every intent sent to the robot, "
     "every result, tokens and timings. On by default; QUACKD_TRACE=0 turns it off too.",
+    rich_help_panel="Output",
 )
 _TRACE_MCP = typer.Option(
     None,
@@ -917,16 +1144,18 @@ _TRACE_MCP = typer.Option(
     "stderr: the verb, every gate that fired, every intent sent to the robot, every result "
     "and the budget. Over MCP the pilot is the client, so its own reasoning is not quackd's "
     "to show. On by default; QUACKD_TRACE=0 turns it off too.",
+    rich_help_panel="Output",
 )
 _TRACE_PROMPT = typer.Option(
     None,
     "--trace-prompt/--no-trace-prompt",
     help="Print the system prompt once at the start of the trace. On by default; "
     "QUACKD_TRACE_PROMPT=0 turns it off too. It is in the transcript either way.",
+    rich_help_panel="Output",
 )
 
 
-@app.command()
+@app.command(rich_help_panel="Run a duck")
 def run(
     duckfile: str | None = _DUCK_ARG,
     goal: str | None = _GOAL,
@@ -945,7 +1174,10 @@ def run(
     token: str | None = _TOKEN,
     fov_deg: float | None = _FOV,
     gif: bool = typer.Option(
-        True, "--gif/--no-gif", help="Simulators: write run.gif into the run dir."
+        True,
+        "--gif/--no-gif",
+        help="Simulators: write run.gif into the run dir.",
+        rich_help_panel="Output",
     ),
     gif_size: int = _GIFSIZE,
     verbose: bool = _VERBOSE,
@@ -990,7 +1222,7 @@ def run(
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Run a duck")
 def record(
     duckfile: str | None = _DUCK_ARG,
     goal: str | None = _GOAL,
@@ -1099,7 +1331,7 @@ def _replay(
                 continue
         if kind == "frame":
             if frames:
-                console.print(f"        frame {data.get('path', '')}", style="dim", markup=False)
+                ui.console.print(f"        frame {data.get('path', '')}", style="dim", markup=False)
             continue
         if kind == "verb" and legacy:
             kind = "verb_end"
@@ -1113,7 +1345,7 @@ _TRACE_RUN = typer.Argument(
 )
 
 
-@app.command("trace")
+@app.command("trace", rich_help_panel="Run a duck")
 def trace_cmd(
     run: str | None = _TRACE_RUN,
     runs_dir: str = _RUNS,
@@ -1132,8 +1364,6 @@ def trace_cmd(
 
     On stdout, because a replay is what you pipe to a pager or a file, and unaffected by
     QUACKD_TRACE: that switch is about narrating live, and asking for a replay is asking."""
-    import json
-
     from quackd.agent.transcript import Transcript
     from quackd.trace import ConsoleTrace, parse_thinking_limit
     from quackd.trace import prompt_shown_default as _prompt_default
@@ -1153,22 +1383,26 @@ def trace_cmd(
     width = max((len(p.parent.name) for p in transcripts), default=0) if len(transcripts) > 1 else 0
     end: dict[str, Any] | None = None
     cut = 0
-    for path in transcripts:
+    for i, path in enumerate(transcripts):
         records = Transcript.read(path, lenient=True)
         cut += int(records[-1].get("_skipped", 0)) if records else 0
         view = ConsoleTrace(
-            console,
+            ui.console,
             thinking_chars=(
                 parse_thinking_limit(thinking) if thinking is not None else _thinking_default()
             ),
             prompt=prompt if prompt is not None else _prompt_default(),
             progress_s=None,  # a replay is not live: one line per burst, as the record has it
             prefix=f"{path.parent.name:<{width}}  " if width else "",
+            prefix_style=ui.MEMBER_STYLES[i % len(ui.MEMBER_STYLES)] if width else "",
+            # a replay has no CLI header in front of it, so this is where the run says what
+            # it was: which duck, which model, which robot, and how long connecting took
+            header=True,
         )
         end = _replay(records, view, from_step=from_step, frames=frames) or end
 
     if cut:
-        err_console.print(
+        ui.err_console.print(
             f"trace: {cut} unreadable line(s) skipped, the run was cut while it was writing",
             style="yellow",
             markup=False,
@@ -1181,20 +1415,22 @@ def trace_cmd(
         return
     usage = end.get("usage") or {}
     if "kicker" in end:  # a flock counts different things, and its summary is the only source
-        spotter = f"spotter={end['spotter']} " if end.get("spotter") else ""
-        detail = (
-            f"{spotter}kicker={end.get('kicker')} auctions={end.get('auctions')} "
-            f"bids={end.get('bids')}"
-        )
+        counters = [f"spotter {end['spotter']}"] if end.get("spotter") else []
+        counters += [
+            f"kicker {end.get('kicker')}",
+            f"auctions {end.get('auctions')}",
+            f"bids {end.get('bids')}",
+        ]
     else:
-        detail = (
-            f"steps={int(end.get('steps') or 0)} llm_calls={int(end.get('llm_calls') or 0)} "
-            f"tokens={usage.get('input_tokens', 0)}+{usage.get('output_tokens', 0)}"
-        )
+        counters = [
+            f"steps {int(end.get('steps') or 0)}",
+            f"llm calls {int(end.get('llm_calls') or 0)}",
+            f"tokens {usage.get('input_tokens', 0)}+{usage.get('output_tokens', 0)}",
+        ]
     _print_outcome(
         str(end.get("outcome", "error")),
         str(end.get("reason", "")),
-        detail=detail,
+        counters=counters,
         run_dir=run_dir,
         gif_path=gif if (gif := run_dir / "run.gif").exists() else None,
         trace_dropped=int(end.get("trace_dropped") or 0),
@@ -1204,7 +1440,7 @@ def trace_cmd(
 # ── doctor / serve-mcp ──────────────────────────────────────────────────────────────────
 
 
-@app.command()
+@app.command(rich_help_panel="Inspect")
 def doctor(
     robot: str | None = typer.Option(
         None, "--robot", "-r", help="Also show one robot's manifest (<adapter>:<backend>)."
@@ -1216,22 +1452,32 @@ def doctor(
     ),
     camera_url: str | None = _CAMERA_URL,
     token: str | None = _TOKEN,
+    as_json: bool = _JSON,
 ) -> None:
     """Check the environment: keys, optional extras, adapters, upstream assumptions.
 
     With `--robot X --address Y` it also connects, which is the only way to see what a
     robot actually reports before a run does."""
-    from quackd.doctor import run_doctor
+    from quackd.doctor import collect, render
 
     if address and not robot:
         _fail("--address needs --robot, so quackd knows what it is connecting to")
         return
-    ok = run_doctor(console, robot=robot, address=address, camera_url=camera_url, token=token)
-    if not ok:
+    if as_json:
+        report = collect(robot, address=address, camera_url=camera_url, token=token)
+        print(json.dumps(report.to_dict()))
+        raise typer.Exit(code=0 if report.ok else 1)
+    ui.install_logging()
+    # the probes are the slow part: five local servers at 1.5 s each, and a real robot after
+    # them. It used to sit silent for ten seconds with no sign it was doing anything.
+    with ui.spinner("checking this machine") as say:
+        report = collect(robot, address=address, camera_url=camera_url, token=token, progress=say)
+    render(ui.console, report)
+    if not report.ok:
         raise typer.Exit(code=1)
 
 
-@app.command("serve-mcp")
+@app.command("serve-mcp", rich_help_panel="Serve")
 def serve_mcp(
     robot: str | None = _ROBOT,
     robots: str | None = typer.Option(
@@ -1284,7 +1530,7 @@ memory_app = typer.Typer(
     help="What a robot remembers between runs: notes the pilot saved, and how runs ended.",
     no_args_is_help=True,
 )
-app.add_typer(memory_app, name="memory")
+app.add_typer(memory_app, name="memory", rich_help_panel="Memory")
 
 
 def _memory_for(robot: str | None, memory_dir: str | None) -> Any:
@@ -1314,12 +1560,56 @@ def memory_show(
             print(mem.path.read_text(encoding="utf-8"), end="")
         return
     info = mem.summary()
-    console.print(
-        f"[bold]{info['robot']}[/bold] · {info['notes']} notes · {info['episodes']} runs · "
-        f"[dim]{info['path']}[/dim]"
+    ui.console.print(
+        Text.assemble(
+            (str(info["robot"]), ui.STYLES["key"]),
+            (f"  {_plural(info['notes'], 'note')}, {_plural(info['episodes'], 'run')}  ", ""),
+            (str(info["path"]), ui.STYLES["muted"]),
+        )
     )
-    text = mem.recall(max_notes=50, max_episodes=10)
-    console.print(escape(text) if text else "[dim](nothing remembered yet)[/dim]")
+    notes, episodes = mem.notes(), mem.episodes()
+    if not notes and not episodes:
+        ui.console.print(Text("nothing remembered yet", style=ui.STYLES["muted"]))
+        return
+    if notes:
+        table = ui.table("notes the pilot saved")
+        table.add_column("date", no_wrap=True)
+        table.add_column("tags", style=ui.STYLES["muted"])
+        table.add_column("note", ratio=1)
+        for entry in reversed(notes[-50:]):
+            table.add_row(Text(entry.date), Text(", ".join(entry.tags)), Text(entry.text))
+        ui.console.print(table)
+    if episodes:
+        table = ui.table("how recent runs ended")
+        table.add_column("date", no_wrap=True)
+        table.add_column("duck", no_wrap=True)
+        table.add_column("outcome", no_wrap=True)
+        table.add_column("what happened", ratio=1)
+        for entry in reversed(episodes[-10:]):
+            outcome = str(entry.outcome or "")
+            what = Text(_episode_detail(entry))
+            if entry.highlights:
+                joined = "; ".join(entry.highlights)
+                what.append(NEWLINE + joined, style=ui.STYLES["muted"])
+            table.add_row(
+                Text(entry.date),
+                Text(str(entry.duck or "")),
+                Text(outcome, style=ui.STYLES["ok" if outcome == "success" else "warn"]),
+                what,
+            )
+        ui.console.print(table)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _episode_detail(entry: Any) -> str:
+    """An episode's text without the duck and outcome it already has columns for."""
+    prefix = f"{entry.duck}: {entry.outcome} — "
+    if entry.duck and entry.outcome and entry.text.startswith(prefix):
+        return str(entry.text[len(prefix) :])
+    return str(entry.text)
 
 
 @memory_app.command("add")
@@ -1332,7 +1622,11 @@ def memory_add(
     """Save a note by hand, the same way the pilot's `remember` does."""
     mem = _memory_for(robot, memory_dir)
     entry = mem.remember(text, tags=tag)
-    console.print(f"remembered for [bold]{mem.robot_key}[/bold]: {escape(entry.text)}")
+    ui.console.print(
+        Text.assemble(
+            ("remembered for ", ""), (mem.robot_key, ui.STYLES["key"]), (": ", ""), entry.text
+        )
+    )
 
 
 @memory_app.command("clear")
@@ -1345,58 +1639,61 @@ def memory_clear(
     mem = _memory_for(robot, memory_dir)
     n = len(mem.entries())
     if n == 0:
-        console.print(f"[dim]{mem.robot_key}: nothing to forget[/dim]")
+        ui.console.print(Text(f"{mem.robot_key}: nothing to forget", style=ui.STYLES["muted"]))
         return
     if not yes and not typer.confirm(f"forget {n} entries for {mem.robot_key}?"):
         raise typer.Exit()
     mem.clear()
-    console.print(f"forgot {n} entries for [bold]{mem.robot_key}[/bold]")
+    ui.console.print(
+        Text.assemble((f"forgot {n} entries for ", ""), (mem.robot_key, ui.STYLES["key"]))
+    )
 
 
 # ── lan (quackd[lan]) ───────────────────────────────────────────────────────────────────
 
 
-@app.command()
+@app.command(rich_help_panel="LAN")
 def discover(
     timeout: float = typer.Option(3.0, "--timeout", help="Seconds to listen for answers."),
     as_json: bool = typer.Option(False, "--json", help="One JSON object per robot."),
 ) -> None:
-    """List the quackd robots answering on the LAN (zeroconf, needs quackd[lan])."""
-    import json
-
-    from rich.table import Table
-
+    r"""List the quackd robots answering on the LAN (zeroconf, needs quackd\[lan])."""
     from quackd.lan import LanNotInstalled
     from quackd.lan import discover as lan_discover
 
     try:
-        robots = lan_discover.discover(timeout)
+        # it listens for the whole timeout whether anything answers or not, so say so
+        with ui.spinner(f"listening for quackd robots ({timeout:g} s)"):
+            robots = lan_discover.discover(timeout)
     except LanNotInstalled as e:
-        _fail(str(e))
+        _fail(str(e), hint="pip install 'quackd[lan]' adds zeroconf")
     if as_json:
         for robot in robots:
             print(json.dumps(robot.row()))
         return
     if not robots:
-        console.print(f"[dim]no quackd robots answered in {timeout:g} s[/dim]")
+        ui.console.print(
+            Text(f"no quackd robots answered in {timeout:g} s", style=ui.STYLES["muted"])
+        )
         return
-    t = Table(title=f"quackd robots on the LAN ({len(robots)})")
-    for column in ("manifest id", "adapter", "model", "embodiment", "verbs", "address", "digest"):
+    t = ui.table(f"quackd robots on the LAN ({len(robots)})")
+    t.add_column("manifest id", style=ui.STYLES["key"], no_wrap=True)
+    for column in ("adapter", "model", "embodiment", "verbs", "address", "digest"):
         t.add_column(column)
     for robot in robots:
         t.add_row(
-            robot.manifest_id,
-            robot.adapter,
-            robot.model,
-            robot.embodiment,
-            str(robot.n_verbs),
-            ", ".join(robot.addresses) or robot.host,
-            robot.digest,
+            Text(robot.manifest_id),
+            Text(robot.adapter),
+            Text(robot.model),
+            Text(robot.embodiment),
+            Text(str(robot.n_verbs)),
+            Text(", ".join(robot.addresses) or robot.host),
+            Text(robot.digest, style=ui.STYLES["muted"]),
         )
-    console.print(t)
+    ui.console.print(t)
 
 
-@app.command()
+@app.command(rich_help_panel="LAN")
 def announce(
     robot: str = typer.Option(
         ..., "--robot", "-r", help="<adapter>:<backend> to advertise (static manifest, no robot)."
@@ -1409,7 +1706,7 @@ def announce(
         None, "--for", help="Seconds to stay announced (default: until Ctrl-C)."
     ),
 ) -> None:
-    """Advertise a robot's identity on the LAN (zeroconf, needs quackd[lan])."""
+    r"""Advertise a robot's identity on the LAN (zeroconf, needs quackd\[lan])."""
     import time
 
     from quackd.adapters.base import AdapterError
@@ -1424,23 +1721,84 @@ def announce(
         ann = lan_announce.announce(manifest, adapter=spec.adapter, port=port)
     except (AdapterError, LanNotInstalled, ValueError) as e:
         _fail(str(e))
-    console.print(
-        f"announcing {ann.record.name} ({manifest.summary()}) at "
-        f"{', '.join(ann.record.addresses)} · digest {manifest.digest()}"
+    ui.console.print(
+        ui.run_header(
+            ann.record.name,
+            [
+                ("robot", manifest.summary()),
+                ("at", ", ".join(ann.record.addresses)),
+                ("digest", manifest.digest()),
+            ],
+            hint="Ctrl-C to withdraw" if for_s is None else f"withdrawing in {for_s:g} s",
+        )
     )
     try:
-        if for_s is None:
-            console.print("[dim]Ctrl-C to withdraw[/dim]")
-            while True:
-                time.sleep(1.0)
-        else:
-            time.sleep(for_s)
+        with ui.spinner(f"announcing {ann.record.name}"):
+            if for_s is None:
+                while True:
+                    time.sleep(1.0)
+            else:
+                time.sleep(for_s)
     except KeyboardInterrupt:
         pass
     finally:
         ann.close()
-        console.print("withdrawn")
+        ui.console.print(Text("withdrawn", style=ui.STYLES["muted"]))
+
+
+def _stdout_alive() -> bool:
+    """Whether stdout can still be written to. A closed pipe fails the flush."""
+    try:
+        sys.stdout.flush()
+    except OSError:
+        return False
+    return not sys.stdout.closed
+
+
+def _leave_quietly() -> None:
+    """Stop, with nothing further to say.
+
+    Python flushes stdout as it exits, which raises a second time on a pipe that has already
+    gone, so stdout is pointed at the void before leaving."""
+    with contextlib.suppress(Exception):
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    raise SystemExit(0)
+
+
+def _rich_traceback(kind: type[BaseException], exc: BaseException, tb: Any) -> None:
+    """A crash, rendered, without this process's locals in it: they hold an API key, a
+    robot's address and its bridge token.
+
+    Built here rather than installed once, because the console `--no-color` rebuilt does not
+    exist until the root callback has run and an excepthook fires long after that."""
+    from rich.traceback import Traceback
+
+    ui.err_console.print(
+        Traceback.from_exception(kind, exc, tb, show_locals=False, suppress=[typer])
+    )
+
+
+def main() -> None:
+    """The console entry point: `app()`, and the two things a command that prints for a
+    living owes its terminal.
+
+    A traceback must not spill this process's locals, because they hold an API key, a
+    robot's address and its bridge token. And a reader is allowed to walk away: `quackd
+    list-verbs | head` closes the pipe halfway down the table, and Python's answer to that
+    is a second wall of text about a broken pipe on top of the output that was asked for."""
+    sys.excepthook = _rich_traceback
+    try:
+        app()
+    except BrokenPipeError:
+        _leave_quietly()
+    except OSError as e:
+        # Windows answers a write to a pipe nobody is reading with EINVAL rather than EPIPE,
+        # and EINVAL is far too common an errno to swallow on its own word: only when stdout
+        # is the stream that has actually stopped accepting writes is this a reader leaving.
+        if e.errno not in (errno.EPIPE, errno.EINVAL) or _stdout_alive():
+            raise
+        _leave_quietly()
 
 
 if __name__ == "__main__":
-    app()
+    main()

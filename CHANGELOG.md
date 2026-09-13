@@ -76,7 +76,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tier are marked as Responses-API models, so a run with one of them opens on `/v1/responses`
   instead of paying a failed Chat Completions call to find that out. The 400 reader 0.8 added stays,
   because it is what covers a model the catalogue has not been told about yet.
+- **The CLI has a house style, and a way out of it.** quackd's colours had grown inline: a
+  `[green]` in one command, a `Table` in another, an emoji in a third, with nothing saying
+  which green meant *this worked* and which meant *this is installed*. `quackd/ui.py` is now
+  that vocabulary in one place, and three rules run through it. Text a model, a robot or a
+  manifest wrote is never read as markup, so a note saying the ball is `[behind]` the sofa
+  and an error naming `quackd[anthropic]` both arrive intact. Glyphs come from a table with
+  an ASCII half chosen from the stream's own encoding, and the panels pick their half when
+  they are drawn rather than when they are built, because a replay goes to stdout, a run
+  narrates to stderr, and a test hands round a buffer of its own. And chrome goes to stderr
+  while answers go to stdout, so `quackd list-adapters > adapters.txt` gets the table and
+  nothing else. On a Windows pipe, where every decoration used to arrive as a question mark,
+  the adapter roster now reads `[ok] built-in: sim2d` and `[exp] jsonrpc`.
+- **`--no-color`, and `--json` on `validate`, `list-verbs`, `list-adapters` and `list-models`.** The tables
+  are for a person. `--json` prints one object per line on stdout and nothing else, keeping
+  the exit code it would have had, so `quackd validate ducks/*.duck --json` still exits 1 on
+  a failure and a script can read which file and why. `--no-color` sets `NO_COLOR` as well as
+  quackd's own consoles, because Typer builds a console of its own for every `--help` it
+  renders. `FORCE_COLOR=1` is the other direction, for a pipe you are colouring on purpose.
+  `quackd list-models` arrived in the same release from the other direction and wears the
+  house style too: its model ids still fold rather than elide, and none of the five columns
+  goes through Rich's markup on the way, so a label with a bracket in it survives.
+- **`-h` works**, everywhere `--help` does, and `--help` groups what it shows. `quackd run`
+  offered twenty seven flags in one flat list. They are sorted into Task, Model, Robot,
+  Output and Memory now, the commands are grouped the same way, and the root help ends with
+  three worked examples.
+- **A line saying what the run is waiting for.** A run spends nearly all its wall clock
+  inside two calls, a model deciding and a verb steering a robot, and said nothing until
+  each of them finished. With `--no-trace` it said nothing at all between the header and the
+  verdict, however long that took. A transient line at the bottom of stderr now names what
+  is being waited on, which step it is, and how many seconds it has been there. It reads the
+  same event stream the trace does, it exists only when stderr is a terminal somebody is
+  watching, and it steps out of the way for a confirmation prompt, because a live region
+  redirects stdout and would otherwise swallow the question until after it was answered.
+  `quackd doctor`, `quackd discover`, `quackd announce` and GIF encoding get a spinner for
+  the same reason.
+- **A run opens and closes with a panel.** The header used to be one line of middle dots and
+  the verdict three lines under it, and on a long run the two ends of the story were the two
+  things hardest to find in a screenful of trace. They are now bordered, the verdict is
+  coloured by its outcome, and the run directory and the GIF are links where the terminal
+  allows it. `quackd trace` prints the same verdict from the transcript, so a replay still
+  ends the way the run did.
+- **`quackd memory show` is two tables**, notes and recent runs, rather than the block of
+  dim text the model is given. The outcome has its own column and its own colour, and an
+  episode no longer repeats the duck and the outcome inside the sentence that follows them.
+- **`quackd doctor --json`**, and a verdict at the end of the human version. doctor knew
+  whether this machine could run anything and said so only through its exit code, which
+  nobody reads off a screen. It now closes with one line: what works here, how many extras
+  are installed, how many assumptions are unverified, and which cloud providers are one key
+  away from working. The `--json` half exists because `collect` and `render` are now two
+  functions rather than one: the collector answers in dataclasses with no styling in them,
+  and it could not have been serialised before, because every cell it produced *was* a
+  markup string.
 
+### Changed
+
+- **The trace is drawn for the person reading it.** The arrow is a glyph in a gutter now and
+  the column says the word it stood for, so `-> sound(...)` reads `→  send    sound(...)`
+  and a result is `✓` or `✗` or, for a handover that ended a verb early on purpose, `•`.
+  Each step is ruled off with the budget line lifted out of the observation it was buried
+  in, and said once rather than twice. The system prompt is an indented block between two
+  rules instead of forty lines of the same dim colour. A flock gives each member a colour as
+  well as a name. [ADR-0031](docs/adr/0031-terminal-theme.md) records the decision and
+  amends [ADR-0029](docs/adr/0029-tracing.md), whose "lines are ASCII first" rule now
+  applies where it was earned: the MCP tool result carries exactly the bytes it always did,
+  frozen case by case by a new golden, and the terminal asks the stream it is writing to
+  which half of the glyph table it can carry. A redirected stderr on Windows still gets
+  `->`, `+` and `x`, and the degree signs and dashes that used to arrive as question marks
+  now arrive as words.
+- **A closed pipe is not an error.** `quackd list-verbs | head` answered with a wall of
+  traceback about a broken pipe printed on top of the output that was asked for. The console
+  entry point is now `quackd.cli:main`, which leaves quietly, and Typer's pretty exceptions
+  are off because they print local variables and this process's locals hold an API key, a
+  robot's address and its bridge token. A Rich traceback without locals is installed instead,
+  so a real crash still reads well.
+- **`quackd validate` counts in English** (`12 files valid`, `1 of 3 files failed`), names
+  where to look next when it fails, and no longer lets a long file path squeeze the column
+  that carries the answer down to nothing.
+- **`quackd doctor` reads as a report rather than a wall.** Thirteen tables arrived stacked
+  with nothing between them, and eight of them were per-upstream lists of unverified
+  assumptions, each followed by its own dim footer. Those sixteen blocks are now two: one
+  sectioned table of assumptions, and one table of pins that puts the eight upstreams side
+  by side where they can be compared, with the doc paths on a line under it. The sections
+  are ruled off and named, and the five local LLM servers are probed behind a spinner
+  rather than ten seconds of silence.
+- **Extras in `--help` keep their brackets.** `--live` advertised an install called `quackd`
+  rather than `quackd[live]`, because Rich had read the extra as markup and eaten it. Same
+  for `quackd[microduck-camera]` and `quackd[lan]`.
 ### Removed
 
 - **The Reachy Mini adapter.** `--robot reachy_mini:{sim2d,mock,sdk}`, `quackd[reachy]`, the

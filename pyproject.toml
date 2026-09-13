@@ -97,7 +97,7 @@ dev = [
 ]
 
 [project.scripts]
-quackd = "quackd.cli:app"
+quackd = "quackd.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/rokbenko/quackd"

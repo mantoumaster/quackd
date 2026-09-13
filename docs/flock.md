@@ -172,19 +172,20 @@ name on every line, so three robots moving at once stay three readable columns r
 one interleaving, and the coordinator's own decisions print under `flock`.
 
 ```
-duck-2  verb    search_scan(target='ball', step_deg=45, max_steps=3)
-duck-2  ->      look(x=1, y=0, z=0)
-duck-2  <-      search_scan ok: ball found: ball at bearing 28° left ~0.81 m (after 2 turn steps) (1.8 s sim, 0.1 s wall, 19 intents)
-flock   auction first bid duck-2 0.81 m
-flock   claim   duck-2 (0.81 m)
-duck-0  <-      search_scan PREEMPTED: duck-0: role change to YIELD (2.2 s sim, 0.1 s wall, 23 intents)
-duck-2  end     stopped after 5 steps
+duck-2  ▶  verb    search_scan(target='ball', step_deg=45, max_steps=3)
+duck-2  →  send    look(x=1, y=0, z=0)
+duck-2  ✓  result  search_scan ok: ball found: ball at bearing 28° left ~0.81 m (after 2 turn steps) (1.8 s sim, 0.1 s wall, 19 intents)
+flock   ◆  auction first bid duck-2 0.81 m
+flock   ◆  claim   duck-2 (0.81 m)
+duck-0  •  result  search_scan PREEMPTED: duck-0: role change to YIELD (2.2 s sim, 0.1 s wall, 23 intents)
+duck-2  ■  end     stopped after 5 steps
 ```
 
 That is a real `--seed 3` run, trimmed. The duck that wins the claim keeps searching, and the
 two that lose are preempted mid-verb and yield, which is the moment a flock is hardest to
 read from `flock.jsonl` alone. `PREEMPTED` is its own outcome rather than an error, because
-a role change is the coordinator working, not a fault.
+a role change is the coordinator working, not a fault, and it wears the glyph for *ended early
+on purpose* rather than the one for a failure.
 
 The `auction`, `claim` and `verdict` lines are the words the GIF captions use, so a line on
 screen and a frame in `run.gif` say the same thing about the same moment.

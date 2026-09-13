@@ -47,9 +47,9 @@ def test_trace_replays_a_finished_run(tmp_path: Path) -> None:
     code, out = _trace(tmp_path, run_dir.name)
     assert code == 0, out
     assert "system prompt" in out
-    assert "-> move" in out and "<- walk_to ok" in out
+    assert "send move" in out and "result walk_to ok" in out
     assert "[scripted]" in out  # the model's reasoning, as the run showed it
-    assert "SUCCESS" in out and "steps=" in out
+    assert "SUCCESS" in out and "llm calls" in out
 
 
 def test_trace_with_no_argument_picks_the_newest_run(tmp_path: Path) -> None:
@@ -81,7 +81,7 @@ def test_trace_accepts_the_transcript_file_itself(tmp_path: Path) -> None:
     """A transcript someone copied out of a run directory is still a run to read."""
     run_dir = _run(tmp_path)
     code, out = _trace(tmp_path, str(run_dir / "transcript.jsonl"))
-    assert code == 0 and "<- walk_to ok" in out
+    assert code == 0 and "result walk_to ok" in out
 
 
 def test_trace_from_step_skips_earlier_turns(tmp_path: Path) -> None:
@@ -90,7 +90,9 @@ def test_trace_from_step_skips_earlier_turns(tmp_path: Path) -> None:
     assert code == 0
     assert "step 2/40" in out
     assert "step 0/40" not in out and "step 1/40" not in out
-    assert "run find-and-kick" in out  # the header still says what is being replayed
+    # the panel, not the run directory that also contains the name: a replay has no other
+    # header, so this is the only thing saying what is being replayed
+    assert "provider fake (scripted:find-and-kick)" in out
 
 
 def test_trace_no_prompt_and_thinking_flags(tmp_path: Path) -> None:
@@ -99,7 +101,7 @@ def test_trace_no_prompt_and_thinking_flags(tmp_path: Path) -> None:
     _, terse = _trace(tmp_path, run_dir.name, "--no-prompt", "--thinking", "0")
     assert "system prompt" in full and "[scripted]" in full
     assert "system prompt" not in terse and "[scripted]" not in terse
-    assert "<- walk_to ok" in terse  # everything else survives
+    assert "result walk_to ok" in terse  # everything else survives
 
 
 def test_trace_frames_are_off_unless_asked(tmp_path: Path) -> None:
@@ -124,8 +126,8 @@ def test_trace_of_a_transcript_without_verb_end_still_shows_results(tmp_path: Pa
     a replay that showed no results at all would be a replay of nothing."""
     code, out = _trace(tmp_path, "docs/assets/transcript-example.jsonl")
     assert code == 0, out
-    assert "<- search_scan" in out or "<- quack" in out
-    assert out.count("<- quack ok") <= 1, "a live transcript has both kinds and must not double"
+    assert "result search_scan" in out or "result quack" in out
+    assert out.count("result quack ok") <= 1, "a live transcript has both kinds and must not double"
 
 
 def test_trace_of_a_cut_transcript_says_so(tmp_path: Path) -> None:
@@ -173,8 +175,9 @@ def test_trace_on_a_flock_run_names_every_member(tmp_path: Path) -> None:
     code, out = _trace(tmp_path, "--no-prompt", "--thinking", "0")
     assert code == 0, out
     for name in ("duck-0", "duck-1", "duck-2"):
-        assert f"{name} verb" in out, (name, out[:400])
-        assert f"{name} end stopped after" in out
+        # the glyph gutter sits between the member's name and the label it prefixes
+        assert f"{name} ▶ verb" in out, (name, out[:400])
+        assert f"{name} ■ end stopped after" in out
     # the outcome comes from summary.json, since no member wrote a run_end
-    assert "SUCCESS" in out and "kicker=duck-" in out
-    assert "steps=0" not in out, "a flock counts auctions and bids, not steps and tokens"
+    assert "SUCCESS" in out and "kicker duck-" in out
+    assert "llm calls" not in out, "a flock counts auctions and bids, not steps and tokens"
