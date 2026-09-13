@@ -98,5 +98,8 @@ the walk policy is Apache-2.0.
   `scan_mode()` picks turning for any mobile robot with a twist. That is the right default
   on a robot whose neck moves about 23 degrees, and a test pins it so it stays a decision.
 - Flock mode does not know this robot yet and says so; extending it is out of scope.
+  Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md): true of
+  the *coordinator* flock, whose runner is still Microduck-only. A **pilot** flock takes any
+  adapter and backend, so this robot can be a member of one today.
 - If upstream renames the class the shim rebinds, the daemon refuses to serve rather than
   leaving a socket that controls nothing while a real gamepad drives the duck.

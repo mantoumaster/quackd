@@ -253,9 +253,10 @@ or across the world. What matters is latency: the deadman expects `robot.move` r
 
 **Is quackd production-ready?** No — it's a research prototype built around one trusted
 local operator, not a hardened multi-user product. There's almost no authentication anywhere;
-`.duck` files with a `flock:` block are refused over MCP for exactly that reason ("one
-pilot, a flock needs a coordinator"), and nothing arbitrates two sessions driving the same
-robot at once. Every real-hardware transport is experimental and unverified end to end
+`.duck` files with a `flock:` block are refused over MCP for exactly that reason: the session
+is one model, a coordinator flock needs a referee this process does not run, and a pilot flock
+needs one model per robot rather than one for all of them. Nothing arbitrates two sessions
+driving the same robot at once. Every real-hardware transport is experimental and unverified end to end
 ([adapter-status.md](adapter-status.md)); the CLI and MCP server are both thin callers of
 the same executor and verb registry, so a real client like a phone app would mean adding a
 network-reachable server and auth on top, not rewriting the core.

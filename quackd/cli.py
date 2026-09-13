@@ -1496,7 +1496,8 @@ _ROBOT = typer.Option(
 _ROBOTS = typer.Option(
     None,
     "--robots",
-    help="A flock or fleet: name=<adapter>:<backend>,... (simulator only for flocks).",
+    help="A flock or fleet: name=<adapter>:<backend>,... A coordinator flock needs every "
+    "member to be microduck:sim2d; a pilot flock and an MCP fleet take any of them.",
     rich_help_panel="Robot",
 )
 _SEED = typer.Option(

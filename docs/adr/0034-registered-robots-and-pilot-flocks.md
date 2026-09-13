@@ -68,10 +68,14 @@ its datasheet, so a pilot deciding who does which half is reading data rather th
 **Every pilot judges its own part, and the flock's outcome is the members' own claims.**
 `assess_task` asks whether this body can do its part, and a body with no part says so and
 declares success once the others report done. The flock succeeds only when every member
-declared success. Otherwise the worst outcome wins, in the fixed order aborted, error,
-infeasible, budget, failure, and the reason names every member that did not succeed. Ctrl-C or
-`q` stops every body through one kill switch fanned out to every executor, and the first
-exception any member raises aborts the others with a reason that names it.
+declared success. Otherwise the worst outcome wins, in the fixed order error, aborted,
+infeasible, budget, failure, and the reason names every member that did not succeed, worst
+first. `error` outranks `aborted` because of what that pair usually means together: one
+member raised and the rest were stopped because it did, so the error is the cause and the
+aborts are its consequence; when a person really does press something, every member aborts
+and nothing errors. Ctrl-C or `q` stops every body through one kill switch fanned out to
+every executor, and the first exception any member raises aborts the others with a reason
+that names it.
 
 **Memory follows the name.** A robot run by its registered name keys its memory file by that
 name, so two registered Microducks keep separate notes. An ad-hoc `adapter:backend` run keys

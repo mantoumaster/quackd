@@ -105,13 +105,14 @@ Nothing here has been pointed at hardware.
 ## Names
 
 A name is a slug: lowercase letters, digits and hyphens, starting with a letter or digit, 64
-characters at most. Three names are refused because they already mean something else:
+characters at most. Three kinds of name are refused, because each already means something
+else on a command line:
 
 | Refused | Because |
 |---|---|
-| `3` | `--flock 3` already means three simulated ducks |
-| `microduck` | `--robot microduck` already means `microduck:sim2d` |
-| `microduck-sim2d` | that is the memory file an unregistered run of that body already opens |
+| any number (`3`, `42`, `007`) | `--flock 3` already means three simulated ducks |
+| any adapter name (`microduck`, `lerobot`, ...) | `--robot microduck` already means `microduck:sim2d` |
+| any `adapter-backend` slug (`microduck-sim2d`, ...) | that is the memory file an unregistered run of that body already opens |
 
 A colon is what tells the two vocabularies apart: `--robot duck-a` is a name, `--robot
 microduck:mock` is a spec, and a bare word that is neither says so in one line.

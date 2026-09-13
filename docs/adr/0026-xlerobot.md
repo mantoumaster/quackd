@@ -99,3 +99,6 @@ documented install is copying files into an existing lerobot source tree. And a 
   what to restart, rather than hanging.
 - Flock mode does not know this robot, and extending it is out of scope, as it was for the
   Open Duck Mini.
+  Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md): true of
+  the *coordinator* flock, whose runner is still Microduck-only. A **pilot** flock takes any
+  adapter and backend, so this robot can be a member of one today.

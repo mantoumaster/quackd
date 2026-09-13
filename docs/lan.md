@@ -85,10 +85,12 @@ result = await run_flock(
 )
 ```
 
-The runner starts the bus inside its event loop and closes it at the end of the run. There
-is no `--bus` flag on purpose: a distributed flock also needs a distributed clock (today's
-flock runs on one lockstep simulator clock), which is out of scope, and a flag would imply
-otherwise. `MqttBus(..., client=)` takes a fake client, which is how the tests run: two
+Either runner starts the bus inside its event loop and closes it at the end of the run. There
+is still no `--bus` flag on purpose, for a different reason per kind. A coordinator flock
+across machines also needs a distributed clock, because it runs on one lockstep simulator
+clock, and that is out of scope. A pilot flock has no shared clock to distribute, so nothing
+stands in its way except that nobody has run one across two machines, and a flag would imply
+somebody had. `MqttBus(..., client=)` takes a fake client, which is how the tests run: two
 nodes on a synchronous fake broker with zero sockets.
 
 **Status.** Round-trips of every message kind, echo, duplicates, threading and a full

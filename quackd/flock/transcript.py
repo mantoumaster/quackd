@@ -1,7 +1,8 @@
 """One paper trail for the whole flock: every bus message, plan, auction and verb.
 
-`flock.jsonl` is the coordinator's log, stamped with sim time so a replay lines up with
-the world. Each member gets a real solo-style `Transcript` under `ducks/<name>/` for its
+`flock.jsonl` is the flock's own log. A coordinator stamps it in sim time (`sim_t`) so a
+replay lines up with the world; a pilot flock has no world to line up with and stamps wall
+seconds under `t`. Each member gets a real solo-style `Transcript` under `ducks/<name>/` for its
 verb events and frames. Per-duck dirs deliberately carry no summary.json — they are not
 solo runs and must not masquerade as ones; the rollup lives in the flock summary.
 """

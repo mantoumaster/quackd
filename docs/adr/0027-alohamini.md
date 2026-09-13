@@ -99,3 +99,6 @@ would zero it is commented out.
   holonomic base; the lift and the arms are added in memory on top, and the manifest already
   says `holding` is commanded rather than sensed, so nothing is claimed that is not true.
 - Flock mode does not know this robot, and extending it stays out of scope.
+  Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md): true of
+  the *coordinator* flock, whose runner is still Microduck-only. A **pilot** flock takes any
+  adapter and backend, so this robot can be a member of one today.

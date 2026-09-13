@@ -1,4 +1,7 @@
-"""The one place an LLM appears in a flock run, and the proof it stayed there.
+"""The one place an LLM appears in a *coordinator* flock run, and the proof it stayed there.
+
+(A pilot flock never reaches this module: each of its members runs its own agent loop against
+its own provider, which is the whole difference between the two kinds.)
 
 Wedges are ALWAYS computed deterministically (an equal partition of the circle over the
 sorted member names — the model does not get to draw geometry). A real provider gets one

@@ -1,4 +1,7 @@
-"""One robot in a flock: a role-driven state machine, not an LLM loop.
+"""One robot in a coordinator flock: a role-driven state machine, not an LLM loop.
+
+(A pilot flock's member is precisely an LLM loop, and it is `quackd/agent/loop.py` unchanged;
+see `pilots.py`.)
 
 The member owns its robot's `Executor`, so the `.duck` allowlist, budgets, machine-enforced
 abort rules and per-robot transcript apply exactly as in a solo run. Roles arrive over the
