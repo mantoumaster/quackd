@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every robot carries a datasheet, and the pilot is told to check the task against it before anything moves.**
+  A pilot used to be told one line about the body it was driving and a list of verbs, and nothing
+  numeric: no payload, no reach, no working height, no endurance, and no way to say "this body
+  cannot do that at all". Asked to carry a laundry basket on a 25 cm duck it had no ground to
+  refuse on. Every manifest now carries a `datasheet`: what it weighs, how tall it is, how many
+  joints it actuates, what it can carry and reach, the band of heights its hands work at, how long
+  it runs, what it holds with, what it is rated for, and the things it cannot do whatever the task
+  says. Every number states how sure quackd is of it (`official`, `estimate` or `measured`) and
+  who says so, because a figure without a source is a rumour. A figure the maker never published
+  is rendered as "not published: decline any task that hinges on it" and never as a zero. Speeds
+  stay out of it: `limits` is what quackd clamps to, which is a rule about what quackd sends
+  rather than a fact about the body, and the prompt renders those separately as clamps. The same
+  sheet describes a body on every backend, which is what keeps a robot's digest equal across
+  sim2d, mock and the real thing. The numbers were read from the makers' pages, repositories and
+  one paper on 2026-09-13, and none of them were measured here, which is what the confidence
+  labels are for ([ADR-0032](docs/adr/0032-datasheets-and-the-verdict.md)).
+
+- **Nothing moves until the pilot has said the body can do the task.**
+  The only way out of a task was `declare_failure`, which means "I tried and could not". A new
+  meta tool, `assess_task` (`robot_assess_task` over MCP), records a verdict first: `feasible`,
+  `infeasible` or `uncertain`, with the reason, the datasheet fields it read, the estimates it
+  made about the world and what the task would need. The executor gains a `verdict` gate that
+  refuses every verb that moves the body until a feasible verdict exists; looking, speaking and
+  the brake run before it, because that is how a pilot works out what it has been asked to do.
+  `infeasible` is its own outcome, not a failure: nothing moved, `quackd run` exits 3, and the
+  run's reason names which shipped bodies could do it by their own datasheets. `uncertain` asks
+  the person at the terminal, and a no ends the run the way the kill switch does; over MCP, where
+  there is no terminal, it stays pending and the model is told to ask the person it is chatting
+  with, because a reachable human is a better answer than a flag. A model cannot clear its own
+  doubt: the tool has no field for it. A flock member is a state machine with no pilot to ask, so
+  its executor never asks, and the scripted pilot answers the gate as a rule and says so in its
+  reason, which keeps every keyless example and all ten acceptance seeds running as before
+  ([ADR-0032](docs/adr/0032-datasheets-and-the-verdict.md)).
+
+- **A base over rosbridge reads its own description, and a flock role can ask for a body that can carry.**
+  `rosbridge` names a transport, not a robot, so the honest static answer was that nothing is
+  known. At connect it now asks the bridge for the topic list and the robot's own URDF, from the
+  `robot_description` parameter first and the latched topic second, and two things a description
+  can honestly settle go into the datasheet tagged official and sourced to the file: what the
+  links weigh and how many joints are not fixed. Everything else stays unknown, payload above
+  all. One deadline covers the whole look and it never fails a connect, so a bridge without
+  `rosapi` costs that and leaves the sheet saying nothing was discovered, with the reason. A new
+  verb, `introspect`, asks again for a robot that was still booting. Separately, a `duck: 2` flock
+  role may state physical `needs` in the same vocabulary a verdict uses, checked by `validate`,
+  by the member before it bids, and by the coordinator from the datasheet the bid itself carries,
+  so a robot quackd does not run is held to the same standard. An unpublished figure counts as
+  not met ([ADR-0032](docs/adr/0032-datasheets-and-the-verdict.md)).
+
+- **A `duck: 2` file can correct a robot's datasheet for the build in front of you.**
+  A vendor says an SO-101 lifts 500 g; your printed gripper holds 300. A `datasheet:` block in
+  the frontmatter replaces any figure with your own, and the prompt renders it as coming from the
+  task file so a reader can tell the maker's numbers from yours. The sentence lists extend and
+  never delete: a task file can add something a body cannot do, and can never remove one. A
+  correction the body contradicts, a payload on a robot with nothing to hold with, is refused by
+  `quackd validate` before anything connects. `duck: 2` also unlocks `flock.roles.<role>.needs`
+  ([docs/duck-spec.md](docs/duck-spec.md)).
+
 - **quackd carries a list of the models it will let you pick, and `--model` picks from it.**
   `--model` used to take any string and hand it to the vendor, so a typo, an id retired last spring
   and an id belonging to a different vendor all failed the same way: at the first call, in the

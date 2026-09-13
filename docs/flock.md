@@ -25,8 +25,8 @@ manifest provides ([ADR-0020](adr/0020-heterogeneous-flocks.md)).
 
 All coordination crosses a tiny in process pub/sub bus, one message at a time, and every
 message lands in `flock.jsonl`. Eight message kinds: `TASK` (the plan), `BID` (a sighting
-with the bidder's own camera distance estimate and, with roles, the role it bids for and
-the verbs it provides), `CLAIM` (the one kick permit, with the role assignments), `ROLE`
+with the bidder's own camera distance estimate and, with roles, the role it bids for, the
+verbs it provides and, in a `duck: 2` file, its datasheet), `CLAIM` (the one kick permit, with the role assignments), `ROLE`
 (SEARCH a heading sector, KICK, YIELD, STOP, and with roles SPOT and JUDGE), `HB`
 (heartbeat for the watchdog), `RESULT` (kicked, miss, search empty, budget, aborted, and
 with roles `kick_done`), `HINT` (an arena frame target estimate, sim only) and `VERDICT`
@@ -78,6 +78,32 @@ robots:
   duck-01: microduck:sim2d
   duck-02: microduck:sim2d
 ```
+
+### Roles by data (0.9)
+
+A `duck: 2` role may also say what the body has to **be**, not only what it has to know.
+The words are the datasheet's own ([manifest-spec.md](manifest-spec.md)): `payload_kg`,
+`reach_m`, `endurance_min`, `work_height_m` and `arms` are minimums, and `manipulator`,
+`mobility` and `terrain` have to match.
+
+```yaml
+flock:
+  members: [eye, arm]
+  roles:
+    spotter: {requires: [observe, gaze]}
+    kicker:
+      requires: [go_to, kick]
+      needs: {payload_kg: 1.0, manipulator: gripper}
+```
+
+A figure the robot's maker never published counts as **not met**, because a robot that
+cannot say what it carries is not the one to ask to carry something. The check runs three
+times, and says the same thing each time: `quackd validate --robots` refuses a role no
+robot in the fleet can fill, before a run starts; a member only bids for roles its own
+datasheet satisfies; and the coordinator re-checks every bid from what the bid itself
+carried, so a robot it does not run is held to the same standard. A rejected bid is a
+`bid_rejected` line naming exactly what was short, in the same words a pilot's own refusal
+uses: `payload_kg >= 1 (has 0.5)`, `manipulator = gripper (has beak)`.
 
 - **Capability aware bids.** A robot bids only for a role whose `requires` its manifest
   satisfies (aliases count: `get_frame` satisfies `observe`). The coordinator checks every
@@ -217,6 +243,10 @@ Flock mode knows the **Microduck**. Any other adapter is refused when the run st
 with the names it does know. An Open Duck Mini cannot join a flock yet, and that is a
 limit of `quackd/flock/runner.py`, not of the robot: extending it is future work rather
 than a hardware problem.
+
+So a role with physical `needs` validates, and its matching is tested at the coordinator,
+but no flock quackd can actually start has two different bodies in it to match. The words
+are in place for the day the runner knows a second adapter.
 
 ## Status and future work
 

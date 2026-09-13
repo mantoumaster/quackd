@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -202,3 +203,23 @@ def list_adapters() -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def shipped_manifests() -> list[tuple[str, RobotManifest]]:
+    """(adapter name, its static manifest) for every body quackd ships, in table order.
+
+    The first backend of each, because a body is the same body on all of them. Static, so
+    this costs no SDK import and no connection."""
+    return [(name, describe(RobotSpec(name, BACKENDS[name][0]))) for name in ADAPTER_NAMES]
+
+
+def bodies_that_could(needs: Mapping[str, Any]) -> list[tuple[str, RobotManifest, list[str]]]:
+    """The shipped bodies whose own datasheets meet these needs, and what each other one lacks.
+
+    Rows are (name, manifest, missing): an empty `missing` is a body that could be asked. Only
+    those are returned, so a caller naming them is naming bodies, not hopes; the lacking ones
+    come back in the same shape for a caller that wants to say why not."""
+    from quackd.verdict import missing_needs
+
+    rows = [(name, m, missing_needs(needs, m)) for name, m in shipped_manifests()]
+    return [row for row in rows if not row[2]]

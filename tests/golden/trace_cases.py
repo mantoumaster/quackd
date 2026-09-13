@@ -264,6 +264,43 @@ def events() -> list[tuple[str, TraceEvent]]:
             "verb_end_legacy_ok_flag",
             _e("verb_end", 0.8, name="quack", ok=True, summary="quacked"),
         ),
+        # ── assess: the verdict, and what the pilot guessed to reach it ──
+        (
+            "assess_feasible",
+            _e("assess", 0.4, verdict="feasible", reason="a tennis ball is well under 0.5 kg"),
+        ),
+        (
+            "assess_infeasible",
+            _e(
+                "assess",
+                0.4,
+                verdict="infeasible",
+                reason="the basket looks like 3 kg of clothes",
+                ends_run=True,
+                estimates=[
+                    {
+                        "object": "laundry basket",
+                        "quantity": "mass_kg",
+                        "value": 3.0,
+                        "basis": "image",
+                        "confidence": "medium",
+                    }
+                ],
+                needs={"payload_kg": 3.0, "manipulator": "gripper"},
+            ),
+        ),
+        (
+            "assess_uncertain_human_no",
+            _e(
+                "assess",
+                0.4,
+                verdict="uncertain",
+                reason="the basket is out of frame",
+                human="no_go",
+                ends_run=True,
+            ),
+        ),
+        ("assess_invalid", _e("assess", 0.4, verdict=None, summary="invalid: verdict: maybe")),
         # ── declare, memory, note ──
         ("declare_success", _e("declare", 0.9, outcome="success", reason="ball displaced")),
         ("declare_failure", _e("declare", 0.9, outcome="failure", reason="never found it")),

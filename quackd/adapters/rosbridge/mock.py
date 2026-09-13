@@ -16,14 +16,59 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from quackd.adapters.rosbridge import upstream_api as up
+from quackd.adapters.rosbridge.introspection import Introspection, parse_urdf
 from quackd.sim2d.render import BALL, FLOOR, HORIZON, SKY, focal_px
 from quackd.transport.base import Ack, DuckState, HeartbeatError, Intent
+
+MOCK_URDF = """<robot name="mock-base">
+  <link name="base_link"><inertial><mass value="10.0"/></inertial></link>
+  <link name="left_wheel"><inertial><mass value="0.5"/></inertial></link>
+  <link name="right_wheel"><inertial><mass value="0.5"/></inertial></link>
+  <link name="caster"/>
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link"/><child link="left_wheel"/>
+    <limit effort="5" velocity="10"/>
+  </joint>
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link"/><child link="right_wheel"/>
+    <limit effort="5" velocity="10"/>
+  </joint>
+  <joint name="caster_joint" type="fixed">
+    <parent link="base_link"/><child link="caster"/>
+  </joint>
+</robot>
+"""
+"""A description shaped like the ones a real base publishes: a chassis with inertials, a
+wheel pair that moves, and one link (the caster) with no inertial at all, because plenty of
+real URDFs leave them out. 11 kg over three links, two moving joints."""
 
 DEADMAN_S = 0.5
 TICK_S = 0.05
 MOCK_CAM_HEIGHT_M = 0.2
 MOCK_BALL_R = 0.05
 FOV_DEG = 45.0
+
+
+def mock_introspection(urdf: str | None = MOCK_URDF, *, camera: bool = True) -> Introspection:
+    """What the mock bridge answers when it is asked about the body.
+
+    Shared with `describe("mock")`, so the static description of this backend and the one a
+    connected run reads are the same thing rather than two guesses that might drift."""
+    topics = {
+        "/cmd_vel": up.MSG_TWIST.name,
+        "/odom": up.MSG_ODOMETRY.name,
+    }
+    if camera:
+        topics["/camera/compressed"] = up.MSG_COMPRESSED_IMAGE.name
+    if urdf is None:
+        return Introspection.from_urdf(
+            None, topics=topics, errors=("the mock was built without a description",)
+        )
+    topics[up.DESCRIPTION_TOPIC.name] = up.MSG_STRING.name
+    return Introspection.from_urdf(
+        parse_urdf(urdf), topics=topics, source="mock", where="the mock's canned URDF"
+    )
 
 
 class RosbridgeMock:
@@ -37,8 +82,12 @@ class RosbridgeMock:
         ball_xy: tuple[float, float] | None = (1.5, 0.5),
         frame_size: int = 128,
         fail_heartbeat_after: int | None = None,
+        urdf: str | None = MOCK_URDF,
     ) -> None:
         self.camera_available = camera
+        self.urdf = urdf
+        self.introspection: Introspection | None = None
+        self.introspections = 0
         self.ball_xy = ball_xy
         self._frame_size = frame_size
         self._fail_after = fail_heartbeat_after
@@ -85,6 +134,12 @@ class RosbridgeMock:
 
     async def connect(self) -> None:
         self.connected = True
+        self.introspection = mock_introspection(self.urdf, camera=self.camera_available)
+
+    async def introspect(self) -> Introspection:
+        self.introspections += 1
+        self.introspection = mock_introspection(self.urdf, camera=self.camera_available)
+        return self.introspection
 
     async def close(self) -> None:
         self.connected = False

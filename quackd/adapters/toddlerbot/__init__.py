@@ -29,6 +29,8 @@ from typing import Any
 from PIL import Image
 
 from quackd.adapters.manifest import (
+    Datasheet,
+    Figure,
     Frame,
     Health,
     RobotManifest,
@@ -109,6 +111,39 @@ def _limits(envelope: dict[str, float] | None = None) -> dict[str, float]:
 BLURB = (
     "a small open source humanoid about 56 cm tall, with two arms, two legs, a two joint "
     "neck and thirty servos, which cannot get up by itself if it falls"
+)
+
+DATASHEET = Datasheet(
+    mass_kg=Figure(value=3.4, confidence="official", source="arXiv:2502.00893"),
+    height_m=Figure(value=0.56, confidence="official", source="arXiv:2502.00893"),
+    dof=Figure(value=30, confidence="official", source="arXiv:2502.00893"),
+    payload_kg=Figure(
+        value=1.484,
+        confidence="official",
+        source="arXiv:2502.00893",
+        note="the whole body with both arms, 40 percent of its own weight; per arm is not "
+        "published",
+    ),
+    endurance_min=Figure(
+        value=19, confidence="official", source="the ToddlerBot project site", note="about"
+    ),
+    manipulator="arms",
+    arms=2,
+    tethered=False,
+    terrain="indoor_flat",
+    not_rated=["stairs", "steps", "slopes"],
+    cannot=[
+        "get back on its feet after a fall: there is no recovery policy, so a fall ends the run "
+        "and needs a human",
+        "carry more than about 1.5 kg with both arms together, or an unknown weight in one",
+        "keep going for more than about twenty minutes: past that the servos heat up and "
+        "balance suffers",
+    ],
+    notes=[
+        "It holds a thing by closing both arms on it, up to 0.27 by 0.24 by 0.31 m; a parallel "
+        "gripper exists only on the gripper builds, which the daemon reports at connect",
+        "Stereo fisheye cameras, an IMU, microphones and a speaker in the reference build",
+    ],
 )
 _MOVE_DESCRIPTION = (
     "Walk with a velocity for a duration: vx forward m/s (backwards is slower than forwards "
@@ -212,6 +247,7 @@ def toddlerbot_manifest(
         limits=_limits(envelope),
         backend=backend,
         blurb=BLURB,
+        datasheet=DATASHEET,
         extras={
             "robot": robot,
             "motors": motors,

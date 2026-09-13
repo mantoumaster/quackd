@@ -17,7 +17,7 @@ it). A test proves UNVERIFIED names stay inside the backend that needs them.
 | LeRobot | `lerobot:mock` | ✅ | | [adapters/lerobot.md](adapters/lerobot.md) |
 | | `lerobot:real` | 🧪 every LeRobot name VERIFIED at a pinned commit, exercised with a fake arm, never run on an arm (Python 3.12+) | [`quackd/adapters/lerobot/upstream_api.py`](../quackd/adapters/lerobot/upstream_api.py) | |
 | rosbridge | `rosbridge:mock` | ✅ | | [adapters/rosbridge.md](adapters/rosbridge.md) |
-| | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics, never run against a bridge | [`quackd/adapters/rosbridge/upstream_api.py`](../quackd/adapters/rosbridge/upstream_api.py) | |
+| | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics and fake services, including reading the robot's own description off the bridge, never run against a bridge | [`quackd/adapters/rosbridge/upstream_api.py`](../quackd/adapters/rosbridge/upstream_api.py) | |
 | Open Duck Mini v2 | `open_duck:sim2d` | ✅ `open-duck-scout` 10 of 10 seeds | | [adapters/open_duck.md](adapters/open_duck.md) |
 | | `open_duck:mock` | ✅ | | |
 | | `open_duck:bridge` | 🧪 every runtime name VERIFIED at a pinned commit, the protocol exercised against the real daemon over loopback, never run on a duck | [`quackd/adapters/open_duck/upstream_api.py`](../quackd/adapters/open_duck/upstream_api.py) | |
@@ -87,6 +87,19 @@ Sources: [duck-ipc-proto/src/lib.rs](https://github.com/pollen-robotics/microduc
 | `camera snapshot over a unix socket` | today the camera reaches clients only through `mediad`'s WebRTC track; no socket-level frame method, and `robotctl`/`duckctl` have no camera subcommand either | `jsonrpc.get_frame()` returns `None` unless `--camera-url` names a source: an HTTP snapshot you provide, or `mediad`'s WebRTC track (below). A snapshot is pulled on a 5 fps timer and served from memory, so `observe` costs no round trip and a failed fetch is reported by `camera_health()` rather than raised. Without one the manifest drops `camera` and the four verbs that need eyes, instead of advertising sight the robot has not got |
 | `mediad media.detections notifications` | **built**, not merely designed: `mediad/src/detect.rs` emits `{width, height, took_ms, boxes[{x0,y0,x1,y1,score}]}` at ~2 Hz (RKNN on the NPU, ONNX on CPU) — and it detects *ducks*, not balls. UNVERIFIED because it is broadcast to WebRTC signalling clients while `remote-webrtc.md` still says perception consumes pixels locally: source and design doc disagree | unreachable from `robotd`'s socket either way, so our `Detector` protocol is still the stand-in |
 | `stand_up` | no such RPC; `robotd` recovers from falls itself (limp → settle → ramp → standing policy) | `stand_up` sends `robot.enable {on: true}` and checks `safety.fallen` afterwards — and fails rather than claiming "upright" when nothing is reporting falls |
+
+### What this robot is, as numbers
+
+Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
+
+| | |
+|---|---|
+| Mass | 0.8 kg (official: the Pollen Robotics README) |
+| Height | 0.25 m (official: the Pollen Robotics README) |
+| Actuated joints | 15 (official: the Pollen Robotics README; XL330 class servos, which is an estimate) |
+| Not published | payload, reach, endurance |
+
+A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ### What we do not touch
 

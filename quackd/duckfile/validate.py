@@ -61,6 +61,21 @@ def validate_duck(
     if not manifests:
         return problems
 
+    if fm.datasheet is not None:
+        # the merge is where a task file's corrections meet the body's own invariants: an
+        # armless body handed a payload is a contradiction, and it is caught here rather than
+        # after the robot has connected
+        from pydantic import ValidationError
+
+        from quackd.adapters.manifest import apply_datasheet_override
+
+        for m in manifests:
+            try:
+                apply_datasheet_override(m, fm.datasheet)
+            except ValidationError as e:
+                why = "; ".join(str(err["msg"]).removeprefix("Value error, ") for err in e.errors())
+                problems.append(Problem("datasheet", f"{m.id} ({m.model}): {why}", robot=m.id))
+
     reported: set[str] = set()
     if fm.flock is None:
         for m in manifests:
@@ -86,12 +101,26 @@ def validate_duck(
                     )
                 )
         for role, spec in (fm.flock.roles or {}).items():
-            if not any(all(m.provides(v) for v in spec.requires) for m in manifests):
+            fillers = [m for m in manifests if all(m.provides(v) for v in spec.requires)]
+            if not fillers:
                 problems.append(
                     Problem(
                         f"flock.roles.{role}",
                         f"no robot provides all of {', '.join(spec.requires)}",
                     )
+                )
+                continue
+            if not spec.needs:
+                continue
+            from quackd.flock.capability import missing_needs
+
+            lacking = {m.id: missing_needs(spec.needs, m) for m in fillers}
+            if all(lacking.values()):
+                why = "; ".join(
+                    f"{m.id} ({m.model}) lacks {', '.join(lacking[m.id])}" for m in fillers
+                )
+                problems.append(
+                    Problem(f"flock.roles.{role}.needs", f"no robot meets its needs: {why}")
                 )
     # the weaker line: an allowed verb no robot has (a v1 task may allow more than it needs)
     for verb in fm.verbs.allow:

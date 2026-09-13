@@ -47,6 +47,9 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
             "https://github.com/gramaziokohler/roslibpy",
             "https://github.com/RobotWebTools/rosbridge_suite",
             "https://github.com/ros2/common_interfaces",
+            # introspection: what a description says, and where it usually is
+            "https://github.com/ros/urdfdom",
+            "https://github.com/ros/robot_state_publisher",
         ),
     ),
     (
@@ -215,3 +218,14 @@ def test_lerobot_and_rosbridge_vocabularies_match_what_was_read() -> None:
     assert rosbridge_api.PIN_ROSBRIDGE in rosbridge_api.OP_PUBLISH.source
     assert rosbridge_api.PIN_INTERFACES in rosbridge_api.MSG_TWIST.source
     assert len(rosbridge_api.refs_by_status("VERIFIED")) >= 25
+
+
+def test_the_names_introspection_asks_a_bridge_for_are_the_ones_upstream_registers() -> None:
+    """A wrong service name is a bridge that answers nothing and a body that stays unknown."""
+    assert rosbridge_api.SVC_TOPICS.name == "/rosapi/topics"
+    assert rosbridge_api.SVC_GET_PARAM.name == "/rosapi/get_param"
+    assert rosbridge_api.SRV_GET_PARAM.name == "rosapi_msgs/srv/GetParam"
+    assert rosbridge_api.PARAM_NAME_FORM.name == "node:parameter"
+    assert rosbridge_api.DESCRIPTION_PARAM.name == "/robot_state_publisher:robot_description"
+    assert rosbridge_api.PIN_URDFDOM in rosbridge_api.URDF_MASS.source
+    assert rosbridge_api.PIN_RSP in rosbridge_api.DESCRIPTION_TOPIC.source

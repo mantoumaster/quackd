@@ -17,6 +17,8 @@ from PIL import Image
 
 from quackd.adapters.lerobot.verbs import JOINTS, lerobot_conditions, lerobot_verbs
 from quackd.adapters.manifest import (
+    Datasheet,
+    Figure,
     Frame,
     Health,
     RobotManifest,
@@ -33,6 +35,37 @@ ROBOT_TYPE = "so101_follower"
 BLURB = (
     "a six-joint desktop robot arm with a parallel gripper (an SO-101 class arm driven "
     "by LeRobot), bolted to a table"
+)
+
+DATASHEET = Datasheet(
+    mass_kg=Figure(value=2.5, confidence="estimate", source="one vendor's listing"),
+    height_m=Figure(
+        value=0.53,
+        confidence="estimate",
+        source="one vendor's listing",
+        note="reaching straight up",
+    ),
+    dof=Figure(
+        value=6,
+        confidence="official",
+        source="the LeRobot SO-101 docs",
+        note="five joints and a gripper",
+    ),
+    payload_kg=Figure(value=0.5, confidence="estimate", source="one vendor's listing"),
+    manipulator="gripper",
+    arms=1,
+    tethered=True,
+    cannot=[
+        "go anywhere: it is bolted to a table and has no base",
+        "lift or hold more than about half a kilogram, and nothing whose weight is not known",
+        "reach anything that is not already within arm's length of its base: the reach is not "
+        "published",
+        "feel what it holds: grip force is not reported, so holding is what was commanded",
+    ],
+    notes=[
+        "How wide the gripper opens and how hard it grips are not published",
+        "No sensors beyond the servo positions unless a camera is configured",
+    ],
 )
 
 
@@ -83,6 +116,7 @@ def lerobot_manifest(
         limits={"joint_deg": 180.0, "gripper": 100.0},
         backend=backend,
         blurb=BLURB,
+        datasheet=DATASHEET,
         extras={
             "robot_type": robot_type,
             "joints": list(JOINTS),

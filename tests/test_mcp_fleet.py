@@ -1,4 +1,4 @@
-"""A fleet over MCP: eight robot_* tools, one executor, budget and heartbeat per robot.
+"""A fleet over MCP: nine robot_* tools, one executor, budget and heartbeat per robot.
 
 Driven in-process by the SDK's own client over memory streams, exactly like the one-robot
 tests.
@@ -55,6 +55,12 @@ async def test_dry_run_still_observes_but_moves_nothing() -> None:
     async with connected(dry_run=True) as (client, fleet):
         seen = await client.call_tool("robot_observe", {"robot": "duck"})
         assert {c.type for c in seen.content} == {"text", "image"}  # read-only verbs run
+        _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {"verdict": "feasible", "reason": "a test: the body fits the task"},
+            )
+        )
         moved = _data(
             await client.call_tool("robot_run_verb", {"verb": "move", "params": {"vx": 0.2}})
         )
@@ -132,3 +138,58 @@ def test_the_detector_policy_is_the_camera_and_nothing_else() -> None:
     mine = ColorBlobDetector()
     assert detector_for(["camera"], mine) is mine
     assert detector_for(["odometry"], mine) is mine
+
+
+async def test_an_infeasible_verdict_names_the_robot_that_could() -> None:
+    """A duck cannot pick anything up and a cart can. The pilot is told which, by name, so
+    the task can be handed over rather than abandoned."""
+    robots = {
+        "duck": make_adapter(RobotSpec("microduck", "sim2d", "duck"), seed=1),
+        "cart": make_adapter(RobotSpec("alohamini", "mock", "cart"), seed=1),
+    }
+    async with connected(robots) as (client, fleet):
+        answer = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {
+                    "verdict": "infeasible",
+                    "reason": "the mug needs a gripper and this body has a beak",
+                    "limits_consulted": ["manipulator", "payload_kg"],
+                    "needs": {"manipulator": "gripper", "payload_kg": 0.4},
+                    "robot": "duck",
+                },
+            )
+        )
+        assert answer["verdict"] == "infeasible"
+        assert answer["could"] == ["cart"]
+        assert "a gripper" in answer["could_datasheets"]["cart"]
+        assert "robot_load_duckfile" in answer["note"]
+        assert not fleet.sessions["duck"].executor.cleared
+
+        # and the body that was named can be asked
+        cleared = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {"verdict": "feasible", "reason": "1 kg per arm covers a mug", "robot": "cart"},
+            )
+        )
+        assert cleared["could"] == []
+        assert fleet.sessions["cart"].executor.cleared
+
+
+async def test_the_instructions_describe_each_body_before_anything_connects() -> None:
+    """`_instructions` runs when the server is built, which is before `connect_all`. Read
+    from the static descriptions it says what each body is; without them it said `a small
+    robot` about every one of them."""
+    from quackd.adapters.factory import describe
+
+    specs = {"duck": RobotSpec("microduck", "sim2d", "duck")}
+    server, _fleet = build_fleet_server(
+        {"duck": make_adapter(specs["duck"], seed=1)},
+        manifests={"duck": describe(specs["duck"])},
+    )
+    text = server.instructions or ""
+    assert "a small biped duck robot" in text
+    assert "0.8 kg (official: the Pollen Robotics README)" in text
+    assert "robot_assess_task" in text
+    assert "a small robot" not in text

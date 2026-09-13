@@ -56,6 +56,18 @@ name a camera and `pick` when a policy object was injected.
 | `place` | extension | open the gripper where the arm is; needs `holding` |
 | `pick(target, max_s)` | extension, **confirm** | one skill intent; the arm's learned policy runs its own observe/act loop at its own rate until something is held or the time is up |
 
+Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
+
+| | |
+|---|---|
+| Mass | 2.5 kg (estimate: one vendor's listing) |
+| Height | 0.53 m (estimate: one vendor's listing; reaching straight up) |
+| Actuated joints | 6 (official: the LeRobot SO-101 docs; five joints and a gripper) |
+| Payload | 0.5 kg (estimate: one vendor's listing) |
+| Not published | reach |
+
+A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
 ## Safety
 
 - **No deadman.** Nothing in LeRobot's `Robot` stops an arm when the client goes quiet; a

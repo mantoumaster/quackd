@@ -187,7 +187,8 @@ async def test_remember_tool_saves_a_note_without_spending_a_step(
         )
     )
     assert result.outcome == "success"
-    assert result.steps == 1 and result.llm_calls == 3, "remember costs an LLM call, not a step"
+    # the verdict and the note each cost an LLM call and neither costs a step
+    assert result.steps == 1 and result.llm_calls == 4
     events = Transcript.read(result.run_dir / "transcript.jsonl")
     assert events[0]["memory"] == {
         "robot": "microduck:mock",

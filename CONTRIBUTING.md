@@ -89,7 +89,8 @@ registrar and a synchronous fake MQTT broker, no sockets. Keep it that way, and 
 4. Open a PR. In the description say what it does, which providers you tried, and what
    failed. Ducks that mostly fail are still welcome if the file says so — that is data.
 
-Checklist: `duck: 0` (or `duck: 1` if you use `requires`, `robots` or `flock.roles`) ·
+Checklist: `duck: 0` (or `duck: 1` if you use `requires`, `robots` or `flock.roles`, or
+`duck: 2` if you correct the robot's `datasheet` or a role's `needs`) ·
 slug name · `allow` lists only verbs the robot provides (`quackd list-verbs --robot ...`)
 · `confirm` ⊆ `allow` · at least one `success` line · `abort_when` uses the two enforced
 phrasings if you want them enforced · body starts with `# Task` · `quackd validate

@@ -598,3 +598,30 @@ def test_the_readme_verb_table_has_a_row_per_body_listing_its_real_verbs() -> No
         possible = set(asyncio.run(_implementable(adapter)))
         gone = [v for v in listed if v not in possible and v not in _CORE_VERBS]
         assert not gone, f"the {adapter} row lists verbs the adapter cannot implement: {gone}"
+
+
+def test_every_body_carries_its_own_numbers_on_its_own_page() -> None:
+    """A datasheet is a claim about a real robot, so it belongs where a reader checks it.
+    rosbridge is exempt: its numbers come off a bridge and are different every time."""
+    from quackd.adapters.factory import ADAPTER_NAMES, BACKENDS, RobotSpec, describe
+
+    pages = {
+        "microduck": REPO / "docs" / "adapter-status.md",
+        **{
+            name: REPO / "docs" / "adapters" / f"{name}.md"
+            for name in ADAPTER_NAMES
+            if name not in ("microduck", "rosbridge")
+        },
+    }
+    for adapter, path in pages.items():
+        page = path.read_text(encoding="utf-8")
+        sheet = describe(RobotSpec(adapter, BACKENDS[adapter][0])).datasheet
+        assert sheet is not None
+        for label, figure, unit in sheet.known():
+            low = getattr(figure, "low", None)
+            amount = (
+                f"{low:g} to {figure.high:g} {unit}".rstrip()  # a band
+                if low is not None
+                else f"{figure.value:g} {unit}".rstrip()
+            )
+            assert amount in page, f"{path.name} does not say {label} is {amount}"

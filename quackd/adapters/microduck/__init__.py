@@ -14,6 +14,8 @@ from typing import Any
 from PIL import Image
 
 from quackd.adapters.manifest import (
+    Datasheet,
+    Figure,
     Frame,
     Health,
     RobotManifest,
@@ -38,6 +40,32 @@ _GO_TO_DESCRIPTION = (
 _SEARCH_SCAN_DESCRIPTION = "Rotate in steps, looking for a target. Returns where it was seen."
 _APPROACH_AND_DESCRIPTION = "walk_to a target, then run another verb (kick, grab)."
 BLURB = "a small biped duck robot (25 cm, 800 g)"
+
+DATASHEET = Datasheet(
+    mass_kg=Figure(value=0.8, confidence="official", source="the Pollen Robotics README"),
+    height_m=Figure(value=0.25, confidence="official", source="the Pollen Robotics README"),
+    dof=Figure(
+        value=15,
+        confidence="official",
+        source="the Pollen Robotics README",
+        note="XL330 class servos, which is an estimate",
+    ),
+    manipulator="beak",
+    tethered=False,
+    terrain="indoor_flat",
+    not_rated=["stairs", "steps", "slopes"],
+    cannot=[
+        "carry, hold or push anything: the beak scoops at the floor and nothing else",
+        "climb or descend a step",
+        "hold a heading for long without a landmark: the IMU has no magnetometer, so heading "
+        "drifts",
+    ],
+    notes=[
+        "The speed caps are a software clamp in robotd, not a measured hardware maximum",
+        "The time-of-flight sensor is an 8 by 8 grid good from 0.12 to 3.54 m",
+        "It falls, and it can get itself upright again",
+    ],
+)
 
 
 def microduck_manifest(
@@ -90,6 +118,7 @@ def microduck_manifest(
         limits={"max_vx": 0.3, "max_vy": 0.2, "max_wz": 1.5},
         backend=backend,
         blurb=BLURB,
+        datasheet=DATASHEET,
     )
 
 

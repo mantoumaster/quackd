@@ -9,14 +9,16 @@ from typing import Any
 
 import pytest
 
-from quackd.agent.loop import RunConfig, run_duck
+from quackd.agent.loop import AgentLoop, RunConfig, run_duck
 from quackd.agent.providers.base import Exchange, ProviderError, ProviderTurn, ToolCall, Usage
 from quackd.agent.providers.fake import FakeProvider
 from quackd.agent.transcript import Transcript
 from quackd.duckfile.schema import Budgets, DuckFile
 from quackd.transport.mock import MockTransport
 
-GOLDEN_HELLO = ["quack", "walk", "quack", "declare_success"]
+# the verdict comes first on every run now: the scripted pilot answers it as a rule, and the
+# duck's own three verbs follow exactly as they did
+GOLDEN_HELLO = ["assess_task", "quack", "walk", "quack", "declare_success"]
 
 
 async def test_hello_world_golden(hello_duck: DuckFile, tmp_path: Path) -> None:
@@ -30,7 +32,8 @@ async def test_hello_world_golden(hello_duck: DuckFile, tmp_path: Path) -> None:
         )
     )
     assert result.outcome == "success", result.reason
-    assert result.steps == 3 and result.llm_calls == 4
+    # hello-world allows 5 llm calls and the verdict is the fifth: it fits, exactly
+    assert result.steps == 3 and result.llm_calls == 5
     events = Transcript.read(result.run_dir / "transcript.jsonl")
     kinds = [e["kind"] for e in events]
     assert kinds[0] == "run_start" and kinds[-1] == "run_end"
@@ -658,3 +661,346 @@ async def test_a_robot_that_claims_no_stand_ins_gets_no_such_section(
     )
     assert "stand-in" not in provider.systems[0]
     assert "stand-ins=" not in provider.observations[0]
+
+
+ARM_DUCK = """\
+---
+duck: {version}
+name: lift-the-mug
+description: Pick up the mug.
+verbs:
+  allow: [observe, report_state, stop]
+success: [The mug is up.]
+{block}---
+# Task
+Pick it up.
+"""
+_OVERRIDE = """datasheet:
+  payload_kg: {value: 0.3, confidence: measured, source: weighed with the printed gripper}
+"""
+
+
+async def test_a_task_files_datasheet_reaches_the_prompt_the_executor_and_the_record(
+    tmp_path: Path,
+) -> None:
+    from quackd.adapters.factory import make_adapter
+    from quackd.duckfile.parser import parse_duck_text
+
+    provider = CapturingProvider()
+    adapter = make_adapter("lerobot:mock")
+    loop = AgentLoop(
+        RunConfig(
+            duck=parse_duck_text(ARM_DUCK.format(version=2, block=_OVERRIDE)),
+            provider=provider,
+            transport=adapter,
+            runs_dir=tmp_path,
+        )
+    )
+    result = await loop.run()
+    assert result.outcome == "success", result.reason
+
+    assert (
+        "0.3 kg (measured: the task file, weighed with the printed gripper)" in provider.systems[0]
+    )
+    assert "0.5 kg (estimate" not in provider.systems[0], "the vendor figure was corrected"
+    sheet = loop.executor.manifest.datasheet if loop.executor.manifest else None
+    assert sheet is not None and sheet.payload_kg is not None and sheet.payload_kg.value == 0.3
+    start = Transcript.read(result.run_dir / "transcript.jsonl")[0]
+    assert start["robot"]["datasheet"]["payload_kg"]["source"].startswith("the task file")
+
+
+async def test_without_a_correction_the_body_speaks_for_itself(tmp_path: Path) -> None:
+    from quackd.adapters.factory import make_adapter
+    from quackd.duckfile.parser import parse_duck_text
+
+    provider = CapturingProvider()
+    result = await run_duck(
+        RunConfig(
+            duck=parse_duck_text(ARM_DUCK.format(version=1, block="")),
+            provider=provider,
+            transport=make_adapter("lerobot:mock"),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assert "0.5 kg (estimate: one vendor's listing)" in provider.systems[0]
+    assert "task file" not in provider.systems[0]
+
+
+def _verdict_call(word: str, reason: str, **extra: Any) -> ToolCall:
+    return ToolCall(name="assess_task", arguments={"verdict": word, "reason": reason, **extra})
+
+
+async def test_the_rule_answers_the_gate_before_its_own_first_verb(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """The scripted pilot has no judgement of a body, so it says so and goes on. Without
+    that, every keyless run in the README would stop at the gate."""
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                    ToolCall(name="declare_success", arguments={"reason": "walked"}),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    calls = [tc["name"] for e in events if e["kind"] == "llm" for tc in e["tool_calls"]]
+    assert calls == ["assess_task", "walk", "declare_success"]
+    assert [i.kind for i in transport.intents if i.kind == "move"]
+    assessed = next(e for e in events if e["kind"] == "assess")
+    assert assessed["verdict"] == "feasible"
+    assert "a rule has no judgement of the body" in assessed["reason"]
+
+
+async def test_a_verb_before_any_verdict_is_refused_and_the_pilot_is_told_why(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    class Impatient:
+        """A pilot that reaches for a leg before it has judged the task."""
+
+        name = "impatient"
+        model = "test"
+        supports_vision = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def step(
+            self, system: str, history: list[Exchange], tools: list[dict[str, Any]]
+        ) -> ProviderTurn:
+            self.calls += 1
+            call = (
+                ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0})
+                if self.calls == 1
+                else ToolCall(name="declare_failure", arguments={"reason": "refused"})
+            )
+            return ProviderTurn(tool_calls=[call])
+
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(duck=hello_duck, provider=Impatient(), transport=transport, runs_dir=tmp_path)
+    )
+    assert result.outcome == "failure"
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    verb = next(e for e in events if e["kind"] == "verb")
+    assert verb["name"] == "walk" and verb["ok"] is False
+    assert "moves the body" in verb["summary"] and "assess_task" in verb["summary"]
+    gate = next(e for e in events if e["kind"] == "gate" and e.get("gate") == "verdict")
+    assert gate["outcome"] == "refused"
+    assert [i.kind for i in transport.intents if i.kind == "move"] == []
+
+
+async def test_an_infeasible_verdict_ends_the_run_before_anything_moves(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call(
+                        "infeasible",
+                        "the basket looks like 3 kg of clothes and this body has no arms",
+                        limits_consulted=["manipulator", "payload_kg"],
+                        estimates=[
+                            {
+                                "object": "laundry basket",
+                                "quantity": "mass_kg",
+                                "value": 3.0,
+                                "basis": "image",
+                                "confidence": "medium",
+                            }
+                        ],
+                        needs={"payload_kg": 3.0, "manipulator": "gripper"},
+                    ),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "infeasible"
+    assert result.steps == 0 and result.llm_calls == 1
+    assert not result.ok
+    assert "3 kg of clothes" in result.reason
+    assert "No shipped body meets needs" in result.reason, "the hint names what could"
+    assert [i.kind for i in transport.intents if i.kind != "stop"] == []
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = next(e for e in events if e["kind"] == "assess")
+    assert assessed["verdict"] == "infeasible" and assessed["ends_run"] is True
+    assert assessed["estimates"][0]["object"] == "laundry basket"
+    assert assessed["needs"] == {"payload_kg": 3.0, "manipulator": "gripper"}
+    assert assessed["limits_consulted"] == ["manipulator", "payload_kg"]
+    summary = json.loads((result.run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["outcome"] == "infeasible"
+
+
+async def test_an_uncertain_verdict_asks_the_person_in_the_room(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    asked: list[str] = []
+
+    def no(why: str) -> bool:
+        asked.append(why)
+        return False
+
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call(
+                        "uncertain",
+                        "the basket is out of frame, so its weight is a guess",
+                        needs={"payload_kg": 2.0},
+                    ),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+            decide=no,
+        )
+    )
+    assert result.outcome == "aborted", "a person stopping the run is the kill switch's kind"
+    assert "the human said no" in result.reason
+    assert "out of frame" in result.reason
+    assert [i.kind for i in transport.intents if i.kind != "stop"] == []
+    assert len(asked) == 1
+    assert "payload_kg=2" in asked[0] and "not sure" in asked[0]
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert next(e for e in events if e["kind"] == "assess")["human"] == "no_go"
+
+
+async def test_a_person_who_says_go_clears_the_gate(hello_duck: DuckFile, tmp_path: Path) -> None:
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see the thing from here"),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                    ToolCall(name="declare_success", arguments={"reason": "walked"}),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+            decide=lambda _why: True,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assert [i.kind for i in transport.intents if i.kind == "move"]
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert next(e for e in events if e["kind"] == "assess")["human"] == "go"
+
+
+async def test_with_nobody_to_ask_the_pilot_is_told_to_decide_itself(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see the thing from here"),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                    _verdict_call("feasible", "looked again: it is a tennis ball"),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                    ToolCall(name="declare_success", arguments={"reason": "walked"}),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+            decide=None,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    observations = [e["text"] for e in events if e["kind"] == "observation"]
+    assert any("decide yourself" in text for text in observations)
+    refused = [e for e in events if e["kind"] == "verb" and not e["ok"]]
+    assert refused and "assess_task" in refused[0]["summary"]
+    assert [e["human"] for e in events if e["kind"] == "assess"] == [None, None]
+
+
+async def test_a_later_verdict_can_still_end_the_run(hello_duck: DuckFile, tmp_path: Path) -> None:
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "looks light from here"),
+                    ToolCall(name="quack", arguments={}),
+                    _verdict_call(
+                        "infeasible",
+                        "close up it is a full crate, not a box",
+                        needs={"payload_kg": 5.0},
+                    ),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "infeasible"
+    assert result.steps == 1, "the quack ran before the pilot changed its mind"
+    assert "full crate" in result.reason
+
+
+async def test_an_invalid_verdict_is_refused_and_the_run_goes_on(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    ToolCall(name="assess_task", arguments={"verdict": "maybe", "reason": "hm"}),
+                    ToolCall(
+                        name="assess_task",
+                        arguments={"verdict": "feasible", "reason": "fine", "human": "go"},
+                    ),
+                    _verdict_call("feasible", "fine"),
+                    ToolCall(name="declare_success", arguments={"reason": "done"}),
+                ]
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = [e for e in events if e["kind"] == "assess"]
+    assert assessed[0]["ok"] is False and "invalid assess_task" in assessed[0]["summary"]
+    assert assessed[1]["ok"] is False and "only a person sets it" in assessed[1]["summary"]
+    assert assessed[2]["ok"] is True
+
+
+async def test_the_prompt_offers_the_tool_and_states_the_rule(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    provider = CapturingProvider()
+    result = await run_duck(
+        RunConfig(duck=hello_duck, provider=provider, transport=MockTransport(), runs_dir=tmp_path)
+    )
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert "assess_task" in events[0]["tools"]
+    system = provider.systems[0]
+    assert "Before the first verb that moves the body, call " in system
+    assert "assess_task" in system
+    assert "the run ends, nothing moves" in system

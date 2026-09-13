@@ -145,7 +145,7 @@ It ships with two simulators, so all of this can be developed and demoed before 
 flowchart TD
     YOU["You<br/>“find the ball and kick it”"]
     LLM["LLM<br/>looks at the camera, the robot's state and the last result<br/>picks ONE of the robot's own skills (a verb) and its parameters"]
-    Q["quackd<br/>checks the rules: allowed? budget left? needs confirmation?<br/>then runs the verb"]
+    Q["quackd<br/>checks the rules: allowed? task judged possible? budget left? needs confirmation?<br/>then runs the verb"]
     R["Robot or simulator<br/>executes the skill with its own controllers<br/>(walking, grasping and looking are not the LLM's job)"]
     O["quackd observes the result<br/>new camera frame, new state"]
     YOU --> LLM --> Q --> R --> O
@@ -159,7 +159,7 @@ The verbs the model can pick from are the robot's real, existing capabilities an
 | Core | `observe` `report_state` `stop` `say` `move` `go_to` `search_scan` `approach_and` | on any robot whose manifest satisfies their requirements (a camera, a twist intent, a sound intent) |
 | Microduck | `sit` `stand` `stand_up` `kick` `grab` `gaze` `quack` | one each per behaviour the robot ships with, each an *intent* the robot's own controllers execute |
 | LeRobot arm | `move_joints` `gripper` `place` `pick` | an SO-101 class arm. `pick` is one skill intent the arm's own learned policy executes, confirm gated and present only when a policy is loaded |
-| rosbridge base | *(core only)* | a wheeled base over ROS 2. It gets `move`, `stop` and `report_state`, plus `observe`, `go_to`, `search_scan` and `approach_and` once an image topic is configured |
+| rosbridge base | `introspect` | a wheeled base over ROS 2. It gets `move`, `stop` and `report_state`, plus `observe`, `go_to`, `search_scan` and `approach_and` once an image topic is configured. `introspect` asks the bridge what the body is: the topic list and the robot's own description, which is where its weight and its joint count come from |
 | Open Duck Mini v2 | `gaze` `express` `quack` | a 42 cm biped. No `sit`, no `kick`, no `stand_up`: its runtime has no such skill, so the verb does not exist rather than being refused |
 | XLeRobot | `move_joints` `gripper` | a dual-arm cart. The arm joints are a normalised -100..100 range, not degrees, and `gripper` takes a `side` because there are two of them |
 | AlohaMini | `lift` `move_joints` `gripper` `home_arms` | two arms on a motorised lift. The arm verbs refuse until quackd's own host wrapper is running on the robot, because upstream's leaves the arms limp |
@@ -173,10 +173,12 @@ The verbs the model can pick from are the robot's real, existing capabilities an
 
 ## Example
 
-A `find-and-kick` run in the cartoon simulator, from its transcript (`runs/<timestamp>-find-and-kick/transcript.jsonl`). This one is the scripted pilot, so `model` says so and `usage` is an estimate from character counts (no tokenizer). A real provider records the API's own counts.
+A `find-and-kick` run in the cartoon simulator, from its transcript (`runs/<timestamp>-find-and-kick/transcript.jsonl`). Every run opens the same way, with the pilot judging whether this body can do this task at all, because nothing that moves the duck runs until it has. This one is the scripted pilot, so `model` says so, the verdict says a rule has no judgement of a body, and `usage` is an estimate from character counts (no tokenizer). A real provider records the API's own counts and weighs the task against the datasheet in its prompt.
 
 ```jsonc
-{"kind": "llm",  "step": 0, "tool_calls": [{"name": "search_scan", "arguments": {"target": "ball"}}], "usage": {"input_tokens": 689, "output_tokens": 16}}
+{"kind": "llm",  "step": 0, "tool_calls": [{"name": "assess_task", "arguments": {"verdict": "feasible", "reason": "scripted pilot: a rule has no judgement of the body, so it assumes the task fits"}}], "usage": {"input_tokens": 1602, "output_tokens": 16}}
+{"kind": "assess", "step": 0, "verdict": "feasible", "reason": "scripted pilot: a rule has no judgement of the body, so it assumes the task fits"}
+{"kind": "llm",  "step": 0, "tool_calls": [{"name": "search_scan", "arguments": {"target": "ball"}}]}
 {"kind": "verb", "step": 1, "name": "search_scan", "ok": true, "summary": "ball found: ball at bearing 18° left ~0.58 m (after 4 turn steps)"}
 {"kind": "llm",  "step": 1, "tool_calls": [{"name": "walk_to", "arguments": {"target": "ball", "stop_distance": 0.22}}]}
 {"kind": "verb", "step": 2, "name": "walk_to", "canonical": "go_to", "ok": true, "summary": "reached the ball: ~0.22 m away, bearing +0°", "data": {"distance_m": 0.217, "ticks": 27}}
@@ -189,7 +191,7 @@ A `find-and-kick` run in the cartoon simulator, from its transcript (`runs/<time
 The same thing as a conversation, through MCP in Claude Code or Claude Desktop:
 
 > **You:** List the duck's verbs, then find the ball and kick it.
-> **Claude:** *(calls `robot_list_verbs`, `robot_observe`, `robot_run_verb("search_scan")`, `robot_run_verb("go_to")`, `robot_run_verb("kick")`, `robot_say`)* Done. The ball moved about half a metre.
+> **Claude:** *(calls `robot_list_verbs`, `robot_observe`, `robot_assess_task("feasible")`, `robot_run_verb("search_scan")`, `robot_run_verb("go_to")`, `robot_run_verb("kick")`, `robot_say`)* Done. The ball moved about half a metre.
 
 <br>
 
@@ -203,7 +205,7 @@ Version 0.7, simulator and mocks. What has been built, and how far each piece ha
 | `mujoco` physics simulator (`quackd[mujoco]`) | ✅ 10 of 10 seeds on `find-and-kick` twice over: once on the kinematic stand-in and once with the duck walking on **upstream's own trained policy**, both ground truth checked, and both named tests rather than remembered numbers. The trained-gait sweep needs upstream's model in the cache, so a nightly job runs it and the gating job on every push runs the stand-in. The model and the policy are fetched from upstream at a pinned commit and hash checked, never shipped |
 | Browser demo ([`web/`](web/)) | 🧪 the same physics, the same two upstream policies, seven of the same verbs and the same allowlist-and-budget machinery in a static page, with the sentence box and the keyboard live on one duck at the same time. Bring your own key, or point it at Ollama. CI checks what it can without a browser (the ids the script looks up, the pins and gait numbers it shares with Python, each module's syntax, the argument validator run under Node, the `/simulator` mount and the assets the page asks for, the vendored mark in the header, the rule that a key barges in only if it would move the robot, and that the abort reaches the request in flight). The page has been booted in a browser twice and a held `W` walks the duck, but a full model-driven run, a barge-in out of one and the recording have never been watched. Live at <https://www.quackd.org/simulator> |
 | Manifests and core verbs (`quackd list-adapters`, `quackd list-verbs --robot`) | ✅ seven adapters, eight core verbs that appear only where the manifest meets their requirements, speed limits from the manifest, `manifest.schema.json` generated and drift tested |
-| MCP server (`quackd serve-mcp`) | ✅ Claude Code and Claude Desktop, fleets with `--robots` (eight `robot_*` tools, tested in process against the simulator and the mocks), no Claude Desktop session on record |
+| MCP server (`quackd serve-mcp`) | ✅ Claude Code and Claude Desktop, fleets with `--robots` (nine `robot_*` tools, tested in process against the simulator and the mocks), no Claude Desktop session on record |
 | Memory between runs (`quackd memory`, `remember`) | ✅ one JSONL file per `adapter:backend`, notes and run outcomes into the next prompt, tested end to end offline, 🧪 the `remember` tool itself exercised by one local model on one machine and by no cloud model ([docs/memory.md](docs/memory.md)) |
 | Providers: eleven cloud vendors, fake | ✅ implemented, tested offline against stubbed SDK clients, with one hand curated catalogue of 115 model ids that `--model` is checked against before any call (`quackd list-models`), real model hero recording pending an API key |
 | Local models (Ollama, vLLM, llama.cpp, LM Studio, any OpenAI compatible server) | ✅ implemented and tested against the OpenAI wire format, 🧪 one live run by a contributor (Qwen 2.5 Coder 14B on LM Studio, two seeds), no transcript in the repo, more welcome |
@@ -358,7 +360,7 @@ A cloud model that takes an image sees the camera frame. Where a vendor does not
 
 | Command | What it does |
 |---|---|
-| `quackd run <duck>` or `quackd run --goal "..."` | Run a task. `--provider`, `--robot <adapter>:<backend>`, `--robots name=<adapter>:<backend>,...` for a flock of mixed bodies, `--address` for a real robot, `--model`, `--seed`, `--max-steps`, `--dry-run`, `--yes`, `--live`, `--gif-size`, `--camera-url` for a robot whose camera is a separate service, `--fov-deg` for your camera's field of view (without it, distances on hardware are a rough guess), `--token` for a robot that wants one, `--flock N` (2 to 4, sim2d), `--no-memory` and `--memory-dir` for what it carries between runs, `--no-trace` to stop it narrating what happens behind the scenes, `--no-trace-prompt` to keep the narration and drop the system prompt |
+| `quackd run <duck>` or `quackd run --goal "..."` | Run a task. `--provider`, `--robot <adapter>:<backend>`, `--robots name=<adapter>:<backend>,...` for a flock of mixed bodies, `--address` for a real robot, `--model`, `--seed`, `--max-steps`, `--dry-run`, `--yes`, `--live`, `--gif-size`, `--camera-url` for a robot whose camera is a separate service, `--fov-deg` for your camera's field of view (without it, distances on hardware are a rough guess), `--token` for a robot that wants one, `--flock N` (2 to 4, sim2d), `--no-memory` and `--memory-dir` for what it carries between runs, `--no-trace` to stop it narrating what happens behind the scenes, `--no-trace-prompt` to keep the narration and drop the system prompt. It exits 1 when a run does not succeed, and 3 when the pilot judged the task beyond this body and nothing moved |
 | `quackd validate ducks/*.duck` | Check task files against the spec and a robot's manifest (`--robot`, repeatable, `--robots` for a fleet, or the file's own `robots:` if it has one). Exits 1 with field level errors such as `requires kick, but arm-01 (lerobot-so101) does not provide it`. `--json` prints one object per file and keeps the same exit code |
 | `quackd serve-mcp` | Expose a robot (`--robot <adapter>:<backend>`), or a fleet with `--robots name=<adapter>:<backend>,...`, as MCP tools over stdio. `--duckfile` starts with a contract loaded on the default robot, `--yes` allows confirm gated verbs, `--seed`, `--address`, `--dry-run`, `--no-memory`, `--memory-dir` and `--no-trace` |
 | `quackd doctor` | Keys, extras, adapters, local LLM servers, and every upstream assumption on this machine, ending in one line saying whether anything can run here (`--robot` for one robot's manifest, `--address` to ask a real robot what it is running, `--json` for a script) |
@@ -403,7 +405,7 @@ robots: microduck:sim2d                 # the default body, so `quackd run` need
 requires: [search_scan, walk_to, kick]  # the honest minimum a body must provide
 ```
 
-`quackd validate --robot` checks `requires` against a robot's manifest before anything moves: `quackd validate find-and-kick --robot lerobot:mock` exits 1 with `requires kick, but arm-01 (lerobot-so101) does not provide it`. For a `duck: 0` file the whole allowlist counts as required. Of the twelve bundled starters, the six written before 0.4 keep their 0.3 spellings at `duck: 0` and the six written since are `duck: 1`.
+`quackd validate --robot` checks `requires` against a robot's manifest before anything moves: `quackd validate find-and-kick --robot lerobot:mock` exits 1 with `requires kick, but arm-01 (lerobot-so101) does not provide it`. For a `duck: 0` file the whole allowlist counts as required. Of the twelve bundled starters, the six written before 0.4 keep their 0.3 spellings at `duck: 0` and the six written since are `duck: 1`. A `duck: 2` file can also correct the robot's datasheet for the build in front of you with a `datasheet:` block, and the prompt labels those numbers as coming from the task file.
 
 | Starter | Goal | Notes |
 |---|---|---|
@@ -428,7 +430,7 @@ Full spec: [docs/duck-spec.md](docs/duck-spec.md). Add yours to [`ducks/`](ducks
 claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d
 ```
 
-Then, in Claude Code or Claude Desktop: *"List the duck's verbs, then find the ball and kick it."* Without a `.duck` loaded the session runs on a default budget of 40 verb steps and five minutes. Load one with `robot_load_duckfile`, or start with `--duckfile`, and its allowlist and budgets apply instead. Pass `--robots duck=microduck:sim2d,arm=lerobot:mock` to front a fleet, with one executor, budget and heartbeat per robot. Simulated robots in a fleet each get their own world (a shared arena over MCP is future work), so for multiple robots on one shared task use flock mode instead (`quackd run flock-kick`). Config for both clients, the eight `robot_*` tools, and a two minute script: [docs/mcp.md](docs/mcp.md).
+Then, in Claude Code or Claude Desktop: *"List the duck's verbs, then find the ball and kick it."* Before the first verb that moves the body, the model has to say whether this body can do the task at all, judged against the datasheet in its `robot_list` row, and `robot_run_verb` refuses anything that moves until it has. Without a `.duck` loaded the session runs on a default budget of 40 verb steps and five minutes. Load one with `robot_load_duckfile`, or start with `--duckfile`, and its allowlist and budgets apply instead. Pass `--robots duck=microduck:sim2d,arm=lerobot:mock` to front a fleet, with one executor, budget and heartbeat per robot. Simulated robots in a fleet each get their own world (a shared arena over MCP is future work), so for multiple robots on one shared task use flock mode instead (`quackd run flock-kick`). Config for both clients, the nine `robot_*` tools, and a two minute script: [docs/mcp.md](docs/mcp.md).
 
 ### What it remembers
 
@@ -438,7 +440,7 @@ A run does not start from nothing. Each robot (keyed `adapter:backend`, so the s
 
 ## Any small robot
 
-A robot joins quackd as an **adapter** that answers one question, what is this body and what can it do, as a **manifest**: its embodiment, the intents its controllers accept (a velocity, a named skill, a gaze, a sound, a joint goal, a pose, a gripper), its sensors, the limits its verbs clamp to, who stops it when quackd goes quiet, and its verbs. Everything else (the loop, the executor, the contract, the MCP server) is shared.
+A robot joins quackd as an **adapter** that answers one question, what is this body and what can it do, as a **manifest**: its embodiment, the intents its controllers accept (a velocity, a named skill, a gaze, a sound, a joint goal, a pose, a gripper), its sensors, the limits its verbs clamp to, who stops it when quackd goes quiet, its verbs, and a **datasheet** of what it weighs, can carry and can reach, with a confidence and a source on every number. Everything else (the loop, the executor, the contract, the MCP server) is shared.
 
 ```bash
 uvx quackd list-adapters                                                # the seven adapters, for your build
@@ -468,7 +470,7 @@ uvx quackd run flock-kick --provider fake --seed 3
 
 The interesting part is not the kick, it is the talking. The ducks coordinate over an in process bus with eight message kinds (TASK, BID, CLAIM, ROLE, HINT, VERDICT, HB and RESULT), every one logged in `flock.jsonl`, and a deterministic Contract Net auction decides which duck acts, from each duck's own camera distance estimate. Every action goes through verbs the duck already has, so the machinery is task agnostic and what a flock can do is bounded by its skills, not by the ball. The LLM contributes **at most one** planning call per run, and each duck still enforces the `.duck` contract on itself. The outcome is judged from sim ground truth, not from a model's claim. Add a `flock:` block to any `.duck` or pass `--flock N` (2 to 4 ducks), and give each named member its robot with `robots:` in a `duck: 1` file or `--robots <member>=<adapter>:<backend>,...`. Simulator only for now (every member must be a `sim2d` backend), and the per duck pilots are deterministic rules, on purpose. Details: [docs/flock.md](docs/flock.md).
 
-**Flocks can also assign roles by capability**, not just split the same search. A `duck: 1` file may declare `flock.roles` (`spotter`, `kicker`), and bids carry a capability term, so each robot bids only for a role its manifest can fill. This machinery is unit tested but has no bundled multi-role starter today: see [docs/flock.md](docs/flock.md#heterogeneous-roles-04).
+**Flocks can also assign roles by capability**, not just split the same search. A `duck: 1` file may declare `flock.roles` (`spotter`, `kicker`), and bids carry a capability term, so each robot bids only for a role its manifest can fill. A `duck: 2` role can ask for a body rather than a vocabulary, enough payload or a gripper rather than a beak, matched against each robot's datasheet. This machinery is unit tested but has no bundled multi-role starter today: see [docs/flock.md](docs/flock.md#heterogeneous-roles-04).
 
 <br>
 
@@ -591,6 +593,8 @@ The physics simulator costs what physics costs. Measured here on one Windows lap
 - The default simulator is a cartoon on purpose. It tests the agent loop, not physics, and will not tell you whether a gait works. `microduck:mujoco` is the one that can, and only for the Microduck.
 - The physics simulator runs upstream's walking and standing policies and nothing else of theirs. `kick` and `grab` use the cartoon's contact rules, `sit` is refused, and a fall is recovered by standing the model up, because upstream's episodic policies did nothing from a standing pose when they were tried. The gait floor, no step below about 0.22 m/s or 1.0 rad/s and roughly 0.42 of what is asked above it, was measured here on one machine with the model's own actuators and is tagged UNVERIFIED, because upstream deploys a different actuator model. All six are listed in `state.extras.assumptions`, so a transcript never implies more than happened.
 - Nothing has run on a real robot of any kind. What each body cannot report or detect on hardware (posture inferred from a policy name on the Microduck, `holding` commanded rather than sensed on the arm, no verified deadman on a rosbridge base, no fall detection and no battery on an Open Duck) is spelled out in [docs/adapter-status.md](docs/adapter-status.md) and the adapter pages.
+- The datasheets were read from the makers' pages, repositories and one paper on 2026-09-13. Nothing was measured here, which is what the confidence label on every number is for, and a body whose maker never published a figure says so rather than having one invented for it.
+- Whether a task fits a body is the model's own judgement, recorded before anything moves and weighed against numbers that carry their own confidence. Every gate below it still applies: the allowlist, the budgets, the confirm gates and the robot's own safety authority.
 - The hero GIF is the scripted pilot, not an LLM, because this repository was built without an API key. The real model code paths are tested against stubbed SDK clients.
 - Success is the model's own claim (`declare_success`) on a solo run. In the simulator, tests also check ground truth, and a flock's success needs a member's kick report (or the spotter's verdict) and sim ground truth to agree. On hardware, the `.duck` bodies insist on verifying with a fresh frame.
 - Memory between runs is a file, not a memory system: no embedding, no search, no sharing between bodies, and nothing the executor ever trusts. The scripted pilot never writes a note, so with `--provider fake` only run outcomes accumulate. Notes have been exercised by one local model on one machine, and by no cloud model at all ([docs/memory.md](docs/memory.md)).

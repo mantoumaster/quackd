@@ -16,11 +16,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from PIL import Image
+from pydantic import ValidationError
 
 from quackd.adapters.base import AdapterError, adapter_name, backend_name
-from quackd.adapters.manifest import RobotManifest
+from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
 from quackd.agent.prompts import (
-    META_TOOL_NAMES,
+    ASSESS_TASK_NAME,
+    DECLARE_NAMES,
     META_TOOLS,
     REMEMBER,
     REMEMBER_NAME,
@@ -51,6 +53,7 @@ from quackd.safety import (
     Heartbeat,
     SafetyStop,
     VerbNotAllowed,
+    VerdictRequired,
     deny_all,
 )
 from quackd.trace import Sink, Tracer
@@ -61,8 +64,9 @@ from quackd.verbs.registry import (
     default_registry,
     registry_from_manifest,
 )
+from quackd.verdict import Verdict, solo_hint
 
-Outcome = Literal["success", "failure", "budget", "aborted", "error"]
+Outcome = Literal["success", "failure", "infeasible", "budget", "aborted", "error"]
 
 REPROMPT = "You must call exactly one tool. Choose now."
 
@@ -96,6 +100,10 @@ class RunConfig:
     """Asked once, before the first leg moves, when the robot cannot see a fall and cannot
     recover from one — so the only guard is the person in the room. None means nobody is
     there to ask (MCP, tests), and the warning is logged instead of blocking."""
+    decide: Callable[[str], bool] | None = None
+    """Asked when the pilot says it is not sure this body can do the task, so a person makes
+    the call. None means nobody is there (MCP, tests), and the pilot is told to decide itself
+    rather than being cleared by default."""
     trace: Sink | None = None
     """Where to show the run as it happens (the CLI passes a `ConsoleTrace`). The transcript
     gets every event whether this is set or not; this is a second reader of the same stream."""
@@ -156,6 +164,8 @@ class AgentLoop:
             log=cfg.log,
             trace=self.tracer,
         )
+        # the pilot is handed an `assess_task` tool, so the executor holds it to the answer
+        self.executor.require_verdict = True
         self.history: list[Exchange] = []
         self.usage = Usage()
         self.highlights: list[str] = []
@@ -206,6 +216,53 @@ class AgentLoop:
         )
         image = png_bytes(img) if (img is not None and self.cfg.provider.supports_vision) else None
         return Observation(text=text, image_png=image, features=features), img
+
+    NOBODY_TO_ASK = (
+        "nobody is here to answer for the human: decide yourself and call assess_task again "
+        "with feasible or infeasible, on your own responsibility"
+    )
+
+    def _assess(self, arguments: dict[str, Any]) -> tuple[VerbResult, str | None]:
+        """Record the pilot's verdict. Returns what it hears back, and the reason the run ends
+        with when the verdict ends it.
+
+        A model cannot clear its own uncertainty: `assess_task` has no `human` field, and one
+        that arrives with it is refused rather than quietly dropped."""
+        if "human" in arguments:
+            return VerbResult.fail(
+                "assess_task takes no `human` field: only a person sets it"
+            ), None
+        try:
+            verdict = Verdict.model_validate(arguments)
+        except ValidationError as e:
+            msgs = "; ".join(
+                f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()
+            )
+            return VerbResult.fail(f"invalid assess_task: {msgs}"), None
+        if verdict.verdict == "uncertain":
+            if self.cfg.decide is None:
+                self.executor.verdict = verdict  # recorded, and still not cleared
+                return VerbResult.fail(self.NOBODY_TO_ASK), None
+            try:
+                answer = bool(self.cfg.decide(verdict.question()))
+            except Exception:
+                # a prompt that raised on Ctrl-C or EOF has not said yes, the same way the
+                # confirm gate reads it
+                answer = False
+            verdict.human = "go" if answer else "no_go"
+        self.executor.verdict = verdict
+        if verdict.verdict == "infeasible":
+            hint = solo_hint(verdict.needs, self.executor.manifest)
+            return VerbResult.fail(verdict.reason), " ".join(p for p in (verdict.reason, hint) if p)
+        if verdict.human == "no_go":
+            return (
+                VerbResult.fail("a human was asked and said no"),
+                f"the pilot was unsure ({verdict.reason}) and the human said no",
+            )
+        return (
+            VerbResult.success(f"recorded {verdict.summary()}; verbs that move the body now run"),
+            None,
+        )
 
     def _remember(self, arguments: dict[str, Any]) -> VerbResult:
         memory = self.cfg.memory
@@ -278,6 +335,11 @@ class AgentLoop:
         connected = await cfg.transport.connect()
         connect_s = round(time.perf_counter() - connect_started, 3)
         manifest = connected if isinstance(connected, RobotManifest) else None
+        if manifest is not None:
+            # a v2 task file corrects the body's own sheet for the build in front of it, and it
+            # does so here, before anything reads a manifest: the executor, the detector, the
+            # prompt and the transcript all see the one the model was told about
+            manifest = apply_datasheet_override(manifest, self.fm.datasheet)
         if manifest is not None:
             if cfg.registry is None:
                 self.registry = registry_from_manifest(manifest, cfg.transport)
@@ -466,7 +528,32 @@ class AgentLoop:
                     )
                     continue
 
-                if call.name in META_TOOL_NAMES:
+                if call.name == ASSESS_TASK_NAME:
+                    # the pilot's judgement of the task against the body: no motion, no step,
+                    # one LLM call, exactly like `remember`
+                    last_verb = ASSESS_TASK_NAME
+                    last_result, ends_with = self._assess(call.arguments)
+                    recorded = self.executor.verdict
+                    self._emit(
+                        "assess",
+                        step=self.budget.steps,
+                        ok=last_result.ok,
+                        summary=last_result.summary,
+                        ends_run=ends_with is not None,
+                        **(
+                            recorded.model_dump(mode="json")
+                            if recorded is not None
+                            else {"verdict": None, "reason": str(call.arguments.get("reason", ""))}
+                        ),
+                    )
+                    if ends_with is not None:
+                        if recorded is not None and recorded.human == "no_go":
+                            raise Aborted(ends_with)
+                        outcome, reason = "infeasible", ends_with
+                        break
+                    continue
+
+                if call.name in DECLARE_NAMES:
                     outcome = "success" if call.name == "declare_success" else "failure"
                     reason = str(call.arguments.get("reason", ""))
                     self._emit("declare", step=self.budget.steps, outcome=outcome, reason=reason)
@@ -477,6 +564,8 @@ class AgentLoop:
                     last_result = await self.executor.run_verb(
                         call.name, call.arguments, source="agent"
                     )
+                except VerdictRequired as e:
+                    last_result = VerbResult.fail(f"{e}: call `{ASSESS_TASK_NAME}`")
                 except VerbNotAllowed as e:
                     last_result = VerbResult.fail(str(e))
                 except ConfirmDenied as e:

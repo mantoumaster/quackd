@@ -28,10 +28,13 @@ from urllib.parse import parse_qs, urlsplit
 from PIL import Image
 
 from quackd.adapters.manifest import (
+    Datasheet,
+    Figure,
     Frame,
     Health,
     RobotManifest,
     SafetyAuthority,
+    Span,
     verb_spec,
 )
 from quackd.adapters.xlerobot import upstream_api as up
@@ -60,6 +63,58 @@ MAX_WZ = 1.5
 BLURB = (
     "a dual-arm mobile manipulator on an IKEA cart: two five-joint arms with grippers on a "
     "three-omniwheel base that can drive sideways as well as forward"
+)
+
+DATASHEET = Datasheet(
+    mass_kg=Figure(value=12.0, confidence="official", source="the XLeRobot docs"),
+    dof=Figure(
+        value=17,
+        confidence="official",
+        source="the XLeRobot BOM",
+        note="two five-joint arms with grippers, a two-axis head, three wheels",
+    ),
+    payload_kg=Figure(
+        value=1.0,
+        confidence="official",
+        source="the XLeRobot docs",
+        note="per arm; 0.6 to 1.0 kg depending on the pose, and 1.0 kg is the limit",
+    ),
+    reach_m=Figure(
+        value=0.40,
+        confidence="official",
+        source="the XLeRobot docs and community measurements",
+    ),
+    workspace_height_m=Span(
+        low=0.5,
+        high=1.25,
+        confidence="official",
+        source="the XLeRobot docs",
+        note="the torso does not lift, so the hands work in this band and nowhere else",
+    ),
+    endurance_min=Figure(
+        value=600,
+        confidence="official",
+        source="the XLeRobot docs",
+        note="a 288 Wh power station, ten hours or more",
+    ),
+    manipulator="gripper",
+    arms=2,
+    tethered=False,
+    terrain="indoor_flat",
+    not_rated=["stairs", "steps", "slopes", "thresholds"],
+    cannot=[
+        "lift more than 1 kg in one hand",
+        "work lower than about 0.5 m or higher than about 1.25 m off the floor: the torso "
+        "height is fixed",
+        "move fast, catch, or manipulate a thing in one hand: no dynamic motion and no in-hand "
+        "dexterity, in the maintainer's words",
+        "go up or down a step: it is a 12 kg cart on three omniwheels",
+    ],
+    notes=[
+        "Driving speed is not published; a community estimate for the LeKiwi base it is built "
+        "on is 0.226 m/s",
+        "Three colour cameras in the reference build and no depth sensor",
+    ],
 )
 _MOVE_DESCRIPTION = (
     "Drive with a velocity for a duration: vx forward m/s, vy left m/s (this robot really "
@@ -169,6 +224,7 @@ def xlerobot_manifest(
         },
         backend=backend,
         blurb=BLURB,
+        datasheet=DATASHEET,
         extras={
             "variant": variant,
             "joints": list(JOINTS),

@@ -487,3 +487,87 @@ def test_the_coordinators_transcript_only_kinds_reach_the_view_with_the_records_
     from quackd.trace import flock_caption
 
     assert all(flock_caption(e.kind, e.data) is not None for e in seen)
+
+
+def test_a_coordinator_rejects_a_bid_whose_body_cannot_do_the_role() -> None:
+    """A role's physical needs are judged from what the bid itself carried, so a robot the
+    coordinator does not run is held to the same standard as one it does."""
+    from quackd.adapters.manifest import Datasheet, Figure
+    from quackd.duckfile.schema import FlockRole
+    from quackd.flock.coordinator import FlockCoordinator
+    from quackd.flock.messages import FlockTask
+
+    def sheet(payload: float | None) -> dict[str, Any]:
+        figure = (
+            Figure(value=payload, confidence="official", source="the docs")
+            if payload is not None
+            else None
+        )
+        return Datasheet(manipulator="gripper", arms=1, payload_kg=figure).model_dump(mode="json")
+
+    events: list[tuple[str, dict[str, Any]]] = []
+    verbs = ["observe", "gaze", "go_to", "kick"]
+    roles = {
+        "spotter": FlockRole(requires=["observe", "gaze"]),
+        "kicker": FlockRole(requires=["go_to", "kick"], needs={"payload_kg": 1.0}),
+    }
+    now = NS(t=0.0)
+    coord = FlockCoordinator(
+        task=FlockTask(task_id="t", name="n", goal="g", roles=roles),
+        members={
+            name: NS(transport=NS(mobility="wheeled"), provides=verbs)
+            for name in ("light", "strong", "eye")
+        },
+        wedges={},
+        bus=InProcessBus(),
+        clock=NS(now=lambda: now.t),
+        transcript=NS(write=lambda *a, **k: None),
+        on_event=lambda kind, data: events.append((kind, data)),
+    )
+
+    # nearest, but it cannot carry: rejected, and told exactly what it lacks
+    coord._dispatch(
+        BidMsg(
+            t=0.0,
+            src="light",
+            task_id="t",
+            ball_dist_m=0.3,
+            role="kicker",
+            provides=verbs,
+            datasheet=sheet(0.5),
+            mobility="wheeled",
+        )
+    )
+    rejected = [d for kind, d in events if kind == "bid_rejected"]
+    assert rejected == [
+        {"src": "light", "role": "kicker", "missing": ["payload_kg >= 1 (has 0.5)"]}
+    ]
+
+    # a bid that says nothing about its body is a body that said nothing
+    coord._dispatch(
+        BidMsg(t=0.0, src="light", task_id="t", ball_dist_m=0.3, role="kicker", provides=verbs)
+    )
+    assert [d for kind, d in events if kind == "bid_rejected"][-1]["missing"] == [
+        "payload_kg >= 1 (not published)"
+    ]
+
+    # the further robot that can carry wins it, and the spotter role is unaffected
+    for src, dist, role, payload in (
+        ("strong", 0.9, "kicker", 1.0),
+        ("eye", 0.4, "spotter", None),
+    ):
+        coord._dispatch(
+            BidMsg(
+                t=0.0,
+                src=src,
+                task_id="t",
+                ball_dist_m=dist,
+                role=role,
+                provides=verbs,
+                datasheet=sheet(payload),
+                mobility="wheeled",
+            )
+        )
+    now.t = 0.5
+    coord._decide_roles_if_due()
+    assert coord.assignments == {"kicker": "strong", "spotter": "eye"}

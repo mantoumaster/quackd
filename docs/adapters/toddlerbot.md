@@ -87,6 +87,19 @@ file, so none of it was ever machine-verified by anyone.
 - **Report a position.** The observation carries motor positions and an orientation. There is
   no odometry, so `go_to` closes the loop on the camera alone.
 
+Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
+
+| | |
+|---|---|
+| Mass | 3.4 kg (official: arXiv:2502.00893) |
+| Height | 0.56 m (official: arXiv:2502.00893) |
+| Actuated joints | 30 (official: arXiv:2502.00893) |
+| Payload | 1.484 kg (official: arXiv:2502.00893; the whole body with both arms, 40 percent of its own weight; per arm is not published) |
+| Endurance | 19 min (official: the ToddlerBot project site; about) |
+| Not published | reach |
+
+A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
 ## The verbs this robot brings
 
 The core verbs come from the registry. These four are the robot's own.

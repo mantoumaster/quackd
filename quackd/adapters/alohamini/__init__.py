@@ -39,6 +39,8 @@ from quackd.adapters.alohamini.verbs import (
     joints_for,
 )
 from quackd.adapters.manifest import (
+    Datasheet,
+    Figure,
     Frame,
     Health,
     RobotManifest,
@@ -68,6 +70,35 @@ coarse bursts between corrections."""
 BLURB = (
     "a two-armed robot on a wheeled base, with a motorised lift that raises both arms from "
     "the floor to table height"
+)
+
+DATASHEET = Datasheet(
+    dof=Figure(
+        value=14,
+        confidence="official",
+        source="the AlohaMini2 README",
+        note="six joints and a gripper per arm; the lift and the base are on top of that",
+    ),
+    payload_kg=Figure(
+        value=1.0, confidence="official", source="the AlohaMini2 README", note="per arm"
+    ),
+    reach_m=Figure(value=0.52, confidence="official", source="the AlohaMini2 README"),
+    manipulator="gripper",
+    arms=2,
+    tethered=False,
+    terrain="indoor_flat",
+    not_rated=["stairs", "steps", "slopes"],
+    cannot=[
+        "hold more than 1 kg in one hand",
+        "reach further than about half a metre from an arm's base",
+        "see depth: five colour cameras, no depth sensor and no lidar",
+    ],
+    notes=[
+        "The base carries a static load of 70 kg and the lift column 30 kg, which is what it "
+        "rides on, not what the hands can hold",
+        "Mass, driving speed, battery runtime and whether there is an IMU are not published; it "
+        "runs on two 12 V 11.2 Ah packs",
+    ],
 )
 _MOVE_DESCRIPTION = (
     "Drive with a velocity for a duration: vx forward m/s, vy left m/s (this base can slide "
@@ -165,6 +196,7 @@ def alohamini_manifest(
         },
         backend=backend,
         blurb=BLURB,
+        datasheet=DATASHEET,
         extras={
             "robot_model": model,
             "joints": list(joints_for(model)) if arms else [],

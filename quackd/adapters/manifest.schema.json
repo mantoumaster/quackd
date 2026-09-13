@@ -2,6 +2,211 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/rokbenko/quackd/blob/main/quackd/adapters/manifest.schema.json",
   "$defs": {
+    "Datasheet": {
+      "additionalProperties": false,
+      "description": "The body as numbers, with how sure quackd is of each, and the things it cannot do.\n\nSpeeds are not here: `RobotManifest.limits` is what quackd clamps to, and the prompt\nrenders those as clamps. `None` means not published, and the prompt says so in those words\nand tells the pilot to decline whatever hinges on it (refuse by default). The same\ndatasheet describes a body on every backend: sim2d, mock or real, the body is the body,\nwhich is what keeps digests equal across backends.",
+      "properties": {
+        "mass_kg": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Figure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "height_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Figure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dof": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Figure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Actuated joints, counted."
+        },
+        "payload_kg": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Figure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What one hand, the beak or the whole body can hold; the note says which."
+        },
+        "reach_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Figure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Arm base to fingertips."
+        },
+        "workspace_height_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Span"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The band of heights the hands can work at."
+        },
+        "endurance_min": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Figure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Minutes on a charge."
+        },
+        "manipulator": {
+          "description": "What quackd can command that touches an object.",
+          "enum": [
+            "none",
+            "beak",
+            "gripper",
+            "arms"
+          ],
+          "title": "Manipulator",
+          "type": "string"
+        },
+        "arms": {
+          "default": 0,
+          "maximum": 4,
+          "minimum": 0,
+          "title": "Arms",
+          "type": "integer"
+        },
+        "tethered": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: mains powered, nothing to run down. False: a battery. None: not published.",
+          "title": "Tethered"
+        },
+        "terrain": {
+          "anyOf": [
+            {
+              "enum": [
+                "indoor_flat",
+                "indoor",
+                "outdoor"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What it is rated for. None: not published; the prompt says to assume a flat indoor floor and decline the rest.",
+          "title": "Terrain"
+        },
+        "not_rated": {
+          "description": "What it is not rated for: stairs, steps, slopes.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Rated",
+          "type": "array"
+        },
+        "cannot": {
+          "description": "Categorical: what it cannot do whatever the task says, one sentence each.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Cannot",
+          "type": "array"
+        },
+        "notes": {
+          "description": "Worth reading before planning, one sentence each.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "manipulator"
+      ],
+      "title": "Datasheet",
+      "type": "object"
+    },
+    "Figure": {
+      "additionalProperties": false,
+      "description": "One physical number, how sure quackd is of it, and who says so.\n\nA figure without a source is a rumour, so `source` is required. The pilot reads all three:\n\"0.5 kg (estimate: one vendor's listing)\" is a different instruction from \"0.5 kg\n(official: the maker's datasheet)\".",
+      "properties": {
+        "value": {
+          "minimum": 0,
+          "title": "Value",
+          "type": "number"
+        },
+        "confidence": {
+          "enum": [
+            "official",
+            "estimate",
+            "measured"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "source": {
+          "description": "Who says so: 'Pollen Robotics README', 'arXiv:2502.00893', 'the task file'.",
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "description": "Read with the number: 'per arm', 'a software cap'.",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "confidence",
+        "source"
+      ],
+      "title": "Figure",
+      "type": "object"
+    },
     "Frame": {
       "additionalProperties": false,
       "properties": {
@@ -56,6 +261,49 @@
         }
       },
       "title": "SafetyAuthority",
+      "type": "object"
+    },
+    "Span": {
+      "additionalProperties": false,
+      "description": "A band rather than a point: the heights the hands can work at.",
+      "properties": {
+        "low": {
+          "minimum": 0,
+          "title": "Low",
+          "type": "number"
+        },
+        "high": {
+          "minimum": 0,
+          "title": "High",
+          "type": "number"
+        },
+        "confidence": {
+          "enum": [
+            "official",
+            "estimate",
+            "measured"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "low",
+        "high",
+        "confidence",
+        "source"
+      ],
+      "title": "Span",
       "type": "object"
     },
     "VerbSpec": {
@@ -232,6 +480,18 @@
       "description": "Prompt intro: 'a small biped duck robot ...'.",
       "title": "Blurb",
       "type": "string"
+    },
+    "datasheet": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Datasheet"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Physical facts with a confidence and a source each (docs/manifest-spec.md). None: the adapter published none, and the prompt says so."
     },
     "extras": {
       "additionalProperties": true,

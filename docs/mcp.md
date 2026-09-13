@@ -29,14 +29,15 @@ stays the fast way in and is what the configs below use.
 
 ## Tools
 
-Eight `robot_*` tools. `robot` is the name from `--robots name=<adapter>:<backend>`; omit
+Nine `robot_*` tools. `robot` is the name from `--robots name=<adapter>:<backend>`; omit
 it (or pass `null`) to address the default robot, which is the only robot when there is
 one, else the first Microduck, else the first declared.
 
 | Tool | What it does |
 |---|---|
-| `robot_list` | Every robot this server fronts: name, adapter, backend, vendor, model, embodiment, mobility, manifest id and digest, loaded contract, health, and which one is the default. Call this first. |
+| `robot_list` | Every robot this server fronts: name, adapter, backend, vendor, model, embodiment, mobility, manifest id and digest, its `datasheet` as data and as one paragraph of `datasheet_text`, loaded contract, health, and which one is the default. Call this first. |
 | `robot_list_verbs(robot?)` | That robot's verbs from its own manifest: params, safety class, `canonical` name and `aliases`, whether it is `core`, and whether its current contract allows it. |
+| `robot_assess_task(robot?, verdict, reason, limits_consulted?, estimates?, needs?)` | Your verdict on whether that body can do the task, judged against the datasheet in its `robot_list` row: `feasible`, `infeasible` or `uncertain`. Required before the first verb that moves the body, and `robot_run_verb` refuses anything that does until you answer (the `verdict` gate). An `infeasible` answer names, in `could`, the robots here whose datasheets meet what the task needs, so it can be handed over. `uncertain` stays pending: there is no terminal to ask on, so ask the person you are chatting with and answer again. Moves nothing and costs no step. |
 | `robot_run_verb(robot?, verb, params?)` | Run any verb through that robot's executor (`search_scan`, `go_to` or its alias `walk_to`, `kick`, `gaze`, `express`, …). Refusals come back as `ok: false`, and a verb the manifest does not list is a refusal too. The result carries a `trace` list of what happened behind it (see below). |
 | `robot_observe(robot?)` | The `observe` verb through the executor (it counts against the budget), returning the camera frame as a PNG image, a one-line detection summary, and the trace as a final text block. |
 | `robot_say(robot?, text)` | The `say` verb, with a `trace` like `robot_run_verb`. No robot here has text to speech, so it degrades: one of seven tones on a Microduck, one of the duck's own sounds on an Open Duck. A robot without a `sound` intent refuses with `ok: false`. |
@@ -55,7 +56,7 @@ with `quackd run flock-kick` instead ([flock.md](flock.md)).
 
 ## What the trace shows
 
-Every call to `robot_run_verb`, `robot_observe` and `robot_say` comes back with a `trace`:
+Every call to `robot_run_verb`, `robot_observe`, `robot_say` and `robot_assess_task` comes back with a `trace`:
 a short list of plain lines saying what happened behind it, whether or not the call ever
 reached the executor. A call the session refused still says why it was refused.
 `robot_observe` returns the same thing as a final text block, because that tool answers with
@@ -79,7 +80,9 @@ done    ok in 2.6 s sim, 0.2 s wall budget: step 2/40, llm calls 0/40, 0.1/5 min
 A `gate` line appears whenever a rule fires, and says which one: `gate allowlist: refused
 verb 'kick' is not in this duck's allowlist (quack, walk, stop)`. That is the difference
 between a refusal you can act on and an `ok: false` you cannot. The executor's gates are
-listed in [architecture.md](architecture.md). Two more belong to the server itself:
+listed in [architecture.md](architecture.md), `verdict` among them: it refuses every verb
+that moves the body until `robot_assess_task` has recorded a feasible answer, and loading a
+`.duck` starts a new task and shuts it again. Two more belong to the server itself:
 `session_aborted` when that robot's session has already aborted, either its heartbeat gave
 up or a contract's `abort_when` fired, and every further call except `stop` is refused,
 and `no_sound_intent` when `robot_say` reaches a body with nothing to say it with.
@@ -230,7 +233,7 @@ against a real duck: [adapters/open_duck.md](adapters/open_duck.md) and its
 
 1. `claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d` (≈20 s, first run downloads quackd)
 2. Open Claude Code in any folder and ask: **"Use the quackd tools. List the verbs, grab a frame, then find the ball and kick it. Quack when you're done."**
-3. Watch it call `robot_list` → `robot_list_verbs` → `robot_observe` → `robot_run_verb("search_scan")` → `robot_run_verb("go_to")` → `robot_run_verb("kick")` → `robot_say`.
+3. Watch it call `robot_list` → `robot_list_verbs` → `robot_observe` → `robot_assess_task` → `robot_run_verb("search_scan")` → `robot_run_verb("go_to")` → `robot_run_verb("kick")` → `robot_say`.
 4. Ask: **"Load ducks/patrol-and-quack.duck and follow it."** — now the allowlist and budgets apply, and the model has the task body as instructions.
 
 ## Safety in an MCP session

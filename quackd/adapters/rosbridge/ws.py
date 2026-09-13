@@ -15,6 +15,7 @@ import asyncio
 import base64
 import contextlib
 import io
+import json
 import math
 import threading
 import time
@@ -27,12 +28,38 @@ from PIL import Image
 
 from quackd.adapters.base import AdapterNotInstalled
 from quackd.adapters.rosbridge import upstream_api as up
+from quackd.adapters.rosbridge.introspection import (
+    Introspection,
+    Source,
+    UrdfSummary,
+    parse_urdf,
+)
 from quackd.transport.base import Ack, DuckState, HeartbeatError, Intent, TransportError
 
 STATUS = "EXPERIMENTAL: roslibpy and rosbridge names verified at pinned commits, never run"
 DEFAULT_ADDRESS = "ws://localhost:9090"
 DEFAULT_CMD_VEL = "/cmd_vel"
 DEFAULT_ODOM = "/odom"
+DEFAULT_URDF_PARAM = up.DESCRIPTION_PARAM.name
+DEFAULT_URDF_TOPIC = up.DESCRIPTION_TOPIC.name
+OFF = "off"
+"""What either URDF source is set to in the address when a bridge should not be asked."""
+
+
+def _off(value: str) -> str | None:
+    return None if value == OFF else value
+
+
+def _param_text(value: Any) -> str:
+    """A parameter arrives JSON-encoded (`upstream_api.PARAM_VALUE_JSON`), so a description is
+    a quoted string. A bridge that sends it raw is taken at its word rather than refused."""
+    if not isinstance(value, str):
+        return ""
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return value
+    return decoded if isinstance(decoded, str) else value
 
 
 @dataclass(frozen=True)
@@ -43,6 +70,8 @@ class Endpoint:
     cmd_vel: str
     odom: str
     image: str | None
+    urdf_param: str | None
+    urdf_topic: str | None
 
     @property
     def url(self) -> str:
@@ -55,9 +84,14 @@ def parse_address(address: str | None) -> Endpoint:
     if parts.scheme not in ("ws", "wss"):
         raise TransportError(f"rosbridge address must start with ws:// or wss://, not {address!r}")
     query = {k: v[-1] for k, v in parse_qs(parts.query).items()}
-    for key in ("cmd_vel", "odom", "image"):
-        if key in query and not query[key].startswith("/"):
+    for key in ("cmd_vel", "odom", "image", "urdf_topic"):
+        if key in query and query[key] != OFF and not query[key].startswith("/"):
             raise TransportError(f"rosbridge topic {key}={query[key]!r} must start with /")
+    if (param := query.get("urdf_param", DEFAULT_URDF_PARAM)) != OFF and not param.startswith("/"):
+        raise TransportError(
+            f"rosbridge urdf_param={param!r} must start with / and name a node and a parameter, "
+            f"as in {DEFAULT_URDF_PARAM}"
+        )
     return Endpoint(
         host=parts.hostname or "localhost",
         port=parts.port or 9090,
@@ -65,6 +99,8 @@ def parse_address(address: str | None) -> Endpoint:
         cmd_vel=query.get("cmd_vel", DEFAULT_CMD_VEL),
         odom=query.get("odom", DEFAULT_ODOM),
         image=query.get("image"),
+        urdf_param=_off(query.get("urdf_param", DEFAULT_URDF_PARAM)),
+        urdf_topic=_off(query.get("urdf_topic", DEFAULT_URDF_TOPIC)),
     )
 
 
@@ -93,7 +129,14 @@ class RosLike(Protocol):
     def terminate(self) -> Any: ...
 
 
+class ServiceLike(Protocol):
+    """The slice of `roslibpy.Service` the backend uses: one blocking call with a deadline."""
+
+    def call(self, args: dict[str, Any], *, timeout: float) -> dict[str, Any]: ...
+
+
 TopicFactory = Callable[[Any, str, str], TopicLike]
+ServiceFactory = Callable[[Any, str, str], ServiceLike]
 
 
 def twist_message(vx: float, vy: float, wz: float) -> dict[str, Any]:
@@ -137,12 +180,16 @@ class RosbridgeWs:
         *,
         ros: RosLike | None = None,
         topic_factory: TopicFactory | None = None,
+        service_factory: ServiceFactory | None = None,
         timeout_s: float = 5.0,
     ) -> None:
         self.endpoint = parse_address(address)
         self.timeout_s = timeout_s
         self._ros: Any = ros  # injected in tests; built in connect() otherwise
         self._topic_factory = topic_factory
+        self._service_factory = service_factory
+        self.introspection: Introspection | None = None
+        """What the bridge last said about the body under it. None until `connect`."""
         self._cmd: TopicLike | None = None
         self._odom: TopicLike | None = None
         self._image: TopicLike | None = None
@@ -162,7 +209,7 @@ class RosbridgeWs:
 
     # ── plumbing ────────────────────────────────────────────────────────────────────
 
-    def _build(self) -> tuple[Any, TopicFactory]:
+    def _build(self) -> tuple[Any, TopicFactory, ServiceFactory]:
         try:
             import roslibpy
         except ImportError as e:
@@ -174,7 +221,18 @@ class RosbridgeWs:
             topic: TopicLike = roslibpy.Topic(client, name, message_type, compression="none")
             return topic
 
-        return ros, factory
+        def services(client: Any, name: str, service_type: str) -> ServiceLike:
+            service = roslibpy.Service(client, name, service_type)
+
+            class _Call:
+                def call(self, args: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+                    # no callback, so this blocks until the answer or the deadline
+                    answer = service.call(roslibpy.ServiceRequest(args), timeout=timeout)
+                    return dict(answer) if answer is not None else {}
+
+            return _Call()
+
+        return ros, factory, services
 
     def _on_odom(self, message: dict[str, Any]) -> None:  # roslibpy's thread
         with self._lock:
@@ -188,10 +246,14 @@ class RosbridgeWs:
 
     async def connect(self) -> None:
         self._closed = False
+        # only when nothing was injected: a test that hands over a ros and a topic factory but
+        # no service factory gets a connection that drives and an introspection that says it
+        # could not ask, which is exactly what a bridge without rosapi looks like
         if self._ros is None or self._topic_factory is None:
-            ros, factory = await asyncio.to_thread(self._build)
+            ros, factory, services = await asyncio.to_thread(self._build)
             self._ros = self._ros or ros
             self._topic_factory = self._topic_factory or factory
+            self._service_factory = self._service_factory or services
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(self._ros.run, self.timeout_s), timeout=self.timeout_s + 1.0
@@ -205,6 +267,122 @@ class RosbridgeWs:
         if self.endpoint.image is not None:
             self._image = make(self._ros, self.endpoint.image, up.MSG_COMPRESSED_IMAGE.name)
             self._image.subscribe(self._on_image)
+        try:
+            self.introspection = await self.introspect()
+        except Exception as e:
+            # a bridge that will not describe the body is still a bridge that drives it; the
+            # datasheet says nothing was discovered and the pilot declines what hinges on it
+            self.introspection = Introspection.from_urdf(
+                None, errors=(f"introspection failed: {type(e).__name__}: {e}",)
+            )
+
+    async def _bounded(
+        self, work: Callable[[], Any], seconds: float, what: str, errors: list[str]
+    ) -> Any:
+        """Run one blocking call with a deadline. A failure is a line in `errors`, never a
+        raise: a bridge that will not answer about the body is still a bridge that drives."""
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(work), seconds)
+        except TimeoutError:
+            errors.append(f"{what}: no answer within {seconds:.0f} s")
+        except Exception as e:
+            errors.append(f"{what}: {type(e).__name__}: {e}")
+        return None
+
+    def _service(self, name: str, service_type: str) -> ServiceLike:
+        if self._ros is None or self._service_factory is None:
+            raise TransportError("rosbridge ws: not connected")
+        return self._service_factory(self._ros, name, service_type)
+
+    async def introspect(self) -> Introspection:
+        """Ask the bridge what this body is: the topic list, then the robot's description.
+
+        One deadline covers all of it, so introspection can add at most `timeout_s` to a
+        connect. The description is looked for on the parameter first and on the topic second,
+        because a parameter answers at once while a topic only answers if somebody publishes;
+        either can be turned off in the address."""
+        if self._ros is None:
+            raise TransportError("rosbridge ws: not connected")
+        deadline = time.monotonic() + self.timeout_s
+        errors: list[str] = []
+
+        def left() -> float:
+            return max(0.2, deadline - time.monotonic())
+
+        topics: dict[str, str] = {}
+        listing = self._service(up.SVC_TOPICS.name, up.SRV_TOPICS.name)
+        answer = await self._bounded(
+            lambda: listing.call({}, timeout=left()), left(), up.SVC_TOPICS.name, errors
+        )
+        if isinstance(answer, dict):
+            names, types = answer.get("topics") or [], answer.get("types") or []
+            topics = dict(zip(names, types, strict=False))
+
+        summary: UrdfSummary | None = None
+        source: Source | None = None
+        where: str | None = None
+
+        if (param := self.endpoint.urdf_param) is not None:
+            service = self._service(up.SVC_GET_PARAM.name, up.SRV_GET_PARAM.name)
+            answer = await self._bounded(
+                lambda: service.call({"name": param, "default_value": ""}, timeout=left()),
+                left(),
+                f"{up.SVC_GET_PARAM.name} {param}",
+                errors,
+            )
+            if isinstance(answer, dict):
+                if answer.get("successful") is False:
+                    errors.append(f"{param}: {answer.get('reason') or 'the bridge said no'}")
+                elif text := _param_text(answer.get("value")):
+                    summary, source, where = parse_urdf(text), "param", param
+
+        if summary is None and (topic_name := self.endpoint.urdf_topic) is not None:
+            summary, source, where = await self._read_description(topic_name, left(), errors)
+
+        intro = Introspection.from_urdf(
+            summary, topics=topics, source=source, where=where, errors=tuple(errors)
+        )
+        if not intro.discovered:
+            intro = Introspection.from_urdf(
+                None, errors=(*errors, "nothing discovered on the bridge")
+            )
+        return intro
+
+    async def _read_description(
+        self, topic_name: str, seconds: float, errors: list[str]
+    ) -> tuple[UrdfSummary | None, Source | None, str | None]:
+        """The second place a description hides: a latched topic.
+
+        `robot_state_publisher` publishes it transient-local, and rosbridge's own subscriber
+        follows a transient-local publisher, so a subscription made now can still see a
+        message sent at startup (`upstream_api.SUBSCRIBER_QOS_FOLLOWS_PUBLISHERS`)."""
+        make = self._topic_factory
+        if make is None or self._ros is None:
+            return None, None, None
+        arrived = threading.Event()
+        box: dict[str, Any] = {}
+        topic = make(self._ros, topic_name, up.MSG_STRING.name)
+
+        def on_message(message: dict[str, Any]) -> None:  # roslibpy's thread
+            box.update(message)
+            arrived.set()
+
+        topic.subscribe(on_message)
+        try:
+            await self._bounded(
+                lambda: arrived.wait(seconds), seconds, f"a message on {topic_name}", errors
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                topic.unsubscribe()
+        if not arrived.is_set():
+            errors.append(
+                f"nothing published on {topic_name} within {seconds:.0f} s; "
+                "it is published transient-local, and a subscription only inherits that when "
+                "every publisher on the topic has it"
+            )
+            return None, None, None
+        return parse_urdf(str(box.get("data", ""))), "topic", topic_name
 
     async def close(self) -> None:
         self._closed = True
@@ -247,6 +425,7 @@ class RosbridgeWs:
             x, y = float(position.get("x", 0.0)), float(position.get("y", 0.0))
             theta = yaw_from_quaternion(dict(pose.get("orientation", {})))
         vx, vy, wz = self.last_twist
+        intro = self.introspection
         return DuckState(
             t=self.now(),
             policy="idle",
@@ -259,9 +438,29 @@ class RosbridgeWs:
             extras={
                 "odom_seen": odom is not None,
                 "twist": {"vx": vx, "vy": vy, "wz": wz},
-                "assumptions": [up.NO_DEADMAN.name, up.TWIST_UNITS.name, up.ODOM_YAW.name],
+                "assumptions": self._assumptions(),
+                "introspection": {
+                    "discovered": intro.discovered if intro else False,
+                    "source": intro.source if intro else None,
+                    "topics": len(intro.topics) if intro else 0,
+                    "urdf": intro.urdf_name if intro else None,
+                    "errors": list(intro.errors) if intro else [],
+                },
             },
         )
+
+    def _assumptions(self) -> list[str]:
+        """What quackd is standing in for, in the robot's own observation. A description read
+        off the bridge adds two more, because both are readings of somebody else's file."""
+        names = [
+            up.NO_DEADMAN.name,
+            up.TWIST_UNITS.name,
+            up.ODOM_YAW.name,
+            up.DESCRIPTION_NAMES.name,
+        ]
+        if self.introspection is not None and self.introspection.source is not None:
+            names += [up.URDF_MASS_IS_THE_BODY.name, up.DOF_IS_NON_FIXED_JOINTS.name]
+        return names
 
     async def send_intent(self, intent: Intent) -> Ack:
         p = intent.params

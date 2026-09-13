@@ -506,6 +506,25 @@ def _scripted_thinking(obs: Observation, step: int, call: ToolCall) -> str:
     )
 
 
+AUTO_VERDICT = ToolCall(
+    name="assess_task",
+    arguments={
+        "verdict": "feasible",
+        "reason": "scripted pilot: a rule has no judgement of the body, so it assumes the "
+        "task fits",
+        "limits_consulted": [],
+        "estimates": [],
+        "needs": {},
+    },
+)
+"""What the rule answers when a run offers it `assess_task`.
+
+A strategy is a rule, not a judgement: it cannot look at a pile of clothes and weigh it. So it
+says so in the reason, and the record shows a scripted verdict rather than a considered one.
+Emitted only when the tool is actually offered, which is why `tests/test_fake_provider.py`,
+which calls `step` with no tools at all, reads exactly as it did."""
+
+
 class FakeProvider:
     name = "fake"
     supports_vision = False
@@ -542,7 +561,15 @@ class FakeProvider:
         self, system: str, history: list[Exchange], tools: list[dict[str, Any]]
     ) -> ProviderTurn:
         obs = history[-1].observation
-        decisions = sum(1 for ex in history if ex.decision is not None)
+        assessed = [
+            ex
+            for ex in history
+            if ex.decision is not None and ex.decision.tool_call.name == AUTO_VERDICT.name
+        ]
+        auto = [ex for ex in assessed if ex.decision.tool_call.id.startswith("fake-auto")]  # type: ignore[union-attr]
+        # the script is indexed by the pilot's own decisions: a verdict the rule inserted is
+        # not one of them, so a scripted run reads step for step as it did before the gate
+        decisions = sum(1 for ex in history if ex.decision is not None) - len(auto)
         if self._script is not None:
             call = self._script[min(decisions, len(self._script) - 1)]
         elif self._strategy is not None:
@@ -552,6 +579,16 @@ class FakeProvider:
                 name="declare_failure", arguments={"reason": "fake provider has no strategy"}
             )
         self.calls += 1
+        offered = any(t.get("name") == AUTO_VERDICT.name for t in tools)
+        if offered and not assessed and call.name != AUTO_VERDICT.name:
+            call = AUTO_VERDICT.model_copy(update={"id": f"fake-auto-{self.calls}"})
+            return ProviderTurn(
+                tool_calls=[call],
+                text=None,
+                usage=Usage(input_tokens=len(system) // 4 + len(obs.text) // 4, output_tokens=16),
+                stop_reason="tool_use",
+                thinking=_scripted_thinking(obs, decisions, call),
+            )
         call = call.model_copy(update={"id": f"fake-{self.calls}"})
         usage = Usage(input_tokens=len(system) // 4 + len(obs.text) // 4, output_tokens=16)
         # No `text` and no `reasoning_tokens`: a rule has nothing to say to the human and

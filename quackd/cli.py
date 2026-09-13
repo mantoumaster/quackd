@@ -122,6 +122,10 @@ def _verbose_line(msg: str) -> None:
     ui.err_console.print(msg, style="dim", markup=False, highlight=False, soft_wrap=True)
 
 
+EXIT_INFEASIBLE = 3
+"""`quackd run` when the pilot judged the task beyond this body and nothing moved."""
+
+
 def _print_outcome(
     outcome: str,
     reason: str,
@@ -507,11 +511,23 @@ def list_models_cmd(
 # ── run / record ────────────────────────────────────────────────────────────────────────
 
 
+def _yes_to_go(_why: str) -> bool:
+    """`--yes` answers the pilot's doubt the way it answers a confirm gate: go."""
+    return True
+
+
 def _confirm_prompt(name: str, params: dict[str, Any]) -> bool:
     # under a running status line the question is invisible: a live region redirects stdout
     # and a prompt writes without a newline, so it stays buffered until it is too late
     with ui.pause_status():
         return typer.confirm(f"run {name}({params})?", default=False)
+
+
+def _decide_prompt(why: str) -> bool:
+    """Asked when the pilot says it is not sure this body can do the task at all."""
+    with ui.pause_status():
+        ui.err_console.print(Text(why, style=ui.STYLES["warn"]))
+        return typer.confirm("Go ahead anyway?", default=False)
 
 
 def _acknowledge_prompt(why: str) -> bool:
@@ -702,6 +718,7 @@ def _run_impl(
         memory=robot_memory,
         fov_deg=fov_deg,
         acknowledge=None if yes else _acknowledge_prompt,
+        decide=_yes_to_go if yes else _decide_prompt,
         trace=fan_out(console_trace, status.sink),
     )
     ui.console.print(
@@ -757,6 +774,10 @@ def _run_impl(
         gif_path=result.gif_path,
         trace_dropped=result.trace_dropped,
     )
+    if result.outcome == "infeasible":
+        # its own code: 1 means the run happened and did not succeed, and a script trying one
+        # body after another branches on "this body could not, try the next"
+        raise typer.Exit(code=EXIT_INFEASIBLE)
     if result.outcome != "success":
         raise typer.Exit(code=1)
 
@@ -959,6 +980,10 @@ def _run_flock_impl(
         gif_path=result.gif_path,
         trace_dropped=result.trace_dropped,
     )
+    if result.outcome == "infeasible":
+        # its own code: 1 means the run happened and did not succeed, and a script trying one
+        # body after another branches on "this body could not, try the next"
+        raise typer.Exit(code=EXIT_INFEASIBLE)
     if result.outcome != "success":
         raise typer.Exit(code=1)
 
@@ -1483,7 +1508,7 @@ def serve_mcp(
     robots: str | None = typer.Option(
         None,
         "--robots",
-        help="A fleet: name=<adapter>:<backend>,... (eight robot_* tools, one executor each).",
+        help="A fleet: name=<adapter>:<backend>,... (nine robot_* tools, one executor each).",
     ),
     duckfile: str | None = typer.Option(
         None, "--duckfile", help="Load a .duck contract at startup (on the default robot)."

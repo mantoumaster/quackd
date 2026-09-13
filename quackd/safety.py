@@ -28,6 +28,7 @@ from quackd.perception.base import Detector
 from quackd.trace import TracedTransport, Tracer, counting
 from quackd.transport.base import DuckState, DuckTransport
 from quackd.verbs.registry import Verb, VerbContext, VerbNotFound, VerbRegistry, VerbResult
+from quackd.verdict import BEFORE_VERDICT, Verdict
 
 if TYPE_CHECKING:
     from quackd.adapters.manifest import RobotManifest
@@ -54,6 +55,13 @@ class Aborted(SafetyStop):
 
 class VerbNotAllowed(PermissionError):
     """Refused, but the run continues — the LLM is told and may choose differently."""
+
+
+class VerdictRequired(VerbNotAllowed):
+    """A verb that moves the body, before the pilot has said the task fits this body.
+
+    Refused like any other gate, and the run goes on: the pilot is told which tool records a
+    verdict, and may record one and try again."""
 
 
 class ConfirmDenied(PermissionError):
@@ -132,6 +140,11 @@ class Executor:
     history: list[tuple[str, dict[str, Any], VerbResult]] = field(default_factory=list)
     manifest: RobotManifest | None = None
     """The connected robot's manifest, handed to verbs so composites can pick a strategy."""
+    verdict: Verdict | None = None
+    """The pilot's latest word on whether this body can do the task it is on."""
+    require_verdict: bool = False
+    """On where an `assess_task` tool was offered: the agent loop and every MCP session. A
+    flock member is a state machine with no pilot to ask, so its executor never does."""
     trace: Tracer | None = None
     """Where the executor narrates itself: `verb_start`, every `gate` that fires, every
     `intent` a verb sends, `verb_end`. None is silent, which is what tests get."""
@@ -183,6 +196,11 @@ class Executor:
         if canonical == "stop":
             return True
         return canonical in {self.registry.canonical(a) for a in self.allowed}
+
+    @property
+    def cleared(self) -> bool:
+        """Whether a verb that moves the body may run."""
+        return self.verdict is not None and self.verdict.go
 
     def needs_confirm(self, verb: Verb) -> bool:
         if self.registry.canonical(verb.name) == "stop":
@@ -329,6 +347,19 @@ class Executor:
                 reason=f"unknown verb {name!r}",
             )
             raise VerbNotAllowed(f"unknown verb {name!r}") from None
+
+        if self.require_verdict and canonical not in BEFORE_VERDICT and not self.cleared:
+            why = (
+                self.verdict.blocking_reason()
+                if self.verdict is not None
+                else "no feasibility verdict has been recorded for this task yet"
+            )
+            reason = (
+                f"{name} moves the body, and {why}: record a verdict first "
+                "(feasible, infeasible or uncertain)"
+            )
+            self._emit("gate", name=name, gate="verdict", outcome="refused", reason=reason)
+            raise VerdictRequired(reason)
 
         try:
             parsed = verb.params.model_validate(params)

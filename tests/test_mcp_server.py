@@ -25,6 +25,8 @@ TOOLS = {
     "robot_list",
     "robot_list_verbs",
     "robot_run_verb",
+    # 0.9: the pilot says whether the body can do the task before it moves
+    "robot_assess_task",
     "robot_observe",
     "robot_say",
     "robot_load_duckfile",
@@ -55,6 +57,14 @@ async def connected(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+
+
+async def _cleared(client: Any, robot: str | None = None) -> dict[str, Any]:
+    """Record a feasible verdict, which is what the executor wants before anything moves."""
+    args: dict[str, Any] = {"verdict": "feasible", "reason": "a test: the body fits the task"}
+    if robot is not None:
+        args["robot"] = robot
+    return _data(await client.call_tool("robot_assess_task", args))
 
 
 def _data(result: Any) -> dict[str, Any]:
@@ -98,6 +108,7 @@ async def test_tools_and_basic_calls() -> None:
         assert state["ok"] and "standing" in state["summary"]
 
         before = (transport.world.duck.x, transport.world.duck.y)
+        assert (await _cleared(client))["verdict"] == "feasible"
         moved = _data(
             await client.call_tool(
                 "robot_run_verb", {"verb": "move", "params": {"vx": 0.2, "duration_s": 1.0}}
@@ -113,6 +124,7 @@ async def test_tools_and_basic_calls() -> None:
 
 async def test_contract_is_enforced_after_loading_a_duck() -> None:
     async with connected() as (client, _session, _transport):
+        await _cleared(client)
         assert _data(await client.call_tool("robot_run_verb", {"verb": "kick"}))["ok"] is True
         loaded = _data(await client.call_tool("robot_load_duckfile", {"path": "hello-world"}))
         assert loaded["ok"] and loaded["name"] == "hello-world"
@@ -173,6 +185,7 @@ async def test_load_duckfile_refuses_flock_ducks() -> None:
 
 async def test_dry_run_sends_nothing() -> None:
     async with connected(dry_run=True) as (client, _session, transport):
+        assert (await _cleared(client))["verdict"] == "feasible"
         res = _data(
             await client.call_tool(
                 "robot_run_verb", {"verb": "move", "params": {"vx": 0.2, "duration_s": 1.0}}
@@ -191,9 +204,11 @@ async def test_confirm_gated_verbs_need_yes() -> None:
         registry, LearnedVerbSpec(name="moonwalk", description="d", policy_path="m.onnx")
     )
     async with connected(registry=registry) as (client, _session, _transport):
+        await _cleared(client)
         res = _data(await client.call_tool("robot_run_verb", {"verb": "moonwalk"}))
         assert res["ok"] is False and "--yes" in res["summary"]
     async with connected(registry=registry, yes=True) as (client, _session, _transport):
+        await _cleared(client)
         res = _data(await client.call_tool("robot_run_verb", {"verb": "moonwalk"}))
         assert res["ok"] is False and "v2" in res["summary"]  # allowed through; no runner yet
 
@@ -213,6 +228,7 @@ async def test_a_call_comes_back_with_what_happened_behind_it() -> None:
     """Over MCP the model is the pilot, so its own reasoning is not quackd's to show. What
     quackd can see, it says: the verb, the intents, what came back, and how long it took."""
     async with connected() as (client, _session, _transport):
+        await _cleared(client)
         result = _data(
             await client.call_tool(
                 "robot_run_verb", {"verb": "move", "params": {"vx": 0.2, "duration_s": 1.0}}
@@ -268,6 +284,7 @@ async def test_two_calls_at_once_never_swap_traces() -> None:
     """The SDK runs every tool call as its own task. A buffer on the session would put one
     call's intents into the other call's result."""
     async with connected() as (client, _session, _transport):
+        await _cleared(client)
         slow, fast = await asyncio.gather(
             client.call_tool(
                 "robot_run_verb", {"verb": "move", "params": {"vx": 0.1, "duration_s": 2.0}}
@@ -356,6 +373,8 @@ async def test_cap_lines_at_the_real_defaults_through_a_long_call(caplog: Any) -
 
     caplog.set_level(logging.INFO, logger="quackd.mcp")
     async with connected() as (client, _session, _transport):
+        await _cleared(client)
+        caplog.clear()  # the verdict is not part of the call being measured
         # a full turn looking for something that is not there: sixteen turn-and-stop pairs,
         # and a burst is only coalesced while the kind stays the same
         result = _data(
@@ -416,3 +435,97 @@ async def test_stop_still_works_after_the_session_aborts() -> None:
         stopped = await client.call_tool("robot_run_verb", {"verb": "stop", "params": {}})
         assert _data(stopped)["ok"], "stop must survive the abort"
         assert "stopped" in _data(stopped)["summary"]
+
+
+async def test_nothing_moves_until_the_pilot_has_judged_the_task() -> None:
+    async with connected() as (client, session, transport):
+        refused = _data(
+            await client.call_tool(
+                "robot_run_verb", {"verb": "move", "params": {"vx": 0.2, "duration_s": 1.0}}
+            )
+        )
+        assert refused["ok"] is False
+        assert "robot_assess_task" in refused["summary"]
+        assert "moves the body" in refused["summary"]
+        assert any("verdict" in line for line in refused["trace"])
+        assert transport.world.steps == 0, "nothing was sent"
+
+        # looking and speaking are how a pilot works out what it is being asked to do
+        assert _data(await client.call_tool("robot_run_verb", {"verb": "report_state"}))["ok"]
+        assert _data(await client.call_tool("robot_run_verb", {"verb": "quack"}))["ok"]
+        assert _data(await client.call_tool("robot_run_verb", {"verb": "stop"}))["ok"]
+
+        assert (await _cleared(client))["note"] == "verbs that move the body now run."
+        assert _data(
+            await client.call_tool(
+                "robot_run_verb", {"verb": "move", "params": {"vx": 0.2, "duration_s": 1.0}}
+            )
+        )["ok"]
+        assert session.executor.verdict is not None
+
+
+async def test_a_new_task_file_is_a_new_question_about_the_body() -> None:
+    from quackd.adapters.factory import make_adapter
+
+    async with connected(make_adapter("microduck:sim2d", seed=1)) as (client, session, _t):
+        await _cleared(client)
+        loaded = _data(await client.call_tool("robot_load_duckfile", {"path": "hello-world"}))
+        assert loaded["ok"]
+        assert "assess it with robot_assess_task" in loaded["note"]
+        assert loaded["datasheet_text"].startswith("microduck: ")
+        assert session.executor.verdict is None
+        refused = _data(
+            await client.call_tool("robot_run_verb", {"verb": "walk", "params": {"vx": 0.1}})
+        )
+        assert refused["ok"] is False and "robot_assess_task" in refused["summary"]
+
+
+async def test_an_uncertain_verdict_waits_for_the_person_in_the_chat() -> None:
+    """`--yes` clears a confirm gate because there is no terminal to ask on. Here there is a
+    person, reachable through the model, which is a better answer than a flag."""
+    async with connected(yes=True) as (client, session, transport):
+        answer = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {
+                    "verdict": "uncertain",
+                    "reason": "the basket is out of frame, so its weight is a guess",
+                    "needs": {"payload_kg": 3.0},
+                },
+            )
+        )
+        assert answer["pending"] is True
+        assert "ask the person you are chatting with" in answer["note"]
+        refused = _data(
+            await client.call_tool("robot_run_verb", {"verb": "move", "params": {"vx": 0.1}})
+        )
+        assert refused["ok"] is False and "uncertain" in refused["summary"]
+        assert transport.world.steps == 0
+        assert session.executor.verdict is not None
+
+
+async def test_a_model_cannot_answer_for_the_human() -> None:
+    """The tool has no `human` field to fill in, so the pilot cannot clear its own doubt."""
+    async with connected() as (client, session, _transport):
+        tool = next(t for t in (await client.list_tools()).tools if t.name == "robot_assess_task")
+        assert "human" not in tool.input_schema["properties"]
+        answer = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {"verdict": "uncertain", "reason": "not sure", "human": "go"},
+            )
+        )
+        assert answer["pending"] is True, "an uncertain verdict stays uncertain"
+        assert session.executor.verdict is not None
+        assert session.executor.verdict.human is None
+        assert not session.executor.cleared
+
+
+async def test_the_robot_list_row_carries_the_body_as_data_and_as_a_sentence() -> None:
+    from quackd.adapters.factory import make_adapter
+
+    async with connected(make_adapter("microduck:sim2d", seed=1)) as (client, _s, _t):
+        row = _data(await client.call_tool("robot_list", {}))["robots"][0]
+        assert row["datasheet"]["mass_kg"]["value"] == 0.8
+        assert row["datasheet"]["payload_kg"] is None  # nobody published one
+        assert "a beak, no arms" in row["datasheet_text"]

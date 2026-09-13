@@ -48,7 +48,7 @@ sequenceDiagram
     A->>L: observation (text + image) + tool list
     L-->>A: exactly one tool call (e.g. go_to)
     A->>E: run_verb("go_to", params)
-    E->>E: allowlist · confirm · budget · abort_when · preconditions · dry-run
+    E->>E: allowlist · verdict · confirm · budget · abort_when · preconditions · dry-run
     E->>V: execute(ctx, params) with timeout
     loop 10 Hz steering
         V->>T: get_frame → detect → send_intent(move)
@@ -63,10 +63,11 @@ sequenceDiagram
 | Path | Why it exists |
 |---|---|
 | `quackd/cli.py` | The front door: `run · validate · doctor · serve-mcp · list-verbs · list-adapters · record · trace · memory · discover · announce`. `--robot <adapter>:<backend>` everywhere, with `--address`, `--camera-url` and `--token` for a real robot. |
-| `quackd/duckfile/` | The `.duck` contract (v0 and v1): strict pydantic frontmatter, parser, generated `schema.json`, `validate.py` (a task against one or more manifests). |
+| `quackd/duckfile/` | The `.duck` contract (v0, v1 and v2): strict pydantic frontmatter, parser, generated `schema.json`, `validate.py` (a task against one or more manifests). |
 | `quackd/adapters/` | `RobotManifest` (data: what a robot is and can do), the `RobotAdapter` protocol, the factory behind `--robot`, and one package per robot: `microduck/` wraps the five transports and declares its manifest and extension verbs; `lerobot/` is a desktop arm (`mock`, `real`, [adapters/lerobot.md](adapters/lerobot.md)); `rosbridge/` is any wheeled base over rosbridge (`mock`, `ws`, [adapters/rosbridge.md](adapters/rosbridge.md)); `open_duck/` is an Open Duck Mini v2 (`sim2d`, `mock`, `bridge`, [adapters/open_duck.md](adapters/open_duck.md)), the first body whose robot side quackd also ships, in `bridge/open_duck/`, because its runtime has no network control API; `xlerobot/` is a dual-arm mobile manipulator (`mock`, `zmq`, [adapters/xlerobot.md](adapters/xlerobot.md)), the first body with both a base and arms, and the one quackd talks to by speaking its ZeroMQ host protocol rather than importing it, because upstream is not an installable package; `alohamini/` is two arms on a lift on a wheeled base (`mock`, `sim2d`, `zmq`, [adapters/alohamini.md](adapters/alohamini.md)), which quackd also reaches by speaking its ZeroMQ host protocol; `toddlerbot/` is a small humanoid (`mock`, `sim2d`, `bridge`, [adapters/toddlerbot.md](adapters/toddlerbot.md)), the third body whose robot side quackd ships, because upstream has no network API at all. Every SDK-touching package owns an `upstream_api.py` and a containment test. |
 | `quackd/verbs/` | `core.py`: the verbs any robot can carry and what each requires; `aliases.py`: the one alias table; `registry.py`: built from a manifest at connect time; `learned.py`: the v2 interface. |
 | `quackd/safety.py` | The layer that does not trust the LLM: `Executor`, `Budget`, `Heartbeat`, `KillSwitch`. Preconditions arrive from the adapter; the executor spells none. |
+| `quackd/verdict.py` | Whether this body can do this task at all: the words a pilot says it in, which verbs wait for the answer, and the matcher that says which other body could. Read by the prompt, the executor, the loop, the MCP server and a flock role, so a refusal and a role are worded the same ([ADR-0032](adr/0032-datasheets-and-the-verdict.md)). |
 | `quackd/transport/` | The Microduck backend layer: the `DuckTransport` protocol; `sim2d`, `mujoco` (physics, needs `quackd[mujoco]`), `mock`, `jsonrpc` (experimental), `websocket` (stub); `upstream_api.py` is the only file allowed to spell a Microduck upstream method. |
 | `quackd/sim2d/` | The cartoon world, two renders (top-down, duck-cam), the GIF recorder, the optional live window. |
 | `quackd/sim3d/` | The physics world: the cartoon's arena minus its person, plus its seeds, deadman, kick cone and scoop, in MuJoCo. `world.py` steps a `Body`, and two exist, a kinematic puppet that needs no download and upstream's own Microduck model walking on upstream's own `alpha_walking.onnx` at 50 Hz. `assets.py` fetches the model and the policies at a pinned commit into `~/.quackd/cache` and checks every file against a recorded sha256; `upstream_api.py` is the only file allowed to spell a `microduck_rl` name ([ADR-0030](adr/0030-mujoco-physics-backend.md)). |
@@ -74,7 +75,7 @@ sequenceDiagram
 | `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
 | `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
 | `quackd/memory.py` | What a robot keeps between runs: one JSONL file per `adapter:backend` with the notes the pilot saved (`remember`) and an episode per run; rendered into the prompt next time ([memory.md](memory.md), ADR-0025). |
-| `quackd/mcp_server.py` | A robot, or a fleet (`--robots`), as MCP tools: eight `robot_*` tools through one executor per robot. |
+| `quackd/mcp_server.py` | A robot, or a fleet (`--robots`), as MCP tools: nine `robot_*` tools through one executor per robot. |
 | `bridge/toddlerbot/` | quackd's own ToddlerBot daemon: the fifty hertz loop upstream has no daemon for, plus the ten things it does not do at all, enumerated in the daemon's own docstring and in `bridge/toddlerbot/README.md` rather than a third time here. It owns the control loop rather than feeding one, which is true of no other body quackd drives. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0028](adr/0028-toddlerbot.md)). |
 | `bridge/alohamini/` | quackd's own AlohaMini host: upstream's host loop with the arm torque its own `configure()` disables and never re-enables, plus three fields in every observation so quackd can tell this host from a stock one. Never imports quackd, ships in the sdist and never in the wheel ([ADR-0027](adr/0027-alohamini.md)). |
 | `bridge/open_duck/` | **The first robot side quackd shipped**, and one of the three above. It has still never run on a duck, like everything else here. Two daemons for an Open Duck Mini v2's Raspberry Pi: the bridge, which is upstream's own walk loop with the gamepad it reads replaced by a socket, and the camera server, which serves one JPEG over HTTP. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0024](adr/0024-open-duck-mini.md)). |
@@ -95,7 +96,7 @@ sequenceDiagram
    earlier runs. Only the last two observations keep their images. The provider must return
    one tool call.
 3. **Enforce.** Zero tool calls → one re-prompt, then failure. Several → the first. Then
-   `Executor.run_verb`: abort flag → allowlist → params → confirm → budget → machine-enforced
+   `Executor.run_verb`: abort flag → allowlist → verdict → params → confirm → budget → machine-enforced
    `abort_when` → preconditions → dry-run → execute, racing the timeout against the abort.
    `stop` is exempt from the abort gate, so the brake still works after one.
 4. **Act.** The verb runs; composites loop on the camera at 10 Hz; `move` re-sends its
@@ -127,10 +128,11 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total), stop_reason, latency, or `error` when the call failed |
 | `enforce` | zero tool calls (re-prompt) or several (first only) |
 | `verb_start` | name as called, canonical name, params, source (`agent` · `mcp` · `cli`), whether it is nested inside a composite |
-| `gate` | one per executor rule that fired: `abort` · `allowlist` · `unknown` · `params` · `confirm` · `budget` · `abort_when` · `precondition` · `dry_run` · `cancelled`, with the reason and, where it matters, the robot state that caused it |
+| `gate` | one per executor rule that fired: `abort` · `allowlist` · `unknown` · `verdict` · `params` · `confirm` · `budget` · `abort_when` · `precondition` · `dry_run` · `cancelled`, with the reason and, where it matters, the robot state that caused it |
 | `intent` | every command sent to the robot: kind, params, whether it was accepted, and the robot's own clock when it has one |
 | `verb_end` | outcome (`ok` · `fail` · `refused` · `denied` · `budget` · `aborted` · `preempted` · `error`), summary, wall seconds, the robot's own seconds on a simulator, and how many intents of each kind it sent |
 | `verb` | the loop's own record of the call it made (name, params, ok, summary, data) |
+| `assess` | the pilot's feasibility verdict on this task against this body: the word, the reason, the datasheet fields it read, what it estimated about the world and how, what the task would need, whether a person cleared it, and whether the run ends there |
 | `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame, the summary (with `trace_dropped`: events a view raised on and never showed) |
 
 Example: [`assets/transcript-example.jsonl`](assets/transcript-example.jsonl), recorded

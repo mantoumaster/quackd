@@ -6,6 +6,11 @@ optionally a compressed image topic, and therefore `move`, `stop`, `report_state
 `observe`, `go_to`, `search_scan` and `approach_and` only when a camera topic is given.
 No `say`, no `gaze`. Two backends: `mock` (offline kinematics with deadman semantics) and
 `ws` (roslibpy behind `quackd[rosbridge]`, never run against a bridge by us).
+
+The name says nothing about the body, so this is the one adapter whose datasheet is not a
+constant: at connect it asks the bridge for the topic list and the robot's own description,
+and a mass and a count of moving joints come back from the URDF. What is not in a URDF, a
+payload above all, stays unknown, and `introspect` asks again (ADR-0032).
 """
 
 from __future__ import annotations
@@ -16,15 +21,31 @@ from typing import Any
 from PIL import Image
 
 from quackd.adapters.manifest import (
+    Datasheet,
     Frame,
     Health,
     RobotManifest,
     SafetyAuthority,
     verb_spec,
 )
-from quackd.transport.base import Ack, DuckState, DuckTransport, HeartbeatError, Intent
+from quackd.adapters.rosbridge.introspection import (
+    Introspection,
+    datasheet_from_introspection,
+)
+from quackd.adapters.rosbridge.verbs import rosbridge_verbs
+from quackd.transport.base import (
+    Ack,
+    DuckState,
+    DuckTransport,
+    HeartbeatError,
+    Intent,
+    TransportError,
+)
 from quackd.verbs.core import CORE
 from quackd.verbs.registry import Precondition, Verb
+
+OWN = rosbridge_verbs()
+"""The one verb that is this adapter's own: everything else here is a core verb."""
 
 BACKENDS = ("mock", "ws")
 DEFAULT_ID = "base-01"
@@ -33,6 +54,18 @@ MAX_WZ = 1.0
 BLURB = (
     "a small wheeled base driven over rosbridge (a ROS 2 robot that takes velocity "
     "commands and reports odometry)"
+)
+
+DATASHEET = Datasheet(
+    manipulator="none",
+    cannot=[
+        "carry, push or hold anything through quackd: this adapter commands a velocity and "
+        "nothing else",
+    ],
+    notes=[
+        "rosbridge is a software bridge: the name says nothing about the body under it. What is "
+        "unknown here is unknown, not zero",
+    ],
 )
 _MOVE_DESCRIPTION = (
     "Drive with a velocity for a duration: vx forward m/s, wz rad/s (+ = left). The base's "
@@ -51,12 +84,16 @@ def rosbridge_manifest(
     odom: str = "/odom",
     image: str | None = None,
     roslibpy_version: str | None = None,
+    datasheet: Datasheet | None = None,
 ) -> RobotManifest:
-    """The base as data. `camera` is whether an image topic is configured."""
+    """The base as data. `camera` is whether an image topic is configured, and `datasheet` is
+    what the bridge said about the body when it was asked (`introspection.py`); without one,
+    the static sheet says nothing is known, which is the honest answer for a name."""
     verbs = [
         verb_spec(CORE["report_state"], core=True),
         verb_spec(CORE["stop"], core=True),
         verb_spec(CORE["move"], core=True, description=_MOVE_DESCRIPTION),
+        verb_spec(OWN["introspect"], core=False),
     ]
     if camera:
         verbs = [
@@ -83,6 +120,7 @@ def rosbridge_manifest(
         limits={"max_vx": max_vx, "max_vy": 0.0, "max_wz": max_wz},
         backend=backend,
         blurb=BLURB,
+        datasheet=datasheet if datasheet is not None else DATASHEET,
         extras={
             "ros": "2",
             "cmd_vel": cmd_vel,
@@ -115,8 +153,22 @@ class RosbridgeAdapter:
             odom=getattr(endpoint, "odom", "/odom"),
             image=getattr(endpoint, "image", None),
             roslibpy_version=getattr(self.transport, "roslibpy_version", None),
+            datasheet=datasheet_from_introspection(
+                getattr(self.transport, "introspection", None), base=DATASHEET
+            ),
         )
         return self.manifest
+
+    async def introspect(self) -> Introspection:
+        """Re-read the bridge and refresh the datasheet in place, so a pilot that asks again
+        is judging against what the robot says now rather than what it said at connect."""
+        reread = getattr(self.transport, "introspect", None)
+        if reread is None:
+            raise TransportError(f"the {self.backend} backend cannot re-read a description")
+        intro: Introspection = await reread()
+        if self.manifest is not None:
+            self.manifest.datasheet = datasheet_from_introspection(intro, base=DATASHEET)
+        return intro
 
     async def disconnect(self) -> None:
         await self.transport.close()
@@ -160,7 +212,7 @@ class RosbridgeAdapter:
         return {}
 
     def implementations(self) -> dict[str, Verb]:
-        return {}  # every verb is a core verb here
+        return dict(OWN)  # one verb of its own: asking the bridge what the body is
 
     @property
     def mobility(self) -> str:
@@ -179,13 +231,23 @@ class RosbridgeAdapter:
 
 
 def describe(backend: str, robot_id: str | None = None) -> RobotManifest:
-    """Static: the mock serves a frame; the ws backend has a camera only when the address
-    names an image topic, which connect() finds out."""
-    return rosbridge_manifest(backend, robot_id, camera=backend == "mock")
+    """Static: the mock serves a frame and a canned description, so what it says here is what
+    a connected run reads. The ws backend knows nothing until it has asked a bridge: whether
+    there is a camera, and what the body is."""
+    if backend == "mock":
+        from quackd.adapters.rosbridge.mock import mock_introspection
+
+        return rosbridge_manifest(
+            backend,
+            robot_id,
+            camera=True,
+            datasheet=datasheet_from_introspection(mock_introspection(), base=DATASHEET),
+        )
+    return rosbridge_manifest(backend, robot_id, camera=False)
 
 
 def implementations() -> dict[str, Verb]:
-    return {}
+    return dict(OWN)
 
 
 def conditions() -> dict[str, Precondition]:

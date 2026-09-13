@@ -553,6 +553,29 @@ def render_events(
                 mark="ok" if won else "fail",
             )
         ]
+    if k == "assess":
+        word = d.get("verdict")
+        if not word:
+            return [TraceLine("assess", f"invalid: {d.get('summary')}", "red", mark="fail")]
+        text = f"{word}: {d.get('reason')}"
+        if d.get("human"):
+            text += " (the human said " + ("go" if d["human"] == "go" else "no") + ")"
+        if d.get("ends_run"):
+            text += " [the run ends before any motion]"
+        style, mark = {
+            "feasible": ("bold green", "ok"),
+            "uncertain": ("yellow", "warn"),
+        }.get(str(word), ("bold yellow", "warn"))
+        lines = [TraceLine("assess", text, style, mark=mark)]
+        if d.get("estimates"):
+            guessed = "; ".join(
+                f"{e['object']} {e['quantity']}={e['value']:g} ({e['basis']}, {e['confidence']})"
+                for e in d["estimates"]
+            )
+            lines.append(TraceLine("est", guessed, "dim"))
+        if d.get("needs"):
+            lines.append(TraceLine("needs", fmt_params(d["needs"]), "dim"))
+        return lines
     if k == "memory":
         return [TraceLine("memory", str(d.get("summary")), "cyan", mark="note")]
     if k == "note":

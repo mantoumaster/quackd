@@ -10,7 +10,15 @@ import pytest
 from pydantic import ValidationError
 
 import quackd.adapters
-from quackd.adapters.manifest import RobotManifest, VerbSpec, manifest_json_schema
+from quackd.adapters.manifest import (
+    Datasheet,
+    Figure,
+    RobotManifest,
+    Span,
+    VerbSpec,
+    apply_datasheet_override,
+    manifest_json_schema,
+)
 from quackd.adapters.microduck import microduck_manifest
 from quackd.verbs.registry import ManifestError, default_registry, registry_from_manifest
 
@@ -118,3 +126,91 @@ def test_manifest_schema_on_disk_is_current() -> None:
         )
     )
     assert on_disk == manifest_json_schema(), "run: uv run python -m quackd.adapters.export"
+
+
+# ── the datasheet ───────────────────────────────────────────────────────────────────────
+
+
+def test_a_figure_needs_a_source_and_a_known_confidence() -> None:
+    with pytest.raises(ValidationError, match="at least 1 character"):
+        Figure(value=1.0, confidence="official", source="")
+    with pytest.raises(ValidationError, match="confidence"):
+        Figure(value=1.0, confidence="hearsay", source="somebody")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        Figure(value=-1.0, confidence="official", source="somebody")
+
+
+def test_a_span_runs_low_to_high() -> None:
+    with pytest.raises(ValidationError, match="exceeds"):
+        Span(low=2.0, high=1.0, confidence="official", source="the docs")
+    assert (
+        Span(low=0.5, high=1.25, confidence="official", source="the docs")
+        .text("m")
+        .startswith("0.5 to 1.25 m")
+    )
+
+
+def test_datasheet_sentences_start_with_a_word() -> None:
+    # a leading backtick renders as the shape the prompt spells an offered verb with
+    with pytest.raises(ValidationError, match="start with a word"):
+        Datasheet(manipulator="none", cannot=["`move` is not for you"])
+    with pytest.raises(ValidationError, match="an empty sentence"):
+        Datasheet(manipulator="none", notes=["   "])
+    with pytest.raises(ValidationError, match="longer than 300 characters"):
+        Datasheet(manipulator="none", notes=["x " * 200])
+
+
+def test_hands_and_payload_have_to_agree() -> None:
+    with pytest.raises(ValidationError, match="no payload"):
+        Datasheet(
+            manipulator="none",
+            payload_kg=Figure(value=1.0, confidence="official", source="the docs"),
+        )
+    with pytest.raises(ValidationError, match="needs arms of at least 1"):
+        Datasheet(manipulator="gripper", arms=0)
+    with pytest.raises(ValidationError, match="arms without a manipulator"):
+        Datasheet(manipulator="none", arms=2)
+
+
+def test_the_datasheet_is_part_of_the_capability_fingerprint() -> None:
+    light = _manifest(datasheet=Datasheet(manipulator="none"))
+    heavy = _manifest(
+        datasheet=Datasheet(
+            manipulator="gripper",
+            arms=1,
+            payload_kg=Figure(value=1.0, confidence="official", source="the docs"),
+        )
+    )
+    assert light.digest() != heavy.digest()
+
+
+def test_the_task_file_replaces_figures_and_only_ever_adds_sentences() -> None:
+    from quackd.duckfile.schema import DatasheetOverride
+
+    base = microduck_manifest("sim2d")
+    assert base.datasheet is not None
+    merged = apply_datasheet_override(
+        base,
+        DatasheetOverride.model_validate(
+            {"payload_kg": 0.1, "cannot": ["lift the lid off anything"]}
+        ),
+    )
+    assert merged.datasheet is not None
+    assert merged.datasheet.payload_kg is not None
+    assert merged.datasheet.payload_kg.value == 0.1
+    assert merged.datasheet.payload_kg.source == "the task file"
+    assert merged.datasheet.payload_kg.confidence == "estimate"  # the file did not say
+    assert merged.datasheet.cannot == [*base.datasheet.cannot, "lift the lid off anything"]
+    assert merged.datasheet.mass_kg == base.datasheet.mass_kg  # untouched
+    assert base.datasheet.payload_kg is None, "the robot's own sheet is not mutated"
+    assert apply_datasheet_override(base, None) is base
+
+
+def test_a_task_file_cannot_hand_an_armless_body_a_payload() -> None:
+    from quackd.duckfile.schema import DatasheetOverride
+
+    with pytest.raises(ValidationError, match="no payload"):
+        apply_datasheet_override(
+            _manifest(datasheet=Datasheet(manipulator="none")),
+            DatasheetOverride.model_validate({"payload_kg": 3.0}),
+        )
