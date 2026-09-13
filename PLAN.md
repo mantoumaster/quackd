@@ -47,7 +47,7 @@ not before.
 ## Open here
 
 - ⬜ **No real model has ever refused a task on feasibility grounds here.** The gate, the
-  outcome, the hint and the fleet handoff are exercised with scripted verdicts and an in-process
+  outcome, the hint and the flock handoff are exercised with scripted verdicts and an in-process
   MCP client. There is one `live_llm` test beside the others waiting for a key, and until
   somebody runs it nothing is known about whether a real model uses `uncertain` when it should
   or reaches for `infeasible` too readily.
@@ -106,12 +106,21 @@ not before.
 - ⏸ **Exercise `remember` against a cloud model.** The scripted pilot has no script for it, so
   `--provider fake` writes episodes and never a note.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
-  for it.
+  for it. The card itself now predates the positioning: it is one cartoon duck, and quackd is a
+  CLI for a flock of robots ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)), so it is
+  worth regenerating before it is uploaded.
+- ⏸ **No asset shows a flock of pilots.** `flock.gif` is the coordinator: three identical ducks
+  auctioning a kick. The kind of flock the README now leads with is two different bodies talking,
+  and it has no recording, because a pilot flock writes no GIF (N members are N worlds).
 
 ## Open elsewhere
 
-One item, and it closed: the half of the browser demo that no commit here could finish.
+Things no commit in this repository can finish.
 
+- ⏸ **The landing page still describes the old quackd.** <https://www.quackd.org/> is built from
+  quackd-web, a separate repository, and it was written when quackd was a brain for one small
+  robot. The one-liner there, and the GitHub About text, are the two copies of the positioning
+  that this repository cannot reach ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)).
 - ✅ **`web/` is on the web.** <https://www.quackd.org/simulator> answers. That address belongs to
   quackd-web, a separate Vercel project serving the landing page, and its build now fetches this
   directory into its own `/simulator` at a pinned commit — so a change here reaches the page on

@@ -37,7 +37,8 @@ app = typer.Typer(
     name="quackd",
     # the emoji only where the stream can carry it: a cp1252 pipe on Windows renders them as
     # `??`, and the front door is the worst place to look broken
-    help="Give your small robot a brain. Any LLM, one .duck file."
+    help="One CLI for all your robots. Connect them, command them, and let them work "
+    "together, each with an LLM for a brain."
     + (" 🦆🧠" if ui.glyphs_for(ui.console) is ui.UNICODE else ""),
     no_args_is_help=True,
     rich_markup_mode="rich",
@@ -247,7 +248,7 @@ def validate(
         "<adapter>:<backend>; repeatable).",
     ),
     robots: str | None = typer.Option(
-        None, "--robots", help="Check against a fleet: name=<adapter>:<backend>,..."
+        None, "--robots", help="Check against a flock: name=<adapter>:<backend>,..."
     ),
     registry_dir: str | None = _REGISTRY_DIR,
 ) -> None:
@@ -1529,8 +1530,8 @@ _ROBOT = typer.Option(
 _ROBOTS = typer.Option(
     None,
     "--robots",
-    help="A flock or fleet: name=<adapter>:<backend>,... A coordinator flock needs every "
-    "member to be microduck:sim2d; a pilot flock and an MCP fleet take any of them.",
+    help="A flock: name=<adapter>:<backend>,... A coordinator flock needs every "
+    "member to be microduck:sim2d, and a pilot flock or serve-mcp takes any of them.",
     rich_help_panel="Robot",
 )
 _SEED = typer.Option(
@@ -1996,14 +1997,14 @@ def serve_mcp(
     robots: str | None = typer.Option(
         None,
         "--robots",
-        help="A fleet: name=<adapter>:<backend>,... (nine robot_* tools, one executor each).",
+        help="A flock: name=<adapter>:<backend>,... (nine robot_* tools, one executor each).",
         rich_help_panel="Robot",
     ),
     flock: str | None = typer.Option(
         None,
         "--flock",
         help="A stored flock (`quackd flock list`): every member from the registry, each with "
-        "its own address, token and camera. The same fleet by another door.",
+        "its own address, token and camera. The same flock by another door.",
         rich_help_panel="Robot",
     ),
     registry_dir: str | None = _REGISTRY_DIR,
@@ -2022,7 +2023,8 @@ def serve_mcp(
     memory_dir: str | None = _MEMORY_DIR,
     trace: bool | None = _TRACE_MCP,
 ) -> None:
-    """Expose the robot as MCP tools over stdio (Claude Code / Claude Desktop)."""
+    """Expose a robot, or a flock of them, as MCP tools over stdio (Claude Code /
+    Claude Desktop)."""
     from quackd.adapters.base import AdapterError
     from quackd.mcp_server import serve
     from quackd.registry import RegistryError

@@ -323,6 +323,29 @@ a cloud provider sees. `quackd memory show` prints it, `quackd memory clear` del
 
 ## What it can and cannot drive
 
+**Can two different robots share a task?** Yes, with a pilot flock. Register them, group
+them, run it:
+
+```bash
+quackd robot add duck microduck:mock
+quackd robot add arm lerobot:mock
+quackd flock create pair --robot duck --robot arm
+quackd run flock-hello --flock pair --provider fake
+```
+
+Each body gets its own LLM pilot, each pilot's prompt carries the other's datasheet, and they
+divide the task by talking. Each member keeps its own memory, and what one needs another to
+know during the run it says with `tell`. `quackd run flock-hello --provider fake` does the same
+thing with no registry at all. The honest part: this has run on `mock` and `sim2d` bodies and on
+no hardware, N simulated members are N separate worlds with nothing checking a claimed success,
+and `tell` has been exercised by the scripted pilot and by no real model
+([flock.md](flock.md#the-pilot-flock)).
+
+The other kind of flock, the deterministic coordinator, still knows only the Microduck on
+`sim2d`. `flock.roles` there declares capability-differentiated roles (a spotter that observes
+and judges, a kicker that goes to and kicks), which is unit tested and has no bundled starter
+that reaches it end to end.
+
 **Can quackd drive something that is not a duck?** Since 0.4, yes: a robot is an adapter
 that returns a manifest, and the verbs come from the manifest. `quackd list-adapters`
 shows the seven that ship (Microduck, a LeRobot arm, any base over rosbridge, an Open
@@ -337,29 +360,10 @@ it"?** Because it is true. A `.duck` lists what it needs (`requires`, or for a `
 file its whole allowlist) and an arm has no legs. Either pick a body that has the verb,
 or write a task for the body you have.
 
-**Can two different robots share a task?** Yes, with a pilot flock. Register them, group
-them, run it:
-
-```bash
-quackd robot add duck microduck:mock
-quackd robot add arm lerobot:mock
-quackd flock create pair --robot duck --robot arm
-quackd run flock-hello --flock pair --provider fake
-```
-
-Each body gets its own LLM pilot, each pilot's prompt carries the other's datasheet, and they
-divide the task by talking. `quackd run flock-hello --provider fake` does the same thing with
-no registry at all. The honest part: this has run on `mock` and `sim2d` bodies and on no
-hardware, N simulated members are N separate worlds with nothing checking a claimed success,
-and `tell` has been exercised by the scripted pilot and by no real model
-([flock.md](flock.md#the-pilot-flock)).
-
-The other kind of flock, the deterministic coordinator, still knows only the Microduck on
-`sim2d`. `flock.roles` there declares capability-differentiated roles (a spotter that observes
-and judges, a kicker that goes to and kicks), which is unit tested and has no bundled starter
-that reaches it end to end.
-
 ## The name
 
 **Why "quackd"?** Upstream names its daemons `robotd`, `mediad`, `padd`, `tofd`… the brain
-daemon was missing. ([ADR-0002](adr/0002-name.md))
+daemon was the one missing, so the first quackd was exactly that, for one Microduck. The name
+stayed when quackd became the command line for every robot you own, and so did the ducks: a task
+is a `.duck` file and a group of robots is a flock.
+([ADR-0002](adr/0002-name.md), [ADR-0035](adr/0035-one-cli-for-all-your-robots.md))

@@ -203,6 +203,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The one-liner changed, and every place that carried the old one followed.**
+  It was *Give your Microduck a brain. Any LLM, one `.duck` file.* It is now *One CLI for all your
+  robots. Connect them, command them, and let them work together, each with an LLM for a brain.*
+  That sentence was accurate for 0.3, when quackd was a brain for exactly one robot. 0.4 made the
+  robot an adapter that declares a manifest, and the registry and the pilot flock in this same
+  section made a robot a name you keep and a flock a list of those names, so what quackd is is the
+  place you connect the robots you own, the place you command all of them, and where they divide a
+  task between themselves, each with an LLM for a brain. quackd is the CLI, not the brain. The new
+  sentence is in the README, in `pyproject.toml`'s description, which PyPI shows at the next
+  release, in the `quackd --help` banner, in `quackd/__init__.py`'s docstring, in the demo's title
+  and meta tags, in `LAUNCH.md`, and in the opening lines of
+  [docs/architecture.md](docs/architecture.md) and [docs/mcp.md](docs/mcp.md). "Fleet" is retired
+  from prose and from help text in favour of "flock", while the code identifiers keep it, because
+  renaming `build_fleet_server` would be churn no reader sees. [docs/flock.md](docs/flock.md) now
+  reads pilots-first. Nothing new ships here: the features this describes landed in this same
+  Unreleased section, every body is still simulated or mocked, and flock mode is still EXPERIMENTAL
+  ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)).
+
 - **A registered robot keys its memory by its name, not by its body.**
   Memory was keyed `adapter:backend` so that a simulated duck never inherited a real one's
   notes, which was right and also meant two real ducks on one desk shared one file. A robot

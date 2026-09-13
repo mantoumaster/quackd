@@ -2,11 +2,15 @@
 
 Internal. Write it, don't publish it. 0.3's story was one duck kicking one ball. 0.4's was
 that the duck is no longer the point. 0.5's was that one of the robots is one you can build.
-**0.8's is that you can watch it happen without installing anything, and the duck is really
-walking.**
+0.8's is that you can watch it happen without installing anything, and the duck is really
+walking. **0.9's is that you register the robots you own, name a flock of them, hand the
+flock a goal, and every robot gets its own LLM pilot, talking to the others.**
 
-**The one sentence:** every robot hands quackd a manifest saying what it is and what it can
-do, and the verbs the model is offered are built from that and nothing else.
+**The one sentence:** One CLI for all your robots. Connect them, command them, and let them
+work together, each with an LLM for a brain.
+
+**The second:** every robot hands quackd a manifest saying what it is and what it can do,
+and the verbs the model is offered are built from that and nothing else.
 
 **The 0.8 sentence:** open a link, type a sentence, and a Microduck walks on Pollen's own
 trained policy in real MuJoCo physics — with the keyboard live the whole time, a centimetre
@@ -32,10 +36,10 @@ command; a sentence needs something to read it.
 
 | Channel | One line |
 |---|---|
-| GitHub | Pilot a small robot with any LLM through `.duck` skill files and MCP. Seven robots supported, three of them open hardware you can build, a physics simulator, a browser demo and no hardware needed. |
+| GitHub | Connect and command every robot you own from one CLI, each with an LLM for a brain, and a flock of them dividing a task by talking to each other. Seven robots supported, three of them open hardware you can build, a physics simulator, a browser demo and no hardware needed. |
 | Hacker News | A `.duck` file is a SKILL.md for a robot: the frontmatter is enforced, the body is the prompt, the executor never trusts the model. Point it at the wrong robot and it refuses before anything moves. |
-| X / Twitter | Give your Microduck a brain. Type *walk in a square* and watch it happen in your browser, on the robot's own trained gait — then hit `W` mid-run and take the duck off the model, no mode to flip first. Or one of six other small robots, from an Open Duck Mini you can print to a ToddlerBot humanoid. Any LLM, one `.duck` file. 🦆🧠 |
-| Pollen Discord | We built the brain daemon that was missing from `robotd / mediad / padd / tofd`. We'd like you to tell us what we got wrong about the SDK. |
+| X / Twitter | One CLI for all your robots. Connect them, command them, and let them work together, each with an LLM for a brain. Take one out of the flock: type *walk in a square* and watch it happen in your browser, on the robot's own trained gait, then hit `W` mid-run and take the duck off the model, no mode to flip first. Six other bodies, from an Open Duck Mini you can print to a ToddlerBot humanoid. 🦆🧠 |
+| Pollen Discord | We built the brain daemon that was missing from `robotd / mediad / padd / tofd`, and it is now the CLI that commands a flock of robots with the Microduck among them. We'd like you to tell us what we got wrong about the SDK. |
 | Open Duck Mini builders (the apirrone Discord, the BDX droid crowd) | You printed a duck that walks. quackd is the layer that decides where it walks, from a plain-language goal. It ships the daemon for your Pi, it knows your duck cannot kick and cannot get up, and nobody has run it on real hardware yet, so the first person who does gets a row in the table. |
 | LeRobot / Hugging Face robotics | An LLM picks the skill, your policy executes it. `pick` is one intent that hands the arm to its own learned policy; quackd does the deciding, the gating and the transcript, and never writes a controller. |
 | ROS folks | Any base that takes a `geometry_msgs/msg/Twist` over rosbridge becomes an LLM-drivable robot. No node to write, no message we invented, no deadman we pretend to have. |
@@ -44,9 +48,9 @@ command; a sentence needs something to read it.
 
 ## Show HN title candidates
 
-1. **Show HN: One LLM brain, seven robots — each one decides what it may be asked to do**
+1. **Show HN: One CLI for all your robots, an LLM for a brain each, and they talk to each other**
 2. Show HN: quackd – a SKILL.md-style file that makes an LLM drive a robot, and refuses the wrong robot
-3. Show HN: I gave a $399 robot duck a brain, then handed the same brain to six other robots
+3. Show HN: I gave a $399 robot duck a brain, then built the CLI that commands a whole flock of them
 
 First comment (post immediately): what it is in three sentences, the manifest idea (a verb not
 in the manifest does not exist), the three-loop table, the honesty paragraph (simulator and
@@ -56,20 +60,21 @@ mocks now, every hardware backend experimental and never run), and the ask ("add
 ## X thread (8 posts)
 
 1. **Hook + GIF.** "Type *walk in a square* and a robot duck walks it on its own trained gait — then take it back mid-sentence with one key. Simulator, runs in 60 seconds. 🧵" *(hero.gif)*
-2. **What.** quackd: pilot a small robot with any LLM. One `.duck` file per task, any provider, MCP so Claude Code/Desktop can drive it. Seven robots today: Microduck, an Open Duck Mini v2 you can print and build, an SO-101 class arm via LeRobot, any base over rosbridge, an XLeRobot dual-arm cart, an AlohaMini with two arms on a lift and a ToddlerBot humanoid. Apache-2.0.
+2. **What.** quackd: one CLI for all your robots. Connect them, command them, and let them work together, each with an LLM for a brain. One `.duck` file per task, any provider, MCP so Claude Code/Desktop can drive it. Seven robots today: Microduck, an Open Duck Mini v2 you can print and build, an SO-101 class arm via LeRobot, any base over rosbridge, an XLeRobot dual-arm cart, an AlohaMini with two arms on a lift and a ToddlerBot humanoid. Apache-2.0.
 3. **Both hands on the same duck.** "The demo puts a sentence box and a live keyboard on one robot, a centimetre apart, and neither takes turns with the other. Press `W` mid-run and you have the duck: the run aborts, the request to the model aborts with it so no answer arrives after you took it back, and the transcript names the key that did it. `O` and the camera keys read without interrupting anything. There is no key for `say` — a key carries a command, a sentence needs something to read it." *(browser session, shot 2)*
 4. **The manifest.** "Every robot hands over a manifest: this is my body, these are my intents, these are my verbs. The model is only ever offered what's in it. An arm is never offered `move`. A wheeled base is never offered `kick`." *(the seven-body table from the README's Which robots work)*
 5. **The `.duck` file.** Screenshot of `find-and-kick.duck` plus the refusal: `quackd validate find-and-kick --robot lerobot:mock` → `requires kick, but arm-01 (lerobot-so101) does not provide it`, exit 1, before anything connects.
-6. **MCP demo.** Short screen capture: `claude mcp add quackd -- uvx quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock`, then "list my robots and make the duck find the ball". One executor, budget and heartbeat per robot.
+6. **MCP demo.** Short screen capture: `claude mcp add quackd -- uvx quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock`, then "list my robots and make the duck find the ball". One executor, budget and heartbeat per robot. `--flock <name>` serves the same set from the registry, so you name the robots once.
 7. **Roadmap tease.** "v2: learned verbs. An LLM writes a reward (DrEureka-style), the training stack produces a policy, and it registers as one more verb. The hook exists today; the loop doesn't. Yet." Plus: an HTTP transport so the MCP server is a remote connector and you can poke the robot from your phone.
 8. **CTA.** "Simulator-first and honest about it: nothing here has run on hardware, on any of the seven bodies, and the README says so in a table. The Open Duck Mini is the one you can build, so it is the one most likely to change that. If you write a `.duck`, PR it to `ducks/`. If you own a robot we don't support, an adapter is a manifest and a mock. Repo: github.com/rokbenko/quackd"
 
 ## Pollen Discord post (draft)
 
-> Hi all — long-time fan, still the duck-brain author. **quackd** is an unofficial "brain
-> daemon": any LLM drives a robot through a small verb vocabulary defined in a `.duck` file,
-> with a built-in 2D sim so it works before hardware ships. Since 0.5 it drives an Open Duck
-> Mini v2 too, alongside the Microduck. Demo GIF attached (sim, scripted pilot).
+> Hi all — long-time fan, still the duck-brain author. **quackd** started as an unofficial
+> "brain daemon" and is now the CLI that commands a flock of robots: any LLM drives a robot
+> through a small verb vocabulary defined in a `.duck` file, with a built-in 2D sim so it
+> works before hardware ships. Since 0.5 it drives an Open Duck Mini v2 too, alongside the
+> Microduck. Demo GIF attached (sim, scripted pilot).
 >
 > One thing I'd really value from the people who built the real thing:
 > 1. **Microduck socket assumptions.** I read `duck-ipc-proto` (API v23, pinned) and mapped verbs to
@@ -103,15 +108,20 @@ please correct it" framing.
    nobody has run the Record button.
 3. **find-and-kick (sim).** ✅ `docs/assets/hero.gif`, scripted pilot, still the cartoon shot.
    Re-record with `--provider anthropic` once a key is available and drop the "scripted" label.
-4. **Claude Desktop piloting a fleet via MCP.** Screen capture: connector listed → "list my
+4. **Claude Desktop piloting a flock via MCP.** Screen capture: connector listed → "list my
    robots" (`robot_list` shows two robots) → "make the duck find the ball" → the run's
    frames. Crop to the chat and the GIF side by side. Not recorded yet.
-5. **validate refusing the wrong robot.** Terminal:
+5. **A pilot flock.** Two members' terminal views side by side: the duck and the arm telling
+   each other what they are, and each declaring for itself whether it got there.
+   EXPERIMENTAL, and two simulated pilots are two separate worlds with no shared arena, so
+   the clip is two transcripts rather than one scene. `tell` has been exercised by the
+   scripted pilot and by no real model. Not recorded yet.
+6. **validate refusing the wrong robot.** Terminal:
    `quackd validate find-and-kick --robot lerobot:mock` → the red field-level error naming
    `kick` → swap to `--robot microduck:sim2d` → green. 10 s. This is the single clearest
    demonstration of the manifest idea. Not recorded yet.
-6. (Optional) `quackd doctor` on a machine with no keys, showing the honesty tables.
-7. (Optional) `open-duck-scout` alone: a printed duck finding the ball and walking up to it.
+7. (Optional) `quackd doctor` on a machine with no keys, showing the honesty tables.
+8. (Optional) `open-duck-scout` alone: a printed duck finding the ball and walking up to it.
 
 ## Timing
 

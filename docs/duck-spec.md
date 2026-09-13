@@ -1,8 +1,9 @@
 # The `.duck` file — spec v0, v1 and v2 (normative)
 
-A `.duck` file is a task for an LLM-piloted robot. It is deliberately **SKILL.md-shaped**:
-YAML frontmatter between `---` fences, then a Markdown body. The frontmatter is a contract
-the executor enforces; the body is the prompt. **The LLM is never trusted to self-police.**
+A `.duck` file is a task for an LLM-piloted robot, or for a flock of them. It is
+deliberately **SKILL.md-shaped**: YAML frontmatter between `---` fences, then a Markdown
+body. The frontmatter is a contract the executor enforces; the body is the prompt. **The LLM
+is never trusted to self-police.**
 `.duck` is the format name the way `Dockerfile` is: a task for a LeRobot arm is a `.duck`
 too. `duck: 1` (quackd 0.4) adds what a multi-robot task needs, and `duck: 2` adds what a
 task says about the *body*: a correction to the robot's own datasheet, and what a flock role

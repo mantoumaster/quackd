@@ -1,7 +1,8 @@
 # Architecture
 
-quackd is the brain daemon Microduck was missing, and a brain for any small robot
-that has an adapter. This page is the map; the ADRs in [`adr/`](adr/) are the reasons.
+quackd is one command line for the robots you own: each joins through an adapter, each gets
+an LLM for a pilot, and a flock of them works one task together. This page is the map, the
+ADRs in [`adr/`](adr/) are the reasons.
 
 ## Three loops
 
@@ -58,6 +59,11 @@ sequenceDiagram
     A->>L: next observation
 ```
 
+A pilot flock is that same sequence once per robot, all of them at once on wall-clock time.
+The only thing the members share is the bus: `tell` puts a TALK message on it, and the
+addressee reads it in its next observation. A coordinator flock replaces the LLM participant
+with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
+
 ## Modules
 
 | Path | Why it exists |
@@ -76,7 +82,7 @@ sequenceDiagram
 | `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
 | `quackd/memory.py` | What a robot keeps between runs: one JSONL file per `adapter:backend`, or per registered robot name, with the notes the pilot saved (`remember`) and an episode per run; rendered into the prompt next time ([memory.md](memory.md), ADR-0025, ADR-0034). |
 | `quackd/registry.py` | The robots you have named and the flocks you made of them: `robots.json` and `flocks.json` under `~/.quackd`, strict reads, atomic writes, and `--robot NAME` resolution ([registry.md](registry.md), ADR-0034). |
-| `quackd/mcp_server.py` | A robot, or a fleet (`--robots`, or a stored flock with `--flock NAME`), as MCP tools: nine `robot_*` tools through one executor per robot. |
+| `quackd/mcp_server.py` | A robot, or a flock (`--robots`, or a stored flock with `--flock NAME`), as MCP tools: nine `robot_*` tools through one executor per robot. |
 | `bridge/toddlerbot/` | quackd's own ToddlerBot daemon: the fifty hertz loop upstream has no daemon for, plus the ten things it does not do at all, enumerated in the daemon's own docstring and in `bridge/toddlerbot/README.md` rather than a third time here. It owns the control loop rather than feeding one, which is true of no other body quackd drives. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0028](adr/0028-toddlerbot.md)). |
 | `bridge/alohamini/` | quackd's own AlohaMini host: upstream's host loop with the arm torque its own `configure()` disables and never re-enables, plus three fields in every observation so quackd can tell this host from a stock one. Never imports quackd, ships in the sdist and never in the wheel ([ADR-0027](adr/0027-alohamini.md)). |
 | `bridge/open_duck/` | **The first robot side quackd shipped**, and one of the three above. It has still never run on a duck, like everything else here. Two daemons for an Open Duck Mini v2's Raspberry Pi: the bridge, which is upstream's own walk loop with the gamepad it reads replaced by a socket, and the camera server, which serves one JPEG over HTTP. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0024](adr/0024-open-duck-mini.md)). |

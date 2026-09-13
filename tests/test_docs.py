@@ -78,7 +78,9 @@ def test_readme_promises() -> None:
         "--provider fake",
         "biped",
         "pronounced",
-        "Any LLM, one <code>.duck</code> file",
+        "One CLI for all your robots",
+        "flock-hello",
+        "quackd flock create",
         "Non goals for now",
         "--provider ollama",
         "quackd list-models",
@@ -445,6 +447,58 @@ def test_no_document_still_promises_a_removal_that_happened() -> None:
         assert "--transport" not in text, f"{path.name} still documents --transport"
         for promise in ("go away in 0.5", "gone in 0.5", "are removed in 0.5", "for one release"):
             assert promise not in text, f"{path.name} still promises {promise!r}, which happened"
+
+
+#: The one-liner ADR-0002 minted and ADR-0035 retired. ADR-0002 said "one-liner everywhere",
+#: and everywhere is what happened: the README, the PyPI summary, the `quackd --help` banner,
+#: the package docstring and the browser demo's title all carried a copy of it, and nothing
+#: counted them. quackd is the CLI and the LLM is the brain now, so "an LLM for a brain" is
+#: fine and only the old claim, that quackd itself is a brain for one small robot, is not.
+_RETIRED_TAGLINES = (
+    "Give your Microduck a brain",
+    "Give your small robot a brain",
+    "Give a Microduck a brain",
+    "a brain for any small robot",
+    "brain daemon Microduck was missing",
+)
+
+#: The three user-facing strings outside the README that carry the replacement, so a revert
+#: in one of them cannot pass while the README still reads correctly.
+_TAGLINE_SITES = ("pyproject.toml", "quackd/__init__.py", "quackd/cli.py")
+
+
+def test_the_retired_tagline_is_gone_and_the_new_one_is_everywhere_it_lived() -> None:
+    """The history files keep it: they record what was true on the day they were written."""
+    sources = [REPO / "pyproject.toml", *((REPO / "quackd").glob("*.py")), REPO / "web/index.html"]
+    for path in _living_docs() + sources:
+        text = path.read_text(encoding="utf-8")
+        for retired in _RETIRED_TAGLINES:
+            assert retired not in text, f"{path.name} still carries the retired tagline {retired!r}"
+    for name in _TAGLINE_SITES:
+        text = (REPO / name).read_text(encoding="utf-8")
+        assert "One CLI for all your robots" in text, f"{name} does not carry the one-liner"
+
+
+def test_no_living_document_or_user_facing_string_still_says_fleet() -> None:
+    """One word for a group of robots, because two words for one idea is two ideas to a reader.
+
+    ADR-0035 retired "fleet" from prose and from help text, and kept it in the code, where
+    `Fleet` and `build_fleet_server` are imported by name. The split is the point: this guard
+    reads what a person reads, which for `quackd/` means docstrings and help strings rather
+    than identifiers, so it checks the CLI's rendered help rather than the source."""
+    from typer.testing import CliRunner
+
+    from quackd.cli import app
+
+    for path in _living_docs():
+        prose = _prose(path.read_text(encoding="utf-8")).lower()
+        assert "fleet" not in prose, f"{path.name} still says fleet"
+    # the help a user actually sees, top level and every sub-app, which is where three of the
+    # stale ones were: a source grep would have been satisfied by `fleet_from_flags`
+    runner = CliRunner()
+    for argv in ([], ["robot"], ["flock"], ["memory"], ["run"], ["serve-mcp"], ["validate"]):
+        rendered = runner.invoke(app, [*argv, "--help"]).output.lower()
+        assert "fleet" not in rendered, f"`quackd {' '.join(argv)} --help` still says fleet"
 
 
 def test_no_living_document_claims_the_wrong_number_of_mcp_tools() -> None:
