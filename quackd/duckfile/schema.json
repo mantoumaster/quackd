@@ -34,6 +34,210 @@
       "title": "Budgets",
       "type": "object"
     },
+    "DatasheetOverride": {
+      "additionalProperties": false,
+      "description": "v2: what a `.duck` says about the body it was written for (`docs/duck-spec.md`).\n\nMerged field-wise into the robot's own datasheet by `apply_datasheet_override`: a figure\ngiven here replaces the adapter's and is rendered as coming from the task file; `cannot`,\n`notes` and `not_rated` extend the adapter's; whatever is omitted is left alone. A task\nfile can add a `cannot`; it can never delete one.",
+      "properties": {
+        "mass_kg": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FigureOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "height_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FigureOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dof": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FigureOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "payload_kg": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FigureOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reach_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FigureOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "workspace_height_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpanOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "endurance_min": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FigureOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "manipulator": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "beak",
+                "gripper",
+                "arms"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manipulator"
+        },
+        "arms": {
+          "anyOf": [
+            {
+              "maximum": 4,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Arms"
+        },
+        "tethered": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tethered"
+        },
+        "terrain": {
+          "anyOf": [
+            {
+              "enum": [
+                "indoor_flat",
+                "indoor",
+                "outdoor"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terrain"
+        },
+        "not_rated": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Rated",
+          "type": "array"
+        },
+        "cannot": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cannot",
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        }
+      },
+      "title": "DatasheetOverride",
+      "type": "object"
+    },
+    "FigureOverride": {
+      "additionalProperties": false,
+      "description": "A number the task file asserts about the build in front of it.\n\nThe source defaults to the file itself and the confidence to `estimate`; an author who\nweighed the thing says `measured`.",
+      "properties": {
+        "value": {
+          "minimum": 0,
+          "title": "Value",
+          "type": "number"
+        },
+        "confidence": {
+          "default": "estimate",
+          "enum": [
+            "official",
+            "estimate",
+            "measured"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "description": "Optional: 'weighed with the printed gripper'.",
+          "title": "Source",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "FigureOverride",
+      "type": "object"
+    },
     "FlockAllocation": {
       "additionalProperties": false,
       "description": "How a flock decides who kicks. Deterministic; the LLM never runs the auction.",
@@ -244,6 +448,48 @@
       "title": "LearnedVerbRef",
       "type": "object"
     },
+    "SpanOverride": {
+      "additionalProperties": false,
+      "description": "A band the task file asserts, the same way.",
+      "properties": {
+        "low": {
+          "minimum": 0,
+          "title": "Low",
+          "type": "number"
+        },
+        "high": {
+          "minimum": 0,
+          "title": "High",
+          "type": "number"
+        },
+        "confidence": {
+          "default": "estimate",
+          "enum": [
+            "official",
+            "estimate",
+            "measured"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "title": "Source",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "low",
+        "high"
+      ],
+      "title": "SpanOverride",
+      "type": "object"
+    },
     "VerbsSection": {
       "additionalProperties": false,
       "description": "Which verbs the LLM may call, and which need a human to say yes first.",
@@ -277,10 +523,11 @@
   "description": "The contract. This is what `schema.json` describes and what the executor enforces.",
   "properties": {
     "duck": {
-      "description": "Spec version: 0 (quackd 0.1 to 0.3) or 1 (0.4: requires, robots, flock.roles, flock.frame_hints). v0 files parse unchanged.",
+      "description": "Spec version: 0 (quackd 0.1 to 0.3), 1 (0.4: requires, robots, flock.roles, flock.frame_hints) or 2 (0.9: datasheet, flock.roles.needs). Older files parse unchanged.",
       "enum": [
         0,
-        1
+        1,
+        2
       ],
       "title": "Duck",
       "type": "integer"
@@ -385,6 +632,18 @@
       "title": "Requires",
       "type": "array"
     },
+    "datasheet": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DatasheetOverride"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "v2: corrections and additions to the robot's datasheet for this build, rendered in the prompt as coming from the task file."
+    },
     "robots": {
       "anyOf": [
         {
@@ -412,6 +671,6 @@
     "verbs",
     "success"
   ],
-  "title": "quackd .duck frontmatter (v0, v1)",
+  "title": "quackd .duck frontmatter (v0, v1, v2)",
   "type": "object"
 }

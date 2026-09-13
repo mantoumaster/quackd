@@ -16,6 +16,7 @@ from typing import Any
 from PIL import Image
 
 from quackd.adapters.manifest import (
+    Datasheet,
     Frame,
     Health,
     RobotManifest,
@@ -33,6 +34,18 @@ MAX_WZ = 1.0
 BLURB = (
     "a small wheeled base driven over rosbridge (a ROS 2 robot that takes velocity "
     "commands and reports odometry)"
+)
+
+DATASHEET = Datasheet(
+    manipulator="none",
+    cannot=[
+        "carry, push or hold anything through quackd: this adapter commands a velocity and "
+        "nothing else",
+    ],
+    notes=[
+        "rosbridge is a software bridge: the name says nothing about the body under it. What is "
+        "unknown here is unknown, not zero",
+    ],
 )
 _MOVE_DESCRIPTION = (
     "Drive with a velocity for a duration: vx forward m/s, wz rad/s (+ = left). The base's "
@@ -83,6 +96,7 @@ def rosbridge_manifest(
         limits={"max_vx": max_vx, "max_vy": 0.0, "max_wz": max_wz},
         backend=backend,
         blurb=BLURB,
+        datasheet=DATASHEET,
         extras={
             "ros": "2",
             "cmd_vel": cmd_vel,

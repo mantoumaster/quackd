@@ -24,6 +24,8 @@ from typing import Any
 from PIL import Image
 
 from quackd.adapters.manifest import (
+    Datasheet,
+    Figure,
     Frame,
     Health,
     RobotManifest,
@@ -54,6 +56,30 @@ BLURB = (
     "a 3D-printed biped duck robot about 42 cm tall that walks on its own 50 Hz policy "
     "(an Open Duck Mini v2). It is slow, it cannot pick anything up, and it cannot get "
     "back up on its own if it falls"
+)
+
+DATASHEET = Datasheet(
+    height_m=Figure(value=0.42, confidence="official", source="the Open Duck Mini v2 repository"),
+    dof=Figure(
+        value=14,
+        confidence="estimate",
+        source="the BOM and the runtime's joint list",
+        note="STS3215 servos, which the BOM states",
+    ),
+    manipulator="none",
+    tethered=False,
+    terrain="indoor_flat",
+    not_rated=["stairs", "steps", "slopes"],
+    cannot=[
+        "pick up, push or carry anything: there is no arm, no gripper and no beak",
+        "get back on its feet after a fall: there is no recovery policy, so a fall ends the run "
+        "and needs a human",
+    ],
+    notes=[
+        "Mass, battery runtime, walking speed, slope and step height are not published",
+        "The base build senses with an IMU and foot contacts; a camera, a microphone and a "
+        "speaker are optional add-ons the bridge reports at connect",
+    ],
 )
 _MOVE_DESCRIPTION = (
     "Walk with a velocity for a duration. This robot is deliberately slow: forward speed is "
@@ -164,6 +190,7 @@ def open_duck_manifest(
         },
         backend=backend,
         blurb=BLURB,
+        datasheet=DATASHEET,
         extras={
             # no text to speech anywhere in the runtime: say() plays one of the duck's sounds
             "speech": "sounds",

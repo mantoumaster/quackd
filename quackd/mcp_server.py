@@ -30,7 +30,7 @@ from mcp.server.mcpserver import Image
 
 from quackd import __version__
 from quackd.adapters.base import adapter_name, backend_name
-from quackd.adapters.manifest import RobotManifest
+from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
 from quackd.agent.transcript import png_bytes
 from quackd.duckfile.parser import DuckParseError, load_duck
 from quackd.duckfile.schema import Budgets, DuckFile
@@ -235,6 +235,8 @@ class RobotSession:
         spent = self.executor.budget
         self.duck = duck
         self.executor.contract = duck.frontmatter
+        if self.manifest is not None:
+            self.executor.manifest = self._merged(self.manifest)
         self.executor.budget = Budget(duck.frontmatter.budgets, now=self.transport.now)
         if first or spent is None:
             # The contract's budget is the task's, counted from when the task starts. The
@@ -248,12 +250,23 @@ class RobotSession:
         self.executor.budget.llm_calls = spent.llm_calls
         self.executor.budget.started_at = spent.started_at
 
+    def _merged(self, manifest: RobotManifest) -> RobotManifest:
+        """The robot's manifest with the loaded task file's datasheet corrections folded in."""
+        override = self.duck.frontmatter.datasheet if self.duck is not None else None
+        return apply_datasheet_override(manifest, override)
+
+    def effective_manifest(self) -> RobotManifest | None:
+        """What the pilot should be told about this body: the merged sheet where there is one."""
+        return self.executor.manifest or self.manifest
+
     async def connect(self) -> None:
         connected = await self.transport.connect()
         if isinstance(connected, RobotManifest):
             # an adapter: the vocabulary is the manifest's, not the Microduck default
             self.manifest = connected
-            self.executor.manifest = connected
+            # `self.manifest` stays the robot's own sheet, so a second `robot_load_duckfile`
+            # merges from the body rather than from the previous task file's corrections
+            self.executor.manifest = self._merged(connected)
             if not self.explicit_registry:
                 self.registry = registry_from_manifest(connected, self.transport)
                 self.executor.registry = self.registry

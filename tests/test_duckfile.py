@@ -92,7 +92,7 @@ def test_advisory_abort_conditions_pass_through() -> None:
     [
         (lambda s: s.replace("---\nduck", "duck", 1), "missing frontmatter"),
         (lambda s: s.replace("---\n# Task", "# Task"), "unterminated"),
-        (lambda s: s.replace("duck: 0", "duck: 2"), "duck"),
+        (lambda s: s.replace("duck: 0", "duck: 3"), "duck"),
         (lambda s: s.replace("success: [x]", "success: [x]\nrequires: [quack]"), "needs duck: 1"),
         (lambda s: s.replace("name: t", "name: Not A Slug"), "name"),
         (lambda s: s.replace("success: [x]", "success: [x]\nbogus: 1"), "bogus"),
@@ -200,4 +200,69 @@ def test_duck_v1_parses_requires_robots_and_roles() -> None:
 def test_invalid_v1_ducks_fail_fast(mutation, needle: str) -> None:
     with pytest.raises(DuckParseError) as exc:
         parse_duck_text(mutation(V1), path="x.duck")
+    assert needle.lower() in str(exc.value).lower()
+
+
+# ── v2: the datasheet a task file corrects ──────────────────────────────────────────────
+
+V2 = """\
+---
+duck: 2
+name: lift-the-mug
+description: Pick up the mug and put it on the shelf.
+robots: lerobot:mock
+requires: [gripper]
+verbs:
+  allow: [observe, report_state, gripper, stop]
+success: [The mug is on the shelf.]
+datasheet:
+  payload_kg: {value: 0.3, confidence: measured, source: weighed with the printed gripper}
+  reach_m: 0.35
+  cannot: [lift anything wider than the printed gripper's 60 mm opening]
+---
+# Task
+Do it.
+"""
+
+
+def test_a_v2_task_file_corrects_the_datasheet_for_its_own_build() -> None:
+    fm = parse_duck_text(V2).frontmatter
+    sheet = fm.datasheet
+    assert sheet is not None
+    assert sheet.payload_kg is not None
+    assert (sheet.payload_kg.value, sheet.payload_kg.confidence) == (0.3, "measured")
+    assert sheet.payload_kg.source == "weighed with the printed gripper"
+    assert sheet.reach_m is not None  # a bare number is shorthand for one
+    assert (sheet.reach_m.value, sheet.reach_m.confidence) == (0.35, "estimate")
+    assert sheet.reach_m.source == ""
+    assert len(sheet.cannot) == 1
+    assert fm.effective_requires == ["gripper"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "needle"),
+    [
+        (lambda s: s.replace("duck: 2", "duck: 1"), "needs duck: 2"),
+        (lambda s: s.replace("confidence: measured", "confidence: hearsay"), "confidence"),
+        (lambda s: s.replace("reach_m: 0.35", "reach_m: -1"), "greater than or equal"),
+        (lambda s: s.replace("reach_m: 0.35", "bogus_m: 0.35"), "bogus_m"),
+        # a backtick reads as an offered verb in the prompt, so the sentence is refused. It
+        # has to be quoted to get past YAML at all, which is where the plain form would die
+        (
+            lambda s: s.replace(
+                "cannot: [lift anything wider than the printed gripper's 60 mm opening]",
+                'cannot: ["`gripper` is not for you"]',
+            ),
+            "start with a word",
+        ),
+        (lambda s: s.replace("  reach_m: 0.35\n", "  manipulator: claw\n"), "manipulator"),
+        (
+            lambda s: s.replace("robots: lerobot:mock", "flock:\n  members: 2"),
+            "a flock duck cannot carry one",
+        ),
+    ],
+)
+def test_invalid_v2_ducks_fail_fast(mutation, needle: str) -> None:
+    with pytest.raises(DuckParseError) as exc:
+        parse_duck_text(mutation(V2), path="x.duck")
     assert needle.lower() in str(exc.value).lower()

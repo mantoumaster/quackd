@@ -12,9 +12,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from quackd.adapters.manifest import (
+    Confidence,
+    Manipulator,
+    Terrain,
+    datasheet_sentences,
+)
 from quackd.verbs.aliases import canonical
 
-DUCK_SPEC_VERSION = 1
+DUCK_SPEC_VERSION = 2
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _ROBOT_SPEC_RE = re.compile(r"^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)?$")
@@ -86,6 +92,78 @@ class Budgets(BaseModel):
         default=5.0, gt=0, le=180, description="Wall-clock (or sim-clock) cap."
     )
     max_llm_calls: int = Field(default=40, ge=1, le=2000, description="Maximum provider calls.")
+
+
+class FigureOverride(BaseModel):
+    """A number the task file asserts about the build in front of it.
+
+    The source defaults to the file itself and the confidence to `estimate`; an author who
+    weighed the thing says `measured`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: float = Field(..., ge=0)
+    confidence: Confidence = "estimate"
+    source: str = Field(default="", description="Optional: 'weighed with the printed gripper'.")
+    note: str = ""
+
+
+class SpanOverride(BaseModel):
+    """A band the task file asserts, the same way."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    low: float = Field(..., ge=0)
+    high: float = Field(..., ge=0)
+    confidence: Confidence = "estimate"
+    source: str = ""
+    note: str = ""
+
+
+def _figure_shorthand(value: Any) -> Any:
+    """`payload_kg: 0.3` is `payload_kg: {value: 0.3}`."""
+    if isinstance(value, bool):
+        return value
+    return {"value": value} if isinstance(value, int | float) else value
+
+
+class DatasheetOverride(BaseModel):
+    """v2: what a `.duck` says about the body it was written for (`docs/duck-spec.md`).
+
+    Merged field-wise into the robot's own datasheet by `apply_datasheet_override`: a figure
+    given here replaces the adapter's and is rendered as coming from the task file; `cannot`,
+    `notes` and `not_rated` extend the adapter's; whatever is omitted is left alone. A task
+    file can add a `cannot`; it can never delete one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mass_kg: FigureOverride | None = None
+    height_m: FigureOverride | None = None
+    dof: FigureOverride | None = None
+    payload_kg: FigureOverride | None = None
+    reach_m: FigureOverride | None = None
+    workspace_height_m: SpanOverride | None = None
+    endurance_min: FigureOverride | None = None
+    manipulator: Manipulator | None = None
+    arms: int | None = Field(default=None, ge=0, le=4)
+    tethered: bool | None = None
+    terrain: Terrain | None = None
+    not_rated: list[str] = Field(default_factory=list)
+    cannot: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "mass_kg", "height_m", "dof", "payload_kg", "reach_m", "endurance_min", mode="before"
+    )
+    @classmethod
+    def _numbers(cls, value: Any) -> Any:
+        return _figure_shorthand(value)
+
+    @field_validator("cannot", "notes", "not_rated")
+    @classmethod
+    def _prose(cls, values: list[str]) -> list[str]:
+        return datasheet_sentences(values)
 
 
 class LearnedVerbRef(BaseModel):
@@ -240,12 +318,13 @@ class FlockSection(BaseModel):
 class DuckFrontmatter(BaseModel):
     """The contract. This is what `schema.json` describes and what the executor enforces."""
 
-    model_config = ConfigDict(extra="forbid", title="quackd .duck frontmatter (v0, v1)")
+    model_config = ConfigDict(extra="forbid", title="quackd .duck frontmatter (v0, v1, v2)")
 
-    duck: Literal[0, 1] = Field(
+    duck: Literal[0, 1, 2] = Field(
         ...,
-        description="Spec version: 0 (quackd 0.1 to 0.3) or 1 (0.4: requires, robots, "
-        "flock.roles, flock.frame_hints). v0 files parse unchanged.",
+        description="Spec version: 0 (quackd 0.1 to 0.3), 1 (0.4: requires, robots, "
+        "flock.roles, flock.frame_hints) or 2 (0.9: datasheet, flock.roles.needs). Older "
+        "files parse unchanged.",
     )
     name: str = Field(..., description="Slug: lowercase letters, digits, hyphens.")
     description: str = Field(..., min_length=1, description="One line, human-facing.")
@@ -277,6 +356,11 @@ class DuckFrontmatter(BaseModel):
         default_factory=list,
         description="v1: verbs the task needs. `quackd validate --robot` checks them against "
         "the robot's manifest. For v0 files every allowed verb is required.",
+    )
+    datasheet: DatasheetOverride | None = Field(
+        default=None,
+        description="v2: corrections and additions to the robot's datasheet for this build, "
+        "rendered in the prompt as coming from the task file.",
     )
     robots: str | dict[str, str] | None = Field(
         default=None,
@@ -311,6 +395,10 @@ class DuckFrontmatter(BaseModel):
 
     @model_validator(mode="after")
     def _version_and_cross_field_rules(self) -> DuckFrontmatter:
+        if self.duck < 2 and self.datasheet is not None:
+            raise ValueError("datasheet needs duck: 2")
+        if self.datasheet is not None and self.flock is not None:
+            raise ValueError("datasheet describes one body; a flock duck cannot carry one")
         if self.duck == 0:
             v1_keys = {
                 "requires": bool(self.requires),

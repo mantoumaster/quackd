@@ -18,7 +18,7 @@ from typing import Any, Literal
 from PIL import Image
 
 from quackd.adapters.base import AdapterError, adapter_name, backend_name
-from quackd.adapters.manifest import RobotManifest
+from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
 from quackd.agent.prompts import (
     META_TOOL_NAMES,
     META_TOOLS,
@@ -278,6 +278,11 @@ class AgentLoop:
         connected = await cfg.transport.connect()
         connect_s = round(time.perf_counter() - connect_started, 3)
         manifest = connected if isinstance(connected, RobotManifest) else None
+        if manifest is not None:
+            # a v2 task file corrects the body's own sheet for the build in front of it, and it
+            # does so here, before anything reads a manifest: the executor, the detector, the
+            # prompt and the transcript all see the one the model was told about
+            manifest = apply_datasheet_override(manifest, self.fm.datasheet)
         if manifest is not None:
             if cfg.registry is None:
                 self.registry = registry_from_manifest(manifest, cfg.transport)

@@ -16,7 +16,7 @@ from quackd.transport.base import DuckState
 from quackd.verbs.registry import Verb, VerbResult
 
 if TYPE_CHECKING:
-    from quackd.adapters.manifest import RobotManifest
+    from quackd.adapters.manifest import Datasheet, RobotManifest
 
 DUCK_BLURB = "a small biped duck robot (25 cm, 800 g)"
 
@@ -77,6 +77,133 @@ REMEMBER = {
 REMEMBER_NAME = REMEMBER["name"]
 
 
+BODY_HEADING = "## Your body: what it can and cannot do"
+
+_CONFIDENCE_KEY = (
+    "official: the maker or a paper says so; estimate: one vendor, a community number or a "
+    "reading off a photo; measured: somebody measured it and said how"
+)
+
+
+def _clamp_words(limits: dict[str, float]) -> str:
+    """What quackd will let through, in the prompt's words.
+
+    Read from `manifest.limits`, never from the datasheet: a clamp is quackd's own rule about
+    what it sends, not a fact about the body. `control_hz` and `camera_fov_deg` are not clamps
+    and are left out."""
+    parts: list[str] = []
+    if (vx := limits.get("max_vx")) is not None:
+        parts.append(f"{vx:g} m/s forward")
+        if (vy := limits.get("max_vy")) is not None:
+            parts.append("no sideways motion" if vy == 0 else f"{vy:g} m/s sideways")
+        if (wz := limits.get("max_wz")) is not None:
+            parts.append(f"{wz:g} rad/s turning")
+    if "lift_min_mm" in limits and "lift_max_mm" in limits:
+        parts.append(f"lift {limits['lift_min_mm']:g} to {limits['lift_max_mm']:g} mm")
+    if (yaw := limits.get("gaze_yaw_deg")) is not None:
+        parts.append(f"gaze {yaw:g} degrees of yaw")
+    if (deg := limits.get("joint_deg")) is not None:
+        parts.append(f"joints within {deg:g} degrees")
+    if (norm := limits.get("joint_norm")) is not None:
+        parts.append(f"joints within a normalised {norm:g}")
+    if (grip := limits.get("gripper")) is not None:
+        parts.append(f"gripper 0 to {grip:g}")
+    return ", ".join(parts)
+
+
+def _hands(ds: Datasheet) -> str:
+    if ds.manipulator == "beak":
+        return (
+            "a beak, no arms. It can scoop at an object on the floor right under it, and that "
+            "is all"
+        )
+    if ds.manipulator == "gripper":
+        arms = "one arm with a gripper" if ds.arms == 1 else f"{ds.arms} arms with a gripper each"
+        return arms
+    if ds.manipulator == "arms":
+        return f"{ds.arms} arms and no gripper: it holds by closing both on a thing"
+    return "none: nothing quackd can command touches an object"
+
+
+def _power_and_ground(ds: Datasheet, *, mobile: bool) -> str:
+    power = {
+        True: "Mains powered, so nothing runs down",
+        False: "Battery powered",
+        None: "Power source not published",
+    }[ds.tethered]
+    if not mobile:
+        return f"{power}. It does not move: no base and no legs"
+    ground = {
+        "indoor_flat": "Rated for a flat indoor floor",
+        "indoor": "Rated for indoors",
+        "outdoor": "Rated for outdoors",
+    }.get(ds.terrain or "") or (
+        "Terrain not published: assume a flat indoor floor and decline anything else"
+    )
+    rated = f". Not rated for {', '.join(ds.not_rated)}" if ds.not_rated else ""
+    return f"{power}. {ground}{rated}"
+
+
+def body_lines(manifest: RobotManifest) -> list[str]:
+    """The body's own facts, as prompt lines.
+
+    Every line starts with a word or a dash and a word, never with a backtick: the prompt
+    spells an offered verb as a backticked name after a dash, and four adapter tests read the
+    offered verbs back out of the prompt by that shape."""
+    ds = manifest.datasheet
+    if ds is None:
+        return [
+            f"The {manifest.model} adapter has published no datasheet. Treat every physical "
+            "limit (weight, height, reach, endurance, terrain) as not published, and decline "
+            "any task that hinges on one."
+        ]
+    mobile = manifest.mobility != "none"
+    lines = [f"Each number says how sure quackd is of it and who says so ({_CONFIDENCE_KEY})."]
+    lines += [f"- {label}: {fig.text(unit)}" for label, fig, unit in ds.known()]
+    lines.append(f"- Manipulator: {_hands(ds)}.")
+    if unknown := ds.unknown():
+        lines.append(
+            f"- Not published: {', '.join(unknown)}. Decline any task that hinges on any of them."
+        )
+    lines.append(f"- {_power_and_ground(ds, mobile=mobile)}.")
+    if clamps := _clamp_words(manifest.limits):
+        lines.append(f"- quackd clamps you to {clamps}.")
+    if manifest.sensors:
+        lines.append(f"- Senses: {', '.join(manifest.sensors)}.")
+    if ds.cannot:
+        lines.append("Whatever the task says, this body cannot:")
+        lines += [f"- {s}" for s in ds.cannot]
+    if ds.notes:
+        lines.append("Worth knowing:")
+        lines += [f"- {s}" for s in ds.notes]
+    return lines
+
+
+def body_section(manifest: RobotManifest) -> str:
+    """The `## Your body` block. Facts only: the rule that the pilot must judge the task
+    against them before moving is one bullet in the prompt's Rules, where every other enforced
+    rule is stated."""
+    return f"\n{BODY_HEADING}\n" + "\n".join(body_lines(manifest)) + "\n"
+
+
+def body_summary(manifest: RobotManifest) -> str:
+    """The same facts as one paragraph, for a tool result (MCP has no system prompt)."""
+    ds = manifest.datasheet
+    if ds is None:
+        return f"{manifest.model}: no datasheet published; treat every physical limit as unknown."
+    facts = [f"{label.lower()} {fig.text(unit)}" for label, fig, unit in ds.known()]
+    facts.append(_hands(ds))
+    facts.append(_power_and_ground(ds, mobile=manifest.mobility != "none").lower())
+    text = f"{manifest.model}: " + ", ".join(facts) + "."
+    if unknown := ds.unknown():
+        text += f" Not published: {', '.join(unknown)}."
+    if ds.cannot:
+        text += " Cannot: " + "; ".join(ds.cannot) + "."
+    if clamps := _clamp_words(manifest.limits):
+        text += f" Clamps: {clamps}."
+    return text
+
+
 def build_system_prompt(
     duck: DuckFile,
     verbs: list[Verb],
@@ -107,6 +234,7 @@ def build_system_prompt(
     abort_lines = (
         "\n".join(f"- {a}" for a in advisory) if advisory else "- (none beyond the enforced ones)"
     )
+    body = body_section(manifest) if manifest is not None else ""
     stand_ins = ""
     if assumptions:
         listed = "\n".join(f"- {a}" for a in assumptions)
@@ -174,7 +302,7 @@ verbs like `{loop_verb}` close their own loops on the camera. Do not micro-manag
 
 ## Verbs
 {verb_lines}
-{stand_ins}{persona}{memory}{sim_note}
+{body}{stand_ins}{persona}{memory}{sim_note}
 ## Task file: {fm.name} — {fm.description}
 
 {duck.body}

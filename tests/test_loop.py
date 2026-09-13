@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from quackd.agent.loop import RunConfig, run_duck
+from quackd.agent.loop import AgentLoop, RunConfig, run_duck
 from quackd.agent.providers.base import Exchange, ProviderError, ProviderTurn, ToolCall, Usage
 from quackd.agent.providers.fake import FakeProvider
 from quackd.agent.transcript import Transcript
@@ -658,3 +658,67 @@ async def test_a_robot_that_claims_no_stand_ins_gets_no_such_section(
     )
     assert "stand-in" not in provider.systems[0]
     assert "stand-ins=" not in provider.observations[0]
+
+
+ARM_DUCK = """\
+---
+duck: {version}
+name: lift-the-mug
+description: Pick up the mug.
+verbs:
+  allow: [observe, report_state, stop]
+success: [The mug is up.]
+{block}---
+# Task
+Pick it up.
+"""
+_OVERRIDE = """datasheet:
+  payload_kg: {value: 0.3, confidence: measured, source: weighed with the printed gripper}
+"""
+
+
+async def test_a_task_files_datasheet_reaches_the_prompt_the_executor_and_the_record(
+    tmp_path: Path,
+) -> None:
+    from quackd.adapters.factory import make_adapter
+    from quackd.duckfile.parser import parse_duck_text
+
+    provider = CapturingProvider()
+    adapter = make_adapter("lerobot:mock")
+    loop = AgentLoop(
+        RunConfig(
+            duck=parse_duck_text(ARM_DUCK.format(version=2, block=_OVERRIDE)),
+            provider=provider,
+            transport=adapter,
+            runs_dir=tmp_path,
+        )
+    )
+    result = await loop.run()
+    assert result.outcome == "success", result.reason
+
+    assert (
+        "0.3 kg (measured: the task file, weighed with the printed gripper)" in provider.systems[0]
+    )
+    assert "0.5 kg (estimate" not in provider.systems[0], "the vendor figure was corrected"
+    sheet = loop.executor.manifest.datasheet if loop.executor.manifest else None
+    assert sheet is not None and sheet.payload_kg is not None and sheet.payload_kg.value == 0.3
+    start = Transcript.read(result.run_dir / "transcript.jsonl")[0]
+    assert start["robot"]["datasheet"]["payload_kg"]["source"].startswith("the task file")
+
+
+async def test_without_a_correction_the_body_speaks_for_itself(tmp_path: Path) -> None:
+    from quackd.adapters.factory import make_adapter
+    from quackd.duckfile.parser import parse_duck_text
+
+    provider = CapturingProvider()
+    result = await run_duck(
+        RunConfig(
+            duck=parse_duck_text(ARM_DUCK.format(version=1, block="")),
+            provider=provider,
+            transport=make_adapter("lerobot:mock"),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assert "0.5 kg (estimate: one vendor's listing)" in provider.systems[0]
+    assert "task file" not in provider.systems[0]

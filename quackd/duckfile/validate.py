@@ -61,6 +61,21 @@ def validate_duck(
     if not manifests:
         return problems
 
+    if fm.datasheet is not None:
+        # the merge is where a task file's corrections meet the body's own invariants: an
+        # armless body handed a payload is a contradiction, and it is caught here rather than
+        # after the robot has connected
+        from pydantic import ValidationError
+
+        from quackd.adapters.manifest import apply_datasheet_override
+
+        for m in manifests:
+            try:
+                apply_datasheet_override(m, fm.datasheet)
+            except ValidationError as e:
+                why = "; ".join(str(err["msg"]).removeprefix("Value error, ") for err in e.errors())
+                problems.append(Problem("datasheet", f"{m.id} ({m.model}): {why}", robot=m.id))
+
     reported: set[str] = set()
     if fm.flock is None:
         for m in manifests:

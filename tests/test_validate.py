@@ -84,3 +84,35 @@ def test_the_registry_vocabulary_rules_stay_worded_as_before() -> None:
         "verbs.allow: unknown verbs: fly",
         "verbs.confirm: a flock cannot prompt y/N per duck: empty verbs.confirm",
     ]
+
+
+PAYLOAD_DUCK = """\
+---
+duck: 2
+name: fetch-the-box
+description: Bring the box over.
+verbs:
+  allow: [observe, stop]
+success: [The box is here.]
+datasheet:
+  payload_kg: 3.0
+---
+# Task
+Do it.
+"""
+
+
+def test_a_task_file_cannot_give_an_armless_body_a_payload() -> None:
+    """The merge is where a correction meets the body's own invariants, and `validate` is
+    where that is said before the robot is ever asked to connect."""
+    duck = parse_duck_text(PAYLOAD_DUCK)
+    problems = validate_duck(duck, [HEAD])
+    assert [p.field for p in problems] == ["datasheet"]
+    assert problems[0].robot == "head-01"
+    assert "no payload and no reach" in problems[0].message
+    assert "fixed-cam" in problems[0].message
+
+
+def test_a_correction_a_body_can_carry_is_no_problem() -> None:
+    duck = parse_duck_text(PAYLOAD_DUCK)
+    assert validate_duck(duck, [DUCK]) == []  # a beak is a manipulator, so a payload is sayable
