@@ -28,7 +28,7 @@ VerdictWord = Literal["feasible", "infeasible", "uncertain"]
 Human = Literal["go", "no_go"]
 
 BEFORE_VERDICT = frozenset(
-    {"stop", "observe", "report_state", "say", "quack", "express", "gaze", "look", "introspect"}
+    {"stop", "observe", "report_state", "say", "quack", "express", "gaze", "look"}
 )
 """What runs before a verdict: the verbs that speak, look, or read, and the brake.
 
@@ -49,6 +49,7 @@ MOVES_THE_BODY = frozenset(
         "grab",
         "move_joints",
         "gripper",
+        "grip",
         "place",
         "pick",
         "lift",
@@ -62,8 +63,8 @@ shipped adapter offers was classified deliberately, in both directions."""
 TERRAIN_ORDER: tuple[Terrain, ...] = ("indoor_flat", "indoor", "outdoor")
 """Rated for more than the task asks is fine; rated for less is not."""
 
-MANIPULATOR_WORDS = tuple(w for w in get_args(Manipulator) if w != "none") + ("any",)
-MOBILITY_WORDS = tuple(w for w in get_args(Mobility) if w != "none") + ("any",)
+MANIPULATOR_WORDS = (*(w for w in get_args(Manipulator) if w != "none"), "any")
+MOBILITY_WORDS = (*(w for w in get_args(Mobility) if w != "none"), "any")
 
 NEEDS_NUMBERS: tuple[str, ...] = (
     "payload_kg",
@@ -128,7 +129,9 @@ def _figure_value(facts: Mapping[str, Any], key: str) -> float | None:
     if isinstance(figure, Mapping):
         raw = figure.get("value")
         return float(raw) if isinstance(raw, int | float) else None
-    return float(figure) if isinstance(figure, int | float) and not isinstance(figure, bool) else None
+    return (
+        float(figure) if isinstance(figure, int | float) and not isinstance(figure, bool) else None
+    )
 
 
 def missing_needs_in(
@@ -187,7 +190,9 @@ def missing_needs_in(
 def missing_needs(needs: Mapping[str, Any], manifest: RobotManifest) -> list[str]:
     """The same, for a robot whose manifest is in hand."""
     sheet = manifest.datasheet
-    return missing_needs_in(needs, sheet.model_dump() if sheet is not None else {}, manifest.mobility)
+    return missing_needs_in(
+        needs, sheet.model_dump() if sheet is not None else {}, manifest.mobility
+    )
 
 
 def datasheet_value(manifest: RobotManifest, field: str) -> float | str | None:

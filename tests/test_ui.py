@@ -95,10 +95,13 @@ def test_nothing_here_reads_what_somebody_else_wrote_as_markup(renderable: Any) 
 
 def test_the_verdict_wears_its_outcome() -> None:
     console, buf = wide(60, force_terminal=True)
-    for outcome in ("success", "failure", "budget", "aborted"):
+    for outcome in ("success", "failure", "budget", "aborted", "infeasible"):
         console.print(ui.verdict(outcome, "why", run_dir="runs/x"))
     out = buf.getvalue()
     assert "SUCCESS" in out and "BUDGET" in out and "ABORTED" in out
+    assert "INFEASIBLE" in out
+    # infeasible is a warning, not a failure: nothing broke and nothing was tried
+    assert ui._OUTCOME["infeasible"] == ui._OUTCOME["budget"]
     assert "\x1b[32m" in out, "success is green"
     assert "\x1b[1;31m" in out, "and a failure is not"
 

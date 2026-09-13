@@ -251,6 +251,38 @@
    "green"
   ]
  ],
+ "assess_feasible": [
+  [
+   "assess  feasible: a tennis ball is well under 0.5 kg",
+   "bold green"
+  ]
+ ],
+ "assess_infeasible": [
+  [
+   "assess  infeasible: the basket looks like 3 kg of clothes [the run ends before any motion]",
+   "bold yellow"
+  ],
+  [
+   "est     laundry basket mass_kg=3 (image, medium)",
+   "dim"
+  ],
+  [
+   "needs   payload_kg=3, manipulator='gripper'",
+   "dim"
+  ]
+ ],
+ "assess_uncertain_human_no": [
+  [
+   "assess  uncertain: the basket is out of frame (the human said no) [the run ends before any motion]",
+   "yellow"
+  ]
+ ],
+ "assess_invalid": [
+  [
+   "assess  invalid: invalid: verdict: maybe",
+   "red"
+  ]
+ ],
  "declare_success": [
   [
    "declare success: ball displaced",
@@ -582,6 +614,12 @@
   "<-      walk ok: walked (20.0 s sim, 1.4 s wall, 200 intents)",
   "<-      walk ok: walked (1.0 s, 0 intents)",
   "<-      quack ok: quacked (0.0 s, 0 intents)",
+  "assess  feasible: a tennis ball is well under 0.5 kg",
+  "assess  infeasible: the basket looks like 3 kg of clothes [the run ends before any motion]",
+  "est     laundry basket mass_kg=3 (image, medium)",
+  "needs   payload_kg=3, manipulator='gripper'",
+  "assess  uncertain: the basket is out of frame (the human said no) [the run ends before any motion]",
+  "assess  invalid: invalid: verdict: maybe",
   "declare success: ball displaced",
   "declare failure: never found it",
   "memory  remembered: the ball lives by the sofa",

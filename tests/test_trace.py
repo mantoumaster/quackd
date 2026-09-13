@@ -567,6 +567,10 @@ def test_every_kind_of_moment_keeps_the_mark_its_glyph_is_chosen_from() -> None:
     assert marks["observation_error"] == ["fail"] and marks["enforce"] == ["warn"]
     assert marks["flock_claim"] == ["flock"] and marks["member_end"] == ["end"]
     assert marks["note"] == ["note"] and marks["memory"] == ["note"]
+    assert marks["assess_feasible"] == ["ok"], "a verdict that clears the way reads like one"
+    assert marks["assess_infeasible"] == ["warn"], "nothing broke: this body cannot"
+    assert marks["assess_uncertain_human_no"] == ["warn"]
+    assert marks["assess_invalid"] == ["fail"]
     assert marks["tool_result"] == ["ok"] and marks["tool_result_sim"] == ["fail"]
     # and nothing invents a mark the glyph table has no field for
     from quackd import ui

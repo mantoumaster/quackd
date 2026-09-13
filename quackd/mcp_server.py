@@ -27,10 +27,12 @@ from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Image
+from pydantic import ValidationError
 
 from quackd import __version__
 from quackd.adapters.base import adapter_name, backend_name
 from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
+from quackd.agent.prompts import body_summary
 from quackd.agent.transcript import png_bytes
 from quackd.duckfile.parser import DuckParseError, load_duck
 from quackd.duckfile.schema import Budgets, DuckFile
@@ -46,6 +48,7 @@ from quackd.safety import (
     Executor,
     Heartbeat,
     VerbNotAllowed,
+    VerdictRequired,
     allow_all,
     deny_all,
 )
@@ -69,12 +72,14 @@ from quackd.verbs.registry import (
     default_registry,
     registry_from_manifest,
 )
+from quackd.verdict import Verdict, missing_needs
 
 log = logging.getLogger("quackd.mcp")
 
 TOOL_NAMES = (
     "robot_list",
     "robot_list_verbs",
+    "robot_assess_task",
     "robot_run_verb",
     "robot_observe",
     "robot_say",
@@ -85,10 +90,15 @@ TOOL_NAMES = (
 """Every tool the server registers, in this order; `docs/mcp.md` must list each one."""
 
 INSTRUCTIONS = """You are piloting one robot through quackd: {names}, which is {blurb}.
+This body: {datasheet}
 Call robot_list_verbs first: the verbs come from that robot's own manifest, so what it can
-do is what it lists and nothing else. Every action is a *verb*; the executor enforces an
-allowlist, budgets and confirmation gates, so a refused call is a rule, not a bug. Prefer
-composite verbs (search_scan, go_to) over micro-managing velocities. Load a .duck file with
+do is what it lists and nothing else. Before the first verb that moves the body, call
+robot_assess_task with your verdict on whether this body can do the task at all, judged
+against that datasheet: feasible, infeasible or uncertain. robot_run_verb refuses anything
+that moves the body until you have answered, and loading a .duck starts a new task and
+needs a new verdict. Every action is a *verb*; the executor enforces an allowlist, budgets
+and confirmation gates, so a refused call is a rule, not a bug. Prefer composite verbs
+(search_scan, go_to) over micro-managing velocities. Load a .duck file with
 robot_load_duckfile(path) to adopt a task contract; then follow its body as your
 instructions.{memory} Call robot_run_verb(verb="stop") if anything looks wrong."""
 
@@ -103,6 +113,14 @@ call is a rule, not a bug. Prefer composite verbs (search_scan, go_to) over micr
 velocities. Load a .duck file with robot_load_duckfile(path, robot) to adopt a task
 contract on one robot; then follow its body as your instructions.{memory} Without a robot
 argument a tool acts on the default, {default}.
+Before the first verb that moves a body, call robot_assess_task(robot=...) with your verdict
+on whether that body can do the task, judged against its datasheet below: feasible,
+infeasible or uncertain. robot_run_verb refuses anything that moves that body until you
+have answered. An infeasible verdict names, in `could`, the robots here whose datasheets
+meet what the task needs: hand the task over with robot_load_duckfile(path, robot=...) and
+assess it again there.
+The bodies:
+{datasheets}
 Call robot_run_verb(verb="stop", robot=...) if anything looks wrong."""
 
 FLEET_MEMORY = """ robot_recall(robot) is what that robot learned in earlier sessions;
@@ -307,6 +325,10 @@ class RobotSession:
             return _result(VerbResult.fail(reason))
         try:
             result = await self.executor.run_verb(name, params or {}, source="mcp")
+        except VerdictRequired as e:
+            result = VerbResult.fail(
+                f"{e}: call robot_assess_task(robot={self.name!r}, verdict=...) first"
+            )
         except VerbNotAllowed as e:
             result = VerbResult.fail(str(e))
         except ConfirmDenied as e:
@@ -323,8 +345,67 @@ class RobotSession:
             )
         return _result(result)
 
+    async def assess(self, arguments: dict[str, Any], could: dict[str, str]) -> dict[str, Any]:
+        """`robot_assess_task`: the pilot's verdict on this task against this body.
+
+        `could` is the other robots in the fleet whose datasheets meet what the task needs,
+        already matched by the caller, which is the only place that knows the fleet."""
+        return await self._call(
+            "robot_assess_task", dict(arguments), lambda: self._assess(arguments, could)
+        )
+
+    async def _assess(self, arguments: dict[str, Any], could: dict[str, str]) -> dict[str, Any]:
+        if "human" in arguments:
+            return {
+                "ok": False,
+                "robot": self.name,
+                "summary": "assess_task takes no `human` field: only a person sets it",
+            }
+        try:
+            verdict = Verdict.model_validate(arguments)
+        except ValidationError as e:
+            msgs = "; ".join(
+                f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()
+            )
+            return {"ok": False, "robot": self.name, "summary": f"invalid verdict: {msgs}"}
+        self.executor.verdict = verdict
+        payload: dict[str, Any] = {
+            "ok": True,
+            "robot": self.name,
+            "verdict": verdict.verdict,
+            "summary": verdict.summary(),
+            "pending": verdict.verdict == "uncertain",
+            "could": sorted(could),
+            "could_datasheets": could,
+        }
+        if verdict.verdict == "uncertain":
+            # `--yes` answers a confirm gate because there is no terminal to ask on. Here
+            # there is a person, reachable through the model, which is better than a flag.
+            payload["note"] = (
+                "recorded as uncertain, which does not clear verbs that move the body. There "
+                "is no terminal here: ask the person you are chatting with, then call "
+                "robot_assess_task again with feasible on your own responsibility, or with "
+                "infeasible."
+            )
+        elif verdict.verdict == "infeasible":
+            payload["note"] = f"nothing on {self.name} will move for this task. " + (
+                f"These robots meet what it needs: {', '.join(sorted(could))}. Load the "
+                "task on one of them with robot_load_duckfile(path, robot=...) and assess "
+                "it again there."
+                if could
+                else "No robot in this fleet meets what it needs; tell the user."
+            )
+        else:
+            payload["note"] = "verbs that move the body now run."
+        self._emit_assess(verdict)
+        return payload
+
+    def _emit_assess(self, verdict: Verdict) -> None:
+        if self.tracer is not None:
+            self.tracer.emit("assess", **verdict.model_dump(mode="json"), ends_run=False)
+
     async def info(self, *, default: bool) -> dict[str, Any]:
-        m = self.manifest
+        m = self.effective_manifest()
         healthy: bool | None = None
         reason: str | None = None
         health = getattr(self.transport, "health", None)
@@ -344,6 +425,8 @@ class RobotSession:
             "mobility": m.mobility if m else None,
             "manifest_id": m.id if m else None,
             "digest": m.digest() if m else None,
+            "datasheet": m.datasheet.model_dump(mode="json") if m and m.datasheet else None,
+            "datasheet_text": body_summary(m) if m else None,
             "contract": self.duck.name if self.duck else None,
             "healthy": healthy,
             "health_reason": reason,
@@ -457,18 +540,26 @@ class RobotSession:
                 }
         reloaded = self.executor.budget is not None
         self.adopt(duck)
-        note = f"The executor now enforces this contract for every call to {self.name}."
+        # a new task is a new question about this body; the last task's verdict does not
+        # carry over, and the gate shuts again until the pilot answers for this one
+        self.executor.verdict = None
+        note = (
+            f"The executor now enforces this contract for every call to {self.name}. This is "
+            "a new task: assess it with robot_assess_task before anything moves."
+        )
         budget = self.executor.budget
         if reloaded and budget is not None:
             # say it, so a human reading the session sees the carry-over rather than
             # wondering why the new contract's budget is already part spent
             note += f" What this session already spent still counts: {budget.status()}."
+        effective = self.effective_manifest()
         return {
             "ok": True,
             "robot": self.name,
             "name": duck.name,
             "contract": duck.frontmatter.model_dump(),
             "instructions": duck.body,
+            "datasheet_text": body_summary(effective) if effective is not None else None,
             "note": note,
         }
 
@@ -485,6 +576,15 @@ def _result(r: VerbResult) -> dict[str, Any]:
 class Fleet:
     sessions: dict[str, RobotSession]
     default: str
+    static: dict[str, RobotManifest] = field(default_factory=dict)
+    """What each robot says about itself before it is asked: `describe()`, from the CLI. The
+    instructions are built before `connect_all` runs, so this is what they can read."""
+
+    def described(self, name: str) -> RobotManifest | None:
+        """The best manifest for this robot right now: the live one, else the static one."""
+        session = self.sessions.get(name)
+        live = session.effective_manifest() if session is not None else None
+        return live or self.static.get(name)
 
     def get(self, name: str | None) -> RobotSession | None:
         return self.sessions.get(name or self.default)
@@ -530,22 +630,33 @@ def _instructions(fleet: Fleet) -> str:
     """One robot gets a prompt about that robot, whichever body it is.
 
     Until 0.5 the solo prompt was hardcoded to a 25 cm Microduck, which was wrong for every
-    other body. The description now comes from the manifest's own blurb."""
+    other body. The description now comes from the manifest's own blurb, and the datasheet
+    from `Fleet.static`: these instructions are built when the server is, which is before
+    anything has connected, so a live manifest is not there to read yet and the static
+    description is the honest source."""
     # with --no-memory both tools answer "memory is off", so telling the pilot to call
     # them early is an instruction to waste a turn
     on = any(s.memory is not None for s in fleet.sessions.values())
     if len(fleet.sessions) == 1:
-        solo = fleet.sessions[fleet.default]
-        manifest = solo.manifest
+        manifest = fleet.described(fleet.default)
         blurb = manifest.blurb if manifest and manifest.blurb else "a small robot"
         return INSTRUCTIONS.format(
-            names=fleet.default, blurb=blurb, memory=SOLO_MEMORY if on else ""
+            names=fleet.default,
+            blurb=blurb,
+            datasheet=body_summary(manifest) if manifest else "no datasheet until it connects.",
+            memory=SOLO_MEMORY if on else "",
         )
+    described = {name: fleet.described(name) for name in fleet.sessions}
+    newline = "\n"
     return FLEET_INSTRUCTIONS.format(
         n=len(fleet.sessions),
         names=", ".join(fleet.sessions),
         default=fleet.default,
         memory=FLEET_MEMORY if on else "",
+        datasheets=newline.join(
+            f"- {name}: {body_summary(m) if m else 'no datasheet until it connects.'}"
+            for name, m in described.items()
+        ),
     )
 
 
@@ -562,6 +673,7 @@ def build_fleet_server(
     memory: bool = True,
     memory_dir: str | Path | None = None,
     trace: bool = True,
+    manifests: Mapping[str, RobotManifest] | None = None,
 ) -> tuple[MCPServer, Fleet]:
     """One MCP server over several robots, each behind its own executor.
 
@@ -605,6 +717,8 @@ def build_fleet_server(
             log=_prefixed(log.debug if trace else log.info, name),
             trace=tracer,
         )
+        # the pilot is offered `robot_assess_task`, so the executor holds it to the answer
+        executor.require_verdict = True
         heartbeat = Heartbeat(
             transport,
             executor.abort,
@@ -631,7 +745,7 @@ def build_fleet_server(
         )
         executor.on_frame = _stash_frames(session)
         sessions[name] = session
-    fleet = Fleet(sessions, default or _pick_default(robots))
+    fleet = Fleet(sessions, default or _pick_default(robots), dict(manifests or {}))
     if fleet.default not in sessions:
         raise ValueError(f"default robot {fleet.default!r} is not one of {list(sessions)}")
     if duckfile:
@@ -691,6 +805,49 @@ def build_fleet_server(
     async def robot_list_verbs(robot: str | None = None) -> dict[str, Any]:
         session = fleet.get(robot)
         return session.verbs_payload() if session else fleet.unknown(robot)
+
+    @mcp.tool(
+        description=(
+            "Your verdict on whether one robot can do the task, judged against the datasheet "
+            "in its robot_list row. Required before the first verb that moves that body: "
+            "until you answer, only stop, observe, report_state, say and the head verbs run. "
+            "feasible: go. infeasible: nothing on that robot will move, so name the limit and "
+            "what you estimated, and read `could` for a robot here that meets what the task "
+            "needs. uncertain: ask the person you are chatting with, then answer again. Fill "
+            "in `needs` (payload_kg, reach_m, manipulator, mobility, ...) even when feasible, "
+            "because that is what names the robots that could."
+        )
+    )
+    async def robot_assess_task(
+        verdict: str,
+        reason: str,
+        limits_consulted: list[str] | None = None,
+        estimates: list[dict[str, Any]] | None = None,
+        needs: dict[str, Any] | None = None,
+        robot: str | None = None,
+    ) -> dict[str, Any]:
+        session = fleet.get(robot)
+        if session is None:
+            return fleet.unknown(robot)
+        arguments: dict[str, Any] = {"verdict": verdict, "reason": reason}
+        if limits_consulted is not None:
+            arguments["limits_consulted"] = limits_consulted
+        if estimates is not None:
+            arguments["estimates"] = estimates
+        if needs is not None:
+            arguments["needs"] = needs
+        could: dict[str, str] = {}
+        if needs:
+            for name in fleet.sessions:
+                other = fleet.described(name)
+                if name != session.name and other is not None:
+                    try:
+                        if not missing_needs(needs, other):
+                            could[name] = body_summary(other)
+                    except ValueError:  # a need outside the vocabulary: the verdict refuses it
+                        could = {}
+                        break
+        return await session.assess(arguments, could)
 
     @mcp.tool(
         description="Run a verb on one robot through its executor, with JSON params. "
@@ -849,6 +1006,7 @@ def serve(
     }
     mcp, _fleet = build_fleet_server(
         adapters,
+        manifests=manifests,
         duckfile=duckfile,
         dry_run=dry_run,
         yes=yes,

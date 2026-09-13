@@ -12,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from quackd.agent.providers.factory import CLOUD_NAMES, default_model_for, model_ids
-from quackd.cli import app
+from quackd.cli import EXIT_INFEASIBLE, app
 
 from .conftest import DUCKS
 
@@ -831,3 +831,50 @@ def test_a_run_into_a_pipe_adds_no_status_line_to_what_a_script_reads(
     assert "SUCCESS" in out
     for chatter in ("waiting on", "observing", "choosing a verb", "finishing"):
         assert chatter not in out, chatter
+
+
+def test_an_infeasible_run_exits_3_and_says_what_could(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1 means the run happened and did not succeed. A run that never moved because the body
+    could not is a different answer, and a script trying one body after another reads it."""
+    from quackd.agent.providers import factory
+    from quackd.agent.providers.base import ToolCall
+    from quackd.agent.providers.fake import FakeProvider
+
+    monkeypatch.setattr(
+        factory,
+        "make_provider",
+        lambda *a, **k: FakeProvider(
+            script=[
+                ToolCall(
+                    name="assess_task",
+                    arguments={
+                        "verdict": "infeasible",
+                        "reason": "a basket of clothes is far past a beak",
+                        "needs": {"payload_kg": 3.0, "manipulator": "gripper"},
+                    },
+                )
+            ]
+        ),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "hello-world",
+            "--provider",
+            "fake",
+            "--robot",
+            "microduck:mock",
+            "--runs-dir",
+            str(tmp_path),
+            "--no-gif",
+        ],
+    )
+    assert result.exit_code == EXIT_INFEASIBLE == 3, result.output
+    out = " ".join(result.output.split())
+    assert "INFEASIBLE" in out
+    assert "far past a beak" in out
+    assert "No shipped body meets needs" in out
+    assert "toddlerbot at 1.484 kg" in out

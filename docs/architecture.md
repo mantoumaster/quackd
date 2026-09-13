@@ -48,7 +48,7 @@ sequenceDiagram
     A->>L: observation (text + image) + tool list
     L-->>A: exactly one tool call (e.g. go_to)
     A->>E: run_verb("go_to", params)
-    E->>E: allowlist · confirm · budget · abort_when · preconditions · dry-run
+    E->>E: allowlist · verdict · confirm · budget · abort_when · preconditions · dry-run
     E->>V: execute(ctx, params) with timeout
     loop 10 Hz steering
         V->>T: get_frame → detect → send_intent(move)
@@ -74,7 +74,7 @@ sequenceDiagram
 | `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
 | `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
 | `quackd/memory.py` | What a robot keeps between runs: one JSONL file per `adapter:backend` with the notes the pilot saved (`remember`) and an episode per run; rendered into the prompt next time ([memory.md](memory.md), ADR-0025). |
-| `quackd/mcp_server.py` | A robot, or a fleet (`--robots`), as MCP tools: eight `robot_*` tools through one executor per robot. |
+| `quackd/mcp_server.py` | A robot, or a fleet (`--robots`), as MCP tools: nine `robot_*` tools through one executor per robot. |
 | `bridge/toddlerbot/` | quackd's own ToddlerBot daemon: the fifty hertz loop upstream has no daemon for, plus the ten things it does not do at all, enumerated in the daemon's own docstring and in `bridge/toddlerbot/README.md` rather than a third time here. It owns the control loop rather than feeding one, which is true of no other body quackd drives. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0028](adr/0028-toddlerbot.md)). |
 | `bridge/alohamini/` | quackd's own AlohaMini host: upstream's host loop with the arm torque its own `configure()` disables and never re-enables, plus three fields in every observation so quackd can tell this host from a stock one. Never imports quackd, ships in the sdist and never in the wheel ([ADR-0027](adr/0027-alohamini.md)). |
 | `bridge/open_duck/` | **The first robot side quackd shipped**, and one of the three above. It has still never run on a duck, like everything else here. Two daemons for an Open Duck Mini v2's Raspberry Pi: the bridge, which is upstream's own walk loop with the gamepad it reads replaced by a socket, and the camera server, which serves one JPEG over HTTP. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0024](adr/0024-open-duck-mini.md)). |
@@ -95,7 +95,7 @@ sequenceDiagram
    earlier runs. Only the last two observations keep their images. The provider must return
    one tool call.
 3. **Enforce.** Zero tool calls → one re-prompt, then failure. Several → the first. Then
-   `Executor.run_verb`: abort flag → allowlist → params → confirm → budget → machine-enforced
+   `Executor.run_verb`: abort flag → allowlist → verdict → params → confirm → budget → machine-enforced
    `abort_when` → preconditions → dry-run → execute, racing the timeout against the abort.
    `stop` is exempt from the abort gate, so the brake still works after one.
 4. **Act.** The verb runs; composites loop on the camera at 10 Hz; `move` re-sends its
@@ -127,10 +127,11 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total), stop_reason, latency, or `error` when the call failed |
 | `enforce` | zero tool calls (re-prompt) or several (first only) |
 | `verb_start` | name as called, canonical name, params, source (`agent` · `mcp` · `cli`), whether it is nested inside a composite |
-| `gate` | one per executor rule that fired: `abort` · `allowlist` · `unknown` · `params` · `confirm` · `budget` · `abort_when` · `precondition` · `dry_run` · `cancelled`, with the reason and, where it matters, the robot state that caused it |
+| `gate` | one per executor rule that fired: `abort` · `allowlist` · `unknown` · `verdict` · `params` · `confirm` · `budget` · `abort_when` · `precondition` · `dry_run` · `cancelled`, with the reason and, where it matters, the robot state that caused it |
 | `intent` | every command sent to the robot: kind, params, whether it was accepted, and the robot's own clock when it has one |
 | `verb_end` | outcome (`ok` · `fail` · `refused` · `denied` · `budget` · `aborted` · `preempted` · `error`), summary, wall seconds, the robot's own seconds on a simulator, and how many intents of each kind it sent |
 | `verb` | the loop's own record of the call it made (name, params, ok, summary, data) |
+| `assess` | the pilot's feasibility verdict on this task against this body: the word, the reason, the datasheet fields it read, what it estimated about the world and how, what the task would need, whether a person cleared it, and whether the run ends there |
 | `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame, the summary (with `trace_dropped`: events a view raised on and never showed) |
 
 Example: [`assets/transcript-example.jsonl`](assets/transcript-example.jsonl), recorded

@@ -14,11 +14,109 @@ from quackd.duckfile.schema import DuckFile
 from quackd.perception.base import Detection, summarize_detections
 from quackd.transport.base import DuckState
 from quackd.verbs.registry import Verb, VerbResult
+from quackd.verdict import needs_properties
 
 if TYPE_CHECKING:
     from quackd.adapters.manifest import Datasheet, RobotManifest
 
 DUCK_BLURB = "a small biped duck robot (25 cm, 800 g)"
+
+ASSESS_TASK = {
+    "name": "assess_task",
+    "description": (
+        "Your verdict on whether THIS body can do THIS task, judged against the datasheet in "
+        "your prompt. Required before the first verb that moves the body: until you have "
+        "answered, only stop, observe, report_state, say/quack, gaze/look and express run. "
+        "Answer `feasible` when every need fits inside a limit you can point to. Answer "
+        "`infeasible` when one need clearly exceeds a limit (a 3 kg basket on a 0.3 kg "
+        "payload): the run ends at once and nothing moves, so name the limit and what you "
+        "estimated. Answer `uncertain` when the verdict turns on something you cannot judge "
+        "from here: you were given detections rather than an image, the object is out of "
+        "view, or the limit that matters is listed as not published. A human is then asked, "
+        "or you are told nobody is there to ask. Do not guess a mass or a size from the words "
+        "of the task alone: look first, or say uncertain. You may call this again later, once "
+        "you have seen the thing. It moves nothing and does not count as a step."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": ["feasible", "infeasible", "uncertain"],
+                "description": (
+                    "feasible: go. infeasible: the run ends before any motion. uncertain: a "
+                    "human decides, or you are told nobody can."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One or two sentences: the need, the limit it meets or exceeds, and how "
+                    "you compared them."
+                ),
+            },
+            "limits_consulted": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "The datasheet fields you read to decide (payload_kg, reach_m, mobility, "
+                    "...). Empty when the task needs none of them."
+                ),
+            },
+            "estimates": {
+                "type": "array",
+                "description": (
+                    "What you guessed about the world to reach the verdict, so the record "
+                    "shows it. One entry per object and quantity."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "object": {"type": "string"},
+                        "quantity": {
+                            "type": "string",
+                            "enum": [
+                                "mass_kg",
+                                "size_m",
+                                "distance_m",
+                                "height_m",
+                                "count",
+                                "other",
+                            ],
+                        },
+                        "value": {"type": "number"},
+                        "basis": {
+                            "type": "string",
+                            "enum": ["image", "detections", "task_text", "prior_knowledge"],
+                            "description": (
+                                "What the guess came from. task_text and prior_knowledge are "
+                                "the weak ones."
+                            ),
+                        },
+                        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                    },
+                    "required": ["object", "quantity", "value", "basis", "confidence"],
+                    "additionalProperties": False,
+                },
+            },
+            "needs": {
+                "type": "object",
+                "description": (
+                    "What the task requires, in the datasheet's own field names. Numbers are "
+                    "minimums (payload_kg: 3 means at least 3 kg). A matcher reads this to say "
+                    "which other body could do the task, so fill it in even when the verdict "
+                    "is feasible."
+                ),
+                "properties": needs_properties(),
+                "additionalProperties": False,
+            },
+        },
+        "required": ["verdict", "reason"],
+        "additionalProperties": False,
+    },
+}
+ASSESS_TASK_NAME = ASSESS_TASK["name"]
+
 
 DECLARE_SUCCESS = {
     "name": "declare_success",
@@ -38,7 +136,11 @@ DECLARE_SUCCESS = {
 
 DECLARE_FAILURE = {
     "name": "declare_failure",
-    "description": "Call when the task cannot be completed (target not found, repeated failures, an abort condition).",
+    "description": (
+        "Call when the task cannot be completed after trying (target not found, repeated "
+        "failures, an abort condition). If nothing has moved yet and the body itself is the "
+        "reason, call assess_task with infeasible instead."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {"reason": {"type": "string"}},
@@ -47,8 +149,10 @@ DECLARE_FAILURE = {
     },
 }
 
-META_TOOLS = [DECLARE_SUCCESS, DECLARE_FAILURE]
+META_TOOLS = [ASSESS_TASK, DECLARE_SUCCESS, DECLARE_FAILURE]
 META_TOOL_NAMES = {t["name"] for t in META_TOOLS}
+DECLARE_NAMES = {str(DECLARE_SUCCESS["name"]), str(DECLARE_FAILURE["name"])}
+"""The two that end a run. `assess_task` is a meta tool too, but it is a gate, not an ending."""
 
 REMEMBER = {
     "name": "remember",
@@ -292,7 +396,8 @@ verbs like `{loop_verb}` close their own loops on the camera. Do not micro-manag
 - Only these verbs are allowed: {", ".join(fm.verbs.allow)}. Anything else is refused.
 - Budgets: {fm.budgets.max_steps} steps, {fm.budgets.max_minutes:g} minutes, {fm.budgets.max_llm_calls} LLM calls. The run stops when any is hit.
 - Verbs marked confirm ({", ".join(fm.verbs.confirm) or "none"}) ask a human before running.
-- When a success criterion is met, call `declare_success`. If the task is impossible, call `declare_failure`.
+- Before the first verb that moves the body, call `assess_task` with your verdict on whether this body can do this task at all, judged against its datasheet below: `feasible`, `infeasible` (the run ends, nothing moves) or `uncertain` (a human is asked). Until then only `observe`, `report_state`, `say`, the head verbs and `stop` run. Assess again later if what you see changes your mind.
+- When a success criterion is met, call `declare_success`. If the task turns out impossible while doing it, call `declare_failure`.
 
 ## Success criteria
 {success}

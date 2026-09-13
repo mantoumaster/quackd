@@ -346,7 +346,12 @@ def run_header(
     return _deferred(build, glyphs)
 
 
-_OUTCOME = {"success": ("ok", "ok"), "budget": ("warn", "warn")}
+_OUTCOME = {
+    "success": ("ok", "ok"),
+    "budget": ("warn", "warn"),
+    # infeasible is not a failure: nothing was tried, the pilot said the body could not
+    "infeasible": ("warn", "warn"),
+}
 """outcome -> (style key, glyph mark). Anything else is a failure and looks like one."""
 
 
