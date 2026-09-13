@@ -13,8 +13,8 @@ from pydantic import TypeAdapter, ValidationError
 
 from quackd.agent.providers.base import ProviderTurn, ToolCall, Usage
 from quackd.agent.providers.fake import FakeProvider
-from quackd.duckfile.parser import parse_duck_text
-from quackd.duckfile.schema import FlockSection
+from quackd.duckfile.parser import DuckParseError, parse_duck_text
+from quackd.duckfile.schema import AUCTION_MAX_MEMBERS, PILOTS_MAX_MEMBERS, FlockSection
 from quackd.flock.auction import Auction, AuctionPolicy
 from quackd.flock.bus import InProcessBus
 from quackd.flock.messages import BidMsg, FlockMessage, TaskMsg
@@ -40,6 +40,50 @@ def test_flock_section_defaults_and_names() -> None:
 def test_flock_members_validation(bad: Any) -> None:
     with pytest.raises(ValidationError):
         FlockSection(members=bad)
+
+
+def test_the_method_says_which_kind_of_flock_and_auction_is_the_default() -> None:
+    assert FlockSection().allocation.method == "auction"
+    pilots = FlockSection(members=["ada", "grace"], allocation={"method": "pilots"})
+    assert pilots.allocation.method == "pilots"
+
+
+def test_pilots_take_up_to_eight_members_and_an_auction_still_caps_at_four() -> None:
+    """The arena holds four. A pilot flock has no arena, so the bound is a person's terminal."""
+    eight = [f"duck-{i}" for i in range(PILOTS_MAX_MEMBERS)]
+    assert len(FlockSection(members=eight, allocation={"method": "pilots"}).member_names) == 8
+    with pytest.raises(ValidationError, match="an auction flock needs 2 to 4"):
+        FlockSection(members=eight[:5])
+    with pytest.raises(ValidationError, match="2 to 8"):
+        FlockSection(members=[*eight, "duck-8"], allocation={"method": "pilots"})
+
+
+def test_the_auction_cap_is_the_arenas_own() -> None:
+    """Spelled in the schema rather than imported, so the two must be checked against each
+    other somewhere; here."""
+    from quackd.sim2d.world import MAX_DUCKS
+
+    assert AUCTION_MAX_MEMBERS == MAX_DUCKS
+
+
+def test_roles_belong_to_the_auction() -> None:
+    with pytest.raises(ValidationError, match="roles is an auction feature"):
+        FlockSection(
+            members=["ada", "grace"],
+            allocation={"method": "pilots"},
+            roles={"spotter": {"requires": ["observe"]}, "kicker": {"requires": ["kick"]}},
+        )
+
+
+def test_pilots_needs_duck_1() -> None:
+    text = (
+        "---\nduck: {v}\nname: t\ndescription: d\nverbs:\n"
+        "  allow: [stop]\nsuccess: [x]\nflock:\n  members: [ada, grace]\n"
+        "  allocation:\n    method: pilots\n---\n# T\nx\n"
+    )
+    with pytest.raises(DuckParseError, match="pilots needs duck: 1"):
+        parse_duck_text(text.format(v=0))
+    assert parse_duck_text(text.format(v=1)).frontmatter.flock is not None
 
 
 def test_flock_block_parses_in_a_duck_and_is_optional() -> None:

@@ -1,6 +1,15 @@
 # ADR-0032: Datasheets, and a pilot that refuses what its body cannot do
 
-**Status:** accepted · **Date:** 2026-09-13 · Extends [ADR-0017](0017-robot-adapters-and-manifest.md) (the manifest gains a datasheet), [ADR-0012](0012-safety-executor.md) (a gate before motion) and [ADR-0019](0019-duck-spec-v1.md) (`duck: 2`)
+**Status:** accepted, amended · **Date:** 2026-09-13 · Extends [ADR-0017](0017-robot-adapters-and-manifest.md) (the manifest gains a datasheet), [ADR-0012](0012-safety-executor.md) (a gate before motion) and [ADR-0019](0019-duck-spec-v1.md) (`duck: 2`)
+
+**Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md):** the
+consequence below that no flock quackd can start has two different bodies in it is now true of
+the *auction* only. A pilot flock takes any bodies, so the datasheet vocabulary this ADR
+defines is finally read by something that moves: each pilot's `assess_task` judges its own part
+of a shared goal against its own sheet, and the "Your flock" section of every pilot's prompt
+carries `body_summary` for each of its peers, which is the same paragraph this ADR renders for
+the pilot's own body. A pilot flock uses no `flock.roles`, so role `needs` is still exercised
+only at the coordinator and in unit tests.
 
 ## Context
 

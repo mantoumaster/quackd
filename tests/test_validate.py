@@ -164,3 +164,53 @@ def test_a_role_one_robot_can_carry_for_is_fine() -> None:
     )
     duck = parse_duck_text(CARRY_FLOCK)
     assert [p.field for p in validate_duck(duck, [HEAD, strong])] == []
+
+
+def test_the_flock_keyword_forces_union_semantics() -> None:
+    """A task file with no `flock:` block, run against a stored flock, is a flock all the
+    same. Checked robot by robot it would refuse the camera for having no legs."""
+    duck = load_duck("hello-world")
+    alone = validate_duck(duck, [HEAD, DUCK])
+    assert [p.field for p in alone] == ["requires", "requires"]
+    assert validate_duck(duck, [HEAD, DUCK], flock=True) == []
+    # and the override works the other way: a flock duck judged one body at a time
+    flock_duck = load_duck("flock-kick")
+    assert validate_duck(flock_duck, [HEAD], flock=False)
+
+
+def test_a_pilot_flock_may_gate_a_verb_and_an_auction_may_not() -> None:
+    """An auction member has nobody to ask, so a gated verb there can only be refused. A
+    pilot flock has pilots, and `--yes` answers for all of them at the run."""
+    text = (
+        "---"
+        + chr(10)
+        + "duck: 1"
+        + chr(10)
+        + "name: t"
+        + chr(10)
+        + "description: d"
+        + chr(10)
+        + "verbs:"
+        + chr(10)
+        + "  allow: [stop, kick]"
+        + chr(10)
+        + "  confirm: [kick]"
+        + chr(10)
+        + "success: [x]"
+        + chr(10)
+        + "flock:"
+        + chr(10)
+        + "  members: [ada, grace]"
+        + chr(10)
+        + "{alloc}---"
+        + chr(10)
+        + "# T"
+        + chr(10)
+        + "x"
+        + chr(10)
+    )
+    auction = parse_duck_text(text.format(alloc=""))
+    assert [p.field for p in validate_duck(auction)] == ["verbs.confirm"]
+    pilots_alloc = "  allocation:" + chr(10) + "    method: pilots" + chr(10)
+    pilots = parse_duck_text(text.format(alloc=pilots_alloc))
+    assert [p.field for p in validate_duck(pilots)] == []

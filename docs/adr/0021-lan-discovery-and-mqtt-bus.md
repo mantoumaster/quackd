@@ -1,6 +1,15 @@
 # ADR-0021: LAN discovery over zeroconf and a flock bus over MQTT, both extras
 
-**Status:** accepted · **Date:** 2026-09-02 · Implemented in Phase 4 of 0.4 ([design](../design/multi-robot.md))
+**Status:** accepted, amended · **Date:** 2026-09-02 · Implemented in Phase 4 of 0.4 ([design](../design/multi-robot.md))
+
+**Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md):** the bus
+carries a ninth kind, `TALK`, which is what one pilot says to another. It rides `ctl` at QoS 1
+like every other control message and needs nothing new from `MqttBus`. The reason there is
+still no `--bus` flag has changed for one of the two kinds: an auction across machines still
+needs a distributed clock, but a pilot flock has no shared clock to distribute, so what is
+missing there is simply that nothing has ever carried one between machines and quackd does not
+ship a claim it has not run. Discovery is still identity only and still feeds no flock: a
+stored flock is a list of names a person wrote, not a list of what answered an mDNS query.
 
 ## Context
 

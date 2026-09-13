@@ -34,13 +34,20 @@ def validate_duck(
     manifests: Sequence[RobotManifest] = (),
     *,
     registry: VerbRegistry | None = None,
+    flock: bool | None = None,
 ) -> list[Problem]:
     """Every problem, in a stable order; an empty list means the contract is honourable.
 
     With manifests, `requires` (for a v0 file: every allowed verb) must be provided by each
     robot for a solo task, or by at least one robot of a flock; every flock role must be
-    fillable by at least one robot. Without manifests the vocabulary is the registry."""
+    fillable by at least one robot. Without manifests the vocabulary is the registry.
+
+    `flock` overrides where that fork is taken. None reads the file, which is right for
+    `quackd validate` and for a solo run. A task file with no `flock:` block run against a
+    stored flock is a flock all the same, and checking each of its bodies for every verb
+    would refuse the arm for not being able to walk, so the caller says so (ADR-0034)."""
     fm = duck.frontmatter
+    as_flock = (fm.flock is not None) if flock is None else flock
     problems: list[Problem] = []
     if not manifests:
         if registry is None:
@@ -54,7 +61,10 @@ def validate_duck(
         problems.append(
             Problem("learned_verbs", "must be empty (executing policies is a v2 feature)")
         )
-    if fm.flock is not None and fm.verbs.confirm:
+    if fm.flock is not None and fm.flock.allocation.method == "auction" and fm.verbs.confirm:
+        # An auction member is a state machine with nobody to ask, so a gated verb there can
+        # only ever be refused. A pilot flock has pilots, and `--yes` is the answer for all of
+        # them at once, so the refusal belongs at the run rather than in the contract.
         problems.append(
             Problem("verbs.confirm", "a flock cannot prompt y/N per duck: empty verbs.confirm")
         )
@@ -77,7 +87,7 @@ def validate_duck(
                 problems.append(Problem("datasheet", f"{m.id} ({m.model}): {why}", robot=m.id))
 
     reported: set[str] = set()
-    if fm.flock is None:
+    if not as_flock:
         for m in manifests:
             for verb in fm.effective_requires:
                 if not m.provides(verb):
@@ -100,7 +110,8 @@ def validate_duck(
                         "requires", f"requires {verb}, but none of {ids} provides it", verb=verb
                     )
                 )
-        for role, spec in (fm.flock.roles or {}).items():
+        roles = fm.flock.roles if fm.flock is not None else None
+        for role, spec in (roles or {}).items():
             fillers = [m for m in manifests if all(m.provides(v) for v in spec.requires)]
             if not fillers:
                 problems.append(

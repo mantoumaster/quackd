@@ -1,6 +1,15 @@
 # ADR-0025: Memory between runs: one JSONL file per robot, notes the model chooses and episodes quackd writes
 
-**Status:** accepted · **Date:** 2026-09-03 · Extends ADR-0017 (the manifest is the vocabulary; memory is not a verb) · Documented in [docs/memory.md](../memory.md)
+**Status:** accepted, amended · **Date:** 2026-09-03 · Extends ADR-0017 (the manifest is the vocabulary; memory is not a verb) · Documented in [docs/memory.md](../memory.md)
+
+**Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md):** the key
+is `adapter:backend` for a robot quackd knows only as a spec, and the **registered name** for
+one added with `quackd robot add`. The argument below, that a simulated duck must not inherit a
+real one's notes, is why the key was the body rather than the run; it does not argue that two
+real ducks on one desk should share a file, which is what it also meant. A name is the finer
+distinction and is used wherever there is one. A registered name may not collide with an
+adapter name or with an existing `adapter-backend` slug, so no run can be ambiguous about which
+file it is writing.
 
 ## Context
 
