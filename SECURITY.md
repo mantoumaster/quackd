@@ -7,7 +7,7 @@ Please **do not** open a public issue for vulnerabilities. Email
 vulnerability reporting on the repository if enabled. You will get an acknowledgement
 within 72 hours.
 
-## What "security" means for a robot brain
+## What "security" means when an LLM commands a robot
 
 quackd sends *intents* to a robot. How much of the stopping the robot itself does depends
 on the body, and each adapter declares it in its manifest's `safety_authority`
