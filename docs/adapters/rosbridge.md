@@ -36,7 +36,7 @@ and turns the camera verbs on). Two more name where the robot's own description 
   "manifest": 1, "id": "base-01", "vendor": "ros", "model": "rosbridge-base",
   "embodiment": "wheeled", "mobility": "wheeled",
   "intents": ["twist"], "sensors": ["odometry", "camera"],
-  "verbs": ["observe", "report_state", "stop", "move", "go_to", "search_scan", "approach_and"],
+  "verbs": ["observe", "report_state", "stop", "move", "introspect", "go_to", "search_scan", "approach_and"],
   "preconditions": {},
   "safety_authority": {"native": "none", "deadman": false, "heartbeat_hz": 2.0},
   "frame": {"reference": "base", "note": "Twist in the base frame; odometry in its odom frame"},
@@ -45,7 +45,11 @@ and turns the camera verbs on). Two more name where the robot's own description 
 }
 ```
 
-Every verb here is a core verb: the adapter adds no extension, it only says what it has.
+Every verb but `introspect` is a core verb: the adapter mostly says what it has, and adds
+the one thing that asks. The `blurb` and the `datasheet` are left out above: the
+blurb is one fixed line on either backend, and the sheet is the thing that is not a constant
+here. On `mock` it reads 11 kg over three link inertials and two moving joints, read from the
+canned URDF the mock serves.
 The `limits` are what `move`, `go_to` and the turn used by `search_scan` clamp to; they are
 quackd's caution, not the base's capability. A manifest can lower them, but not raise them past
 `move`'s own schema bounds (±0.3 m/s, ±0.2 m/s, ±1.5 rad/s), which reject a larger request.
@@ -80,10 +84,16 @@ a gripper can hold, and quackd on this adapter commands a velocity and nothing e
 named like a gripper are noted and claimed as nothing. A pilot reading a datasheet full of
 "not published" is told to decline whatever hinges on it, which is the point.
 
+Two caps bound what comes back. A description over 8 MiB is refused unparsed, so mass and
+joint count stay unknown with `the description is over 8192 KiB` as the reason, and only the
+first 24 moving joints reach the notes, the rest counted as `and N more joints not listed
+here`. Neither is settable.
+
 If nothing answers, quackd connects anyway and the datasheet says `nothing discovered on the
 bridge`, with the reason. A bridge launched without the `rosapi` node is the usual cause,
 and both description sources can be turned off in the address (`?urdf_param=off`,
-`?urdf_topic=off`) so that costs nothing on a bridge that will never answer.
+`?urdf_topic=off`). That skips the two description reads and not the topic list, which is
+asked for first and under the same deadline, so a bridge with no `rosapi` still costs it.
 
 `introspect` re-reads all of it and returns the topic list and the description, so a pilot
 can look again after a robot has finished booting. It refreshes the manifest's datasheet in

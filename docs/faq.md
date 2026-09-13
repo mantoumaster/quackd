@@ -101,13 +101,13 @@ checks before it reads a key or opens a connection, so nothing was sent anywhere
 
 ```
 $ quackd run hello-world --provider openai --model gpt-5 --robot microduck:mock
-error: openai: unknown model 'gpt-5' from --model. Valid ids: gpt-5.6-sol (default), gpt-6-astra,
+✗ error: openai: unknown model 'gpt-5' from --model. Valid ids: gpt-5.6-sol (default), gpt-6-astra,
 gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.2, gpt-5.1,
 gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5.3-codex,
 chat-latest. See `quackd list-models --provider openai`.
 
 $ quackd run hello-world --provider openai --model grok-4.6 --robot microduck:mock
-error: openai: unknown model 'grok-4.6' from --model ('grok-4.6' is a grok model: pass --provider
+✗ error: openai: unknown model 'grok-4.6' from --model ('grok-4.6' is a grok model: pass --provider
 grok). Valid ids: ... See `quackd list-models --provider openai`.
 ```
 
@@ -116,6 +116,14 @@ rather than just refused, which is the mistake worth catching early. `QUACKD_MOD
 the same check and gets the same refusal, with `QUACKD_MODEL` in place of `--model`, so a stale
 line in your `.env` cannot quietly start a run either. The one thing this never applies to is a
 local preset, whose `--model` is free text.
+
+**The id is in the catalogue, but the vendor refuses my key.** Check which endpoint your key
+belongs to. quackd calls each cloud vendor at one fixed base URL, and for two of them there
+is more than one to choose from: Qwen goes to DashScope's *international* endpoint
+(`dashscope-intl.aliyuncs.com`), so a key issued on Alibaba's China console will not
+authenticate, and Cohere goes to its OpenAI compatibility path rather than its native one.
+`--base-url` moves any vendor that speaks OpenAI's API, which is every one of them except
+Anthropic and Gemini, where the flag is accepted and ignored.
 
 **Are local LLMs supported (llama.cpp, vLLM, Ollama, LM Studio)?** Yes. They all speak
 OpenAI's Chat Completions API, so `--provider ollama`, `vllm`, `llamacpp`, `lmstudio`, or

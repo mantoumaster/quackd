@@ -1,11 +1,13 @@
-# The `.duck` file — spec v0 and v1 (normative)
+# The `.duck` file — spec v0, v1 and v2 (normative)
 
 A `.duck` file is a task for an LLM-piloted robot. It is deliberately **SKILL.md-shaped**:
 YAML frontmatter between `---` fences, then a Markdown body. The frontmatter is a contract
 the executor enforces; the body is the prompt. **The LLM is never trusted to self-police.**
 `.duck` is the format name the way `Dockerfile` is: a task for a LeRobot arm is a `.duck`
-too. `duck: 1` (quackd 0.4) adds what a multi-robot task needs; `duck: 0` files parse and
-run unchanged ([ADR-0019](adr/0019-duck-spec-v1.md)).
+too. `duck: 1` (quackd 0.4) adds what a multi-robot task needs, and `duck: 2` adds what a
+task says about the *body*: a correction to the robot's own datasheet, and what a flock role
+physically needs ([ADR-0019](adr/0019-duck-spec-v1.md),
+[ADR-0032](adr/0032-datasheets-and-the-verdict.md)). `duck: 0` files parse and run unchanged.
 
 Machine-readable schema: [`../quackd/duckfile/schema.json`](../quackd/duckfile/schema.json)
 (generated from `quackd/duckfile/schema.py`; a test keeps them in sync).
@@ -77,10 +79,32 @@ terminal to prompt on). Full semantics: [flock.md](flock.md).
 | `flock.search.partition` | `heading` | `heading` | coordinator | Each duck owns a heading sector. |
 | `flock.search.restart_s` | > 0 ≤ 120 | 8 | member | Re-scan the sector when nothing was found for this long. |
 | `flock.roles` (v1) | mapping `{spotter: {requires: [...]}, kicker: {requires: [...]}}` | absent | coordinator | Heterogeneous roles. A robot bids only for a role whose `requires` its manifest satisfies. quackd knows exactly these two roles (both must be given), one robot each; `members` must then be a named list. Each role's `requires` ⊆ `allow`. |
-| `flock.roles.<role>.needs` (v2) | mapping in the datasheet vocabulary | `{}` | coordinator | What the body must be able to do, not only what it must know: `payload_kg`, `reach_m`, `endurance_min`, `work_height_m` and `arms` are minimums; `manipulator`, `mobility` and `terrain` must match. A figure the maker never published counts as not met. Checked by `validate --robots`, by the member before it bids, and by the coordinator from what the bid carried ([flock.md](flock.md)). |
+| `flock.roles.<role>.needs` (v2) | mapping in the datasheet vocabulary | `{}` | coordinator | What the body must be able to do, not only what it must know. See the rules below. Checked by `validate --robots`, by the member before it bids, and by the coordinator from what the bid carried ([flock.md](flock.md)). |
 | `flock.frame_hints` (v1) | `auto` · `on` · `off` | `auto` | runner | Share arena-frame target hints between robots. `auto` is on only when every member runs in `sim2d`; there is no shared frame on hardware ([flock.md](flock.md)). |
 
 Unknown keys anywhere are errors (`extra="forbid"`).
+
+### `needs` — the datasheet vocabulary (v2)
+
+A role's `needs` is checked against a robot's datasheet, and each key is checked its own way.
+The same vocabulary is what a pilot names in `assess_task`, so a refusal and a role are
+worded alike ([manifest-spec.md](manifest-spec.md#the-datasheet)).
+
+| Key | How it is checked |
+|---|---|
+| `payload_kg`, `reach_m`, `arms` | minimums. The body must publish at least this much. |
+| `endurance_min` | a minimum, except on a mains-powered body (`tethered: true`), which has nothing to run down and passes. |
+| `work_height_m` | **not** a minimum: a height the hands must be able to reach, so it must fall inside the body's `workspace_height_m` band. Asking for 0.4 m fails a body that reaches 0.5 to 1.25 m, because that is below it. |
+| `manipulator`, `mobility` | must match the body's own word, or be `any`, which accepts anything except `none`. |
+| `terrain` | a floor, not a match: `indoor_flat` < `indoor` < `outdoor`, and a body rated for more than the task asks passes. |
+
+**A figure the maker never published counts as not met**, because a robot that cannot say
+what it carries is not the one to ask to carry something. The words are
+`manipulator: beak · gripper · arms · any`, `mobility: legged · wheeled · any` and
+`terrain: indoor_flat · indoor · outdoor`. Of those, `terrain` is the one to be careful
+with: five shipped bodies are rated `indoor_flat` and two publish nothing, so a role asking
+for `indoor` or `outdoor` can be filled by no robot quackd ships today
+([manifest-spec.md](manifest-spec.md#the-datasheet)).
 
 ### `abort_when` — what is enforced
 
@@ -120,9 +144,10 @@ is refused at runtime and the LLM is told so.
 
 ## Runtime semantics
 
-- The loop ends with one of `success`, `failure` (the LLM's declaration), `budget`,
-  `aborted` (heartbeat, kill switch, enforced `abort_when`), or `error` (a provider or
-  transport that failed, or a bug). The robot is stopped in every case and its adapter
+- The loop ends with one of `success`, `failure` (the LLM's declaration), `infeasible` (the
+  pilot judged the task beyond this body, so nothing moved and `quackd run` exits 3),
+  `budget`, `aborted` (heartbeat, kill switch, enforced `abort_when`), or `error` (a provider
+  or transport that failed, or a bug). The robot is stopped in every case and its adapter
   closed.
 - `--max-steps` on the CLI overrides `budgets.max_steps` for one run.
 - `--dry-run` executes read-only verbs (`observe`, alias `get_frame`, and `report_state`) and logs everything else without
@@ -170,8 +195,11 @@ datasheet:
 
 A figure given here replaces the robot's own and is rendered as coming from the task file,
 so the pilot can see which numbers are the maker's and which are yours. A bare number is
-shorthand for `{value: n}`, and its confidence defaults to `estimate`. The sentence lists
-(`cannot`, `notes`, `not_rated`) **extend** the robot's: a task file can add something a
-body cannot do, and can never delete one. A correction the body contradicts, a payload on a
-robot with nothing to hold with, is refused by `validate` before the run starts. A flock
+shorthand for `{value: n}`, and its confidence defaults to `estimate`. The words can be
+corrected too, not only the figures: `manipulator`, `arms`, `tethered` and `terrain`. The
+sentence lists (`cannot`, `notes`, `not_rated`) **extend** the robot's: a task file can add
+something a body cannot do, and can never delete one. A sentence must start with a word and
+stay under 300 characters, so the leading `-`, `` ` `` or `*` that a list invites is refused
+at parse time: the prompt bullets these itself, and a backtick is how it spells a verb. A correction the body contradicts, a
+payload on a robot with nothing to hold with, is refused by `validate` before the run starts. A flock
 duck cannot carry one, because it describes one body.

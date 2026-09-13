@@ -197,7 +197,7 @@ The same thing as a conversation, through MCP in Claude Code or Claude Desktop:
 
 ## Status
 
-Version 0.7, simulator and mocks. What has been built, and how far each piece has actually been exercised:
+Version 0.8, simulator and mocks. What has been built, and how far each piece has actually been exercised:
 
 | Piece | Status |
 |---|---|
@@ -356,14 +356,14 @@ Cloud or local, same command.
 
 Every row above runs the cartoon, which is the default robot. To put the same model on the physics simulator instead, ask for both extras and name the backend: `uvx --from "quackd[mujoco,anthropic]" quackd run find-and-kick --provider anthropic --robot microduck:mujoco`. The extras are independent, so `quackd[anthropic]` alone gives you the model and no physics. Nobody stands in the physics arena, so `follow-me`, whose whole task is to follow somebody, cannot succeed there and nothing stops you pointing it at that backend anyway.
 
-A cloud model that takes an image sees the camera frame. Where a vendor does not document image input, `quackd list-models` marks that model `no frames` and quackd sends it the detections as text instead. Local models get the text detections by default and the frame too with `--vision`, which also overrides a `no frames` mark. The scripted pilot only reads the detection summary. Local setup, tool calling flags per server and what to expect from small models: [docs/local-llms.md](docs/local-llms.md).
+A cloud model that takes an image sees the camera frame. Where a vendor does not document image input, `quackd list-models` marks that model `no frames` and quackd sends it the detections as text instead. Local models get the text detections by default and the frame too with `--vision`, which also overrides a `no frames` mark. `--no-vision` is the other direction, for a vision model you would rather send text to. The scripted pilot only reads the detection summary. Local setup, tool calling flags per server and what to expect from small models: [docs/local-llms.md](docs/local-llms.md).
 
 | Command | What it does |
 |---|---|
 | `quackd run <duck>` or `quackd run --goal "..."` | Run a task. `--provider`, `--robot <adapter>:<backend>`, `--robots name=<adapter>:<backend>,...` for a flock of mixed bodies, `--address` for a real robot, `--model`, `--seed`, `--max-steps`, `--dry-run`, `--yes`, `--live`, `--gif-size`, `--camera-url` for a robot whose camera is a separate service, `--fov-deg` for your camera's field of view (without it, distances on hardware are a rough guess), `--token` for a robot that wants one, `--flock N` (2 to 4, sim2d), `--no-memory` and `--memory-dir` for what it carries between runs, `--no-trace` to stop it narrating what happens behind the scenes, `--no-trace-prompt` to keep the narration and drop the system prompt. It exits 1 when a run does not succeed, and 3 when the pilot judged the task beyond this body and nothing moved |
 | `quackd validate ducks/*.duck` | Check task files against the spec and a robot's manifest (`--robot`, repeatable, `--robots` for a fleet, or the file's own `robots:` if it has one). Exits 1 with field level errors such as `requires kick, but arm-01 (lerobot-so101) does not provide it`. `--json` prints one object per file and keeps the same exit code |
 | `quackd serve-mcp` | Expose a robot (`--robot <adapter>:<backend>`), or a fleet with `--robots name=<adapter>:<backend>,...`, as MCP tools over stdio. `--duckfile` starts with a contract loaded on the default robot, `--yes` allows confirm gated verbs, `--seed`, `--address`, `--dry-run`, `--no-memory`, `--memory-dir` and `--no-trace` |
-| `quackd doctor` | Keys, extras, adapters, local LLM servers, and every upstream assumption on this machine, ending in one line saying whether anything can run here (`--robot` for one robot's manifest, `--address` to ask a real robot what it is running, `--json` for a script) |
+| `quackd doctor` | Keys, extras, adapters, local LLM servers, and every upstream assumption on this machine, ending in one line saying whether anything can run here (`--robot` for one robot's manifest, `--address` to ask a real robot what it is running, `--json` for a script). It exits 1 when nothing here can run, so a setup script can branch on it |
 | `quackd list-verbs` | The vocabulary with parameters and safety classes (`--robot` for another robot, `--json` for a script) |
 | `quackd list-adapters` | The robot adapters this build knows, their backends and status (`--json` for a script) |
 | `quackd list-models` | Every model this build knows for every cloud vendor: the id `--model` takes, a label, one of five statuses (`current`, `legacy`, `preview`, `specialised`, `open`) and notes, which mark each vendor's default, the OpenAI models that need the Responses API, and the models quackd sends text detections to rather than a frame. `--provider NAME` prints one vendor. Local presets have no rows, because they take any id their server serves. `--json` for a script |
@@ -559,11 +559,11 @@ browser test.
 | Physics simulator | `--robot microduck:mujoco`, with `quackd[mujoco]`. The model and the policies are fetched once into `~/.quackd/cache`, where `QUACKD_CACHE_DIR` moves them and `QUACKD_MICRODUCK_ASSETS` points at your own `microduck_rl` checkout instead. `QUACKD_MUJOCO_BODY=puppet` runs the kinematic stand-in, which downloads nothing and is the body the tests build. `--live` opens MuJoCo's own viewer |
 | Determinism | `--seed N` makes a simulator run repeatable |
 | Budgets | in the `.duck`. `--max-steps` overrides for one run |
-| Human in the loop | `verbs.confirm` in the `.duck` prompts y/N. `--yes` auto accepts. MCP refuses gated verbs unless started with `--yes` |
+| Human in the loop | `verbs.confirm` in the `.duck` prompts y/N, and so does a pilot that answers `uncertain` when it judges the task, where a no ends the run. `--yes` auto accepts both, and `quackd record` always passes it. MCP refuses gated verbs unless started with `--yes` |
 | Dry run | `--dry-run` sends nothing, and the trace shows every verb it would have run, with its parameters |
 | Trace | on by default, on stderr: the prompt, what the model thought and chose, every executor decision, every intent sent to the robot, every result, tokens and timings, a rule per step and a glyph per outcome. `--no-trace` or `QUACKD_TRACE=0` turns it off and leaves the one line status that says what the run is waiting on, `--no-trace-prompt` or `QUACKD_TRACE_PROMPT=0` drops just the system prompt, `QUACKD_TRACE_THINKING` caps the reasoning shown per turn (default 2000 characters, `all` for everything). The transcript keeps all of it either way. See [docs/architecture.md](docs/architecture.md#trace) |
-| Colour | on when the output is a terminal. `--no-color` or `NO_COLOR=1` turns it off, `FORCE_COLOR=1` keeps it in a pipe. Glyphs fall back to ASCII on a codepage that cannot carry them |
-| Machine readable | `--json` on `validate`, `list-verbs`, `list-adapters`, `doctor` and `discover`. One object per line on stdout, nothing else, and the exit code is unchanged |
+| Colour | on when the output is a terminal. `quackd --no-color <command>` or `NO_COLOR=1` turns it off, `FORCE_COLOR=1` keeps it in a pipe. `--no-color` belongs to `quackd` itself, so it goes before the command rather than after it. Glyphs fall back to ASCII on a codepage that cannot carry them |
+| Machine readable | `--json` on `validate`, `list-verbs`, `list-adapters`, `list-models`, `doctor` and `discover`. One object per line on stdout, nothing else, and the exit code is unchanged |
 | Memory | on by default, under `~/.quackd/memory/`. `--no-memory` runs fresh, `--memory-dir` or `QUACKD_MEMORY_DIR` moves it |
 
 **Real robots.** Each needs `--robot` and `--address`, and the extra named. None has been run against its target by us, so all seven are 🧪 ([docs/adapter-status.md](docs/adapter-status.md)).

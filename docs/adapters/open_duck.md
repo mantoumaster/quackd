@@ -59,6 +59,11 @@ Its datasheet, which the pilot is shown and told to judge a task against before 
 | Actuated joints | 14 (estimate: the BOM and the runtime's joint list; STS3215 servos, which the BOM states) |
 | Not published | mass, endurance |
 
+And what it cannot do whatever the task says, which is the half a refusal usually turns on, in the words the pilot is shown:
+
+- pick up, push or carry anything: there is no arm, no gripper and no beak
+- get back on its feet after a fall: there is no recovery policy, so a fall ends the run and needs a human
+
 A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The manifest
@@ -85,9 +90,8 @@ driving a legged robot that also has a head. `ducks/open-duck-lookout.duck` deli
 leaves `search_scan` out for exactly this reason.
 
 `say` has no voice behind it. There is no text to speech anywhere in the runtime, so the
-text is logged verbatim and voiced as the closest of the duck's own sounds — the same
-mood-mapping approach [ADR-0023](../adr/0023-reachy-mini.md) used for the now-removed
-Reachy Mini adapter ([ADR-0024](../adr/0024-open-duck-mini.md)).
+text is logged verbatim and voiced as the closest of the duck's own sounds
+([ADR-0024](../adr/0024-open-duck-mini.md)).
 
 ## The bridge daemon
 

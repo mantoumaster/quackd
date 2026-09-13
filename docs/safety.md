@@ -7,7 +7,7 @@ A biped falls in 0.3 s; an LLM answers in 3 s. Everything here follows from that
 | Layer | Owner | What it guarantees |
 |---|---|---|
 | Body | the robot's own controller | **Whatever that particular body actually offers, which is not the same everywhere.** The Microduck's `robotd` gives joint and thermal clamps, fall detection and a **deadman**: velocity goes to zero when `robot.move` notifications stop. An Open Duck Mini v2 gives *none of those*: its deadman is quackd's own daemon on the Pi and the human watching is its only fall detector (details under "On hardware"). The body is still the sole safety authority: clients send intents, never motor writes. What each body offers is declared in its manifest's `safety_authority`, and `quackd doctor` prints what the robot itself reported (see "On other bodies"). |
-| Judgement | the pilot, held to it by quackd `Executor` | Nothing that moves the body runs until the model has said, against the robot's datasheet, whether the task fits the body at all. It is the model's own judgement; what the executor guarantees is that it was made, recorded, and made *before* the first leg moved. |
+| Judgement | the pilot, held to it by quackd `Executor` | Nothing that moves the body runs until the model has said, against the robot's datasheet, whether the task fits the body at all. It is the model's own judgement; what the executor guarantees is that it was made, recorded, and made *before* the first leg moved. A flock member is a state machine with no pilot to ask, so it is never asked: a role's `needs` against a datasheet is what a flock has instead ([flock.md](flock.md)). |
 | Conversation | quackd `Executor` | The LLM and MCP clients can only do what the `.duck` allows, as often as the budget allows, with a human in the loop where the contract says so. |
 | Session | quackd `Heartbeat` + `KillSwitch` | A dead transport or a worried human ends in a `stop` intent. |
 
@@ -15,9 +15,14 @@ A biped falls in 0.3 s; an LLM answers in 3 s. Everything here follows from that
 
 Every verb call — from the agent loop or an MCP session — passes `Executor.run_verb`, in
 this order: abort flag (`stop` is exempt, so the brake still works) → **allowlist**
-(`verbs.allow`; `stop` always allowed) → param validation (errors are feedback to the
-model, not crashes) → **confirm gate** (`verbs.confirm` or `safety_class` ∈ {confirm,
-dangerous}; y/N in the terminal, `--yes` to auto-accept, MCP refuses unless `--yes`) →
+(`verbs.allow`; `stop` always allowed) → **verdict** (nothing that moves the body runs until
+the pilot has judged the task feasible against the datasheet; `stop`, `observe`,
+`report_state`, `say`, `quack`, `express`, `gaze`, `look` and `introspect` run before it,
+because a pilot has to be able to look at the thing before judging whether it can lift it,
+and a verb in neither list waits, including one quackd has never heard of) → param
+validation (errors are feedback to the model, not crashes) → **confirm gate**
+(`verbs.confirm` or `safety_class` ∈ {confirm, dangerous}; y/N in the terminal, `--yes` to
+auto-accept, MCP refuses unless `--yes`) →
 **budgets** (`max_steps` and `max_minutes` here, which is what caps an MCP session since
 there is no loop there; `max_llm_calls` is the loop's own) →
 machine-enforced **`abort_when`** (the battery threshold here, consecutive failures once
@@ -43,6 +48,19 @@ Ctrl-C and `q` (when stdin is a terminal) set the same abort flag; the loop's `f
 always sends `stop` and closes the transport. Works on Windows (signal handler, not
 `loop.add_signal_handler`).
 
+## When the pilot is unsure
+
+`assess_task` has a third answer. `uncertain` means the pilot cannot tell from where it is
+whether the body can do the task, and at a terminal that is a y/N question with no as the
+default. A no ends the run `aborted` and exits 1, not `infeasible` and 3, because a person
+stopping a robot is the kill switch's kind of act rather than a statement about the body.
+
+**`--yes` answers that question with go**, the same way it answers a confirm gate, and
+`quackd record` always passes it. So a `--yes` in a script no longer only skips
+confirmations: it also clears the pilot's own doubt about whether the task suits the body.
+Over MCP there is no terminal and nothing clears it, so the verdict stays pending and the
+model is told to ask the person it is chatting with ([mcp.md](mcp.md)).
+
 ## Dry run
 
 `--dry-run` sends nothing, and the trace names every verb a model *would* have run, with the
@@ -56,6 +74,10 @@ A parameter the model left unset shows as `null` rather than being dropped, beca
 run the omission is the thing you are checking. Read-only verbs (`observe`, alias
 `get_frame`, and `report_state`) still run. Use it the first time you point a new `.duck` at
 hardware.
+
+It does not get you past the verdict, because that gate runs before this one. A task the
+pilot judges infeasible ends with nothing logged rather than with the list of verbs it would
+have sent, which is the one case where `--dry-run` tells you less than you asked for.
 
 ## On hardware
 
@@ -193,10 +215,8 @@ What each body can carry, reach and survive is its **datasheet**
 ([manifest-spec.md](manifest-spec.md)): every number with how sure quackd is of it and who
 says so, and a figure the maker never published listed as not published rather than guessed
 at. The pilot is shown it and told to judge the task against it before anything moves, which
-is what `assess_task` is for. A `.duck` file can correct it for the build in front of you,
-and the prompt says which numbers came from the task file. None of it is enforced: an
-executor cannot weigh a basket. What is enforced is that the judgement was made first
-([ADR-0032](adr/0032-datasheets-and-the-verdict.md)).
+is what `assess_task` is for, and a `.duck` file can correct it for the build in front of
+you ([ADR-0032](adr/0032-datasheets-and-the-verdict.md)).
 
 ## What quackd does not protect against
 

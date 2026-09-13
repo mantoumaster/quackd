@@ -68,6 +68,12 @@ Its datasheet, which the pilot is shown and told to judge a task against before 
 | Reach | 0.52 m (official: the AlohaMini2 README) |
 | Not published | mass, height, endurance |
 
+And what it cannot do whatever the task says, which is the half a refusal usually turns on, in the words the pilot is shown:
+
+- hold more than 1 kg in one hand
+- reach further than about half a metre from an arm's base
+- see depth: five colour cameras, no depth sensor and no lidar
+
 A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The arms are limp, and that is upstream's own state

@@ -90,7 +90,7 @@ Sources: [duck-ipc-proto/src/lib.rs](https://github.com/pollen-robotics/microduc
 
 ### What this robot is, as numbers
 
-Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
+Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](manifest-spec.md)):
 
 | | |
 |---|---|
@@ -99,7 +99,13 @@ Its datasheet, which the pilot is shown and told to judge a task against before 
 | Actuated joints | 15 (official: the Pollen Robotics README; XL330 class servos, which is an estimate) |
 | Not published | payload, reach, endurance |
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+And what it cannot do whatever the task says, which is the half a refusal usually turns on, in the words the pilot is shown:
+
+- carry, hold or push anything: the beak scoops at the floor and nothing else
+- climb or descend a step
+- hold a heading for long without a landmark: the IMU has no magnetometer, so heading drifts
+
+A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](duck-spec.md)).
 
 ### What we do not touch
 

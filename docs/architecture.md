@@ -62,7 +62,7 @@ sequenceDiagram
 
 | Path | Why it exists |
 |---|---|
-| `quackd/cli.py` | The front door: `run · validate · doctor · serve-mcp · list-verbs · list-adapters · record · trace · memory · discover · announce`. `--robot <adapter>:<backend>` everywhere, with `--address`, `--camera-url` and `--token` for a real robot. |
+| `quackd/cli.py` | The front door: `run · validate · doctor · serve-mcp · list-verbs · list-adapters · list-models · record · trace · memory · discover · announce`. `--robot <adapter>:<backend>` everywhere, with `--address`, `--camera-url` and `--token` for a real robot. |
 | `quackd/duckfile/` | The `.duck` contract (v0, v1 and v2): strict pydantic frontmatter, parser, generated `schema.json`, `validate.py` (a task against one or more manifests). |
 | `quackd/adapters/` | `RobotManifest` (data: what a robot is and can do), the `RobotAdapter` protocol, the factory behind `--robot`, and one package per robot: `microduck/` wraps the five transports and declares its manifest and extension verbs; `lerobot/` is a desktop arm (`mock`, `real`, [adapters/lerobot.md](adapters/lerobot.md)); `rosbridge/` is any wheeled base over rosbridge (`mock`, `ws`, [adapters/rosbridge.md](adapters/rosbridge.md)); `open_duck/` is an Open Duck Mini v2 (`sim2d`, `mock`, `bridge`, [adapters/open_duck.md](adapters/open_duck.md)), the first body whose robot side quackd also ships, in `bridge/open_duck/`, because its runtime has no network control API; `xlerobot/` is a dual-arm mobile manipulator (`mock`, `zmq`, [adapters/xlerobot.md](adapters/xlerobot.md)), the first body with both a base and arms, and the one quackd talks to by speaking its ZeroMQ host protocol rather than importing it, because upstream is not an installable package; `alohamini/` is two arms on a lift on a wheeled base (`mock`, `sim2d`, `zmq`, [adapters/alohamini.md](adapters/alohamini.md)), which quackd also reaches by speaking its ZeroMQ host protocol; `toddlerbot/` is a small humanoid (`mock`, `sim2d`, `bridge`, [adapters/toddlerbot.md](adapters/toddlerbot.md)), the third body whose robot side quackd ships, because upstream has no network API at all. Every SDK-touching package owns an `upstream_api.py` and a containment test. |
 | `quackd/verbs/` | `core.py`: the verbs any robot can carry and what each requires; `aliases.py`: the one alias table; `registry.py`: built from a manifest at connect time; `learned.py`: the v2 interface. |
@@ -111,10 +111,12 @@ Step 0, before all of that: the loop calls `connect()` and, when an adapter answ
 manifest, builds the registry from it (`registry_from_manifest`). A bare transport answers
 `None` and gets the Microduck vocabulary.
 
-Outcomes: `success` / `failure` (the LLM's claim via the meta tools), `budget`, `aborted`
-(heartbeat, kill switch, `abort_when`) and `error`, which nobody chose: a provider that
-failed, a transport that died mid-observation, a bug. In sim the run summary also carries ground truth
-(`final_state.extras.ball_displacement_m`) so tests judge the claim.
+Outcomes: `success` / `failure` (the LLM's claim via the meta tools), `infeasible` (the
+pilot judged the task beyond this body before anything moved, and `quackd run` exits 3),
+`budget`, `aborted` (heartbeat, kill switch, `abort_when`) and `error`, which nobody chose:
+a provider that failed, a transport that died mid-observation, a bug. In sim the run summary
+also carries ground truth (`final_state.extras.ball_displacement_m`) so tests judge the
+claim.
 
 ## Transcript format
 
@@ -174,7 +176,7 @@ characters, `all`, or `0`. The transcript always has all of it.
 The MCP result carries the renderer's lines verbatim and a model reads them, so those bytes
 are frozen: `->`, `<-`, an eight-column label, ASCII throughout, held to it case by case by
 `tests/golden/trace_lines.json`. A person at a terminal is a different reader, so the same
-events are drawn differently there ([ADR-0031](adr/0031-terminal-theme.md)): the arrow is a
+events are drawn differently there ([ADR-0033](adr/0033-terminal-theme.md)): the arrow is a
 glyph in a gutter and the column says the word it stood for (`send`, `result`), each step is
 ruled off with the budget lifted out of the observation, the system prompt is an indented
 block between two rules, and an outcome is a shape as well as a colour.

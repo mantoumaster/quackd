@@ -76,7 +76,12 @@ lives. The rules, enforced by the model itself ([manifest-spec.md](manifest-spec
 - **Extension verbs are the robot's own** (`kick`, `express`, `move_joints`). Declare
   them with `verb_spec(verb, core=False)` and supply the implementation from
   `implementations()`. Reusing a name another robot uses (`move_joints` on the LeRobot arm
-  and on the XLeRobot) is how `requires: [move_joints]` is satisfied by both.
+  and on the XLeRobot) is how `requires: [move_joints]` is satisfied by both. Every one of
+  them also needs classifying in `quackd/verdict.py`, as a verb that may run before the
+  pilot has judged the task (looking, speaking, the brake) or as one that moves the body and
+  waits for a feasible verdict. Leave one out and it waits, which is wrong for a verb the
+  pilot needs in order to reach a verdict at all, so a test refuses to pass until you have
+  chosen.
 - **`stop` is universal**: present on every manifest, always allowed, never gated.
 - **Aliases are not yours to declare.** `get_frame`, `walk_to` and `walk` live in
   `quackd/verbs/aliases.py`; a manifest names the canonical verb.
@@ -87,6 +92,13 @@ lives. The rules, enforced by the model itself ([manifest-spec.md](manifest-spec
   deadman: false` is a legitimate answer; a wrong `deadman: true` is not.
 - **`limits`** are what the core verbs clamp to (`max_vx`, `max_vy`, `max_wz`,
   `gaze_yaw_deg`); leave one out and the schema bound applies.
+- **The `datasheet` is the body as numbers**, so a pilot can refuse a task before anything
+  moves: what it weighs, carries and reaches, what it holds with, what it is rated for and
+  what it cannot do whatever the task says. Every figure carries a confidence and a source,
+  and a figure the maker never published is left out rather than guessed at, because the
+  prompt renders an absent one as "not published" and tells the pilot to decline whatever
+  hinges on it ([manifest-spec.md](manifest-spec.md#the-datasheet)). The same sheet describes
+  the body on every backend, which is part of why `digest()` matches across them.
 - **`digest()`** is the capability fingerprint discovery advertises; it ignores `id` and
   `backend`, so the same robot over `sim2d` and `mock` hashes the same.
 
@@ -207,7 +219,9 @@ this repository claims a robot moved unless one did.
 
 ## The checklist
 
-1. `quackd/adapters/<name>/__init__.py` with the manifest, the adapter class and the four functions.
+1. `quackd/adapters/<name>/__init__.py` with the manifest (its datasheet included), the
+   adapter class and the four functions, and each verb of its own classified in
+   `quackd/verdict.py`.
 2. `mock.py`, and a test that runs every verb through an `Executor` on it.
 3. `upstream_api.py` with pinned links; a row in `tests/test_upstream_api.py`.
 4. The SDK backend, lazily imported, injectable, with a test on fakes and a test that the
