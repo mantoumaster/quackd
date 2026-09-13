@@ -30,10 +30,16 @@ Which one runs is the task file's to say, through `flock.allocation.method`:
 - **`--flock NAME`**, a stored flock ([registry.md](registry.md)), supplies the members from
   the registry. A task file with no `flock:` block, run that way, is a pilot flock.
 
-The coordinator is described first, because most of this page was written for it and all of
-it is still true of it. The pilot flock is [further down](#the-pilot-flock).
+One half of this page each. The coordinator comes first, because most of it was written for
+that flock and all of it is still true of that flock.
 
-## What a flock is
+<br>
+
+# The coordinator flock
+
+Everything from here to [the pilot flock](#the-pilot-flock) is about the `auction` kind.
+
+## What a flock of this kind is
 
 2 to 4 robots in one shared arena on one shared clock, each with its **own** safety
 executor enforcing the same `.duck` contract: allowlist, budgets, machine enforced abort
@@ -70,11 +76,9 @@ releases the claim and the failed duck sits out a cooldown, during which it may 
 searching but cannot bid. A lost heartbeat also releases the claim, but that duck is
 presumed dead and excluded for good. Either way everyone re-scans the full circle (the
 ball has moved) and the auction runs again. Ducks cannot fall in the 2D
-simulator, and the coordinator runs nowhere else, so fall handling is untested there. A duck
-can fall in `microduck:mujoco`, a backend only a pilot flock can reach and no bundled one
-uses, so nothing exercises that path either. A duck can fall in
-`microduck:mujoco`, but every flock member has to be a `sim2d` robot, so nothing exercises
-that path yet.
+simulator, and this kind of flock runs nowhere else, so fall handling is untested. A duck can
+fall in `microduck:mujoco`, which only a pilot flock can reach and no bundled one uses, so
+nothing exercises that path either.
 
 ## Roles
 
@@ -108,12 +112,11 @@ robots:
 
 ### Roles by data
 
-A `duck: 2` role may also say what the body has to **be**, not only what it has to know.
-The words are the datasheet's own ([manifest-spec.md](manifest-spec.md)): `payload_kg`,
-`reach_m`, `endurance_min` and `arms` are minimums, `work_height_m` is a height the hands
-must reach inside the body's own band, `manipulator` and `mobility` match or take `any`, and
-`terrain` is a floor, so a body rated for rougher ground than the task asks still passes.
-The rule per key is one table in [duck-spec.md](duck-spec.md#needs--the-datasheet-vocabulary-v2).
+A `duck: 2` role may also say what the body has to **be**, not only what it has to know. The
+words are the datasheet's own (`payload_kg`, `reach_m`, `manipulator`, `terrain` and the rest),
+and each one is checked its own way: the rule per key is one table in
+[duck-spec.md](duck-spec.md#needs--the-datasheet-vocabulary-v2), and what the words mean is
+[manifest-spec.md](manifest-spec.md).
 
 ```yaml
 flock:
@@ -276,16 +279,15 @@ therefore costs zero sim time, and with `--provider fake` and a fixed seed a flo
 reproducible. Wall clock heartbeat scheduling is the one nondeterministic input, and it
 only influences failure path timing, as in solo runs.
 
-## Which robots can join the coordinator
+## Which robots can join
 
 The coordinator knows the **Microduck** on `sim2d`. Any other adapter is refused when the run
 starts, with the names it does know, and so is a stored flock whose members are not all
 `microduck:sim2d`. That is a limit of `quackd/flock/runner.py`, not of the robots.
 
-So a role with physical `needs` validates, and its matching is tested at the coordinator, but
-no coordinator flock quackd can actually start has two different bodies in it to match. The
-words are in place for the day the runner knows a second adapter. A flock of two different
-bodies is what the **pilots** are for, and it uses no roles.
+So a role with physical `needs` validates and its matching is tested here, but no coordinator
+flock quackd can start has two different bodies in it to match. A flock of two different bodies
+is what the [pilots](#the-pilot-flock) are for, and that kind uses no roles.
 
 <br>
 

@@ -23,8 +23,16 @@ uv pip install "quackd[lerobot]" && quackd doctor --robot lerobot:real --address
 | `lerobot:real` | 🧪 | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch); every LeRobot name VERIFIED against a pinned commit, unverified end to end, never run on an arm |
 
 `--address` is the arm's serial port (`/dev/ttyACM0`, `COM5`). The `real` backend calls
-`connect(calibrate=False)` and refuses an uncalibrated arm: LeRobot's calibration is
-interactive (it calls `input()`), so it is a human's step, never quackd's.
+`connect(calibrate=False)` and refuses an uncalibrated arm, in these words:
+
+```
+lerobot real: the arm is not calibrated; run LeRobot's calibration first
+(it is interactive, quackd never triggers it)
+```
+
+LeRobot's calibration calls `input()`, so it is a human's step and never quackd's. Run
+upstream's own `lerobot-calibrate --robot.type=so101_follower --robot.port=<port>` first, or
+whatever your LeRobot version spells it, and then connect.
 
 ## The manifest
 

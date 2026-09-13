@@ -99,5 +99,4 @@ exercised once by us: two `MqttBus` nodes with real paho 2.1 clients against an 
 0.12 broker on `localhost:1883` (one Windows 11 machine), all eight message kinds that
 existed that day delivered in order, echo dropped, tap once per node. `TALK`, the ninth,
 rides `ctl` like the rest and has crossed a fake broker in the suite and no real one. It has
-not carried a flock between two machines: an auction needs a distributed clock, which nothing
-provides, and a pilot flock has no shared clock to distribute but has never been tried.
+not carried a flock of either kind between two machines, for the reasons above.

@@ -2,6 +2,13 @@
 
 **Status:** implemented in 0.6.0 · **Branch:** `feat/memory-between-runs` (#5), `fix/max-minutes-provider-deadline` (#3) · **Shipped:** 2026-09-04
 
+> **Read on 2026-09-13:** the decision below to key a memory file by `adapter:backend` is
+> still what an unregistered run does, and still for the reason given. 0.9 added a finer key
+> beside it: a robot registered with `quackd robot add` keys by the name you gave it, so two
+> real ducks on one desk no longer share a file, which is the case this table's reasoning did
+> not separate ([ADR-0034](../adr/0034-registered-robots-and-pilot-flocks.md),
+> [registry.md](../registry.md)).
+
 ## Why
 
 Every quackd release so far built a pilot with no past. The transcript recorded each prompt,

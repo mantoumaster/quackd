@@ -46,12 +46,6 @@ not before.
 
 ## Open here
 
-- ⬜ **The browser demo has no datasheet and no feasibility gate.** `web/src/pilot.js` is a
-  second loop with its own hardcoded Microduck prompt, and it shares no code with the package,
-  so the body section and the `assess_task` rule that the Python pilot now gets stop at the
-  language boundary. A page asked to carry something will try. `web/README.md` now says so in
-  its canonical list of differences, which was the cheaper half of this. What is still open is
-  the page growing both.
 - ⬜ **No real model has ever refused a task on feasibility grounds here.** The gate, the
   outcome, the hint and the fleet handoff are exercised with scripted verdicts and an in-process
   MCP client. There is one `live_llm` test beside the others waiting for a key, and until
@@ -96,9 +90,11 @@ not before.
 - ⬜ **The browser demo is not at parity with the backend.** Seven of the manifest's fifteen
   verbs and none of the three composites, a contract of its own, an arena that is not upstream's
   scene, geometric perception, no hash check on anything it fetches, a seed that means the same
-  distributions and not the same layout, and no scripted pilot. `web/README.md` holds that list
-  in full and is the one place it is kept; this bullet is the reminder that it is a list of open
-  gaps and not just a disclosure.
+  distributions and not the same layout, and no scripted pilot. It also has no datasheet and no
+  feasibility gate: `web/src/pilot.js` is a second loop with its own hardcoded prompt, so a page
+  asked to carry something will try. `web/README.md` holds that list in full and is the one place
+  it is kept; this bullet is the reminder that it is a list of open gaps and not just a
+  disclosure.
 - ⬜ **`GAIT_FLOOR_VY` was never measured.** The forward and turning floors were; the sideways
   one is assumed equal to the training maximum, so every lateral request is sent at full
   scale. The assumption is in `GAIT_THRESHOLD`'s note and in the state's `assumptions`, and

@@ -1,6 +1,14 @@
 # ADR-0011: How each verb maps to the real robot
 
-**Status:** accepted · **Date:** 2026-08-28
+**Status:** accepted, amended · **Date:** 2026-08-28
+
+**Amended 2026-09-02 by [ADR-0017](0017-robot-adapters-and-manifest.md) and
+[ADR-0018](0018-core-verbs-extensions-aliases.md):** this table was written when quackd had one
+robot and one hardcoded map. A verb's route to a body is now the adapter's business, declared in
+its manifest, and the skills a robot answers to are read from it rather than assumed. The
+signatures here are also the 0.3 spellings: `get_frame`, `walk_to` and `walk` are aliases of
+`observe`, `go_to` and `move` today. The live per-method table, VERIFIED against upstream, is
+[adapter-status.md](../adapter-status.md).
 
 ## Context
 

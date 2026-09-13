@@ -1,5 +1,12 @@
 # Security Policy
 
+## Reporting
+
+Please **do not** open a public issue for vulnerabilities. Email
+**ksjeno@gmail.com** with "quackd security" in the subject, or use GitHub's private
+vulnerability reporting on the repository if enabled. You will get an acknowledgement
+within 72 hours.
+
 ## What "security" means for a robot brain
 
 quackd sends *intents* to a robot. How much of the stopping the robot itself does depends
@@ -116,13 +123,6 @@ Also in scope:
 - The recommended deployment for all of them is an ssh tunnel
   (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 -L 9873:127.0.0.1:9873`) rather than
   exposing any of these ports.
-
-## Reporting
-
-Please **do not** open a public issue for vulnerabilities. Email
-**ksjeno@gmail.com** with "quackd security" in the subject, or use GitHub's private
-vulnerability reporting on the repository if enabled. You will get an acknowledgement
-within 72 hours.
 
 ## Supported versions
 

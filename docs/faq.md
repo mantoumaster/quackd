@@ -1,5 +1,7 @@
 # FAQ
 
+## Simulators and the browser demo
+
 **Which simulator should I use?** Both ship, and the cartoon is still the default. `sim2d`
 starts in a second, needs no network, runs anywhere, and is what the three other bodies that have a simulator and
 every CI sweep use. It tests the *agent loop* — search, approach, act, verify — and it will
@@ -30,14 +32,10 @@ that downloads nothing and is the body the tests build directly.
 
 **How do I run the browser demo, and is it live anywhere?** `python web/serve.py`, then open
 <http://localhost:8000/simulator/>. Nothing to build, and no quackd to install: that server is
-one stdlib file. It still needs a server, for two reasons: browsers refuse ES modules over
-`file://`, and the page expects to be mounted at `/simulator`, so every local reference in
-`index.html` is absolute. That is why a plain `python -m http.server --directory web` no longer
-works — it serves the HTML and then 404s the stylesheet and the script, because nothing answers
-on `/simulator` at the root. `web/serve.py` takes an optional port. The page is live at
-<https://www.quackd.org/simulator>, where the separate quackd-web project fetches this directory
-into its own build at a pinned commit; `/simulator/source.json` says which one. The browser
-fetches
+one stdlib file, it takes an optional port, and [web/README.md](../web/README.md) says why a
+plain `http.server` will not do. The page is also live at <https://www.quackd.org/simulator>,
+where the separate quackd-web project fetches this directory into its own build at a pinned
+commit; `/simulator/source.json` says which one. The browser fetches
 about 45 MB the first time and caches it: MuJoCo's WebAssembly build, onnxruntime-web and
 three.js from jsDelivr, upstream's model at the same pinned commit Python uses, and
 `alpha_walking.onnx` and `alpha_stand.onnx` — the same two policies Python fetches, with the
@@ -48,16 +46,13 @@ compressed archive. Nothing fetched is hash checked, which Python does and the p
 
 **Can I drive the browser demo myself?** Yes, at the same time as the model, which is the
 argument the page exists to make. The keyboard is never handed over because it is never taken
-away: `W`/`S` walk, `A`/`D` turn, `Shift` with `A`/`D` strafes, `Q`/`E` look, `G` centres the
-head, `Space` stops, `K` kicks, `R` stands the duck up, `O` prints the raw state the model's
-observation is built from, `1`/`2` change camera and `Esc` hands the keyboard back to the arena.
-A key that would *move* the robot takes it mid-run — the run is aborted and the request to the
-model is aborted with it, so nothing keeps running against your key and no answer arrives after
-you took the duck back, and the transcript records the handover with the key that did it. A key
-that only reads (`O`, the camera keys) never interrupts. There is no key
-for `say`, deliberately: a key carries a command, and a sentence needs something to read it.
-The `quackd is on` switch decides only that last part — whether anything reads English — and no
-longer decides whether you may drive.
+away. A key that would *move* the robot takes it mid-run: the run is aborted and the request to
+the model is aborted with it, so nothing keeps running against your key and no answer arrives
+after you took the duck back, and the transcript records the handover with the key that did it.
+A key that only reads never interrupts. There is no key for `say`, deliberately: a key carries a
+command, and a sentence needs something to read it. The `quackd is on` switch decides only that
+last part, whether anything reads English, and no longer decides whether you may drive. The key
+map is in [web/README.md](../web/README.md).
 
 **Why does the duck in the physics simulator not go the speed I asked for?** Because the walking
 policy has a floor and quackd will not hide it. Under the model's own actuators the gait does
@@ -77,6 +72,8 @@ may not, and the frames are what fails first there. On a headless Linux box, ins
 and set `MUJOCO_GL=osmesa`, which renders into process memory and needs no display, no GPU and no
 `/dev/dri` — it is what CI's own physics job does. quackd names both in the error rather than
 letting an OpenGL traceback out. Rendering is this backend's real cost, not physics.
+
+## Models and providers
 
 **Does `uvx quackd run … --provider anthropic` work with no extras?** The default install
 is light on purpose (no vendor SDKs). Use `uvx --from "quackd[anthropic]" quackd run …`, or
@@ -125,12 +122,24 @@ authenticate, and Cohere goes to its OpenAI compatibility path rather than its n
 `--base-url` moves any vendor that speaks OpenAI's API, which is every one of them except
 Anthropic and Gemini, where the flag is accepted and ignored.
 
+**Why did my OpenAI run move to a different API mid-flight?** Because some OpenAI models refuse
+function tools on `/v1/chat/completions` at every reasoning effort and name `/v1/responses` in
+the 400. Every verb is a function tool, so quackd reads that answer, moves the run to the
+Responses API and stays there. The catalogue already knows which models those are, so `quackd
+list-models` marks them `Responses API` and a run on one opens there without spending a call to
+find out; reading the 400 is what still covers a model the catalogue has not been told about.
+`QUACKD_OPENAI_API=responses` starts there in every case, and `QUACKD_OPENAI_REASONING_EFFORT`
+sets the effort on either API. The browser demo does the same on both counts, with nothing to
+set.
+
 **Are local LLMs supported (llama.cpp, vLLM, Ollama, LM Studio)?** Yes. They all speak
 OpenAI's Chat Completions API, so `--provider ollama`, `vllm`, `llamacpp`, `lmstudio`, or
 `local --base-url http://host:port/v1` works with no API key. Tool calling must be enabled
 on the server (`llama-server --jinja`, `vllm serve --enable-auto-tool-choice
 --tool-call-parser …`), vision is off unless you pass `--vision`, and a small model that
 writes its tool call as plain JSON is still understood. Details: [local-llms.md](local-llms.md).
+
+## Seeing what happened
 
 **How does the LLM "see"?** Providers with vision get the duck-cam PNG for the last two
 turns; every provider gets a text line like `ball at bearing 12° left, ~0.80 m` from the
@@ -165,6 +174,8 @@ shows. The scripted pilot has no reasoning either, but it does report which rule
 — what it saw, how the last verb ended, and the verb that fell out — on the same line, marked
 `[scripted]` so it can never be mistaken for a model's own words. So a run with no API key
 still shows you the shape of the trace.
+
+## Real robots
 
 **Does the robot need a powerful onboard computer?** No. quackd's own process, the part
 that calls the LLM and runs the detector, never runs on the robot itself — you run
@@ -213,7 +224,11 @@ exceeds a limit ends the run as `infeasible` rather than `failure`: nothing move
 exits 3, and the reason names which other shipped body could do it. If the verdict turns on
 something the pilot cannot judge from where it is, it answers `uncertain` and you are asked.
 An infeasible run is remembered like any other, so the next run on that robot is told what was
-already found not to fit it ([memory.md](memory.md), [safety.md](safety.md)).
+already found not to fit it. If the number the verdict turned on is simply wrong for the build
+in front of you, a printed gripper that holds more than the vendor's, say, a `duck: 2` task file
+can correct it with a `datasheet:` block, and the prompt labels those figures as coming from the
+task file rather than from the maker ([duck-spec.md](duck-spec.md), [memory.md](memory.md),
+[safety.md](safety.md)).
 
 **Why can't the duck say words?** Upstream has seven duck sounds and no TTS. `quack(text)`
 maps your text to the closest tone (`greet`, `inquire`, `alarm`, `wheee`, …) and logs the
@@ -230,6 +245,8 @@ is POSIX-only; forward it with `ssh -L 9870:/run/robotd.sock <robot>` and use
 **Can I run it on my Microduck today?** `--robot microduck:jsonrpc` speaks the verified
 `duck-ipc-proto` v23 vocabulary but has never touched hardware. Start with `--dry-run`,
 read [adapter-status.md](adapter-status.md), and tell us what happened.
+
+## Driving it from somewhere else
 
 **Can I drive it from the Claude mobile app?** Not yet. `quackd serve-mcp` speaks `stdio`
 only, so Claude Code and Claude Desktop spawn it as a local subprocess on the same machine
@@ -250,6 +267,8 @@ never a freeform command sent to the motors.
 goes through a network hop (see `Windows?` above), and that hop works the same across the room
 or across the world. What matters is latency: the deadman expects `robot.move` roughly every
 100 ms, so a slow or flaky link stops the robot outright, however close you are standing.
+
+## Security and privacy
 
 **Is quackd production-ready?** No — it's a research prototype built around one trusted
 local operator, not a hardened multi-user product. There's almost no authentication anywhere;
@@ -302,6 +321,8 @@ a cloud provider sees. `quackd memory show` prints it, `quackd memory clear` del
 `--no-memory` never writes it. See [memory.md](memory.md) and
 [local-llms.md](local-llms.md).
 
+## What it can and cannot drive
+
 **Can quackd drive something that is not a duck?** Since 0.4, yes: a robot is an adapter
 that returns a manifest, and the verbs come from the manifest. `quackd list-adapters`
 shows the seven that ship (Microduck, a LeRobot arm, any base over rosbridge, an Open
@@ -337,6 +358,8 @@ The other kind of flock, the deterministic coordinator, still knows only the Mic
 `sim2d`. `flock.roles` there declares capability-differentiated roles (a spotter that observes
 and judges, a kicker that goes to and kicks), which is unit tested and has no bundled starter
 that reaches it end to end.
+
+## The name
 
 **Why "quackd"?** Upstream names its daemons `robotd`, `mediad`, `padd`, `tofd`… the brain
 daemon was missing. ([ADR-0002](adr/0002-name.md))
