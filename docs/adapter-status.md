@@ -15,7 +15,7 @@ it). A test proves UNVERIFIED names stay inside the backend that needs them.
 | | `microduck:jsonrpc` | 🧪 experimental: every method VERIFIED, never run on a duck | [`quackd/transport/upstream_api.py`](../quackd/transport/upstream_api.py) | |
 | | `microduck:websocket` | ⏳ stub: raises with a link until upstream ships it | | |
 | LeRobot | `lerobot:mock` | ✅ | | [adapters/lerobot.md](adapters/lerobot.md) |
-| | `lerobot:real` | 🧪 every LeRobot name VERIFIED at a pinned commit, exercised with a fake arm, never run on an arm (Python 3.12+) | [`quackd/adapters/lerobot/upstream_api.py`](../quackd/adapters/lerobot/upstream_api.py) | |
+| | `lerobot:real` | 🧪 every LeRobot name VERIFIED at a pinned commit, exercised against a fake arm that caps each action, stalls a joint and can be unplugged mid-run, never run on an arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`quackd/adapters/lerobot/upstream_api.py`](../quackd/adapters/lerobot/upstream_api.py) | |
 | rosbridge | `rosbridge:mock` | ✅ | | [adapters/rosbridge.md](adapters/rosbridge.md) |
 | | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics and fake services, including reading the robot's own description off the bridge, never run against a bridge | [`quackd/adapters/rosbridge/upstream_api.py`](../quackd/adapters/rosbridge/upstream_api.py) | |
 | Open Duck Mini v2 | `open_duck:sim2d` | ✅ `open-duck-scout` 10 of 10 seeds | | [adapters/open_duck.md](adapters/open_duck.md) |

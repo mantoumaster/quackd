@@ -249,7 +249,7 @@ Seven robots, and one table for how far each one has actually got. Each name lin
 | **[Open Duck Mini v2](docs/adapters/open_duck.md)** | `open_duck:sim2d`, `mock` | a 42 cm 3D printed biped you can build yourself | ✅ simulator, ✅ mock |
 | | `open_duck:bridge` | the real one, through a daemon quackd ships for its Raspberry Pi | 🧪 daemon. **The nearest of these to a first real run**, because the hardware is buildable today ([checklist](docs/open-duck-hardware-checklist.md)) |
 | **[LeRobot arm](docs/adapters/lerobot.md)** | `lerobot:mock` | an SO-101 class desktop arm | ✅ mock |
-| | `lerobot:real` | the real one, through LeRobot | 🧪 names, behind `quackd[lerobot]`, Python 3.12 or newer |
+| | `lerobot:real` | the real one, through LeRobot | 🧪 names, behind `quackd[lerobot]`, Python 3.12 or newer ([checklist](docs/lerobot-hardware-checklist.md)) |
 | **[Any ROS base](docs/adapters/rosbridge.md)** | `rosbridge:mock` | any wheeled base that takes a Twist | ✅ mock |
 | | `rosbridge:ws` | the real one, over `rosbridge_server` | 🧪 names, behind `quackd[rosbridge]` |
 | **[XLeRobot](docs/adapters/xlerobot.md)** | `xlerobot:mock` | a dual-arm mobile manipulator on an IKEA cart, about $660 to build | ✅ mock |
@@ -462,6 +462,7 @@ requires: [search_scan, walk_to, kick]  # the honest minimum a body must provide
 | `xlerobot-lookout` | stand still and report what is in front of you | an **XLeRobot**, and the task to point at a real cart first: nothing in its allowlist moves a wheel or an arm. This robot has no head control and no voice, so a human aims it and it reports in text |
 | `alohamini-lookout` | stand still and report what is in front of you | an **AlohaMini**, and the task to point at a real robot first: nothing in its allowlist moves a wheel, an arm or the lift. Like the XLeRobot it has no head and no voice, so a human aims it and it reports in text |
 | `toddlerbot-lookout` | stand still, look around with the head, and report what you can see | a **ToddlerBot**, and the task to point at a real humanoid first: nothing in its allowlist moves a leg, an arm or the waist. Put it on its safety stand before you try it |
+| `lerobot-lookout` | move nothing, read the arm back, and report what it says about itself | a **LeRobot SO-101 arm**, and the task to point at a real arm first: nothing in its allowlist moves a joint. It asks for `report_state` rather than `observe`, because the real backend configures no camera and so an arm has nothing to look with |
 
 Full spec: [docs/duck-spec.md](docs/duck-spec.md). Add yours to [`ducks/`](ducks/).
 

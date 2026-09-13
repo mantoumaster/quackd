@@ -136,7 +136,7 @@ and all of you are working at the same time. Nobody is in charge and nothing ass
 you divide it between you by saying what you will do.
 
 The others:
-- `arm` (lerobot:mock): lerobot-so101: mass 2.5 kg (estimate: ...), one arm with a gripper, ...
+- `arm` (lerobot:mock): lerobot-so101: height 0.53 m (estimate: ...), one arm with a gripper, ...
 ```
 
 The same section says that `assess_task` judges **your part** of the task rather than all of
