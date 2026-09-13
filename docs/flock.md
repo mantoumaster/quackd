@@ -70,7 +70,9 @@ releases the claim and the failed duck sits out a cooldown, during which it may 
 searching but cannot bid. A lost heartbeat also releases the claim, but that duck is
 presumed dead and excluded for good. Either way everyone re-scans the full circle (the
 ball has moved) and the auction runs again. Ducks cannot fall in the 2D
-simulator, which is the only place a flock runs, so fall handling is untested. A duck can fall in
+simulator, and the coordinator runs nowhere else, so fall handling is untested there. A duck
+can fall in `microduck:mujoco`, a backend only a pilot flock can reach and no bundled one
+uses, so nothing exercises that path either. A duck can fall in
 `microduck:mujoco`, but every flock member has to be a `sim2d` robot, so nothing exercises
 that path yet.
 
@@ -132,9 +134,11 @@ carried, so a robot it does not run is held to the same standard. A rejected bid
 `bid_rejected` line naming exactly what was short, in the same words a pilot's own refusal
 uses: `payload_kg >= 1 (has 0.5)`, `manipulator = gripper (has beak)`.
 
-Those three checks are also the *only* feasibility judgement in a flock. A member is a state
-machine with no pilot to ask, so it is never sent through the `assess_task` gate a solo run
-opens with ([safety.md](safety.md), [ADR-0032](adr/0032-datasheets-and-the-verdict.md)).
+Those three checks are also the *only* feasibility judgement in a coordinator flock. Its
+member is a state machine with no pilot to ask, so it is never sent through the `assess_task`
+gate a solo run opens with ([safety.md](safety.md), [ADR-0032](adr/0032-datasheets-and-the-verdict.md)).
+A [pilot flock](#the-pilot-flock) member is a whole pilot and is asked exactly as a solo run
+is, about its own part of the task.
 
 - **Capability aware bids.** A robot bids only for a role whose `requires` its manifest
   satisfies (aliases count: `get_frame` satisfies `observe`). The coordinator checks every

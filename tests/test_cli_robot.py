@@ -244,8 +244,12 @@ def test_a_run_by_name_takes_the_robots_own_pilot_unless_a_flag_says_otherwise(
     ]
     assert runner.invoke(app, common).exit_code == 0
     assert seen[-1] == ("openai", "gpt-5")
+    # a stored model belongs to the vendor it was stored against: carrying `gpt-5` into
+    # Gemini's catalogue would be refused with a message blaming a `--model` nobody typed
     assert runner.invoke(app, [*common, "--provider", "gemini"]).exit_code == 0
-    assert seen[-1] == ("gemini", "gpt-5"), "the flag names the vendor, the entry still the model"
+    assert seen[-1] == ("gemini", None)
+    assert runner.invoke(app, [*common, "--model", "gemini-9"]).exit_code == 0
+    assert seen[-1] == ("openai", "gemini-9"), "an explicit --model is always taken as typed"
 
 
 def test_a_run_by_name_reaches_the_address_it_was_registered_with(

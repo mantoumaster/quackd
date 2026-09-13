@@ -209,6 +209,10 @@ TELL = {
 TELL_NAME = TELL["name"]
 
 
+COMPOSITE_VERBS = ("walk_to", "go_to", "search_scan", "approach_and")
+"""The verbs that close their own loop on the camera, in the order the prompt prefers to name
+one. A body that provides none of them is told about none of them."""
+
 BODY_HEADING = "## Your body: what it can and cannot do"
 
 _CONFIDENCE_KEY = (
@@ -355,12 +359,17 @@ def build_system_prompt(
     fm = duck.frontmatter
     blurb = manifest.blurb if manifest is not None and manifest.blurb else DUCK_BLURB
     names = {v.name for v in verbs}
-    if "walk_to" in names:
-        loop_verb = "walk_to"
-    elif "go_to" in names or manifest is None or manifest.provides("go_to"):
-        loop_verb = "go_to" if "go_to" in names or manifest is not None else "walk_to"
-    else:
-        loop_verb = "search_scan"
+    # what this body actually has, not what a duck has. The fallback used to name
+    # `search_scan` unconditionally, so an arm was told about a composite verb it does not
+    # provide, in the same prompt whose allowlist does not list it.
+    composite = next((v for v in COMPOSITE_VERBS if v in names), None)
+    moves_itself = manifest is None or manifest.mobility != "none"
+    controllers = "balance and gait" if moves_itself else "the motion"
+    pilot_line = f"the robot's own controllers handle {controllers}"
+    if composite is not None:
+        pilot_line += (
+            f", and composite\nverbs like `{composite}` close their own loops on the camera"
+        )
     verb_lines = "\n".join(f"- `{v.name}`: {v.description}" for v in verbs)
     success = "\n".join(f"- {s}" for s in fm.success)
     advisory = fm.advisory_abort_conditions
@@ -419,8 +428,7 @@ above.
             "Distances are metres.\n"
         )
     return f"""You are the brain of {blurb}. You are a high-level pilot:
-you choose ONE verb per turn; the robot's own controllers handle balance and gait, and composite
-verbs like `{loop_verb}` close their own loops on the camera. Do not micro-manage.
+you choose ONE verb per turn; {pilot_line}. Do not micro-manage.
 
 ## Rules (enforced by the executor — not optional)
 - Call exactly one tool per turn. Never zero, never two.

@@ -341,6 +341,16 @@ class Registry:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": VERSION, key: {k: section[k] for k in sorted(section)}}
         tmp = path.with_suffix(".json.tmp")
+        if key == "robots":
+            # robots.json holds robot tokens, so the mode goes on the TEMPORARY file,
+            # before a token is written into it: the rename then carries that mode onto
+            # robots.json. Setting it after the rename left the tokens world-readable for
+            # the length of every write, in a file nothing cleans up if the write fails.
+            # A no-op on Windows, which is why SECURITY.md calls this a file in a home
+            # directory rather than a secret store.
+            with contextlib.suppress(OSError):
+                tmp.touch(mode=0o600)
+                tmp.chmod(0o600)  # a tmp left by a failed write keeps its old mode
         tmp.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
@@ -348,12 +358,8 @@ class Registry:
         try:
             tmp.replace(path)
         except PermissionError as e:  # Windows: another program is holding the file open
+            tmp.unlink(missing_ok=True)
             raise RegistryError(f"could not replace {path}: another program has it open") from e
-        if key == "robots":
-            # it holds robot tokens. A no-op on Windows, which is why SECURITY.md says this
-            # is a file in a home directory rather than a secret store.
-            with contextlib.suppress(OSError):
-                path.chmod(0o600)
 
     @staticmethod
     def _one_line(path: Path, name: str, e: ValidationError) -> RegistryError:

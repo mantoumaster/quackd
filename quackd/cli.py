@@ -256,7 +256,7 @@ def validate(
     from quackd.adapters.factory import describe
     from quackd.duckfile.parser import DuckParseError, load_duck
     from quackd.duckfile.validate import validate_duck
-    from quackd.registry import Registry, resolve_robot_ref
+    from quackd.registry import Registry, RegistryError, resolve_robot_ref
     from quackd.verbs.registry import default_registry
 
     registry_ref = Registry(registry_dir)
@@ -287,7 +287,8 @@ def validate(
             else:
                 specs = []
             manifests = [describe(spec) for spec in specs]
-        except AdapterError as e:
+        except (AdapterError, RegistryError) as e:
+            # a registered name means reading robots.json, and a broken one refuses
             row.update(ok=False, problems=[str(e)], summary=[str(e)])
             continue
         row["robots"] = [m.id for m in manifests]
@@ -368,18 +369,27 @@ _SAFETY_STYLE = {"safe": "ok", "confirm": "warn", "dangerous": "fail"}
 @app.command("list-verbs", rich_help_panel="Inspect")
 def list_verbs(
     robot: str | None = typer.Option(
-        None, "--robot", "-r", help="A robot's vocabulary (<adapter>:<backend>); default Microduck."
+        None,
+        "--robot",
+        "-r",
+        help="A robot's vocabulary: <adapter>:<backend>, or a registered name. Default Microduck.",
     ),
+    registry_dir: str | None = _REGISTRY_DIR,
     as_json: bool = _JSON,
 ) -> None:
     """List every verb a robot provides, with params and safety class."""
     from quackd.adapters.base import AdapterError
-    from quackd.adapters.factory import parse_robot_spec, registry_for
+    from quackd.adapters.factory import registry_for
+    from quackd.registry import Registry, RegistryError, resolve_robot_ref
     from quackd.verbs.registry import default_registry
 
     try:
-        registry = registry_for(parse_robot_spec(robot)) if robot else default_registry()
-    except AdapterError as e:
+        registry = (
+            registry_for(resolve_robot_ref(robot, Registry(registry_dir)).spec)
+            if robot
+            else default_registry()
+        )
+    except (AdapterError, RegistryError) as e:
         _fail(str(e), hint=_ADAPTER_HINT)
         return
     aliases: dict[str, list[str]] = {}
@@ -559,6 +569,18 @@ def _acknowledge_prompt(why: str) -> bool:
         return typer.confirm("Are you watching the robot right now?", default=False)
 
 
+def _entry_model(resolved: Any, provider: str | None) -> str | None:
+    """A registered robot's model, but only for the provider it was registered against.
+
+    `--provider openai` on a robot registered `anthropic` + `claude-opus-5` must not carry the
+    Claude id into OpenAI's catalogue, where it is refused with a message blaming `--model`."""
+    if resolved.model is None:
+        return None
+    if provider and resolved.provider and provider.lower() != resolved.provider:
+        return None
+    return str(resolved.model)
+
+
 def _parse_flock_flag(flock: str | None, registry_dir: str | None) -> tuple[int | None, Any]:
     """`--flock` is either a count of simulated ducks or the name of a stored flock.
 
@@ -639,6 +661,13 @@ def _run_impl(
     flock_name = flock if roster is not None else None
     if roster is not None and (robot or robots):
         _fail("--flock NAME brings its own robots: drop --robot and --robots")
+        return
+    if roster is not None and (address or camera_url or token):
+        # they would be silently dropped: both flock paths read each member's own
+        _fail(
+            "--flock NAME takes every member's address, token and camera from the registry",
+            hint="quackd robot edit NAME to change one",
+        )
         return
     try:
         duck = load_duck(duckfile) if duckfile is not None else None
@@ -757,10 +786,13 @@ def _run_impl(
                     hint="set flock.allocation.method: pilots to run other bodies",
                 )
                 return
-            if len(roster) > AUCTION_MAX_MEMBERS:
+            if not 2 <= len(roster) <= AUCTION_MAX_MEMBERS:
+                # both bounds, because the members are folded in with `model_copy`, which
+                # skips the field validator that would otherwise have caught one of them
                 _fail(
                     f"a coordinator flock is 2 to {AUCTION_MAX_MEMBERS} ducks "
-                    f"(the arena holds {AUCTION_MAX_MEMBERS}): {flock_name} has {len(roster)}"
+                    f"(the arena holds {AUCTION_MAX_MEMBERS}): {flock_name} has "
+                    f"{_plural(len(roster), 'robot')}"
                 )
                 return
         _run_flock_impl(
@@ -792,7 +824,7 @@ def _run_impl(
         # a registered robot may name the pilot that drives it; a flag on the line still wins
         llm = make_provider(
             provider or here.provider or DEFAULT_PROVIDER,
-            model=model or here.model,
+            model=model or _entry_model(here, provider),
             duck_name=duck.name,
             goal=goal,
             base_url=base_url,
@@ -1024,7 +1056,7 @@ def _run_pilots_impl(
         providers = {
             name: make_provider(
                 provider or entry.provider or DEFAULT_PROVIDER,
-                model=model or entry.model,
+                model=model or _entry_model(entry, provider),
                 duck_name=duck.name,
                 goal=goal,
                 base_url=base_url,
@@ -1490,7 +1522,8 @@ _ROBOT = typer.Option(
     "--robot",
     "-r",
     help="<adapter>:<backend>, e.g. microduck:sim2d (default) · microduck:mock · "
-    "microduck:jsonrpc. See `quackd list-adapters`.",
+    "microduck:jsonrpc, or a name from `quackd robot add`, which brings its own address, "
+    "token and camera. See `quackd list-adapters` and `quackd robot list`.",
     rich_help_panel="Robot",
 )
 _ROBOTS = typer.Option(
@@ -1683,7 +1716,13 @@ def record(
     base_url: str | None = _BASEURL,
     api_key: str | None = _APIKEY,
     vision: bool | None = _VISION,
-    flock: str | None = _FLOCK,
+    flock: str | None = typer.Option(
+        None,
+        "--flock",
+        help="EXPERIMENTAL: N cooperating ducks (2-4) in sim2d. A count only: this command "
+        "pins the simulator, so a stored flock belongs to `quackd run`.",
+        rich_help_panel="Robot",
+    ),
     trace: bool | None = _TRACE,
     trace_prompt: bool | None = _TRACE_PROMPT,
 ) -> None:
@@ -1896,7 +1935,10 @@ def trace_cmd(
 @app.command(rich_help_panel="Inspect")
 def doctor(
     robot: str | None = typer.Option(
-        None, "--robot", "-r", help="Also show one robot's manifest (<adapter>:<backend>)."
+        None,
+        "--robot",
+        "-r",
+        help="Also show one robot's manifest (<adapter>:<backend>, or a registered name).",
     ),
     address: str | None = typer.Option(
         None,
@@ -1905,6 +1947,7 @@ def doctor(
     ),
     camera_url: str | None = _CAMERA_URL,
     token: str | None = _TOKEN,
+    registry_dir: str | None = _REGISTRY_DIR,
     as_json: bool = _JSON,
 ) -> None:
     """Check the environment: keys, optional extras, adapters, upstream assumptions.
@@ -1916,6 +1959,23 @@ def doctor(
     if address and not robot:
         _fail("--address needs --robot, so quackd knows what it is connecting to")
         return
+    if robot:
+        # a registered name is a robot too, and it brings the address you registered it with.
+        # Only a name that resolves is substituted: anything else stays exactly as typed, so
+        # `doctor --robot nope:x --json` still reports the bad spec inside its one JSON
+        # document rather than dying with a line of prose before it.
+        from quackd.registry import Registry, RegistryError
+
+        with contextlib.suppress(RegistryError):
+            entry = Registry(registry_dir).get_robot(robot)
+            if entry is not None:
+                robot = entry.key
+                where = entry.adapter_kwargs(address=address, camera_url=camera_url, token=token)
+                address, camera_url, token = (
+                    where["address"],
+                    where["camera_url"],
+                    where["token"],
+                )
     if as_json:
         report = collect(robot, address=address, camera_url=camera_url, token=token)
         print(json.dumps(report.to_dict()))
@@ -2266,9 +2326,21 @@ def robot_edit(
     address: str | None = _ADDR,
     camera_url: str | None = _CAMERA_URL,
     token: str | None = _TOKEN,
-    provider: str | None = typer.Option(None, "--provider", "-p", rich_help_panel="Model"),
-    model: str | None = typer.Option(None, "--model", "-m", rich_help_panel="Model"),
-    note: str | None = typer.Option(None, "--note"),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        "-p",
+        help="The provider a run uses for this robot when --provider is absent.",
+        rich_help_panel="Model",
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Its model id, used with the provider above.",
+        rich_help_panel="Model",
+    ),
+    note: str | None = typer.Option(None, "--note", help="One line for people."),
     clear: list[str] = typer.Option(
         [],
         "--clear",
@@ -2320,7 +2392,9 @@ def robot_remove(
     ),
     registry_dir: str | None = _REGISTRY_DIR,
 ) -> None:
-    """Forget a registered robot. Its memory file stays (quackd memory clear --robot NAME)."""
+    """Forget a registered robot. Its memory file stays, and after this only the path finds it,
+    because `quackd memory` addresses a robot by a name that is no longer registered."""
+    from quackd.memory import RobotMemory
     from quackd.registry import RegistryError
 
     try:
@@ -2344,6 +2418,10 @@ def robot_remove(
         _registry_fail(e)
         return
     ui.console.print(_ok_line(f"removed {name}"))
+    kept = RobotMemory(entry.memory_key).path
+    if kept.exists():
+        # `quackd memory clear --robot <name>` cannot reach it any more: the name is gone
+        ui.console.print(Text(f"  its notes are still at {kept}", style=ui.STYLES["muted"]))
     if dropped:
         ui.console.print(Text(f"  dropped from {', '.join(dropped)}", style=ui.STYLES["muted"]))
 

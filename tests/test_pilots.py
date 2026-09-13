@@ -431,3 +431,30 @@ def test_usage_is_summed_across_the_members(tmp_path: Path) -> None:
     )
     assert result.usage.input_tokens == 20 and result.usage.output_tokens == 2
     assert result.llm_calls == 2
+
+
+async def test_a_cancelled_flock_records_every_member_rather_than_crashing(
+    tmp_path: Path,
+) -> None:
+    """The second Ctrl-C: `asyncio.run` cancels the task. A member that never returned a
+    result used to leave a `KeyError` where the interrupt should have been."""
+
+    class _Slow:
+        name, model, supports_vision = "slow", "none", False
+
+        async def step(self, system: str, history: list[Exchange], tools: list[Any]) -> Any:
+            await asyncio.sleep(30)
+            raise AssertionError("never")
+
+    roster = _roster()
+    task = asyncio.ensure_future(_run(tmp_path, roster, providers={n: _Slow() for n in roster}))
+    await asyncio.sleep(0.4)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # the record survives the interrupt, which is the whole point of writing it first
+    run_dir = await asyncio.to_thread(lambda: sorted(tmp_path.glob("*flock-hello"))[-1])
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["outcome"] == "aborted"
+    assert set(summary["per_member"]) == set(roster)
+    assert all(m["outcome"] == "aborted" for m in summary["per_member"].values())

@@ -328,21 +328,38 @@ async def run_pilot_flock(
 
     watcher = asyncio.create_task(watch(), name="quackd-pilots-abort")
 
+    def _ended(name: str, outcome: Outcome, reason: str) -> RunResult:
+        """What a member that did not return a result of its own is recorded as."""
+        loop = loops[name]
+        return RunResult(
+            outcome=outcome,
+            reason=reason,
+            steps=loop.budget.steps,
+            llm_calls=loop.budget.llm_calls,
+            usage=loop.usage,
+            run_dir=loop.run_dir,
+            trace_dropped=loop.tracer.dropped,
+        )
+
     async def member(name: str) -> None:
-        """Never raises: a flock ends when every member has ended, however each one ended."""
+        """One member, start to finish, recorded whatever it did.
+
+        Swallows every `Exception`, so a flock ends when every member has ended however each
+        one ended, and one that raised does not take the `gather` down with it. A
+        `CancelledError` is re-raised, because a cancellation is not this member's failure to
+        report: the run is over. It is still recorded first, so the teardown below has a
+        result to write rather than a `KeyError` in place of the interrupt."""
         loop = loops[name]
         try:
             results[name] = await loop.run()
+        except asyncio.CancelledError:
+            # a second Ctrl-C: `asyncio.run` cancels every task, and this one is not an error
+            # to blame on the member. Recorded before the re-raise, because the `finally` below
+            # reads it and a KeyError there would replace the interrupt with a crash.
+            results[name] = _ended(name, "aborted", "interrupted")
+            raise
         except Exception as e:
-            results[name] = RunResult(
-                outcome="error",
-                reason=f"{type(e).__name__}: {e}",
-                steps=loop.budget.steps,
-                llm_calls=loop.budget.llm_calls,
-                usage=loop.usage,
-                run_dir=loop.run_dir,
-                trace_dropped=loop.tracer.dropped,
-            )
+            results[name] = _ended(name, "error", f"{type(e).__name__}: {e}")
             # `AgentLoop.run` connects before its own try/finally, so a transport that failed
             # to connect, or one whose vocabulary refused the contract, is still open here
             with contextlib.suppress(Exception):
@@ -355,7 +372,7 @@ async def run_pilot_flock(
         finally:
             ended.add(name)
             links[name].close()
-            result = results[name]
+            result = results.setdefault(name, _ended(name, "error", "ended without a result"))
             transcript.write(
                 "member_end",
                 duck=name,
@@ -384,15 +401,8 @@ async def run_pilot_flock(
         with contextlib.suppress(asyncio.CancelledError):
             await watcher
         for name in members:
-            if name not in results:  # cancelled from outside before it could finish
-                results[name] = RunResult(
-                    outcome="aborted",
-                    reason="interrupted",
-                    steps=0,
-                    llm_calls=0,
-                    usage=Usage(),
-                    run_dir=run_dir / "ducks" / name,
-                )
+            if name not in results:  # cancelled before its own task could record anything
+                results[name] = _ended(name, "aborted", "interrupted")
         result = _finish(
             duck=duck,
             members=members,

@@ -77,7 +77,7 @@ class FlockLink:
 
     @property
     def members(self) -> list[str]:
-        """Everyone, this pilot included, in roster order."""
+        """Everyone: the other members in roster order, then this pilot last."""
         return [*(p.name for p in self.peers), self.name]
 
     # ── saying ──────────────────────────────────────────────────────────────────────
@@ -153,13 +153,16 @@ you divide it between you by saying what you will do.
 The others:
 {others}
 
-Read those the way you read your own body above, because that is the same paragraph: what each
-one can carry, reach and do, and what it cannot do at all. Use it to work out which part of the
-task is yours and which is somebody else's.
+Each of those is the short form of the same sheet your own body is described by above: what it
+weighs, what it can carry and reach, what it holds with, and what it cannot do at all. It is
+shorter than yours and says less, so treat a peer's silence about something as not knowing
+rather than as a no. Use it to work out which part of the task is yours and which is somebody
+else's.
 
 Talking: call `tell` with `to` (a name above, or `{EVERYONE}`) and a short `text`. It reaches
-them in their next observation, moves nothing and costs no step. Say what you are about to do
-before you do it, and say when you are done, so nobody waits on you. What they say to you
+them in their next observation and moves nothing: it costs no step, though it does use one of
+your calls. Say what you are about to do before you do it, and say when you are done, so nobody
+waits on you. What they say to you
 arrives under "Messages from your flock"; you never hear your own words back, and a message
 from `{FLOCK_SRC}` is the run itself telling you that somebody has finished or stopped.
 

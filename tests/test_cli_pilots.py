@@ -292,3 +292,38 @@ def test_record_takes_a_count_and_not_a_stored_flock(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1, result.output
     assert "record pins the simulator" in result.output
+
+
+def test_a_coordinator_flock_of_one_is_refused(tmp_path: Path) -> None:
+    """The members are folded in with `model_copy`, which skips the field validator, so the
+    lower bound has to be checked here or a one-duck auction runs."""
+    _seed(tmp_path, {"lonely": "microduck:sim2d"}, {"solo": ["lonely"]})
+    result = runner.invoke(app, ["run", "flock-kick", "--flock", "solo", *_run_args(tmp_path)])
+    assert result.exit_code == 1, result.output
+    assert "2 to 4 ducks" in result.output
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_stored_flock_refuses_the_endpoint_flags_it_would_have_dropped(
+    tmp_path: Path,
+) -> None:
+    _seed(
+        tmp_path,
+        {"duck": "microduck:mock", "arm": "lerobot:mock"},
+        {"pair": ["duck", "arm"]},
+    )
+    for extra in (["--address", "tcp://x:1"], ["--token", "t"], ["--camera-url", "http://x"]):
+        result = runner.invoke(
+            app, ["run", "flock-hello", "--flock", "pair", *extra, *_run_args(tmp_path)]
+        )
+        assert result.exit_code == 1, result.output
+        assert "takes every member's address" in result.output
+
+
+def test_validate_answers_in_one_line_when_the_registry_is_broken(tmp_path: Path) -> None:
+    """`validate --robot <name>` reads robots.json, and a broken one must not be a traceback."""
+    (tmp_path / "robots.json").write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(app, ["validate", "hello-world", "--robot", "duck-a", *_reg(tmp_path)])
+    assert result.exit_code == 1, result.output
+    assert "not valid JSON" in result.output
+    assert "Traceback" not in result.output
