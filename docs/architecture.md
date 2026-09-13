@@ -71,7 +71,7 @@ sequenceDiagram
 | `quackd/sim2d/` | The cartoon world, two renders (top-down, duck-cam), the GIF recorder, the optional live window. |
 | `quackd/sim3d/` | The physics world: the cartoon's arena minus its person, plus its seeds, deadman, kick cone and scoop, in MuJoCo. `world.py` steps a `Body`, and two exist, a kinematic puppet that needs no download and upstream's own Microduck model walking on upstream's own `alpha_walking.onnx` at 50 Hz. `assets.py` fetches the model and the policies at a pinned commit into `~/.quackd/cache` and checks every file against a recorded sha256; `upstream_api.py` is the only file allowed to spell a `microduck_rl` name ([ADR-0030](adr/0030-mujoco-physics-backend.md)). |
 | `quackd/perception/` | `Detection` + `Detector`; the HSV colour-blob default; the lazy YOLO extra. |
-| `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. |
+| `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
 | `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
 | `quackd/memory.py` | What a robot keeps between runs: one JSONL file per `adapter:backend` with the notes the pilot saved (`remember`) and an episode per run; rendered into the prompt next time ([memory.md](memory.md), ADR-0025). |
 | `quackd/mcp_server.py` | A robot, or a fleet (`--robots`), as MCP tools: eight `robot_*` tools through one executor per robot. |
@@ -188,7 +188,12 @@ its logs.
 
 ## Where the seams are
 
-- **Providers** — add a file under `agent/providers/`, one line in `factory.py`.
+- **Providers** — add a file under `agent/providers/`, a tuple in `agent/providers/catalogue.py`
+  (which is where the vendor's name, its model ids and its default come from), and its rows in
+  `factory.py`. The browser demo's copy of the model list is generated rather than written:
+  `python web/build_catalogue.py` rewrites `web/src/catalogue.js` from the same catalogue, and
+  `tests/test_web.py` fails if the committed file is not what the generator produces. What the
+  entries are and what counts them: [CONTRIBUTING.md](../CONTRIBUTING.md).
 - **Detectors** — implement `detect(image) -> list[Detection]`; upstream's future feature
   stream becomes one more detector that reads a socket.
 - **Robots** — a package under `adapters/` with `describe()` (the static manifest),

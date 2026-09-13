@@ -383,14 +383,20 @@ def _drive_providers(script: str) -> Any:
 
 #: A tool list and a two-turn history, in the shapes web/src/pilot.js really builds:
 #: `history.push({ observation, call })` where `call` is `{ name, arguments }`.
-_FIXTURES = """
+#: An OpenAI model the catalogue does NOT route to Responses. The two tests below drive the
+#: 400 reader, and a model the catalogue already routes would start on Responses and never
+#: reach it. `tests/test_providers.py` keeps the same constant for the same reason.
+UNHINTED = "gpt-5.6-sol"
+
+_FIXTURES = f"""
+const UNHINTED = "{UNHINTED}";
 const tools = [
-  { name: "walk", description: "walk a bit",
-    input_schema: { type: "object", properties: { vx: { type: "number" } } } },
+  {{ name: "walk", description: "walk a bit",
+    input_schema: {{ type: "object", properties: {{ vx: {{ type: "number" }} }} }} }},
 ];
 const history = [
-  { observation: "obs one", call: { name: "walk", arguments: { vx: 0.2 } } },
-  { observation: "obs two", call: { name: "gaze", arguments: { bearing_deg: 30 } } },
+  {{ observation: "obs one", call: {{ name: "walk", arguments: {{ vx: 0.2 }} }} }},
+  {{ observation: "obs two", call: {{ name: "gaze", arguments: {{ bearing_deg: 30 }} }} }},
 ];
 """
 
@@ -430,7 +436,7 @@ globalThis.fetch = async (url, init) => {
   }), { status: 200 });
 };
 
-const p = makeProvider({ provider: "openai", key: "sk-test", model: "gpt-6-astra" });
+const p = makeProvider({ provider: "openai", key: "sk-test", model: UNHINTED });
 const first = await p.step({ system: "SYS", history: [], observation: "obs one", tools });
 await p.step({ system: "SYS", history, observation: "obs three", tools });
 
@@ -591,7 +597,7 @@ globalThis.fetch = async (url) => {
   return new Response(JSON.stringify({ error: { message: "responses is unhappy" } }),
                       { status: 400 });
 };
-const p = makeProvider({ provider: "openai", key: "k", model: "gpt-6-astra" });
+const p = makeProvider({ provider: "openai", key: "k", model: UNHINTED });
 let gaveUp = "it did not throw";
 try {
   await p.step({ system: "SYS", history: [], observation: "obs", tools });
@@ -610,7 +616,7 @@ globalThis.fetch = async (url) => {
     { type: "message", content: [{ type: "output_text", text: "I would rather talk" }] },
   ] }), { status: 200 });
 };
-const q = makeProvider({ provider: "openai", key: "k", model: "gpt-6-astra" });
+const q = makeProvider({ provider: "openai", key: "k", model: UNHINTED });
 let noCall = "it did not throw";
 try {
   await q.step({ system: "SYS", history: [], observation: "obs", tools });
@@ -675,6 +681,68 @@ def test_the_browser_and_python_agree_on_which_400_means_responses() -> None:
         in_python = _wants_the_responses_api(Vendor(status, detail))
         assert in_python is expected, f"the Python predicate gets {name} wrong"
         assert in_browser is expected, f"the browser predicate gets {name} wrong"
+
+
+def test_the_browser_and_python_start_the_same_models_on_the_same_api() -> None:
+    """The other half of the rule above, and the half that costs nothing to get right.
+
+    Reading the 400 is the fallback. Where the catalogue already records that a model will not
+    take function tools on Chat Completions, both clients open on Responses and neither spends a
+    call finding out. Run in the browser rather than read, so a `startingApi` that quietly stopped
+    consulting the catalogue would fail here instead of costing every visitor a wasted call.
+    """
+    from quackd.agent.providers.catalogue import models_for
+    from quackd.agent.providers.openai import OpenAIProvider
+
+    ids = [m.id for m in models_for("openai")]
+    browser = _drive_providers(
+        """
+const { startingApi } = await import(MODULE);
+const ids = IDS;
+console.log(JSON.stringify(ids.map((id) => startingApi("openai", id))));
+""".replace("IDS", json.dumps(ids))
+    )
+
+    class Stub:
+        def __init__(self) -> None:
+            self.chat = self.responses = None
+
+    for model_id, in_browser in zip(ids, browser, strict=True):
+        in_python = OpenAIProvider(model=model_id, client=Stub()).api
+        assert in_browser == in_python, (
+            f"{model_id} starts on {in_browser} in the page and {in_python} in the CLI"
+        )
+    assert "responses" in browser, "no model routes to Responses, so this test proves nothing"
+
+
+def test_the_browser_asks_each_vendor_for_a_tool_call_the_way_python_does() -> None:
+    """`tool_choice` is not one word shared by eleven vendors.
+
+    Mistral spells it `any` and 400s on OpenAI's `required`; Cohere's compatibility endpoint
+    documents no such parameter at all and the field is omitted; Z.ai supports only `auto`. The
+    page and the CLI each hold a copy of that table, and a copy that drifts is a vendor that
+    starts refusing tool calls in one of the two places only.
+    """
+    import importlib
+
+    from quackd.agent.providers.factory import OPENAI_COMPATIBLE
+
+    offered = _drive_providers(
+        """
+const { PROVIDERS } = await import(MODULE);
+console.log(JSON.stringify(Object.fromEntries(
+  Object.entries(PROVIDERS).map(([key, spec]) => [key, spec.toolChoice ?? null]))));
+"""
+    )
+    assert offered.get("openai") == "required", "OpenAI's own setting is the one that must not move"
+    for name, in_browser in offered.items():
+        if name not in OPENAI_COMPATIBLE:
+            continue
+        module = importlib.import_module(f"quackd.agent.providers.{name}")
+        in_python = getattr(module, OPENAI_COMPATIBLE[name]).default_tool_choice
+        assert in_browser == in_python, (
+            f"the page asks {name} with tool_choice={in_browser!r} and the CLI with {in_python!r}"
+        )
 
 
 # ── the two copies of upstream's contract stay in step ──────────────────────────────────
@@ -862,3 +930,93 @@ def test_the_browser_refuses_the_arguments_python_refuses() -> None:
     assert "left, right" in got["badLeg"]
     assert got["fine"] is None
     assert got["empty"] is None, "Python's MoveParams requires nothing, so neither may this"
+
+
+# ── the two copies of the model list stay in step ───────────────────────────────────────
+
+
+def test_the_browser_offers_the_same_models_python_does() -> None:
+    """The generated half of the catalogue, checked the way the upstream pins are.
+
+    `quackd/agent/providers/catalogue.py` is the single source of truth for model names and the
+    browser cannot import it, so `web/build_catalogue.py` writes the copy the page reads. A
+    generated file that nothing re-generates is just a stale file with a comment on it, so the
+    generator is run here and its output compared against what is committed.
+
+    Loaded by path rather than imported: `web/` is not a package, and this keeps the script a
+    script, runnable as `python web/build_catalogue.py` the way its docstring promises.
+    """
+    import importlib.util
+
+    script = WEB / "build_catalogue.py"
+    spec = importlib.util.spec_from_file_location("build_catalogue", script)
+    assert spec and spec.loader, f"{script} could not be loaded as a module"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # The committed file is read with its newlines normalised: git may check it out with CRLF
+    # on Windows, and `render()` always produces LF. The difference that matters is the models.
+    committed = (SRC / "catalogue.js").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert module.render() == committed, (
+        "web/src/catalogue.js is not what web/build_catalogue.py produces, so the page offers a "
+        "different model list from the CLI. Regenerate it and commit the result:\n\n"
+        "    python web/build_catalogue.py\n"
+    )
+
+
+def test_every_vendor_the_page_cannot_offer_is_named_in_its_README() -> None:
+    """A vendor may be missing from the dropdown, and may not be missing quietly.
+
+    The page calls a vendor from the visitor's browser, so one that refuses a cross-origin
+    preflight cannot be offered here however well it works under `quackd run`. GLM is that
+    vendor today: `api.z.ai` answers the preflight with no `Access-Control-Allow-*` header at
+    all. That is a fact about a third party on a particular day, not a decision this repository
+    made, so what is enforced is not *which* vendors are absent but that each absence is
+    written down with its reason. Otherwise the next one drops out in a diff nobody reads.
+    """
+    from quackd.agent.providers.catalogue import CLOUD_NAMES
+
+    both = _drive_providers(
+        """
+const { PROVIDERS, NOT_FROM_A_BROWSER } = await import(MODULE);
+console.log(JSON.stringify({ offered: Object.keys(PROVIDERS), excused: NOT_FROM_A_BROWSER }));
+"""
+    )
+    offered = {name for name in both["offered"] if name in CLOUD_NAMES}
+    assert "openai" in offered, "PROVIDERS came back empty, so this test is vacuous"
+    absent = set(CLOUD_NAMES) - offered
+    excused = both["excused"]
+    # Matching the map to the gap is what makes this falsifiable. Searching the README for the
+    # vendor's name would not: every catalogue name is already somewhere in that file, including
+    # the ones the page does offer, so the check would pass whatever was deleted from PROVIDERS.
+    assert set(excused) == absent, (
+        f"web/src/providers.js offers {sorted(offered)} of {len(CLOUD_NAMES)} catalogue vendors "
+        f"and excuses {sorted(excused)}. A vendor the page drops needs a line in "
+        f"NOT_FROM_A_BROWSER saying why, and one it gains needs that line removed"
+    )
+    readme = (WEB / "README.md").read_text(encoding="utf-8").lower()
+    for vendor, reason in excused.items():
+        assert reason.strip(), f"{vendor} is excused with an empty reason"
+        assert re.search(r"\d{4}-\d{2}-\d{2}", reason), (
+            f"{vendor}'s reason has no date, and a third party's CORS policy is only true on a day"
+        )
+        assert vendor in readme, (
+            f"web/README.md never mentions {vendor}, which the page cannot call"
+        )
+
+
+def test_the_dropdown_can_show_every_model_the_catalogue_holds() -> None:
+    """`fillModels` builds one `<optgroup>` per status in STATUS_ORDER and fills it by filtering
+    on that status, so a model whose status is not in STATUS_ORDER is in the data, is offered by
+    the CLI, and is silently missing from the page. Nothing else would notice."""
+    catalogue = _js("catalogue.js")
+    order = re.search(r"STATUS_ORDER = \[([^\]]*)\]", catalogue)
+    assert order, "web/src/catalogue.js no longer exports STATUS_ORDER"
+    known = set(re.findall(r'"(\w+)"', order.group(1)))
+    used = set(re.findall(r'"status": "(\w+)"', catalogue))
+    assert used, "no model in web/src/catalogue.js carries a status, so this test is vacuous"
+    assert used <= known, (
+        f"web/src/catalogue.js holds models whose status STATUS_ORDER does not list: "
+        f"{sorted(used - known)}. fillModels() groups by that order, so those models would "
+        f"never appear in the dropdown"
+    )

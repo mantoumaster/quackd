@@ -14,7 +14,8 @@ keywords = [
   "microduck", "open-duck-mini", "lerobot", "xlerobot", "alohamini", "toddlerbot", "humanoid", "ros", "rosbridge",
   "robotics", "embodied-ai", "physical-ai", "llm-agents",
   "mcp", "model-context-protocol", "reinforcement-learning", "sim2real",
-  "claude", "openai", "ollama", "vllm", "llama-cpp", "local-llm",
+  "claude", "openai", "gemini", "grok", "mistral", "deepseek", "cohere", "qwen", "kimi", "glm",
+  "ollama", "vllm", "llama-cpp", "local-llm",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -43,7 +44,17 @@ dependencies = [
 anthropic = ["anthropic>=1.0,<2"]
 openai = ["openai>=1.50"]
 gemini = ["google-genai>=1.0"]
+# Eight vendors, one wheel. Each speaks OpenAI's API at its own address, so the extra exists
+# to name the install a reader of `quackd doctor` or a ProviderNotInstalled actually wants,
+# not because there is a second package to fetch (see EXTRA_FOR in agent/providers/factory.py).
 grok = ["openai>=1.50"]
+mistral = ["openai>=1.50"]
+deepseek = ["openai>=1.50"]
+cohere = ["openai>=1.50"]
+qwen = ["openai>=1.50"]
+kimi = ["openai>=1.50"]
+glm = ["openai>=1.50"]
+meta = ["openai>=1.50"]
 all = ["anthropic>=1.0,<2", "openai>=1.50", "google-genai>=1.0"]
 yolo = ["ultralytics>=8.2"]
 live = ["pygame>=2.5"]
@@ -144,6 +155,8 @@ ignore = ["RUF012", "B008"]
 # The browser demo's dev server. It is a command a person runs, and printing the URL it
 # mounted on is the whole of its user interface.
 "web/serve.py" = ["T20"]
+# The same, for the generator beside it: it is run by hand and reports what it wrote.
+"web/build_catalogue.py" = ["T20"]
 # Prose-heavy files: upstream citations and LLM-facing prompt text read better unwrapped.
 "quackd/transport/upstream_api.py" = ["E501"]
 "quackd/agent/prompts.py" = ["E501"]

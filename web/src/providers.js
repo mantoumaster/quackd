@@ -11,45 +11,139 @@
  * Each provider does the same job: hand the model a system prompt, the turns so far and a
  * list of tools, and return exactly one tool call. Where a vendor can be told to call a
  * tool it is told to; where it cannot, a missing call ends the run rather than being
- * guessed at.
+ * guessed at. `toolChoice` below is that difference, per vendor, and it is copied from the
+ * provider classes in `quackd/agent/providers/`: Mistral spells it `any`, Cohere documents
+ * no such parameter at all and is therefore asked rather than told, and the rest take
+ * `auto` or `required`.
+ *
+ * Eleven cloud vendors are in the catalogue and ten are offered here. Anthropic, OpenAI and
+ * Gemini each have a client of their own; Grok, Mistral, DeepSeek, Cohere, Qwen, Kimi and
+ * Meta are all OpenAI-shaped, so they are the same client with a different base URL. GLM is
+ * the one that is missing: Z.ai answers a CORS preflight with no `Access-Control-Allow-*`
+ * headers, so a browser refuses the call before it is made. It stays on the CLI, it stays in
+ * `catalogue.js`, and `web/README.md` says so. The model list itself is generated from
+ * Python by `web/build_catalogue.py` and is never edited here.
  *
  * OpenAI is the one vendor here with two APIs that can do that job. Chat Completions is
  * asked first, and a model that refuses function tools there is moved to Responses for the
  * rest of the run, on the strength of what the 400 said. `quackd/agent/providers/openai.py`
- * makes the same move for the CLI, and the two have to keep agreeing.
+ * makes the same move for the CLI, and the two have to keep agreeing. Where the catalogue
+ * already knows a model is Responses-only, `startingApi` says so up front and the failed
+ * call is never paid for.
  */
+
+import { CATALOGUE } from "./catalogue.js";
+
+/**
+ * The vendors this page can call, which is not the same list as the CLI's.
+ *
+ * No `models` and no `defaultModel` on a cloud entry: both live in `catalogue.js`, generated
+ * from the Python that is the single source of truth for model names. Local keeps its own,
+ * because a local server serves whatever you pulled and quackd has no list for it.
+ */
+/**
+ * Vendors quackd can drive from a terminal and this page cannot, with the reason and the day it
+ * was measured.
+ *
+ * Written down rather than inferred from which keys are missing below, because "absent" and
+ * "forgotten" look identical in a diff. A test holds this map to exactly the set of catalogue
+ * vendors `PROVIDERS` leaves out, so dropping a vendor from the page without saying why fails
+ * the suite, and re-adding one without deleting its excuse fails it too.
+ */
+export const NOT_FROM_A_BROWSER = {
+  glm: "Z.ai answers a CORS preflight with no Access-Control-Allow-* header, measured 2026-09-12",
+};
 
 export const PROVIDERS = {
   anthropic: {
     label: "Anthropic (Claude)",
     keyPlaceholder: "sk-ant-...",
-    defaultModel: "claude-sonnet-5",
-    models: ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001"],
     keyUrl: "https://console.anthropic.com/settings/keys",
     needsKey: true,
   },
   openai: {
     label: "OpenAI",
     keyPlaceholder: "sk-...",
-    defaultModel: "gpt-5",
-    models: ["gpt-5", "gpt-5-mini", "gpt-6-astra"],
     keyUrl: "https://platform.openai.com/api-keys",
+    baseUrl: "https://api.openai.com/v1",
+    toolChoice: "required",
     needsKey: true,
   },
   gemini: {
     label: "Google (Gemini)",
     keyPlaceholder: "AIza...",
-    defaultModel: "gemini-2.5-pro",
-    models: ["gemini-2.5-pro", "gemini-2.5-flash"],
     keyUrl: "https://aistudio.google.com/apikey",
     needsKey: true,
+  },
+  grok: {
+    label: "xAI (Grok)",
+    keyPlaceholder: "xai-...",
+    keyUrl: "https://console.x.ai/",
+    baseUrl: "https://api.x.ai/v1",
+    toolChoice: "required",
+    needsKey: true,
+  },
+  mistral: {
+    label: "Mistral",
+    keyPlaceholder: "your Mistral key",
+    keyUrl: "https://console.mistral.ai/api-keys",
+    baseUrl: "https://api.mistral.ai/v1",
+    // `required` is a 400 here. Mistral's word for the same thing is `any`.
+    toolChoice: "any",
+    needsKey: true,
+  },
+  deepseek: {
+    label: "DeepSeek",
+    keyPlaceholder: "sk-...",
+    keyUrl: "https://platform.deepseek.com/api_keys",
+    baseUrl: "https://api.deepseek.com",
+    toolChoice: "required",
+    needsKey: true,
+  },
+  cohere: {
+    label: "Cohere",
+    keyPlaceholder: "your Cohere key",
+    keyUrl: "https://dashboard.cohere.com/api-keys",
+    baseUrl: "https://api.cohere.ai/compatibility/v1",
+    // The one vendor here that cannot be told to call a tool, only asked: its compatibility
+    // layer documents no `tool_choice` at all, so the field is left out of the body entirely.
+    toolChoice: null,
+    needsKey: true,
+  },
+  qwen: {
+    label: "Alibaba (Qwen)",
+    keyPlaceholder: "sk-...",
+    keyUrl: "https://modelstudio.console.alibabacloud.com/",
+    baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    toolChoice: "auto",
+    needsKey: true,
+  },
+  kimi: {
+    label: "Moonshot (Kimi)",
+    keyPlaceholder: "sk-...",
+    // the API host is still api.moonshot.ai, but the console moved to platform.kimi.ai
+    keyUrl: "https://platform.kimi.ai/console/api-keys",
+    baseUrl: "https://api.moonshot.ai/v1",
+    toolChoice: "auto",
+    needsKey: true,
+  },
+  meta: {
+    label: "Meta (Muse Spark)",
+    keyPlaceholder: "your Meta Model API key",
+    baseUrl: "https://api.meta.ai/v1",
+    toolChoice: "auto",
+    needsKey: true,
+    note:
+      "The Meta Model API, which replaced the hosted Llama API in July 2026. The key is the " +
+      "one Meta's own examples export as MODEL_API_KEY. Two Muse Spark models are " +
+      "contributor tier: cheaper, and Meta trains on what you send them.",
   },
   local: {
     label: "Local (Ollama or any OpenAI-compatible server)",
     keyPlaceholder: "not needed",
     defaultModel: "qwen3:8b",
-    models: [],
     baseUrl: "http://localhost:11434/v1",
+    toolChoice: "required",
     needsKey: false,
     note:
       "Ollama must be told to accept this page: run it with OLLAMA_ORIGINS=* (or your own " +
@@ -162,11 +256,17 @@ function anthropic({ key, model }) {
  * path: the run moves to Responses and stays. Staying is the point. Retrying chat each turn
  * would pay a failed call per step against the visitor's own key.
  */
-function openaiCompatible({ key, model, baseUrl, label }) {
+function openaiCompatible({ key, model, baseUrl, label, toolChoice = "required", api: startApi }) {
   const root = baseUrl.replace(/\/$/, "");
   // "chat" or "responses". Held across steps, so a model that has refused chat once is never
-  // asked again for the life of this provider, which is the life of the run.
-  let api = "chat";
+  // asked again for the life of this provider, which is the life of the run. It starts at
+  // whatever the caller knew — see `startingApi` — and defaults to chat, which is the only
+  // API a local server speaks and the one every other vendor here answers on.
+  let api = startApi === "responses" ? "responses" : "chat";
+
+  // `null` means the vendor documents no `tool_choice` at all, and an unknown field is a 400
+  // on some gateways, so the key is left out of the body rather than sent as null.
+  const insist = (body) => (toolChoice === null ? body : { ...body, tool_choice: toolChoice });
 
   // A replayed call and its result have to quote the same handle. It is invented here rather
   // than echoed from the vendor, and both renderers key it off the turn index, so the pair
@@ -189,15 +289,14 @@ function openaiCompatible({ key, model, baseUrl, label }) {
       messages.push({ role: "tool", tool_call_id: callId(index), content: "ok" });
     });
     messages.push({ role: "user", content: observation });
-    return {
+    return insist({
       model,
       messages,
-      tool_choice: "required",
       tools: tools.map((t) => ({
         type: "function",
         function: { name: t.name, description: t.description, parameters: t.input_schema },
       })),
-    };
+    });
   }
 
   /** The same turn in the shapes Responses uses. It agrees with Chat Completions on almost no
@@ -216,18 +315,17 @@ function openaiCompatible({ key, model, baseUrl, label }) {
       input.push({ type: "function_call_output", call_id: callId(index), output: "ok" });
     });
     input.push({ role: "user", content: [{ type: "input_text", text: observation }] });
-    return {
+    return insist({
       model,
       instructions: system,
       input,
-      tool_choice: "required",
       tools: tools.map((t) => ({
         type: "function",
         name: t.name,
         description: t.description,
         parameters: t.input_schema,
       })),
-    };
+    });
   }
 
   function fromChat(body) {
@@ -325,21 +423,55 @@ function gemini({ key, model }) {
   };
 }
 
-export function makeProvider({ provider, key, model, baseUrl }) {
+/**
+ * Which API a run should open on, for a model the catalogue already knows.
+ *
+ * Some OpenAI models will not take function tools on Chat Completions at all. The 400 they
+ * answer with is read below and the run moves, but it pays a call to learn what the catalogue
+ * already records, so the page asks this first and skips it. Everything else starts on Chat
+ * Completions, including any id the catalogue has never heard of: this is a hint, not a
+ * gate, and a model the visitor typed or a vendor shipped this morning must still reach the
+ * vendor and get the vendor's own answer.
+ */
+export function startingApi(provider, model) {
+  const known = CATALOGUE[provider]?.entries.find((entry) => entry.id === model);
+  return known?.api === "responses" ? "responses" : "chat";
+}
+
+export function makeProvider({ provider, key, model, baseUrl, api }) {
   const spec = PROVIDERS[provider];
   if (!spec) throw new ProviderError(`unknown provider ${provider}`);
   if (spec.needsKey && !key) throw new ProviderError(`${spec.label} needs your API key`);
-  const chosen = model || spec.defaultModel;
+  // The default comes from the catalogue for a cloud vendor and from the spec for Local. The
+  // id itself is NOT checked against the catalogue: a model quackd has not heard of has to
+  // reach the vendor and come back in the vendor's own words, which is the only answer that
+  // can be right about a list this page does not own.
+  const chosen = model || CATALOGUE[provider]?.default || spec.defaultModel;
+  // Where the caller said nothing, the catalogue decides, so a caller who reaches for
+  // `makeProvider` directly gets the same answer the page does. `quackd/agent/providers/
+  // openai.py` resolves it in the same order for the same reason.
+  const startsOn = api || startingApi(provider, chosen);
   if (provider === "anthropic") return anthropic({ key, model: chosen });
   if (provider === "gemini") return gemini({ key, model: chosen });
-  if (provider === "openai") {
-    return openaiCompatible({ key, model: chosen, baseUrl: "https://api.openai.com/v1", label: "OpenAI" });
+  // Every other cloud vendor is OpenAI-shaped, so it is one client with a different base URL,
+  // a different label on its errors and whatever `tool_choice` that vendor accepts. Local is
+  // the same client again, with the only base URL on the page a visitor may type.
+  if (spec.needsKey) {
+    return openaiCompatible({
+      key,
+      model: chosen,
+      baseUrl: spec.baseUrl,
+      label: spec.label,
+      toolChoice: spec.toolChoice,
+      api: startsOn,
+    });
   }
   return openaiCompatible({
     key: key || "",
     model: chosen,
     baseUrl: localBaseUrl(baseUrl || spec.baseUrl),
     label: "your local server",
+    toolChoice: spec.toolChoice,
   });
 }
 

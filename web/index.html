@@ -98,8 +98,13 @@
           billed to you. Prefer nothing to leave the machine at all? Pick <em>Local</em>.
         </p>
         <div class="row">
+          <!-- Two controls for one field, and applyProvider() shows exactly one. A cloud
+               vendor's models are a list quackd keeps, so picking one is a <select> built
+               from catalogue.js. A local server serves whatever you pulled and quackd has no
+               list for it, so that one stays free text. -->
           <select id="provider" aria-label="model provider"></select>
-          <input id="model" placeholder="model" autocomplete="off">
+          <select id="model" aria-label="model"></select>
+          <input id="model-text" placeholder="model" aria-label="model" autocomplete="off" hidden>
         </div>
         <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off">
         <input id="base-url" placeholder="http://localhost:11434/v1" autocomplete="off" hidden>

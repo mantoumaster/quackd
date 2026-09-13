@@ -9,6 +9,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **quackd carries a list of the models it will let you pick, and `--model` picks from it.**
+  `--model` used to take any string and hand it to the vendor, so a typo, an id retired last spring
+  and an id belonging to a different vendor all failed the same way: at the first call, in the
+  vendor's own words, after the run directory had been made and the robot had connected. There is
+  now one curated list per cloud vendor in `quackd/agent/providers/catalogue.py` — eleven vendors,
+  115 models, each with the id as the vendor spells it, a label a human can read, one of five
+  statuses (`current`, `legacy`, `preview`, `specialised`, `open`) and two hints about what the
+  vendor will accept. The first entry of a vendor is its default, so a default is no longer a second
+  place the id gets written down and falls out of step. `quackd list-models` prints the whole table
+  and `--provider NAME` narrows it to one vendor; the notes column marks the default, the OpenAI
+  models that open on the Responses API, and the vendors that do not document image input, where
+  quackd sends the detections as text instead of the camera frame and `--vision` overrides.
+  `QUACKD_MODEL` is checked exactly as `--model` is, and the refusal says which of the two the id
+  came from, because a flag you just typed and a line you forgot in a `.env` want different answers.
+  `--model` also completes in the shell, following whichever `--provider` is already on the command
+  line. The local presets are deliberately outside all of this: `local`, `ollama`, `vllm`,
+  `llamacpp` and `lmstudio` serve whatever you pulled, so `--model` is still free text there and
+  passing none still means "ask the server what it has". `quackd serve-mcp` picks no model at all —
+  the client's own model is the pilot and `QUACKD_MODEL` is irrelevant there — which was already
+  true and is now written down ([ADR-0031](docs/adr/0031-model-catalogue.md)).
+- **Seven more cloud vendors: Mistral, DeepSeek, Cohere, Qwen, Kimi, GLM and Meta.** All seven serve
+  an OpenAI-shaped endpoint, so each is one small `OpenAIProvider` subclass with a base URL and a
+  key variable, exactly as Grok has been since the first release. `--provider mistral` reads `MISTRAL_API_KEY`,
+  `deepseek` reads `DEEPSEEK_API_KEY`, `cohere` reads `COHERE_API_KEY` (or `CO_API_KEY`, which is
+  what Cohere's own examples export), `qwen` reads `DASHSCOPE_API_KEY`, `kimi` reads
+  `MOONSHOT_API_KEY`, `glm` reads `ZAI_API_KEY`, and `meta` reads `META_API_KEY` (or
+  `MODEL_API_KEY`). Each has its own extra — `quackd[mistral]`, `quackd[deepseek]` and so on — and
+  every one of them installs the same `openai>=1.50` wheel that `quackd[openai]` and `quackd[grok]`
+  do. Eight vendors, one package: the extra exists so that a missing-SDK error can name the install
+  the reader actually wants rather than a package name they will not connect to the vendor they
+  asked for. Meta here is not Llama — Meta retired the hosted Llama API in July 2026, and its
+  replacement, the Meta Model API, serves Muse Spark; two of those are a contributor tier, cheaper
+  because Meta trains on your prompts, and the label in `list-models` says so. The honest part: of
+  the eleven cloud vendors, only OpenAI has been run against a real key on the machine that wrote
+  this. The other ten are wired from their own published documentation and held by tests that stub
+  the SDK client, which is enough to prove each one is built with the right base URL, key variable,
+  extra and default model, and is not enough to prove that any of them answers.
+- **The browser demo picks its model from a dropdown.** The page declared a `models:` array per
+  vendor that nothing ever read, and offered a free-text box instead, so a visitor who came to click
+  one thing had to already know a model id to type. The dropdown is now fed by the same catalogue
+  through `web/src/catalogue.js`, generated from the Python and grouped by status, with a test that
+  fails when the generated file has drifted from `catalogue.py`.
+
+### Changed
+
+- **`--model` and `QUACKD_MODEL` now take a catalogue id, and three of the four defaults moved.**
+  [ADR-0010](docs/adr/0010-providers.md) shipped four defaults with the first release and marked
+  three of them "(verify)". Nobody ever did, and by 2026-09-12 all three were wrong: `gpt-5` has
+  an announced shutdown date, `gemini-2.5-pro` is legacy, and `grok-4` was retired in May 2026 and
+  is silently answered by `grok-4.3` — which is the worst of the three, because nothing fails, the
+  key is billed and the transcript records a model that did not run. The defaults are now
+  `gpt-5.6-sol` for `openai`, `gemini-3.8-flash` for `gemini` and `grok-4.6` for `grok`;
+  `claude-opus-5` for `anthropic` is unchanged. This is breaking for anyone passing an id quackd
+  does not list, the three old defaults included, and that is the point: the refusal arrives
+  before a key is read or a packet is sent, and it says what to pass instead.
+
+      error: openai: unknown model 'gpt-5' from --model. Valid ids: gpt-5.6-sol (default),
+      gpt-6-astra, gpt-5.6-terra, ... See `quackd list-models --provider openai`.
+
+  When the id belongs to another vendor the refusal names it — `('grok-4.6' is a grok model: pass
+  --provider grok)` — because that is the commonest mistake and the hardest to see, the id looking
+  perfectly valid. A `QUACKD_MODEL` line that has sat in a `.env` since then now stops the run rather
+  than starting a wrong one, and `quackd doctor` shows the id each provider would actually be given
+  instead of guessing at it. One more thing rides on the same list: `gpt-6-astra` and the OpenAI pro
+  tier are marked as Responses-API models, so a run with one of them opens on `/v1/responses`
+  instead of paying a failed Chat Completions call to find that out. The 400 reader 0.8 added stays,
+  because it is what covers a model the catalogue has not been told about yet.
 - **The CLI has a house style, and a way out of it.** quackd's colours had grown inline: a
   `[green]` in one command, a `Table` in another, an emoji in a third, with nothing saying
   which green meant *this worked* and which meant *this is installed*. `quackd/ui.py` is now
@@ -21,12 +88,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while answers go to stdout, so `quackd list-adapters > adapters.txt` gets the table and
   nothing else. On a Windows pipe, where every decoration used to arrive as a question mark,
   the adapter roster now reads `[ok] built-in: sim2d` and `[exp] jsonrpc`.
-- **`--no-color`, and `--json` on `validate`, `list-verbs` and `list-adapters`.** The tables
+- **`--no-color`, and `--json` on `validate`, `list-verbs`, `list-adapters` and `list-models`.** The tables
   are for a person. `--json` prints one object per line on stdout and nothing else, keeping
   the exit code it would have had, so `quackd validate ducks/*.duck --json` still exits 1 on
   a failure and a script can read which file and why. `--no-color` sets `NO_COLOR` as well as
   quackd's own consoles, because Typer builds a console of its own for every `--help` it
   renders. `FORCE_COLOR=1` is the other direction, for a pipe you are colouring on purpose.
+  `quackd list-models` arrived in the same release from the other direction and wears the
+  house style too: its model ids still fold rather than elide, and none of the five columns
+  goes through Rich's markup on the way, so a label with a bracket in it survives.
 - **`-h` works**, everywhere `--help` does, and `--help` groups what it shows. `quackd run`
   offered twenty seven flags in one flat list. They are sorted into Task, Model, Robot,
   Output and Memory now, the commands are grouped the same way, and the root help ends with
@@ -93,7 +163,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extras in `--help` keep their brackets.** `--live` advertised an install called `quackd`
   rather than `quackd[live]`, because Rich had read the extra as markup and eaten it. Same
   for `quackd[microduck-camera]` and `quackd[lan]`.
-
 ### Removed
 
 - **The Reachy Mini adapter.** `--robot reachy_mini:{sim2d,mock,sdk}`, `quackd[reachy]`, the

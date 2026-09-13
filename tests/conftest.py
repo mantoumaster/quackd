@@ -75,6 +75,16 @@ def _trace_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUACKD_TRACE", "0")
 
 
+@pytest.fixture(autouse=True)
+def _no_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`QUACKD_MODEL` pins the model for every provider, and the CLI loads a developer's `.env`
+    in its root callback, so one line in an untracked file could make half this suite assert
+    against a model nobody chose. Empty reads as unset everywhere it is consumed, and unlike
+    `delenv` it survives `load_dotenv`, which does not overwrite a name already in the
+    environment. The tests that exercise the variable set it themselves."""
+    monkeypatch.setenv("QUACKD_MODEL", "")
+
+
 @pytest.fixture
 def registry() -> VerbRegistry:
     return default_registry()

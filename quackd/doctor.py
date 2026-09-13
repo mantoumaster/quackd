@@ -30,15 +30,28 @@ from rich.text import Text
 from quackd import __version__, ui
 from quackd.adapters.base import AdapterError
 from quackd.adapters.factory import describe, list_adapters, parse_robot_spec
-from quackd.agent.providers.factory import DEFAULT_MODELS, KEY_ENV, LOCAL_NAMES, PROVIDER_NAMES
+from quackd.agent.providers.base import ProviderError
+from quackd.agent.providers.factory import (
+    EXTRA_FOR,
+    KEY_ENV,
+    LOCAL_NAMES,
+    PROVIDER_NAMES,
+    SDK_FOR,
+    default_model,
+    resolve_model,
+)
 from quackd.agent.providers.local import PRESETS
 from quackd.duckfile.parser import list_bundled_ducks
 from quackd.transport import upstream_api as up
 from quackd.transport.factory import TRANSPORT_STATUS
 
+# The optional extras table, which is about packages rather than providers: the providers table
+# builds its own rows from SDK_FOR and EXTRA_FOR. One wheel now serves nine vendors, so naming
+# them all here would be a list to keep in step for no gain; `quackd list-models` and the
+# providers table above already say which vendor wants which install.
 EXTRAS = {
     "anthropic": ("anthropic", "quackd[anthropic]"),
-    "openai": ("openai", "quackd[openai] / quackd[grok]"),
+    "openai": ("openai", "quackd[openai] and every OpenAI-compatible vendor"),
     "gemini": ("google.genai", "quackd[gemini]"),
     "yolo": ("ultralytics", "quackd[yolo]"),
     "live": ("pygame", "quackd[live]"),
@@ -131,6 +144,11 @@ class ProviderRow:
     key_optional: bool
     """A local server does not need one; a cloud provider cannot run without it."""
     model: str
+    pinned: bool = False
+    """QUACKD_MODEL chose this one, rather than the vendor's default."""
+    refused_model: str = ""
+    """A QUACKD_MODEL this vendor does not list, which is why `model` is its default and not
+    what the environment asked for."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -141,6 +159,8 @@ class ProviderRow:
             "key_env": self.key_env,
             "key_optional": self.key_optional,
             "model": self.model,
+            "pinned": self.pinned,
+            "refused_model": self.refused_model or None,
         }
 
 
@@ -555,19 +575,29 @@ def collect(
                 ProviderRow("fake", "built-in", "built-in", "", "", True, "scripted")
             )
             continue
-        module, extra = EXTRAS["openai" if name in ("grok", *LOCAL_NAMES) else name]
         key = os.environ.get(KEY_ENV[name], "")
+        # What this provider would actually be given, not what the table used to guess. A
+        # QUACKD_MODEL meant for one vendor is refused by the others, and doctor is where a
+        # reader should find that out rather than three commands later.
+        refused = ""
+        try:
+            model = resolve_model(name, default_model(name), source="QUACKD_MODEL") or (
+                "auto (first served)"
+            )
+        except ProviderError:
+            model = default_model(name) or "auto (first served)"
+            refused = str(os.environ.get("QUACKD_MODEL", ""))
         report.providers.append(
             ProviderRow(
                 name=name,
-                extra=extra,
-                version=_installed(module),
+                extra=f"quackd[{EXTRA_FOR[name]}]",
+                version=_installed(SDK_FOR[name]),
                 key=_mask(key) if key else "",
                 key_env=KEY_ENV[name],
                 key_optional=name in LOCAL_NAMES,
-                model=os.environ.get("QUACKD_MODEL")
-                or DEFAULT_MODELS.get(name)
-                or "auto (first served)",
+                model=model,
+                pinned=bool(os.environ.get("QUACKD_MODEL")) and not refused,
+                refused_model=refused,
             )
         )
 
@@ -688,7 +718,8 @@ def _providers_table(report: DoctorReport) -> Any:
     table.add_column("provider", style=ui.STYLES["key"], no_wrap=True)
     table.add_column("extra")
     table.add_column("key")
-    table.add_column("default model")
+    # folded, not elided: a model id with an ellipsis through it cannot be pasted into --model
+    table.add_column("default model", overflow="fold")
     for row in report.providers:
         if row.name == "fake":
             table.add_row(
@@ -707,7 +738,14 @@ def _providers_table(report: DoctorReport) -> Any:
             key = Text("optional", style=ui.STYLES["muted"])
         else:
             key = Text(f"{row.key_env} unset", style=ui.STYLES["warn"])
-        table.add_row(Text(row.name), extra, key, Text(row.model))
+        if row.refused_model:
+            model = Text.assemble(
+                (f"QUACKD_MODEL={row.refused_model}", ui.STYLES["warn"]),
+                (f", which {row.name} does not list", ui.STYLES["warn"]),
+            )
+        else:
+            model = Text(row.model, style=ui.STYLES["ok"] if row.pinned else "")
+        table.add_row(Text(row.name), extra, key, model)
     return table
 
 
@@ -879,7 +917,7 @@ def render(console: Console, report: DoctorReport) -> None:
     console.print(_checks(report.core))
     console.print(Text(f"  {report.bundled_ducks} bundled ducks", style=ui.STYLES["muted"]))
 
-    _section(console, "providers")
+    _section(console, "providers (every model id: quackd list-models)")
     console.print(_providers_table(report))
 
     _section(console, "local LLM servers (GET /v1/models, 1.5 s timeout)")

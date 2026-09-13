@@ -143,12 +143,27 @@ Renaming a verb is not a rename: add the new name and keep the old one in
 
 ## Add a provider
 
-A provider is one file under `quackd/agent/providers/` and five entries that have to
-agree: the name in `CLOUD_NAMES` or `LOCAL_NAMES`, rows in `DEFAULT_MODELS` and
-`KEY_ENV`, a branch in `make_provider`, and a row in `EXTRAS` in `quackd/doctor.py`.
-Nothing counts them, and `quackd doctor` indexes `KEY_ENV` and `EXTRAS` by name, so a
-missing row is a `KeyError` in the command people run when something is already wrong. Four
-things the tracing depends on, none of them optional:
+A provider is one file under `quackd/agent/providers/` and six entries that have to
+agree: its tuple in `CATALOGUE` in `providers/catalogue.py`, which is where the name, the
+model ids and the default all come from and what puts a cloud vendor in `CLOUD_NAMES`, then
+rows in `KEY_ENV`, `EXTRA_FOR` and `SDK_FOR` in `providers/factory.py`, then either a row in
+`OPENAI_COMPATIBLE` or a branch in `make_provider`, and finally a `quackd[<name>]` extra in
+`pyproject.toml`. `tests/test_catalogue.py` counts them now, under the heading
+`one file and the entries that have to agree`: it walks `PROVIDER_NAMES` and fails on the
+missing row, and it opens `pyproject.toml` to check the extra exists and installs the SDK
+that provider imports. Before it existed a missing row was a `KeyError` out of `quackd
+doctor`, which is the command people run when something is already wrong.
+
+Then the browser, which has its own copy of the model list and its own reason to refuse one.
+Run `python web/build_catalogue.py` and commit `web/src/catalogue.js`, or the generator-drift
+test in `tests/test_web.py` fails. Then decide whether the page can call the vendor at all: it
+calls from the visitor's browser, so a vendor that refuses a cross-origin preflight goes in
+`NOT_FROM_A_BROWSER` in `web/src/providers.js` with the reason and the date, and a vendor that
+answers one goes in `PROVIDERS` with its base URL, its key link and the `tool_choice` its own
+docs allow. A test holds that pair to exactly the vendors `PROVIDERS` leaves out, so neither
+half can be skipped quietly.
+
+Four things the tracing depends on, none of them optional:
 
 1. Fill `ProviderTurn.thinking` with the model's own reasoning when the API returns it, and
    `Usage.reasoning_tokens` with what it charged for. The trace shows the first and the

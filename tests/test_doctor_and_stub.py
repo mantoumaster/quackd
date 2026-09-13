@@ -16,6 +16,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from quackd import doctor
+from quackd.agent.providers.factory import CLOUD_NAMES, KEY_ENV, PROVIDER_NAMES
 from quackd.cli import app
 from quackd.transport.base import TransportError
 from quackd.transport.websocket_stub import WebSocketTransport
@@ -33,6 +34,26 @@ def test_doctor_runs() -> None:
         "jsonrpc",
     ):
         assert needle in result.output
+
+
+def test_doctor_lists_every_provider_and_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The providers table is built from the same tables `make_provider` dispatches on, so a
+    vendor that is wired up but missing a row here would be a vendor nobody could discover.
+
+    The keys are blanked, and blanked rather than deleted: doctor names the variable it wants
+    only when it is empty, and the CLI loads a developer's `.env` in its root callback, so on
+    a machine with one real key this asserted against a masked value instead. Empty reads as
+    unset and, unlike `delenv`, survives `load_dotenv`, which does not overwrite a name that
+    is already in the environment."""
+    for env in set(KEY_ENV.values()):
+        monkeypatch.setenv(env, "")
+    result = CliRunner().invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    for name in PROVIDER_NAMES:
+        assert name in flat, f"{name} has no row in doctor's providers table"
+    for cloud in CLOUD_NAMES:
+        assert KEY_ENV[cloud] in flat, f"{cloud} does not say which key it wants"
 
 
 def test_doctor_shows_a_robot_manifest() -> None:
