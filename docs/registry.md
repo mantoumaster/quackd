@@ -1,4 +1,4 @@
-# Registered robots
+# Registered robots and flocks
 
 A name for a robot, kept between runs. Not the *verb* registry
 ([architecture.md](architecture.md)), which is a robot's vocabulary: this is the other half of
@@ -174,9 +174,99 @@ wins, and so does `--model`.
 the stored one, field by field, because reaching the same robot through a tunnel today is not
 renaming it.
 
+## Flocks
+
+A flock is a list of registered robot names that you keep, so several robots can be handed one
+task without retyping who they are. `quackd flock` is its CRUD:
+
+```bash
+quackd flock create NAME [--robot A --robot B] [--description "..."]
+quackd flock list
+quackd flock show NAME
+quackd flock edit NAME [--add R] [--remove R] [--description "..."] [--rename NEW]
+quackd flock delete NAME
+```
+
+```
+$ quackd flock create kitchen --robot duck-a --robot arm --description "the two by the sink"
++ created flock kitchen: duck-a, arm (2 robots)
+  quackd run <duck> --flock kitchen
+```
+
+With no `--robot` it prints what you have registered, numbered, and asks:
+
+```
+$ quackd flock create pair
+robots you have registered
++------------------------------------------------+
+| # | name   | robot          | note             |
+|---+--------+----------------+------------------|
+| 1 | arm    | lerobot:mock   |                  |
+| 2 | duck-a | microduck:mock | the cream one    |
+| 3 | duck-b | microduck:mock |                  |
++------------------------------------------------+
+which robots? (numbers or names, comma separated, empty to cancel): 2, 3
++ created flock pair: duck-a, duck-b (2 robots)
+```
+
+Numbers and names can be mixed, a bad answer says what was wrong and asks again up to three
+times, and an empty answer cancels. Where there is no terminal to ask on, which is any script,
+it says so and tells you to pass `--robot` instead.
+
+```
+$ quackd flock list
+flocks (--flock NAME)
++-------------------------------------------------------+
+| name    | robots       | status | description         |
+|---------+--------------+--------+---------------------|
+| kitchen | duck-a - arm | ok     | the two by the sink |
++-------------------------------------------------------+
+```
+
+Order is kept, because it is the order the members are listed and coloured in when the flock
+runs. A flock stores 1 to 8 robots and **runs** with 2 to 8, so a flock you are still building
+is stored and marked rather than refused.
+
+```jsonc
+{
+  "version": 1,
+  "flocks": {
+    "kitchen": {
+      "members": ["duck-a", "arm"],
+      "description": "the two by the sink",
+      "created": "2026-09-13T13:19:58Z",
+      "updated": "2026-09-13T13:19:58Z"
+    }
+  }
+}
+```
+
+### When a member goes missing
+
+The one broken state either file can be in is a flock naming a robot nobody registered.
+`quackd robot remove` will not create it: it refuses while a flock lists the robot, names the
+flocks, and `--force` drops it from them instead.
+
+Hand-editing the file can still create it, so every read reports it and running refuses:
+
+```
+$ quackd flock list
+flocks (--flock NAME)
++---------------------------------------------------------------+
+| name    | robots          | status                 | description |
+|---------+-----------------+------------------------+-------------|
+| kitchen | ! duck-a - arm  | ! duck-a not registered|             |
++---------------------------------------------------------------+
+a robot marked as not registered was removed by hand: quackd robot add it back, or
+quackd flock edit NAME --remove it
+```
+
+Either repair works. quackd will not quietly run the smaller flock, because a member you put
+there on purpose going missing is not a detail.
+
 ## See also
 
-- [flock.md](flock.md) for `quackd flock` and for running several registered robots at once
+- [flock.md](flock.md) for what happens when a flock runs
 - [memory.md](memory.md) for what each robot remembers between runs
 - [mcp.md](mcp.md) for `quackd serve-mcp --robot NAME`
 - [ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md) for why any of this exists

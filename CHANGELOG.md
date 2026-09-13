@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A flock is a list of names you keep: `quackd flock create|list|show|edit|delete`.**
+  Members are robots registered with `quackd robot add`, so a flock is a composition rather
+  than a command line, and `~/.quackd/flocks.json` remembers it between runs. `create` with no
+  `--robot` prints what you have registered, numbered, and asks which to include; numbers and
+  names can be mixed, a bad answer says what was wrong and asks again, and where there is no
+  terminal to ask on it says so and tells you to pass `--robot` instead, because a script must
+  never hang on a prompt. Order is kept, because it is the order the members are listed and
+  coloured in when the flock runs. A flock stores 1 to 8 robots and runs with 2 to 8, so one
+  you are still building is stored and marked rather than refused. The one broken state either
+  file can be in is a flock naming a robot nobody registered: `quackd robot remove` refuses
+  while a flock lists it and names the flocks, `--force` drops it from them, and a flock that a
+  hand edit left dangling is marked in every listing and refuses to run rather than quietly
+  running smaller ([docs/registry.md](docs/registry.md),
+  [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
 - **A robot has a name now, and quackd keeps it: `quackd robot add|list|show|edit|remove`.**
   Reaching a real body took five flags, one of them a secret: `--robot open_duck:bridge
   --address tcp://10.0.0.5:9871 --token ... --camera-url ...`, retyped on every run and

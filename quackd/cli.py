@@ -13,6 +13,7 @@ import errno
 import glob
 import json
 import os
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -1943,6 +1944,350 @@ def _in_use(name: str, flocks: list[str]) -> Exception:
     from quackd.registry import RobotInUse
 
     return RobotInUse(name, flocks)
+
+
+# ── flock (the stored groups) ───────────────────────────────────────────────────────────
+
+flock_app = typer.Typer(
+    name="flock",
+    help="Named groups of registered robots, for --flock NAME on run and serve-mcp. Not the "
+    "flock: block of a .duck file, which says how a task is shared out: this says which "
+    "bodies share it. Kept in ~/.quackd/flocks.json.",
+    no_args_is_help=True,
+)
+app.add_typer(flock_app, name="flock", rich_help_panel="Robots")
+
+_FLOCK_NAME = typer.Argument(..., help="A slug. Not a number: --flock N means N simulated ducks.")
+_FLOCK_MEMBER = typer.Option(
+    [], "--robot", "-r", help="A registered robot to include. Repeatable, order kept."
+)
+PROMPT_TRIES = 3
+"""How many times the picker re-asks before giving up. Enough for a typo, not a loop."""
+
+
+def _flock_status(flock: Any, missing: list[str]) -> Any:
+    """One cell saying whether this flock could run, and what to do if not."""
+    if missing:
+        text, style = f"{', '.join(missing)} not registered", ui.STYLES["warn"]
+    elif not flock.members:
+        text, style = "empty", ui.STYLES["warn"]
+    elif len(flock.members) < 2:
+        text, style = "1 robot: running needs 2 to 8", ui.STYLES["warn"]
+    else:
+        return Text("ok", style=ui.STYLES["ok"])
+
+    def build(g: ui.Glyphs) -> Any:
+        return Text(f"{g.warn} {text}", style=style)
+
+    return ui.Deferred(build)
+
+
+def _members_cell(flock: Any, missing: list[str]) -> Any:
+    def build(g: ui.Glyphs) -> Any:
+        out = Text()
+        for i, member in enumerate(flock.members):
+            if i:
+                out.append(f" {g.dot} ", style=ui.STYLES["muted"])
+            if member in missing:
+                out.append(f"{g.warn} {member}", style=ui.STYLES["warn"])
+            else:
+                out.append(member)
+        return out or Text("-", style=ui.STYLES["muted"])
+
+    return ui.Deferred(build)
+
+
+def _pick_members(registry: Any) -> list[str]:
+    """The numbered table, and the answer. Only reached when there is a terminal to ask on."""
+    entries = registry.robots()
+    table = ui.table("robots you have registered")
+    table.add_column("#", no_wrap=True, justify="right", style=ui.STYLES["muted"])
+    table.add_column("name", no_wrap=True, style=ui.STYLES["key"])
+    table.add_column("robot", no_wrap=True)
+    table.add_column("note", ratio=1)
+    names = list(entries)
+    for i, name in enumerate(names, 1):
+        entry = entries[name]
+        table.add_row(
+            Text(str(i)),
+            Text(name),
+            Text(entry.key, style=ui.STYLES["accent"]),
+            Text(entry.note or ""),
+        )
+    ui.console.print(table)
+    for attempt in range(PROMPT_TRIES):
+        answer = typer.prompt(
+            "which robots? (numbers or names, comma separated, empty to cancel)",
+            default="",
+            show_default=False,
+        )
+        if not answer.strip():
+            ui.console.print(Text("nothing created", style=ui.STYLES["muted"]))
+            raise typer.Exit()
+        chosen, problem = _read_picks(answer, names)
+        if problem is None:
+            return chosen
+        ui.err_console.print(Text(problem, style=ui.STYLES["warn"]))
+        if attempt == PROMPT_TRIES - 1:
+            _fail(f"no valid answer in {PROMPT_TRIES} tries")
+    return []
+
+
+def _read_picks(answer: str, names: list[str]) -> tuple[list[str], str | None]:
+    """`1, 3` or `duck-a, arm` or both. Returns the names, or what was wrong with the answer."""
+    picked: list[str] = []
+    tokens = [t for t in re.split(r"[,\s]+", answer.strip()) if t]
+    for token in tokens:
+        if token.isdigit():
+            index = int(token)
+            if not 1 <= index <= len(names):
+                return [], f"there is no robot {token}: pick 1 to {len(names)}"
+            name = names[index - 1]
+        elif token in names:
+            name = token
+        else:
+            return [], (
+                f"no robot called {token!r}: pick 1 to {len(names)}, or a name from the table"
+            )
+        if name in picked:
+            return [], f"{name} twice"
+        picked.append(name)
+    return picked, None
+
+
+@flock_app.command("create")
+def flock_create(
+    name: str = _FLOCK_NAME,
+    robot: list[str] = _FLOCK_MEMBER,
+    description: str | None = typer.Option(None, "--description", help="One line for people."),
+    registry_dir: str | None = _REGISTRY_DIR,
+) -> None:
+    """Name a group of registered robots. With no --robot it lists them and asks."""
+    from quackd.registry import MAX_MEMBERS, RegistryError, StoredFlock
+
+    try:
+        registry = _registry(registry_dir)
+        known = registry.robots()
+    except RegistryError as e:
+        _registry_fail(e)
+        return
+    members = list(robot)
+    if not members:
+        if not known:
+            _fail(
+                "no robots registered yet: quackd robot add NAME <adapter>:<backend> first",
+                hint="quackd robot list",
+            )
+            return
+        if not _can_prompt():
+            _fail(
+                "no terminal to ask on: name the robots yourself",
+                hint="quackd flock create NAME --robot A --robot B",
+            )
+            return
+        members = _pick_members(registry)
+    try:
+        flock = registry.add_flock(StoredFlock(name=name, members=members, description=description))
+    except (RegistryError, ValidationError) as e:
+        _registry_fail(_one_line(e))
+        return
+    ui.console.print(
+        _ok_line(
+            f"created flock {flock.name}: {', '.join(flock.members) or 'no robots'} "
+            f"({_plural(len(flock.members), 'robot')})"
+        )
+    )
+    if len(flock.members) < 2:
+        ui.err_console.print(
+            Text(
+                f"  a flock runs with 2 to {MAX_MEMBERS}: "
+                f"quackd flock edit {flock.name} --add NAME",
+                style=ui.STYLES["warn"],
+            )
+        )
+        return
+    ui.console.print(Text(f"  quackd run <duck> --flock {flock.name}", style=ui.STYLES["muted"]))
+
+
+@flock_app.command("list")
+def flock_list(
+    registry_dir: str | None = _REGISTRY_DIR,
+    as_json: bool = _JSON,
+) -> None:
+    """Every flock you have made, and whether it could run."""
+    from quackd.registry import RegistryError
+
+    try:
+        registry = _registry(registry_dir)
+        flocks = registry.flocks()
+        missing = {name: registry.missing_members(f) for name, f in flocks.items()}
+    except RegistryError as e:
+        _registry_fail(e)
+        return
+    if as_json:
+        for name, flock in flocks.items():
+            print(json.dumps(flock.public(missing[name]), ensure_ascii=False))
+        return
+    if not flocks:
+        ui.console.print(
+            Text(
+                "no flocks yet: quackd flock create NAME --robot A --robot B",
+                style=ui.STYLES["muted"],
+            )
+        )
+        return
+    table = ui.table("flocks (--flock NAME)")
+    table.add_column("name", no_wrap=True, style=ui.STYLES["key"])
+    table.add_column("robots", overflow="fold")
+    table.add_column("status", overflow="fold")
+    table.add_column("description", ratio=1)
+    for name, flock in flocks.items():
+        table.add_row(
+            Text(name),
+            _members_cell(flock, missing[name]),
+            _flock_status(flock, missing[name]),
+            Text(flock.description or ""),
+        )
+    ui.console.print(table)
+    if any(missing.values()):
+        ui.console.print(
+            Text(
+                "a robot marked as not registered was removed by hand: quackd robot add it "
+                "back, or quackd flock edit NAME --remove it",
+                style=ui.STYLES["muted"],
+            )
+        )
+
+
+@flock_app.command("show")
+def flock_show(
+    name: str = _FLOCK_NAME,
+    registry_dir: str | None = _REGISTRY_DIR,
+    as_json: bool = _JSON,
+) -> None:
+    """One flock, and the robots in it."""
+    from quackd.registry import RegistryError
+
+    try:
+        registry = _registry(registry_dir)
+        flock = registry.flock(name)
+        missing = registry.missing_members(flock)
+        known = registry.robots()
+    except RegistryError as e:
+        _fail(str(e), hint="quackd flock list")
+        return
+    if as_json:
+        payload = {
+            **flock.public(missing),
+            "robots": [known[m].public() for m in flock.members if m in known],
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return
+    rows: list[tuple[str, Any]] = [
+        ("name", Text(flock.name, style=ui.STYLES["key"])),
+        ("robots", _members_cell(flock, missing)),
+        ("status", _flock_status(flock, missing)),
+    ]
+    if flock.description:
+        rows.append(("description", Text(flock.description)))
+    rows += [
+        ("created", Text(flock.created, style=ui.STYLES["muted"])),
+        ("updated", Text(flock.updated, style=ui.STYLES["muted"])),
+    ]
+    ui.console.print(ui.kv_grid(rows))
+    if not flock.members:
+        return
+    table = ui.table("its robots")
+    table.add_column("#", no_wrap=True, justify="right", style=ui.STYLES["muted"])
+    table.add_column("name", no_wrap=True, style=ui.STYLES["key"])
+    table.add_column("robot", no_wrap=True)
+    table.add_column("address", overflow="fold")
+    table.add_column("note", ratio=1)
+    for i, member in enumerate(flock.members, 1):
+        entry = known.get(member)
+        if entry is None:
+            table.add_row(
+                Text(str(i)),
+                Text(member, style=ui.STYLES["warn"]),
+                Text("not registered", style=ui.STYLES["warn"]),
+                Text(""),
+                Text(""),
+            )
+            continue
+        table.add_row(
+            Text(str(i)),
+            Text(member),
+            Text(entry.key, style=ui.STYLES["accent"]),
+            Text(entry.address or "-", style="" if entry.address else ui.STYLES["muted"]),
+            Text(entry.note or ""),
+        )
+    ui.console.print(table)
+
+
+@flock_app.command("edit")
+def flock_edit(
+    name: str = _FLOCK_NAME,
+    add: list[str] = typer.Option([], "--add", help="A registered robot to add. Repeatable."),
+    remove: list[str] = typer.Option([], "--remove", help="A member to drop. Repeatable."),
+    description: str | None = typer.Option(
+        None, "--description", help="Change it. An empty string clears it."
+    ),
+    rename: str | None = typer.Option(None, "--rename", help="A new name for the flock."),
+    registry_dir: str | None = _REGISTRY_DIR,
+) -> None:
+    """Add or drop members, change the description, or rename the flock."""
+    from quackd.registry import RegistryError
+
+    if not (add or remove or description is not None or rename):
+        _fail("nothing to change: --add, --remove, --description or --rename")
+        return
+    try:
+        flock = _registry(registry_dir).update_flock(
+            name, add=add, remove=remove, description=description, rename=rename
+        )
+    except (RegistryError, ValidationError) as e:
+        _registry_fail(_one_line(e))
+        return
+    done: list[str] = []
+    if add:
+        done.append(f"added {', '.join(add)}")
+    if remove:
+        done.append(f"removed {', '.join(remove)}")
+    if description is not None:
+        done.append("cleared the description" if not description else "changed the description")
+    if rename:
+        done.append(f"renamed to {rename}")
+    ui.console.print(_ok_line(f"updated {name}: {'; '.join(done)}"))
+    ui.console.print(
+        Text(f"  {flock.name}: {', '.join(flock.members) or 'no robots'}", style=ui.STYLES["muted"])
+    )
+
+
+@flock_app.command("delete")
+def flock_delete(
+    name: str = _FLOCK_NAME,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask."),
+    registry_dir: str | None = _REGISTRY_DIR,
+) -> None:
+    """Forget a flock. The robots in it stay registered."""
+    from quackd.registry import RegistryError
+
+    try:
+        registry = _registry(registry_dir)
+        flock = registry.flock(name)
+    except RegistryError as e:
+        _fail(str(e), hint="quackd flock list")
+        return
+    if not yes:
+        with ui.pause_status():
+            asked = typer.confirm(
+                f"delete flock {name} ({_plural(len(flock.members), 'robot')})? "
+                "the robots stay registered"
+            )
+            if not asked:
+                raise typer.Exit()
+    registry.delete_flock(name)
+    ui.console.print(_ok_line(f"deleted flock {name}"))
 
 
 # ── memory ──────────────────────────────────────────────────────────────────────────────
