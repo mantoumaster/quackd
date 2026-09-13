@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A flock can be N pilots talking, not only a coordinator refereeing: `quackd run <duck> --flock <name>`.**
+  The 0.3 flock is one deterministic referee and N state machines in one simulated arena on a
+  lockstep clock, which is the right machine for finding and kicking a ball and the wrong one
+  for two robots whose bodies differ, because an auction has no way to express half a task.
+  A pilot flock is the other kind: one whole `AgentLoop` per body, all at once, on wall-clock
+  time, on any adapter and backend including mixed ones, 2 to 8 of them. Each member keeps its
+  own provider, executor, allowlist, budgets, heartbeat, memory and feasibility verdict, and
+  nothing about it is a special case, so what a pilot flock can do is what one pilot can do
+  times the number of bodies. Each member is handed the part of the contract its own body can
+  answer for, so an arm in a walking flock is not turned away at the door for having no legs,
+  while what the task *requires* is still checked against the union of every body before
+  anything connects. Every pilot declares for itself and the flock succeeds only when all of
+  them did; otherwise the worst outcome wins, with `error` above `aborted` because one member
+  raising and the rest being stopped because it did makes the error the cause and the aborts
+  the consequence. Ctrl-C or `q` fans one kill switch out to every executor. `ducks/flock-hello.duck`
+  is the bundled demo, a duck and an arm saying hello, and it runs with `--provider fake` on a
+  fresh checkout with no key and no registry. The honest part, which is also in the docs: N
+  simulated members are N separate worlds with no shared arena and nothing to check a claimed
+  success against, a seed does not make it reproducible, it costs one budget and one model call
+  per member per turn, and nothing here has run on hardware
+  ([docs/flock.md](docs/flock.md#the-pilot-flock), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
+- **Pilots talk to each other: a `tell` tool and a `TALK` message on the flock bus.**
+  `tell(to, text)` sits beside `assess_task`, `declare_success` and `remember`: it moves
+  nothing, costs no step and one model call, and whatever was said arrives in the addressee's
+  next observation under "Messages from your flock". `to` is a member name or `all`, a pilot
+  never hears its own words back, and every message is a `TALK` in `flock.jsonl` like any other
+  bus kind. It is not a verb, it is in no manifest, and no robot ever executes one. Each
+  pilot's system prompt also gains a `## Your flock` section naming every peer and giving its
+  datasheet in the same paragraph form the pilot's own body is described in, so a pilot
+  deciding who fetches and who holds is reading data rather than guessing, and saying that
+  `assess_task` judges its own part rather than the whole task. The runner speaks too, under
+  the name `flock`, when a member's loop ends, because otherwise a pilot waiting on somebody
+  who has already stopped would wait until its budget ran out
+  ([ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
+- **`flock.allocation.method` takes `pilots`, the second value it has ever had.**
+  The task file says which kind of flock it wants. `auction` is the default and everything it
+  always was, and `--flock N` is always that one. `pilots` needs `duck: 1` and reads only
+  `flock.members`. A coordinator flock is still 2 to 4 members, because its arena holds four; a
+  pilot flock is 2 to 8, because nothing is shared and the bound is what one terminal can show.
+  `flock.roles` stays a coordinator feature and is refused on a pilots file, which splits the
+  work by talking instead. An older quackd refuses the value rather than ignoring it, which is
+  the correct failure for a file asking for behaviour it does not have
+  ([docs/duck-spec.md](docs/duck-spec.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
 - **A flock is a list of names you keep: `quackd flock create|list|show|edit|delete`.**
   Members are robots registered with `quackd robot add`, so a flock is a composition rather
   than a command line, and `~/.quackd/flocks.json` remembers it between runs. `create` with no

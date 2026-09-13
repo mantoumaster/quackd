@@ -439,7 +439,45 @@ def generic_strategy(obs: Observation, step: int, history: list[Exchange]) -> To
     )
 
 
+WAIT_STEPS = 3
+"""How long `flock-hello`'s rule waits for a peer before giving up. A rule cannot tell a slow
+peer from an absent one, so it is bounded: a demo that hangs is not a demo."""
+
+
+def flock_hello_strategy(obs: Observation, step: int, history: list[Exchange]) -> ToolCall:
+    """The pilot flock demo: say you are here, wait to be answered, then stop.
+
+    It is a rule, so it does not reason about anyone's datasheet, but it does exercise the
+    whole path the real thing uses: the `tell` tool, the bus, and the inbox that arrives in the
+    next observation. `features["flock"]` is how it knows its own name; `features["inbox"]` is
+    how it knows it was answered. Deterministic and finite even if nobody ever answers."""
+    me = str((obs.features.get("flock") or {}).get("me") or "this robot")
+    heard = {
+        str(message.get("from"))
+        for exchange in history
+        for message in (exchange.observation.features.get("inbox") or [])
+        if message.get("from") not in (None, "flock", me)
+    }
+    if _count_calls(history, "tell") == 0:
+        return ToolCall(
+            name="tell",
+            arguments={"to": "all", "text": f"{me} here and ready; say hello back"},
+        )
+    if heard:
+        return ToolCall(
+            name="declare_success",
+            arguments={"reason": f"said hello and heard back from {', '.join(sorted(heard))}"},
+        )
+    if _count_calls(history, "report_state") >= WAIT_STEPS:
+        return ToolCall(
+            name="declare_failure",
+            arguments={"reason": f"nobody answered after {WAIT_STEPS} checks"},
+        )
+    return ToolCall(name="report_state", arguments={})
+
+
 STRATEGIES: dict[str, Strategy] = {
+    "flock-hello": flock_hello_strategy,
     "hello-world": hello_world_strategy,
     "find-and-kick": find_and_kick_strategy,
     "patrol-and-quack": patrol_strategy,

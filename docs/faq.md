@@ -315,12 +315,27 @@ it"?** Because it is true. A `.duck` lists what it needs (`requires`, or for a `
 file its whole allowlist) and an arm has no legs. Either pick a body that has the verb,
 or write a task for the body you have.
 
-**Can two different robots share a task?** In the simulator, `flock.roles` lets a `.duck`
-declare capability-differentiated roles instead of one shared verb set — a spotter that
-observes and judges, a kicker that goes to and kicks — but two Microducks are the only
-pairing quackd ships an adapter for today, and no bundled starter exercises the split end
-to end yet ([flock.md](flock.md)). On hardware, not yet: a flock across machines needs a
-clock across machines, and nothing multi-robot has run on hardware.
+**Can two different robots share a task?** Yes, with a pilot flock. Register them, group
+them, run it:
+
+```bash
+quackd robot add duck microduck:mock
+quackd robot add arm lerobot:mock
+quackd flock create pair --robot duck --robot arm
+quackd run flock-hello --flock pair --provider fake
+```
+
+Each body gets its own LLM pilot, each pilot's prompt carries the other's datasheet, and they
+divide the task by talking. `quackd run flock-hello --provider fake` does the same thing with
+no registry at all. The honest part: this has run on `mock` and `sim2d` bodies and on no
+hardware, N simulated members are N separate worlds with nothing checking a claimed success,
+and `tell` has been exercised by the scripted pilot and by no real model
+([flock.md](flock.md#the-pilot-flock)).
+
+The other kind of flock, the deterministic coordinator, still knows only the Microduck on
+`sim2d`. `flock.roles` there declares capability-differentiated roles (a spotter that observes
+and judges, a kicker that goes to and kicks), which is unit tested and has no bundled starter
+that reaches it end to end.
 
 **Why "quackd"?** Upstream names its daemons `robotd`, `mediad`, `padd`, `tofd`… the brain
 daemon was missing. ([ADR-0002](adr/0002-name.md))

@@ -127,6 +127,10 @@ class FlockLink:
 
     # ── being told about the others ─────────────────────────────────────────────────
 
+    def close(self) -> None:
+        """Stop hearing. A member that has ended must not keep a queue nobody drains."""
+        self._sub.close()
+
     def describe(self) -> dict[str, Any]:
         """What the transcript and the scripted pilot read: who I am and who else there is."""
         return {"me": self.name, "members": self.members}

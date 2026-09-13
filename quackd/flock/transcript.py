@@ -21,15 +21,19 @@ if TYPE_CHECKING:
 
 
 class FlockTranscript:
-    def __init__(self, run_dir: Path, now: Callable[[], float]) -> None:
+    def __init__(self, run_dir: Path, now: Callable[[], float], *, stamp: str = "sim_t") -> None:
         self.run_dir = run_dir
         self.now = now
+        self.stamp = stamp
+        """What the time column is called. `sim_t` for an auction, whose clock is the world's;
+        `t` for a pilot flock, whose members run in wall-clock seconds and would be lying
+        under the other name."""
         self._fh = (run_dir / "flock.jsonl").open("a", encoding="utf-8")
         self._members: dict[str, Transcript] = {}
         self.events = 0
 
     def write(self, kind: str, **payload: Any) -> None:
-        record = {"sim_t": round(self.now(), 3), "kind": kind, **payload}
+        record = {self.stamp: round(self.now(), 3), "kind": kind, **payload}
         self._fh.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
         self._fh.flush()
         self.events += 1

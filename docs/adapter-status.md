@@ -30,10 +30,14 @@ it). A test proves UNVERIFIED names stay inside the backend that needs them.
 | | `toddlerbot:sim2d` | ✅ `toddlerbot-lookout` 10 of 10 seeds | | |
 | | `toddlerbot:bridge` | 🧪 every upstream name VERIFIED at the commit the v2.0.0 tag points at, the protocol and the daemon's own safety machinery exercised against a fake body over loopback, never run on a robot | [`quackd/adapters/toddlerbot/upstream_api.py`](../quackd/adapters/toddlerbot/upstream_api.py) | |
 
-**Flocks** (`--flock`, `flock.roles`) run N in-process views of one simulated world on
-one lockstep clock. The MQTT bus implements the same `Bus` protocol and was exercised
-once against a local broker ([lan.md](lan.md)); a flock across machines also needs a
-clock across machines, which does not exist yet.
+**Coordinator flocks** (`--flock N`, `flock.roles`) run N in-process views of one simulated
+world on one lockstep clock, Microducks only. **Pilot flocks**
+(`flock.allocation.method: pilots`, `--flock NAME`) run one LLM pilot per body on wall-clock
+time, on any adapter and backend including mixed ones, and have run on `mock` and `sim2d`
+bodies and on no hardware. The MQTT bus implements the same `Bus` protocol and was exercised
+once against a local broker ([lan.md](lan.md)); a coordinator flock across machines also needs
+a clock across machines, which does not exist yet, and a pilot flock needs no such clock and
+has never been tried across two.
 
 The rest of this page is the Microduck's table; the other adapters keep theirs on their
 own pages.

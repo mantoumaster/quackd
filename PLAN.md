@@ -41,7 +41,8 @@ not before.
   physically forward, the camera colour order, how fast the lift travels in mm/s, and whether
   the wrapper really does leave the arms holding.
 - ⏸ **An SO-101 arm or any rosbridge base.** `lerobot:real` against a calibrated arm,
-  `rosbridge:ws` against a bridge. A flock across two machines needs a distributed clock first.
+  `rosbridge:ws` against a bridge. A coordinator flock across two machines needs a distributed
+  clock first; a pilot flock needs none and has simply never been tried across two.
 
 ## Open here
 
@@ -56,13 +57,22 @@ not before.
   MCP client. There is one `live_llm` test beside the others waiting for a key, and until
   somebody runs it nothing is known about whether a real model uses `uncertain` when it should
   or reaches for `infeasible` too readily.
-- ⏸ **A flock role can ask for a body, and no flock can have two different ones in it.**
+- ⏸ **A flock role can ask for a body, and no coordinator flock can have two different ones.**
   `flock.roles.<role>.needs` validates, and the coordinator matches it against the datasheet a
   bid carries, tested at that level. But `flock/runner.py` still knows only the Microduck, so
   nothing quackd can start exercises the matching end to end. It waits on the same work as the
-  rest of heterogeneous flocks, including the latent bug [ADR-0020](docs/adr/0020-heterogeneous-flocks.md)
-  records: the coordinator judges eligibility before members report their vocabulary, and
-  `needs` inherits that.
+  rest of heterogeneous coordinator flocks, including the latent bug
+  [ADR-0020](docs/adr/0020-heterogeneous-flocks.md) records: the coordinator judges eligibility
+  before members report their vocabulary, and `needs` inherits that. A **pilot** flock does put
+  two different bodies on one task, and it uses no roles: each pilot reads its own datasheet and
+  its peers', and they divide the work by talking ([ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+- ⏸ **No pilot flock has been driven by a real model, or by a real robot.** `flock-hello` runs
+  on `mock` and `sim2d` bodies with the scripted rule, which cannot reason about a datasheet, so
+  what a frontier model does with the `Your flock` section and `tell` is unknown. Needs a key,
+  and then two robots.
+- ⏸ **N simulated pilots are N separate worlds.** Two `microduck:sim2d` members of a pilot flock
+  cannot see each other, so nothing checks a claimed success against ground truth the way the
+  coordinator's arena does. A shared arena for pilots is unbuilt.
 - ⏸ **Nobody has asked a real bridge what its robot is.** `rosbridge:ws` reads the topic list
   and the URDF at connect, from the parameter and from the latched topic, and every name is
   VERIFIED at a pin. All of it is exercised with fake services and fake topics. What a real
@@ -79,8 +89,8 @@ not before.
   `web/README.md` come from a scratch harness that is not in the repository, and both files it
   measured have changed since, in the abort path and in the arena's geometry, so nothing here can
   re-run it. Locally it is `python web/serve.py`, then <http://localhost:8000/simulator/>.
-- ⬜ Flock mode does not know `open_duck` yet (`flock/runner.py` knows one adapter), and a
-  hardware flock waits on Microducks shipping.
+- ⬜ The coordinator flock does not know `open_duck` yet (`flock/runner.py` knows one adapter).
+  A pilot flock knows all seven. A hardware flock of either kind waits on robots shipping.
 - ⏸ **A real model recording**, in either simulator, to replace a scripted-pilot asset and drop
   the label (see [docs/assets](docs/assets/README.md)). Needs a key.
 - ⬜ **The browser demo is not at parity with the backend.** Seven of the manifest's fifteen

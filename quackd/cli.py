@@ -559,6 +559,27 @@ def _acknowledge_prompt(why: str) -> bool:
         return typer.confirm("Are you watching the robot right now?", default=False)
 
 
+def _parse_flock_flag(flock: str | None, registry_dir: str | None) -> tuple[int | None, Any]:
+    """`--flock` is either a count of simulated ducks or the name of a stored flock.
+
+    All digits is the count, because that is what it has always meant and `check_name` refuses
+    to register anything that could be read as one. Anything else is a name, and its roster is
+    read now rather than at the first connection, so a flock with a hole in it refuses before
+    a run directory exists."""
+    from quackd.registry import Registry, RegistryError
+
+    if flock is None:
+        return None, None
+    flock = flock.strip()
+    if flock.isdigit():
+        return int(flock), None
+    try:
+        return None, Registry(registry_dir).roster(flock)
+    except RegistryError as e:
+        _fail(str(e), hint="quackd flock list, or a number for N simulated ducks")
+        raise
+
+
 def _run_impl(
     duckfile: str | None,
     goal: str | None,
@@ -580,7 +601,7 @@ def _run_impl(
     base_url: str | None = None,
     api_key: str | None = None,
     vision: bool | None = None,
-    flock: int | None = None,
+    flock: str | None = None,
     *,
     robot: str | None = None,
     robots: str | None = None,
@@ -595,9 +616,12 @@ def _run_impl(
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import make_provider
     from quackd.duckfile.parser import DuckParseError, duck_from_goal, load_duck
+    from quackd.duckfile.schema import AUCTION_MAX_MEMBERS, PILOTS_MAX_MEMBERS
     from quackd.duckfile.validate import validate_duck
+    from quackd.flock.pilots import ADVISORY_FIELDS, roster_from_specs
+    from quackd.flock.runner import member_specs
     from quackd.perception import detector_for
-    from quackd.registry import RegistryError
+    from quackd.registry import RegistryError, Resolved
     from quackd.safety import KillSwitch, allow_all
     from quackd.trace import (
         ConsoleTrace,
@@ -611,21 +635,53 @@ def _run_impl(
     if (duckfile is None) == (goal is None):
         _fail('give either a .duck file (or bundled name) or --goal "...", not both')
         return
+    flock_n, roster = _parse_flock_flag(flock, registry_dir)
+    flock_name = flock if roster is not None else None
+    if roster is not None and (robot or robots):
+        _fail("--flock NAME brings its own robots: drop --robot and --robots")
+        return
     try:
         duck = load_duck(duckfile) if duckfile is not None else None
-        resolved = _robot_specs(robot, robots, duck, registry_dir=registry_dir)
+        resolved = (
+            [Resolved(entry.robot_spec, entry) for entry in roster.values()]
+            if roster is not None
+            else _robot_specs(robot, robots, duck, registry_dir=registry_dir)
+        )
         specs = [r.spec for r in resolved]
         here = resolved[0]
         spec = here.spec
         if goal is not None:
-            safe = [v.name for v in registry_for(spec).verbs() if v.safety_class == "safe"]
+            # the union across the flock, so a goal run on mixed bodies allows what any of
+            # them can do; each member is then trimmed to its own half of that
+            safe = sorted(
+                {
+                    v.name
+                    for one in specs
+                    for v in registry_for(one).verbs()
+                    if v.safety_class == "safe"
+                }
+            )
             duck = duck_from_goal(goal, safe)
         assert duck is not None
         # Refuse before connecting, with the validator's words. `serve-mcp` has always done
         # this; `run` never did, and reached the loop's tool_schemas and died on a raw
         # VerbNotFound with the robot already connected and a run directory already made.
         manifests = [describe(s) for s in specs]
-        problems = validate_duck(duck, manifests)
+        section = duck.frontmatter.flock
+        method = (
+            section.allocation.method
+            if section is not None
+            else ("pilots" if roster is not None else None)
+        )
+        # a task file with no `flock:` block, run against a stored flock, is still a flock:
+        # judged body by body the arm would be refused for not being able to walk. And a
+        # pilot flock drops the advisory `verbs.allow` line, because trimming each member to
+        # its own vocabulary is its answer to it (`pilots.ADVISORY_FIELDS`).
+        problems = [
+            p
+            for p in validate_duck(duck, manifests, flock=True if roster is not None else None)
+            if not (method == "pilots" and p.field in ADVISORY_FIELDS)
+        ]
     except (DuckParseError, TransportError, RegistryError) as e:
         _fail(str(e))
         return
@@ -635,14 +691,84 @@ def _run_impl(
             + "; ".join(p.message for p in problems)
         )
         return
-    if flock is not None and not 2 <= flock <= 4:
+    if flock_n is not None and not 2 <= flock_n <= 4:
         _fail("a flock needs 2 to 4 ducks (drop --flock for a single run)")
         return
-    if flock is not None or duck.frontmatter.flock is not None:
+    if flock_n is not None or roster is not None or duck.frontmatter.flock is not None:
+        if method == "pilots":
+            if roster is None and section is not None:
+                # `flock.members` plus `robots:` or `--robots` names the bodies without a
+                # registry; a stored flock names them with one
+                roster = roster_from_specs(
+                    member_specs(
+                        section.member_names,
+                        {s.name: s.key for s in specs if s.name} or None,
+                        duck.frontmatter.robots,
+                    )
+                )
+            if roster is None:
+                _fail(
+                    "allocation.method: pilots needs members: name them in flock.members, "
+                    "or run a stored flock with --flock NAME"
+                )
+                return
+            if flock_n is not None:
+                _fail(
+                    "--flock N is the coordinator, and this task file runs pilots",
+                    hint="name the members in flock.members, or run a stored flock: --flock NAME",
+                )
+                return
+            if not 2 <= len(roster) <= PILOTS_MAX_MEMBERS:
+                _fail(
+                    f"a pilot flock needs 2 to {PILOTS_MAX_MEMBERS} members; "
+                    f"{flock_name or 'this task file'} names {len(roster)}"
+                )
+                return
+            _run_pilots_impl(
+                duck,
+                roster,
+                provider=provider,
+                model=model,
+                seed=seed,
+                dry_run=dry_run,
+                runs_dir=runs_dir,
+                yes=yes,
+                live=live,
+                verbose=verbose,
+                goal=goal,
+                base_url=base_url,
+                api_key=api_key,
+                vision=vision,
+                max_steps=max_steps,
+                fov_deg=fov_deg,
+                memory=memory,
+                memory_dir=memory_dir,
+                flock_name=flock_name,
+                trace=trace,
+                trace_prompt=trace_prompt,
+            )
+            return
+        if roster is not None:
+            wrong = [n for n, e in roster.items() if e.robot_spec.key != "microduck:sim2d"]
+            if wrong:
+                _fail(
+                    f"a coordinator flock is sim2d Microducks only (docs/flock.md): "
+                    f"{wrong[0]} is {roster[wrong[0]].robot_spec.key}",
+                    hint="set flock.allocation.method: pilots to run other bodies",
+                )
+                return
+            if len(roster) > AUCTION_MAX_MEMBERS:
+                _fail(
+                    f"a coordinator flock is 2 to {AUCTION_MAX_MEMBERS} ducks "
+                    f"(the arena holds {AUCTION_MAX_MEMBERS}): {flock_name} has {len(roster)}"
+                )
+                return
         _run_flock_impl(
             duck,
             provider=provider,
             specs=specs,
+            members=list(roster) if roster is not None else None,
+            flock_name=flock_name,
             model=model,
             seed=seed,
             dry_run=dry_run,
@@ -656,7 +782,7 @@ def _run_impl(
             base_url=base_url,
             api_key=api_key,
             vision=vision,
-            n_override=flock,
+            n_override=flock_n,
             max_steps=max_steps,
             trace=trace,
             trace_prompt=trace_prompt,
@@ -808,11 +934,257 @@ def _run_impl(
         raise typer.Exit(code=1)
 
 
+def _member_views(
+    member_names: list[str],
+    *,
+    trace_on: bool,
+    trace_prompt: bool | None,
+    status: Any,
+) -> tuple[dict[str, Any], Any]:
+    """One console view per member, coloured and prefixed by name, plus the flock's own.
+
+    Shared by both kinds of flock, because a person reading either one needs the same thing:
+    several robots narrating at once stay several readable columns rather than one
+    interleaving. Returns the views (so the caller can flush them) and the `trace(name)`
+    factory the runner takes."""
+    from quackd.flock.runner import FLOCK_TRACE
+    from quackd.trace import (
+        ConsoleTrace,
+        Sink,
+        fan_out,
+        prompt_shown_default,
+        thinking_limit_default,
+    )
+
+    views: dict[str, ConsoleTrace] = {}
+    width = max(len(name) for name in [*member_names, FLOCK_TRACE])
+
+    def view_for(name: str) -> Sink | None:
+        if name not in views:
+            # a colour per member as well as a name, because robots moving at once interleave
+            # and the eye finds a colour faster than it reads a prefix
+            order = member_names.index(name) if name in member_names else -1
+            views[name] = ConsoleTrace(
+                ui.err_console,
+                thinking_chars=thinking_limit_default(),
+                prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
+                prefix=f"{name:<{width}}  ",
+                prefix_style=ui.MEMBER_STYLES[order % len(ui.MEMBER_STYLES)]
+                if order >= 0
+                else ui.STYLES["key"],
+            )
+        return fan_out(views[name], status.sink)
+
+    def status_only(_name: str) -> Sink | None:
+        """With --no-trace nothing narrates, but the status line still has to say which robot
+        is doing what, or a flock is a minute of nothing at all."""
+        return status.sink
+
+    return views, (view_for if trace_on else status_only)
+
+
+def _run_pilots_impl(
+    duck: Any,
+    roster: Any,
+    *,
+    provider: str | None,
+    model: str | None,
+    seed: int | None,
+    dry_run: bool,
+    runs_dir: str,
+    yes: bool,
+    live: bool,
+    verbose: bool,
+    goal: str | None,
+    base_url: str | None,
+    api_key: str | None,
+    vision: bool | None,
+    max_steps: int | None,
+    fov_deg: float | None,
+    memory: bool,
+    memory_dir: str | None,
+    flock_name: str | None,
+    trace: bool | None = None,
+    trace_prompt: bool | None = None,
+) -> None:
+    """A pilot per body, all at once. The other flock is `_run_flock_impl`."""
+    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.factory import make_provider
+    from quackd.flock.pilots import run_pilot_flock
+    from quackd.memory import RobotMemory
+    from quackd.safety import KillSwitch
+    from quackd.trace import trace_enabled_default
+    from quackd.transport.base import TransportError
+
+    members = list(roster)
+    if duck.frontmatter.verbs.confirm and not yes:
+        _fail("a pilot flock cannot prompt y/N per member: empty verbs.confirm or pass --yes")
+        return
+    try:
+        providers = {
+            name: make_provider(
+                provider or entry.provider or DEFAULT_PROVIDER,
+                model=model or entry.model,
+                duck_name=duck.name,
+                goal=goal,
+                base_url=base_url,
+                api_key=api_key,
+                vision=vision,
+            )
+            for name, entry in roster.items()
+        }
+    except (ProviderError, ImportError) as e:
+        _fail(str(e))
+        return
+    memories = (
+        {name: RobotMemory(entry.memory_key, memory_dir) for name, entry in roster.items()}
+        if memory
+        else None
+    )
+
+    trace_on = trace if trace is not None else trace_enabled_default()
+
+    def log(msg: str) -> None:
+        # the trace says all of this and more, so two views of one line is noise
+        if verbose and not trace_on:
+            _verbose_line(msg)
+
+    status = ui.RunStatus()
+    ui.install_logging()
+    views, view_factory = _member_views(
+        members, trace_on=trace_on, trace_prompt=trace_prompt, status=status
+    )
+    ui.console.print(
+        ui.run_header(
+            duck.name,
+            _pilot_header_rows(roster, providers, memories, flock_name=flock_name, dry_run=dry_run),
+            hint="Ctrl-C or q stops every robot. Press it twice to quit at once.",
+        )
+    )
+
+    def killed(msg: str) -> None:
+        ui.err_console.print(Text(msg, style=ui.STYLES["warn"]))
+
+    async def main() -> Any:
+        master = asyncio.Event()
+        ks = KillSwitch(master, log=killed)
+        ks.install()
+        try:
+            return await run_pilot_flock(
+                duck,
+                roster,
+                providers=providers,
+                seed=seed,
+                runs_dir=runs_dir,
+                dry_run=dry_run,
+                max_steps=max_steps,
+                live=live,
+                yes=yes,
+                memories=memories,
+                fov_deg=fov_deg,
+                log=log,
+                trace=view_factory,
+                abort=master,
+                flock_name=flock_name,
+            )
+        finally:
+            ks.uninstall()
+
+    try:
+        with status:
+            status.update(f"connecting {_plural(len(members), 'robot')}")
+            result = asyncio.run(main())
+    except (ValueError, TransportError, ProviderError, ImportError) as e:
+        _fail(str(e))
+        return
+    finally:
+        # a member's last event is the stop it was accepted for, and a pending burst is only
+        # written by the next event that is not an intent: without this, never
+        for pending in views.values():
+            pending.flush()
+    ok = sum(1 for row in result.per_member.values() if row["outcome"] == "success")
+    _print_outcome(
+        result.outcome,
+        result.reason,
+        counters=[
+            f"members {ok}/{len(members)} succeeded",
+            f"talk {result.messages}",
+            f"steps {result.steps}",
+            f"llm calls {result.llm_calls}",
+            f"tokens {result.usage.input_tokens}+{result.usage.output_tokens}",
+        ],
+        run_dir=result.run_dir,
+        trace_dropped=result.trace_dropped,
+    )
+    if result.outcome == "infeasible":
+        raise typer.Exit(code=EXIT_INFEASIBLE)
+    if result.outcome != "success":
+        raise typer.Exit(code=1)
+
+
+def _pilot_header_rows(
+    roster: Any,
+    providers: dict[str, Any],
+    memories: Any,
+    *,
+    flock_name: str | None,
+    dry_run: bool,
+) -> list[tuple[str, Any]]:
+    """What is about to happen: which bodies, which pilots, and what is different about it."""
+    pilots = {(p.name, p.model) for p in providers.values()}
+    rows: list[tuple[str, Any]] = []
+    if len(pilots) == 1:
+        name, model = pilots.pop()
+        rows.append(("provider", f"{name} ({model or 'the first model it serves'})"))
+    else:
+        rows.append(
+            (
+                "pilots",
+                Text(
+                    NEWLINE.join(
+                        f"{n:<{max(len(m) for m in roster)}}  {providers[n].name} "
+                        f"({providers[n].model or 'the first model it serves'})"
+                        for n in roster
+                    )
+                ),
+            )
+        )
+    width = max(len(n) for n in roster)
+    rows.append(
+        (
+            "flock",
+            Text(
+                NEWLINE.join(f"{n:<{width}}  {entry.robot_spec.key}" for n, entry in roster.items())
+            ),
+        )
+    )
+    if flock_name:
+        rows.append(("stored as", Text(flock_name, style=ui.STYLES["accent"])))
+    rows.append(("status", Text("EXPERIMENTAL", style=ui.STYLES["warn"])))
+    if dry_run:
+        rows.append(("mode", Text("DRY RUN: nothing is sent", style=ui.STYLES["warn"])))
+    if memories:
+        total = sum(len(m.notes()) for m in memories.values())
+        rows.append(
+            (
+                "memory",
+                Text(
+                    f"{_plural(total, 'note')} across {_plural(len(memories), 'robot')}"
+                    "  --no-memory to run fresh",
+                    style=ui.STYLES["muted"],
+                ),
+            )
+        )
+    return rows
+
+
 def _run_flock_impl(
     duck: Any,
     *,
     provider: str | None,
     specs: list[Any],
+    members: list[str] | None = None,
+    flock_name: str | None = None,
     model: str | None,
     seed: int | None,
     dry_run: bool,
@@ -859,6 +1231,16 @@ def _run_flock_impl(
     if n_override is not None and roles:
         _fail("--flock N cannot be combined with flock.roles; the task file names its members")
         return
+    if members is not None:
+        # a stored flock supplies the members the way `--flock N` supplies the count. The
+        # size and the bodies were checked by the caller, so this skips the field validator
+        # rather than re-deriving a task file that never named them.
+        from quackd.duckfile.schema import FlockSection
+
+        section = (duck.frontmatter.flock or FlockSection()).model_copy(update={"members": members})
+        duck = duck.model_copy(
+            update={"frontmatter": duck.frontmatter.model_copy(update={"flock": section})}
+        )
     robots = {spec.name: spec.key for spec in specs if spec.name} or None
     try:
         llm = make_provider(
@@ -950,7 +1332,12 @@ def _run_flock_impl(
 
     rows: list[tuple[str, Any]] = [
         ("provider", f"{llm.name} ({llm.model or 'the first model it serves'})"),
-        ("flock", f"{count} ducks in sim2d" + (f"  seed {seed}" if seed is not None else "")),
+        (
+            "flock",
+            (f"{flock_name}: " if flock_name else "")
+            + f"{count} ducks in sim2d"
+            + (f"  seed {seed}" if seed is not None else ""),
+        ),
         ("status", Text("EXPERIMENTAL", style=ui.STYLES["warn"])),
     ]
     if dry_run:
@@ -1035,7 +1422,9 @@ _GIFSIZE = typer.Option(
 _FLOCK = typer.Option(
     None,
     "--flock",
-    help="EXPERIMENTAL: run N cooperating ducks (2-4) in sim2d. Overrides the file's flock block.",
+    help="EXPERIMENTAL: a number N runs N cooperating ducks (2-4) in sim2d under the "
+    "deterministic coordinator; a name from `quackd flock list` runs that flock's registered "
+    "robots, one LLM pilot each. Either overrides the file's flock members.",
     rich_help_panel="Robot",
 )
 _MEMORY = typer.Option(
@@ -1239,7 +1628,7 @@ def run(
     base_url: str | None = _BASEURL,
     api_key: str | None = _APIKEY,
     vision: bool | None = _VISION,
-    flock: int | None = _FLOCK,
+    flock: str | None = _FLOCK,
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
     registry_dir: str | None = _REGISTRY_DIR,
@@ -1293,11 +1682,17 @@ def record(
     base_url: str | None = _BASEURL,
     api_key: str | None = _APIKEY,
     vision: bool | None = _VISION,
-    flock: int | None = _FLOCK,
+    flock: str | None = _FLOCK,
     trace: bool | None = _TRACE,
     trace_prompt: bool | None = _TRACE_PROMPT,
 ) -> None:
     """Like `run` on sim2d, but always writes a GIF (for READMEs and launches)."""
+    if flock is not None and not flock.strip().isdigit():
+        _fail(
+            "record pins the simulator: --flock takes a count here, not a stored flock",
+            hint="quackd run <duck> --flock NAME",
+        )
+        return
     _run_impl(
         duckfile,
         goal,
