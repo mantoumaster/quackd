@@ -1936,7 +1936,16 @@ def serve_mcp(
         None,
         "--robots",
         help="A fleet: name=<adapter>:<backend>,... (nine robot_* tools, one executor each).",
+        rich_help_panel="Robot",
     ),
+    flock: str | None = typer.Option(
+        None,
+        "--flock",
+        help="A stored flock (`quackd flock list`): every member from the registry, each with "
+        "its own address, token and camera. The same fleet by another door.",
+        rich_help_panel="Robot",
+    ),
+    registry_dir: str | None = _REGISTRY_DIR,
     duckfile: str | None = typer.Option(
         None, "--duckfile", help="Load a .duck contract at startup (on the default robot)."
     ),
@@ -1955,11 +1964,14 @@ def serve_mcp(
     """Expose the robot as MCP tools over stdio (Claude Code / Claude Desktop)."""
     from quackd.adapters.base import AdapterError
     from quackd.mcp_server import serve
+    from quackd.registry import RegistryError
 
     try:
         serve(
             robot=robot,
             robots=robots,
+            flock=flock,
+            registry_dir=registry_dir,
             duckfile=duckfile,
             seed=seed,
             address=address,
@@ -1971,7 +1983,7 @@ def serve_mcp(
             memory_dir=memory_dir,
             trace=trace,
         )
-    except AdapterError as e:
+    except (AdapterError, RegistryError) as e:
         _fail(str(e))
 
 

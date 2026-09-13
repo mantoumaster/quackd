@@ -55,6 +55,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the correct failure for a file asking for behaviour it does not have
   ([docs/duck-spec.md](docs/duck-spec.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
 
+- **`quackd serve-mcp --flock <name>` fronts a stored flock as the MCP fleet, and adds no tools.**
+  `--robots name=<adapter>:<backend>,...` already served several robots from one process, with
+  one executor, budget and heartbeat each. What it could not do is give each of them its own
+  address, token and camera: those three flags were one value applied to every robot, which is
+  fine for three simulators and wrong for three machines. A stored flock takes all three from
+  the registry per member, keys each member's memory by its registered name, and makes the
+  flock's own first member the default robot rather than whichever Microduck came first.
+  `--flock` refuses `--robot`, `--robots` and the three endpoint flags, because the registry
+  already answers all five. The nine `robot_*` tools are untouched, and a flock **task file**
+  is still refused over MCP, whichever kind it is ([docs/mcp.md](docs/mcp.md),
+  [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
 - **A flock is a list of names you keep: `quackd flock create|list|show|edit|delete`.**
   Members are robots registered with `quackd robot add`, so a flock is a composition rather
   than a command line, and `~/.quackd/flocks.json` remembers it between runs. `create` with no
