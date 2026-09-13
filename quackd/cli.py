@@ -20,6 +20,7 @@ from typing import Any
 
 import typer
 from dotenv import load_dotenv
+from pydantic import ValidationError
 from rich.text import Text
 
 from quackd import __version__, ui
@@ -100,6 +101,13 @@ _JSON = typer.Option(
     help="One JSON object per line on stdout, and nothing else: for a script rather than "
     "for a person. Exit codes are unchanged.",
     rich_help_panel="Output",
+)
+
+_REGISTRY_DIR = typer.Option(
+    None,
+    "--registry-dir",
+    help="Where robots.json and flocks.json live (default: $QUACKD_REGISTRY_DIR or ~/.quackd).",
+    rich_help_panel="Robot",
 )
 
 NEWLINE = "\n"
@@ -194,24 +202,32 @@ def _fail(msg: str, code: int = 1, *, hint: str | None = None) -> None:
     raise typer.Exit(code=code)
 
 
-def _robot_specs(robot: str | None, robots: str | None, duck: Any) -> list:
-    """The robots a command talks about: --robots, else --robot, else the duck's own
-    `robots:` default, else the Microduck simulator."""
-    from quackd.adapters.factory import RobotSpec, parse_robot_spec, parse_robots, resolve_robot
+def _robot_specs(
+    robot: str | None, robots: str | None, duck: Any, *, registry_dir: str | None = None
+) -> list[Any]:
+    """The robots a command talks about, as `Resolved`: --robots, else --robot (a registered
+    name or a spec), else the duck's own `robots:` default, else the Microduck simulator."""
+    from quackd.adapters.factory import RobotSpec, parse_robot_spec, parse_robots
+    from quackd.registry import Registry, Resolved, resolve_robot_ref
 
     if robots:
-        return parse_robots(robots)
+        # `--robots name=spec` is ad hoc by design: the names are this run's, not the
+        # registry's, and a stored flock is spelled `--flock NAME` instead
+        return [Resolved(spec) for spec in parse_robots(robots)]
+    registry = Registry(registry_dir)
     default = duck.frontmatter.robots if duck is not None else None
     if isinstance(default, dict):
         if robot:
-            return [resolve_robot(robot)]
+            return [resolve_robot_ref(robot, registry)]
         # the member names become the robot ids, as `--robots name=spec` would make them
-        specs = []
+        out = []
         for name, text in default.items():
             parsed = parse_robot_spec(text)
-            specs.append(RobotSpec(parsed.adapter, parsed.backend, name))
-        return specs
-    return [resolve_robot(robot, duck_default=default)]
+            out.append(Resolved(RobotSpec(parsed.adapter, parsed.backend, name)))
+        return out
+    if isinstance(default, str) or default is None:
+        return [resolve_robot_ref(robot, registry, duck_default=default)]
+    return [resolve_robot_ref(robot, registry)]
 
 
 # ── validate ────────────────────────────────────────────────────────────────────────────
@@ -226,18 +242,23 @@ def validate(
         None,
         "--robot",
         "-r",
-        help="Check the files against this robot's manifest (<adapter>:<backend>; repeatable).",
+        help="Check the files against this robot's manifest (a registered name or "
+        "<adapter>:<backend>; repeatable).",
     ),
     robots: str | None = typer.Option(
         None, "--robots", help="Check against a fleet: name=<adapter>:<backend>,..."
     ),
+    registry_dir: str | None = _REGISTRY_DIR,
 ) -> None:
     """Validate .duck files against the spec and a robot's verbs. Exits 1 on any failure."""
     from quackd.adapters.base import AdapterError
-    from quackd.adapters.factory import describe, parse_robot_spec
+    from quackd.adapters.factory import describe
     from quackd.duckfile.parser import DuckParseError, load_duck
     from quackd.duckfile.validate import validate_duck
+    from quackd.registry import Registry, resolve_robot_ref
     from quackd.verbs.registry import default_registry
+
+    registry_ref = Registry(registry_dir)
 
     registry = default_registry()
     rows: list[dict[str, Any]] = []
@@ -256,12 +277,12 @@ def validate(
         try:
             if robot or robots:
                 specs = (
-                    [parse_robot_spec(r) for r in robot]
+                    [resolve_robot_ref(r, registry_ref).spec for r in robot]
                     if robot
-                    else _robot_specs(None, robots, duck)
+                    else [r.spec for r in _robot_specs(None, robots, duck)]
                 )
             elif duck.frontmatter.robots is not None:
-                specs = _robot_specs(None, None, duck)
+                specs = [r.spec for r in _robot_specs(None, None, duck)]
             else:
                 specs = []
             manifests = [describe(spec) for spec in specs]
@@ -540,7 +561,7 @@ def _acknowledge_prompt(why: str) -> bool:
 def _run_impl(
     duckfile: str | None,
     goal: str | None,
-    provider: str,
+    provider: str | None,
     model: str | None,
     seed: int | None,
     dry_run: bool,
@@ -564,6 +585,7 @@ def _run_impl(
     robots: str | None = None,
     memory: bool = True,
     memory_dir: str | None = None,
+    registry_dir: str | None = None,
     trace: bool | None = None,
     trace_prompt: bool | None = None,
 ) -> None:
@@ -574,6 +596,7 @@ def _run_impl(
     from quackd.duckfile.parser import DuckParseError, duck_from_goal, load_duck
     from quackd.duckfile.validate import validate_duck
     from quackd.perception import detector_for
+    from quackd.registry import RegistryError
     from quackd.safety import KillSwitch, allow_all
     from quackd.trace import (
         ConsoleTrace,
@@ -589,8 +612,10 @@ def _run_impl(
         return
     try:
         duck = load_duck(duckfile) if duckfile is not None else None
-        specs = _robot_specs(robot, robots, duck)
-        spec = specs[0]
+        resolved = _robot_specs(robot, robots, duck, registry_dir=registry_dir)
+        specs = [r.spec for r in resolved]
+        here = resolved[0]
+        spec = here.spec
         if goal is not None:
             safe = [v.name for v in registry_for(spec).verbs() if v.safety_class == "safe"]
             duck = duck_from_goal(goal, safe)
@@ -600,7 +625,7 @@ def _run_impl(
         # VerbNotFound with the robot already connected and a run directory already made.
         manifests = [describe(s) for s in specs]
         problems = validate_duck(duck, manifests)
-    except (DuckParseError, TransportError) as e:
+    except (DuckParseError, TransportError, RegistryError) as e:
         _fail(str(e))
         return
     if problems:
@@ -637,9 +662,10 @@ def _run_impl(
         )
         return
     try:
+        # a registered robot may name the pilot that drives it; a flag on the line still wins
         llm = make_provider(
-            provider,
-            model=model,
+            provider or here.provider or DEFAULT_PROVIDER,
+            model=model or here.model,
             duck_name=duck.name,
             goal=goal,
             base_url=base_url,
@@ -649,10 +675,8 @@ def _run_impl(
         duck_transport = make_adapter(
             spec,
             seed=seed,
-            address=address,
             live=live,
-            camera_url=camera_url,
-            token=token,
+            **here.adapter_kwargs(address=address, camera_url=camera_url, token=token),
         )
     except (ProviderError, TransportError, ImportError) as e:
         _fail(str(e))
@@ -702,8 +726,9 @@ def _run_impl(
     if memory:
         from quackd.memory import RobotMemory
 
-        # keyed by adapter:backend, so a simulated duck never inherits a real one's notes
-        robot_memory = RobotMemory(spec.key, memory_dir)
+        # keyed by adapter:backend, so a simulated duck never inherits a real one's notes,
+        # or by the registered name, so two ducks of one kind keep separate notes
+        robot_memory = RobotMemory(here.memory_key, memory_dir)
     cfg = RunConfig(
         duck=duck,
         provider=llm,
@@ -725,7 +750,7 @@ def _run_impl(
         ui.run_header(
             duck.name,
             _header_rows(
-                provider=llm, robot=spec.key, seed=seed, dry_run=dry_run, memory=robot_memory
+                provider=llm, robot=here.label, seed=seed, dry_run=dry_run, memory=robot_memory
             ),
             hint="Ctrl-C or q stops the duck. Press it twice to quit at once.",
         )
@@ -750,7 +775,7 @@ def _run_impl(
     _ = run_duck  # imported for symmetry; AgentLoop is used directly so the kill switch can bind
     try:
         with status:
-            status.update(f"connecting to {spec.key}")
+            status.update(f"connecting to {here.label}")
             result = asyncio.run(main())
     except (TransportError, ProviderError) as e:
         # the trace has already shown the call that failed; this is the one-line verdict
@@ -785,7 +810,7 @@ def _run_impl(
 def _run_flock_impl(
     duck: Any,
     *,
-    provider: str,
+    provider: str | None,
     specs: list[Any],
     model: str | None,
     seed: int | None,
@@ -836,7 +861,7 @@ def _run_flock_impl(
     robots = {spec.name: spec.key for spec in specs if spec.name} or None
     try:
         llm = make_provider(
-            provider,
+            provider or DEFAULT_PROVIDER,
             model=model,
             duck_name=duck.name,
             goal=goal,
@@ -1041,11 +1066,15 @@ def _complete_model(ctx: typer.Context, incomplete: str) -> list[tuple[str, str]
     return [(m.id, m.label) for m in models_for(provider) if m.id.startswith(incomplete)]
 
 
+DEFAULT_PROVIDER = "fake"
+"""The pilot when nothing else names one: no key, no network, a rule that plays the starters.
+A registered robot may name its own, and `--provider` beats that."""
+
 _PROVIDER = typer.Option(
-    "fake",
+    None,
     "--provider",
     "-p",
-    help=" · ".join(PROVIDER_NAMES),
+    help=" · ".join(PROVIDER_NAMES) + f"  (default: {DEFAULT_PROVIDER}, or the robot's own)",
     rich_help_panel="Model",
 )
 _BASEURL = typer.Option(
@@ -1184,7 +1213,7 @@ _TRACE_PROMPT = typer.Option(
 def run(
     duckfile: str | None = _DUCK_ARG,
     goal: str | None = _GOAL,
-    provider: str = _PROVIDER,
+    provider: str | None = _PROVIDER,
     robot: str | None = _ROBOT,
     robots: str | None = _ROBOTS,
     model: str | None = _MODEL,
@@ -1212,6 +1241,7 @@ def run(
     flock: int | None = _FLOCK,
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
+    registry_dir: str | None = _REGISTRY_DIR,
     trace: bool | None = _TRACE,
     trace_prompt: bool | None = _TRACE_PROMPT,
 ) -> None:
@@ -1242,6 +1272,7 @@ def run(
         robots=robots,
         memory=memory,
         memory_dir=memory_dir,
+        registry_dir=registry_dir,
         trace=trace,
         trace_prompt=trace_prompt,
     )
@@ -1251,7 +1282,7 @@ def run(
 def record(
     duckfile: str | None = _DUCK_ARG,
     goal: str | None = _GOAL,
-    provider: str = _PROVIDER,
+    provider: str | None = _PROVIDER,
     model: str | None = _MODEL,
     seed: int | None = typer.Option(0, "--seed"),
     max_steps: int | None = _MAXSTEPS,
@@ -1548,6 +1579,372 @@ def serve_mcp(
         _fail(str(e))
 
 
+# ── robot (the registry) ────────────────────────────────────────────────────────────────
+
+robot_app = typer.Typer(
+    name="robot",
+    help="The robots you have named: which body, where it is, and who pilots it. Kept in "
+    "~/.quackd/robots.json so --robot NAME means the same thing in every command.",
+    no_args_is_help=True,
+)
+app.add_typer(robot_app, name="robot", rich_help_panel="Robots")
+
+
+def _registry(registry_dir: str | None) -> Any:
+    from quackd.registry import Registry
+
+    return Registry(registry_dir)
+
+
+def _registry_fail(e: Exception) -> None:
+    """Every registry refusal is one line. A robot that is not there is not a traceback."""
+    from quackd.adapters.base import AdapterError
+
+    _fail(str(e), hint=_ADAPTER_HINT if isinstance(e, AdapterError) else None)
+
+
+def _can_prompt() -> bool:
+    """Whether there is a person at a terminal to ask. The seam tests replace."""
+    return bool(sys.stdin is not None and sys.stdin.isatty())
+
+
+def _entry_rows(entry: Any, *, flocks: list[str]) -> list[tuple[str, Any]]:
+    from quackd.adapters.factory import describe
+
+    body: Any
+    try:
+        manifest = describe(entry.robot_spec)
+        body = Text(manifest.summary())
+    except Exception as e:  # an adapter whose extra is missing still has a name
+        body = Text(str(e), style=ui.STYLES["muted"])
+    dash = Text("-", style=ui.STYLES["muted"])
+    pilot = (
+        Text(" ".join(p for p in (entry.provider, entry.model) if p))
+        if entry.provider or entry.model
+        else dash
+    )
+    return [
+        ("name", Text(entry.name, style=ui.STYLES["key"])),
+        ("robot", Text(entry.key, style=ui.STYLES["accent"])),
+        ("body", body),
+        ("address", Text(entry.address) if entry.address else dash),
+        ("camera", Text(entry.camera_url) if entry.camera_url else dash),
+        ("token", Text("set") if entry.token else dash),
+        ("pilot", pilot),
+        ("note", Text(entry.note) if entry.note else dash),
+        ("flocks", Text(", ".join(flocks)) if flocks else dash),
+        ("added", Text(entry.added, style=ui.STYLES["muted"])),
+        ("updated", Text(entry.updated, style=ui.STYLES["muted"])),
+    ]
+
+
+_ROBOT_NAME = typer.Argument(
+    ...,
+    help="A slug: lowercase letters, digits and hyphens. Not a number (--flock N already "
+    "means N simulated ducks) and not an adapter name.",
+)
+_PROBE = typer.Option(
+    False,
+    "--probe",
+    help="Connect to each robot and say whether it answered. Costs a connection per robot.",
+)
+_PROBE_TIMEOUT = typer.Option(
+    5.0, "--timeout", min=0.1, max=120.0, help="Seconds to wait per robot when probing."
+)
+
+
+@robot_app.command("add")
+def robot_add(
+    name: str = _ROBOT_NAME,
+    spec: str = typer.Argument(
+        ..., help="<adapter>[:<backend>], e.g. microduck:sim2d. See `quackd list-adapters`."
+    ),
+    address: str | None = _ADDR,
+    camera_url: str | None = _CAMERA_URL,
+    token: str | None = _TOKEN,
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        "-p",
+        help="The provider a run uses for this robot when --provider is absent.",
+        rich_help_panel="Model",
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Its model id. --model on the run beats this, and this beats QUACKD_MODEL.",
+        rich_help_panel="Model",
+    ),
+    note: str | None = typer.Option(None, "--note", help="One line for people: which one is it."),
+    registry_dir: str | None = _REGISTRY_DIR,
+) -> None:
+    """Register a robot under a name, with how to reach it."""
+    from quackd.adapters.base import AdapterError
+    from quackd.registry import RegistryError, RobotEntry
+
+    try:
+        entry = RobotEntry(
+            name=name,
+            spec=spec,
+            address=address,
+            camera_url=camera_url,
+            token=token,
+            provider=provider,
+            model=model,
+            note=note,
+        )
+        _registry(registry_dir).add_robot(entry)
+    except (RegistryError, AdapterError, ValidationError) as e:
+        _registry_fail(_one_line(e))
+        return
+    where = f" at {entry.address}" if entry.address else ""
+    ui.console.print(_ok_line(f"added {entry.name}: {entry.key}{where}"))
+    ui.console.print(Text(f"  quackd run <duck> --robot {entry.name}", style=ui.STYLES["muted"]))
+
+
+def _one_line(e: Exception) -> Exception:
+    """A pydantic error folded to the one sentence a person needs, keeping its own words."""
+    if isinstance(e, ValidationError):
+        return ValueError(
+            "; ".join(
+                str(err["msg"]).removeprefix("Value error, ")
+                for err in e.errors()  # type: ignore[attr-defined]
+            )
+        )
+    return e
+
+
+@robot_app.command("list")
+def robot_list(
+    probe: bool = _PROBE,
+    timeout: float = _PROBE_TIMEOUT,
+    registry_dir: str | None = _REGISTRY_DIR,
+    as_json: bool = _JSON,
+) -> None:
+    """Every registered robot. Static by default: --probe connects to each of them."""
+    from quackd.registry import RegistryError, probe_all
+
+    try:
+        registry = _registry(registry_dir)
+        entries = registry.robots()
+        holders = {name: registry.flocks_of(name) for name in entries}
+    except RegistryError as e:
+        _registry_fail(e)
+        return
+    probes: dict[str, Any] = {}
+    if probe and entries:
+        with ui.spinner(f"probing {_plural(len(entries), 'robot')} ({timeout:g} s each)"):
+            probes = probe_all(entries.values(), timeout_s=timeout)
+    if as_json:
+        for name, entry in entries.items():
+            payload: dict[str, Any] = {**entry.public(), "flocks": holders[name]}
+            if probe:
+                result = probes.get(name)
+                payload["reachable"] = result.reachable if result else None
+                payload["probe"] = result.detail if result else ""
+            print(json.dumps(payload, ensure_ascii=False))
+        _exit_on_unreachable(probes)
+        return
+    if not entries:
+        ui.console.print(
+            Text(
+                "no robots registered yet: quackd robot add NAME <adapter>:<backend>",
+                style=ui.STYLES["muted"],
+            )
+        )
+        return
+    # a column nobody has filled is a column that only makes the rest narrower, and on an
+    # 80-column terminal a probe's refusal needs every character it can get
+    cells: dict[str, list[Any]] = {
+        "address": [Text(e.address or "") for e in entries.values()],
+        "pilot": [Text(" ".join(p for p in (e.provider, e.model) if p)) for e in entries.values()],
+        "flocks": [Text(", ".join(holders[n])) for n in entries],
+        "note": [Text(e.note or "") for e in entries.values()],
+    }
+    if probe:
+        cells["reachable"] = [_probe_cell(probes.get(n)) for n in entries]
+    shown = [
+        name for name, column in cells.items() if name == "reachable" or any(str(c) for c in column)
+    ]
+    table = ui.table("robots (--robot NAME)")
+    table.add_column("name", no_wrap=True, style=ui.STYLES["key"])
+    table.add_column("robot", no_wrap=True)
+    for name in shown:
+        table.add_column(name, overflow="fold", ratio=1 if name in ("note", "reachable") else None)
+    for i, (name, entry) in enumerate(entries.items()):
+        table.add_row(
+            Text(name),
+            Text(entry.key, style=ui.STYLES["accent"]),
+            *(cells[column][i] for column in shown),
+        )
+    ui.console.print(table)
+    _exit_on_unreachable(probes)
+
+
+PROBE_DETAIL_CHARS = 48
+"""A refusal from a socket can be a paragraph (Windows spells one in about 120 characters),
+and a column that wide turns the table into a page. `quackd robot show` and `--json` carry
+the whole of it; this says which robot to go and look at."""
+
+
+def _probe_cell(result: Any) -> Any:
+    if result is None:
+        return Text("-", style=ui.STYLES["muted"])
+    detail = " ".join(str(result.detail).split())
+    if len(detail) > PROBE_DETAIL_CHARS:
+        detail = detail[: PROBE_DETAIL_CHARS - 3].rstrip() + "..."
+    if result.reachable is None:
+        return Text(detail, style=ui.STYLES["muted"])
+    style = ui.STYLES["ok"] if result.reachable else ui.STYLES["fail"]
+
+    def build(g: ui.Glyphs) -> Any:
+        mark = g.ok if result.reachable else g.fail
+        return Text(f"{mark} {detail}", style=style)
+
+    return ui.Deferred(build)
+
+
+def _exit_on_unreachable(probes: dict[str, Any]) -> None:
+    """A probe that found a robot down is a failing command, so a script can branch on it."""
+    down = [name for name, result in probes.items() if result.reachable is False]
+    if down:
+        raise typer.Exit(code=1)
+
+
+@robot_app.command("show")
+def robot_show(
+    name: str = _ROBOT_NAME,
+    registry_dir: str | None = _REGISTRY_DIR,
+    as_json: bool = _JSON,
+) -> None:
+    """Everything one registered robot says about itself, and what it remembers."""
+    from quackd.memory import RobotMemory
+    from quackd.registry import RegistryError
+
+    try:
+        registry = _registry(registry_dir)
+        entry = registry.robot(name)
+        flocks = registry.flocks_of(name)
+    except RegistryError as e:
+        _fail(str(e), hint="quackd robot list")
+        return
+    if as_json:
+        print(json.dumps({**entry.public(), "flocks": flocks}, ensure_ascii=False))
+        return
+    rows = _entry_rows(entry, flocks=flocks)
+    memory = RobotMemory(entry.memory_key).summary()
+    rows.append(
+        (
+            "memory",
+            Text(
+                f"{_plural(int(memory['notes']), 'note')}, "
+                f"{_plural(int(memory['episodes']), 'run')}  {memory['path']}",
+                style=ui.STYLES["muted"],
+            ),
+        )
+    )
+    ui.console.print(ui.kv_grid(rows))
+
+
+_CLEARABLE = ("address", "token", "camera-url", "provider", "model", "note")
+
+
+@robot_app.command("edit")
+def robot_edit(
+    name: str = _ROBOT_NAME,
+    spec: str | None = typer.Option(None, "--spec", help="Move it to another <adapter>:<backend>."),
+    address: str | None = _ADDR,
+    camera_url: str | None = _CAMERA_URL,
+    token: str | None = _TOKEN,
+    provider: str | None = typer.Option(None, "--provider", "-p", rich_help_panel="Model"),
+    model: str | None = typer.Option(None, "--model", "-m", rich_help_panel="Model"),
+    note: str | None = typer.Option(None, "--note"),
+    clear: list[str] = typer.Option(
+        [],
+        "--clear",
+        help=f"Empty one field: {', '.join(_CLEARABLE)}. Repeatable.",
+    ),
+    registry_dir: str | None = _REGISTRY_DIR,
+) -> None:
+    """Change what a registered robot is or where it is."""
+    from quackd.adapters.base import AdapterError
+    from quackd.registry import RegistryError
+
+    given = {
+        "spec": spec,
+        "address": address,
+        "camera_url": camera_url,
+        "token": token,
+        "provider": provider,
+        "model": model,
+        "note": note,
+    }
+    changes: dict[str, str | None] = {k: v for k, v in given.items() if v is not None}
+    for field in clear:
+        key = field.strip().lower().replace("-", "_")
+        if key not in {c.replace("-", "_") for c in _CLEARABLE}:
+            _fail(f"--clear {field}: empty one of {', '.join(_CLEARABLE)}")
+            return
+        if key in changes:
+            _fail(f"--{key.replace('_', '-')} and --clear {field} contradict each other")
+            return
+        changes[key] = None
+    if not changes:
+        _fail("nothing to change: give a field to set, or --clear FIELD")
+        return
+    try:
+        _registry(registry_dir).update_robot(name, changes)
+    except (RegistryError, AdapterError, ValidationError) as e:
+        _registry_fail(_one_line(e))
+        return
+    touched = ", ".join(sorted(key.replace("_", "-") for key in changes))
+    ui.console.print(_ok_line(f"updated {name}: {touched}"))
+
+
+@robot_app.command("remove")
+def robot_remove(
+    name: str = _ROBOT_NAME,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask."),
+    force: bool = typer.Option(
+        False, "--force", help="Also drop it from every flock that lists it."
+    ),
+    registry_dir: str | None = _REGISTRY_DIR,
+) -> None:
+    """Forget a registered robot. Its memory file stays (quackd memory clear --robot NAME)."""
+    from quackd.registry import RegistryError
+
+    try:
+        registry = _registry(registry_dir)
+        entry = registry.robot(name)
+        holding = registry.flocks_of(name)
+    except RegistryError as e:
+        _fail(str(e), hint="quackd robot list")
+        return
+    if holding and not force:
+        _registry_fail(_in_use(name, holding))
+        return
+    also = f" and drop it from {', '.join(holding)}" if holding else ""
+    if not yes:
+        with ui.pause_status():
+            if not typer.confirm(f"remove {name} ({entry.key}){also}?"):
+                raise typer.Exit()
+    try:
+        dropped = registry.remove_robot(name, force=force)
+    except RegistryError as e:
+        _registry_fail(e)
+        return
+    ui.console.print(_ok_line(f"removed {name}"))
+    if dropped:
+        ui.console.print(Text(f"  dropped from {', '.join(dropped)}", style=ui.STYLES["muted"]))
+
+
+def _in_use(name: str, flocks: list[str]) -> Exception:
+    from quackd.registry import RobotInUse
+
+    return RobotInUse(name, flocks)
+
+
 # ── memory ──────────────────────────────────────────────────────────────────────────────
 
 memory_app = typer.Typer(
@@ -1558,26 +1955,29 @@ memory_app = typer.Typer(
 app.add_typer(memory_app, name="memory", rich_help_panel="Memory")
 
 
-def _memory_for(robot: str | None, memory_dir: str | None) -> Any:
+def _memory_for(robot: str | None, memory_dir: str | None, registry_dir: str | None = None) -> Any:
     from quackd.adapters.base import AdapterError
-    from quackd.adapters.factory import resolve_robot
     from quackd.memory import RobotMemory
+    from quackd.registry import Registry, RegistryError, resolve_robot_ref
 
     try:
-        spec = resolve_robot(robot)
-    except AdapterError as e:  # every other --robot command answers in one line, not a traceback
+        resolved = resolve_robot_ref(robot, Registry(registry_dir))
+    except (AdapterError, RegistryError) as e:
+        # every other --robot command answers in one line, not a traceback
         _fail(str(e))
-    return RobotMemory(spec.key, memory_dir)
+    # a registered robot keys by its name, so two ducks of one kind keep separate notes
+    return RobotMemory(resolved.memory_key, memory_dir)
 
 
 @memory_app.command("show")
 def memory_show(
     robot: str | None = _ROBOT,
     memory_dir: str | None = _MEMORY_DIR,
+    registry_dir: str | None = _REGISTRY_DIR,
     raw: bool = typer.Option(False, "--raw", help="Print the JSONL file as is."),
 ) -> None:
     """Print what one robot remembers (default: the Microduck simulator)."""
-    mem = _memory_for(robot, memory_dir)
+    mem = _memory_for(robot, memory_dir, registry_dir)
     if raw:
         if mem.path.exists():
             # "as is" means as is: a note saying "the ball is [bold]behind[/bold] the sofa"
@@ -1642,10 +2042,11 @@ def memory_add(
     text: str = typer.Argument(..., help="One short fact, e.g. 'the ball lives by the sofa'."),
     robot: str | None = _ROBOT,
     memory_dir: str | None = _MEMORY_DIR,
+    registry_dir: str | None = _REGISTRY_DIR,
     tag: list[str] = typer.Option([], "--tag", help="Optional label(s)."),
 ) -> None:
     """Save a note by hand, the same way the pilot's `remember` does."""
-    mem = _memory_for(robot, memory_dir)
+    mem = _memory_for(robot, memory_dir, registry_dir)
     entry = mem.remember(text, tags=tag)
     ui.console.print(
         Text.assemble(
@@ -1658,10 +2059,11 @@ def memory_add(
 def memory_clear(
     robot: str | None = _ROBOT,
     memory_dir: str | None = _MEMORY_DIR,
+    registry_dir: str | None = _REGISTRY_DIR,
     yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask."),
 ) -> None:
     """Forget everything one robot remembers (deletes its memory file)."""
-    mem = _memory_for(robot, memory_dir)
+    mem = _memory_for(robot, memory_dir, registry_dir)
     n = len(mem.entries())
     if n == 0:
         ui.console.print(Text(f"{mem.robot_key}: nothing to forget", style=ui.STYLES["muted"]))

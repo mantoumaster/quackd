@@ -25,6 +25,8 @@ def test_cli_help() -> None:
         "trace",
         "discover",
         "announce",
+        "memory",
+        "robot",
     ):
         assert command in result.output
 

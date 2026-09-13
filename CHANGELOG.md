@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A robot has a name now, and quackd keeps it: `quackd robot add|list|show|edit|remove`.**
+  Reaching a real body took five flags, one of them a secret: `--robot open_duck:bridge
+  --address tcp://10.0.0.5:9871 --token ... --camera-url ...`, retyped on every run and
+  therefore in shell history from then on. `--robots name=<adapter>:<backend>,...` gave a name
+  that died with the process. `quackd robot add scout open_duck:bridge --address ... --token
+  ...` writes it once to `~/.quackd/robots.json`, and `--robot scout` then means the same thing
+  in `run`, `record`, `validate`, `list-verbs`, `doctor`, `serve-mcp` and `quackd memory`. An
+  entry may also name the provider and model that pilot that robot, so a real duck can default
+  to Claude and the simulator to the scripted rule without a flag; a flag on the line still
+  wins, field by field, because reaching the same robot through a tunnel today is not renaming
+  it. `quackd robot list` is static, because it is what you run to remember a name, and
+  `--probe` connects to each robot and says whether it answered, exiting 1 if any did not.
+  `--registry-dir` beats `QUACKD_REGISTRY_DIR` beats `~/.quackd`, which is the precedence
+  `--memory-dir` already has. A name may not be a number, an adapter name, or an
+  `adapter-backend` memory slug, because each of those already means something else on a
+  command line. The honest part: the token is stored in plain text in a file in your home
+  directory, quackd masks it in everything it prints, and `SECURITY.md` says so
+  ([docs/registry.md](docs/registry.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
 - **Every robot carries a datasheet, and the pilot is told to check the task against it before anything moves.**
   A pilot used to be told one line about the body it was driving and a list of verbs, and nothing
   numeric: no payload, no reach, no working height, no endurance, and no way to say "this body
@@ -110,6 +129,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails when the generated file has drifted from `catalogue.py`.
 
 ### Changed
+
+- **A registered robot keys its memory by its name, not by its body.**
+  Memory was keyed `adapter:backend` so that a simulated duck never inherited a real one's
+  notes, which was right and also meant two real ducks on one desk shared one file. A robot
+  registered with `quackd robot add` now keys by the name you gave it, so `duck-a` and `duck-b`
+  keep separate notes, while an unregistered `--robot microduck:sim2d` run keys exactly as it
+  did. A registered name may not collide with an `adapter-backend` slug, so a run can never be
+  ambiguous about which file it is writing. Amends
+  [ADR-0025](docs/adr/0025-memory-between-runs.md)
+  ([docs/memory.md](docs/memory.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
 
 - **`--model` and `QUACKD_MODEL` now take a catalogue id, and three of the four defaults moved.**
   [ADR-0010](docs/adr/0010-providers.md) shipped four defaults with the first release and marked

@@ -37,6 +37,20 @@ The key is the body, not the name you gave it, so two members of one fleet that 
 same `adapter:backend` share a file. That is the same rule that keeps `microduck:sim2d` and
 `microduck:jsonrpc` apart, read the other way round.
 
+**Unless you have registered it.** `quackd robot add duck-a microduck:jsonrpc` gives that one
+robot a name, and a run by that name keys its memory by the name instead:
+
+```
+~/.quackd/memory/duck-a.jsonl
+~/.quackd/memory/duck-b.jsonl
+```
+
+So two real ducks on one desk keep separate notes, which the rule above could not express.
+A registered name may not collide with an adapter name or with one of the `adapter-backend`
+slugs above, so the two schemes never meet in one file
+([registry.md](registry.md), [ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)
+amending [ADR-0025](adr/0025-memory-between-runs.md)).
+
 `microduck:sim2d` and `microduck:mujoco` are the pair that catches people out. They share an
 arena (bar the cartoon's person, who is not in the physics one), a seed and a `.duck` file by
 design, and they still keep separate files, because what a
