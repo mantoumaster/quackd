@@ -36,14 +36,29 @@ def test_every_shipped_body_publishes_a_datasheet_that_renders(spec: RobotSpec) 
     assert "\n" not in summary and summary.startswith(manifest.model)
 
 
-@pytest.mark.parametrize("adapter", ADAPTER_NAMES)
+@pytest.mark.parametrize("adapter", [a for a in ADAPTER_NAMES if a != "rosbridge"])
 def test_a_body_reads_the_same_on_every_backend(adapter: str) -> None:
-    """sim2d, mock or real, the body is the body. This is also what keeps the digests equal."""
+    """sim2d, mock or real, the body is the body. This is also what keeps the digests equal.
+
+    rosbridge is the exception and is tested below: its sheet is whatever the bridge said,
+    so it is not a constant of the adapter at all."""
     sheets = {
         backend: describe(RobotSpec(adapter, backend)).datasheet for backend in BACKENDS[adapter]
     }
     dumps = {backend: sheet.model_dump_json() for backend, sheet in sheets.items() if sheet}
     assert len(set(dumps.values())) == 1, dumps
+
+
+def test_the_one_body_whose_datasheet_is_not_a_constant_is_the_one_that_is_a_name() -> None:
+    """`rosbridge` names a transport. What is on the other side is whatever answered, so the
+    mock (which serves a canned description) and the ws backend (which has asked nobody yet)
+    describe different bodies on purpose."""
+    mock = describe(RobotSpec("rosbridge", "mock")).datasheet
+    blind = describe(RobotSpec("rosbridge", "ws")).datasheet
+    assert mock is not None and blind is not None
+    assert mock != blind
+    assert mock.mass_kg is not None and blind.mass_kg is None
+    assert blind.manipulator == mock.manipulator == "none"
 
 
 def test_the_microduck_says_what_it_knows_and_what_nobody_published() -> None:

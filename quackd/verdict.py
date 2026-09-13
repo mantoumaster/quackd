@@ -28,7 +28,7 @@ VerdictWord = Literal["feasible", "infeasible", "uncertain"]
 Human = Literal["go", "no_go"]
 
 BEFORE_VERDICT = frozenset(
-    {"stop", "observe", "report_state", "say", "quack", "express", "gaze", "look"}
+    {"stop", "observe", "report_state", "say", "quack", "express", "gaze", "look", "introspect"}
 )
 """What runs before a verdict: the verbs that speak, look, or read, and the brake.
 

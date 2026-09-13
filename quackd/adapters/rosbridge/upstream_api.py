@@ -7,8 +7,10 @@ reachable from the experimental `ws` backend.
 
 Three upstreams, each pinned and read on 2026-09-02: roslibpy (the client library, PyPI
 2.1.0, Python >= 3.9), rosbridge_suite (the protocol the server speaks, ros2 branch) and
-ros2/common_interfaces (the message definitions). Nothing here has been run against a
-bridge, and roslibpy is never imported outside the `ws` backend.
+ros2/common_interfaces (the message definitions). Two more were pinned and read on
+2026-09-13 for introspection, which asks the bridge what the body under it is: ros/urdfdom
+(what a URDF says) and ros/robot_state_publisher (where the URDF usually is). Nothing here
+has been run against a bridge, and roslibpy is never imported outside the `ws` backend.
 """
 
 from __future__ import annotations
@@ -21,7 +23,12 @@ REPO_ROSBRIDGE = "https://github.com/RobotWebTools/rosbridge_suite"
 PIN_ROSBRIDGE = "aa9a7a33ddb3b1b45ddd6d2eead4c3d5eb800b14"
 REPO_INTERFACES = "https://github.com/ros2/common_interfaces"
 PIN_INTERFACES = "d54aa9b96dfed4922775652414e0e8fa4ee2ae40"
+REPO_URDFDOM = "https://github.com/ros/urdfdom"
+PIN_URDFDOM = "bfcf29f39cc3e0fa13e5572f36b4b8c42d4f5ce1"
+REPO_RSP = "https://github.com/ros/robot_state_publisher"
+PIN_RSP = "5526c766f79537f233903d3d7cabd33cb97c44e6"
 READ_ON = "2026-09-02"
+READ_ON_INTROSPECTION = "2026-09-13"
 PYPI_VERSION_READ = "2.1.0"
 
 
@@ -37,12 +44,26 @@ def msg(path: str, line: int | None = None) -> str:
     return f"{REPO_INTERFACES}/blob/{PIN_INTERFACES}/{path}" + (f"#L{line}" if line else "")
 
 
+def urdfdom(path: str, line: int | None = None) -> str:
+    return f"{REPO_URDFDOM}/blob/{PIN_URDFDOM}/{path}" + (f"#L{line}" if line else "")
+
+
+def rsp(path: str, line: int | None = None) -> str:
+    return f"{REPO_RSP}/blob/{PIN_RSP}/{path}" + (f"#L{line}" if line else "")
+
+
 _ROS = "src/roslibpy/ros.py"
 _CORE = "src/roslibpy/core.py"
 _COMM = "src/roslibpy/comm/comm.py"
 _PROTO = "ROSBRIDGE_PROTOCOL.md"
 _LOADER = "rosbridge_library/src/rosbridge_library/internal/ros_loader.py"
 _CONV = "rosbridge_library/src/rosbridge_library/internal/message_conversion.py"
+_SUBSCRIBERS = "rosbridge_library/src/rosbridge_library/internal/subscribers.py"
+_ROSAPI_NODE = "rosapi/scripts/rosapi_node"
+_ROSAPI_PARAMS = "rosapi/src/rosapi/params.py"
+_LINK_CPP = "urdf_parser/src/link.cpp"
+_JOINT_CPP = "urdf_parser/src/joint.cpp"
+_RSP_CPP = "src/robot_state_publisher.cpp"
 
 # ── roslibpy, the client ────────────────────────────────────────────────────────────────
 
@@ -212,6 +233,175 @@ ROS1_BRIDGE = UpstreamRef(
     "UNVERIFIED",
     bridge(_LOADER, 254),
     "a ROS 1 rosbridge should accept the three-part type strings too; not tried",
+)
+
+
+# ── introspection: what the bridge can be asked about the body (read 2026-09-13) ────────
+
+SERVICE = UpstreamRef(
+    "roslibpy.Service(ros, name, service_type, reconnect_on_close=True)",
+    "VERIFIED",
+    src(_CORE, 560),
+)
+SERVICE_CALL = UpstreamRef(
+    "Service.call(request, callback=None, errback=None, timeout=None)",
+    "VERIFIED",
+    src(_CORE, 598),
+    "with no callback it blocks on call_sync_service(message, timeout) (line 628) and raises "
+    "ServiceException (line 551) when the answer carries one; quackd calls it in a worker "
+    "thread with the remaining deadline",
+)
+SERVICE_REQUEST = UpstreamRef(
+    "roslibpy.ServiceRequest(values)", "VERIFIED", src(_CORE, 505), "a UserDict, like Message"
+)
+OP_CALL_SERVICE = UpstreamRef(
+    "op=call_service {id, service, args}",
+    "VERIFIED",
+    bridge(_PROTO, 780),
+    "protocol 4.4.3; the answer is op=service_response {id, service, values, result} (4.4.4). "
+    "No type on the wire: the server resolves it",
+)
+ROSAPI_NODE = UpstreamRef(
+    "rosapi",
+    "VERIFIED",
+    bridge(_ROSAPI_NODE, 96),
+    "the node registers its services as ~/topics and ~/get_param, so on the stock node name "
+    "they are /rosapi/topics and /rosapi/get_param; a bridge launched without rosapi answers "
+    "neither, and quackd records that it discovered nothing",
+)
+SVC_TOPICS = UpstreamRef(
+    "/rosapi/topics",
+    "VERIFIED",
+    bridge(_ROSAPI_NODE, 96),
+    "create_service(Topics, '~/topics'); the handler fills response.topics and response.types "
+    "(line 201)",
+)
+SRV_TOPICS = UpstreamRef(
+    "rosapi_msgs/srv/Topics",
+    "VERIFIED",
+    bridge("rosapi_msgs/srv/Topics.srv"),
+    "no request fields; {string[] topics, string[] types}",
+)
+SVC_GET_PARAM = UpstreamRef(
+    "/rosapi/get_param",
+    "VERIFIED",
+    bridge(_ROSAPI_NODE, 146),
+    "create_service(GetParam, '~/get_param')",
+)
+SRV_GET_PARAM = UpstreamRef(
+    "rosapi_msgs/srv/GetParam",
+    "VERIFIED",
+    bridge("rosapi_msgs/srv/GetParam.srv"),
+    "{string name, string default_value} -> {string value, bool successful, string reason}",
+)
+PARAM_NAME_FORM = UpstreamRef(
+    "node:parameter",
+    "VERIFIED",
+    bridge(_ROSAPI_NODE, 328),
+    "the ROS 2 rosapi splits request.name on a colon into a node and a parameter "
+    "(`return tuple(param.split(':'))`), and params.py makes the node name absolute (line 234)",
+)
+PARAM_VALUE_JSON = UpstreamRef(
+    "get_param answers with JSON",
+    "VERIFIED",
+    bridge(_ROSAPI_PARAMS, 238),
+    "`return dumps(value)`, so a string parameter arrives quoted; quackd json-loads it and "
+    "keeps the raw text when that fails",
+)
+ROS_GET_PARAM = UpstreamRef(
+    "Ros.get_param(name, callback=None, errback=None)",
+    "VERIFIED",
+    src(_ROS, 435),
+    "what roslibpy offers; quackd calls the service itself because this one json-loads inside "
+    "roslibpy's own callback thread, where a raw-text answer would raise where nobody catches it",
+)
+SUBSCRIBE_QOS = UpstreamRef(
+    "subscribe carries an optional qos",
+    "VERIFIED",
+    bridge(_PROTO, 528),
+    "protocol 4.3.4; roslibpy 2.1.0's Topic.subscribe never sends one, so quackd cannot ask "
+    "for transient_local and relies on the next entry instead",
+)
+SUBSCRIBER_QOS_FOLLOWS_PUBLISHERS = UpstreamRef(
+    "a subscription is transient_local when every publisher on the topic is",
+    "VERIFIED",
+    bridge(_SUBSCRIBERS, 165),
+    "the default is depth 10, VOLATILE, BEST_EFFORT (line 157); durability follows the "
+    "publishers when all of them are transient-local, which is how a late subscriber sees a "
+    "robot_description published at startup",
+)
+MSG_STRING = UpstreamRef(
+    "std_msgs/msg/String", "VERIFIED", msg("std_msgs/msg/String.msg", 1), "{data}"
+)
+RSP_NODE = UpstreamRef(
+    "robot_state_publisher",
+    "VERIFIED",
+    rsp(_RSP_CPP, 85),
+    "the node name; it declares a robot_description parameter (line 89)",
+)
+DESCRIPTION_TOPIC = UpstreamRef(
+    "/robot_description",
+    "VERIFIED",
+    rsp(_RSP_CPP, 95),
+    "create_publisher<std_msgs::msg::String>('robot_description', QoS(1).transient_local())",
+)
+DESCRIPTION_PARAM = UpstreamRef(
+    "/robot_state_publisher:robot_description",
+    "VERIFIED",
+    bridge(_ROSAPI_NODE, 328),
+    "RSP_NODE's parameter written in PARAM_NAME_FORM; the default of the address's ?urdf_param=",
+)
+URDF_MASS = UpstreamRef(
+    "link/inertial/mass@value",
+    "VERIFIED",
+    urdfdom(_LINK_CPP, 287),
+    "parseInertial requires a mass element with a value attribute; the inertial element "
+    "itself is optional per link (line 356)",
+)
+URDF_JOINT_TYPE = UpstreamRef(
+    "joint@type in planar, floating, revolute, continuous, prismatic, fixed",
+    "VERIFIED",
+    urdfdom(_JOINT_CPP, 287),
+    "the six strings parseJoint accepts, in that order",
+)
+URDF_JOINT_LIMIT = UpstreamRef(
+    "joint/limit@lower,upper,effort,velocity",
+    "VERIFIED",
+    urdfdom(_JOINT_CPP, 127),
+    "lower (127), upper (143), effort (160) and velocity (175); lower and upper are optional",
+)
+URDF_JOINT_TREE = UpstreamRef(
+    "joint@name, joint/parent@link, joint/child@link",
+    "VERIFIED",
+    urdfdom(_JOINT_CPP, 267),
+    "name (267), parent link (284), child link (285)",
+)
+
+# ── UNVERIFIED: what quackd assumes about a description it has never actually read ──────
+
+DESCRIPTION_NAMES = UpstreamRef(
+    "DESCRIPTION_NAMES",
+    "UNVERIFIED",
+    rsp(_RSP_CPP, 85),
+    "that the description lives on a node called /robot_state_publisher, un-namespaced, and "
+    "as a parameter rather than only on the topic; both names come from the address "
+    "(?urdf_param=, ?urdf_topic=) and either can be turned off",
+)
+URDF_MASS_IS_THE_BODY = UpstreamRef(
+    "URDF_MASS_IS_THE_BODY",
+    "UNVERIFIED",
+    urdfdom(_LINK_CPP, 287),
+    "that the sum of the links' inertial masses is what the robot weighs. It is the robot's "
+    "own file, so quackd tags the figure official, but a URDF may leave inertials out (the "
+    "note says how many links had one) or model a tool or a payload as a link",
+)
+DOF_IS_NON_FIXED_JOINTS = UpstreamRef(
+    "DOF_IS_NON_FIXED_JOINTS",
+    "UNVERIFIED",
+    urdfdom(_JOINT_CPP, 287),
+    "that every joint whose type is not fixed is a degree of freedom, so wheels, casters, "
+    "gripper fingers and mimic joints all count; no joints at all reports 0 and an unreadable "
+    "description reports nothing",
 )
 
 
