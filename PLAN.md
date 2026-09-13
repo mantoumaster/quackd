@@ -106,9 +106,11 @@ not before.
 - ⏸ **Exercise `remember` against a cloud model.** The scripted pilot has no script for it, so
   `--provider fake` writes episodes and never a note.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
-  for it. The card itself now predates the positioning: it is one cartoon duck, and quackd is a
-  CLI for a flock of robots ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)), so it is
-  worth regenerating before it is uploaded.
+  for it, so it is the one asset a commit here cannot ship. The card itself is current: it
+  carries the one-liner ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)) and its two
+  panels are a real three-robot `sim2d` arena. Regenerate it with
+  [`docs/assets/social_preview.py`](docs/assets/social_preview.py), which exists because the
+  original was drawn by hand and the script was never committed, so nobody could.
 - ⏸ **No asset shows a flock of pilots.** `flock.gif` is the coordinator: three identical ducks
   auctioning a kick. The kind of flock the README now leads with is two different bodies talking,
   and it has no recording, because a pilot flock writes no GIF (N members are N worlds).
@@ -117,10 +119,16 @@ not before.
 
 Things no commit in this repository can finish.
 
-- ⏸ **The landing page still describes the old quackd.** <https://www.quackd.org/> is built from
-  quackd-web, a separate repository, and it was written when quackd was a brain for one small
-  robot. The one-liner there, and the GitHub About text, are the two copies of the positioning
-  that this repository cannot reach ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)).
+- ✅ **The GitHub About text and Topics carry the one-liner**
+  ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)), set by hand because there is no
+  commit that can set them. Topics are at the cap of 20, so the next one has to replace one.
+- ⏸ **The landing page.** <https://www.quackd.org/> is built from quackd-web, a separate
+  repository, and it was written around 0.5: quackd was a brain for one small robot, there were
+  five adapters, and one of the five was the Reachy Mini, which this project removed in 0.8. Its
+  copy is being corrected there. The part no commit in either repository can fix is
+  `public/og.png`, the card a social network shows for quackd.org. It is a designed asset with
+  no generator, and its headline is set in a display weight of Nunito Sans that Google now
+  serves only as a variable font, so it needs whoever made it rather than a script.
 - ✅ **`web/` is on the web.** <https://www.quackd.org/simulator> answers. That address belongs to
   quackd-web, a separate Vercel project serving the landing page, and its build now fetches this
   directory into its own `/simulator` at a pinned commit — so a change here reaches the page on

@@ -8,7 +8,8 @@
 *Give your Microduck a brain. Any LLM, one `.duck` file.* It said "one-liner everywhere", and
 everywhere is where it went: the README's first line, `pyproject.toml`'s description and
 therefore the PyPI page, the `quackd --help` banner, `quackd/__init__.py`'s docstring, the
-browser demo's title and meta tags, and every line of per-channel copy in `LAUNCH.md`.
+browser demo's title and meta tags, and the launch copy in `LAUNCH.md` written for the
+channels where a one-liner is the whole post.
 
 It was accurate for 0.3. quackd was a brain for exactly one robot, that robot was a Microduck,
 and the interesting part really was that any LLM could drive it from one task file. Three
@@ -52,8 +53,9 @@ not renamed, because a rename there is churn no reader ever sees.
 join. That the seven bodies shipping today are all small is a fact in a table, next to the fact
 that none of them has run.
 
-**The way in is not "an API or an SDK".** Three of the seven bodies expose no network API at all,
-and for those quackd ships a daemon or a host wrapper that runs on the robot itself. The
+**The way in is not "an API or an SDK".** Two of the seven bodies expose no network API at all, and
+a third's own host leaves its arms limp, so for those three quackd ships a daemon or a host wrapper
+that runs on the robot itself. The
 phrasing, where a doc needs it: any robot with a way in, through its SDK, through the protocol
 its host already speaks, or through a small daemon quackd puts on the robot.
 

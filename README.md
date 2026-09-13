@@ -95,7 +95,6 @@ The first of those also passes 10 of 10 on the physics simulator, with the duck 
 
 ```bash
 uvx --from "quackd[mujoco]" quackd run --goal "walk in a square" --robot microduck:mujoco --provider fake   # the duck above: real physics, its own trained gait (first run fetches about 10 MB)
-uvx quackd run flock-hello --provider fake                                          # two robots, a duck and an arm, one LLM pilot each, talking
 uvx quackd run find-and-kick --provider fake                                        # the cartoon: no download, done in a second
 claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d               # or just chat with it: "find the ball and kick it"
 uvx quackd run open-duck-scout --provider fake                                     # a duck you can build: it finds the ball and walks up, no kick
@@ -112,6 +111,8 @@ same time, so a key can take the duck off the model mid-run. [The browser demo](
 says what it does and how to run it from a checkout.
 
 Put keys in the environment or in a `.env` file (copy [`.env.example`](.env.example)). `quackd doctor` tells you what is missing. Needs Python 3.11 or newer and [`uv`](https://docs.astral.sh/uv/), nothing else.
+
+Every line above runs on the released package, which is 0.8. Naming robots and giving a flock one pilot each are the next release, so `quackd robot`, `quackd flock` and `flock-hello` want a checkout (`uv sync`) until then, and everything below that shows them is written for one.
 
 <br>
 
@@ -215,7 +216,7 @@ Version 0.8, simulator and mocks. What has been built, and how far each piece ha
 | Memory between runs (`quackd memory`, `remember`) | ✅ one JSONL file per `adapter:backend`, or per registered robot name, notes and run outcomes into the next prompt, tested end to end offline, 🧪 the `remember` tool itself exercised by one local model on one machine and by no cloud model ([docs/memory.md](docs/memory.md)) |
 | Providers: eleven cloud vendors, fake | ✅ implemented, tested offline against stubbed SDK clients, with one hand curated catalogue of 115 model ids that `--model` is checked against before any call (`quackd list-models`), real model hero recording pending an API key |
 | Local models (Ollama, vLLM, llama.cpp, LM Studio, any OpenAI compatible server) | ✅ implemented and tested against the OpenAI wire format, 🧪 one live run by a contributor (Qwen 2.5 Coder 14B on LM Studio, two seeds), no transcript in the repo, more welcome |
-| Registered robots and flocks (`quackd robot`, `quackd flock`) | ✅ both command groups over `~/.quackd/robots.json` and `~/.quackd/flocks.json`, so `--robot NAME` and `--flock NAME` mean the same thing in every command that takes a robot, tested offline, `robot list --probe` answered by the mocks, 🧪 never pointed at hardware ([docs/registry.md](docs/registry.md)) |
+| Registered robots and flocks (`quackd robot`, `quackd flock`) | ✅ both command groups over `~/.quackd/robots.json` and `~/.quackd/flocks.json`, so `--robot NAME` means the same thing in every command that takes a robot and `--flock NAME` in `run` and `serve-mcp`, tested offline, `robot list --probe` answered by the mocks, 🧪 never pointed at hardware ([docs/registry.md](docs/registry.md)) |
 | Pilot flocks, several robots on one task (`--flock NAME`) | ✅ one whole pilot per body, any backend, same or different bodies, 2 to 8, each with its own executor, allowlist, budget, heartbeat, memory and verdict, dividing the work with `tell` over the bus, 🧪 experimental, exercised on mock and sim2d bodies with the scripted pilot, by no real model and on no hardware |
 | Coordinator flock, one referee instead (`--flock N`) | ✅ deterministic auction and bus, one planner LLM call at most, ground truth checked in tests, 🧪 experimental and sim2d Microducks only. Its capability aware role auction (spotter/kicker) is unit tested but has no bundled two-robot demo today |
 | LAN discovery (`quackd discover`, `quackd announce`, `quackd[lan]`) | ✅ record format and both commands on fakes in the suite, 🧪 real zeroconf exercised once on one machine, never between two ([docs/lan.md](docs/lan.md)) |
@@ -385,7 +386,7 @@ A cloud model that takes an image sees the camera frame. Where a vendor does not
 
 ### Your robots, by name
 
-Reaching a real robot takes a spec, an address, a token and a camera URL, and retyping them on every command puts that token in your shell history. `quackd robot add` keeps them instead: which body, where it is, its token and camera, and optionally the provider and model that pilot it. A flock is a named list of those entries. Register once, and `--robot NAME` and `--flock NAME` mean the same thing in every command that takes a robot.
+Reaching a real robot takes a spec, an address, a token and a camera URL, and retyping them on every command puts that token in your shell history. `quackd robot add` keeps them instead: which body, where it is, its token and camera, and optionally the provider and model that pilot it. A flock is a named list of those entries. Register once, and `--robot NAME` means the same thing in every command that takes a robot, `--flock NAME` in `run` and `serve-mcp`.
 
 ```bash
 quackd robot add duck microduck:mock
@@ -474,13 +475,13 @@ Then, in Claude Code or Claude Desktop: *"List the duck's verbs, then find the b
 
 ### What it remembers
 
-A run does not start from nothing. Each robot has a small memory under `~/.quackd/memory/`, keyed `adapter:backend` so the simulator and a real duck keep separate files, or by its name once you have registered it with `quackd robot add`, so two ducks of one kind do too. It holds: the notes the pilot saved with the `remember` tool, and one line per earlier run that quackd writes itself (outcome, reason, the last few verb results). The newest of both go into the system prompt at the next run, and `remember` costs no step. `quackd memory show`, `add` and `clear` manage it, and `--no-memory` runs fresh. Over MCP the same file sits behind `robot_recall` and `robot_remember`. Members of a flock each keep their own, and what one needs another to know *during* a run it says with `tell` rather than writing it down. Details and what it is *not* (a learning loop, a search index): [docs/memory.md](docs/memory.md).
+A run does not start from nothing. Each robot has a small memory under `~/.quackd/memory/`, keyed `adapter:backend` so the simulator and a real duck keep separate files, or by its name once you have registered it with `quackd robot add`, so two ducks of one kind do too. It holds: the notes the pilot saved with the `remember` tool, and one line per earlier run that quackd writes itself (outcome, reason, the last few verb results). The newest of both go into the system prompt at the next run, and `remember` costs no step. `quackd memory show`, `add` and `clear` manage it, and `--no-memory` runs fresh. Over MCP the same file sits behind `robot_recall` and `robot_remember`. In a flock the same rule applies, so two members of one kind share a file unless you have registered them, and what one needs another to know *during* a run it says with `tell` rather than writing it down. Details and what it is *not* (a learning loop, a search index): [docs/memory.md](docs/memory.md).
 
 <br>
 
 ## Connect any robot
 
-Any robot with a way in can join: through its own SDK, through the protocol its host already speaks, or through a small daemon quackd puts on the robot when its runtime has no network API at all. Three of the seven bodies here are in that last category. A robot joins as an **adapter** that answers one question, what is this body and what can it do, as a **manifest**: its embodiment, the intents its controllers accept (a velocity, a named skill, a gaze, a sound, a joint goal, a pose, a gripper), its sensors, the limits its verbs clamp to, who stops it when quackd goes quiet, its verbs, and a **datasheet** of what it weighs, can carry and can reach, with a confidence and a source on every number. Everything else (the loop, the executor, the contract, the MCP server) is shared.
+Any robot with a way in can join: through its own SDK, through the protocol its host already speaks, or through a small daemon quackd puts on the robot when its runtime has no network API at all. Two of the seven are in that last category, and a third gets a host wrapper from quackd because the one upstream ships leaves its arms limp. A robot joins as an **adapter** that answers one question, what is this body and what can it do, as a **manifest**: its embodiment, the intents its controllers accept (a velocity, a named skill, a gaze, a sound, a joint goal, a pose, a gripper), its sensors, the limits its verbs clamp to, who stops it when quackd goes quiet, its verbs, and a **datasheet** of what it weighs, can carry and can reach, with a confidence and a source on every number. Everything else (the loop, the executor, the contract, the MCP server) is shared.
 
 ```bash
 uvx quackd list-adapters                                                # the seven adapters, for your build

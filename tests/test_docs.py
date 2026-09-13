@@ -469,7 +469,14 @@ _TAGLINE_SITES = ("pyproject.toml", "quackd/__init__.py", "quackd/cli.py")
 
 def test_the_retired_tagline_is_gone_and_the_new_one_is_everywhere_it_lived() -> None:
     """The history files keep it: they record what was true on the day they were written."""
-    sources = [REPO / "pyproject.toml", *((REPO / "quackd").glob("*.py")), REPO / "web/index.html"]
+    # rglob, not glob: the retired sentence also lived in `quackd/agent/prompts.py`'s neighbours,
+    # and a guard that reads only the top of the package is a guard with a floor under it
+    sources = [
+        REPO / "pyproject.toml",
+        *(REPO / "quackd").rglob("*.py"),
+        *(REPO / "bridge").rglob("*.py"),
+        REPO / "web/index.html",
+    ]
     for path in _living_docs() + sources:
         text = path.read_text(encoding="utf-8")
         for retired in _RETIRED_TAGLINES:
@@ -497,8 +504,13 @@ def test_no_living_document_or_user_facing_string_still_says_fleet() -> None:
     # stale ones were: a source grep would have been satisfied by `fleet_from_flags`
     runner = CliRunner()
     for argv in ([], ["robot"], ["flock"], ["memory"], ["run"], ["serve-mcp"], ["validate"]):
-        rendered = runner.invoke(app, [*argv, "--help"]).output.lower()
-        assert "fleet" not in rendered, f"`quackd {' '.join(argv)} --help` still says fleet"
+        result = runner.invoke(app, [*argv, "--help"])
+        # exit code first: a renamed sub-app makes Click print a "No such command" usage page,
+        # which contains no "fleet" either, and the assertion below would pass on nothing
+        assert result.exit_code == 0, f"`quackd {' '.join(argv)} --help` did not render"
+        assert "fleet" not in result.output.lower(), (
+            f"`quackd {' '.join(argv)} --help` still says fleet"
+        )
 
 
 def test_no_living_document_claims_the_wrong_number_of_mcp_tools() -> None:

@@ -151,9 +151,12 @@ Every pilot declares for itself. The flock succeeds only when all of them declar
 ```
 +- + SUCCESS -------------------------------------------------------------+
 | every member declared success: duck, arm, cart                          |
-| members 3/3 succeeded - talk 3 - steps 0 - llm calls 9 - tokens 17306+144|
+| members 3/3 succeeded - talk 3 - steps 0 - llm calls 9 - tokens 16703+144|
 +-------------------------------------------------------------------------+
 ```
+
+That count is from a `--no-memory` run. With memory on it climbs by whatever each robot has
+remembered, because every note and every past outcome goes into that pilot's next prompt.
 
 Otherwise the worst outcome wins, in the order `error`, `aborted`, `infeasible`, `budget`,
 `failure`, and the reason names every member that did not succeed, worst first. `error` beats

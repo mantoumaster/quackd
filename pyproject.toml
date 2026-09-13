@@ -151,7 +151,8 @@ ignore = ["RUF012", "B008"]
 "quackd/cli.py" = ["T20"]
 "quackd/mcp_server.py" = ["T20"]
 "tests/**" = ["T20"]
-# The two scripts that build the README's assets are run by hand and report as they go.
+# The scripts that build the README's assets and the social card are run by hand and
+# report as they go.
 "docs/assets/*.py" = ["T20"]
 # The browser demo's dev server. It is a command a person runs, and printing the URL it
 # mounted on is the whole of its user interface.
