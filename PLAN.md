@@ -74,8 +74,6 @@ not before.
   it is in the repository, so the README says exactly that.
 - ⏸ **Exercise `remember` against a cloud model.** The scripted pilot has no script for it, so
   `--provider fake` writes episodes and never a note.
-- ⏸ Verify the `gpt-5`, `grok-4` and `gemini-2.5-pro` default IDs against vendor docs. All are
-  overridable with `QUACKD_MODEL`.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
   for it.
 

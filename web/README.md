@@ -5,7 +5,7 @@ model you bring the key for turns it into the robot's own skills while quackd de
 it is allowed to do. The keyboard is live the whole time, next to the box you type in, so the
 two ways of driving a robot sit a centimetre apart. It is the same idea as
 `quackd run --goal "..." --robot microduck:mujoco`, with the same physics and the same
-walking policy, in six modules of plain JavaScript with no build step instead of Python.
+walking policy, in seven modules of plain JavaScript with no build step instead of Python.
 
 It lives at <https://www.quackd.org/simulator>. That domain is served by quackd-web, a separate
 Vercel project, whose build fetches this directory into its own `/simulator` at a pinned commit,
@@ -94,16 +94,85 @@ to proxy it through. Every call is billed to you.
 - **Anthropic** needs the `anthropic-dangerous-direct-browser-access: true` header, which
   the page sends. That header is exactly what its name says: your key is in a web page.
 - **Gemini** and **OpenAI** work with their normal browser CORS.
+- **Grok, Mistral, DeepSeek, Cohere, Qwen, Kimi and Meta** are all OpenAI-shaped, so each is
+  the OpenAI client again with a different base URL, and each answered a CORS preflight from
+  this page's origins when it was measured. What differs between them is one field. Mistral
+  spells "you must call a tool" as `any` rather than `required`, Cohere documents no
+  `tool_choice` at all and so can only be asked rather than told, and Qwen, Kimi and Meta take
+  `auto`. Those values are copied from the provider classes in `quackd/agent/providers/`, so
+  the page and the CLI send the same body to the same vendor.
+- **GLM is not offered here, and is on the CLI.** See below.
 - **Some OpenAI reasoning models** refuse function tools on `/v1/chat/completions` and
   name `/v1/responses` in the 400. Every verb here is a function tool, so the page reads
   that answer, moves the run to the Responses API and stays there for the rest of it.
   `gpt-6-astra` is one such model and needs nothing set. This is the same switch
   `quackd/agent/providers/openai.py` makes for the CLI, kept in step by
-  `test_the_browser_and_python_agree_on_which_400_means_responses`.
+  `test_the_browser_and_python_agree_on_which_400_means_responses`. Where the catalogue
+  already records `api: "responses"` for a model, the page opens the run there and the failed
+  call is never made. The 400 reader stays for every model it does not record, which is any id
+  a vendor shipped after this build.
 - **Local models** need no key. Ollama must be told to accept the page:
   `OLLAMA_ORIGINS=* ollama serve`. Any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
   works the same way — change the base URL. Browsers treat `http://localhost` as trustworthy,
   so an https page may call it.
+
+## The model list, and where it comes from
+
+The model field is a dropdown, not a text box. It is grouped by the catalogue's own statuses —
+current, legacy, preview, specialised, open — and it opens on the vendor's default, so the
+page offers exactly what `quackd list-models` does and a typo cannot reach a vendor at all.
+
+`quackd/agent/providers/catalogue.py` is the only place a model is ever added. `web/src/catalogue.js`
+is generated from it:
+
+```bash
+python web/build_catalogue.py
+```
+
+Committing the output is part of the change. `tests/test_web.py` re-runs the generator and
+compares it against the committed file, so the two copies cannot drift the way the upstream
+pins could before `test_the_browser_pins_the_same_upstream_commits_python_does` was written.
+
+Every cloud vendor is in `catalogue.js`, including GLM, which the page cannot call. The data
+stays one to one with Python; `PROVIDERS` in `src/providers.js` is what decides the dropdown.
+
+Local is the exception and keeps its free-text box. A local server serves whatever you pulled,
+so quackd has no list to offer and does not pretend to (ADR-0014).
+
+## Which vendors this page can offer, and why GLM is not one
+
+The CLI calls a vendor from your machine. This page calls it from your browser, which means a
+vendor that refuses a cross-origin preflight cannot be offered here at all, however well it
+works under `quackd run`. So it was measured rather than assumed, on **2026-09-12**, with an
+`OPTIONS` preflight to each vendor's `/chat/completions` from both origins this page is served
+from (`http://localhost:8000` and `https://www.quackd.org`), asking for `POST` with
+`authorization` and `content-type`:
+
+| Vendor | Preflight | Verdict |
+|---|---|---|
+| Grok (`api.x.ai`) | `200`, `allow-origin: *`, `allow-headers: *` | offered |
+| Mistral (`api.mistral.ai`) | `200`, `allow-origin: *`, `allow-headers: Authorization,Content-Type,...` | offered |
+| DeepSeek (`api.deepseek.com`) | `200`, `allow-origin` echoes the origin, `allow-headers: authorization,content-type` | offered |
+| Cohere (`api.cohere.ai`) | `200`, `allow-origin: *`, `allow-headers: Authorization, Content-Type` | offered |
+| Qwen (`dashscope-intl.aliyuncs.com`) | `200`, `allow-origin` echoes the origin, `allow-headers: authorization,content-type` | offered |
+| Kimi (`api.moonshot.ai`) | `204`, `allow-origin` echoes the origin, `allow-headers: authorization,content-type` | offered |
+| Meta (`api.meta.ai`) | `200`, `allow-origin: *`, `allow-headers: *` | offered |
+| **GLM (`api.z.ai`)** | `200`, and **no `Access-Control-Allow-*` header of any kind** | **not offered** |
+
+**GLM is the one that failed.** Z.ai answers the preflight `200 OK` with `Vary: Origin` and
+nothing else: no `Access-Control-Allow-Origin`, no `Access-Control-Allow-Headers`. A browser
+reads that as a refusal and never sends the POST. The `POST` itself does carry
+`Access-Control-Allow-Origin`, which is the confusing part, but a request bearing an
+`Authorization` header and a JSON content type is always preflighted, so the browser never
+reaches it. Nothing the page can do fixes that from this side. It needs a header from Z.ai.
+
+GLM therefore stays on the CLI, where it works — `quackd run --provider glm` is unaffected —
+and stays in `catalogue.js` so the two model lists remain identical. `tests/test_web.py` fails
+if a vendor drops out of `PROVIDERS` without being named in this file, so this cannot happen
+quietly to the next vendor.
+
+This is one measurement from one machine on one day. A vendor can add the header, or remove
+it. Re-run the preflight before trusting the table.
 
 ## Two hands on the same duck
 
@@ -182,9 +251,15 @@ the restyle were watched rather than reasoned about, and somebody has held `W`.
 
 What those two sessions did not cover is most of it. Nobody has watched a full model-driven
 run, a barge-in *out of* a live run, the recording (Record, Save clip, Share), the switch
-thrown mid-run, or the page on any browser, screen or machine but the one. Two clean boots are
-not a browser test, and none of it was recorded, so the honest reading is that the page starts
-and the hand works, and everything downstream of a model answering is still only read.
+thrown mid-run, or the page on any browser, screen or machine but the one. The model dropdown
+is newer than both sessions and has never been opened in a browser: that it groups by status,
+fits the band beside the provider select at both layout tiers, and hands its place to the
+free-text box on Local are all read rather than seen. Every vendor the page offers was exercised
+under Node against a stubbed `fetch` — right base URL, right default model, right `tool_choice`
+— which is not the same as a key and a real answer. Nobody has run this page against any vendor
+but the three that were here before. Two clean boots are not a browser test, and none of it was
+recorded, so the honest reading is that the page starts and the hand works, and everything
+downstream of a model answering is still only read.
 
 `tests/test_web.py` is the floor under that. It runs in the ordinary suite, with no browser:
 every id the JavaScript looks up exists in the page, nothing it hides is pinned visible by a
@@ -229,11 +304,13 @@ Deliberately, and none of it is a bug. This list is the canonical one: `README.m
 |---|---|
 | `index.html` | the page: the fonts, the onnxruntime tag, the copy, the keycap legend |
 | `serve.py` | the mount, locally: stdlib only, serves this directory under `/simulator` the way the deploy does |
+| `build_catalogue.py` | writes `src/catalogue.js` from Python's catalogue. Stdlib only. Run it after adding a model |
 | `style.css` | hand-authored, in the quackd-web design language |
 | `assets/` | quackd's own mark: the header logo, the favicon, the touch icon |
 | `src/microduck.js` | the robot: MJCF, the 50 Hz loop, the policy, the gait floor |
 | `src/pilot.js` | quackd itself: the clock, the verbs, the contract, the loop |
-| `src/providers.js` | one tool call from Anthropic, OpenAI, Gemini or a local server |
+| `src/catalogue.js` | GENERATED. the model list, from `quackd/agent/providers/catalogue.py` |
+| `src/providers.js` | one tool call from any cloud vendor the page offers or a local server |
 | `src/view.js` | three.js built from the compiled model's own geoms |
 | `src/record.js` | canvas capture, and the post the Share button writes |
 | `src/app.js` | the page: the switch, the keyboard, the barge-in, the transcript |

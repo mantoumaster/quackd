@@ -14,6 +14,9 @@ uvx --from "quackd[openai]" quackd run find-and-kick --provider local --base-url
 
 The `openai` extra is the `openai` Python package, which is the client for all of these.
 Leave `--model` off and quackd asks the server for its model list and takes the first one.
+`--model` here is free text: any id your server serves is accepted, because the model catalogue
+`quackd list-models` prints, and that `--model` is checked against, covers the cloud vendors
+only. A local preset is never refused for naming something the catalogue has not heard of.
 
 | `--provider` | Default address | Override |
 |---|---|---|
@@ -85,7 +88,7 @@ servers reject image parts. The text observation already carries what the camera
 
 | Setting | Values | Default for local |
 |---|---|---|
-| `--model` / `QUACKD_MODEL` | any id the server serves | first entry of `/v1/models` |
+| `--model` / `QUACKD_MODEL` | any id the server serves, checked against no catalogue | first entry of `/v1/models` |
 | `--base-url` / `QUACKD_BASE_URL` | `http://host:port/v1` | the preset's address |
 | `--api-key` / `LOCAL_API_KEY` | any string | `not-needed` (servers ignore it) |
 | `QUACKD_TOOL_CHOICE` | `auto`, `required`, `none` | `auto` (`none` omits the field for servers that reject it) |
