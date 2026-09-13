@@ -1,4 +1,4 @@
-"""`quackd serve-mcp`: a robot, or a fleet of them, as MCP tools over stdio.
+"""`quackd serve-mcp`: a robot, or a flock of them, as MCP tools over stdio.
 
 This is the second wow-demo — "I asked Claude to make the duck patrol my desk" — and it
 goes through the *same* `Executor` as `.duck` runs, so allowlists, confirm gates, budgets
@@ -393,7 +393,7 @@ class RobotSession:
                 "task on one of them with robot_load_duckfile(path, robot=...) and assess "
                 "it again there."
                 if could
-                else "No robot in this fleet meets what it needs; tell the user."
+                else "No robot in this flock meets what it needs; tell the user."
             )
         else:
             payload["note"] = "verbs that move the body now run."

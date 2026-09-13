@@ -5,14 +5,15 @@ build-backend = "hatchling.build"
 [project]
 name = "quackd"
 dynamic = ["version", "readme"]
-description = "Give your small robot a brain. Any LLM, one .duck file. Microduck, Open Duck Mini, LeRobot arms, XLeRobot carts, AlohaMini, ToddlerBot and ROS bases."
+description = "One CLI for all your robots. Connect them, command them, and let them work together, each with an LLM for a brain. Microduck, Open Duck Mini, LeRobot arms, XLeRobot carts, AlohaMini, ToddlerBot and ROS bases."
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 authors = [{ name = "Rok Benko" }]
 keywords = [
   "microduck", "open-duck-mini", "lerobot", "xlerobot", "alohamini", "toddlerbot", "humanoid", "ros", "rosbridge",
-  "robotics", "embodied-ai", "physical-ai", "llm-agents",
+  # "robot-fleet" is a PyPI search term people type, and the one place the retired word stays on purpose.
+  "robotics", "embodied-ai", "physical-ai", "llm-agents", "multi-robot", "robot-fleet",
   "mcp", "model-context-protocol", "reinforcement-learning", "sim2real",
   "claude", "openai", "gemini", "grok", "mistral", "deepseek", "cohere", "qwen", "kimi", "glm",
   "ollama", "vllm", "llama-cpp", "local-llm",
