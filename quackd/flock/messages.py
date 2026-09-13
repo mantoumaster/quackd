@@ -10,7 +10,7 @@ world, not with wall-clock noise.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -84,6 +84,14 @@ class BidMsg(_Base):
     provides: list[str] = Field(
         default_factory=list,
         description="The capability term: the bidder's canonical verb names from its manifest.",
+    )
+    datasheet: dict[str, Any] | None = Field(
+        default=None,
+        description="v2: the bidder's datasheet, so a coordinator can check a role's physical "
+        "needs against what the robot says about itself rather than taking its word for it.",
+    )
+    mobility: str | None = Field(
+        default=None, description="v2: the bidder's manifest mobility, for a role that needs one."
     )
 
 

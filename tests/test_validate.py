@@ -116,3 +116,51 @@ def test_a_task_file_cannot_give_an_armless_body_a_payload() -> None:
 def test_a_correction_a_body_can_carry_is_no_problem() -> None:
     duck = parse_duck_text(PAYLOAD_DUCK)
     assert validate_duck(duck, [DUCK]) == []  # a beak is a manipulator, so a payload is sayable
+
+
+CARRY_FLOCK = """---
+duck: 2
+name: two-body-kick
+description: One spots, the one that can carry kicks.
+verbs:
+  allow: [observe, gaze, go_to, kick, stop]
+success: [The ball moved.]
+flock:
+  members: [eye, arm]
+  roles:
+    spotter: {requires: [observe, gaze]}
+    kicker:
+      requires: [go_to, kick]
+      needs: {payload_kg: 1.0}
+---
+# Task
+Do it.
+"""
+
+
+def test_a_role_nobody_can_carry_for_is_refused_before_the_run_starts() -> None:
+    duck = parse_duck_text(CARRY_FLOCK)
+    problems = validate_duck(duck, [HEAD, DUCK])
+    needs = [p for p in problems if p.field == "flock.roles.kicker.needs"]
+    assert len(needs) == 1
+    assert "no robot meets its needs" in needs[0].message
+    assert "payload_kg >= 1 (not published)" in needs[0].message
+    assert "duck-01" in needs[0].message
+
+
+def test_a_role_one_robot_can_carry_for_is_fine() -> None:
+    from quackd.adapters.manifest import Datasheet, Figure
+
+    assert DUCK.datasheet is not None
+    strong = DUCK.model_copy(
+        update={
+            "id": "cart-01",
+            "datasheet": Datasheet(
+                manipulator="gripper",
+                arms=2,
+                payload_kg=Figure(value=1.0, confidence="official", source="the docs"),
+            ),
+        }
+    )
+    duck = parse_duck_text(CARRY_FLOCK)
+    assert [p.field for p in validate_duck(duck, [HEAD, strong])] == []

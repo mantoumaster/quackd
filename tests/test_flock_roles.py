@@ -7,9 +7,10 @@ from types import SimpleNamespace as NS
 
 from pydantic import TypeAdapter
 
+from quackd.adapters.manifest import Datasheet, Figure, RobotManifest, VerbSpec
 from quackd.duckfile.schema import FlockRole
 from quackd.flock.auction import AuctionPolicy, RoleAuction
-from quackd.flock.capability import eligible_roles, missing
+from quackd.flock.capability import eligible_roles, missing, missing_needs, missing_needs_in
 from quackd.flock.messages import (
     BidMsg,
     FlockMessage,
@@ -19,6 +20,7 @@ from quackd.flock.messages import (
     RoleMsg,
     VerdictMsg,
 )
+from quackd.verdict import NEEDS_NUMBERS, NEEDS_WORDS
 
 ROLES = {
     "spotter": FlockRole(requires=["observe", "gaze"]),
@@ -153,3 +155,90 @@ def test_new_messages_round_trip_and_old_ones_keep_their_defaults() -> None:
         }
     )
     assert isinstance(role, RoleMsg) and role.seq == 0 and role.flock_role is None
+
+
+# ── v2: a role that asks for a body, not only a vocabulary ──────────────────────────────
+
+CARRY = {
+    "spotter": FlockRole(requires=["observe", "gaze"]),
+    "kicker": FlockRole(requires=["go_to", "kick"], needs={"payload_kg": 1.0}),
+}
+
+
+def _sheet(**over: object) -> Datasheet:
+    base: dict[str, object] = {"manipulator": "gripper", "arms": 1}
+    base.update(over)
+    return Datasheet(**base)  # type: ignore[arg-type]
+
+
+def _robot(sheet: Datasheet | None, mobility: str = "legged") -> RobotManifest:
+    return RobotManifest(
+        id="bot-01",
+        vendor="acme",
+        model="bot",
+        embodiment="biped",
+        mobility=mobility,  # type: ignore[arg-type]
+        intents=["twist"],
+        verbs=[VerbSpec(name="move", core=True)],
+        datasheet=sheet,
+    )
+
+
+def test_the_needs_vocabulary_is_the_datasheets_own() -> None:
+    """A role and a pilot's refusal use the same words, so they cannot mean different things."""
+    for key in NEEDS_NUMBERS:
+        assert key in Datasheet.model_fields or key == "work_height_m", key
+    assert set(NEEDS_WORDS) == {"manipulator", "mobility", "terrain"}
+
+
+def test_a_role_can_ask_for_a_body_and_an_unknown_figure_is_not_a_yes() -> None:
+    strong = _robot(_sheet(payload_kg=Figure(value=1.0, confidence="official", source="the docs")))
+    light = _robot(_sheet(payload_kg=Figure(value=0.5, confidence="official", source="the docs")))
+    silent = _robot(_sheet())
+
+    assert eligible_roles(CARRY, DUCK, strong) == ["kicker", "spotter"]
+    assert eligible_roles(CARRY, DUCK, light) == ["spotter"]
+    assert eligible_roles(CARRY, DUCK, silent) == ["spotter"], "unknown is not a yes"
+    # and with nobody to ask about the body at all
+    assert eligible_roles(CARRY, DUCK) == ["spotter"]
+    # a v1 role is unaffected, manifest or no manifest
+    assert eligible_roles(ROLES, DUCK) == ["kicker", "spotter"]
+
+    assert missing_needs({"payload_kg": 1.0}, light) == ["payload_kg >= 1 (has 0.5)"]
+    assert missing_needs({"payload_kg": 1.0}, silent) == ["payload_kg >= 1 (not published)"]
+    assert missing_needs({"payload_kg": 1.0}, strong) == []
+
+
+def test_a_bid_carries_the_facts_a_coordinator_judges_it_by() -> None:
+    adapter: TypeAdapter[FlockMessage] = TypeAdapter(FlockMessage)
+    sheet = _sheet(payload_kg=Figure(value=1.0, confidence="official", source="the docs"))
+    bid = BidMsg(
+        t=1.0,
+        src="cart",
+        task_id="t",
+        ball_dist_m=0.9,
+        role="kicker",
+        provides=DUCK,
+        datasheet=sheet.model_dump(mode="json"),
+        mobility="wheeled",
+    )
+    again = adapter.validate_python(bid.model_dump())
+    assert again == bid
+    assert isinstance(again, BidMsg) and again.datasheet is not None
+    assert again.datasheet["payload_kg"]["value"] == 1.0
+    legacy = adapter.validate_python(
+        {"kind": "BID", "t": 0.0, "src": "duck-1", "task_id": "t", "ball_dist_m": 0.6}
+    )
+    assert isinstance(legacy, BidMsg) and legacy.datasheet is None and legacy.mobility is None
+
+
+def test_missing_needs_reads_a_bids_own_words() -> None:
+    """The coordinator never sees the bidder's manifest, only what the bid carried."""
+    sheet = _sheet(payload_kg=Figure(value=0.5, confidence="official", source="the docs"))
+    facts = sheet.model_dump()
+    assert missing_needs_in({"payload_kg": 1.0}, facts, "wheeled") == ["payload_kg >= 1 (has 0.5)"]
+    assert missing_needs_in({"payload_kg": 0.5}, facts, "wheeled") == []
+    assert missing_needs_in({"payload_kg": 1.0}, {}, None) == ["payload_kg >= 1 (not published)"]
+    assert missing_needs_in({"mobility": "wheeled"}, facts, "legged") == [
+        "mobility = wheeled (has legged)"
+    ]

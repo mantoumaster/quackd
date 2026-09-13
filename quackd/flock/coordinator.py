@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from quackd.flock.auction import Auction, AuctionPolicy, RoleAuction
 from quackd.flock.bus import Bus
-from quackd.flock.capability import missing
+from quackd.flock.capability import missing, missing_needs_in
 from quackd.flock.member import FlockMember
 from quackd.flock.messages import (
     BidMsg,
@@ -207,7 +207,13 @@ class FlockCoordinator:
             self.transcript.write("bid_rejected", src=msg.src, role=msg.role, why="unknown role")
             self._event("bid_rejected", src=msg.src, role=msg.role, why="unknown role")
             return
-        lacking = missing(self.roles[msg.role].requires, msg.provides)
+        role = self.roles[msg.role]
+        lacking = missing(role.requires, msg.provides)
+        if not lacking and role.needs:
+            # the physical half of the same question, judged from what the bid itself carries
+            # so a robot we do not run is held to the same standard. A bid with no datasheet
+            # is a body that said nothing, and a body that said nothing does not qualify.
+            lacking = missing_needs_in(role.needs, msg.datasheet or {}, msg.mobility)
         if lacking:
             # defence in depth: the member already checked; a LAN peer might not have
             self.transcript.write("bid_rejected", src=msg.src, role=msg.role, missing=lacking)

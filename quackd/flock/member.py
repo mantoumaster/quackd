@@ -422,7 +422,9 @@ class FlockMember:
             )
             self._publish(self._bid)
             return
-        for role_name in eligible_roles(self.task.roles, self.provides):
+        manifest = self.executor.manifest
+        sheet = manifest.datasheet if manifest is not None else None
+        for role_name in eligible_roles(self.task.roles, self.provides, manifest):
             self._bid = BidMsg(
                 t=self.transport.now(),
                 src=self.name,
@@ -431,6 +433,10 @@ class FlockMember:
                 bearing_deg=bearing_f,
                 role=role_name,
                 provides=self.provides,
+                # what it says about its own body travels with the bid, so a coordinator
+                # judges a role's physical needs itself rather than taking the bidder's word
+                datasheet=sheet.model_dump(mode="json") if sheet is not None else None,
+                mobility=manifest.mobility if manifest is not None else None,
             )
             self._publish(self._bid)
         if self.task.frame_hints and dist is not None:

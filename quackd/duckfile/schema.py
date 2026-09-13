@@ -8,6 +8,7 @@ for the LLM and is deliberately not modelled beyond "it is a string".
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -19,6 +20,7 @@ from quackd.adapters.manifest import (
     datasheet_sentences,
 )
 from quackd.verbs.aliases import canonical
+from quackd.verdict import check_needs
 
 DUCK_SPEC_VERSION = 2
 
@@ -238,12 +240,23 @@ class FlockSearch(BaseModel):
 
 
 class FlockRole(BaseModel):
-    """A role in a heterogeneous flock (v1): who may take it is decided by capability."""
+    """A role in a heterogeneous flock (v1): who may take it is decided by capability.
+
+    v2 adds a second half to that: a role may also state what the body has to be able to do
+    physically, in the datasheet's own words. A robot whose datasheet does not say is not
+    offered the role, because a robot that cannot say what it carries is not the one to ask
+    to carry something."""
 
     model_config = ConfigDict(extra="forbid")
 
     requires: list[str] = Field(
         default=..., min_length=1, description="Verbs a robot must provide to bid for this role."
+    )
+    needs: dict[str, float | str] = Field(
+        default_factory=dict,
+        description="v2: what the body must be, in the datasheet vocabulary (payload_kg, "
+        "reach_m, manipulator, mobility, ...). Numbers are minimums; a figure nobody "
+        "published counts as not met.",
     )
     count: Literal[1] = Field(default=1, description="Robots per role. Only 1 so far.")
 
@@ -251,6 +264,11 @@ class FlockRole(BaseModel):
     @classmethod
     def _names(cls, names: list[str]) -> list[str]:
         return _verb_list(names)
+
+    @field_validator("needs", mode="before")
+    @classmethod
+    def _needs(cls, value: Any) -> Any:
+        return check_needs(value) if isinstance(value, Mapping) else value
 
 
 class FlockSection(BaseModel):
@@ -397,6 +415,10 @@ class DuckFrontmatter(BaseModel):
     def _version_and_cross_field_rules(self) -> DuckFrontmatter:
         if self.duck < 2 and self.datasheet is not None:
             raise ValueError("datasheet needs duck: 2")
+        if self.duck < 2 and self.flock is not None and self.flock.roles is not None:
+            for role, spec in self.flock.roles.items():
+                if spec.needs:
+                    raise ValueError(f"flock.roles.{role}.needs needs duck: 2")
         if self.datasheet is not None and self.flock is not None:
             raise ValueError("datasheet describes one body; a flock duck cannot carry one")
         if self.duck == 0:

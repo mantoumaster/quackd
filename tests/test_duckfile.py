@@ -266,3 +266,47 @@ def test_invalid_v2_ducks_fail_fast(mutation, needle: str) -> None:
     with pytest.raises(DuckParseError) as exc:
         parse_duck_text(mutation(V2), path="x.duck")
     assert needle.lower() in str(exc.value).lower()
+
+
+V2_FLOCK = """---
+duck: 2
+name: two-body-kick
+description: One spots, the one that can carry kicks.
+verbs:
+  allow: [observe, gaze, go_to, kick, stop]
+success: [The ball moved.]
+flock:
+  members: [eye, arm]
+  roles:
+    spotter: {requires: [observe, gaze]}
+    kicker:
+      requires: [go_to, kick]
+      needs: {payload_kg: 1.0, manipulator: gripper}
+---
+# Task
+Do it.
+"""
+
+
+def test_a_v2_role_can_ask_for_a_body_not_only_a_vocabulary() -> None:
+    fm = parse_duck_text(V2_FLOCK).frontmatter
+    roles = (fm.flock.roles or {}) if fm.flock else {}
+    assert roles["kicker"].needs == {"payload_kg": 1.0, "manipulator": "gripper"}
+    assert roles["spotter"].needs == {}, "a role that asks for nothing is still a role"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "needle"),
+    [
+        (lambda s: s.replace("duck: 2", "duck: 1"), "flock.roles.kicker.needs needs duck: 2"),
+        (lambda s: s.replace("payload_kg: 1.0", "oomph: 1.0"), "datasheet vocabulary"),
+        (lambda s: s.replace("payload_kg: 1.0", "payload_kg: -1"), "0 or more"),
+        (lambda s: s.replace("payload_kg: 1.0", "payload_kg: heavy"), "must be a number"),
+        (lambda s: s.replace("manipulator: gripper", "manipulator: claw"), "must be one of"),
+        (lambda s: s.replace("payload_kg: 1.0", "mobility: flying"), "must be one of"),
+    ],
+)
+def test_invalid_v2_role_needs_fail_fast(mutation, needle: str) -> None:
+    with pytest.raises(DuckParseError) as exc:
+        parse_duck_text(mutation(V2_FLOCK), path="x.duck")
+    assert needle.lower() in str(exc.value).lower()

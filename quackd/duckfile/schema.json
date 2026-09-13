@@ -282,7 +282,7 @@
     },
     "FlockRole": {
       "additionalProperties": false,
-      "description": "A role in a heterogeneous flock (v1): who may take it is decided by capability.",
+      "description": "A role in a heterogeneous flock (v1): who may take it is decided by capability.\n\nv2 adds a second half to that: a role may also state what the body has to be able to do\nphysically, in the datasheet's own words. A robot whose datasheet does not say is not\noffered the role, because a robot that cannot say what it carries is not the one to ask\nto carry something.",
       "properties": {
         "requires": {
           "description": "Verbs a robot must provide to bid for this role.",
@@ -292,6 +292,21 @@
           "minItems": 1,
           "title": "Requires",
           "type": "array"
+        },
+        "needs": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "description": "v2: what the body must be, in the datasheet vocabulary (payload_kg, reach_m, manipulator, mobility, ...). Numbers are minimums; a figure nobody published counts as not met.",
+          "title": "Needs",
+          "type": "object"
         },
         "count": {
           "const": 1,
