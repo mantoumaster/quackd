@@ -106,9 +106,11 @@ not before.
 - ⏸ **Exercise `remember` against a cloud model.** The scripted pilot has no script for it, so
   `--provider fake` writes episodes and never a note.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
-  for it. The card itself now predates the positioning: it is one cartoon duck, and quackd is a
-  CLI for a flock of robots ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)), so it is
-  worth regenerating before it is uploaded.
+  for it, so it is the one asset a commit here cannot ship. The card itself is current: it
+  carries the one-liner ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)) and its two
+  panels are a real three-robot `sim2d` arena. Regenerate it with
+  [`docs/assets/social_preview.py`](docs/assets/social_preview.py), which exists because the
+  original was drawn by hand and the script was never committed, so nobody could.
 - ⏸ **No asset shows a flock of pilots.** `flock.gif` is the coordinator: three identical ducks
   auctioning a kick. The kind of flock the README now leads with is two different bodies talking,
   and it has no recording, because a pilot flock writes no GIF (N members are N worlds).
