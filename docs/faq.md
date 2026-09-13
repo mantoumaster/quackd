@@ -198,6 +198,15 @@ outcomes and never a note. [memory.md](memory.md), [ADR-0025](adr/0025-memory-be
 honest state of the art. In either simulator the run summary also records ground truth
 (`ball_displacement_m`) and the tests check the claim against it.
 
+**What if the robot cannot do what I asked?** It says so before it moves. Every robot carries
+a datasheet of what it weighs, can carry and can reach, and the pilot has to judge the task
+against it (`assess_task`) before any verb that moves the body will run. A task that clearly
+exceeds a limit ends the run as `infeasible` rather than `failure`: nothing moved, `quackd run`
+exits 3, and the reason names which other shipped body could do it. If the verdict turns on
+something the pilot cannot judge from where it is, it answers `uncertain` and you are asked.
+An infeasible run is remembered like any other, so the next run on that robot is told what was
+already found not to fit it ([memory.md](memory.md), [safety.md](safety.md)).
+
 **Why can't the duck say words?** Upstream has seven duck sounds and no TTS. `quack(text)`
 maps your text to the closest tone (`greet`, `inquire`, `alarm`, `wheee`, …) and logs the
 text.

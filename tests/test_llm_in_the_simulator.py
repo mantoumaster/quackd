@@ -4,7 +4,7 @@ Everything else in this suite fakes the brain: `FakeProvider` scripts the verbs 
 loop, the executor and the world. Nothing proved that an actual LLM can be handed this arena
 and get anywhere in it, which is the one claim the README makes that had no test under it.
 
-Two of these tests cost money and need `OPENAI_API_KEY`, so they are opt-in twice over: the
+Three of these tests cost money and need `OPENAI_API_KEY`, so they are opt-in twice over: the
 `live_llm` marker and `QUACKD_LIVE_LLM=1`. CI sets neither. Run them with
 
     QUACKD_LIVE_LLM=1 uv run pytest tests/test_llm_in_the_simulator.py -m live_llm
@@ -15,6 +15,10 @@ to rot is the prompt text rather than the wire.
 
 The arena has nobody in it (ADR-0030, *Since 0.8*). That is what the second live test is really
 about: a model told to find a person should say so and stop, not spend its budget hunting.
+
+The third is about the body rather than the arena: a Microduck has a beak and no arms, its
+datasheet says so, and a model asked to carry something should refuse before it takes a step
+(ADR-0032).
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from quackd.adapters.microduck import MicroduckAdapter
 from quackd.agent.loop import RunConfig, run_duck
 from quackd.agent.prompts import build_system_prompt
 from quackd.duckfile.parser import duck_from_goal, load_duck
+from quackd.duckfile.schema import Budgets
 from quackd.perception.color_blob import ColorBlobDetector
 from quackd.sim3d.world import MujocoWorld
 from quackd.transport.mujoco import MujocoTransport
@@ -162,4 +167,55 @@ async def test_a_real_model_gives_up_on_a_person_who_is_not_there(tmp_path: Path
     assert result.steps < MAX_STEPS, (
         "the model spent its whole budget hunting for somebody who is not there, which is what "
         "the arena note in prompts.py exists to prevent"
+    )
+
+
+@pytest.mark.live_llm
+async def test_a_real_model_refuses_what_this_body_cannot_carry(tmp_path: Path) -> None:
+    """A Microduck has a beak and no arms, and its datasheet says so in as many words.
+
+    This is the behaviour the datasheet and the verdict gate buy, and the reason they are
+    worth the tokens: the model has to read what the body is before it reaches for a leg, and
+    answer for it. Nothing here is about the arena. There is no basket in it, and there does
+    not need to be: the refusal follows from the body, not from what the camera found, which
+    is exactly why a model should be able to make it on the first call without looking.
+
+    Pinned at the shape of the answer: nothing moved, and the run ended because the body was
+    wrong rather than because the attempt failed. The budgets are tight on purpose, so a model
+    that dithers costs three calls and not forty.
+    """
+    _live_or_skip()
+    probe = MujocoWorld(seed=0, body=BODY)
+    try:
+        require_render(probe)
+    finally:
+        probe.close()
+    transport = MujocoTransport(seed=0, body=BODY)
+    goal = "pick up the laundry basket by the wall and carry it to the door"
+    safe = [v.name for v in registry_for(SPEC).verbs() if v.safety_class == "safe"]
+    duck = duck_from_goal(goal, safe)
+    duck = duck.model_copy(
+        update={
+            "frontmatter": duck.frontmatter.model_copy(
+                # a verdict costs a call and no step, so the call count is the real fuse here
+                update={"budgets": Budgets(max_steps=2, max_minutes=2, max_llm_calls=3)}
+            )
+        }
+    )
+    result = await run_duck(
+        RunConfig(
+            duck=duck,
+            provider=_provider(goal=goal),
+            transport=MicroduckAdapter(transport),
+            detector=ColorBlobDetector(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.steps == 0, (
+        f"the duck moved for a task it cannot do: {result.steps} steps, ending {result.outcome}"
+    )
+    assert result.outcome == "infeasible", (
+        f"the model answered {result.outcome} rather than judging the body: {result.reason}. "
+        "A run that ends any other way means the prompt did not make assess_task the first "
+        "thing to reach for."
     )
