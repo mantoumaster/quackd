@@ -16,7 +16,8 @@ velocities, detects falls, and zeroes motion when commands stall. On an Open Duc
 deadman is quackd's own daemon, running on the robot and zeroing the velocity inside the
 50 Hz loop, so it is code we ship and therefore code we are answerable for. On the other
 five bodies upstream has no deadman that covers the whole body. A rosbridge base
-declares `native: none`, and a LeRobot arm has a torque limit but holds its last goal.
+declares `native: none`, and a LeRobot arm has a torque limit on its gripper alone and holds
+its last goal.
 An XLeRobot's host watchdog zeroes its wheels and leaves the arms holding, and an
 AlohaMini's covers the base and the lift and never the arms, so both are partial by
 construction. A ToddlerBot has no watchdog, timeout or e-stop anywhere upstream at all, and

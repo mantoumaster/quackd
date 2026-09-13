@@ -62,9 +62,10 @@ a gripper is a pinch hazard at any torque. Read
    the travel you swept during calibration, that torque is on, and what the servos say their
    temperature is with the arm cold. That last number is the baseline for every later step.
 
-   **Support the arm before this command finishes.** LeRobot's `disconnect()` disables
-   torque by default, so the arm goes limp at the end of every clean session, a `doctor`
-   probe included. An arm folded somewhere awkward will fall when the probe returns.
+   **Support the arm before this command finishes, and while it starts.** `configure()` runs
+   with torque off, so connecting drops it for a moment, and LeRobot's `disconnect()` disables
+   it again by default at the end of every clean session, a `doctor` probe included. An arm
+   folded somewhere awkward will fall at either end.
 7. **`lerobot-lookout`.** It moves no joint.
 
    ```bash

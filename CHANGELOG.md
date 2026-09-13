@@ -12,15 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A bring-up checklist and a lookout task for the LeRobot arm, which were the last two
   missing.** Every other experimental backend had both; the arm had neither, and this file
   has said so since 0.7. [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)
-  is the order to try an SO-101 in, and nothing moves until step 8: before that it is the
-  supply that matches your build, an inline switch on it because there is no e-stop on this
-  arm, upstream's own interactive calibration under the id quackd will use, `quackd doctor`
-  with a hand on the arm because a clean disconnect drops torque, and `lerobot-lookout`.
-  After it, one joint at a time, then the cable pulled mid-move, then Ctrl-C mid-move, and
-  only then the gripper and a policy. `ducks/lerobot-lookout.duck` is the task to point at a
-  real arm first: it moves no joint, and it asks for `report_state` rather than `observe`,
-  because the real backend configures no camera and a bring-up task that refuses before it
-  runs is no use to anybody ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
+  is the order to try an SO-101 in, with nothing moving until step 8 and a hand on the power
+  switch from there, because this arm has no e-stop. `ducks/lerobot-lookout.duck` is the task
+  to point at a real arm first: it moves no joint, and it asks for `report_state` rather than
+  `observe`, because the real backend configures no camera
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
 
 - **A flock can be N pilots talking, not only a coordinator refereeing: `quackd run <duck> --flock <name>`.**
   The 0.3 flock is one deterministic referee and N state machines in one simulated arena on a
@@ -217,35 +213,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The LeRobot arm adapter stops taking the arm's word for four things it never said.**
-  Re-reading upstream at the same pinned commit turned up less of a guarantee than the
-  adapter had been assuming, and each gap is now closed in code rather than in a caveat.
-  `is_connected` is the serial port's own open flag, so an unplugged arm stayed `True` until
-  something happened to fail: the heartbeat is now a real round trip to the motors every
-  500 ms. `get_observation()` reads `Present_Position` and nothing else, so the old state
-  hardcoded `torque: True` and a servo that had tripped its own overload protection looked
-  healthy: torque and per-joint temperature now come off the bus by register, `extras.torque`
-  is measured, and a joint at or above 60 °C refuses the verbs that move the five joints
-  LeRobot writes no torque cap for, which is all of them except the gripper. The `DEGREES`
-  branch of LeRobot's un-normalise does not clamp, though the two 0..100 modes do, so a goal
-  past the calibrated travel went to the servo as-is: each joint's range is now computed from
-  the arm's own calibration file at connect, and a goal outside it is refused with the range
-  in the reason. And `max_relative_target` is `None` upstream, so one action could slew a
-  joint across its whole travel: quackd sets it, to 5 degrees an action re-sent at 10 Hz, or
-  whatever `QUACKD_LEROBOT_MAX_STEP_DEG` says.
-  That cap is also why `move_joints` and `gripper` became loops. An action moves a joint at
-  most one step, so a goal takes as many actions as it takes, and since nothing upstream
-  reports arrival, each tick compares the goal with the measurement: an arm that stalls
-  against an obstacle now fails with where it stopped instead of reporting the move it was
-  asked for and sleeping through it. `holding` is inferred the same way, from the gripper
-  settling short of shut rather than from what was commanded, which is still an inference and
-  is listed as one. `stop` holds the five body joints and deliberately leaves the gripper's
-  goal alone, so the stop that ends every failed verb never opens a hand that is holding
-  something. A call that blows its deadline now wedges the transport rather than releasing
-  the lock and putting a second thread on a half-duplex bus. A policy that raises is a failed
-  `pick` that says what it raised. And the datasheet stops claiming a mass: vendor listings
-  put this arm anywhere from 0.8 to 2.5 kg and nobody official publishes one, so it is listed
-  as not published, which is what the rule always said to do
-  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
+  Re-reading upstream at the pinned commit found that `is_connected` is only the serial
+  port's open flag, that `get_observation()` reads positions and nothing else, that a degrees
+  goal past the calibrated travel is written unclamped, and that one action may slew a joint
+  its whole travel. So the heartbeat now reads the arm; torque and each servo's temperature
+  are read off the bus by register; every joint's range comes from the arm's own calibration
+  file and a goal outside it is refused; and one action moves a joint at most a capped step,
+  set by `QUACKD_LEROBOT_MAX_STEP_DEG`. What a pilot notices: `move_joints` and `gripper`
+  re-send the goal and watch the measurement, so they can now fail with where the arm stopped
+  and `duration_s` is a budget rather than a wait; a new `not_hot` precondition refuses
+  `move_joints` and `pick` when a joint reads 60 °C or more; `report_state` carries `torque`
+  as measured, `temperature_c`, `hot`, `joint_range_deg`, `calibration_file`, `step_deg` and
+  `torque_limit_scope`; `holding` is inferred from the gripper settling short of shut; `stop`
+  holds the five body joints and leaves the gripper's goal alone, so a failed verb never drops
+  what is held; and the datasheet no longer claims a mass, because vendor listings disagree by
+  a factor of three. Why each of these is the way it is:
+  [ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md).
 
 - **The one-liner changed, and every place that carried the old one followed.**
   It was *Give your Microduck a brain. Any LLM, one `.duck` file.* It is now *One CLI for all your
