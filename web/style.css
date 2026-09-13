@@ -1491,8 +1491,8 @@ details[open] summary { margin-bottom: var(--s-2); }
 
 /* THE VALVE — a real laptop: 1366×768 minus Windows Chrome's chrome is 641px, 1280×720 is
    593px, and a bookmarks bar takes another 40. The eyebrow goes here, and the 26px it costs
-   go straight into the arena: the nav already carries the wordmark, "a Microduck with a
-   brain" and a status pill that says "MuJoCo · WASM · your key stays in this tab", which is
+   go straight into the arena: the nav already carries the wordmark, "a Microduck with an LLM
+   for a brain" and a status pill that says "MuJoCo · WASM · your key stays in this tab", which is
    very nearly what the eyebrow says. The page is not left mute — it stops saying the same
    thing twice at the one height where the duck is fighting for pixels.
    Opening at 46rem (736px) rather than the 40rem this used to use is deliberate: 641px is

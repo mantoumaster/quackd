@@ -128,9 +128,10 @@ is read by the next `quackd run` on the same `adapter:backend`, and the other wa
 - **Not retrieval.** There is no embedding, no search: the newest entries win, and the cap
   keeps the prompt small. If you need a map of your house, write it as a few notes.
 - **Not shared between bodies.** By design, where a body means an `adapter:backend`. Use
-  `quackd memory add` on the other robot if a fact really transfers. In a
-  [flock](flock.md) of pilots each member still keeps its own file, and what one needs
-  another to know during a run it says with `tell` rather than through memory.
+  `quackd memory add` on the other robot if a fact really transfers. The same rule decides a
+  [flock](flock.md): members key by body, so two of one kind share a file unless they are
+  registered, and what one needs another to know *during* a run it says with `tell` rather
+  than through memory, which the other pilot would not read until its next run anyway.
 - **Not written by the scripted pilot.** `--provider fake` has no `remember` in its script,
   so it accumulates episodes and never a note. Notes have been exercised by one local model
   on one machine and by no cloud model at all.

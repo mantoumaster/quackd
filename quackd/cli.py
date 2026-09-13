@@ -89,7 +89,7 @@ def _main(
         "the colour when the output is a pipe.",
     ),
 ) -> None:
-    """quackd — pilot a small robot (real or simulated) with any LLM."""
+    """quackd — one CLI for all your robots, real or simulated, piloted by any LLM."""
     # `.env` first, so a NO_COLOR line in it counts, and then the consoles: Rich reads the
     # environment and the stream's encoding when a console is built, and quackd's are built
     # at import, which is before any of this was known.
