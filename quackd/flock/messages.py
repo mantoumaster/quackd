@@ -2,7 +2,9 @@
 
 Six message kinds mirror the research report's wire sketches (TASK, BID, CLAIM, ROLE, HB,
 RESULT); 0.4 adds HINT (an arena-frame target estimate) and VERDICT (the spotter's own
-judgement of a kick) for heterogeneous flocks, and a capability term on BID (ADR-0020).
+judgement of a kick) for heterogeneous flocks, and a capability term on BID (ADR-0020); 0.9
+adds TALK, which is one LLM pilot saying something to another and is the only kind a pilot
+flock sends at all (ADR-0034).
 Every addition has a default, so a 0.3 flock's messages read exactly as before.
 Timestamps are sim time from the shared clock, so a transcript replay lines up with the
 world, not with wall-clock noise.
@@ -174,7 +176,27 @@ class ResultMsg(_Base):
     ball_moved_m: float | None = None
 
 
+TALK_MAX_CHARS = 400
+"""What one pilot may say to another in one message. A pilot flock pays for every word twice,
+once in the sender's output and once in every receiver's next observation, and a sentence that
+does not fit here was going to be a paragraph nobody read."""
+
+
+class TalkMsg(_Base):
+    """One pilot to another, or to everyone. The only kind a pilot flock publishes.
+
+    An auction never sends one: its members are state machines and have nothing to say. The
+    runner itself sends one under `src="flock"` when a member's loop ends, so the survivors
+    hear it in their next observation rather than waiting for someone who has stopped."""
+
+    kind: Literal["TALK"] = "TALK"
+    to: str | None = Field(
+        default=None, description="A member name, or None for everyone but the sender."
+    )
+    text: str = Field(..., min_length=1, max_length=TALK_MAX_CHARS)
+
+
 FlockMessage = Annotated[
-    TaskMsg | BidMsg | ClaimMsg | RoleMsg | HbMsg | ResultMsg | HintMsg | VerdictMsg,
+    TaskMsg | BidMsg | ClaimMsg | RoleMsg | HbMsg | ResultMsg | HintMsg | VerdictMsg | TalkMsg,
     Field(discriminator="kind"),
 ]

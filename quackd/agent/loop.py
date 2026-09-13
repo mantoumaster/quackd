@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from PIL import Image
 from pydantic import ValidationError
@@ -26,6 +26,8 @@ from quackd.agent.prompts import (
     META_TOOLS,
     REMEMBER,
     REMEMBER_NAME,
+    TELL,
+    TELL_NAME,
     build_observation_text,
     build_system_prompt,
     observation_features,
@@ -71,6 +73,26 @@ Outcome = Literal["success", "failure", "infeasible", "budget", "aborted", "erro
 REPROMPT = "You must call exactly one tool. Choose now."
 
 
+@runtime_checkable
+class FlockLinkLike(Protocol):
+    """One pilot's end of a flock bus (`quackd.flock.talk.FlockLink`).
+
+    Structural on purpose: `quackd.agent` must not import `quackd.flock`, because the flock
+    imports the loop. The loop knows a link can be talked through and nothing else about
+    flocks."""
+
+    name: str
+    abort_reason: str | None
+
+    def send(self, to: str | None, text: str) -> Any: ...
+
+    def drain(self) -> list[dict[str, Any]]: ...
+
+    def prompt_section(self) -> str: ...
+
+    def describe(self) -> dict[str, Any]: ...
+
+
 @dataclass
 class RunConfig:
     duck: DuckFile
@@ -107,6 +129,13 @@ class RunConfig:
     trace: Sink | None = None
     """Where to show the run as it happens (the CLI passes a `ConsoleTrace`). The transcript
     gets every event whether this is set or not; this is a second reader of the same stream."""
+    link: FlockLinkLike | None = None
+    """This pilot's end of a flock bus. None is a solo run: no `tell` tool, no flock section
+    in the prompt, and no inbox in any observation."""
+    summary_file: bool = True
+    """Whether to write `summary.json` beside the transcript. False for a flock member, whose
+    rollup belongs in the flock's own summary and whose directory must not read as a solo run
+    (`quackd/flock/transcript.py`)."""
 
 
 @dataclass
@@ -198,6 +227,10 @@ class AgentLoop:
             if self.cfg.detector is not None:
                 detections = self.cfg.detector.detect(img)
             self._on_frame(img, f"step {self.budget.steps}: {last_verb or 'start'}")
+        # drained here and nowhere else, so each message is shown exactly once: a re-prompt
+        # reuses these features rather than observing again
+        link = self.cfg.link
+        inbox = link.drain() if link is not None else None
         text = build_observation_text(
             step=self.budget.steps,
             max_steps=self.fm.budgets.max_steps,
@@ -206,6 +239,8 @@ class AgentLoop:
             last_verb=last_verb,
             last_result=last_result,
             budget_status=self.budget.status(),
+            inbox=inbox,
+            inbox_for=link.name if link is not None else None,
         )
         features = observation_features(
             state=state,
@@ -213,6 +248,8 @@ class AgentLoop:
             last_verb=last_verb,
             last_result=last_result,
             allowed=self.executor.allowed,
+            inbox=inbox,
+            flock=link.describe() if link is not None else None,
         )
         image = png_bytes(img) if (img is not None and self.cfg.provider.supports_vision) else None
         return Observation(text=text, image_png=image, features=features), img
@@ -285,6 +322,24 @@ class AgentLoop:
         return VerbResult.success(
             f"remembered for future runs: {entry.text}", notes=len(memory.notes())
         )
+
+    def _tell(self, arguments: dict[str, Any]) -> VerbResult:
+        """One sentence to another pilot. Not a verb: nothing is sent to any robot.
+
+        It works under `--dry-run`, unlike `remember`. A dry run sends no intent and leaves
+        nothing behind, and a message to a peer in the same dry run is neither: the peer is
+        equally pretending, and a flock that could not talk would not be a dry run of a flock
+        at all."""
+        link = self.cfg.link
+        if link is None:
+            return VerbResult.fail("you are not in a flock; there is nobody to tell")
+        to = str(arguments.get("to") or "").strip()
+        text = str(arguments.get("text") or "")
+        try:
+            link.send(to, text)
+        except ValueError as e:
+            return VerbResult.fail(str(e))
+        return VerbResult.success(f"told {to or 'all'}: {' '.join(text.split())}")
 
     def _history_for_provider(self) -> list[Exchange]:
         """Older images are dropped to keep context small; the last N keep theirs."""
@@ -385,6 +440,8 @@ class AgentLoop:
             if cfg.acknowledge is not None and not cfg.acknowledge(warning):
                 raise Aborted("nobody confirmed they were watching a robot that cannot see a fall")
         tools = registry.tool_schemas(allow) + META_TOOLS
+        if cfg.link is not None:
+            tools = [*tools, TELL]
         memory_text: str | None = None
         if cfg.memory is not None:
             tools = [*tools, REMEMBER]
@@ -396,6 +453,7 @@ class AgentLoop:
             manifest=manifest,
             memory_text=memory_text,
             assumptions=first_state.extras.get("assumptions") or None,
+            flock_text=cfg.link.prompt_section() if cfg.link is not None else None,
         )
         system += getattr(cfg.provider, "prompt_hint", "") or ""  # e.g. the local JSON fallback
         self._emit(
@@ -412,6 +470,7 @@ class AgentLoop:
             system_prompt=system,
             tools=[t["name"] for t in tools],
             memory=cfg.memory.summary() if cfg.memory is not None else None,
+            flock=cfg.link.describe() if cfg.link is not None else None,
             connect_s=connect_s,
         )
         outcome: Outcome = "error"
@@ -426,8 +485,13 @@ class AgentLoop:
             while True:
                 await asyncio.sleep(0)  # let the heartbeat and kill switch run
                 if self.executor.abort.is_set():
+                    # a flock stops its members when one of them breaks, and the record has to
+                    # say which one rather than blaming a kill switch nobody pressed
                     raise Aborted(
-                        str(self.heartbeat.failure) if self.heartbeat.failure else "kill switch"
+                        str(self.heartbeat.failure)
+                        if self.heartbeat.failure
+                        else (cfg.link.abort_reason if cfg.link is not None else None)
+                        or "kill switch"
                     )
                 observe_started = time.perf_counter()
                 obs, _ = await self._observe(last_verb, last_result)
@@ -524,6 +588,21 @@ class AgentLoop:
                         step=self.budget.steps,
                         ok=last_result.ok,
                         text=call.arguments.get("text"),
+                        summary=last_result.summary,
+                    )
+                    continue
+
+                if call.name == TELL_NAME:
+                    # a word to another pilot: no motion, no step, one LLM call, like `remember`
+                    last_verb = TELL_NAME
+                    last_result = self._tell(call.arguments)
+                    self._emit(
+                        "talk",
+                        step=self.budget.steps,
+                        src=cfg.link.name if cfg.link is not None else None,
+                        to=str(call.arguments.get("to") or "all"),
+                        text=str(call.arguments.get("text") or ""),
+                        ok=last_result.ok,
                         summary=last_result.summary,
                     )
                     continue
@@ -638,7 +717,8 @@ class AgentLoop:
                 self._emit("run_end", **summary)
             finally:
                 try:
-                    self.transcript.write_summary(summary)
+                    if cfg.summary_file:
+                        self.transcript.write_summary(summary)
                 finally:
                     self.transcript.close()
             if cfg.memory is not None and not cfg.dry_run:

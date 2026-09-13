@@ -24,14 +24,16 @@ manifest provides ([ADR-0020](adr/0020-heterogeneous-flocks.md)).
 ## The bus
 
 All coordination crosses a tiny in process pub/sub bus, one message at a time, and every
-message lands in `flock.jsonl`. Eight message kinds: `TASK` (the plan), `BID` (a sighting
+message lands in `flock.jsonl`. Nine message kinds: `TASK` (the plan), `BID` (a sighting
 with the bidder's own camera distance estimate and, with roles, the role it bids for, the
 verbs it provides and, in a `duck: 2` file, its datasheet), `CLAIM` (the one kick permit, with the role assignments), `ROLE`
 (SEARCH a heading sector, KICK, YIELD, STOP, and with roles SPOT and JUDGE), `HB`
 (heartbeat for the watchdog), `RESULT` (kicked, miss, search empty, budget, aborted, and
-with roles `kick_done`), `HINT` (an arena frame target estimate, sim only) and `VERDICT`
+with roles `kick_done`), `HINT` (an arena frame target estimate, sim only), `VERDICT`
 (the spotter's judgement of a kick, which is a different thing from the feasibility verdict
-a solo pilot gives before it moves). The bus is a small protocol so a LAN bus (MQTT) can slot in for
+a solo pilot gives before it moves) and `TALK` (one LLM pilot saying something to another,
+which an auction never sends and a pilot flock sends nothing else). The bus is a small
+protocol so a LAN bus (MQTT) can slot in for
 real robots. Only the in process implementation is used by default, and nobody ever awaits
 the bus, which keeps the shared clock deadlock free.
 

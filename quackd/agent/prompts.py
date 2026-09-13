@@ -8,6 +8,7 @@ stated here *and* enforced by the loop; saying it is not the same as trusting it
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from quackd.duckfile.schema import DuckFile
@@ -180,6 +181,33 @@ REMEMBER = {
 }
 REMEMBER_NAME = REMEMBER["name"]
 
+TELL = {
+    "name": "tell",
+    "description": (
+        "Say one short thing to another pilot in your flock, or to all of them. It reaches "
+        "them in their next observation. It moves nothing and does not count as a step, "
+        "though it does use one of your calls. Say what you are about to do, what you have "
+        "done, or what you need from them, so nobody waits on somebody who is not coming. "
+        "You never hear your own words back."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "to": {
+                "type": "string",
+                "description": "A member name from `Your flock`, or `all` for everyone.",
+            },
+            "text": {
+                "type": "string",
+                "description": "One or two sentences, concrete: 'I have the ball, you spot'.",
+            },
+        },
+        "required": ["to", "text"],
+        "additionalProperties": False,
+    },
+}
+TELL_NAME = TELL["name"]
+
 
 BODY_HEADING = "## Your body: what it can and cannot do"
 
@@ -316,6 +344,7 @@ def build_system_prompt(
     memory_text: str | None = None,
     *,
     assumptions: list[str] | None = None,
+    flock_text: str | None = None,
 ) -> str:
     """`memory_text` is what the robot remembers from earlier runs (`RobotMemory.recall`);
     None means memory is off for this run, "" means on but empty.
@@ -363,6 +392,8 @@ where an object usually is, which strategy worked, what to avoid. It moves nothi
 costs no step, though it does use one of your calls. Do not save what is already listed
 above.
 """
+    # built by `quackd.flock.talk`, which knows the roster; this only decides where it goes
+    flock = f"\n{flock_text.strip()}\n" if flock_text else ""
     sim_note = ""
     if transport_name == "sim2d":
         sim_note = (
@@ -407,11 +438,25 @@ verbs like `{loop_verb}` close their own loops on the camera. Do not micro-manag
 
 ## Verbs
 {verb_lines}
-{body}{stand_ins}{persona}{memory}{sim_note}
+{body}{stand_ins}{persona}{memory}{flock}{sim_note}
 ## Task file: {fm.name} — {fm.description}
 
 {duck.body}
 """
+
+
+def inbox_lines(inbox: Sequence[Mapping[str, Any]], me: str | None) -> list[str]:
+    """What the flock said to you since your last turn, oldest first.
+
+    `to` is the addressee, so a message sent to everyone reads `all` and one sent to you reads
+    `you`: a pilot deciding whether to answer needs to know which it was."""
+    out = []
+    for message in inbox:
+        who = str(message.get("from", "?"))
+        to = message.get("to")
+        whom = "you" if (to is not None and to == me) else "all"
+        out.append(f"- {who} -> {whom}: {str(message.get('text', '')).strip()}")
+    return out
 
 
 def build_observation_text(
@@ -423,6 +468,8 @@ def build_observation_text(
     last_verb: str | None,
     last_result: VerbResult | None,
     budget_status: str,
+    inbox: Sequence[Mapping[str, Any]] | None = None,
+    inbox_for: str | None = None,
 ) -> str:
     lines = [
         f"[step {step}/{max_steps} · {budget_status}]",
@@ -433,6 +480,9 @@ def build_observation_text(
         lines.append(
             f"last verb `{last_verb}`: {'ok' if last_result.ok else 'FAILED'} — {last_result.summary}"
         )
+    if inbox:
+        lines.append("Messages from your flock (newest last):")
+        lines.extend(inbox_lines(inbox, inbox_for))
     lines.append("Choose exactly one tool.")
     return "\n".join(lines)
 
@@ -444,8 +494,18 @@ def observation_features(
     last_verb: str | None,
     last_result: VerbResult | None,
     allowed: list[str],
+    inbox: Sequence[Mapping[str, Any]] | None = None,
+    flock: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # `inbox` and `flock` are absent rather than empty on a solo run, so every existing reader
+    # of these features (the scripted strategies, the goldens) sees exactly what it always did
+    extra: dict[str, Any] = {}
+    if inbox is not None:
+        extra["inbox"] = [dict(m) for m in inbox]
+    if flock is not None:
+        extra["flock"] = dict(flock)
     return {
+        **extra,
         "state": state.model_dump(),
         "detections": [d.model_dump() for d in detections],
         "last_result": (

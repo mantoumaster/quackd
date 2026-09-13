@@ -136,6 +136,7 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | `verb_end` | outcome (`ok` · `fail` · `refused` · `denied` · `budget` · `aborted` · `preempted` · `error`), summary, wall seconds, the robot's own seconds on a simulator, and how many intents of each kind it sent |
 | `verb` | the loop's own record of the call it made (name, params, ok, summary, data) |
 | `assess` | the pilot's feasibility verdict on this task against this body: the word, the reason, the datasheet fields it read, what it estimated about the world and how, what the task would need, whether a person cleared it, and whether the run ends there |
+| `talk` | one pilot to another in a flock: who said it, to whom (a member name or `all`), the words, and whether the message was accepted. Sent through the `tell` tool, so it moves nothing and counts as no step ([flock.md](flock.md)) |
 | `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame, the summary (with `trace_dropped`: events a view raised on and never showed) |
 
 Example: [`assets/transcript-example.jsonl`](assets/transcript-example.jsonl), recorded
