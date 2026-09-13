@@ -3490,6 +3490,12 @@ alohamini = [
 anthropic = [
     { name = "anthropic" },
 ]
+cohere = [
+    { name = "openai" },
+]
+deepseek = [
+    { name = "openai" },
+]
 dev = [
     { name = "hatchling" },
     { name = "mypy" },
@@ -3503,7 +3509,13 @@ dev = [
 gemini = [
     { name = "google-genai" },
 ]
+glm = [
+    { name = "openai" },
+]
 grok = [
+    { name = "openai" },
+]
+kimi = [
     { name = "openai" },
 ]
 lan = [
@@ -3516,16 +3528,25 @@ lerobot = [
 live = [
     { name = "pygame" },
 ]
+meta = [
+    { name = "openai" },
+]
 microduck-camera = [
     { name = "aiortc" },
     { name = "av" },
     { name = "websockets" },
+]
+mistral = [
+    { name = "openai" },
 ]
 mujoco = [
     { name = "mujoco" },
     { name = "onnxruntime" },
 ]
 openai = [
+    { name = "openai" },
+]
+qwen = [
     { name = "openai" },
 ]
 rosbridge = [
@@ -3555,8 +3576,15 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "onnxruntime", marker = "extra == 'mujoco'", specifier = ">=1.20" },
     { name = "openai", marker = "extra == 'all'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'cohere'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'deepseek'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'glm'", specifier = ">=1.50" },
     { name = "openai", marker = "extra == 'grok'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'kimi'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'meta'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'mistral'", specifier = ">=1.50" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'qwen'", specifier = ">=1.50" },
     { name = "opencv-python-headless", specifier = ">=4.9" },
     { name = "paho-mqtt", marker = "extra == 'lan'", specifier = ">=2,<3" },
     { name = "pillow", specifier = ">=10.3" },
@@ -3579,7 +3607,7 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'microduck-camera'", specifier = ">=13" },
     { name = "zeroconf", marker = "extra == 'lan'", specifier = ">=0.132" },
 ]
-provides-extras = ["all", "alohamini", "anthropic", "dev", "gemini", "grok", "lan", "lerobot", "live", "microduck-camera", "mujoco", "openai", "rosbridge", "xlerobot", "yolo"]
+provides-extras = ["all", "alohamini", "anthropic", "cohere", "deepseek", "dev", "gemini", "glm", "grok", "kimi", "lan", "lerobot", "live", "meta", "microduck-camera", "mistral", "mujoco", "openai", "qwen", "rosbridge", "xlerobot", "yolo"]
 
 [[package]]
 name = "referencing"

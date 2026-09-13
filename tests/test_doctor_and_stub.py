@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 
 import pytest
 from rich.console import Console
@@ -143,15 +144,26 @@ def test_render_says_everything_the_report_holds() -> None:
         assert needle in out, needle
 
 
-def test_render_puts_nothing_on_a_codepage_that_cannot_carry_it() -> None:
-    """A Windows pipe is cp1252 and this is a command people paste into an issue."""
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_render_loses_nothing_on_a_codepage_that_cannot_carry_it(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """A Windows pipe is cp1252 and this is the command people paste into an issue.
+
+    `errors="strict"` is the assertion: the stream raises rather than substituting, so this
+    passes only if every character doctor wrote can be carried. Counting question marks
+    cannot do the same job, because the transports note says "not on a robot?" on a machine
+    with no socket and that question mark is prose, not a casualty. Both platform branches of
+    that note are checked, since only one of them runs on any given machine."""
+    monkeypatch.setattr(sys, "platform", platform)
     raw = io.BytesIO()
-    console = Console(file=io.TextIOWrapper(raw, encoding="cp1252", errors="replace"), width=120)
+    console = Console(file=io.TextIOWrapper(raw, encoding="cp1252", errors="strict"), width=120)
     doctor.render(console, doctor.collect())
     console.file.flush()
     out = raw.getvalue().decode("cp1252")
-    assert "?" not in out.replace("?cmd_vel", ""), "a lost glyph arrives as a question mark"
+    assert out.isascii()
     assert "[ok] built-in" in out, "the registry's tick becomes something readable"
+    assert "duck-ipc-proto API" in out
 
 
 def test_doctor_json_is_one_document_and_carries_the_exit_code() -> None:
