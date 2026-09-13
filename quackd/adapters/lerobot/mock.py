@@ -4,6 +4,12 @@
 on an object when the arm is near it, a scripted "policy" answers `pick`, and the camera
 is a synthetic frame with an orange disc that slides as the shoulder pans. Enough to run
 every arm verb, the executor's gates and the detector offline.
+
+Two things here exist to mirror the real backend rather than to be realistic. A goal
+outside a joint's range is refused in the same words, because on an arm LeRobot writes an
+unclamped degrees goal straight to the servo. And a gripper that closes on the object stops
+short of shut, because that is the whole of what a real arm knows about holding something:
+there is no force sensor anywhere on this body.
 """
 
 from __future__ import annotations
@@ -31,6 +37,28 @@ NEAR_DEG = 10.0
 MOCK_CAM_HEIGHT_M = 0.3
 MOCK_OBJECT_R = 0.03
 
+RANGE_DEG = 100.0
+"""A plausible travel for a calibrated body joint. A real one is read off the arm's own
+calibration file at connect and is different on every arm."""
+FULL_TURN_DEG = 180.0
+"""`wrist_roll` is the joint LeRobot's calibration leaves as a full turn."""
+MOCK_RANGES: dict[str, tuple[float, float]] = {
+    joint: (
+        (GRIPPER_CLOSED, GRIPPER_OPEN)
+        if joint == "gripper"
+        else (-FULL_TURN_DEG, FULL_TURN_DEG)
+        if joint == "wrist_roll"
+        else (-RANGE_DEG, RANGE_DEG)
+    )
+    for joint in JOINTS
+}
+
+GRIP_ON_OBJECT = 30.0
+"""Where the gripper stops when something is between the jaws."""
+MOCK_TEMPERATURE_C = 30.0
+"""A fixed reading, so the heat refusal has something to refuse offline. A mock has no
+servos and this number measures nothing."""
+
 
 class LeRobotMock(MockTransport):
     name = "mock"
@@ -46,6 +74,7 @@ class LeRobotMock(MockTransport):
         frame_size: int = 128,
         fail_heartbeat_after: int | None = None,
         refuse_kinds: set[str] | None = None,
+        hot_joints: tuple[str, ...] = (),
     ) -> None:
         super().__init__(
             states=[DuckState(policy="idle", posture="unknown", battery_percent=None)],
@@ -54,6 +83,7 @@ class LeRobotMock(MockTransport):
             frame_size=(frame_size, frame_size),
         )
         self.joints: dict[str, float] = dict(REST)
+        self.joint_range_deg = dict(MOCK_RANGES)
         self.holding = False
         self.torque = True
         self.policy = "idle"
@@ -61,11 +91,18 @@ class LeRobotMock(MockTransport):
         self.object_distance_m = object_distance_m
         self.actions: list[dict[str, float]] = []
         self.policy_runs: list[str] = []
+        self.temperature_c = {joint: MOCK_TEMPERATURE_C for joint in JOINTS}
+        for joint in hot_joints:
+            self.temperature_c[joint] = 65.0
 
     # ── state and camera ────────────────────────────────────────────────────────────
 
     def _near_object(self) -> bool:
         return all(abs(self.joints[k] - v) <= NEAR_DEG for k, v in OBJECT_AT.items())
+
+    @property
+    def hot_joints(self) -> list[str]:
+        return sorted(k for k, v in self.temperature_c.items() if v >= 60.0)
 
     async def get_state(self) -> DuckState:
         state = await super().get_state()
@@ -76,6 +113,9 @@ class LeRobotMock(MockTransport):
                 "extras": {
                     "joints": {k: round(v, 1) for k, v in self.joints.items()},
                     "torque": self.torque,
+                    "temperature_c": {k: round(v) for k, v in self.temperature_c.items()},
+                    "hot": self.hot_joints,
+                    "out_of_range": [],
                     "near_object": self._near_object(),
                 },
             }
@@ -101,19 +141,34 @@ class LeRobotMock(MockTransport):
 
     # ── intents ─────────────────────────────────────────────────────────────────────
 
+    def _refuse_out_of_range(self, goals: dict[str, float]) -> str | None:
+        for joint, goal in sorted(goals.items()):
+            span = self.joint_range_deg.get(joint)
+            if span is None:
+                continue
+            if not span[0] <= float(goal) <= span[1]:
+                return (
+                    f"{joint}={float(goal):.0f} is outside this arm's calibrated range "
+                    f"{span[0]:.0f}..{span[1]:.0f}; LeRobot does not clamp a degrees goal, "
+                    "so quackd refuses it"
+                )
+        return None
+
     def _goto(self, goals: dict[str, float]) -> None:
         for joint, goal in goals.items():
             if joint in JOINTS:
-                lo, hi = (0.0, 100.0) if joint == "gripper" else (-180.0, 180.0)
+                lo, hi = self.joint_range_deg[joint]
                 self.joints[joint] = min(hi, max(lo, float(goal)))
         self.actions.append(dict(goals))
 
     def _set_gripper(self, open_: bool) -> None:
-        self._goto({"gripper": GRIPPER_OPEN if open_ else GRIPPER_CLOSED})
         if open_:
+            self._goto({"gripper": GRIPPER_OPEN})
             self.holding = False
-        elif self._near_object():
-            self.holding = True
+            return
+        # a gripper that closes on something stops where the something is
+        self.holding = self._near_object()
+        self._goto({"gripper": GRIP_ON_OBJECT if self.holding else GRIPPER_CLOSED})
 
     async def send_intent(self, intent: Intent) -> Ack:
         ack = await super().send_intent(intent)
@@ -124,7 +179,10 @@ class LeRobotMock(MockTransport):
             case "joint":
                 if not self.torque:
                     return Ack(accepted=False, reason="torque is off")
-                self._goto({str(k): float(v) for k, v in dict(p.get("positions", {})).items()})
+                goals = {str(k): float(v) for k, v in dict(p.get("positions", {})).items()}
+                if (refusal := self._refuse_out_of_range(goals)) is not None:
+                    return Ack(accepted=False, reason=refusal)
+                self._goto(goals)
             case "gripper":
                 self._set_gripper(bool(p.get("open", True)))
             case "do":

@@ -11,9 +11,18 @@ import pytest
 from quackd.adapters.base import AdapterNotInstalled, RobotAdapter
 from quackd.adapters.factory import RobotSpec, describe, make_adapter, parse_robot_spec
 from quackd.adapters.lerobot import JOINTS, LeRobotAdapter, lerobot_manifest
-from quackd.adapters.lerobot.mock import LeRobotMock
-from quackd.adapters.lerobot.real import LeRobotReal, load_policy
-from quackd.duckfile.parser import parse_duck_text
+from quackd.adapters.lerobot.mock import GRIP_ON_OBJECT, LeRobotMock
+from quackd.adapters.lerobot.real import (
+    ENCODER_TICKS,
+    MAX_STEP_DEG,
+    STEP_ENV,
+    LeRobotReal,
+    check_port,
+    load_policy,
+    step_from_env,
+)
+from quackd.duckfile.parser import load_duck, parse_duck_text
+from quackd.duckfile.validate import validate_duck
 from quackd.perception.color_blob import ColorBlobDetector
 from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all, deny_all
 from quackd.transport.base import HeartbeatError, Intent, TransportError
@@ -37,19 +46,34 @@ def test_manifest_is_an_arm_with_no_duck_verbs() -> None:
     assert set(m.verb_names()) == ARM_VERBS
     assert not any(m.provides(v) for v in DUCK_ONLY)
     assert m.verb("pick") is not None and m.verb("pick").safety_class == "confirm"
+    # not_hot guards the five joints LeRobot writes no torque cap for; the gripper has its
+    # own caps, and refusing to open a hot one would strand whatever it is holding
     assert m.preconditions == {
-        "move_joints": ["torque_on"],
+        "move_joints": ["torque_on", "not_hot"],
         "place": ["holding"],
-        "pick": ["torque_on"],
+        "pick": ["torque_on", "not_hot"],
     }
     assert m.safety_authority.native == "torque_limit" and not m.safety_authority.deadman
     assert m.extras["joints"] == list(JOINTS)
+    assert m.extras["torque_limit_scope"] == "gripper_only"
     assert describe(parse_robot_spec("lerobot:mock")) == m
-    # the static manifest of a real arm claims neither a camera nor a policy
+    # the static manifest of a real arm claims neither a camera nor a policy, and no joint
+    # ranges either: they are read off the arm's own calibration file at connect
     real = describe(parse_robot_spec("lerobot:real"))
     assert set(real.verb_names()) == {"report_state", "stop", "move_joints", "gripper", "place"}
     assert set(real.intents) == {"joint", "gripper"} and real.sensors == ["joint_state"]
+    assert "joint_range_deg" not in real.extras and "step_deg" not in real.limits
     assert real.digest() != m.digest()
+
+
+def test_the_datasheet_declines_to_guess_a_mass() -> None:
+    """Vendor listings put this arm anywhere from 0.8 to 2.5 kg and nobody official says.
+    A figure nobody published is listed as not published, which is the whole rule."""
+    sheet = lerobot_manifest("mock").datasheet
+    assert sheet is not None and sheet.mass_kg is None
+    assert "mass" in sheet.unknown() and "reach" in sheet.unknown()
+    assert sheet.payload_kg is not None and sheet.payload_kg.value == 0.5
+    assert any("0.8 to 2.5 kg" in note for note in sheet.notes)
 
 
 def test_registry_from_the_manifest_has_joints_not_legs() -> None:
@@ -59,6 +83,10 @@ def test_registry_from_the_manifest_has_joints_not_legs() -> None:
     assert "move" not in registry and "walk" not in registry and "get_frame" in registry
     schema = registry.get("move_joints").tool_schema()["input_schema"]
     assert "positions" in schema["properties"] and "duration_s" in schema["properties"]
+
+
+def _executor(adapter: LeRobotAdapter, manifest: Any, **kwargs: Any) -> Executor:
+    return Executor(registry_from_manifest(manifest, adapter), adapter, manifest=manifest, **kwargs)
 
 
 async def test_mock_arm_runs_every_verb_through_the_executor() -> None:
@@ -76,12 +104,10 @@ async def test_mock_arm_runs_every_verb_through_the_executor() -> None:
     mock = adapter.transport
     assert isinstance(mock, LeRobotMock)
     assert "ball" in (await ex.run_verb("observe")).summary  # the object is in view at rest
-    moved = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 30}, "duration_s": 0.2})
-    assert (
-        moved.ok
-        and mock.joints["shoulder_pan"] == 30.0
-        and moved.data["joints"]["shoulder_pan"] == 30.0
-    )
+    moved = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 30}, "duration_s": 2})
+    assert moved.ok, moved.summary
+    assert mock.joints["shoulder_pan"] == 30.0
+    assert moved.data["joints"]["shoulder_pan"] == 30.0
     bad = await ex.run_verb("move_joints", {"positions": {"tail": 5}})
     assert not bad.ok and "unknown joints" in bad.summary
     far = await ex.run_verb("move_joints", {"positions": {"elbow_flex": 400}})
@@ -90,7 +116,7 @@ async def test_mock_arm_runs_every_verb_through_the_executor() -> None:
     nothing = await ex.run_verb("place")
     assert not nothing.ok and "nothing is held" in nothing.summary
     closed = await ex.run_verb("gripper", {"open": False})
-    assert closed.ok and closed.data["holding"] is False
+    assert closed.ok and closed.data["holding"] is False and "on nothing" in closed.summary
     # pick is one skill intent: the scripted policy goes there and grasps
     picked = await ex.run_verb("pick", {"target": "cup", "max_s": 5})
     assert picked.ok, picked.summary
@@ -106,6 +132,32 @@ async def test_mock_arm_runs_every_verb_through_the_executor() -> None:
     assert health.ok and health.battery_percent is None and health.extras["holding"] is False
 
 
+async def test_the_mock_refuses_a_goal_outside_the_calibrated_range() -> None:
+    """The schema bound is plus or minus 180; the arm's own travel is narrower, and on a
+    real arm LeRobot writes an unclamped degrees goal straight to the servo."""
+    adapter = LeRobotAdapter(LeRobotMock())
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    out = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 150}})
+    assert not out.ok and "calibrated range" in out.summary and "-100..100" in out.summary
+    turn = await ex.run_verb("move_joints", {"positions": {"wrist_roll": 150}, "duration_s": 2})
+    assert turn.ok, turn.summary  # wrist_roll is the full-turn joint
+
+
+async def test_the_mock_gripper_stops_on_the_object_and_says_where() -> None:
+    mock = LeRobotMock()
+    adapter = LeRobotAdapter(mock)
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    assert (await ex.run_verb("move_joints", {"positions": dict(mock.joints) | {}})).ok is not None
+    await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 30}, "duration_s": 2})
+    await ex.run_verb("move_joints", {"positions": {"shoulder_lift": -20}, "duration_s": 2})
+    await ex.run_verb("move_joints", {"positions": {"elbow_flex": 40}, "duration_s": 2})
+    closed = await ex.run_verb("gripper", {"open": False})
+    assert closed.ok and closed.data["holding"] is True
+    assert "on something" in closed.summary and f"{GRIP_ON_OBJECT:.0f}/100" in closed.summary
+
+
 async def test_pick_is_confirm_gated_and_a_sick_arm_reports_it() -> None:
     adapter = LeRobotAdapter(LeRobotMock(fail_heartbeat_after=0))
     manifest = await adapter.connect()
@@ -115,18 +167,83 @@ async def test_pick_is_confirm_gated_and_a_sick_arm_reports_it() -> None:
     assert not (await adapter.health()).ok
 
 
-class FakeArm:
-    """The slice of a LeRobot `Robot` the real backend touches, verified names only."""
+async def test_a_hot_joint_refuses_the_verbs_that_move_the_uncapped_ones() -> None:
+    adapter = LeRobotAdapter(LeRobotMock(hot_joints=("shoulder_lift",)))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest, confirm=allow_all)
+    hot = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}})
+    assert not hot.ok and "shoulder_lift reads 65" in hot.summary and "70" in hot.summary
+    # the gripper has LeRobot's own torque and current caps, and opening a hot one is how
+    # you put down what it is holding, so it is not gated on heat
+    assert (await ex.run_verb("gripper", {"open": True})).ok
 
-    def __init__(self, *, calibrated: bool = True, camera: bool = True) -> None:
+
+# ── the real backend, against a fake arm ────────────────────────────────────────────────
+
+
+class FakeCalibration:
+    """The two fields quackd reads off a `MotorCalibration` (`up.MOTOR_CALIBRATION`)."""
+
+    def __init__(self, travel_deg: float) -> None:
+        span = travel_deg * (ENCODER_TICKS - 1) / 360.0
+        middle = (ENCODER_TICKS - 1) / 2
+        self.range_min = int(middle - span / 2)
+        self.range_max = int(middle + span / 2)
+
+
+class FakeBus:
+    """The registers `get_observation()` does not read (`up.STS3215_REGISTERS`)."""
+
+    def __init__(self, arm: FakeArm) -> None:
+        self.arm = arm
+
+    def sync_read(
+        self, data_name: str, motors: Any = None, *, normalize: bool = True, num_retry: int = 0
+    ) -> dict[str, int]:
+        self.arm.reads.append((data_name, normalize, num_retry))
+        if self.arm.bus_error:
+            raise RuntimeError("Incorrect status packet!")
+        if data_name == "Torque_Enable":
+            return dict.fromkeys(JOINTS, 1 if self.arm.torque else 0)
+        if data_name == "Present_Temperature":
+            return {joint: int(self.arm.temperature.get(joint, 30)) for joint in JOINTS}
+        raise KeyError(data_name)
+
+
+class FakeArm:
+    """The slice of a LeRobot `Robot` the real backend touches, verified names only.
+
+    It caps every step the way `max_relative_target` does, so a goal takes as many sends as
+    a real one would, and its gripper stops on an object instead of closing."""
+
+    def __init__(
+        self,
+        *,
+        calibrated: bool = True,
+        camera: bool = True,
+        step: float = 25.0,
+        object_in_jaws: bool = False,
+        stuck: tuple[str, ...] = (),
+    ) -> None:
         self.calibrated = calibrated
         self.camera = camera
+        self.step = step
+        self.object_in_jaws = object_in_jaws
+        self.stuck = set(stuck)
         self.connected = False
+        self.dead = False
+        self.bus_error = False
+        self.torque = True
+        self.temperature: dict[str, float] = dict.fromkeys(JOINTS, 30.0)
         self.calls: list[tuple[Any, ...]] = []
         self.actions: list[dict[str, float]] = []
-        self.positions = {j: 0.0 for j in JOINTS}
+        self.reads: list[tuple[str, bool, int]] = []
+        self.positions = dict.fromkeys(JOINTS, 0.0)
         self.positions["gripper"] = 100.0
         self.torque_disabled = 0
+        self.calibration = {joint: FakeCalibration(200.0) for joint in JOINTS}
+        self.calibration_fpath = "/tmp/lerobot/calibration/robots/so_follower/arm-01.json"
+        self.bus = FakeBus(self)
 
     @property
     def observation_features(self) -> dict[str, Any]:
@@ -152,6 +269,8 @@ class FakeArm:
         self.connected = False
 
     def get_observation(self) -> dict[str, Any]:
+        if self.dead:
+            raise ConnectionError("Failed to sync read 'Present_Position'")
         obs: dict[str, Any] = {f"{j}.pos": v for j, v in self.positions.items()}
         if self.camera:
             obs["front"] = np.zeros((48, 64, 3), dtype=np.uint8)
@@ -159,41 +278,227 @@ class FakeArm:
 
     def send_action(self, action: dict[str, float]) -> dict[str, float]:
         self.actions.append(dict(action))
+        sent = {}
         for key, value in action.items():
-            self.positions[key.removesuffix(".pos")] = float(value)
-        return dict(action)
+            joint = key.removesuffix(".pos")
+            present = self.positions[joint]
+            capped = present + max(-self.step, min(self.step, float(value) - present))
+            sent[key] = capped
+            if joint in self.stuck:
+                continue
+            if joint == "gripper" and self.object_in_jaws:
+                capped = max(capped, GRIP_ON_OBJECT)
+            self.positions[joint] = capped
+        return sent
 
     def disable_torque(self) -> None:
         self.torque_disabled += 1
 
 
+class FakePolicy:
+    """Moves the arm and then closes the gripper, which is the only way anything on this
+    body can end up holding something."""
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.tasks: list[str] = []
+
+    def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
+        assert "shoulder_pan.pos" in observation
+        self.tasks.append(task)
+        self.n += 1
+        if self.n < 3:
+            return {"shoulder_pan": 5.0 * self.n}
+        if self.n < 8:
+            return {"gripper": 0.0}
+        return None
+
+
 async def test_real_backend_maps_intents_to_verified_names_and_never_limps() -> None:
-    arm = FakeArm()
+    arm = FakeArm(object_in_jaws=True)
     adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
     manifest = await adapter.connect()
     assert arm.calls[0] == ("connect", False)  # calibration is interactive: never triggered
     assert manifest.provides("observe") and not manifest.provides("pick")
     assert "camera" in manifest.sensors and manifest.backend == "real"
-    ex = Executor(registry_from_manifest(manifest, adapter), adapter, manifest=manifest)
+    # the joint ranges come off the arm's own calibration: 200 degrees of travel, centred
+    assert manifest.extras["joint_range_deg"]["shoulder_pan"] == [-100.0, 100.0]
+    assert manifest.extras["joint_range_deg"]["gripper"] == [0.0, 100.0]
+    assert manifest.extras["calibration_file"].endswith("arm-01.json")
+    assert manifest.limits["step_deg"] == MAX_STEP_DEG
+    ex = _executor(adapter, manifest)
     assert (
-        await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}, "duration_s": 0.2})
+        await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}, "duration_s": 2})
     ).ok
     assert arm.actions[-1] == {"shoulder_pan.pos": 10.0}
-    assert (await ex.run_verb("gripper", {"open": False})).ok
+    closed = await ex.run_verb("gripper", {"open": False})
+    assert closed.ok and closed.data["holding"] is True, closed.summary
     assert arm.actions[-1] == {"gripper.pos": 0.0} and (await adapter.get_state()).holding
-    assert (await ex.run_verb("stop")).ok
-    assert set(arm.actions[-1]) == {f"{j}.pos" for j in JOINTS}  # hold: present positions
+    stopped = await ex.run_verb("stop")
+    assert stopped.ok
+    # a hold is the five body joints and deliberately not the gripper: re-sending its
+    # measured position would open a hand that is squeezing something
+    assert set(arm.actions[-1]) == {f"{j}.pos" for j in JOINTS if j != "gripper"}
     assert arm.actions[-1]["shoulder_pan.pos"] == 10.0 and arm.torque_disabled == 0
+    assert (await adapter.get_state()).holding  # the stop did not drop it
     frame = await adapter.get_frame()
     assert frame is not None and frame.size == (64, 48)
     state = await adapter.get_state()
     assert state.extras["joints"]["shoulder_pan"] == 10.0 and state.battery_percent is None
+    assert state.extras["torque"] is True and state.extras["temperature_c"]["elbow_flex"] == 30
     assert "GRIPPER_OPEN_VALUE" in state.extras["assumptions"]
     await adapter.heartbeat()
     await adapter.close()
     assert ("disconnect",) in arm.calls
     with pytest.raises(HeartbeatError):
         await adapter.heartbeat()
+
+
+def test_the_config_spells_out_every_field_that_is_a_safety_choice() -> None:
+    """Inheriting an upstream default is fine until upstream changes one. The step cap is
+    the field upstream leaves at None, and it has to be a float, not an int."""
+    kwargs = LeRobotReal("COM5", robot_id="arm-09")._config_kwargs()
+    assert kwargs == {
+        "port": "COM5",
+        "id": "arm-09",
+        "use_degrees": True,
+        "disable_torque_on_disconnect": True,
+        "cameras": {},
+        "max_relative_target": 5.0,
+    }
+    assert isinstance(kwargs["max_relative_target"], float)
+
+
+def test_the_port_has_to_look_like_a_port() -> None:
+    check_port("COM5")
+    check_port("/dev/ttyACM0")
+    with pytest.raises(TransportError, match="must be the arm's serial port"):
+        check_port("")
+    with pytest.raises(TransportError, match="not a serial port"):
+        check_port("tcp://192.168.1.42:5555")
+
+
+def test_the_step_cap_comes_from_the_environment_or_refuses(monkeypatch: Any) -> None:
+    assert step_from_env() == MAX_STEP_DEG
+    monkeypatch.setenv(STEP_ENV, "2.5")
+    assert step_from_env() == 2.5
+    monkeypatch.setenv(STEP_ENV, "0")
+    with pytest.raises(TransportError, match="above 0"):
+        step_from_env()
+    monkeypatch.setenv(STEP_ENV, "quickly")
+    with pytest.raises(TransportError, match="not a number"):
+        step_from_env()
+
+
+async def test_a_move_takes_as_many_sends_as_the_step_cap_needs() -> None:
+    """One send_action moves a joint at most the cap, so the verb re-sends and watches."""
+    arm = FakeArm(step=5.0)
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    moved = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 30}, "duration_s": 8})
+    assert moved.ok, moved.summary
+    assert len(arm.actions) >= 5, arm.actions
+    assert arm.positions["shoulder_pan"] == pytest.approx(30.0, abs=5.0)
+    assert moved.data["goal"] == {"shoulder_pan": 30.0}
+
+
+async def test_a_joint_that_stops_moving_is_a_failure_and_not_a_success() -> None:
+    """Upstream reports nothing about whether a goal was reached: an arm against an
+    obstacle and an arm that arrived look identical unless somebody compares them."""
+    arm = FakeArm(stuck=("shoulder_lift",))
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    stalled = await ex.run_verb(
+        "move_joints", {"positions": {"shoulder_lift": 40}, "duration_s": 5}
+    )
+    assert not stalled.ok
+    assert "shoulder_lift is at 0 with a goal of 40" in stalled.summary
+    assert "stopped moving" in stalled.summary
+
+
+async def test_a_goal_outside_the_calibrated_range_is_refused_with_the_range() -> None:
+    arm = FakeArm()
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    out = await ex.run_verb("move_joints", {"positions": {"elbow_flex": 170}})
+    assert not out.ok and "-100..100" in out.summary and "does not clamp" in out.summary
+    # the goal never reached the arm: what did is the hold that every failed verb ends with
+    assert all(action.get("elbow_flex.pos") != 170.0 for action in arm.actions)
+    assert arm.positions["elbow_flex"] == 0.0
+
+
+async def test_an_unplugged_arm_fails_the_heartbeat_even_though_is_connected_is_true() -> None:
+    """`is_connected` is the serial port's own open flag, so it stays True until a read
+    fails. The heartbeat reads the arm rather than the flag."""
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    await adapter.heartbeat()
+    arm.dead = True
+    assert arm.is_connected is True
+    with pytest.raises(HeartbeatError, match="did not answer"):
+        await adapter.heartbeat()
+
+
+async def test_a_wedged_call_refuses_every_later_call_instead_of_sharing_the_bus() -> None:
+    """A call that blows its deadline is not over: its thread is still sitting on a
+    half-duplex bus. Starting another would put two talkers on it."""
+    import threading
+
+    release = threading.Event()
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm, timeout_s=0.2)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+
+    def block() -> None:
+        release.wait(5.0)
+
+    try:
+        with pytest.raises(TimeoutError):
+            await transport._call(block, deadline_s=0.2)
+        assert transport.stop_error is not None and "one owner" in transport.stop_error
+        with pytest.raises(HeartbeatError):
+            await adapter.heartbeat()
+        assert not (await adapter.send_intent(Intent.gripper(True))).accepted
+    finally:
+        release.set()
+
+
+async def test_torque_and_temperature_are_measured_rather_than_assumed() -> None:
+    arm = FakeArm()
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    assert ("Torque_Enable", False, 2) in arm.reads
+    assert ("Present_Temperature", False, 2) in arm.reads
+    arm.torque = False
+    refused = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}})
+    assert not refused.ok and "torque is off" in refused.summary
+    arm.torque = True
+    arm.temperature["elbow_flex"] = 65.0
+    hot = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}})
+    assert not hot.ok and "elbow_flex reads 65" in hot.summary
+    health = await adapter.health()
+    assert health.ok and health.extras["hottest_c"] == 65
+
+
+async def test_a_corrupt_register_read_costs_a_reading_and_not_the_run() -> None:
+    """A Feetech bus returns the odd corrupt status packet. Losing the run over one would
+    be worse than the disease, so the positions are the liveness check and the registers
+    are not."""
+    arm = FakeArm()
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    await adapter.connect()
+    arm.bus_error = True
+    await adapter.heartbeat()
+    state = await adapter.get_state()
+    assert "Incorrect status packet" in state.extras["register_error"]
+    assert state.extras["torque"] is True  # the last known reading stands
 
 
 async def test_real_backend_refuses_an_uncalibrated_arm() -> None:
@@ -204,20 +509,18 @@ async def test_real_backend_refuses_an_uncalibrated_arm() -> None:
     assert ("disconnect",) in arm.calls
 
 
-class FakePolicy:
-    def __init__(self) -> None:
-        self.n = 0
-        self.tasks: list[str] = []
-
-    def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
-        assert "shoulder_pan.pos" in observation
-        self.tasks.append(task)
-        self.n += 1
-        return {"shoulder_pan": 5.0 * self.n} if self.n < 3 else None
+async def test_real_backend_refuses_an_arm_with_no_calibration_file() -> None:
+    """`is_calibrated` compares the motors with a file. Without the file there is nothing
+    that knows how far each joint travels, and the range refusal has nothing to stand on."""
+    arm = FakeArm()
+    arm.calibration = {}
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    with pytest.raises(TransportError, match="no calibration file"):
+        await adapter.connect()
 
 
 async def test_real_backend_runs_an_injected_policy_for_pick() -> None:
-    arm = FakeArm(camera=False)
+    arm = FakeArm(camera=False, object_in_jaws=True)
     policy = FakePolicy()
     adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm, policy=policy))
     manifest = await adapter.connect()
@@ -227,13 +530,64 @@ async def test_real_backend_runs_an_injected_policy_for_pick() -> None:
         and not manifest.provides("observe")
     )
     ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
-    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 5})
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 10})
     assert picked.ok, picked.summary
-    assert policy.tasks == ["cup", "cup", "cup"]
+    assert policy.tasks[0] == "cup"
     assert {"shoulder_pan.pos": 5.0} in arm.actions and {"shoulder_pan.pos": 10.0} in arm.actions
     assert (await adapter.get_state()).holding
     assert (await adapter.get_state()).policy == "idle"
     await adapter.close()
+
+
+async def test_a_verb_is_refused_while_a_policy_has_the_arm() -> None:
+    class Forever:
+        def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
+            return {"shoulder_pan": 5.0}
+
+    arm = FakeArm(camera=False)
+    transport = LeRobotReal("COM5", robot=arm, policy=Forever())
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+    try:
+        refused = await adapter.send_intent(Intent.joint({"shoulder_pan": 0.0}, 1.0))
+        assert not refused.accepted and "pick is running" in (refused.reason or "")
+    finally:
+        await adapter.close()
+
+
+async def test_a_policy_that_raises_is_a_failed_pick_and_says_so() -> None:
+    class Broken:
+        def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
+            raise RuntimeError("no accelerated backend")
+
+    arm = FakeArm(camera=False)
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm, policy=Broken()))
+    manifest = await adapter.connect()
+    ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
+    failed = await ex.run_verb("pick", {"target": "cup", "max_s": 2})
+    assert not failed.ok
+    assert "no accelerated backend" in failed.summary and "RuntimeError" in failed.summary
+
+
+async def test_the_lookout_duck_validates_against_the_arm_and_moves_nothing() -> None:
+    """`lerobot:real` has no camera configured, so it has no `observe`: the bring-up task
+    has to ask for something the arm it is pointed at actually provides."""
+    duck = load_duck("lerobot-lookout")
+    for backend in ("mock", "real"):
+        manifest = describe(parse_robot_spec(f"lerobot:{backend}"))
+        assert validate_duck(duck, [manifest]) == [], backend
+    mock = LeRobotMock()
+    adapter = LeRobotAdapter(mock)
+    manifest = await adapter.connect()
+    ex = Executor(
+        registry_from_manifest(manifest, adapter),
+        adapter,
+        contract=duck.frontmatter,
+        manifest=manifest,
+    )
+    assert (await ex.run_verb("report_state")).ok
+    assert mock.actions == []
 
 
 @pytest.mark.skipif(not NO_LEROBOT, reason="lerobot is installed here")

@@ -38,7 +38,6 @@ BLURB = (
 )
 
 DATASHEET = Datasheet(
-    mass_kg=Figure(value=2.5, confidence="estimate", source="one vendor's listing"),
     height_m=Figure(
         value=0.53,
         confidence="estimate",
@@ -60,11 +59,18 @@ DATASHEET = Datasheet(
         "lift or hold more than about half a kilogram, and nothing whose weight is not known",
         "reach anything that is not already within arm's length of its base: the reach is not "
         "published",
-        "feel what it holds: grip force is not reported, so holding is what was commanded",
+        "feel what it holds: nothing reports grip force, so holding is inferred from the "
+        "gripper stopping short of shut, which an empty hand that binds also does",
+        "know its own mass: vendor listings disagree by a factor of three",
     ],
     notes=[
         "How wide the gripper opens and how hard it grips are not published",
-        "No sensors beyond the servo positions unless a camera is configured",
+        "No sensors beyond the servo positions unless a camera is configured, and the servo "
+        "temperature, which quackd reads off the bus because LeRobot does not",
+        "Vendor listings give the mass as anything from 0.8 to 2.5 kg and nobody official "
+        "publishes one, so it is listed as not published rather than picked from a hat",
+        "There are 7.4 V and 12 V builds of the same arm, with different stall torque and "
+        "different supplies. Which one is on the desk is not something quackd can ask",
     ],
 )
 
@@ -77,9 +83,13 @@ def lerobot_manifest(
     policy: bool = False,
     robot_type: str = ROBOT_TYPE,
     lerobot_version: str | None = None,
+    joint_range_deg: dict[str, tuple[float, float]] | None = None,
+    step_deg: float | None = None,
+    calibration_file: str | None = None,
 ) -> RobotManifest:
     """The arm as data. `camera` and `policy` are what the backend found at connect: the
-    static manifest of `real` claims neither, the mock has both."""
+    static manifest of `real` claims neither, the mock has both. So are the joint ranges,
+    which come off the arm's own calibration file and are unknown until it has answered."""
     own = lerobot_verbs(policy=policy)
     verbs = [
         verb_spec(CORE["report_state"], core=True),
@@ -90,12 +100,32 @@ def lerobot_manifest(
     ]
     if camera:
         verbs.insert(0, verb_spec(CORE["observe"], core=True))
-    preconditions = {"move_joints": ["torque_on"], "place": ["holding"]}
+    # not_hot guards the five body joints, which are the ones LeRobot caps nothing on; the
+    # gripper has its own torque and current caps, and refusing to open a hot one would
+    # strand whatever it is holding
+    preconditions = {"move_joints": ["torque_on", "not_hot"], "place": ["holding"]}
     if policy:
         verbs.append(verb_spec(own["pick"], core=False, safety_class="confirm"))
-        preconditions["pick"] = ["torque_on"]
+        preconditions["pick"] = ["torque_on", "not_hot"]
     intents: list[Any] = ["joint", "gripper"] + (["skill"] if policy else [])
     sensors: list[Any] = ["joint_state"] + (["camera"] if camera else [])
+    limits = {"joint_deg": 180.0, "gripper": 100.0}
+    if step_deg is not None:
+        limits["step_deg"] = float(step_deg)
+    extras: dict[str, Any] = {
+        "robot_type": robot_type,
+        "joints": list(JOINTS),
+        "policy": policy,
+        "lerobot_version": lerobot_version,
+        # the gripper is the only joint LeRobot writes a torque or current cap for
+        "torque_limit_scope": "gripper_only",
+    }
+    if joint_range_deg:
+        extras["joint_range_deg"] = {
+            joint: [round(lo, 1), round(hi, 1)] for joint, (lo, hi) in joint_range_deg.items()
+        }
+    if calibration_file:
+        extras["calibration_file"] = calibration_file
     return RobotManifest(
         id=robot_id or DEFAULT_ID,
         vendor="huggingface",
@@ -113,16 +143,11 @@ def lerobot_manifest(
             reference="base",
             note="joint space in degrees (gripper 0..100); no camera-to-base calibration",
         ),
-        limits={"joint_deg": 180.0, "gripper": 100.0},
+        limits=limits,
         backend=backend,
         blurb=BLURB,
         datasheet=DATASHEET,
-        extras={
-            "robot_type": robot_type,
-            "joints": list(JOINTS),
-            "policy": policy,
-            "lerobot_version": lerobot_version,
-        },
+        extras=extras,
     )
 
 
@@ -149,6 +174,9 @@ class LeRobotAdapter:
             camera=bool(getattr(self.transport, "camera_available", False)),
             policy=self._policy,
             lerobot_version=getattr(self.transport, "lerobot_version", None),
+            joint_range_deg=getattr(self.transport, "joint_range_deg", None) or None,
+            step_deg=getattr(self.transport, "max_step_deg", None),
+            calibration_file=getattr(self.transport, "calibration_file", None),
         )
         return self.manifest
 
@@ -173,11 +201,15 @@ class LeRobotAdapter:
         except HeartbeatError as e:
             return Health(ok=False, reason=str(e))
         state = await self.transport.get_state()
-        return Health(
-            ok=True,
-            battery_percent=None,
-            extras={"holding": state.holding, "policy": state.policy},
-        )
+        extras: dict[str, Any] = {
+            "holding": state.holding,
+            "policy": state.policy,
+            "torque": state.extras.get("torque"),
+        }
+        temperatures = [float(v) for v in state.extras.get("temperature_c", {}).values()]
+        if temperatures:
+            extras["hottest_c"] = round(max(temperatures))
+        return Health(ok=True, battery_percent=None, extras=extras)
 
     async def heartbeat(self) -> None:
         await self.transport.heartbeat()
@@ -218,7 +250,8 @@ class LeRobotAdapter:
 
 def describe(backend: str, robot_id: str | None = None) -> RobotManifest:
     """Static: the mock always has its camera and its scripted policy; the real backend
-    claims neither until connect() finds them."""
+    claims neither until connect() finds them, and claims no joint ranges either, because
+    they are read off the arm's calibration file."""
     offline = backend == "mock"
     return lerobot_manifest(backend, robot_id, camera=offline, policy=offline)
 
@@ -246,10 +279,15 @@ def make(
 
         return LeRobotAdapter(LeRobotMock(), robot_id=robot_id)
     if backend == "real":
-        from quackd.adapters.lerobot.real import LeRobotReal
+        from quackd.adapters.lerobot.real import LeRobotReal, step_from_env
 
         return LeRobotAdapter(
-            LeRobotReal(address=address, robot_id=robot_id or DEFAULT_ID), robot_id=robot_id
+            LeRobotReal(
+                address=address,
+                robot_id=robot_id or DEFAULT_ID,
+                max_step_deg=step_from_env(),
+            ),
+            robot_id=robot_id,
         )
     raise ValueError(f"unknown lerobot backend {backend!r}; choose one of {BACKENDS}")
 
