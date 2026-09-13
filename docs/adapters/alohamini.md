@@ -59,6 +59,17 @@ port can drive the robot. Bind it to loopback and reach it through an ssh tunnel
 - **A position.** The observation carries `x.vel`, `y.vel` and `theta.vel` and no pose at all,
   so `go_to` closes the loop on the camera alone and a lost target has no fallback.
 
+Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
+
+| | |
+|---|---|
+| Actuated joints | 14 (official: the AlohaMini2 README; six joints and a gripper per arm; the lift and the base are on top of that) |
+| Payload | 1 kg (official: the AlohaMini2 README; per arm) |
+| Reach | 0.52 m (official: the AlohaMini2 README) |
+| Not published | mass, height, endurance |
+
+A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
 ## The arms are limp, and that is upstream's own state
 
 `configure()` calls `disable_torque()` on both arm buses, and **both of its `enable_torque()`

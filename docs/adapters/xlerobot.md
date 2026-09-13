@@ -60,6 +60,20 @@ API needs; this one has one.
 - **Cartesian reach, `pick`, `place`.** There is no inverse kinematics on the robot class and no
   policy ships with it.
 
+Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
+
+| | |
+|---|---|
+| Mass | 12 kg (official: the XLeRobot docs) |
+| Actuated joints | 17 (official: the XLeRobot BOM; two five-joint arms with grippers, a two-axis head, three wheels) |
+| Payload | 1 kg (official: the XLeRobot docs; per arm; 0.6 to 1.0 kg depending on the pose, and 1.0 kg is the limit) |
+| Reach | 0.4 m (official: the XLeRobot docs and community measurements) |
+| Endurance | 600 min (official: the XLeRobot docs; a 288 Wh power station, ten hours or more) |
+| Working height | 0.5 to 1.25 m (official: the XLeRobot docs; the torso does not lift, so the hands work in this band and nowhere else) |
+| Not published | height |
+
+A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
 ## The manifest
 
 | Field | Value |

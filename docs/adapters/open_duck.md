@@ -51,6 +51,16 @@ When the duck is down, `move` and `gaze` refuse with a message that names no ver
 human must stand it up, because nothing quackd can call will recover it. A task pointed at
 this robot should say so in its body, and `open-duck-scout` does.
 
+Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
+
+| | |
+|---|---|
+| Height | 0.42 m (official: the Open Duck Mini v2 repository) |
+| Actuated joints | 14 (estimate: the BOM and the runtime's joint list; STS3215 servos, which the BOM states) |
+| Not published | mass, endurance |
+
+A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
 ## The manifest
 
 A fully built duck. A real one is whatever its owner soldered, so the `bridge` backend

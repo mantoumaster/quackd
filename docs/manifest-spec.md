@@ -25,6 +25,7 @@ version without touching the robot.
 | `limits` | name → number | `max_vx`, `max_vy`, `max_wz`, `gaze_yaw_deg`, `gaze_pitch_deg`, `joint_deg`, ...; the core verbs clamp to them. `camera_fov_deg` is the exception: not a clamp but the lens the detector assumes, and without it (or `--fov-deg`) a real camera falls back to the simulator's 90° and every detection is labelled uncalibrated |
 | `backend` | string | informational: which backend produced this |
 | `blurb` | string | the prompt's one-line intro: "a small biped duck robot (25 cm, 800 g)" |
+| `datasheet` | `Datasheet` or absent | the body as numbers, each with how sure quackd is and who says so, plus what it cannot do whatever the task says (see below) |
 | `extras` | object | adapter-specific facts (`speech: tones`, `camera_calibrated: false`, `policy: true`) |
 
 A `VerbSpec`: `name` (canonical, never an alias), `core` (the same verb on every robot
@@ -52,6 +53,57 @@ that has it), `description` (LLM-facing; empty means the implementation's defaul
 - Every verb in `preconditions` is declared; every condition name has a predicate in the
   adapter's `conditions()` (checked when the registry is built).
 - `intents` and `sensors` carry no duplicates.
+
+## The datasheet
+
+The body as numbers, so a pilot can refuse a task before anything moves
+([ADR-0032](adr/0032-datasheets-and-the-verdict.md)). Each number is a `Figure`: a `value`,
+a `confidence` and a `source`, plus an optional `note` read with it.
+
+| Field | Meaning |
+|---|---|
+| `mass_kg`, `height_m`, `dof` | what it weighs, how tall it stands, how many joints it actuates |
+| `payload_kg` | what one hand, the beak or the whole body can hold; the `note` says which |
+| `reach_m` | arm base to fingertips |
+| `workspace_height_m` | a `Span` (`low`, `high`): the band of heights the hands can work at |
+| `endurance_min` | minutes on a charge |
+| `manipulator` | `none`, `beak`, `gripper` or `arms`: what quackd can command that touches an object |
+| `arms`, `tethered`, `terrain`, `not_rated` | how many, mains or battery, what it is rated for and what it is not |
+| `cannot`, `notes` | sentences: what it cannot do whatever the task says, and what is worth knowing first |
+
+Three rules make it honest:
+
+- **`confidence` is one of `official` (the maker or a paper says so), `estimate` (one vendor,
+  a community number, a reading off a photo) or `measured` (somebody measured it and said
+  how), and `source` is required.** A figure without a source is a rumour.
+- **`None` means not published.** The prompt says so in those words and tells the pilot to
+  decline whatever hinges on it. It is never rendered as a zero, and a figure that cannot
+  apply (endurance on a mains-powered arm, payload on a body with no manipulator) is not
+  listed as missing either.
+- **Speeds are not in it.** `limits` is what quackd clamps to, which is a rule about what
+  quackd sends rather than a fact about the body, and the prompt renders those separately as
+  clamps.
+
+The same datasheet describes a body on every backend, which is also what keeps its `digest()`
+equal across `sim2d`, `mock` and the real thing. `rosbridge` is the one exception, because it
+names a transport rather than a body: its sheet is whatever the bridge answered when asked
+([adapters/rosbridge.md](adapters/rosbridge.md)).
+
+The seven shipped sheets, with each figure's confidence:
+
+| Robot | Mass | Height | Joints | Payload | Reach | Endurance | Hands |
+|---|---|---|---|---|---|---|---|
+| `microduck` | 0.8 kg official | 0.25 m official | 15 official | not published | not published | not published | a beak |
+| `open_duck` | not published | 0.42 m official | 14 estimate | not published | not published | not published | none |
+| `lerobot` | 2.5 kg estimate | 0.53 m estimate | 6 official | 0.5 kg estimate | not published | mains powered | one gripper |
+| `rosbridge` | from the URDF | not published | from the URDF | not published | not published | not published | none |
+| `xlerobot` | 12 kg official | working height 0.5 to 1.25 m official | 17 official | 1.0 kg official, per arm | 0.40 m official | 600 min official | two grippers |
+| `alohamini` | not published | not published | 14 official | 1.0 kg official, per arm | 0.52 m official | not published | two grippers |
+| `toddlerbot` | 3.4 kg official | 0.56 m official | 30 official | 1.484 kg official, both arms | not published | 19 min official | two arms |
+
+A `.duck` file can correct any of it for the build in front of it
+([duck-spec.md](duck-spec.md)), and the prompt labels those numbers as coming from the task
+file.
 
 ## Intents on the wire
 

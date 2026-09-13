@@ -88,6 +88,19 @@ Sources: [duck-ipc-proto/src/lib.rs](https://github.com/pollen-robotics/microduc
 | `mediad media.detections notifications` | **built**, not merely designed: `mediad/src/detect.rs` emits `{width, height, took_ms, boxes[{x0,y0,x1,y1,score}]}` at ~2 Hz (RKNN on the NPU, ONNX on CPU) — and it detects *ducks*, not balls. UNVERIFIED because it is broadcast to WebRTC signalling clients while `remote-webrtc.md` still says perception consumes pixels locally: source and design doc disagree | unreachable from `robotd`'s socket either way, so our `Detector` protocol is still the stand-in |
 | `stand_up` | no such RPC; `robotd` recovers from falls itself (limp → settle → ramp → standing policy) | `stand_up` sends `robot.enable {on: true}` and checks `safety.fallen` afterwards — and fails rather than claiming "upright" when nothing is reporting falls |
 
+### What this robot is, as numbers
+
+Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
+
+| | |
+|---|---|
+| Mass | 0.8 kg (official: the Pollen Robotics README) |
+| Height | 0.25 m (official: the Pollen Robotics README) |
+| Actuated joints | 15 (official: the Pollen Robotics README; XL330 class servos, which is an estimate) |
+| Not published | payload, reach, endurance |
+
+A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
 ### What we do not touch
 
 `robot.init` (moves every joint), `robot.relax` (the robot collapses), `system.*`, `net.*`,

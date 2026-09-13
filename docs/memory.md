@@ -12,6 +12,10 @@ and appends to at the end. Two kinds of entry live in it:
 | **note** | the model, with the `remember` tool (or you, with `quackd memory add`) | `the ball is usually near the left wall` |
 | **episode** | quackd itself, at the end of every non-dry run | `find-and-kick: success — ball displaced 0.49 m (4 steps) · search_scan: ball found at bearing 18° left; kick: ball moved 0.49 m` |
 
+A run that ended `infeasible`, where the pilot judged the task beyond this body and
+nothing moved, is remembered the same way and with the same reason, hint included: the next
+run on the same robot is told what was already found not to fit it.
+
 At the next run the newest notes (up to 20) and episodes (up to 5) are rendered into the
 system prompt under *What you remember from earlier runs on this robot*, and the model is
 told how to add to them. Nothing else changes: the allowlist, budgets and confirmation

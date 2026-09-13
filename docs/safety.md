@@ -7,6 +7,7 @@ A biped falls in 0.3 s; an LLM answers in 3 s. Everything here follows from that
 | Layer | Owner | What it guarantees |
 |---|---|---|
 | Body | the robot's own controller | **Whatever that particular body actually offers, which is not the same everywhere.** The Microduck's `robotd` gives joint and thermal clamps, fall detection and a **deadman**: velocity goes to zero when `robot.move` notifications stop. An Open Duck Mini v2 gives *none of those*: its deadman is quackd's own daemon on the Pi and the human watching is its only fall detector (details under "On hardware"). The body is still the sole safety authority: clients send intents, never motor writes. What each body offers is declared in its manifest's `safety_authority`, and `quackd doctor` prints what the robot itself reported (see "On other bodies"). |
+| Judgement | the pilot, held to it by quackd `Executor` | Nothing that moves the body runs until the model has said, against the robot's datasheet, whether the task fits the body at all. It is the model's own judgement; what the executor guarantees is that it was made, recorded, and made *before* the first leg moved. |
 | Conversation | quackd `Executor` | The LLM and MCP clients can only do what the `.duck` allows, as often as the budget allows, with a human in the loop where the contract says so. |
 | Session | quackd `Heartbeat` + `KillSwitch` | A dead transport or a worried human ends in a `stop` intent. |
 
@@ -188,10 +189,26 @@ cannot `say`, and `validate --robot` says so before a run starts.
 `pick` on the arm is confirm-gated in its manifest because it hands the whole arm to a
 controller quackd does not write.
 
+What each body can carry, reach and survive is its **datasheet**
+([manifest-spec.md](manifest-spec.md)): every number with how sure quackd is of it and who
+says so, and a figure the maker never published listed as not published rather than guessed
+at. The pilot is shown it and told to judge the task against it before anything moves, which
+is what `assess_task` is for. A `.duck` file can correct it for the build in front of you,
+and the prompt says which numbers came from the task file. None of it is enforced: an
+executor cannot weigh a basket. What is enforced is that the judgement was made first
+([ADR-0032](adr/0032-datasheets-and-the-verdict.md)).
+
 ## What quackd does not protect against
 
 A model that is *allowed* to `walk` can walk into a wall; the sim has walls, your living
 room has stairs. The allowlist is your tool: a `.duck` for a new space should start small.
+
+The feasibility verdict is the model's own guess about the world, weighed against numbers
+that carry confidence labels of their own, and neither is a measurement. A wrong `feasible`
+buys nothing past the gates below it: the allowlist, the budgets, the confirm gates and the
+body's own safety authority all still apply, which is why the verdict is a layer above them
+and not a replacement for any. A wrong `infeasible` costs one run. A robot that reports a
+URDF that does not match the robot is believed, and that assumption is recorded as one.
 
 There is one more thing to know about. A robot's memory
 ([memory.md](memory.md)) is text a model wrote, kept on disk, and handed to the *next*

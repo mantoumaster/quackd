@@ -45,6 +45,30 @@ not before.
 
 ## Open here
 
+- ⬜ **The browser demo has no datasheet and no feasibility gate.** `web/src/pilot.js` is a
+  second loop with its own hardcoded Microduck prompt, and it shares no code with the package,
+  so the body section and the `assess_task` rule that the Python pilot now gets stop at the
+  language boundary. A page asked to carry something will try. Either the page grows both, or
+  its README says which of quackd's guarantees it does not have.
+- ⬜ **No real model has ever refused a task on feasibility grounds here.** The gate, the
+  outcome, the hint and the fleet handoff are exercised with scripted verdicts and an in-process
+  MCP client. There is one `live_llm` test beside the others waiting for a key, and until
+  somebody runs it nothing is known about whether a real model uses `uncertain` when it should
+  or reaches for `infeasible` too readily.
+- ⏸ **A flock role can ask for a body, and no flock can have two different ones in it.**
+  `flock.roles.<role>.needs` validates, and the coordinator matches it against the datasheet a
+  bid carries, tested at that level. But `flock/runner.py` still knows only the Microduck, so
+  nothing quackd can start exercises the matching end to end. It waits on the same work as the
+  rest of heterogeneous flocks, including the latent bug [ADR-0020](docs/adr/0020-heterogeneous-flocks.md)
+  records: the coordinator judges eligibility before members report their vocabulary, and
+  `needs` inherits that.
+- ⏸ **Nobody has asked a real bridge what its robot is.** `rosbridge:ws` reads the topic list
+  and the URDF at connect, from the parameter and from the latched topic, and every name is
+  VERIFIED at a pin. All of it is exercised with fake services and fake topics. What a real
+  bridge does, whether `rosapi` is running, whether the description is where its defaults
+  expect, and what a real robot's inertials add up to, is unknown until somebody points it at
+  one.
+
 - 🔨 **Somebody has to drive `web/` in a browser, and record it.** The page itself is no longer
   unopened: it booted clean twice on the machine that wrote it (`8d72a2a`, `a9fea18`), with the
   fonts and the mark loaded and a held `W` walking the duck. What that leaves is everything past
