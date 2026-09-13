@@ -46,6 +46,16 @@ def _memory_in_tmp(
 
 
 @pytest.fixture(autouse=True)
+def _registry_in_tmp(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same rule as memory, for the same reason: a test that registers a robot must never
+    write the developer's real `~/.quackd/robots.json`, and a developer who has one must never
+    be running a different suite from CI because a flock they made is lying there."""
+    monkeypatch.setenv("QUACKD_REGISTRY_DIR", str(tmp_path_factory.mktemp("quackd-registry")))
+
+
+@pytest.fixture(autouse=True)
 def _asset_cache_in_tmp(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,

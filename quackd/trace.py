@@ -358,6 +358,7 @@ _FLOCK_STYLE = {
     "member_excluded": "red",
     "wedges_rotated": "cyan",
     "bid_rejected": "yellow",
+    "talk": "cyan",
 }
 
 
@@ -392,6 +393,11 @@ def flock_caption(kind: str, d: Mapping[str, Any]) -> tuple[str, str] | None:
         return "OUT", f"{d.get('duck')} ({d.get('why')})"
     if kind == "wedges_rotated":
         return "SEARCH", f"round {d.get('round')}, wedges rotated {d.get('by_deg')} deg"
+    if kind == "talk":
+        # the one flock line a person actually reads for its content rather than its verdict,
+        # so it carries the words and not a summary of them
+        refused = "" if d.get("ok", True) else f" (refused: {d.get('summary')})"
+        return "TALK", f"{d.get('src')} -> {d.get('to')}: {d.get('text')}{refused}"
     if kind == "bid_rejected":
         why = d.get("why") or f"missing {', '.join(d.get('missing') or [])}"
         return "BID", f"{d.get('src')} for {d.get('role')} rejected: {why}"

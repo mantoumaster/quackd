@@ -37,6 +37,20 @@ The key is the body, not the name you gave it, so two members of one fleet that 
 same `adapter:backend` share a file. That is the same rule that keeps `microduck:sim2d` and
 `microduck:jsonrpc` apart, read the other way round.
 
+**Unless you have registered it.** `quackd robot add duck-a microduck:jsonrpc` gives that one
+robot a name, and a run by that name keys its memory by the name instead:
+
+```
+~/.quackd/memory/duck-a.jsonl
+~/.quackd/memory/duck-b.jsonl
+```
+
+So two real ducks on one desk keep separate notes, which the rule above could not express.
+A registered name may not collide with an adapter name or with one of the `adapter-backend`
+slugs above, so the two schemes never meet in one file
+([registry.md](registry.md), [ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)
+amending [ADR-0025](adr/0025-memory-between-runs.md)).
+
 `microduck:sim2d` and `microduck:mujoco` are the pair that catches people out. They share an
 arena (bar the cartoon's person, who is not in the physics one), a seed and a `.duck` file by
 design, and they still keep separate files, because what a
@@ -50,8 +64,8 @@ and the oldest **episodes** go first, because notes were chosen on purpose.
 
 ## The `remember` tool
 
-When memory is on, the model gets one extra tool next to `declare_success` and
-`declare_failure`:
+When memory is on, the model gets one more tool beside `assess_task`, `declare_success` and
+`declare_failure` (and `tell`, in a flock of pilots):
 
 ```jsonc
 {"name": "remember", "arguments": {"text": "kick with the right leg from 0.25 m works", "tags": ["strategy"]}}
@@ -75,9 +89,11 @@ putting the call **inside the numbered strategy** of the `.duck` body, right bef
 declaration (`5. When the ball has moved ≥ 0.3 m, \`remember\` where you found the ball,
 \`quack\` once and declare success.`), plus a short *Memory* section saying what is worth
 keeping. The solo starters do that, except the three lookouts added in 0.7 (`xlerobot-lookout`,
-`alohamini-lookout`, `toddlerbot-lookout`); `--goal` runs get the same line. The flock
-ducks do not, because the coordinator does not run the deliberation loop and has no
-`remember`. `hello-world` is left alone: it is a smoke test that says "do not do anything
+`alohamini-lookout`, `toddlerbot-lookout`); `--goal` runs get the same line. `flock-kick`
+does not, because a coordinator flock's member is a state machine: it never runs the
+deliberation loop and is never offered `remember`. `flock-hello` is a flock of pilots, whose
+members are whole agent loops with a memory file each, so a note there would work; it does not
+ask for one because it is a radio check. `hello-world` is left alone: it is a smoke test that says "do not do anything
 else". Write your own ducks the same way.
 
 ## The CLI

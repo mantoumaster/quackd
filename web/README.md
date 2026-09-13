@@ -180,13 +180,19 @@ The sentence box and the keyboard are both live, always, and neither takes turns
 other. There is no mode to flip before you can drive.
 
 The keys write a twist — `vx, vy, wz` — and a head angle, which is the entire interface the
-hardware has. `W`/`S` walk, `A`/`D` turn, `Shift` with `A`/`D` strafes instead of turning,
-`Q`/`E` look left and right, `G` centres the head, `Space` stops (a latch, not a term in the
-twist: a key you are physically holding is dropped and has to be pressed again), `K` kicks,
-`R` stands the duck up after a fall, `O` reads the state into the log, `1`/`2` change camera
-and `Esc` hands the keyboard back to the arena from wherever focus is. The legend on the
-page is that same list, and the keycaps
-light up as you hold them.
+hardware has. The legend on the page is this same list, and the keycaps light up as you hold
+them.
+
+| Keys | What they do |
+|---|---|
+| `W` `S` | walk forward and back |
+| `A` `D` | turn, or strafe with `Shift` held |
+| `Q` `E` | look left and right, `G` centres the head |
+| `Space` | stop. A latch, not a term in the twist: a key you are holding is dropped and has to be pressed again |
+| `K` `R` | kick, and stand the duck up after a fall |
+| `O` | read the raw state into the log, as JSON, without interrupting a run |
+| `1` `2` | over the shoulder camera or duck cam, also without interrupting |
+| `Esc` | hand the keyboard back to the arena from wherever focus is |
 
 There is deliberately **no key for `say`**. Every other verb the model can pick has a key
 beside it, and that one cannot: a key carries a command, and a sentence needs something to

@@ -1,6 +1,13 @@
 # ADR-0016: The flock clock is lockstep
 
-**Status:** accepted · **Date:** 2026-08-31
+**Status:** accepted, amended · **Date:** 2026-08-31
+
+**Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md):** this is
+the *auction* flock's clock. A pilot flock has no `FlockClock`: its members are real or
+simulated bodies on their own clocks, running concurrently in wall-clock time, so a slow model
+costs real seconds there and a seed does not make the run reproducible. The "it may return as
+a realtime mode" line below is what happened, for that kind only. Everything here still holds
+for an auction, which is still the only flock with one shared world to advance.
 
 ## Context
 

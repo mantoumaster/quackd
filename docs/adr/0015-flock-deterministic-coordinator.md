@@ -1,6 +1,18 @@
 # ADR-0015: Flocks are a deterministic coordinator with one planner call
 
-**Status:** accepted · **Date:** 2026-08-31
+**Status:** accepted, amended · **Date:** 2026-08-31
+
+**Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md):** the "Out
+of scope for 0.3" line below says per-duck LLM pilots and LLM-negotiated bids are not built.
+They are built now, as a *second kind* of flock rather than a replacement for this one:
+`flock.allocation.method: pilots` runs one `AgentLoop` per member on wall-clock time with a
+`tell` tool over this ADR's own bus, and `auction` is still the default and still everything
+decided here. The reasoning above is untouched and still correct for the task class it names:
+a Contract Net is near-optimal for ST-SR-IA, and pilots do cost N times the tokens and the
+latency, which is why the kick demo still runs the auction. What changed is that
+[ADR-0032](0032-datasheets-and-the-verdict.md) gave a pilot a datasheet to reason from, so two
+pilots splitting a task between two different bodies are reading data rather than improvising,
+which is a task class this coordinator cannot express at all.
 
 ## Context
 

@@ -63,9 +63,19 @@ THEME = Theme(STYLES)
 """The same names, installed on quackd's own consoles, so `[ok]` markup works for anyone who
 wants it. Nothing in this file relies on it."""
 
-MEMBER_STYLES = ("cyan", "magenta", "green", "yellow")
-"""One per robot in a flock. Three of them narrate at once and the eye finds a colour faster
-than it reads a name; the coordinator's own lines are bold and wear none of these."""
+MEMBER_STYLES = (
+    "cyan",
+    "magenta",
+    "green",
+    "yellow",
+    "blue",
+    "bright_cyan",
+    "bright_magenta",
+    "bright_green",
+)
+"""One per robot in a flock. Several narrate at once and the eye finds a colour faster than it
+reads a name; the coordinator's own lines are bold and wear none of these. Eight of them,
+because that is what a pilot flock may hold (`PILOTS_MAX_MEMBERS`); an auction uses four."""
 
 MARKS = ("start", "send", "ok", "fail", "warn", "other", "note", "flock", "end")
 """The kinds of moment a trace line can be, and the glyph fields that answer for them."""

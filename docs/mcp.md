@@ -29,9 +29,10 @@ stays the fast way in and is what the configs below use.
 
 ## Tools
 
-Nine `robot_*` tools. `robot` is the name from `--robots name=<adapter>:<backend>`; omit
-it (or pass `null`) to address the default robot, which is the only robot when there is
-one, else the first Microduck, else the first declared.
+Nine `robot_*` tools. `robot` is the name from `--robots name=<adapter>:<backend>`, or a
+registered robot's name when the fleet came from `--flock NAME`; omit it (or pass `null`) to
+address the default robot, which is the only robot when there is one, else a stored flock's
+first member, else the first Microduck, else the first declared.
 
 | Tool | What it does |
 |---|---|
@@ -50,9 +51,22 @@ on a default budget of 40 verb steps and five minutes, counted from when the ser
 Load one to get the guard rails and the task's own budget. Contracts, budgets and abort
 flags are per robot: loading a contract on `duck` changes nothing for `arm`.
 
+A fleet can also come from a stored flock, which is the same fleet by another door:
+
+```bash
+quackd serve-mcp --flock kitchen
+```
+
+Every member comes from the registry with its own address, token and camera, rather than one
+value applied to all of them, and each keeps its memory under its registered name
+([registry.md](registry.md)). `--flock` refuses `--robot`, `--robots`, `--address`, `--token`
+and `--camera-url`, because the registry already answers all five.
+
 Simulated robots in one fleet each get their own world; a shared arena over MCP is future
-work (a flock needs a coordinator, and one MCP pilot is not one). Run a flock task
-with `quackd run flock-kick` instead ([flock.md](flock.md)).
+work. A flock **task file** is still refused here, whichever kind it is: the coordinator needs
+a referee this process does not run, and a pilot flock needs one model per robot rather than
+the one model driving this session. Run either with `quackd run` instead
+([flock.md](flock.md)).
 
 ## What the trace shows
 
@@ -199,6 +213,7 @@ quackd serve-mcp --dry-run                           # intents are logged, never
 quackd serve-mcp --yes                               # allow confirm-gated verbs (no terminal to ask)
 quackd serve-mcp --robot microduck:jsonrpc --address tcp://127.0.0.1:9870   # real robot, experimental
 quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock             # a fleet: robot_* tools, one executor each
+quackd serve-mcp --flock kitchen                                            # the same, from a stored flock
 quackd serve-mcp --no-trace                          # stop every result carrying a trace of what happened
 quackd serve-mcp --robot open_duck:sim2d                                     # a buildable duck, no hardware needed
 ```

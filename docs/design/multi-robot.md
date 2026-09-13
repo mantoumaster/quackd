@@ -2,6 +2,16 @@
 
 **Status:** implemented in 0.4.0 · **Branch:** `feat/multi-robot` · **Shipped:** 2026-09-02
 
+> **Read on 2026-09-13:** this is the record of what 0.4 designed and built, and it is still
+> accurate about that. Two things below have since been overtaken. Where it says a flock
+> member is a state machine and that every member must be `sim2d`, it is describing the
+> **coordinator** flock, which is unchanged; 0.9 added a second kind, a **pilot** flock, where
+> each member is a whole `AgentLoop` on wall-clock time on any backend. And the rule at the end
+> about a new MCP tool needing its docs in the same commit still holds and has been extended:
+> a new CLI command needs its README table row and its `docs/architecture.md` row in the same
+> commit, and a test now says so. See [ADR-0034](../adr/0034-registered-robots-and-pilot-flocks.md)
+> and [flock.md](../flock.md).
+
 ## Why
 
 quackd 0.3 is a working brain for exactly one robot, the Microduck, addressed through

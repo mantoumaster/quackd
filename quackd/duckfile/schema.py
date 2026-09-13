@@ -31,6 +31,14 @@ _ROBOT_SPEC_RE = re.compile(r"^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)?$")
 # fabricated capability, so the vocabulary is closed (ADR-0019, ADR-0020).
 KNOWN_ROLES = ("spotter", "kicker")
 
+# How big a flock may be, per kind. An auction flock shares one arena and the arena holds
+# four (`quackd.sim2d.world.MAX_DUCKS`), spelled here rather than imported because this
+# module must not pull numpy in to parse a file. A pilot flock has no arena: each member is
+# its own body on its own clock, so the bound is what a person can read in one terminal and
+# what N concurrent pilots cost in tokens (ADR-0034).
+AUCTION_MAX_MEMBERS = 4
+PILOTS_MAX_MEMBERS = 8
+
 # The two `abort_when` phrasings the executor enforces itself. Anything else in the list is
 # passed to the LLM as an instruction, which is honest about what is and is not policed.
 BATTERY_ABORT_RE = re.compile(r"battery\s+(?:below|under|<)\s*(\d+(?:\.\d+)?)\s*%", re.I)
@@ -183,11 +191,17 @@ class LearnedVerbRef(BaseModel):
 
 
 class FlockAllocation(BaseModel):
-    """How a flock decides who kicks. Deterministic; the LLM never runs the auction."""
+    """Which kind of flock this is, and how an auction flock decides who kicks.
+
+    `auction` is the 0.3 coordinator: deterministic Contract Net, the LLM never runs it, and
+    every knob below is its. `pilots` (0.9) is the other kind entirely: one LLM pilot per
+    body, on wall-clock time, deciding by talking to each other rather than by bidding, so
+    the coordinator never runs and the rest of this block is ignored (ADR-0034)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    method: Literal["auction"] = "auction"  # Contract Net; the only method in v0.3
+    method: Literal["auction", "pilots"] = "auction"
+    """`auction`: Contract Net, one referee, sim2d Microducks. `pilots`: one LLM per body."""
     bid: Literal["ball_distance"] = "ball_distance"  # lower bid wins
     tie_break: Literal["duck_id"] = "duck_id"  # lexicographic member name
     hysteresis_pct: float = Field(
@@ -272,13 +286,16 @@ class FlockRole(BaseModel):
 
 
 class FlockSection(BaseModel):
-    """Cooperating robots (simulator only). The coordinator enforces this block."""
+    """Cooperating robots. `allocation.method` says which kind of flock this is: `auction`
+    (the coordinator enforces this block, simulator only) or `pilots` (one LLM per body, any
+    backend, and only `members` is read)."""
 
     model_config = ConfigDict(extra="forbid")
 
     members: int | list[str] = Field(
         default=3,
-        description="Count (2-4, named duck-0..) or a list of 2-4 unique slugs.",
+        description="Count (named duck-0..) or a list of unique slugs. 2-4 for an auction "
+        "(the arena holds four), 2-8 for pilots.",
     )
     allocation: FlockAllocation = Field(default_factory=FlockAllocation)
     safety: FlockSafety = Field(default_factory=FlockSafety)
@@ -294,9 +311,25 @@ class FlockSection(BaseModel):
     )
 
     @model_validator(mode="after")
+    def _size_fits_the_method(self) -> FlockSection:
+        """An auction shares one arena and the arena holds four. Pilots share nothing."""
+        if self.allocation.method == "auction" and len(self.member_names) > AUCTION_MAX_MEMBERS:
+            raise ValueError(
+                f"an auction flock needs 2 to {AUCTION_MAX_MEMBERS} ducks (the arena holds "
+                f"{AUCTION_MAX_MEMBERS}); allocation.method: pilots takes up to "
+                f"{PILOTS_MAX_MEMBERS}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _roles_are_known_and_complete(self) -> FlockSection:
         if self.roles is None:
             return self
+        if self.allocation.method != "auction":
+            raise ValueError(
+                "flock.roles is an auction feature; allocation.method: pilots "
+                "splits the work by talking, so it names no roles"
+            )
         unknown = sorted(set(self.roles) - set(KNOWN_ROLES))
         if unknown:
             raise ValueError(
@@ -311,12 +344,14 @@ class FlockSection(BaseModel):
     @field_validator("members")
     @classmethod
     def _members(cls, value: int | list[str]) -> int | list[str]:
+        # the wide bound here and the narrow one per method below: `members` is validated
+        # before `allocation` is in hand, so the kind-specific cap is a model validator
         if isinstance(value, int):
-            if not 2 <= value <= 4:
-                raise ValueError("a flock needs 2 to 4 ducks")
+            if not 2 <= value <= PILOTS_MAX_MEMBERS:
+                raise ValueError(f"a flock needs 2 to {PILOTS_MAX_MEMBERS} ducks")
             return value
-        if not 2 <= len(value) <= 4:
-            raise ValueError("a flock needs 2 to 4 named ducks")
+        if not 2 <= len(value) <= PILOTS_MAX_MEMBERS:
+            raise ValueError(f"a flock needs 2 to {PILOTS_MAX_MEMBERS} named ducks")
         seen: set[str] = set()
         for name in value:
             if not _NAME_RE.match(name):
@@ -341,8 +376,8 @@ class DuckFrontmatter(BaseModel):
     duck: Literal[0, 1, 2] = Field(
         ...,
         description="Spec version: 0 (quackd 0.1 to 0.3), 1 (0.4: requires, robots, "
-        "flock.roles, flock.frame_hints) or 2 (0.9: datasheet, flock.roles.needs). Older "
-        "files parse unchanged.",
+        "flock.roles, flock.frame_hints; 0.9: flock.allocation.method: pilots) or 2 (0.9: "
+        "datasheet, flock.roles.needs). Older files parse unchanged.",
     )
     name: str = Field(..., description="Slug: lowercase letters, digits, hyphens.")
     description: str = Field(..., min_length=1, description="One line, human-facing.")
@@ -368,7 +403,8 @@ class DuckFrontmatter(BaseModel):
     )
     flock: FlockSection | None = Field(
         default=None,
-        description="Cooperating robots (simulator only). Absent means a single robot.",
+        description="Cooperating robots. Absent means a single robot, unless the run names a "
+        "stored flock, which makes it a pilot flock.",
     )
     requires: list[str] = Field(
         default_factory=list,
@@ -415,6 +451,8 @@ class DuckFrontmatter(BaseModel):
     def _version_and_cross_field_rules(self) -> DuckFrontmatter:
         if self.duck < 2 and self.datasheet is not None:
             raise ValueError("datasheet needs duck: 2")
+        if self.duck < 1 and self.flock is not None and self.flock.allocation.method != "auction":
+            raise ValueError("flock.allocation.method: pilots needs duck: 1")
         if self.duck < 2 and self.flock is not None and self.flock.roles is not None:
             for role, spec in self.flock.roles.items():
                 if spec.needs:

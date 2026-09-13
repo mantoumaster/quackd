@@ -9,6 +9,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A flock can be N pilots talking, not only a coordinator refereeing: `quackd run <duck> --flock <name>`.**
+  The 0.3 flock is one deterministic referee and N state machines in one simulated arena on a
+  lockstep clock, which is the right machine for finding and kicking a ball and the wrong one
+  for two robots whose bodies differ, because an auction has no way to express half a task.
+  A pilot flock is the other kind: one whole `AgentLoop` per body, all at once, on wall-clock
+  time, on any adapter and backend including mixed ones, 2 to 8 of them. Each member keeps its
+  own provider, executor, allowlist, budgets, heartbeat, memory and feasibility verdict, and
+  nothing about it is a special case, so what a pilot flock can do is what one pilot can do
+  times the number of bodies. Each member is handed the part of the contract its own body can
+  answer for, so an arm in a walking flock is not turned away at the door for having no legs,
+  while what the task *requires* is still checked against the union of every body before
+  anything connects. Every pilot declares for itself and the flock succeeds only when all of
+  them did; otherwise the worst outcome wins, with `error` above `aborted` because one member
+  raising and the rest being stopped because it did makes the error the cause and the aborts
+  the consequence. Ctrl-C or `q` fans one kill switch out to every executor. `ducks/flock-hello.duck`
+  is the bundled demo, a duck and an arm saying hello, and it runs with `--provider fake` on a
+  fresh checkout with no key and no registry. The honest part, which is also in the docs: N
+  simulated members are N separate worlds with no shared arena and nothing to check a claimed
+  success against, a seed does not make it reproducible, it costs one budget and one model call
+  per member per turn, and nothing here has run on hardware
+  ([docs/flock.md](docs/flock.md#the-pilot-flock), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
+- **Pilots talk to each other: a `tell` tool and a `TALK` message on the flock bus.**
+  `tell(to, text)` sits beside `assess_task`, `declare_success` and `remember`: it moves
+  nothing, costs no step and one model call, and whatever was said arrives in the addressee's
+  next observation under "Messages from your flock". `to` is a member name or `all`, a pilot
+  never hears its own words back, and every message is a `TALK` in `flock.jsonl` like any other
+  bus kind. It is not a verb, it is in no manifest, and no robot ever executes one. Each
+  pilot's system prompt also gains a `## Your flock` section naming every peer and giving its
+  datasheet in the same paragraph form the pilot's own body is described in, so a pilot
+  deciding who fetches and who holds is reading data rather than guessing, and saying that
+  `assess_task` judges its own part rather than the whole task. The runner speaks too, under
+  the name `flock`, when a member's loop ends, because otherwise a pilot waiting on somebody
+  who has already stopped would wait until its budget ran out
+  ([ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
+- **`flock.allocation.method` takes `pilots`, the second value it has ever had.**
+  The task file says which kind of flock it wants. `auction` is the default and everything it
+  always was, and `--flock N` is always that one. `pilots` needs `duck: 1` and reads only
+  `flock.members`. A coordinator flock is still 2 to 4 members, because its arena holds four; a
+  pilot flock is 2 to 8, because nothing is shared and the bound is what one terminal can show.
+  `flock.roles` stays a coordinator feature and is refused on a pilots file, which splits the
+  work by talking instead. An older quackd refuses the value rather than ignoring it, which is
+  the correct failure for a file asking for behaviour it does not have
+  ([docs/duck-spec.md](docs/duck-spec.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
+- **`quackd serve-mcp --flock <name>` fronts a stored flock as the MCP fleet, and adds no tools.**
+  `--robots name=<adapter>:<backend>,...` already served several robots from one process, with
+  one executor, budget and heartbeat each. What it could not do is give each of them its own
+  address, token and camera: those three flags were one value applied to every robot, which is
+  fine for three simulators and wrong for three machines. A stored flock takes all three from
+  the registry per member, keys each member's memory by its registered name, and makes the
+  flock's own first member the default robot rather than whichever Microduck came first.
+  `--flock` refuses `--robot`, `--robots` and the three endpoint flags, because the registry
+  already answers all five. The nine `robot_*` tools are untouched, and a flock **task file**
+  is still refused over MCP, whichever kind it is ([docs/mcp.md](docs/mcp.md),
+  [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
+- **A flock is a list of names you keep: `quackd flock create|list|show|edit|delete`.**
+  Members are robots registered with `quackd robot add`, so a flock is a composition rather
+  than a command line, and `~/.quackd/flocks.json` remembers it between runs. `create` with no
+  `--robot` prints what you have registered, numbered, and asks which to include; numbers and
+  names can be mixed, a bad answer says what was wrong and asks again, and where there is no
+  terminal to ask on it says so and tells you to pass `--robot` instead, because a script must
+  never hang on a prompt. Order is kept, because it is the order the members are listed and
+  coloured in when the flock runs. A flock stores 1 to 8 robots and runs with 2 to 8, so one
+  you are still building is stored and marked rather than refused. The one broken state either
+  file can be in is a flock naming a robot nobody registered: `quackd robot remove` refuses
+  while a flock lists it and names the flocks, `--force` drops it from them, and a flock that a
+  hand edit left dangling is marked in every listing and refuses to run rather than quietly
+  running smaller ([docs/registry.md](docs/registry.md),
+  [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
+- **A robot has a name now, and quackd keeps it: `quackd robot add|list|show|edit|remove`.**
+  Reaching a real body took five flags, one of them a secret: `--robot open_duck:bridge
+  --address tcp://10.0.0.5:9871 --token ... --camera-url ...`, retyped on every run and
+  therefore in shell history from then on. `--robots name=<adapter>:<backend>,...` gave a name
+  that died with the process. `quackd robot add scout open_duck:bridge --address ... --token
+  ...` writes it once to `~/.quackd/robots.json`, and `--robot scout` then means the same thing
+  in `run`, `record`, `validate`, `list-verbs`, `doctor`, `serve-mcp` and `quackd memory`. An
+  entry may also name the provider and model that pilot that robot, so a real duck can default
+  to Claude and the simulator to the scripted rule without a flag; a flag on the line still
+  wins, field by field, because reaching the same robot through a tunnel today is not renaming
+  it. `quackd robot list` is static, because it is what you run to remember a name, and
+  `--probe` connects to each robot and says whether it answered, exiting 1 if any did not.
+  `--registry-dir` beats `QUACKD_REGISTRY_DIR` beats `~/.quackd`, which is the precedence
+  `--memory-dir` already has. A name may not be a number, an adapter name, or an
+  `adapter-backend` memory slug, because each of those already means something else on a
+  command line. The honest part: the token is stored in plain text in a file in your home
+  directory, quackd masks it in everything it prints, and `SECURITY.md` says so
+  ([docs/registry.md](docs/registry.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
+
 - **Every robot carries a datasheet, and the pilot is told to check the task against it before anything moves.**
   A pilot used to be told one line about the body it was driving and a list of verbs, and nothing
   numeric: no payload, no reach, no working height, no endurance, and no way to say "this body
@@ -110,6 +202,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails when the generated file has drifted from `catalogue.py`.
 
 ### Changed
+
+- **A registered robot keys its memory by its name, not by its body.**
+  Memory was keyed `adapter:backend` so that a simulated duck never inherited a real one's
+  notes, which was right and also meant two real ducks on one desk shared one file. A robot
+  registered with `quackd robot add` now keys by the name you gave it, so `duck-a` and `duck-b`
+  keep separate notes, while an unregistered `--robot microduck:sim2d` run keys exactly as it
+  did. A registered name may not collide with an `adapter-backend` slug, so a run can never be
+  ambiguous about which file it is writing. Amends
+  [ADR-0025](docs/adr/0025-memory-between-runs.md)
+  ([docs/memory.md](docs/memory.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
 
 - **`--model` and `QUACKD_MODEL` now take a catalogue id, and three of the four defaults moved.**
   [ADR-0010](docs/adr/0010-providers.md) shipped four defaults with the first release and marked
@@ -239,6 +341,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seven adapters changed.
 
 ### Fixed
+
+- **The system prompt no longer promises every body a verb only a duck has.**
+  It opened by telling the pilot that composite verbs like `walk_to` close their own loops on
+  the camera, falling back to naming `search_scan` when it found neither `walk_to` nor `go_to`.
+  A robot that provides none of the three was therefore told about one it does not have, in the
+  same prompt whose allowlist does not list it, and a bolted-down arm was told its controllers
+  handle balance and gait. It now names a composite verb only when the body actually provides
+  one, and says "the motion" for a body that does not move itself. A Microduck's prompt is
+  unchanged, byte for byte. Found by reading the arm's real prompt in the new `flock-hello`
+  demo, which is what a bundled task on a second body is for.
+
+- **A registered robot's model no longer follows `--provider` to another vendor.**
+  `quackd robot add duck-a ... --provider anthropic --model claude-opus-5` then `quackd run
+  <duck> --robot duck-a --provider openai` carried the Claude id into OpenAI's catalogue, where
+  it was refused with a message blaming a `--model` nobody typed. A stored model now applies
+  only to the provider it was stored against, and an explicit `--model` is always taken as
+  typed.
 
 - **The browser demo can drive a model that will not take function tools on Chat
   Completions.** 0.8 taught the Python provider to read that 400, move the whole run to the

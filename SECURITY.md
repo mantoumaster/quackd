@@ -1,5 +1,12 @@
 # Security Policy
 
+## Reporting
+
+Please **do not** open a public issue for vulnerabilities. Email
+**ksjeno@gmail.com** with "quackd security" in the subject, or use GitHub's private
+vulnerability reporting on the repository if enabled. You will get an acknowledgement
+within 72 hours.
+
 ## What "security" means for a robot brain
 
 quackd sends *intents* to a robot. How much of the stopping the robot itself does depends
@@ -34,6 +41,14 @@ Also in scope:
   would be a security issue: memory reaching the executor, a note from one robot appearing
   in another robot's prompt, or the file escaping the directory `--memory-dir` names.
   `--no-memory` writes nothing at all, and `quackd memory clear` deletes the file.
+- **The robot registry** (`~/.quackd/robots.json`, `~/.quackd/flocks.json`). `quackd robot
+  add --token ...` writes that token to disk **in plain text**, which is the honest trade for
+  not having it in shell history on every run. It is a file in your home directory, not a
+  secret store: if that is not good enough for your robot, keep passing `--token` on the line
+  or through `QUACKD_DUCK_TOKEN`. quackd masks it in everything it prints, `--json` included,
+  which reports only whether one is set. What would be a security issue: a token reaching a
+  transcript, a trace line, a run directory or an MCP tool result, or either file escaping the
+  directory `--registry-dir` names.
 - The MCP server executing verbs a loaded `.duck` contract does not allow.
 - Anything that lets a `.duck` file (untrusted input — people will share them) execute
   code, read files, or reach the network.
@@ -108,13 +123,6 @@ Also in scope:
 - The recommended deployment for all of them is an ssh tunnel
   (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 -L 9873:127.0.0.1:9873`) rather than
   exposing any of these ports.
-
-## Reporting
-
-Please **do not** open a public issue for vulnerabilities. Email
-**ksjeno@gmail.com** with "quackd security" in the subject, or use GitHub's private
-vulnerability reporting on the repository if enabled. You will get an acknowledgement
-within 72 hours.
 
 ## Supported versions
 

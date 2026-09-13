@@ -28,7 +28,7 @@ Encoding UTF-8. The first non-blank, non-comment line must be `---`.
 
 | Field | Type | Required | Enforced by | Meaning |
 |---|---|---|---|---|
-| `duck` | `0`, `1` or `2` | yes | parser | Spec version. `1` unlocks `requires`, `robots`, `flock.roles` and `flock.frame_hints`; `2` unlocks `datasheet` and `flock.roles.<role>.needs`. Using a key under too low a version is an error that names the fix. |
+| `duck` | `0`, `1` or `2` | yes | parser | Spec version. `1` unlocks `requires`, `robots`, `flock.roles`, `flock.frame_hints` and `flock.allocation.method: pilots`; `2` unlocks `datasheet` and `flock.roles.<role>.needs`. Using a key under too low a version is an error that names the fix. |
 | `name` | slug `^[a-z0-9][a-z0-9-]{0,63}$` | yes | parser | Identifier; run directories and the fake pilot's strategies key on it. |
 | `description` | string | yes | — | One human-facing line. Shown in the system prompt. |
 | `author` | string | no | — | Credit. |
@@ -42,7 +42,7 @@ Encoding UTF-8. The first non-blank, non-comment line must be `---`.
 | `persona` | string | no | — | Tone. Inserted verbatim into the system prompt. |
 | `providers` | list of strings | no | — | Tested-with, **not** a restriction. |
 | `learned_verbs` | list of `{name, policy, description?, metadata?}` | no | `validate` rejects non-empty | Reserved for v2 ([learned-verbs.md](learned-verbs.md)). |
-| `flock` | mapping, see below | no | **coordinator** | Cooperating robots (simulator only). Absent means a single robot. |
+| `flock` | mapping, see below | no | **coordinator** or **pilots** | Cooperating robots. Absent means a single robot, unless the run names a stored flock (`--flock NAME`), which makes it a pilot flock. |
 | `requires` | list of verb names ⊆ `allow` (v1) | no (default `[]`) | `validate --robot` | The verbs the task *needs*. Checked against each robot's manifest. For a v0 file every allowed verb is required. |
 | `datasheet` (v2) | mapping, see below | no | loop and MCP session | Corrections and additions to the robot's own datasheet, for the build in front of you. Rendered in the prompt as coming from the task file. |
 | `robots` | `<adapter>[:<backend>]`, or a mapping member → spec (v1) | no | CLI | The default robot(s), so `quackd run <duck>` needs no `--robot`. Flags win over the file. |
@@ -60,15 +60,21 @@ below). Aliases count: a robot that provides `observe` satisfies `get_frame`.
 `robots` names the default robot for a solo task (`robots: microduck:sim2d`) or one per
 flock member (`robots: {duck-01: microduck:sim2d, duck-02: microduck:sim2d}`).
 
-### `flock` — cooperating robots (simulator only)
+### `flock` — cooperating robots
 
-A flock duck with a non-empty `verbs.confirm` fails `quackd validate` (there is no per-duck
-terminal to prompt on). Full semantics: [flock.md](flock.md).
+`allocation.method` chooses the kind. **`auction`** (the default) is the 0.3 coordinator:
+2 to 4 Microducks in one `sim2d` arena on a lockstep clock, members are state machines, at
+most one model call for the whole run, and every other key in this block is read. An auction
+duck with a non-empty `verbs.confirm` fails `quackd validate`, because an auction member has
+no pilot and no terminal to prompt on. **`pilots`** (`duck: 1`, 0.9) is the other kind: 2 to 8
+bodies on any backend, one LLM pilot each, on wall-clock time, splitting the work by talking.
+A pilot flock reads only `members`, takes `verbs.confirm` with `--yes`, and names no roles.
+Full semantics: [flock.md](flock.md).
 
 | Field | Type | Default | Enforced by | Meaning |
 |---|---|---|---|---|
-| `flock.members` | int 2–4, or list of 2–4 unique slugs | 3 | coordinator | Member count (named `duck-0`…) or explicit names. `--flock N` overrides. |
-| `flock.allocation.method` | `auction` | `auction` | coordinator | Contract Net is still the only method. |
+| `flock.members` | int, or a list of unique slugs. 2–4 for an auction, 2–8 for pilots | 3 | coordinator or pilots | Member count (named `duck-0`…) or explicit names. `--flock N` overrides the count for an auction; `--flock NAME` supplies the members from the registry. |
+| `flock.allocation.method` | `auction` · `pilots` (v1) | `auction` | parser | Which kind of flock. `auction`: Contract Net, one referee, sim2d Microducks. `pilots`: one LLM per body, any backend, and every other `allocation`, `safety`, `search` and `roles` key below is ignored ([ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)). |
 | `flock.allocation.bid` | `ball_distance` | `ball_distance` | coordinator | Lower camera-estimated distance wins. |
 | `flock.allocation.tie_break` | `duck_id` | `duck_id` | coordinator | Lexicographic member name. |
 | `flock.allocation.hysteresis_pct` | 0–100 | 20 | coordinator | A challenger must bid this much lower to unseat the current claimant. |
@@ -78,7 +84,7 @@ terminal to prompt on). Full semantics: [flock.md](flock.md).
 | `flock.safety.per_duck_heartbeat_s` | > 0 ≤ 10 | 1.0 | coordinator | Bus heartbeat period; the watchdog presumes a duck dead after 3× this, or this plus 2.5 s, whichever is longer. |
 | `flock.search.partition` | `heading` | `heading` | coordinator | Each duck owns a heading sector. |
 | `flock.search.restart_s` | > 0 ≤ 120 | 8 | member | Re-scan the sector when nothing was found for this long. |
-| `flock.roles` (v1) | mapping `{spotter: {requires: [...]}, kicker: {requires: [...]}}` | absent | coordinator | Heterogeneous roles. A robot bids only for a role whose `requires` its manifest satisfies. quackd knows exactly these two roles (both must be given), one robot each; `members` must then be a named list. Each role's `requires` ⊆ `allow`. |
+| `flock.roles` (v1) | mapping `{spotter: {requires: [...]}, kicker: {requires: [...]}}` | absent | coordinator | Heterogeneous roles, **auction only**. A robot bids only for a role whose `requires` its manifest satisfies. quackd knows exactly these two roles (both must be given), one robot each; `members` must then be a named list. Each role's `requires` ⊆ `allow`. |
 | `flock.roles.<role>.needs` (v2) | mapping in the datasheet vocabulary | `{}` | coordinator | What the body must be able to do, not only what it must know. See the rules below. Checked by `validate --robots`, by the member before it bids, and by the coordinator from what the bid carried ([flock.md](flock.md)). |
 | `flock.frame_hints` (v1) | `auto` · `on` · `off` | `auto` | runner | Share arena-frame target hints between robots. `auto` is on only when every member runs in `sim2d`; there is no shared frame on hardware ([flock.md](flock.md)). |
 
@@ -157,7 +163,7 @@ is refused at runtime and the LLM is told so.
 
 `quackd validate <files or globs or bundled names>` prints a table and exits 1 on any
 failure, with a path and a field-level reason. Checks: parse, schema, unknown verbs,
-`learned_verbs` empty, no `confirm` in a flock. With `--robot <adapter>:<backend>` (one or
+`learned_verbs` empty, no `confirm` in an auction flock. With `--robot <adapter>:<backend>` (one or
 more) or `--robots name=spec,...`, the file is also checked against those robots' manifests:
 `requires` (or, for v0, `allow`) per robot, and every flock role fillable by at least one
 robot. Without a flag, the duck's own `robots:` default is used, then the Microduck.
@@ -170,8 +176,9 @@ robot. Without a flag, the duck's own `robots:` default is used, then the Microd
 ## Versioning
 
 `duck: 0` is the 0.1 to 0.3 contract ([ADR-0005](adr/0005-duck-spec-v0.md)); `duck: 1`
-adds `requires`, `robots`, `flock.roles` and `flock.frame_hints`
-([ADR-0019](adr/0019-duck-spec-v1.md)); `duck: 2` adds `datasheet` and
+adds `requires`, `robots`, `flock.roles`, `flock.frame_hints` and, since 0.9,
+`flock.allocation.method: pilots` ([ADR-0019](adr/0019-duck-spec-v1.md),
+[ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)); `duck: 2` adds `datasheet` and
 `flock.roles.<role>.needs` ([ADR-0032](adr/0032-datasheets-and-the-verdict.md)). Older
 files keep parsing because the version is explicit and the parser is strict; the only new
 rejections a v0 file can hit are two contradictions no shipped file contains (a verb listed

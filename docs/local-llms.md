@@ -118,18 +118,15 @@ that live copy is served over https and your server is not. Browsers disagree ab
 `http://localhost` counts as a trustworthy origin, so some of them let an https page call a
 plaintext server on your own machine and others refuse it as mixed content or want a permission
 first. A copy you serve yourself is plain http at both ends, so there is no such argument to have,
-and it is also what you run when you are changing the page. The page wants a server in front of it, for two
-reasons: browsers refuse ES modules over `file://`, and the page expects to be mounted at
-`/simulator`, so every local reference in it is absolute. `web/serve.py` is that server —
-stdlib only, so it is Python but not quackd:
+and it is also what you run when you are changing the page. `web/serve.py` is the server it
+needs, stdlib only, so it is Python but not quackd ([web/README.md](../web/README.md) says
+why a plain `http.server` will not do):
 
 ```bash
 python web/serve.py            # then open http://localhost:8000/simulator/
 ```
 
-`python -m http.server --directory web` will not do: it serves the HTML and then 404s
-`/simulator/style.css` and `/simulator/src/app.js`, because nothing answers on the mount at
-the root. If port 8000 is already a vLLM, which the table above assumes it is, then
+If port 8000 is already a vLLM, which the table above assumes it is, then
 `python web/serve.py 8001` moves the page rather than the model server.
 
 Either copy is driven the same way. Pick Local in the page and give it your base URL. Ollama has

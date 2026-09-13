@@ -28,6 +28,7 @@ import quackd.lan
 import quackd.lan.announce
 import quackd.lan.discover
 import quackd.flock.mqtt_bus
+import quackd.registry
 from quackd.adapters.factory import BACKENDS, RobotSpec, describe, list_adapters, make_adapter
 rows = list_adapters()
 assert [r["name"] for r in rows] == [

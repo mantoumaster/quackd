@@ -65,7 +65,7 @@ local fan-out plus a non-blocking hand-off; members still `drain()` between sim 
 
 | | |
 |---|---|
-| Topics | `quackd/<flock_id>/ctl` (TASK, BID, CLAIM, ROLE, RESULT, HINT, VERDICT) at QoS 1, `quackd/<flock_id>/hb` (HB) at QoS 0, `retain=False` everywhere |
+| Topics | `quackd/<flock_id>/ctl` (TASK, BID, CLAIM, ROLE, RESULT, HINT, VERDICT, TALK) at QoS 1, `quackd/<flock_id>/hb` (HB) at QoS 0, `retain=False` everywhere |
 | Payload | the pydantic `FlockMessage` JSON, exactly what `flock.jsonl` records |
 | Echo | a broker sends your own publications back; a message whose `src` is one of this node's subscribers is dropped and counted |
 | Duplicates | QoS 1 is at least once; the coordinator's handlers are idempotent (minimum bid per source, maximum exclusion, idempotent heartbeats), so a duplicate changes no decision, and a test pins that |
@@ -85,15 +85,18 @@ result = await run_flock(
 )
 ```
 
-The runner starts the bus inside its event loop and closes it at the end of the run. There
-is no `--bus` flag on purpose: a distributed flock also needs a distributed clock (today's
-flock runs on one lockstep simulator clock), which is out of scope, and a flag would imply
-otherwise. `MqttBus(..., client=)` takes a fake client, which is how the tests run: two
+Either runner starts the bus inside its event loop and closes it at the end of the run. There
+is still no `--bus` flag on purpose, for a different reason per kind. A coordinator flock
+across machines also needs a distributed clock, because it runs on one lockstep simulator
+clock, and that is out of scope. A pilot flock has no shared clock to distribute, so nothing
+stands in its way except that nobody has run one across two machines, and a flag would imply
+somebody had. `MqttBus(..., client=)` takes a fake client, which is how the tests run: two
 nodes on a synchronous fake broker with zero sockets.
 
 **Status.** Round-trips of every message kind, echo, duplicates, threading and a full
 `flock-kick` run over the bus are tested on a fake broker in the suite. The real path was
 exercised once by us: two `MqttBus` nodes with real paho 2.1 clients against an `amqtt`
-0.12 broker on `localhost:1883` (one Windows 11 machine), all eight message kinds
-delivered in order, echo dropped, tap once per node. It has not carried a flock between
-two machines, because nothing distributes the clock yet.
+0.12 broker on `localhost:1883` (one Windows 11 machine), all eight message kinds that
+existed that day delivered in order, echo dropped, tap once per node. `TALK`, the ninth,
+rides `ctl` like the rest and has crossed a fake broker in the suite and no real one. It has
+not carried a flock of either kind between two machines, for the reasons above.

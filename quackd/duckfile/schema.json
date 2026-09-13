@@ -240,11 +240,14 @@
     },
     "FlockAllocation": {
       "additionalProperties": false,
-      "description": "How a flock decides who kicks. Deterministic; the LLM never runs the auction.",
+      "description": "Which kind of flock this is, and how an auction flock decides who kicks.\n\n`auction` is the 0.3 coordinator: deterministic Contract Net, the LLM never runs it, and\nevery knob below is its. `pilots` (0.9) is the other kind entirely: one LLM pilot per\nbody, on wall-clock time, deciding by talking to each other rather than by bidding, so\nthe coordinator never runs and the rest of this block is ignored (ADR-0034).",
       "properties": {
         "method": {
-          "const": "auction",
           "default": "auction",
+          "enum": [
+            "auction",
+            "pilots"
+          ],
           "title": "Method",
           "type": "string"
         },
@@ -372,7 +375,7 @@
     },
     "FlockSection": {
       "additionalProperties": false,
-      "description": "Cooperating robots (simulator only). The coordinator enforces this block.",
+      "description": "Cooperating robots. `allocation.method` says which kind of flock this is: `auction`\n(the coordinator enforces this block, simulator only) or `pilots` (one LLM per body, any\nbackend, and only `members` is read).",
       "properties": {
         "members": {
           "anyOf": [
@@ -387,7 +390,7 @@
             }
           ],
           "default": 3,
-          "description": "Count (2-4, named duck-0..) or a list of 2-4 unique slugs.",
+          "description": "Count (named duck-0..) or a list of unique slugs. 2-4 for an auction (the arena holds four), 2-8 for pilots.",
           "title": "Members"
         },
         "allocation": {
@@ -538,7 +541,7 @@
   "description": "The contract. This is what `schema.json` describes and what the executor enforces.",
   "properties": {
     "duck": {
-      "description": "Spec version: 0 (quackd 0.1 to 0.3), 1 (0.4: requires, robots, flock.roles, flock.frame_hints) or 2 (0.9: datasheet, flock.roles.needs). Older files parse unchanged.",
+      "description": "Spec version: 0 (quackd 0.1 to 0.3), 1 (0.4: requires, robots, flock.roles, flock.frame_hints; 0.9: flock.allocation.method: pilots) or 2 (0.9: datasheet, flock.roles.needs). Older files parse unchanged.",
       "enum": [
         0,
         1,
@@ -637,7 +640,7 @@
         }
       ],
       "default": null,
-      "description": "Cooperating robots (simulator only). Absent means a single robot."
+      "description": "Cooperating robots. Absent means a single robot, unless the run names a stored flock, which makes it a pilot flock."
     },
     "requires": {
       "description": "v1: verbs the task needs. `quackd validate --robot` checks them against the robot's manifest. For v0 files every allowed verb is required.",

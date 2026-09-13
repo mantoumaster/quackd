@@ -125,6 +125,9 @@ torqued holding its last target instead.
   Open Duck's choice and for the same reason in reverse: turning a humanoid with no fall
   recovery to look around is not the first thing to reach for.
 - Flock mode does not know this robot, and extending it stays out of scope.
+  Amended 2026-09-13 by [ADR-0034](0034-registered-robots-and-pilot-flocks.md): true of
+  the *coordinator* flock, whose runner is still Microduck-only. A **pilot** flock takes any
+  adapter and backend, so this robot can be a member of one today.
 - Eight unknowns remain and are named in `upstream_api.py` as UNVERIFIED, the largest being
   whether the safe pose is safe to slew to from a crawling or prone start. Only a robot on a
   stand retires that one.

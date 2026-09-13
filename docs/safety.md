@@ -7,34 +7,36 @@ A biped falls in 0.3 s; an LLM answers in 3 s. Everything here follows from that
 | Layer | Owner | What it guarantees |
 |---|---|---|
 | Body | the robot's own controller | **Whatever that particular body actually offers, which is not the same everywhere.** The Microduck's `robotd` gives joint and thermal clamps, fall detection and a **deadman**: velocity goes to zero when `robot.move` notifications stop. An Open Duck Mini v2 gives *none of those*: its deadman is quackd's own daemon on the Pi and the human watching is its only fall detector (details under "On hardware"). The body is still the sole safety authority: clients send intents, never motor writes. What each body offers is declared in its manifest's `safety_authority`, and `quackd doctor` prints what the robot itself reported (see "On other bodies"). |
-| Judgement | the pilot, held to it by quackd `Executor` | Nothing that moves the body runs until the model has said, against the robot's datasheet, whether the task fits the body at all. It is the model's own judgement; what the executor guarantees is that it was made, recorded, and made *before* the first leg moved. A flock member is a state machine with no pilot to ask, so it is never asked: a role's `needs` against a datasheet is what a flock has instead ([flock.md](flock.md)). |
+| Judgement | the pilot, held to it by quackd `Executor` | Nothing that moves the body runs until the model has said, against the robot's datasheet, whether the task fits the body at all. It is the model's own judgement; what the executor guarantees is that it was made, recorded, and made *before* the first leg moved. A **coordinator** flock's member is a state machine with no pilot to ask, so it is never asked: a role's `needs` against a datasheet is what that kind of flock has instead. A **pilot** flock's member is a whole pilot and is asked exactly as a solo run is, about its own part of the task rather than all of it ([flock.md](flock.md)). |
 | Conversation | quackd `Executor` | The LLM and MCP clients can only do what the `.duck` allows, as often as the budget allows, with a human in the loop where the contract says so. |
-| Session | quackd `Heartbeat` + `KillSwitch` | A dead transport or a worried human ends in a `stop` intent. |
+| Session | quackd `Heartbeat` + `KillSwitch` | A dead transport or a worried human ends in a `stop` intent. In a flock one kill switch reaches every member's executor, so Ctrl-C stops every body rather than the one in front. |
 
 ## The executor (mirrors upstream's own rules)
 
-Every verb call — from the agent loop or an MCP session — passes `Executor.run_verb`, in
-this order: abort flag (`stop` is exempt, so the brake still works) → **allowlist**
-(`verbs.allow`; `stop` always allowed) → **verdict** (nothing that moves the body runs until
-the pilot has judged the task feasible against the datasheet; `stop`, `observe`,
-`report_state`, `say`, `quack`, `express`, `gaze`, `look` and `introspect` run before it,
-because a pilot has to be able to look at the thing before judging whether it can lift it,
-and a verb in neither list waits, including one quackd has never heard of) → param
-validation (errors are feedback to the model, not crashes) → **confirm gate**
-(`verbs.confirm` or `safety_class` ∈ {confirm, dangerous}; y/N in the terminal, `--yes` to
-auto-accept, MCP refuses unless `--yes`) →
-**budgets** (`max_steps` and `max_minutes` here, which is what caps an MCP session since
-there is no loop there; `max_llm_calls` is the loop's own) →
-machine-enforced **`abort_when`** (the battery threshold here, consecutive failures once
-the result is in) →
-**preconditions** (not fallen, not sitting) → `--dry-run` → execute, racing the **timeout**
-against the abort, so a kill switch cancels the verb. A verb that times out or raises stops
-the duck and reports a failure.
+Every verb call — from the agent loop or an MCP session — passes `Executor.run_verb`, which
+applies these in order and stops at the first one that refuses. The **gate** column is the word
+the trace and the transcript print, so a refusal tells you which row you are on.
 
-So does a call whose *caller* goes away: an MCP client dropping the request, or a second
-Ctrl-C. The verb is cancelled and a `stop` goes out, recorded as `gate cancelled`. That path
-used to return at once and leave the legs moving with nothing to halt them, which is the
-failure this page exists to rule out.
+| Gate | What it checks | What you change |
+|---|---|---|
+| `abort` | the run has been aborted. `stop` is exempt, so the brake still works | nothing: the run is over |
+| `allowlist` | the verb is in `verbs.allow`. `stop` is always allowed | the `.duck`'s `verbs.allow` |
+| `unknown` | quackd has never heard of this verb | the spelling, or the robot (`quackd list-verbs`) |
+| `verdict` | the pilot has judged the task feasible against the datasheet. `stop`, `observe`, `report_state`, `say`, `quack`, `express`, `gaze`, `look` and `introspect` run before it, because a pilot has to look at a thing before judging whether it can lift it | nothing: the model calls `assess_task` |
+| `params` | the arguments fit the verb's schema | the call. This is feedback to the model, not a crash |
+| `confirm` | `verbs.confirm`, or a `safety_class` of `confirm` or `dangerous`. y/N in the terminal; over MCP it refuses unless `--yes` | answer y, or pass `--yes` |
+| `budget` | `max_steps` and `max_minutes`. These cap an MCP session too, which has no loop of its own; `max_llm_calls` is the loop's | the `.duck`'s `budgets`, or `--max-steps` |
+| `abort_when` | the battery threshold, and consecutive failures once the result is in | the `.duck`'s `abort_when`, or the robot |
+| `precondition` | what the manifest says this verb needs: not fallen, not sitting, torque on | the robot's state |
+| `dry_run` | `--dry-run` is on, so nothing is sent | drop `--dry-run` |
+| `cancelled` | the caller went away mid-verb: an MCP client dropped the request, or a second Ctrl-C | nothing: a `stop` went out |
+
+Execution races a **timeout** against the abort, so a kill switch cancels the verb that is
+running. A verb that times out or raises stops the robot and comes back as a failed result
+rather than an abort.
+
+The `cancelled` row is the one worth knowing about: that path used to return at once and leave
+the legs moving with nothing to halt them, which is the failure this page exists to rule out.
 
 ## Heartbeat
 
@@ -152,6 +154,8 @@ widen it. **You are responsible for your robot.**
   at the end of a session by its default, so the arm can sag when the run ends: do not
   leave it holding something fragile.
 - Calibration is interactive and quackd never triggers it. An uncalibrated arm is refused.
+- A good first contract: `allow: [observe, report_state, stop]`. It moves no joint, so it tells
+  you whether the arm answers before anything sweeps a volume.
 
 **A wheeled base over rosbridge:**
 
@@ -162,6 +166,8 @@ widen it. **You are responsible for your robot.**
   `stop`, on close, and when the heartbeat fails. That is the entire stop authority.
 - The speed limits are quackd's caution (`limits.max_vx`, `max_wz` in the manifest), not
   the base's capability. Lower them before the first real drive.
+- A good first contract: `allow: [observe, report_state, introspect, stop]`. Nothing there
+  publishes a Twist, so you can read what the bridge says the robot is before you drive it.
 
 **An Open Duck Mini v2:**
 
@@ -187,6 +193,8 @@ widen it. **You are responsible for your robot.**
   **no authentication at all**. It binds loopback and warns if you bind it wider, because
   it shows whatever the robot can see. Tunnel it rather than exposing it.
 - The only e-stop is the power switch.
+- A good first contract is the shipped `open-duck-lookout`: it looks and speaks, and moves no
+  leg.
 - The order to bring one up in, feet off the ground until step 10, with an abort condition
   at every step: [open-duck-hardware-checklist.md](open-duck-hardware-checklist.md).
 

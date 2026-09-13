@@ -39,21 +39,19 @@ hardware through its `--fake` mode and a pure core the tests drive directly. The
 ToddlerBot daemon is the largest of the three, because it owns that robot's control
 loop rather than feeding one, so it carries the most of its own safety machinery.
 
-Touching `web/`? That is the browser demo, and the only quackd code that is not Python: six
-modules of plain JavaScript, no build step, nothing to install. Run it with the server in the
-directory itself, not with `http.server`:
+Touching `web/`? That is the browser demo, and the only quackd code that is not Python: plain
+JavaScript modules, no build step, nothing to install. Run it with the server in the directory
+itself, not with `http.server` ([web/README.md](web/README.md) says why):
 
 ```bash
 python web/serve.py            # then open http://localhost:8000/simulator/
 ```
 
-The page is mounted at `/simulator` in production, and that mount is live:
-<https://www.quackd.org/simulator> is what a visitor sees today. That domain belongs to
-quackd-web, a separate project whose build fetches this directory into its own `/simulator` at a
-pinned commit — so every local reference in `index.html` is absolute under that prefix, and a
-plain `python -m http.server --directory web` serves the HTML and then 404s the stylesheet and
-the script. `web/serve.py` is stdlib only and mounts the directory the way the deploy does, so
-the local mount is what you compare your change against, and what you test there is what ships.
+The mount matters here for a reason that is yours rather than the reader's. The live page at
+<https://www.quackd.org/simulator> belongs to quackd-web, a separate project whose build fetches
+this directory into its own `/simulator` at a pinned commit. `web/serve.py` mounts the directory
+the way that deploy does, so the local mount is what you compare your change against, and what
+you test there is what ships.
 
 Merging is not shipping here. Because the deployed copy is pinned, a change to `web/` on `main`
 does not reach a visitor until quackd-web builds again. Asking it to is the whole job of
@@ -89,8 +87,9 @@ registrar and a synchronous fake MQTT broker, no sockets. Keep it that way, and 
 4. Open a PR. In the description say what it does, which providers you tried, and what
    failed. Ducks that mostly fail are still welcome if the file says so — that is data.
 
-Checklist: `duck: 0` (or `duck: 1` if you use `requires`, `robots` or `flock.roles`, or
-`duck: 2` if you correct the robot's `datasheet` or a role's `needs`) ·
+Checklist: `duck: 0` (or `duck: 1` if you use `requires`, `robots`, `flock.roles` or
+`flock.allocation.method: pilots`, or `duck: 2` if you correct the robot's `datasheet` or a
+role's `needs`) ·
 slug name · `allow` lists only verbs the robot provides (`quackd list-verbs --robot ...`)
 · `confirm` ⊆ `allow` · at least one `success` line · `abort_when` uses the two enforced
 phrasings if you want them enforced · body starts with `# Task` · `quackd validate
@@ -98,7 +97,9 @@ your.duck --robot <adapter>:<backend>` passes for the robot you mean.
 
 **Ask for a note.** Every solo starter except `hello-world` and the three lookouts added in 0.7
 ends its numbered strategy with a `remember` and carries a short *Memory* section saying what
-is worth keeping for next time.
+is worth keeping for next time. A coordinator flock's duck has no `remember` step, because its
+members are state machines with nothing to remember with; a pilot flock's members are whole
+pilots and may.
 Put the call in the strategy rather than only in a Memory section: a 14B local model read a
 prompt-level hint and never wrote to memory, and followed the same instruction on its first
 run once it was step 5. `remember` is offered automatically when memory is on and needs

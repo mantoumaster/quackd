@@ -403,6 +403,18 @@
    "yellow"
   ]
  ],
+ "flock_talk": [
+  [
+   "talk    duck-a -> arm: I have the ball, you spot",
+   "cyan"
+  ]
+ ],
+ "flock_talk_refused": [
+  [
+   "talk    duck-a -> ghost: hello (refused: no member called 'ghost'; this flock is arm)",
+   "cyan"
+  ]
+ ],
  "member_end": [
   [
    "end     stopped after 7 steps",
@@ -640,6 +652,8 @@
   "search  round 2, wedges rotated 45 deg",
   "bid     duck-0 for kicker rejected: too far",
   "bid     duck-0 for kicker rejected: missing kick, walk_to",
+  "talk    duck-a -> arm: I have the ball, you spot",
+  "talk    duck-a -> ghost: hello (refused: no member called 'ghost'; this flock is arm)",
   "end     stopped after 7 steps",
   "tool    robot_run_verb verb='go_to', params={'target': 'ball'} on duck",
   "done    ok in 1.1 s budget: step 1/40",

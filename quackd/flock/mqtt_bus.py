@@ -18,8 +18,10 @@ network thread; consumers still `drain()` between sim sleeps. Four invariants:
   `call_soon_threadsafe` before it is tapped and pushed. Without a running loop (a
   synchronous test) it is delivered inline.
 
-Library-only: `run_flock(bus_factory=...)`. There is no `--bus` flag because a
-distributed flock also needs a distributed clock, which is out of scope.
+Library-only: both runners take `bus_factory=...`. There is still no `--bus` flag: a
+coordinator flock across machines also needs a distributed clock, which is out of scope, and a
+pilot flock needs no shared clock at all but has simply never been run across two machines.
+quackd does not ship a flag for a thing nobody has done.
 """
 
 from __future__ import annotations

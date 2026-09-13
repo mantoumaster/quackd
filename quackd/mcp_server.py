@@ -672,6 +672,7 @@ def build_fleet_server(
     default: str | None = None,
     memory: bool = True,
     memory_dir: str | Path | None = None,
+    memory_keys: Mapping[str, str] | None = None,
     trace: bool = True,
     manifests: Mapping[str, RobotManifest] | None = None,
 ) -> tuple[MCPServer, Fleet]:
@@ -680,7 +681,9 @@ def build_fleet_server(
     `--yes` and `--dry-run` are global; contracts, budgets and abort flags are per robot.
     A `.duck` given at startup is adopted by the default robot. With `memory` on, each
     robot gets its `RobotMemory` (keyed adapter:backend, so a simulated body never
-    inherits a real one's notes) behind `robot_recall` / `robot_remember`. With `trace` on,
+    inherits a real one's notes, or by its registered name where `memory_keys` gives one,
+    so two registered robots of one kind keep separate notes) behind `robot_recall` /
+    `robot_remember`. With `trace` on,
     each robot narrates its calls: a `trace` list in every result that reached its executor,
     and the same lines on stderr in place of the executor's own log lines."""
     if not robots:
@@ -736,7 +739,9 @@ def build_fleet_server(
             explicit_registry=registry is not None,
             memory=(
                 RobotMemory(
-                    f"{adapter_name(transport) or name}:{backend_name(transport)}", memory_dir
+                    (memory_keys or {}).get(name)
+                    or f"{adapter_name(transport) or name}:{backend_name(transport)}",
+                    memory_dir,
                 )
                 if memory
                 else None
@@ -939,32 +944,52 @@ def build_server(
     return mcp, fleet.sessions[name]
 
 
-def serve(
+@dataclass
+class FleetPlan:
+    """A fleet, built but not connected: what `serve` hands `build_fleet_server`."""
+
+    adapters: dict[str, Any]
+    manifests: dict[str, RobotManifest]
+    memory_keys: dict[str, str]
+    """name -> memory key, for the robots that have a registered name to be keyed by."""
+    default: str | None
+    """The flock's first member, when a stored flock named one. Else `_pick_default` decides."""
+
+
+def fleet_from_flags(
+    *,
+    robot: str | None = None,
+    robots: str | None = None,
+    flock: str | None = None,
+    registry_dir: str | None = None,
     duckfile: str | None = None,
     seed: int | None = None,
     address: str | None = None,
     camera_url: str | None = None,
     token: str | None = None,
-    dry_run: bool = False,
-    yes: bool = False,
-    *,
-    robot: str | None = None,
-    robots: str | None = None,
-    warn: Any = None,
-    memory: bool = True,
-    memory_dir: str | None = None,
-    trace: bool | None = None,
-) -> None:
+) -> FleetPlan:
+    """Which robots this server fronts, from the flags that name them.
+
+    Three ways in: one robot, an ad-hoc fleet, or a stored flock. The last is the only one
+    where each robot brings its own address, token and camera, because it is the only one
+    where somebody wrote them down (ADR-0034)."""
     from quackd.adapters.factory import (
         RobotSpec,
         describe,
         make_adapter,
         parse_robots,
-        resolve_robot,
     )
+    from quackd.registry import Registry, RegistryError, Resolved, resolve_robot_ref
 
-    if robots and robot:
-        raise SystemExit("choose one: --robots name=<adapter>:<backend>,... or --robot")
+    given = (("--flock", flock), ("--robots", robots), ("--robot", robot))
+    named = [name for name, value in given if value]
+    if len(named) > 1:
+        raise SystemExit(f"choose one: {', '.join(named)}")
+    if flock and (address or camera_url or token):
+        raise SystemExit(
+            "--flock takes every member's address, token and camera from the registry: "
+            "quackd robot edit NAME to change one"
+        )
     probe: DuckFile | None = None
     default = None
     if duckfile:
@@ -972,13 +997,27 @@ def serve(
         if probe.frontmatter.flock is not None:
             raise SystemExit(
                 "flock ducks are not available over MCP yet (the MCP client is one pilot, "
-                "a flock needs a coordinator). Run it with: quackd run " + duckfile
+                "a flock needs a coordinator, and a pilot flock has one model per robot "
+                "rather than one for all of them). Run it with: quackd run " + duckfile
             )
         if isinstance(probe.frontmatter.robots, str):
             default = probe.frontmatter.robots
-    specs: list[RobotSpec] = (
-        parse_robots(robots) if robots else [resolve_robot(robot, duck_default=default)]
-    )
+    registry = Registry(registry_dir)
+    resolved: list[Resolved]
+    fleet_default: str | None = None
+    if flock:
+        try:
+            roster = registry.roster(flock)
+        except RegistryError as e:
+            raise SystemExit(str(e)) from e
+        resolved = [Resolved(entry.robot_spec, entry) for entry in roster.values()]
+        # the flock's own order decides, rather than `_pick_default`'s first-Microduck rule
+        fleet_default = next(iter(roster), None)
+    elif robots:
+        resolved = [Resolved(spec) for spec in parse_robots(robots)]
+    else:
+        resolved = [resolve_robot_ref(robot, registry, duck_default=default)]
+    specs: list[RobotSpec] = [r.spec for r in resolved]
     manifests = {spec.name or describe(spec).id: describe(spec) for spec in specs}
     if probe is not None:
         # the contract lands on the default robot: refuse now, with the validator's words
@@ -991,22 +1030,61 @@ def serve(
                 f"{duckfile} cannot run on {target} ({manifests[target].model}): "
                 + "; ".join(p.message for p in problems)
             )
+    adapters = {}
+    for (name, spec), one in zip(zip(manifests, specs, strict=True), resolved, strict=True):
+        where = one.adapter_kwargs(address=address, camera_url=camera_url, token=token)
+        adapters[name] = make_adapter(
+            spec,
+            seed=seed if seed is not None else 0,
+            address=where["address"],
+            camera_url=where["camera_url"],
+            token=where["token"],
+        )
+    memory_keys = {
+        name: one.memory_key
+        for name, one in zip(manifests, resolved, strict=True)
+        if one.registered
+    }
+    return FleetPlan(adapters, manifests, memory_keys, fleet_default)
+
+
+def serve(
+    duckfile: str | None = None,
+    seed: int | None = None,
+    address: str | None = None,
+    camera_url: str | None = None,
+    token: str | None = None,
+    dry_run: bool = False,
+    yes: bool = False,
+    *,
+    robot: str | None = None,
+    robots: str | None = None,
+    flock: str | None = None,
+    registry_dir: str | None = None,
+    warn: Any = None,
+    memory: bool = True,
+    memory_dir: str | None = None,
+    trace: bool | None = None,
+) -> None:
+    plan = fleet_from_flags(
+        robot=robot,
+        robots=robots,
+        flock=flock,
+        registry_dir=registry_dir,
+        duckfile=duckfile,
+        seed=seed,
+        address=address,
+        camera_url=camera_url,
+        token=token,
+    )
     logging.basicConfig(
         stream=sys.stderr, level=logging.INFO, format="quackd-mcp %(levelname)s %(message)s"
     )
-    adapters = {
-        name: make_adapter(
-            spec,
-            seed=seed if seed is not None else 0,
-            address=address,
-            camera_url=camera_url,
-            token=token,
-        )
-        for name, spec in zip(manifests, specs, strict=True)
-    }
     mcp, _fleet = build_fleet_server(
-        adapters,
-        manifests=manifests,
+        plan.adapters,
+        manifests=plan.manifests,
+        memory_keys=plan.memory_keys,
+        default=plan.default,
         duckfile=duckfile,
         dry_run=dry_run,
         yes=yes,
@@ -1034,8 +1112,10 @@ __all__ = [
     "TOOL_NAMES",
     "DuckSession",
     "Fleet",
+    "FleetPlan",
     "RobotSession",
     "build_fleet_server",
     "build_server",
+    "fleet_from_flags",
     "serve",
 ]

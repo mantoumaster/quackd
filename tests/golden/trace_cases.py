@@ -329,6 +329,22 @@ def events() -> list[tuple[str, TraceEvent]]:
             "flock_bid_rejected_missing",
             _e("bid_rejected", 1.0, src="duck-0", role="kicker", missing=["kick", "walk_to"]),
         ),
+        (
+            "flock_talk",
+            _e("talk", 1.0, src="duck-a", to="arm", text="I have the ball, you spot", ok=True),
+        ),
+        (
+            "flock_talk_refused",
+            _e(
+                "talk",
+                1.0,
+                src="duck-a",
+                to="ghost",
+                text="hello",
+                ok=False,
+                summary="no member called 'ghost'; this flock is arm",
+            ),
+        ),
         ("member_end", _e("member_end", 1.1, status="stopped", steps=7)),
         # ── the MCP server's own kinds ──
         (
