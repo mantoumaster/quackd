@@ -342,6 +342,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The system prompt no longer promises every body a verb only a duck has.**
+  It opened by telling the pilot that composite verbs like `walk_to` close their own loops on
+  the camera, falling back to naming `search_scan` when it found neither `walk_to` nor `go_to`.
+  A robot that provides none of the three was therefore told about one it does not have, in the
+  same prompt whose allowlist does not list it, and a bolted-down arm was told its controllers
+  handle balance and gait. It now names a composite verb only when the body actually provides
+  one, and says "the motion" for a body that does not move itself. A Microduck's prompt is
+  unchanged, byte for byte. Found by reading the arm's real prompt in the new `flock-hello`
+  demo, which is what a bundled task on a second body is for.
+
+- **A registered robot's model no longer follows `--provider` to another vendor.**
+  `quackd robot add duck-a ... --provider anthropic --model claude-opus-5` then `quackd run
+  <duck> --robot duck-a --provider openai` carried the Claude id into OpenAI's catalogue, where
+  it was refused with a message blaming a `--model` nobody typed. A stored model now applies
+  only to the provider it was stored against, and an explicit `--model` is always taken as
+  typed.
+
 - **The browser demo can drive a model that will not take function tools on Chat
   Completions.** 0.8 taught the Python provider to read that 400, move the whole run to the
   Responses API and stay there. The demo at <https://www.quackd.org/simulator> has an OpenAI
