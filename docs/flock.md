@@ -30,7 +30,8 @@ verbs it provides and, in a `duck: 2` file, its datasheet), `CLAIM` (the one kic
 (SEARCH a heading sector, KICK, YIELD, STOP, and with roles SPOT and JUDGE), `HB`
 (heartbeat for the watchdog), `RESULT` (kicked, miss, search empty, budget, aborted, and
 with roles `kick_done`), `HINT` (an arena frame target estimate, sim only) and `VERDICT`
-(the spotter's judgement). The bus is a small protocol so a LAN bus (MQTT) can slot in for
+(the spotter's judgement of a kick, which is a different thing from the feasibility verdict
+a solo pilot gives before it moves). The bus is a small protocol so a LAN bus (MQTT) can slot in for
 real robots. Only the in process implementation is used by default, and nobody ever awaits
 the bus, which keeps the shared clock deadlock free.
 
@@ -79,12 +80,14 @@ robots:
   duck-02: microduck:sim2d
 ```
 
-### Roles by data (0.9)
+### Roles by data
 
 A `duck: 2` role may also say what the body has to **be**, not only what it has to know.
 The words are the datasheet's own ([manifest-spec.md](manifest-spec.md)): `payload_kg`,
-`reach_m`, `endurance_min`, `work_height_m` and `arms` are minimums, and `manipulator`,
-`mobility` and `terrain` have to match.
+`reach_m`, `endurance_min` and `arms` are minimums, `work_height_m` is a height the hands
+must reach inside the body's own band, `manipulator` and `mobility` match or take `any`, and
+`terrain` is a floor, so a body rated for rougher ground than the task asks still passes.
+The rule per key is one table in [duck-spec.md](duck-spec.md#needs--the-datasheet-vocabulary-v2).
 
 ```yaml
 flock:
@@ -104,6 +107,10 @@ datasheet satisfies; and the coordinator re-checks every bid from what the bid i
 carried, so a robot it does not run is held to the same standard. A rejected bid is a
 `bid_rejected` line naming exactly what was short, in the same words a pilot's own refusal
 uses: `payload_kg >= 1 (has 0.5)`, `manipulator = gripper (has beak)`.
+
+Those three checks are also the *only* feasibility judgement in a flock. A member is a state
+machine with no pilot to ask, so it is never sent through the `assess_task` gate a solo run
+opens with ([safety.md](safety.md), [ADR-0032](adr/0032-datasheets-and-the-verdict.md)).
 
 - **Capability aware bids.** A robot bids only for a role whose `requires` its manifest
   satisfies (aliases count: `get_frame` satisfies `observe`). The coordinator checks every

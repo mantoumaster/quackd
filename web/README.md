@@ -280,6 +280,12 @@ Deliberately, and none of it is a bug. This list is the canonical one: `README.m
   tells a model to prefer. `DEFAULT_CONTRACT` allows exactly those seven with 18 steps and 3
   minutes, so it is the same verb definitions and the same allowlist-and-budget machinery as
   Python, not the same allowlist and not the same budget as any `.duck` in `ducks/`.
+- **No datasheet, and no feasibility gate.** Python hands its pilot the body as numbers and
+  refuses every verb that moves until the model has answered `assess_task` — the release's
+  headline guarantee, and the one on that list the page does not have. `pilot.js` is a
+  second loop with its own hardcoded Microduck prompt and shares no code with the package,
+  so the body section and the gate stopped at the language boundary. A page asked to carry
+  something will try.
 - **The arena is not upstream's scene.** `sim3d` builds upstream's own `scene*.xml` palette —
   a blue-grey edge-marked checker, a gradient skybox, upstream's lights. The browser fetches
   `robot_walk.xml` and none of the `scene*.xml` wrappers, so it draws a flat pale plane under

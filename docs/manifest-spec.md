@@ -65,10 +65,10 @@ a `confidence` and a `source`, plus an optional `note` read with it.
 | `mass_kg`, `height_m`, `dof` | what it weighs, how tall it stands, how many joints it actuates |
 | `payload_kg` | what one hand, the beak or the whole body can hold; the `note` says which |
 | `reach_m` | arm base to fingertips |
-| `workspace_height_m` | a `Span` (`low`, `high`): the band of heights the hands can work at |
+| `workspace_height_m` | a `Span`: the band of heights the hands can work at, as `low` and `high` with a `confidence` and a `source` of their own |
 | `endurance_min` | minutes on a charge |
 | `manipulator` | `none`, `beak`, `gripper` or `arms`: what quackd can command that touches an object |
-| `arms`, `tethered`, `terrain`, `not_rated` | how many, mains or battery, what it is rated for and what it is not |
+| `arms`, `tethered`, `terrain`, `not_rated` | how many, mains or battery, what it is rated for (`indoor_flat`, `indoor` or `outdoor`) and what it is not |
 | `cannot`, `notes` | sentences: what it cannot do whatever the task says, and what is worth knowing first |
 
 Three rules make it honest:
@@ -84,6 +84,11 @@ Three rules make it honest:
   quackd sends rather than a fact about the body, and the prompt renders those separately as
   clamps.
 
+`manipulator` is the only field a sheet must carry, and three contradictions are refused
+when the manifest is built rather than left to a reader: arms on a body whose manipulator is
+`none`, a `gripper` or `arms` with no arm to put it on, and a payload or a reach on a body
+with nothing to hold with.
+
 The same datasheet describes a body on every backend, which is also what keeps its `digest()`
 equal across `sim2d`, `mock` and the real thing. `rosbridge` is the one exception, because it
 names a transport rather than a body: its sheet is whatever the bridge answered when asked
@@ -97,9 +102,13 @@ The seven shipped sheets, with each figure's confidence:
 | `open_duck` | not published | 0.42 m official | 14 estimate | not published | not published | not published | none |
 | `lerobot` | 2.5 kg estimate | 0.53 m estimate | 6 official | 0.5 kg estimate | not published | mains powered | one gripper |
 | `rosbridge` | from the URDF | not published | from the URDF | not published | not published | not published | none |
-| `xlerobot` | 12 kg official | working height 0.5 to 1.25 m official | 17 official | 1.0 kg official, per arm | 0.40 m official | 600 min official | two grippers |
+| `xlerobot` | 12 kg official | not published | 17 official | 1.0 kg official, per arm | 0.40 m official | 600 min official | two grippers |
 | `alohamini` | not published | not published | 14 official | 1.0 kg official, per arm | 0.52 m official | not published | two grippers |
 | `toddlerbot` | 3.4 kg official | 0.56 m official | 30 official | 1.484 kg official, both arms | not published | 19 min official | two arms |
+
+One body carries the eighth figure: the XLeRobot publishes a working height of 0.5 to
+1.25 m, official, because its torso does not lift, so its hands work in that band and
+nowhere else.
 
 A `.duck` file can correct any of it for the build in front of it
 ([duck-spec.md](duck-spec.md)), and the prompt labels those numbers as coming from the task

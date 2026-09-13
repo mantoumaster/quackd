@@ -98,6 +98,12 @@ Its datasheet, which the pilot is shown and told to judge a task against before 
 | Endurance | 19 min (official: the ToddlerBot project site; about) |
 | Not published | reach |
 
+And what it cannot do whatever the task says, which is the half a refusal usually turns on, in the words the pilot is shown:
+
+- get back on its feet after a fall: there is no recovery policy, so a fall ends the run and needs a human
+- carry more than about 1.5 kg with both arms together, or an unknown weight in one
+- keep going for more than about twenty minutes: past that the servos heat up and balance suffers
+
 A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The verbs this robot brings

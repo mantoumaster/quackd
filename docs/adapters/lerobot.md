@@ -66,6 +66,13 @@ Its datasheet, which the pilot is shown and told to judge a task against before 
 | Payload | 0.5 kg (estimate: one vendor's listing) |
 | Not published | reach |
 
+And what it cannot do whatever the task says, which is the half a refusal usually turns on, in the words the pilot is shown:
+
+- go anywhere: it is bolted to a table and has no base
+- lift or hold more than about half a kilogram, and nothing whose weight is not known
+- reach anything that is not already within arm's length of its base: the reach is not published
+- feel what it holds: grip force is not reported, so holding is what was commanded
+
 A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## Safety

@@ -1,6 +1,6 @@
-# ADR-0031: The terminal has a house style, and a way out of it
+# ADR-0033: The terminal has a house style, and a way out of it
 
-**Status:** accepted · **Date:** 2026-09-12 · Amends [ADR-0029](0029-tracing.md) (its "lines are ASCII first" rule becomes "the MCP lines are ASCII; a terminal asks its own stream") · Extends [ADR-0001](0001-language.md) (`typer` + `rich` were always the CLI stack; this is what they are used for) · Documented in [architecture.md](../architecture.md#trace)
+**Status:** accepted · **Date:** 2026-09-12 · Numbered 0033 on 2026-09-13, because two branches that merged the same day had both taken 0031 · Amends [ADR-0029](0029-tracing.md) (its "lines are ASCII first" rule becomes "the MCP lines are ASCII; a terminal asks its own stream") · Extends [ADR-0001](0001-language.md) (`typer` + `rich` were always the CLI stack; this is what they are used for) · Documented in [architecture.md](../architecture.md#trace)
 
 ## Context
 

@@ -72,6 +72,13 @@ Its datasheet, which the pilot is shown and told to judge a task against before 
 | Working height | 0.5 to 1.25 m (official: the XLeRobot docs; the torso does not lift, so the hands work in this band and nowhere else) |
 | Not published | height |
 
+And what it cannot do whatever the task says, which is the half a refusal usually turns on, in the words the pilot is shown:
+
+- lift more than 1 kg in one hand
+- work lower than about 0.5 m or higher than about 1.25 m off the floor: the torso height is fixed
+- move fast, catch, or manipulate a thing in one hand: no dynamic motion and no in-hand dexterity, in the maintainer's words
+- go up or down a step: it is a 12 kg cart on three omniwheels
+
 A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The manifest

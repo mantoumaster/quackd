@@ -48,8 +48,9 @@ not before.
 - ⬜ **The browser demo has no datasheet and no feasibility gate.** `web/src/pilot.js` is a
   second loop with its own hardcoded Microduck prompt, and it shares no code with the package,
   so the body section and the `assess_task` rule that the Python pilot now gets stop at the
-  language boundary. A page asked to carry something will try. Either the page grows both, or
-  its README says which of quackd's guarantees it does not have.
+  language boundary. A page asked to carry something will try. `web/README.md` now says so in
+  its canonical list of differences, which was the cheaper half of this. What is still open is
+  the page growing both.
 - ⬜ **No real model has ever refused a task on feasibility grounds here.** The gate, the
   outcome, the hint and the fleet handoff are exercised with scripted verdicts and an in-process
   MCP client. There is one `live_llm` test beside the others waiting for a key, and until

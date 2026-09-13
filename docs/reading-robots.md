@@ -107,3 +107,22 @@ because the write that would zero the register is too.
 
 **What to do:** read the config as shipped, not the config as documented. What a robot does
 out of the box is what most owners will have.
+
+## A description that is not a datasheet
+
+A robot that publishes a URDF is handing you its own account of itself, which is the best
+source there is and still not a spec sheet. A `link/inertial` is optional per link, so the
+mass is a sum over whichever links carry one and the rest weigh nothing; quackd's note says
+how many did, because 11 kg over three of four links is a different claim from 11 kg. Every
+non-fixed joint counts as a degree of freedom, so wheels, casters and fingers all land in
+the same number. And nothing anywhere in the file says what a gripper can hold: payload is
+not a geometric property, so a description can be complete and still answer none of the
+questions a pilot needs answered before it lifts something.
+
+What arrives may not even be a URDF. A bridge can hand back an unexpanded xacro, which
+parses far enough to look like an answer and is missing whatever the macros would have made.
+
+**What to do:** tag what the file says as official and source it to the file, because it is
+the robot's own, and say in the note how much of the file said it. Leave everything else
+not published rather than deriving it. A body that reports a description quackd cannot check
+is believed, and that assumption is written down as one.
