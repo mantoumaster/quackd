@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -766,15 +767,25 @@ def test_no_color_reaches_the_help_typer_renders_for_itself() -> None:
     assert os.environ.get("NO_COLOR") == "1"
 
 
+def _help(argv: list[str]) -> str:
+    """Help text with its styling taken off.
+
+    On GitHub Actions Typer forces coloured help: it reads GITHUB_ACTIONS when `rich_utils`
+    is imported, which is before any fixture can say otherwise. Rich then styles an option
+    name in pieces, so `--no-color` reaches a substring check as three spans with escape
+    sequences between them. What this test is about is the words, not the colour."""
+    out = CliRunner().invoke(app, argv, env={"COLUMNS": "200"}).output
+    return " ".join(re.sub(r"\[[0-9;]*m", "", out).split())
+
+
 def test_the_help_groups_the_flags_and_keeps_the_brackets_of_an_extra() -> None:
-    """Twenty five flags in one flat list is a list nobody reads. And `rich_markup_mode`
+    """Twenty seven flags in one flat list is a list nobody reads. And `rich_markup_mode`
     reads `quackd[lan]` as markup, which printed an install that does not exist."""
-    wide = {"COLUMNS": "200"}
-    out = " ".join(CliRunner().invoke(app, ["run", "--help"], env=wide).output.split())
+    out = _help(["run", "--help"])
     assert "quackd[live]" in out, "an extra a reader is meant to type must survive"
     for group in ("Task", "Model", "Robot", "Output", "Memory"):
         assert group in out, group
-    root = " ".join(CliRunner().invoke(app, ["--help"], env=wide).output.split())
+    root = _help(["--help"])
     assert "--no-color" in root
     for group in ("Inspect", "Run a duck", "Serve", "LAN", "Memory"):
         assert group in root, group
