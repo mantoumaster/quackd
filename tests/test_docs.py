@@ -625,3 +625,37 @@ def test_every_body_carries_its_own_numbers_on_its_own_page() -> None:
                 else f"{figure.value:g} {unit}".rstrip()
             )
             assert amount in page, f"{path.name} does not say {label} is {amount}"
+
+
+def test_the_registry_is_documented_where_it_is_configured() -> None:
+    """Two files under a directory an env var moves, holding a robot's token. Every one of
+    those facts has a place it has to be findable from, or somebody loses a robot or a secret.
+    """
+    for path, needles in (
+        ("README.md", ("quackd robot", "quackd flock", "QUACKD_REGISTRY_DIR", "--registry-dir")),
+        ("docs/registry.md", ("robots.json", "flocks.json", "--probe", "plain text")),
+        (".env.example", ("QUACKD_REGISTRY_DIR",)),
+        ("docs/mcp.md", ("--flock",)),
+        ("docs/memory.md", ("registered",)),
+        ("SECURITY.md", ("robots.json",)),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+
+
+def test_every_command_is_named_in_the_readme_table_and_the_module_map() -> None:
+    """`quackd memory` shipped in 0.6 and appeared in neither for a release. A command nobody
+    can find is a command nobody has."""
+    from quackd.cli import app
+
+    names = {c.name or (c.callback.__name__ if c.callback else "") for c in app.registered_commands}
+    names |= {g.name or "" for g in app.registered_groups}
+    names = {n.replace("_", "-") for n in names if n}
+    architecture = (REPO / "docs" / "architecture.md").read_text(encoding="utf-8")
+    # the table row, not the prose: `quackd flock` is mentioned in three paragraphs and was
+    # still missing from the one table somebody reads to find out that it exists
+    rows = "".join(line for line in README.splitlines(keepends=True) if line.startswith("| `"))
+    for name in sorted(names):
+        assert f"| `quackd {name}" in rows, f"the README usage table has no row for {name}"
+        assert name in architecture, f"docs/architecture.md never names {name}"

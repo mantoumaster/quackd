@@ -189,10 +189,14 @@ approach distance, scan step, timeout) through a single forced tool call. Numeri
 parameters are clamped into the schema's ranges, an invalid field is dropped on its own
 (the valid ones survive), and a missing or broken call falls back to deterministic
 defaults, logged. With `--provider fake` even that call is skipped and the plan is a pure
-function. The auction, the roles and the steering are deterministic code. Per duck LLM
-pilots and LLM negotiated bids are still deliberately out of scope: they would cost N
-times the tokens and latency, and the demo does not need them to be honest.
-`summary.json` records `planner.llm_calls` (0 or 1) as proof.
+function. The auction, the roles and the steering are deterministic code. `summary.json`
+records `planner.llm_calls` (0 or 1) as proof.
+
+Per robot LLM pilots do cost N times the tokens and the latency, which is why this is still
+what the kick demo runs. They are no longer out of scope: they are the
+[other kind of flock](#the-pilot-flock), and they exist because a pilot that can read a
+datasheet has something to say to another pilot, which was not true when
+[ADR-0015](adr/0015-flock-deterministic-coordinator.md) ruled them out.
 
 ## Ground truth
 

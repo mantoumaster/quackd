@@ -89,8 +89,9 @@ registrar and a synchronous fake MQTT broker, no sockets. Keep it that way, and 
 4. Open a PR. In the description say what it does, which providers you tried, and what
    failed. Ducks that mostly fail are still welcome if the file says so — that is data.
 
-Checklist: `duck: 0` (or `duck: 1` if you use `requires`, `robots` or `flock.roles`, or
-`duck: 2` if you correct the robot's `datasheet` or a role's `needs`) ·
+Checklist: `duck: 0` (or `duck: 1` if you use `requires`, `robots`, `flock.roles` or
+`flock.allocation.method: pilots`, or `duck: 2` if you correct the robot's `datasheet` or a
+role's `needs`) ·
 slug name · `allow` lists only verbs the robot provides (`quackd list-verbs --robot ...`)
 · `confirm` ⊆ `allow` · at least one `success` line · `abort_when` uses the two enforced
 phrasings if you want them enforced · body starts with `# Task` · `quackd validate
@@ -98,7 +99,9 @@ your.duck --robot <adapter>:<backend>` passes for the robot you mean.
 
 **Ask for a note.** Every solo starter except `hello-world` and the three lookouts added in 0.7
 ends its numbered strategy with a `remember` and carries a short *Memory* section saying what
-is worth keeping for next time.
+is worth keeping for next time. A coordinator flock's duck has no `remember` step, because its
+members are state machines with nothing to remember with; a pilot flock's members are whole
+pilots and may.
 Put the call in the strategy rather than only in a Memory section: a 14B local model read a
 prompt-level hint and never wrote to memory, and followed the same instruction on its first
 run once it was step 5. `remember` is offered automatically when memory is on and needs
