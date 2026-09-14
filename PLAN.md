@@ -104,12 +104,14 @@ not before.
   one is assumed equal to the training maximum, so every lateral request is sent at full
   scale. The assumption is in `GAIT_THRESHOLD`'s note and in the state's `assumptions`, and
   the fix is the same script that produced the other two.
-- 🔨 **A transcript from a live local server other than LM Studio** (Ollama, vLLM,
-  llama.cpp). Still none on the dev machine. LM Studio is now covered: #7 landed two
-  `find-and-kick` transcripts against Qwen 2.5 Coder 14B in `docs/assets/transcripts/`,
-  read in [docs/local-llms.md](docs/local-llms.md). They are one model on one machine on
-  one afternoon, and they are not a chain, so what is still open is a second server and a
-  run where a note written by one run is read by the next.
+- 🔨 **A transcript from a live local server quackd has not seen yet** (Ollama,
+  llama.cpp). Still none on the dev machine, and that has not changed. LM Studio was covered
+  by #7 and vLLM by #23, which also closed the other half of this item: its two Qwen3-32B-AWQ
+  runs are a chain, the note the first one saved is in the second one's `system_prompt`
+  verbatim, and the memory counters move by exactly one note and one episode, so nothing ran
+  between them. Both ends are in `docs/assets/transcripts/`, read in
+  [docs/local-llms.md](docs/local-llms.md). What is still open is Ollama, llama.cpp, a run on
+  this machine, and any task harder than the starter duck.
 - ⏸ **Exercise `remember` against a cloud model.** The scripted pilot has no script for it, so
   `--provider fake` writes episodes and never a note.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API

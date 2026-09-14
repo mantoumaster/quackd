@@ -96,6 +96,13 @@ members are whole agent loops with a memory file each, so a note there would wor
 ask for one because it is a radio check. `hello-world` is left alone: it is a smoke test that says "do not do anything
 else". Write your own ducks the same way.
 
+A second model on a second server says the same thing from the other end. Qwen3-32B-AWQ on
+vLLM, with `remember` sitting in strategy step 5, called it and saved where the ball was. The
+very next run did not call it, which is also right: that fact was already in its prompt, and
+the *Memory* section tells it to skip one the prompt already remembers. Those two runs are the
+only place in this repository where a note written by one run reaches the next one's prompt,
+and both ends are published ([local-llms.md](local-llms.md)).
+
 ## The CLI
 
 ```bash
@@ -133,7 +140,7 @@ is read by the next `quackd run` on the same `adapter:backend`, and the other wa
   registered, and what one needs another to know *during* a run it says with `tell` rather
   than through memory, which the other pilot would not read until its next run anyway.
 - **Not written by the scripted pilot.** `--provider fake` has no `remember` in its script,
-  so it accumulates episodes and never a note. Notes have been exercised by one local model
-  on one machine and by no cloud model at all.
+  so it accumulates episodes and never a note. Notes have been exercised by two local models
+  on two machines and by no cloud model at all.
 - **Not trusted.** A note is text the model wrote; the executor never reads it. Safety
   lives in the contract, as before ([safety.md](safety.md)).
