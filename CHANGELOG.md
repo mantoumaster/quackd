@@ -320,8 +320,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose runs and whose transcripts these are.
 
 - **Two transcripts from Qwen3-32B-AWQ on vLLM, and the first numbers anybody has for what
-  `--extra-body` actually stops.** Same build (`739ff84`), same server, same seed on the
-  contributor's word since no transcript records one, and the flag the difference the pair was
+  `--extra-body` actually stops.** Same build (`739ff84`), same server, and the same seed on the
+  contributor's word, since no transcript records one. The flag is the difference the pair was
   built around.
   Every test in this repository proves the object reaches the SDK call and not one of them proves
   the thinking stops, so until now that flag shipped on a mechanism nobody had watched work. With
