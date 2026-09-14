@@ -9,6 +9,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The LeRobot pages rewritten for someone who owns the arm rather than someone who wrote
+  the adapter, and four things they said that were not true.** An SO-101 owner is the likeliest
+  first external user of quackd, and the two pages assumed a reader who already knew what
+  quackd was for. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) now opens with what
+  LeRobot already does for you and what quackd deliberately does not touch (teleoperation,
+  recording, training), the three properties of this body that shape every guard, and a
+  starting path that begins with the mock and no arm at all. It gained the install trap in
+  full (the `[feetech]` extra, and the `python_version >= '3.12'` marker that makes an install
+  on 3.11 resolve to nothing while `doctor` keeps saying `not installed`), a section on the
+  calibration id, which is the name you give the robot and the one thing that silently breaks
+  a connection after a calibration you watched succeed, the three ways to drive the arm with
+  the MCP config written out, `--dry-run` as a rehearsal that connects for real and sends
+  nothing, and a troubleshooting section that quotes every refusal the code can raise beside
+  what to do about it, followed by a short list of failures SO-101 owners report that nobody
+  here has verified, labelled as such.
+  The four corrections: a task that allows `observe` is refused on **every** real arm rather
+  than only on one without a camera, because `quackd run` checks the allowlist as well as
+  `requires` against the static manifest, and the place it does work is MCP, where
+  `robot_load_duckfile` validates against the robot already connected, so the same task loads
+  on a session started with `--camera-url`; the pilot gets detections every step whether or
+  not `observe` is allowed, which makes `--vision` the picture rather than the sight;
+  `load_policy()` imports
+  `lerobot.configs.policies.PreTrainedConfig`, which had no ref, so "every name quackd spells
+  lives in `upstream_api.py`" was false until this commit added it; and `pick` is not reachable
+  from the CLI or from MCP at all, because `make()` has no policy parameter and `load_policy()`
+  has no caller, which the checklist had presented as something to try at the bench.
+  The checklist could not be followed as written: step 4 ran `lerobot-calibrate`, which step 5
+  installed. Installing now comes first, finding the port with upstream's own `lerobot-find-port`
+  comes with the calibration, and the claim that Windows needs a CH340 or CP210x driver is gone,
+  because the arm enumerates as a USB CDC device and no primary source names that chip. It also
+  gained the `--dry-run` rehearsal as step 9, so nothing moves until step 10, and a
+  [hardware report template](.github/ISSUE_TEMPLATE/lerobot-hardware-report.yml) that asks for
+  exactly what *What to report* asks for.
+  Two things changed in the code because writing the pages found them. **A camera that dies
+  mid-run was invisible on a `quackd run`**: `camera_error` was read only by `observe` and by
+  `doctor`, and `observe` cannot be in a `.duck`'s allowlist on this backend, so the frames
+  simply stopped and nothing said why. The camera's health now rides in the arm's own state
+  beside the policy and register errors, which puts it in the transcript and in front of an
+  MCP client, and `report_state` says `CAMERA DOWN:` with the reason when a read has actually
+  failed, staying quiet for a camera that is merely unread. And **`doctor`'s no-frame
+  advisory named `go_to`, `search_scan` and `approach_and`**, none of which exist on an arm
+  bolted to a table; it now names the camera verbs the robot in front of it actually has. A
+  `camera_health()` proxy on the adapter went with them: `doctor` reaches the transport's own
+  method, as it does on every other body, so the proxy was called by nothing but the tests
+  that were meant to be covering `doctor`.
+
+  One thing neither page knew: **upstream's calibration does not sweep `wrist_roll`.** It
+  prints *move all joints except 'wrist_roll'* and records a full encoder turn for it, so that
+  joint's travel comes out as -180..180 and quackd's out-of-range refusal, which is real on the
+  other four body joints, cannot catch anything on that one. Both pages now say so, and the
+  checklist's out-of-range step says which joint not to test it on.
+
+- **A camera on the LeRobot arm: `--camera-url opencv://N`.** No SO-101 has a camera in it,
+  whatever a kit's listing says: the arm is six servos and a serial board, and every camera on
+  one is a USB webcam plugged into the computer. `lerobot:real` now opens one, so `observe`
+  exists on a real arm for the first time. The url is the OpenCV index
+  (`lerobot-find-cameras opencv` prints them and saves a frame from each, which is the only
+  honest way to tell which is which), with `?width`, `?height`, `?fps`, `?fourcc`, `?rotation`,
+  `?name`, `?fov` and `?backend=msmf` for the Windows camera that lists and then will not open.
+  Nothing is asked of the camera by default, because a mode it cannot do is a refusal at
+  connect and the webcam in a lab drawer is unknown. An unknown key or a bad value is refused
+  with the shape, before LeRobot is imported.
+  quackd builds the camera itself rather than handing it to the follower, and that is the
+  whole design: a follower's `is_connected` is the bus **and** every camera, and `send_action`
+  and `disconnect()` are gated on it, so one webcam coming unplugged would have made every
+  move and every hold raise while the arm was perfectly fine. Beside the follower, a camera
+  asked for and not opened refuses at connect naming the url, before the arm is touched at
+  all, and a camera that dies later costs `observe` and a `pick` in flight and nothing else:
+  the heartbeat still reads the arm, the joints still move, `stop` still holds. `observe` now says what the camera said rather than "this transport has
+  no camera", `quackd doctor` gates its verdict on a real frame as it does for every other
+  body, and `?fov=` travels with the camera into `limits.camera_fov_deg` so bearings are
+  calibrated over MCP too, where there is no `--fov-deg`
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#camera), step 8 of
+  [the checklist](docs/lerobot-hardware-checklist.md)).
+
+
 - **A body field the server wants and quackd never sends: `--extra-body` and
   `QUACKD_EXTRA_BODY`.** One JSON object, merged into the top of every request body on every
   provider that speaks OpenAI's API, which is nine of the eleven cloud vendors and all five
@@ -35,10 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A bring-up checklist and a lookout task for the LeRobot arm, which were the last two
   missing.** Every other experimental backend had both; the arm had neither, and this file
   has said so since 0.7. [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)
-  is the order to try an SO-101 in, with nothing moving until step 8 and a hand on the power
+  is the order to try an SO-101 in, with nothing moving until step 10 and a hand on the power
   switch from there, because this arm has no e-stop. `ducks/lerobot-lookout.duck` is the task
   to point at a real arm first: it moves no joint, and it asks for `report_state` rather than
-  `observe`, because the real backend configures no camera
+  `observe`, because a `.duck` is checked against the static manifest, which cannot know
+  whether a webcam is plugged in
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
 
 - **A flock can be N pilots talking, not only a coordinator refereeing: `quackd run <duck> --flock <name>`.**

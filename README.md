@@ -269,6 +269,8 @@ Seven robots, and one table for how far each one has actually got. Each name lin
 
 **If you own one of these, the Open Duck Mini is where help is worth the most.** It is a body a stranger can build from scratch, the daemon and the protocol are already exercised against each other, and the only untested part left is the duck. [docs/open-duck-hardware-checklist.md](docs/open-duck-hardware-checklist.md) is the order to try it in, feet off the ground until step 10.
 
+**If you own an SO-101, the path is short**, because LeRobot is a `pip install` and quackd ships no daemon for the arm: the setup is `uv pip install "quackd[lerobot]"` and a calibration you have already done. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) is written for someone who already drives this arm and wants to know what quackd adds to it, what it deliberately does not touch, and what to do when it refuses. Nothing moves until step 10 of [its checklist](docs/lerobot-hardware-checklist.md).
+
 <br>
 
 ## Architecture
@@ -464,7 +466,7 @@ requires: [search_scan, walk_to, kick]  # the honest minimum a body must provide
 | `xlerobot-lookout` | stand still and report what is in front of you | an **XLeRobot**, and the task to point at a real cart first: nothing in its allowlist moves a wheel or an arm. This robot has no head control and no voice, so a human aims it and it reports in text |
 | `alohamini-lookout` | stand still and report what is in front of you | an **AlohaMini**, and the task to point at a real robot first: nothing in its allowlist moves a wheel, an arm or the lift. Like the XLeRobot it has no head and no voice, so a human aims it and it reports in text |
 | `toddlerbot-lookout` | stand still, look around with the head, and report what you can see | a **ToddlerBot**, and the task to point at a real humanoid first: nothing in its allowlist moves a leg, an arm or the waist. Put it on its safety stand before you try it |
-| `lerobot-lookout` | move nothing, read the arm back, and report what it says about itself | a **LeRobot SO-101 arm**, and the task to point at a real arm first: nothing in its allowlist moves a joint, and it asks for `report_state` rather than `observe` because the real backend has no camera |
+| `lerobot-lookout` | move nothing, read the arm back, and report what it says about itself | a **LeRobot SO-101 arm**, and the task to point at a real arm first: nothing in its allowlist moves a joint, and it asks for `report_state` rather than `observe` because a camera on this arm is one you chose to plug in |
 
 Full spec: [docs/duck-spec.md](docs/duck-spec.md). Add yours to [`ducks/`](ducks/).
 

@@ -424,8 +424,8 @@ def probe(
             camera: dict[str, Any] | None = None
             cam_probe = getattr(transport, "camera_health", None)
             # Only report on a camera the adapter actually reads. `camera_url` is accepted and
-            # ignored by lerobot and rosbridge, and gating their verdict on a frame from an
-            # unrelated path fails a healthy robot.
+            # ignored by rosbridge, and gating its verdict on a frame from an unrelated path
+            # fails a healthy robot.
             if camera_url and callable(cam_probe):
                 # Frames arrive on a timer, so ask for one and give the capture loop a moment
                 # rather than reading memory that cannot have been filled yet.
@@ -496,9 +496,19 @@ def probe(
             "merely allows it runs without it"
         )
     if not camera_ok:
+        # naming verbs this body does not have sends the reader looking for them at the
+        # moment they are trying to work out why their webcam gave nothing
+        from quackd.verbs.core import REQUIREMENTS
+
+        blind = [
+            name
+            for name in live.verb_names()
+            if (req := REQUIREMENTS.get(name)) is not None and req.camera
+        ]
         report.advisories.append(
-            "--camera-url was given but no frame came back, so observe, go_to, search_scan "
-            "and approach_and cannot see anything on this run"
+            "--camera-url was given but no frame came back, so "
+            + (", ".join(blind) if blind else "nothing that needs a camera")
+            + " cannot see anything on this run"
         )
     for key in ("auth_warning", "runtime_warning"):
         if warning := told.get(key):

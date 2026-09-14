@@ -10,7 +10,7 @@ body:
         as one that says it did.
 
         Please follow [docs/open-duck-hardware-checklist.md](https://github.com/rokbenko/quackd/blob/main/docs/open-duck-hardware-checklist.md)
-        first. It is ordered so the duck's feet stay off the ground until step 8, and this
+        first. It is ordered so the duck's feet stay off the ground until step 10, and this
         robot cannot get back up if it falls.
   - type: input
     id: quackd_version

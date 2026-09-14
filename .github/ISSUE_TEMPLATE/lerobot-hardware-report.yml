@@ -1,0 +1,111 @@
+name: LeRobot SO-101 hardware report
+description: You ran quackd against a real SO-101 arm. Tell us what happened.
+labels: ["lerobot", "hardware", "adapter-status"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Nobody has run `lerobot:real` against a physical arm yet, so yours is the
+        first real evidence either way, and a report that says "it did not work" is worth as
+        much as one that says it did.
+
+        Please follow [docs/lerobot-hardware-checklist.md](https://github.com/rokbenko/quackd/blob/main/docs/lerobot-hardware-checklist.md)
+        first. It is ordered so that nothing moves until step 10, because this arm has no
+        e-stop and LeRobot caps the torque of the gripper and of no other joint.
+  - type: input
+    id: quackd_version
+    attributes:
+      label: quackd version
+      description: Output of `quackd --version`
+    validations:
+      required: true
+  - type: input
+    id: lerobot_version
+    attributes:
+      label: lerobot version
+      description: "`pip show lerobot`, or the commit if you installed from source"
+    validations:
+      required: true
+  - type: dropdown
+    id: step
+    attributes:
+      label: Which checklist step did you reach?
+      options:
+        - "4: the extra installs, both doctor rows green"
+        - "5: the port found and the arm calibrated"
+        - "6: doctor connects and reads the arm back"
+        - "7: lerobot-lookout, moving nothing"
+        - "8: a camera opened and doctor showed a frame"
+        - "9: the --dry-run rehearsal"
+        - "10: gripper open and closed"
+        - "11: one joint moved"
+        - "12: an out-of-range goal refused"
+        - "13: USB pulled mid-move"
+        - "14: Ctrl-C mid-move"
+        - "15: gripper closed on something soft"
+        - "16: a policy, wired up in your own code"
+    validations:
+      required: true
+  - type: dropdown
+    id: gripper_open
+    attributes:
+      label: Which end of the gripper's 0..100 range is open?
+      description: quackd assumes 100 is open. Everything it believes about holding rests on this.
+      options:
+        - "100 is open, as assumed"
+        - "0 is open, the other way round"
+        - "not tested"
+    validations:
+      required: true
+  - type: input
+    id: holding_reading
+    attributes:
+      label: What the gripper reads while actually holding something
+      description: quackd calls it holding between 8 and 90 of 100, and nobody has seen a real grasp.
+  - type: input
+    id: temperature
+    attributes:
+      label: Servo temperature, cold and after ten minutes of work
+      description: "quackd refuses to move at 60 °C; Feetech documents a 70 °C cut-off. Neither was measured here."
+  - type: dropdown
+    id: step_deg
+    attributes:
+      label: Did 5 degrees per action feel right in the room?
+      options:
+        - "about right"
+        - "too fast, I lowered QUACKD_LEROBOT_MAX_STEP_DEG"
+        - "too slow"
+        - "not tested"
+  - type: dropdown
+    id: stall
+    attributes:
+      label: Held a joint against its goal. Was the stall caught?
+      options:
+        - "yes, the verb failed with where it stopped"
+        - "no, it kept trying"
+        - "not tested"
+  - type: input
+    id: camera
+    attributes:
+      label: The camera, if you brought one
+      description: Which OpenCV index it turned out to be, and whether it needed ?backend=msmf or a dropped mode.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: quackd doctor --robot lerobot:real --address ...
+      description: The whole thing. It carries the calibration file, the joint ranges and the temperatures.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: transcript
+    attributes:
+      label: The first 40 lines of transcript.jsonl
+      render: json
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What the arm actually did
+      description: What moved, what did not, and anything that surprised you. A video is welcome.
+    validations:
+      required: true

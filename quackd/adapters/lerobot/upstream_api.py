@@ -38,9 +38,12 @@ _TABLES = "src/lerobot/motors/feetech/tables.py"
 _CONSTANTS = "src/lerobot/utils/constants.py"
 _POLICY = "src/lerobot/policies/pretrained.py"
 _FACTORY = "src/lerobot/policies/factory.py"
+_POLICY_CFG = "src/lerobot/configs/policies.py"
 _CAMERA = "src/lerobot/cameras/camera.py"
 _OPENCV = "src/lerobot/cameras/opencv/camera_opencv.py"
 _OPENCV_CFG = "src/lerobot/cameras/opencv/configuration_opencv.py"
+_CAM_CFG = "src/lerobot/cameras/configs.py"
+_CAMERAS_INIT = "src/lerobot/cameras/__init__.py"
 
 # ── package ─────────────────────────────────────────────────────────────────────────────
 
@@ -125,6 +128,18 @@ ROBOT_CALIBRATION_FPATH = UpstreamRef(
     "VERIFIED",
     src(_ROBOT, 53),
     "calibration_dir / '<id>.json'; quackd reports the path, so a wrong id is visible",
+)
+WRIST_ROLL_IS_A_FULL_TURN = UpstreamRef(
+    "calibrate() records wrist_roll as a full turn",
+    "VERIFIED",
+    src(_SO),
+    'the SO follower\'s calibrate() sets `full_turn_motor = "wrist_roll"`, prints "Move '
+    "all joints except 'wrist_roll' sequentially through their entire ranges of "
+    'motion", and then writes `range_mins[full_turn_motor] = 0` and '
+    "`range_maxes[full_turn_motor] = 4095` rather than anything swept. quackd derives every "
+    "joint's travel from those numbers, so wrist_roll comes out as -180..180 and the "
+    "out-of-range refusal, which is real on the other four body joints, cannot catch "
+    "anything on that one",
 )
 CALIBRATION_DIR = UpstreamRef(
     "HF_LEROBOT_CALIBRATION/robots/so_follower/",
@@ -375,15 +390,118 @@ CAMERA_COLOR_MODE_DEFAULT = UpstreamRef(
     "OpenCVCameraConfig.color_mode defaults to ColorMode.RGB",
     "VERIFIED",
     src(_OPENCV_CFG, 62),
-    "which settles the channel order quackd used to assume: a stock OpenCV camera hands over "
-    "RGB. The shipped real backend configures no camera at all, so this matters only to "
-    "somebody who passes one in",
+    "which settles the channel order quackd used to assume: a stock OpenCV camera hands "
+    "over RGB, and quackd passes it explicitly anyway",
+)
+OPENCV_CAMERA = UpstreamRef(
+    "lerobot.cameras.opencv.OpenCVCamera(config)",
+    "VERIFIED",
+    src(_OPENCV, 52),
+    "the class quackd builds and owns itself, beside the follower rather than inside it",
+)
+OPENCV_CAMERA_CONFIG = UpstreamRef(
+    "OpenCVCameraConfig(index_or_path, fps=None, width=None, height=None, "
+    "color_mode=ColorMode.RGB, rotation=Cv2Rotation.NO_ROTATION, warmup_s=1, fourcc=None, "
+    "backend=Cv2Backends.ANY)",
+    "VERIFIED",
+    src(_OPENCV_CFG, 25),
+    "an index or a device path, and a fourcc that must be four characters",
+)
+CAMERA_EXPORTS = UpstreamRef(
+    "lerobot.cameras exports Camera, CameraConfig, ColorMode, Cv2Backends, Cv2Rotation",
+    "VERIFIED",
+    src(_CAMERAS_INIT, 16),
+    "OpenCVCameraConfig is deliberately NOT among them (a note at line 19 says so): it "
+    "comes from lerobot.cameras.opencv, which is why quackd imports from both",
+)
+CV2_BACKENDS = UpstreamRef(
+    "Cv2Backends: ANY, V4L2, DSHOW, PVAPI, ANDROID, AVFOUNDATION, MSMF",
+    "VERIFIED",
+    src(_CAM_CFG, 45),
+    "the backend is a config field, so the Windows fix people circulate as a source patch "
+    "is a query key here: ?backend=msmf. ANY is the default and lets OpenCV choose. All "
+    "seven are upstream's; --camera-url accepts the five that name a platform quackd's "
+    "owners are on (any, v4l2, dshow, avfoundation, msmf), because an unreachable backend "
+    "is a refusal at connect and PVAPI and ANDROID would only ever be one",
+)
+CAMERA_CONNECT = UpstreamRef(
+    "Camera.connect(warmup=True)",
+    "VERIFIED",
+    src(_CAMERA, 100),
+    "opens the device and reads frames for warmup_s before returning, so a camera that "
+    "opens and never delivers fails here rather than at the first observe",
+)
+OPENCV_OPEN_FAILS = UpstreamRef(
+    "connect() raises ConnectionError on an index that will not open",
+    "VERIFIED",
+    src(_OPENCV, 171),
+    "its own words name `lerobot-find-cameras opencv`, so quackd passes them through",
+)
+OPENCV_MODE_IS_A_DEMAND = UpstreamRef(
+    "a requested fps or size that the camera refuses raises RuntimeError",
+    "VERIFIED",
+    src(_OPENCV, 260),
+    "width and height at line 297; fourcc only warns (line 262). So pinning a mode is a "
+    "refusal on a camera that cannot do it, which is why quackd asks for none by default",
+)
+OPENCV_MODE_DEFAULTS_TO_THE_CAMERA = UpstreamRef(
+    "an unset fps, width or height keeps the camera's own mode",
+    "VERIFIED",
+    src(_OPENCV, 228),
+    "the guards read the device's defaults back instead of setting anything (fps at line "
+    "237), which is what quackd relies on when it is pointed at an unknown webcam",
+)
+CAMERA_READ_LATEST = UpstreamRef(
+    "Camera.read_latest(max_age_ms=500)",
+    "VERIFIED",
+    src(_OPENCV, 582),
+    "the newest buffered frame, non-blocking; raises TimeoutError when it is older than "
+    "max_age_ms (opencv line 610) and RuntimeError before the first frame or if the read "
+    "thread has died. quackd catches all of it and reports a camera error instead. The "
+    "anchor is the OpenCV override on purpose: the base method (camera.py line 153) is not "
+    "abstract, it emits a FutureWarning and delegates to async_read(), which blocks and "
+    "takes a timeout_ms instead, so these semantics are the subclass's",
+)
+CAMERA_DISCONNECT = UpstreamRef("Camera.disconnect()", "VERIFIED", src(_CAMERA, 182))
+SO_CAMERAS_ARE_THE_FOLLOWERS = UpstreamRef(
+    "a follower's cameras are part of its connected state",
+    "VERIFIED",
+    src(_SO, 88),
+    "is_connected is the bus AND every camera, and send_action and disconnect() are "
+    "decorated on it, so a webcam that drops would make every move and every hold raise. "
+    "That is why quackd builds its camera beside the follower and passes cameras={}",
+)
+FIND_PORT = UpstreamRef(
+    "lerobot-find-port",
+    "VERIFIED",
+    src("pyproject.toml"),
+    "lerobot.scripts.lerobot_find_port:main, a [project.scripts] entry beside "
+    "lerobot-calibrate and lerobot-setup-motors. It lists the ports, asks you to unplug the "
+    "arm, and names the one that disappeared, which is the only way to be sure which port "
+    "is the arm rather than something else on the bus",
+)
+FIND_CAMERAS = UpstreamRef(
+    "lerobot-find-cameras opencv",
+    "VERIFIED",
+    src("pyproject.toml", 352),
+    "lerobot.scripts.lerobot_find_cameras:main; prints an Id per camera and saves one "
+    "outputs/captured_images/opencv_<id>.png (line 289), which is how an owner learns "
+    "which index is which. Off Linux it scans indices 0 to 59",
 )
 
 # ── policies (pick is a LeRobot policy, never a quackd control law) ─────────────────────
 
 POLICY_BASE = UpstreamRef(
     "lerobot.policies.pretrained.PreTrainedPolicy", "VERIFIED", src(_POLICY, 61)
+)
+PRETRAINED_CONFIG = UpstreamRef(
+    "lerobot.configs.policies.PreTrainedConfig",
+    "VERIFIED",
+    src(_POLICY_CFG),
+    "`class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC)`, with "
+    "`from_pretrained(pretrained_name_or_path, *, ...)`, a `device` field and a `type` "
+    "property. `load_policy()` reads a checkpoint's config through it before building the "
+    "policy class, so it is the one policy name that is not in the factory",
 )
 POLICY_FROM_PRETRAINED = UpstreamRef(
     "PreTrainedPolicy.from_pretrained(path, *, config=None, local_files_only=False, "
@@ -450,6 +568,24 @@ TEMPERATURE_C = UpstreamRef(
     "which nothing in LeRobot reads or converts. quackd reports it raw and refuses to move a "
     "joint at or above 60, which is the datasheet's operating maximum and below the servo's "
     "own 70 cut-off, so the number and the threshold are both ours to be wrong about",
+)
+CAMERA_INDEX_MOVES = UpstreamRef(
+    "CAMERA_INDEX_MOVES",
+    "UNVERIFIED",
+    src(_OPENCV, 308),
+    "an OpenCV index is a scan position, not an identity: it can change when a camera is "
+    "replugged or the machine reboots, and a laptop's own webcam usually holds 0. quackd "
+    "records the index it opened and the frame size it got, and cannot tell you it is the "
+    "camera you meant. `lerobot-find-cameras opencv` saves a frame per index for that",
+)
+WINDOWS_CAMERA_BACKEND = UpstreamRef(
+    "WINDOWS_CAMERA_BACKEND",
+    "UNVERIFIED",
+    src(_CAM_CFG, 45),
+    "which OpenCV backend a given Windows machine needs for a given webcam is not knowable "
+    "in advance: the common report is a camera that lists and then will not open under the "
+    "default. quackd leaves upstream's ANY alone and gives the owner ?backend=msmf rather "
+    "than guessing per platform",
 )
 JOINT_RANGES = UpstreamRef(
     "JOINT_RANGES",
