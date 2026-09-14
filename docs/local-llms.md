@@ -140,20 +140,31 @@ What the page has and has not been run against is in [web/README.md](../web/READ
 
 - Which local model pilots the duck well is an open question we have barely measured. The
   loop was designed so that a weak planner degrades the task, never the robot's balance.
-  There are exactly two data points, and they are not ours: the contributor who built
+  Two transcripts are published here and they are not ours: the contributor who built
   memory between runs ran `find-and-kick` against **Qwen 2.5 Coder 14B on LM Studio**
-  (Apple M2 Pro, 2026-09-03) and the transcripts are in [`assets/transcripts/`](assets/transcripts/):
+  (Apple M2 Pro, 2026-09-03) and they are in [`assets/transcripts/`](assets/transcripts/).
+  They are two runs out of more than two: [docs/design/memory.md](design/memory.md)
+  records the same model reading the memory block and never writing to it *across four
+  runs* before `remember` was moved into the numbered strategy. These two were kept, so
+  read them as a selection rather than as the sample:
 
   | transcript | seed | outcome | steps | LLM calls | tokens in + out | text fallbacks | what it shows |
   |---|---|---|---|---|---|---|---|
-  | [`…seed6-memory-read.jsonl`](assets/transcripts/qwen2.5-coder-14b-lmstudio-find-and-kick-seed6-memory-read.jsonl) | 6 | success | 8 | 9 | 29,403 + 244 | 0 | the system prompt carries the previous run's episode under *What you remember*; the model never calls `remember`; two kicks fall short before the third connects |
+  | [`…seed6-memory-read.jsonl`](assets/transcripts/qwen2.5-coder-14b-lmstudio-find-and-kick-seed6-memory-read.jsonl) | 6 | success | 8 | 9 | 29,403 + 244 | 0 | the system prompt carries an earlier run's episode under *What you remember*; the model never calls `remember`; two kicks fall short before the third connects |
   | [`…seed5-remember.jsonl`](assets/transcripts/qwen2.5-coder-14b-lmstudio-find-and-kick-seed5-remember.jsonl) | 5 | success | 4 | 6 | 17,939 + 265 | 0 | the `.duck` body now says `remember` in strategy step 5; after the kick the model returns `remember`, `quack` and `declare_success` in one response, the loop keeps the first (a fact from the verb results) and marks `multiple_tool_calls`, and the other two arrive one per turn after |
+
+  These two are not a chain, and nothing here should be read as one: they ran against
+  different memory directories (`memory-qwen3` and `memory-qwen2`), seed 5 started from an
+  empty memory block, and the episode seed 6 remembers was written by a run that is not in
+  this repository. Seed 5 shows the write and seed 6 shows the read. Neither shows the
+  other's half.
 
   Every turn was a native tool call, none needed the JSON text fallback. The simulator
   clock (`elapsed_s` in `run_end`, which is what the budget counts on `sim2d`) says 14 s and
   11 s; the transcript timestamps say 33 s and 29 s of wall clock, three to nine seconds per
   LLM call. What they cannot show: anything about another model, another machine, or a
-  harder task than the starter duck. If you run one, please
+  harder task than the starter duck, and neither one shows a note surviving from the run
+  that wrote it into the run that reads it. If you run one, please
   share the transcript in a Discussion or a PR into that folder: it is the cheapest way
   to make this section shorter.
 - The cloud providers keep their stricter settings (`tool_choice="required"`,
