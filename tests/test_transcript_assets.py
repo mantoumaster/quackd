@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator
+from functools import cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -30,8 +31,19 @@ from quackd.memory import DEFAULT_DIR as MEMORY_DEFAULT_DIR
 
 REPO = Path(__file__).resolve().parents[1]
 TRANSCRIPTS = sorted((REPO / "docs" / "assets" / "transcripts").glob("*.jsonl"))
-ASSETS_TABLE = (REPO / "docs" / "assets" / "README.md").read_text(encoding="utf-8")
-LOCAL_LLMS = (REPO / "docs" / "local-llms.md").read_text(encoding="utf-8")
+
+
+@cache
+def _assets_table() -> str:
+    """docs/assets/README.md, the row per asset."""
+    return (REPO / "docs" / "assets" / "README.md").read_text(encoding="utf-8")
+
+
+@cache
+def _local_llms() -> str:
+    """docs/local-llms.md, the page whose tables quote these files."""
+    return (REPO / "docs" / "local-llms.md").read_text(encoding="utf-8")
+
 
 #: The two files of the Qwen3 pair, by name, because the memory claim on the page is about
 #: these two and no others. If they are renamed or dropped, the last test fails and whoever
@@ -177,7 +189,7 @@ def test_every_transcript_has_a_row_in_the_assets_table(path: Path) -> None:
     recording nobody can reproduce is a recording nobody can check. Every other asset in that
     directory has a row, and a transcript is the one kind that also carries numbers."""
     row = f"| `transcripts/{path.name}` |"
-    assert row in ASSETS_TABLE, f"docs/assets/README.md has no row for transcripts/{path.name}"
+    assert row in _assets_table(), f"docs/assets/README.md has no row for transcripts/{path.name}"
 
 
 #: A row of either transcript table in `docs/local-llms.md`, which reads
@@ -192,7 +204,7 @@ _TOKENS = re.compile(r"^(?P<input>[\d,]+)\s*\+\s*(?P<output>[\d,]+)$")
 
 def _published_row(name: str) -> list[str]:
     """The cells of the row that links this transcript, the link cell first."""
-    for line in LOCAL_LLMS.splitlines():
+    for line in _local_llms().splitlines():
         found = _ROW.search(line)
         if found is None or found.group("file") != name:
             continue
@@ -263,7 +275,7 @@ def test_the_note_one_qwen3_run_saved_is_read_by_the_other() -> None:
         f"{THINKING_OFF} does not carry the note {THINKING_ON} saved: {note!r}"
     )
     # and the page quotes it, so a rewrite that drops the evidence drops the claim with it
-    assert note in LOCAL_LLMS, f"docs/local-llms.md no longer quotes the note: {note!r}"
+    assert note in _local_llms(), f"docs/local-llms.md no longer quotes the note: {note!r}"
 
     before, after = on[0]["memory"], off[0]["memory"]
     assert after["notes"] == before["notes"] + 1, (
