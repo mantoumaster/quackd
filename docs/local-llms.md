@@ -194,6 +194,36 @@ What the page has and has not been run against is in [web/README.md](../web/READ
   | [`…seed6-memory-read.jsonl`](assets/transcripts/qwen2.5-coder-14b-lmstudio-find-and-kick-seed6-memory-read.jsonl) | 6 | success | 8 | 9 | 29,403 + 244 | 0 | the system prompt carries an earlier run's episode under *What you remember*; the model never calls `remember`; two kicks fall short before the third connects |
   | [`…seed5-remember.jsonl`](assets/transcripts/qwen2.5-coder-14b-lmstudio-find-and-kick-seed5-remember.jsonl) | 5 | success | 4 | 6 | 17,939 + 265 | 0 | the `.duck` body now says `remember` in strategy step 5; after the kick the model returns `remember`, `quack` and `declare_success` in one response, the loop keeps the first (a fact from the verb results) and marks `multiple_tool_calls`, and the other two arrive one per turn after |
 
+  Two more arrived on 2026-09-14, from the contributor who asked for `--extra-body`, and
+  they are a pair rather than a sample: the same build (`739ff84`), the same seed, the same
+  server, one variable. **Qwen3-32B-AWQ on vLLM 0.27.2.dev**, on an NVIDIA GB10, which is
+  `aarch64` and not a machine this project has ever run on.
+
+  | transcript | seed | outcome | steps | LLM calls | tokens in + out | text fallbacks | what it shows |
+  |---|---|---|---|---|---|---|---|
+  | [`…seed1-thinking-on.jsonl`](assets/transcripts/qwen3-32b-awq-vllm-find-and-kick-seed1-thinking-on.jsonl) | 1 | success | 4 | 8 | 35,416 + 2,049 | 0 | Qwen3 with its factory default: every one of the eight calls opens with visible deliberation, 165 to 402 output tokens each |
+  | [`…seed1-thinking-off.jsonl`](assets/transcripts/qwen3-32b-awq-vllm-find-and-kick-seed1-thinking-off.jsonl) | 1 | success | 3 | 5 | 21,802 + 263 | 0 | the same run with `--extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'`: no deliberation anywhere, 19 to 130 output tokens a call |
+
+  **They did not do the same work, so read the per-call numbers and not the totals.** The
+  thinking run took four steps and spent two of them on `remember` and `quack`; the quiet
+  one took three and went from the kick to the declaration. Part of 2,049 → 263 is a shorter
+  path. What the path cannot explain is 165 to 402 tokens a call becoming 19 to 130.
+
+  The first call stays expensive either way: 130 tokens and 16.0 s with thinking off, against
+  19 to 40 tokens and 1.9 to 3.9 s for every call after it. Whatever that is, it is not
+  deliberation, because the quiet transcript contains none.
+
+  `reasoning_tokens` reads 0 in both, and that is a property of the server rather than the
+  model: without `--reasoning-parser` vLLM leaves the thinking inside `content`, where it is
+  billed as output. Output tokens is therefore the honest column here, and a run that reports
+  no reasoning tokens is not a run that did no reasoning.
+
+  The simulator clock says 6.7 s for both, because the robot did the same thing at the same
+  speed; the transcript timestamps say 195.9 s and 29.6 s of wall clock. On this server the
+  same result is available at serve time, with `--reasoning-parser qwen3` beside
+  `--default-chat-template-kwargs '{"enable_thinking": false}'`, and that is the better answer
+  for a box you own. The flag is what you have on one you do not.
+
   These two are not a chain, and nothing here should be read as one: they ran against
   different memory directories (`memory-qwen3` and `memory-qwen2`), seed 5 started from an
   empty memory block, and the episode seed 6 remembers was written by a run that is not in

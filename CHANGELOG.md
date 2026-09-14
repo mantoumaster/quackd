@@ -319,6 +319,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from one run into the next. Thanks to [@Bayway](https://github.com/Bayway) (#7),
   whose runs and whose transcripts these are.
 
+- **Two transcripts from Qwen3-32B-AWQ on vLLM, and the first numbers anybody has for what
+  `--extra-body` actually stops.** Same build, same seed, same server, one variable: with the
+  flag off, all eight LLM calls deliberate in the open and the run spends 2,049 output tokens
+  over four steps; with it on, none of the five do and the run spends 263 over three. Neither
+  needed the JSON text fallback. The totals flatter it, because the two runs took different
+  paths — the thinking one spent two steps on `remember` and `quack` — so the per-call figures
+  are the ones to read: 165 to 402 output tokens a call becomes 19 to 130. `reasoning_tokens`
+  stays 0 in both, which is a property of a server running without `--reasoning-parser` rather
+  than evidence of a model that did not reason: the thinking sits in `content` and is billed as
+  output. The machine is an `aarch64` NVIDIA GB10, which nothing here had run on before.
+
 ### Changed
 
 - **The README and the social card wear the duck head quackd.org uses, and `logo.svg` is
