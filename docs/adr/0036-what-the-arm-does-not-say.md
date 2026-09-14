@@ -45,7 +45,7 @@ Feetech bus returns the odd corrupt packet and losing a run over one would be wo
 disease.
 
 **The heat gate covers exactly the joints LeRobot does not cap.** A new precondition,
-`not_hot`, refuses `move_joints` and `pick` when any joint reads at or above `HOT_C`
+`not_hot`, refuses `move_joints` and `pick` when any body joint reads at or above `HOT_C`
 (`real.py`). It is not on `gripper` or `place`: the gripper has LeRobot's own caps, and opening
 a hot gripper is how you put down what it is holding. The threshold and the servo's own
 cut-off above it are Feetech's documentation, not anything measured here, and both are listed

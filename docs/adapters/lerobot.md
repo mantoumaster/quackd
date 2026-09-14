@@ -113,8 +113,8 @@ reasoning is in [ADR-0036](../adr/0036-what-the-arm-does-not-say.md).
   `True` with the cable pulled, so the heartbeat is a round trip to the motors, and a dead arm
   ends the run.
 - **Torque and temperature are measured.** `get_observation()` reads positions only, so
-  `Torque_Enable` and `Present_Temperature` are read off the bus. A joint at or above 60 °C
-  refuses `move_joints` and `pick`; the servo's own cut-off is 70 °C.
+  `Torque_Enable` and `Present_Temperature` are read off the bus. A body joint at or above
+  60 °C refuses `move_joints` and `pick`; the servo's own cut-off is 70 °C.
 - **A goal outside the calibrated range is refused.** LeRobot does not clamp a degrees goal,
   so quackd computes each joint's travel from the calibration file and refuses instead.
 - **One action moves a joint at most one step.** `max_relative_target` is unset upstream;

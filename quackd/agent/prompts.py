@@ -302,8 +302,20 @@ def body_lines(manifest: RobotManifest) -> list[str]:
             f"- Not published: {', '.join(unknown)}. Decline any task that hinges on any of them."
         )
     lines.append(f"- {_power_and_ground(ds, mobile=mobile)}.")
-    if clamps := _clamp_words(manifest.limits):
+    limits = dict(manifest.limits)
+    ranges: dict[str, Any] = manifest.extras.get("joint_range_deg") or {}
+    if ranges:
+        # an arm that has answered knows each joint's real travel, and a goal outside it is
+        # refused; the schema's symmetric bound would tell the pilot a range it cannot use
+        limits.pop("joint_deg", None)
+    if clamps := _clamp_words(limits):
         lines.append(f"- quackd clamps you to {clamps}.")
+    if ranges:
+        travel = ", ".join(f"{joint} {lo:g} to {hi:g}" for joint, (lo, hi) in ranges.items())
+        lines.append(
+            f"- Each joint's travel in degrees, read from its own calibration, and the only "
+            f"goals quackd will send: {travel}."
+        )
     if manifest.sensors:
         lines.append(f"- Senses: {', '.join(manifest.sensors)}.")
     if ds.cannot:

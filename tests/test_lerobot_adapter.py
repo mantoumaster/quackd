@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from typing import Any
 
@@ -333,7 +334,8 @@ async def test_real_backend_maps_intents_to_verified_names_and_never_limps() -> 
     assert arm.actions[-1] == {"shoulder_pan.pos": 10.0}
     closed = await ex.run_verb("gripper", {"open": False})
     assert closed.ok and closed.data["holding"] is True, closed.summary
-    assert arm.actions[-1] == {"gripper.pos": 0.0} and (await adapter.get_state()).holding
+    # closing on something stops short, which is a stall, and a stall ends in a hold
+    assert {"gripper.pos": 0.0} in arm.actions and (await adapter.get_state()).holding
     stopped = await ex.run_verb("stop")
     assert stopped.ok
     # a hold is the five body joints and deliberately not the gripper: re-sending its
@@ -597,3 +599,153 @@ async def test_real_backend_without_the_extra_names_it() -> None:
         await adapter.connect()
     with pytest.raises(AdapterNotInstalled, match=r"quackd\[lerobot\]"):
         load_policy("some/checkpoint")
+
+
+# ── what an adversarial review of the branch found, and what now pins it ────────────────
+
+
+async def test_a_caller_already_queued_on_the_lock_is_refused_when_the_call_ahead_wedges() -> None:
+    """The wedge is checked inside the lock as well as before it: the lock's release is what
+    wakes the next caller, and that is exactly the moment a second thread must not start."""
+    import threading
+
+    release = threading.Event()
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm, timeout_s=0.2)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    entered: list[str] = []
+
+    def block() -> None:
+        entered.append("blocker")
+        release.wait(5.0)
+
+    def second() -> None:
+        entered.append("second")
+
+    async def first() -> None:
+        with pytest.raises(TimeoutError):
+            await transport._call(block, deadline_s=0.2)
+
+    async def queued() -> None:
+        await asyncio.sleep(0.05)  # parked on the lock while `block` holds it
+        with pytest.raises(TransportError, match="one owner"):
+            await transport._call(second, deadline_s=1.0)
+
+    try:
+        await asyncio.gather(first(), queued())
+        assert entered == ["blocker"]
+    finally:
+        release.set()
+
+
+async def test_a_cancelled_call_wedges_like_a_timed_out_one() -> None:
+    import threading
+
+    release = threading.Event()
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm, timeout_s=5.0)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    task = asyncio.create_task(transport._call(lambda: release.wait(5.0), deadline_s=5.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    try:
+        assert transport.stop_error is not None
+        assert adapter.stop_error is not None  # the core `stop` verb reads this one
+        assert not (await adapter.send_intent(Intent.gripper(True))).accepted
+    finally:
+        release.set()
+
+
+async def test_two_picks_at_once_leave_exactly_one_policy_loop_that_stop_cancels() -> None:
+    class Forever:
+        def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
+            return {"shoulder_pan": 5.0}
+
+    arm = FakeArm(camera=False)
+    transport = LeRobotReal("COM5", robot=arm, policy=Forever())
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    await asyncio.gather(
+        adapter.send_intent(Intent.do("policy:pick:a")),
+        adapter.send_intent(Intent.do("policy:pick:b")),
+        adapter.send_intent(Intent.do("policy:pick:c")),
+    )
+    await asyncio.sleep(0.15)
+    await adapter.stop()
+    assert not transport.policy_running
+    sent = len(arm.actions)
+    await asyncio.sleep(0.35)
+    assert len(arm.actions) == sent, "an orphaned policy loop is still driving the arm"
+    await adapter.close()
+
+
+async def test_holding_is_never_true_from_two_samples_a_millisecond_apart() -> None:
+    """A heartbeat probe and a verb's poll can land on the same reading. Two samples that
+    close agree whatever the gripper is doing, so they say nothing about settling."""
+    arm = FakeArm(step=5.0, object_in_jaws=True)
+    transport = LeRobotReal("COM5", robot=arm)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.send_intent(Intent.gripper(False))).accepted  # 100 -> 95
+    await adapter.get_state()
+    await adapter.get_state()  # the same reading, microseconds later
+    assert not (await adapter.get_state()).holding
+
+
+async def test_holding_is_false_on_an_empty_gripper_that_shuts() -> None:
+    arm = FakeArm(object_in_jaws=False)
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    closed = await ex.run_verb("gripper", {"open": False})
+    assert closed.ok and closed.data["holding"] is False and "on nothing" in closed.summary
+    assert not (await adapter.get_state()).holding
+
+
+async def test_a_gripper_that_does_not_move_is_a_failure_not_a_report() -> None:
+    arm = FakeArm(stuck=("gripper",))
+    arm.positions["gripper"] = 100.0
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    closed = await ex.run_verb("gripper", {"open": False})
+    assert not closed.ok and "did not close" in closed.summary
+
+
+async def test_a_small_step_cap_is_not_mistaken_for_a_stall() -> None:
+    arm = FakeArm(step=0.5)
+    transport = LeRobotReal("COM5", robot=arm, max_step_deg=0.5)
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    assert manifest.limits["step_deg"] == 0.5
+    ex = _executor(adapter, manifest)
+    moved = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 4}, "duration_s": 6})
+    assert moved.ok, moved.summary
+
+
+async def test_a_hot_gripper_does_not_gate_the_body_joints() -> None:
+    arm = FakeArm()
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    arm.temperature["gripper"] = 66.0
+    state = await adapter.get_state()
+    assert state.extras["temperature_c"]["gripper"] == 66 and state.extras["hot"] == []
+    assert (await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 5}})).ok
+
+
+async def test_the_pilot_is_told_the_calibrated_travel_and_not_the_schema_bound() -> None:
+    from quackd.agent.prompts import body_lines
+
+    arm = FakeArm()
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    manifest = await adapter.connect()
+    text = "\n".join(body_lines(manifest))
+    assert "shoulder_pan -100 to 100" in text and "within 180 degrees" not in text
+    health = await adapter.health()
+    assert health.extras["calibration_file"].endswith("arm-01.json")
+    assert health.extras["joint_range_deg"]["elbow_flex"] == [-100, 100]

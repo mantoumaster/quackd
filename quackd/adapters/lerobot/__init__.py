@@ -209,7 +209,22 @@ class LeRobotAdapter:
         temperatures = [float(v) for v in state.extras.get("temperature_c", {}).values()]
         if temperatures:
             extras["hottest_c"] = round(max(temperatures))
+        # what doctor is the first place to show: which calibration file the arm answered
+        # with, and the travel that file gives each joint
+        if path := getattr(self.transport, "calibration_file", None):
+            extras["calibration_file"] = path
+        if ranges := getattr(self.transport, "joint_range_deg", None):
+            extras["joint_range_deg"] = {
+                j: [round(lo), round(hi)] for j, (lo, hi) in ranges.items()
+            }
         return Health(ok=True, battery_percent=None, extras=extras)
+
+    @property
+    def stop_error(self) -> str | None:
+        """Why the last stop did not reach the arm, when the backend knows: the core `stop`
+        verb reads this and refuses to say "stopped" over a hold that never got there."""
+        error = getattr(self.transport, "stop_error", None)
+        return str(error) if error else None
 
     async def heartbeat(self) -> None:
         await self.transport.heartbeat()

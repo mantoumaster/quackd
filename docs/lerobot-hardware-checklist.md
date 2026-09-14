@@ -128,8 +128,8 @@ a real arm:
 - **What a joint reads in degrees Celsius**, cold and after ten minutes of work. quackd
   refuses to move at 60, below the servo's own 70 cut-off, and both numbers are Feetech's
   documentation rather than anything measured here.
-- **Whether 5 degrees an action felt right.** It is upstream's own suggested figure and it
-  has never been watched.
+- **Whether 5 degrees an action felt right.** The figure is quackd's own choice for a first
+  run, not anything upstream recommends for this arm, and it has never been watched.
 - **Whether a stall is caught.** Hold a joint gently against its goal and see whether the verb
   fails with where it stopped.
 

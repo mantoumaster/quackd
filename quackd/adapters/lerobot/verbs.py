@@ -48,9 +48,7 @@ STALL_DEG = 0.5
 GRIPPER_S = 6.0
 """How long to give the gripper. The step cap applies to its 0..100 range too, so a full
 open takes 100 divided by the step, times the tick."""
-GRIPPER_SETTLE = 1.0
-PLACE_OPEN_MIN = 50.0
-"""Below this the gripper did not open, whatever it was asked for."""
+
 PICK_POLL_S = 0.5
 
 
@@ -152,6 +150,14 @@ def _shortfall(goal: dict[str, float], joints: dict[str, float]) -> str:
     return f"{worst} is at {joints[worst]:.0f} with a goal of {goal[worst]:.0f}"
 
 
+def _stall_threshold(ctx: VerbContext) -> float:
+    """How little a joint may move per tick before it counts as stopped. Scaled to the step
+    cap: an arm told to move half a degree a tick is moving at full speed at half a degree
+    a tick, and calling that a stall would fail every legitimate move."""
+    step = (ctx.manifest.limits.get("step_deg") if ctx.manifest is not None else None) or 0.0
+    return min(STALL_DEG, step / 2) if step > 0 else STALL_DEG
+
+
 async def _drive(
     ctx: VerbContext,
     intent: Intent,
@@ -159,33 +165,42 @@ async def _drive(
     *,
     budget_s: float,
     tolerance: Callable[[str], float],
-) -> tuple[dict[str, float], str | None]:
+) -> tuple[dict[str, float], DuckState | None, str, str | None]:
     """Re-send a goal until the arm is there, stops moving, or the budget runs out.
 
-    Returns the last joint reading and None, or a reason it did not arrive. A failure stops
-    the arm first: `stop` holds the present position and deliberately leaves the gripper's
-    goal alone, so stopping mid-move never drops what is held."""
+    Returns the last joint reading, the last state, how it ended (`arrived`, `stalled`,
+    `timeout` or `refused`) and a reason when it did not arrive. A failure stops the arm
+    first: `stop` holds the present position and deliberately leaves the gripper's goal
+    alone, so stopping mid-move never drops what is held."""
     started = ctx.transport.now()
+    stall = _stall_threshold(ctx)
     joints: dict[str, float] = {}
     previous: dict[str, float] = {}
+    state: DuckState | None = None
     still = 0
     while ctx.transport.now() - started < budget_s:
         if (fail := await send_or_fail(ctx, intent)) is not None:
             await ctx.transport.stop()
-            return joints, fail.summary
+            return joints, state, "refused", fail.summary
         await ctx.transport.sleep(TICK_S)
-        joints = _joints_of(await ctx.transport.get_state())
+        state = await ctx.transport.get_state()
+        joints = _joints_of(state)
         error = {k: abs(joints[k] - v) for k, v in goal.items() if k in joints}
         if error and all(gap <= tolerance(joint) for joint, gap in error.items()):
-            return joints, None
+            return joints, state, "arrived", None
         moved = [abs(joints[k] - previous[k]) for k in previous if k in joints]
-        still = still + 1 if moved and max(moved) <= STALL_DEG else 0
+        still = still + 1 if moved and max(moved) <= stall else 0
         previous = {k: joints[k] for k in goal if k in joints}
         if still >= STALL_TICKS:
             await ctx.transport.stop()
-            return joints, f"{_shortfall(goal, joints)}, and it has stopped moving"
+            return (
+                joints,
+                state,
+                "stalled",
+                f"{_shortfall(goal, joints)}, and it has stopped moving",
+            )
     await ctx.transport.stop()
-    return joints, f"{_shortfall(goal, joints)} when the time ran out"
+    return joints, state, "timeout", f"{_shortfall(goal, joints)} when the time ran out"
 
 
 # ── the verbs ───────────────────────────────────────────────────────────────────────────
@@ -193,7 +208,7 @@ async def _drive(
 
 async def move_joints(ctx: VerbContext, p: MoveJointsParams) -> VerbResult:
     goal = dict(p.positions)
-    joints, why = await _drive(
+    joints, _state, _how, why = await _drive(
         ctx,
         Intent.joint(goal, p.duration_s),
         goal,
@@ -209,40 +224,34 @@ async def move_joints(ctx: VerbContext, p: MoveJointsParams) -> VerbResult:
     )
 
 
-async def _settle_gripper(
+async def _drive_gripper(
     ctx: VerbContext, *, open_: bool
-) -> tuple[float | None, bool, VerbResult | None]:
-    """Hold the gripper's goal until its reading stops changing, and report where it stopped.
-
-    The step cap moves it a few units per send, so this is how long a full open takes; and
-    where it stops is the whole of what quackd knows about holding something."""
-    intent = Intent.gripper(open_)
-    started = ctx.transport.now()
-    position: float | None = None
-    state = await ctx.transport.get_state()
-    while ctx.transport.now() - started < GRIPPER_S:
-        if (fail := await send_or_fail(ctx, intent)) is not None:
-            await ctx.transport.stop()
-            return position, False, fail
-        await ctx.transport.sleep(TICK_S)
-        state = await ctx.transport.get_state()
-        latest = _joints_of(state).get("gripper")
-        if latest is not None and position is not None and abs(latest - position) <= GRIPPER_SETTLE:
-            return latest, state.holding, None
-        position = latest
-    return position, state.holding, None
+) -> tuple[float | None, DuckState | None, str, str | None]:
+    """The gripper is a joint like the others: the step cap moves it a few units per send,
+    and where it stops is the whole of what quackd knows about holding something."""
+    goal = {"gripper": GRIPPER_OPEN if open_ else GRIPPER_CLOSED}
+    joints, state, how, why = await _drive(
+        ctx, Intent.gripper(open_), goal, budget_s=GRIPPER_S, tolerance=lambda _: GRIPPER_TOL
+    )
+    return joints.get("gripper"), state, how, why
 
 
 async def gripper(ctx: VerbContext, p: GripperParams) -> VerbResult:
-    position, holding, refused = await _settle_gripper(ctx, open_=p.open)
-    if refused is not None:
-        return refused
+    position, state, how, why = await _drive_gripper(ctx, open_=p.open)
     where = "" if position is None else f" (stopped at {position:.0f}/100)"
     if p.open:
+        if how != "arrived":
+            return VerbResult.fail(f"gripper did not open: {why}", open=True, position=position)
         return VerbResult.success(f"gripper open{where}", open=True, position=position)
-    grasped = "on something" if holding else "on nothing"
-    return VerbResult.success(
-        f"gripper closed {grasped}{where}", open=False, position=position, holding=holding
+    # closing on something is the one move that is supposed to stop short
+    holding = bool(state is not None and state.holding)
+    if how == "arrived" or (how == "stalled" and holding):
+        grasped = "on something" if holding else "on nothing"
+        return VerbResult.success(
+            f"gripper closed {grasped}{where}", open=False, position=position, holding=holding
+        )
+    return VerbResult.fail(
+        f"gripper did not close: {why}", open=False, position=position, holding=holding
     )
 
 
@@ -270,13 +279,9 @@ async def pick(ctx: VerbContext, p: PickParams) -> VerbResult:
 
 
 async def place(ctx: VerbContext, _: NoParams) -> VerbResult:
-    position, _holding, refused = await _settle_gripper(ctx, open_=True)
-    if refused is not None:
-        return refused
-    if position is not None and position < PLACE_OPEN_MIN:
-        return VerbResult.fail(
-            f"place: the gripper did not open, it is at {position:.0f}/100", position=position
-        )
+    position, _state, how, why = await _drive_gripper(ctx, open_=True)
+    if how != "arrived":
+        return VerbResult.fail(f"place: the gripper did not open: {why}", position=position)
     return VerbResult.success("placed: gripper opened where the arm is", position=position)
 
 

@@ -48,8 +48,9 @@ POLICY_HZ = 10.0
 
 MAX_STEP_DEG = 5.0
 """How far one `send_action` may move a joint, in degrees. At the 10 Hz a verb re-sends a
-goal that is also the top joint speed: 5 degrees a step is 50 degrees a second. Upstream's
-own replay tutorial suggests 5; upstream's default is no cap at all."""
+goal that is also the top joint speed: 5 degrees a step is 50 degrees a second. The figure
+is quackd's own choice for a first run and nothing upstream recommends one for this arm;
+upstream's default is no cap at all."""
 STEP_ENV = "QUACKD_LEROBOT_MAX_STEP_DEG"
 
 ENCODER_TICKS = 4096
@@ -63,6 +64,8 @@ HOLD_MAX = 90.0
 """A gripper told to close and settled strictly inside this band is holding something."""
 GRIPPER_SETTLE = 1.0
 """Two readings this close together mean the gripper has stopped moving."""
+SETTLE_GAP_S = 0.08
+"""How far apart in time those two readings have to be to say anything."""
 
 OUT_OF_RANGE_DEG = 2.0
 """How far past its calibrated travel a joint must read before the state says so."""
@@ -160,7 +163,8 @@ class LeRobotReal:
         self._temperature_c: dict[str, float] = {}
         self._register_error: str | None = None
         self._gripper_goal: float | None = None
-        self._gripper_trace: deque[float] = deque(maxlen=2)
+        self._gripper_trace: deque[tuple[float, float]] = deque(maxlen=16)
+        self._policy_lock = asyncio.Lock()
         self._range_clips = 0
         self.joint_range_deg: dict[str, tuple[float, float]] = {}
         self.calibration_file: str | None = None
@@ -193,19 +197,20 @@ class LeRobotReal:
         would put two talkers on that bus, so the transport stays wedged until the thread
         comes back, and says so instead. The arm holds its last goal meanwhile, which is the
         one thing that needs no rescuing (`up.NO_CLIENT_DEADMAN`)."""
-        if self._wedged is not None:
-            if not self._wedged.done():
-                raise TransportError(self.stop_error or "a LeRobot call has not come back")
-            self._wedged = None
-            self.stop_error = None
+        self._refuse_if_wedged()
         loop = asyncio.get_running_loop()
         pending: asyncio.Future[Any] | None = None
         try:
             async with asyncio.timeout(deadline_s or self.timeout_s):
                 async with self._lock:
+                    # a caller parked on the lock passed the check above before the call
+                    # ahead of it wedged; the lock's release is what woke it, so ask again
+                    self._refuse_if_wedged()
                     pending = loop.run_in_executor(None, functools.partial(fn, *args))
                     return await asyncio.shield(pending)
-        except TimeoutError:
+        except (TimeoutError, asyncio.CancelledError):
+            # a cancelled verb (Ctrl-C mid-move) leaves its thread on the wire exactly as
+            # a timed-out one does, and the stop that follows must not join it there
             if pending is not None and not pending.done():
                 self._wedged = pending
                 self.stop_error = (
@@ -213,6 +218,14 @@ class LeRobotReal:
                     "serial bus has one owner, so quackd refuses every call until it does"
                 )
             raise
+
+    def _refuse_if_wedged(self) -> None:
+        if self._wedged is None:
+            return
+        if not self._wedged.done():
+            raise TransportError(self.stop_error or "a LeRobot call has not come back")
+        self._wedged = None
+        self.stop_error = None
 
     def _config_kwargs(self) -> dict[str, Any]:
         """Every safety-shaped field of `up.SO_CONFIG`, spelled out.
@@ -313,7 +326,7 @@ class LeRobotReal:
         self._joints = self._joints_of(obs)
         gripper = self._joints.get("gripper")
         if gripper is not None:
-            self._gripper_trace.append(gripper)
+            self._gripper_trace.append((self.now(), gripper))
         self._register_error = error
         if torque:
             self._torque = all(int(v) == 1 for v in torque.values())
@@ -342,7 +355,9 @@ class LeRobotReal:
 
     @property
     def hot_joints(self) -> list[str]:
-        return sorted(k for k, v in self._temperature_c.items() if v >= HOT_C)
+        """The body joints at or above `HOT_C`. The gripper is left out on purpose: it has
+        LeRobot's own torque and current caps, and its temperature is still reported."""
+        return sorted(k for k, v in self._temperature_c.items() if v >= HOT_C and k != "gripper")
 
     def _out_of_range(self) -> list[str]:
         """Joints reading outside the travel their own calibration recorded. Not a refusal:
@@ -359,10 +374,14 @@ class LeRobotReal:
         has stopped moving, and it stopped short of shut."""
         if self._gripper_goal is None or self._gripper_goal > HOLD_MIN:
             return False
-        if len(self._gripper_trace) < 2:
+        if not self._gripper_trace:
             return False
-        previous, latest = self._gripper_trace[-2], self._gripper_trace[-1]
-        if abs(latest - previous) > GRIPPER_SETTLE:
+        at, latest = self._gripper_trace[-1]
+        # settled means the reading has not moved over a real interval. The heartbeat and a
+        # verb's poll can land a millisecond apart, and two samples that close agree whatever
+        # the gripper is doing, so the comparison reaches back at least one tick
+        earlier = [pos for t, pos in self._gripper_trace if at - t >= SETTLE_GAP_S]
+        if not earlier or abs(latest - earlier[-1]) > GRIPPER_SETTLE:
             return False
         return HOLD_MIN < latest < HOLD_MAX
 
@@ -477,10 +496,11 @@ class LeRobotReal:
             return Ack(accepted=False, reason=f"unknown skill {skill!r}")
         if self._policy is None:
             return Ack(accepted=False, reason="no policy was given to this backend")
-        await self._cancel_policy()
-        self._policy_error = None
-        self._policy_name = f"policy:pick:{task}"
-        self._policy_task = asyncio.create_task(self._run_policy(task))
+        async with self._policy_lock:  # two picks at once must not each start a loop
+            await self._cancel_policy()
+            self._policy_error = None
+            self._policy_name = f"policy:pick:{task}"
+            self._policy_task = asyncio.create_task(self._run_policy(task))
         return Ack()
 
     async def _run_policy(self, task: str) -> None:
