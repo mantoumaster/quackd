@@ -107,6 +107,17 @@ async def test_tool_choice_none_omits_the_field(monkeypatch: pytest.MonkeyPatch)
     assert "tool_choice" not in client.kwargs
 
 
+async def test_local_forwards_extra_body() -> None:
+    """The presets are where #12 came from: a vLLM server wants a field in the body and
+    `LocalProvider` has to carry it up to the base class, which is what sends it."""
+    body = {"chat_template_kwargs": {"enable_thinking": False}}
+    client = FakeClient(reply(text="{}"))
+    await LocalProvider("m", preset="vllm", client=client, extra_body=body).step(
+        "S", history(), TOOLS
+    )
+    assert client.kwargs["extra_body"] == body
+
+
 async def test_cloud_openai_keeps_strict_params() -> None:
     client = FakeClient(reply(tool_calls=[NS(id="c1", function=NS(name="kick", arguments="{}"))]))
     await OpenAIProvider("gpt-5", client=client).step("S", history(), TOOLS)
@@ -227,20 +238,28 @@ def test_prompt_hint_only_for_local() -> None:
 
 def test_factory_builds_local_presets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("quackd.agent.providers.local.LocalProvider.__init__", _record_init)
-    p = make_provider("vllm", model="Qwen/Qwen3-8B", base_url="http://gpu:8000/v1", vision=True)
+    p = make_provider(
+        "vllm",
+        model="Qwen/Qwen3-8B",
+        base_url="http://gpu:8000/v1",
+        vision=True,
+        extra_body='{"chat_template_kwargs": {"enable_thinking": false}}',
+    )
     assert p.recorded == {  # type: ignore[attr-defined]
         "model": "Qwen/Qwen3-8B",
         "preset": "vllm",
         "base_url": "http://gpu:8000/v1",
         "api_key": None,
         "vision": True,
+        # the flag arrives as text and the factory hands the provider the parsed object
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }
 
 
 def _record_init(self: Any, model: Any = None, **kw: Any) -> None:
     self.recorded = {
         "model": model,
-        **{k: kw.get(k) for k in ("preset", "base_url", "api_key", "vision")},
+        **{k: kw.get(k) for k in ("preset", "base_url", "api_key", "vision", "extra_body")},
     }
     self.name = kw.get("preset", "local")
     self.model = model or ""

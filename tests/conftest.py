@@ -95,6 +95,16 @@ def _no_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUACKD_MODEL", "")
 
 
+@pytest.fixture(autouse=True)
+def _no_extra_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`QUACKD_EXTRA_BODY` adds fields to every request an OpenAI-compatible provider sends, so
+    one line in a developer's `.env` would reach every test in this suite that reads a request
+    body, and the tests asserting a field is *absent* would fail on their machine and nowhere
+    else. Empty reads as unset, and unlike `delenv` it survives `load_dotenv`. The tests that
+    exercise the variable set it themselves."""
+    monkeypatch.setenv("QUACKD_EXTRA_BODY", "")
+
+
 @pytest.fixture
 def registry() -> VerbRegistry:
     return default_registry()

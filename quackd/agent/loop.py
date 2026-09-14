@@ -462,6 +462,10 @@ class AgentLoop:
             duck_path=self.duck.path,
             provider=cfg.provider.name,
             model=cfg.provider.model,
+            # Fields a passthrough added to every request (#12). A run whose model was told not
+            # to think reads very differently from one that was, and the transcript is the only
+            # place a reader can tell which they are holding.
+            extra_body=getattr(cfg.provider, "extra_body", None),
             transport=backend_name(cfg.transport),
             adapter=adapter_name(cfg.transport),
             robot=manifest.model_dump(mode="json") if manifest is not None else None,

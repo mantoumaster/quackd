@@ -21,6 +21,31 @@ from quackd.transport.mock import MockTransport
 GOLDEN_HELLO = ["assess_task", "quack", "walk", "quack", "declare_success"]
 
 
+async def test_run_start_records_the_extra_body(hello_duck: DuckFile, tmp_path: Path) -> None:
+    """A run whose model was told not to think reads nothing like one that was, and the
+    transcript is the only place a reader can tell which of the two they are holding. The
+    emit is a `getattr`, which would record None for ever if the attribute were renamed."""
+    body = {"chat_template_kwargs": {"enable_thinking": False}}
+    provider = FakeProvider.for_duck(hello_duck.name)
+    provider.extra_body = body  # type: ignore[attr-defined]
+    result = await run_duck(
+        RunConfig(duck=hello_duck, provider=provider, transport=MockTransport(), runs_dir=tmp_path)
+    )
+    start = Transcript.read(result.run_dir / "transcript.jsonl")[0]
+    assert start["kind"] == "run_start" and start["extra_body"] == body
+
+    # a provider with no such attribute records None rather than raising
+    plain = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck(hello_duck.name),
+            transport=MockTransport(),
+            runs_dir=tmp_path / "plain",
+        )
+    )
+    assert Transcript.read(plain.run_dir / "transcript.jsonl")[0]["extra_body"] is None
+
+
 async def test_hello_world_golden(hello_duck: DuckFile, tmp_path: Path) -> None:
     transport = MockTransport()
     result = await run_duck(

@@ -122,6 +122,7 @@ class LocalProvider(OpenAIProvider):
         api_key: str | None = None,
         tool_choice: str | None = None,
         vision: bool | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         if preset not in PRESETS:
             raise ProviderError(f"unknown local preset {preset!r}; one of {', '.join(LOCAL_NAMES)}")
@@ -148,6 +149,7 @@ class LocalProvider(OpenAIProvider):
             base_url=url,
             tool_choice=choice,
             vision=vision,
+            extra_body=extra_body,
         )
         self.text_fallbacks = 0
 
