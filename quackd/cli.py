@@ -624,6 +624,7 @@ def _run_impl(
     base_url: str | None = None,
     api_key: str | None = None,
     vision: bool | None = None,
+    extra_body: str | None = None,
     flock: str | None = None,
     *,
     robot: str | None = None,
@@ -769,6 +770,7 @@ def _run_impl(
                 base_url=base_url,
                 api_key=api_key,
                 vision=vision,
+                extra_body=extra_body,
                 max_steps=max_steps,
                 fov_deg=fov_deg,
                 memory=memory,
@@ -815,6 +817,7 @@ def _run_impl(
             base_url=base_url,
             api_key=api_key,
             vision=vision,
+            extra_body=extra_body,
             n_override=flock_n,
             max_steps=max_steps,
             trace=trace,
@@ -831,6 +834,7 @@ def _run_impl(
             base_url=base_url,
             api_key=api_key,
             vision=vision,
+            extra_body=extra_body,
         )
         duck_transport = make_adapter(
             spec,
@@ -1032,6 +1036,7 @@ def _run_pilots_impl(
     base_url: str | None,
     api_key: str | None,
     vision: bool | None,
+    extra_body: str | None,
     max_steps: int | None,
     fov_deg: float | None,
     memory: bool,
@@ -1063,6 +1068,7 @@ def _run_pilots_impl(
                 base_url=base_url,
                 api_key=api_key,
                 vision=vision,
+                extra_body=extra_body,
             )
             for name, entry in roster.items()
         }
@@ -1231,6 +1237,7 @@ def _run_flock_impl(
     base_url: str | None,
     api_key: str | None,
     vision: bool | None,
+    extra_body: str | None,
     n_override: int | None,
     max_steps: int | None,
     trace: bool | None = None,
@@ -1284,6 +1291,7 @@ def _run_flock_impl(
             base_url=base_url,
             api_key=api_key,
             vision=vision,
+            extra_body=extra_body,
         )
     except (ProviderError, ImportError) as e:
         _fail(str(e))
@@ -1512,6 +1520,15 @@ _APIKEY = typer.Option(
     help="API key override (local servers do not need one).",
     rich_help_panel="Model",
 )
+_EXTRA_BODY = typer.Option(
+    None,
+    "--extra-body",
+    help="A JSON object merged into every request body on the OpenAI-compatible providers, for "
+    "a field the server wants and quackd never sends. Qwen3 on vLLM stops thinking with "
+    '\'{"chat_template_kwargs": {"enable_thinking": false}}\'. QUACKD_EXTRA_BODY does the '
+    "same when the flag is absent, and spares you the shell quoting.",
+    rich_help_panel="Model",
+)
 _VISION = typer.Option(
     None,
     "--vision/--no-vision",
@@ -1663,6 +1680,7 @@ def run(
     base_url: str | None = _BASEURL,
     api_key: str | None = _APIKEY,
     vision: bool | None = _VISION,
+    extra_body: str | None = _EXTRA_BODY,
     flock: str | None = _FLOCK,
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
@@ -1692,6 +1710,7 @@ def run(
         base_url=base_url,
         api_key=api_key,
         vision=vision,
+        extra_body=extra_body,
         flock=flock,
         robot=robot,
         robots=robots,
@@ -1717,6 +1736,7 @@ def record(
     base_url: str | None = _BASEURL,
     api_key: str | None = _APIKEY,
     vision: bool | None = _VISION,
+    extra_body: str | None = _EXTRA_BODY,
     flock: str | None = typer.Option(
         None,
         "--flock",
@@ -1755,6 +1775,7 @@ def record(
         base_url=base_url,
         api_key=api_key,
         vision=vision,
+        extra_body=extra_body,
         flock=flock,
         robot="microduck:sim2d",
         trace=trace,

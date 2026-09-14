@@ -778,8 +778,76 @@ def _help(argv: list[str]) -> str:
     return " ".join(re.sub(r"\[[0-9;]*m", "", out).split())
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "hello-world", "--robot", "microduck:mock", "--no-gif"],
+        ["record", "hello-world", "--gif-size", "64"],
+        ["run", "flock-hello", "--no-gif"],
+        ["run", "flock-kick", "--no-gif"],
+    ],
+    ids=["run", "record", "pilot-flock", "coordinator-flock"],
+)
+def test_extra_body_reaches_every_provider_a_run_builds(
+    argv: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A flock builds one provider per member, so a flag that only reached the single-robot
+    path would be a silent no-op on the very runs that cost the most. The two kinds of flock
+    are two call sites: `flock-hello` is `method: pilots` and goes through `_run_pilots_impl`,
+    `flock-kick` is `method: auction` and goes through `_run_flock_impl`."""
+    body = '{"chat_template_kwargs": {"enable_thinking": false}}'
+    seen: list[object] = []
+    real = __import__("quackd.agent.providers.factory", fromlist=["make_provider"]).make_provider
+
+    def recorder(name: str, **kw: object) -> object:
+        seen.append(kw.get("extra_body"))
+        return real("fake", duck_name=kw.get("duck_name"))  # type: ignore[arg-type]
+
+    monkeypatch.setattr("quackd.agent.providers.factory.make_provider", recorder)
+    result = runner.invoke(
+        app, [*argv, "--provider", "fake", "--runs-dir", str(tmp_path / "r"), "--extra-body", body]
+    )
+    assert result.exit_code == 0, result.output
+    assert seen, "no provider was built"
+    assert all(s == body for s in seen), "the factory is handed the text as it was typed"
+    # a pilot flock is one whole pilot per body; a coordinator flock is one referee for all
+    # of them, so only the first should build more than one provider
+    if "flock-hello" in argv:
+        assert len(seen) > 1, "a pilot flock is one provider per member"
+
+
+def test_a_bad_extra_body_stops_before_anything_connects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parse is in the factory, and the factory runs before the adapter, so the run
+    directory is never made. Each door names itself: a flag somebody has just typed and a
+    line in a `.env` they have forgotten want different answers."""
+    runs = tmp_path / "r"
+    common = [
+        "run",
+        "hello-world",
+        "--provider",
+        "vllm",
+        "--robot",
+        "microduck:mock",
+        "--no-gif",
+        "--runs-dir",
+        str(runs),
+        "--memory-dir",
+        str(tmp_path / "m"),
+    ]
+    result = runner.invoke(app, [*common, "--extra-body", "[1]"])
+    assert result.exit_code == 1
+    assert "--extra-body" in result.output and "Traceback" not in result.output
+    assert not runs.exists() or not list(runs.iterdir())
+
+    monkeypatch.setenv("QUACKD_EXTRA_BODY", "[1]")
+    result = runner.invoke(app, common)
+    assert result.exit_code == 1 and "QUACKD_EXTRA_BODY" in result.output
+
+
 def test_the_help_groups_the_flags_and_keeps_the_brackets_of_an_extra() -> None:
-    """Twenty seven flags in one flat list is a list nobody reads. And `rich_markup_mode`
+    """Twenty eight flags in one flat list is a list nobody reads. And `rich_markup_mode`
     reads `quackd[lan]` as markup, which printed an install that does not exist."""
     out = _help(["run", "--help"])
     assert "quackd[live]" in out, "an extra a reader is meant to type must survive"
