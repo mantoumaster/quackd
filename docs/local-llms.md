@@ -212,8 +212,11 @@ What the page has and has not been run against is in [web/README.md](../web/READ
 
   **Qwen3-32B-AWQ on vLLM 0.27.2.dev**, an NVIDIA GB10 that is `aarch64`, 2026-09-14, from
   the contributor who asked for `--extra-body` (#12). Not a selection this time but a pair:
-  the same build (`739ff84`), the same seed and the same server, with one variable between
-  them. It is the only measurement anybody has of what that flag actually stops, because
+  the same build (`739ff84`), the same server, and the same seed on the contributor's word,
+  because no transcript records one. The flag is the difference the pair was built around,
+  and not the only one: the second run's prompt had grown by two lines in the meantime,
+  which is the chain at the end of this section and the reason that run skips `remember`.
+  It is still the only measurement anybody has of what the flag actually stops, because
   every test in this repository proves the object reaches the SDK call and none of them
   proves the thinking stops:
 
@@ -246,12 +249,12 @@ What the page has and has not been run against is in [web/README.md](../web/READ
 
   **The expensive first call is the verdict, not a warm-up for thinking.** With the flag on
   it is 130 output tokens and 16.0 s, against 19 to 40 tokens and 1.9 to 3.9 s afterwards.
-  That first call is `assess_task`, whose `reason` argument is a four sentence paragraph and
-  the longest single answer in the quiet run. Every call in that run decodes at 8 to 10
-  tokens a second, the first one included, so its own length accounts for about 13 of the
-  16 s and the remaining three are what a first call costs on a cold prompt. The thinking
-  run's first call carries the same overhead, so it is a property of the server and not of
-  the flag.
+  That first call is `assess_task`, whose `reason` argument is a five sentence paragraph and
+  the longest single answer in the quiet run. Every call in that run decodes at 8.1 to 10.2
+  tokens a second, the first one included, so its own length accounts for about 13 of those
+  16 seconds. What is left over is what a first call costs before a server is warm, and the
+  thinking run's first call also runs long past what its own length explains, so the cost
+  sits with the first call rather than with the flag.
 
   **`reasoning_tokens` reads 0 in both, and the thought is still in the file.** vLLM ran
   without `--reasoning-parser`, so the server left the thinking inside `content` and billed

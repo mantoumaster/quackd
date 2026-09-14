@@ -320,7 +320,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose runs and whose transcripts these are.
 
 - **Two transcripts from Qwen3-32B-AWQ on vLLM, and the first numbers anybody has for what
-  `--extra-body` actually stops.** Same build (`739ff84`), same seed, same server, one variable.
+  `--extra-body` actually stops.** Same build (`739ff84`), same server, same seed on the
+  contributor's word since no transcript records one, and the flag the difference the pair was
+  built around.
   Every test in this repository proves the object reaches the SDK call and not one of them proves
   the thinking stops, so until now that flag shipped on a mechanism nobody had watched work. With
   it off, all eight LLM calls deliberate in the open, 599 to 1,446 characters of it in each row's
@@ -335,8 +337,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missed rather than a step saved. The thinking run's own first call asked for `search_scan`
   before recording a verdict and the gate refused it, so one of its eight bought nothing.
   Its expensive first call is the verdict, not a warm-up: `assess_task`'s `reason` argument is a
-  four sentence paragraph, and at the 8 to 10 tokens a second every call in that run decodes at,
-  130 tokens is about 13 of its 16 seconds. `reasoning_tokens` stays 0 in both, which is a
+  five sentence paragraph, and at the 8.1 to 10.2 tokens a second every call in that run decodes
+  at, 130 tokens is about 13 of its 16 seconds. `reasoning_tokens` stays 0 in both, which is a
   property of a server running without `--reasoning-parser` rather than evidence of a model that
   did not reason: the server leaves the thinking in `content`, billed as output, and quackd then
   splits it into the transcript's own `thinking` field before the text fallback can read a verb
