@@ -255,6 +255,37 @@ added.
    release and say so in the CHANGELOG rather than leaving them for later.
 6. **Reply properly and say thank you.** Somebody spent their evening on this.
 
+### How the reply is written
+
+It goes out under a person's name, to a person, so it has to read like a person wrote it.
+This section is written to its own rules, as the worked example.
+
+**No dashes.** No em dash, no en dash, no hyphen standing in for a comma or a colon or an
+aside, and no hyphen bullets. A hyphen belongs only inside something that genuinely has one:
+`google-genai`, `gemini-3.8-flash`, `--provider`, a branch name, an identifier. Everything
+else is a real sentence, or a colon, or a full stop. Prose here leans on em dashes heavily
+and a reply must not, so the weight goes onto the colon and onto the short flat sentence
+after a long one instead. This is the fastest way for a reply to look machine written, and
+it is the last thing to check before posting.
+
+**None of the assistant tells.** Not "Great work!", not "Let's dive in", not "Overall," or
+"In summary," or "It's worth noting that". No three tidy parallel bullets where two uneven
+sentences would do. No closing line that restates the paragraph above it. Hedging like "it
+seems" or "it appears" means the checking did not happen, so go and check, then write the
+answer.
+
+**When something is declined, say what it lost to.** Usually it is timing and not judgement:
+`main` moved, or the same problem got solved another way while the PR sat open. If they were
+right when they wrote it, say that in as many words. Nobody should have to work out from
+silence whether they were wrong.
+
+**Thank them for the specific thing.** Not for "the contribution". For the evening, for the
+provider nobody else was running, for the bug that could only be found by pointing a duck at
+it and reading what came back.
+
+**Length.** Something a person reads in one go. If it has grown headings to hold itself
+together, it is too long.
+
 ## Reporting bugs and proposing verbs
 
 Use the issue templates. `quackd doctor` output and the relevant `transcript.jsonl` lines
