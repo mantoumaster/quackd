@@ -227,9 +227,15 @@ async def report_state(ctx: VerbContext, _: NoParams) -> VerbResult:
     else:
         heat = "no temperature reported"
     held = "holding something" if state.holding else "holding nothing"
-    return VerbResult.success(
-        f"{where or 'no joints reported'}; {torque}; {heat}; {held}", state=state.model_dump()
-    )
+    parts = [where or "no joints reported", torque, heat, held]
+    # a camera earns a clause only when a read has actually failed. Not when it is merely
+    # unread: `ok` is false until the first frame, and a camera that opened and has not been
+    # asked yet is not news. A working one is already in every observation as detections,
+    # and a dead one is otherwise silent on a run that cannot call `observe`.
+    camera = extras.get("camera")
+    if isinstance(camera, dict) and camera.get("error"):
+        parts.append(f"CAMERA DOWN: {camera['error']}")
+    return VerbResult.success("; ".join(parts), state=state.model_dump())
 
 
 async def move_joints(ctx: VerbContext, p: MoveJointsParams) -> VerbResult:

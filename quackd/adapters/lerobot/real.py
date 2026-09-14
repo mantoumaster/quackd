@@ -659,6 +659,13 @@ class LeRobotReal:
             extras["policy_error"] = self._policy_error
         if self._register_error is not None:
             extras["register_error"] = self._register_error
+        if self.camera_spec is not None:
+            # A camera that dies mid-run is otherwise invisible on a `quackd run`: the only
+            # reader of camera_error is the `observe` verb, and `observe` cannot be in a
+            # .duck's allowlist on this backend because the static manifest has no camera.
+            # So the frames stop, the observation loses a line, and nothing says why. This
+            # is pure field reads, no bus and no camera call, so the heartbeat pays nothing.
+            extras["camera"] = self.camera_health()
         return DuckState(
             t=self.now(),
             policy=self._policy_name,

@@ -160,7 +160,7 @@ widen it. **You are responsible for your robot.**
   end of a session by its default, so the arm sags when the run ends: do not leave it holding
   something fragile.
 - A good first contract is the shipped `lerobot-lookout`, which moves no joint. The order to
-  bring one up in, nothing moving until step 9:
+  bring one up in, nothing moving until step 10:
   [lerobot-hardware-checklist.md](lerobot-hardware-checklist.md).
 
 **A wheeled base over rosbridge:**

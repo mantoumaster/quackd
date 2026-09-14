@@ -870,14 +870,13 @@ def test_the_camera_is_not_the_followers_and_the_config_says_so() -> None:
 
 async def test_a_camera_gives_the_arm_observe_and_a_frame() -> None:
     camera = FakeCamera()
-    adapter = LeRobotAdapter(
-        LeRobotReal(
-            "COM5",
-            robot=FakeArm(),
-            camera=parse_camera_url(_camera_url(fov=70)),
-            camera_object=camera,
-        )
+    transport = LeRobotReal(
+        "COM5",
+        robot=FakeArm(),
+        camera=parse_camera_url(_camera_url(fov=70)),
+        camera_object=camera,
     )
+    adapter = LeRobotAdapter(transport)
     manifest = await adapter.connect()
     assert camera.calls == ["connect"]
     assert manifest.provides("observe") and "camera" in manifest.sensors
@@ -885,8 +884,8 @@ async def test_a_camera_gives_the_arm_observe_and_a_frame() -> None:
     assert manifest.limits["camera_fov_deg"] == 70.0
     frame = await adapter.get_frame()
     assert frame is not None and frame.size == (64, 48)
-    health = adapter.camera_health()
-    assert health is not None and health["ok"] and health["size"] == "64x48"
+    health = transport.camera_health()  # the method `doctor` reaches, past the adapter
+    assert health["ok"] and health["size"] == "64x48"
     ex = _executor(adapter, manifest, detector=ColorBlobDetector())
     assert (await ex.run_verb("observe")).ok
     await adapter.close()
@@ -924,8 +923,8 @@ async def test_a_stalled_camera_costs_the_picture_and_not_the_run() -> None:
     camera.stalled = True
     assert await adapter.get_frame() is None
     assert "TimeoutError" in (adapter.camera_error or "")
-    health = adapter.camera_health()
-    assert health is not None and not health["ok"] and "too old" in health["error"]
+    health = transport.camera_health()  # the method `doctor` reaches, past the adapter
+    assert not health["ok"] and "too old" in health["error"]
     observed = await ex.run_verb("observe")
     assert not observed.ok and "too old" in observed.summary
     # the arm is untouched by any of it
@@ -1034,3 +1033,35 @@ def test_the_documented_defaults_and_a_real_lens_are_accepted() -> None:
     for bad in ("opencv://0?width=1280", "opencv://0?height=720", "opencv://0?fov=0"):
         with pytest.raises(AdapterError, match="opencv://0"):
             parse_camera_url(bad)
+
+
+async def test_a_camera_that_died_is_in_the_arms_own_report() -> None:
+    """A run that cannot call `observe` would otherwise lose the camera in silence: the
+    frames stop, the observation loses a line, and nothing in the transcript says why. So the
+    health goes into the state every heartbeat reads, and report_state says it out loud."""
+    arm = FakeArm()
+    camera = FakeCamera()
+    adapter = LeRobotAdapter(
+        LeRobotReal("COM5", robot=arm, camera=parse_camera_url("opencv://0"), camera_object=camera)
+    )
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+
+    healthy = await ex.run_verb("report_state")
+    assert healthy.ok and "CAMERA DOWN" not in healthy.summary, "a working camera is not news"
+
+    camera.stalled = True
+    assert await adapter.get_frame() is None
+    said = await ex.run_verb("report_state")
+    assert said.ok, "a dead camera is not a failed read of the arm"
+    assert "CAMERA DOWN" in said.summary and "too old" in said.summary
+    health = said.data["state"]["extras"]["camera"]
+    assert health["configured"] and not health["ok"] and "too old" in health["error"]
+
+
+async def test_an_arm_without_a_camera_says_nothing_about_one() -> None:
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=FakeArm()))
+    manifest = await adapter.connect()
+    said = await _executor(adapter, manifest).run_verb("report_state")
+    assert said.ok and "CAMERA" not in said.summary
+    assert "camera" not in said.data["state"]["extras"]

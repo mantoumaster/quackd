@@ -4,11 +4,13 @@
 #
 # `observe` is deliberately not here, though every other lookout task in quackd is built on it.
 # A camera on this arm is a USB webcam somebody chose to plug in, named by --camera-url, so the
-# static manifest this task is checked against cannot know there is one: allowing `observe`
-# would refuse the task before it ran on any arm without a camera. What an arm has
-# instead is `report_state`, and on this body that is the more useful question anyway: whether
-# it answers at all, whether torque is on, and how warm the servos are. Those three are what
-# the next steps of the checklist depend on.
+# static manifest `quackd run` checks this task against cannot know there is one. Allowing
+# `observe` would refuse the task on a real arm before it connected, camera or no camera, and
+# the allowlist is checked as well as `requires`. (Over MCP, where robot_load_duckfile validates
+# against the connected robot, a task that allows it does load on a session started with
+# --camera-url.) What an arm has instead is `report_state`, and on this body that is the more
+# useful question anyway: whether it answers at all, whether torque is on, and how warm the
+# servos are. Those three are what the next steps of the checklist depend on.
 ---
 duck: 1
 name: lerobot-lookout
@@ -50,8 +52,11 @@ what it says, so that a human can decide whether this arm is fit to be driven.
 
 - **You cannot move in this task and you should not want to.** Every verb that moves a joint is
   outside your allowlist. If the reading looks wrong, saying so is the answer.
-- **You have no camera and no voice.** `observe` and `say` do not exist for you. Reporting
-  means writing it in the reason you declare with.
+- **You cannot ask for a picture, and you have no voice.** `observe` and `say` are not verbs
+  you have. If somebody plugged a webcam in and named it, you will still see a camera line in
+  your observations, because a frame is taken every step whatever your allowlist says: use it
+  if it is there and do not wait for it if it is not. Reporting means writing it in the reason
+  you declare with.
 - **Torque off is not a fault you can fix.** quackd never switches torque on or off. A servo
   that has tripped its own overload protection reads the same way, so name the joint and let a
   human look at it.

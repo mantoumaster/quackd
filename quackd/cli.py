@@ -1589,7 +1589,10 @@ _LIVE = typer.Option(
 _ADDR = typer.Option(
     None,
     "--address",
-    help="jsonrpc: unix:///run/robotd.sock or tcp://host:port",
+    help="Where the body is, in its own protocol's shape: a LeRobot arm's serial port "
+    "(COM5 on Windows, /dev/ttyACM0 elsewhere), a rosbridge websocket "
+    "(ws://host:9090), a ZeroMQ or bridge host (tcp://host:5555), or robotd's socket "
+    "(unix:///run/robotd.sock, tcp://host:port).",
     rich_help_panel="Robot",
 )
 _TOKEN = typer.Option(

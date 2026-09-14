@@ -269,6 +269,8 @@ Seven robots, and one table for how far each one has actually got. Each name lin
 
 **If you own one of these, the Open Duck Mini is where help is worth the most.** It is a body a stranger can build from scratch, the daemon and the protocol are already exercised against each other, and the only untested part left is the duck. [docs/open-duck-hardware-checklist.md](docs/open-duck-hardware-checklist.md) is the order to try it in, feet off the ground until step 10.
 
+**If you own an SO-101, the path is short**, because LeRobot is a `pip install` and quackd ships no daemon for the arm: the setup is `uv pip install "quackd[lerobot]"` and a calibration you have already done. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) is written for someone who already drives this arm and wants to know what quackd adds to it, what it deliberately does not touch, and what to do when it refuses. Nothing moves until step 10 of [its checklist](docs/lerobot-hardware-checklist.md).
+
 <br>
 
 ## Architecture

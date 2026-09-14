@@ -238,11 +238,6 @@ class LeRobotAdapter:
         error = getattr(self.transport, "camera_error", None)
         return str(error) if error else None
 
-    def camera_health(self) -> dict[str, Any] | None:
-        """What `doctor` probes. None on a backend with no camera of its own."""
-        probe = getattr(self.transport, "camera_health", None)
-        return dict(probe()) if callable(probe) else None
-
     @property
     def stop_error(self) -> str | None:
         """Why the last stop did not reach the arm, when the backend knows: the core `stop`
