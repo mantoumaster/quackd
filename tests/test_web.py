@@ -140,6 +140,34 @@ def test_the_header_wears_the_vendored_duck_mark_and_not_an_emoji() -> None:
     )
 
 
+def test_no_mark_in_web_assets_runs_off_its_own_canvas() -> None:
+    """The bug this catches shipped twice: `duck-mark.png` and `favicon-96.png` were both
+    exported with the crop window about twenty rows too high, so the duck's chin, lower jaw and
+    mouth were sliced away by the bottom edge of the file. Opaque pixels on the last row are
+    the tell, and it is invisible in review because the image still looks like a duck.
+
+    It reached the repository README and the social card before anyone noticed, because both
+    read the same file. `web/make_mark.py` refuses to write an export that fails this, and this
+    is the same check standing over what is actually committed."""
+    pytest.importorskip("PIL", reason="Pillow is not a runtime dependency of quackd")
+    from PIL import Image
+
+    marks = sorted((REPO / "web" / "assets").glob("*.png"))
+    assert marks, "web/assets has no PNGs, so this test is not testing anything"
+    for path in marks:
+        image = Image.open(path).convert("RGBA")
+        width, height = image.size
+        ink = image.getbbox()
+        assert ink is not None, f"{path.name} is entirely transparent"
+        if ink == (0, 0, width, height):
+            # a full-bleed icon: apple-touch-icon.png is a plate, edge to edge on purpose
+            continue
+        assert ink[0] > 0 and ink[1] > 0 and ink[2] < width and ink[3] < height, (
+            f"{path.name} has ink at {ink} in a {width}x{height} canvas, so the art is cut off "
+            f"by its own edge. Re-cut it with web/make_mark.py."
+        )
+
+
 def test_the_page_offers_a_way_back_to_the_site_that_mounts_it() -> None:
     """quackd-web links here from five places — the hero, the loop, the try section, the footer
     and the nav — and this page linked back zero times: the mark was not even a link and "What
