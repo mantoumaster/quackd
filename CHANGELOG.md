@@ -320,15 +320,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose runs and whose transcripts these are.
 
 - **Two transcripts from Qwen3-32B-AWQ on vLLM, and the first numbers anybody has for what
-  `--extra-body` actually stops.** Same build, same seed, same server, one variable: with the
-  flag off, all eight LLM calls deliberate in the open and the run spends 2,049 output tokens
-  over four steps; with it on, none of the five do and the run spends 263 over three. Neither
-  needed the JSON text fallback. The totals flatter it, because the two runs took different
-  paths — the thinking one spent two steps on `remember` and `quack` — so the per-call figures
-  are the ones to read: 165 to 402 output tokens a call becomes 19 to 130. `reasoning_tokens`
-  stays 0 in both, which is a property of a server running without `--reasoning-parser` rather
-  than evidence of a model that did not reason: the thinking sits in `content` and is billed as
-  output. The machine is an `aarch64` NVIDIA GB10, which nothing here had run on before.
+  `--extra-body` actually stops.** Same build (`739ff84`), same seed, same server, one variable.
+  Every test in this repository proves the object reaches the SDK call and not one of them proves
+  the thinking stops, so until now that flag shipped on a mechanism nobody had watched work. With
+  it off, all eight LLM calls deliberate in the open, 599 to 1,446 characters of it in each row's
+  `thinking` field; with it on, not one of the five carries that field at all. Neither run needed
+  the JSON text fallback, on a server nothing here had ever talked to.
+  **The drop is 4.9x, not the 7.8x the totals show.** The two runs took different paths, so
+  2,049 against 263 is not a comparison. Five decisions are common to both, `assess_task`,
+  `search_scan`, `walk_to`, `kick` and `declare_success`, and on those it is 1,290 against 263.
+  The rest is path, and the path is not the flag's doing either: the quiet run skipped `remember`
+  because its prompt already held the fact it would have saved and the duck tells it to skip one
+  that is already there, and it skipped the `quack` its persona asks for, which is an instruction
+  missed rather than a step saved. The thinking run's own first call asked for `search_scan`
+  before recording a verdict and the gate refused it, so one of its eight bought nothing.
+  Its expensive first call is the verdict, not a warm-up: `assess_task`'s `reason` argument is a
+  four sentence paragraph, and at the 8 to 10 tokens a second every call in that run decodes at,
+  130 tokens is about 13 of its 16 seconds. `reasoning_tokens` stays 0 in both, which is a
+  property of a server running without `--reasoning-parser` rather than evidence of a model that
+  did not reason: the server leaves the thinking in `content`, billed as output, and quackd then
+  splits it into the transcript's own `thinking` field before the text fallback can read a verb
+  out of a discarded thought.
+  **And the pair is the first published chain of quackd's memory**, which the PR delivered
+  without claiming. The thinking run's `remember` saved *"The ball was found at 43° left, ~0.85 m
+  during initial scan."* and that sentence is in the other run's `system_prompt` verbatim, beside
+  the episode quackd wrote from the same run, with the counters moving from 1 note and 2 episodes
+  to 2 and 3, so nothing ran between them. A note written by one run and read by the next, both
+  ends in this repository, which no transcript here had shown and which
+  [PLAN.md](PLAN.md) had carried as open since #7. The machine is an `aarch64` NVIDIA GB10,
+  which nothing here had run on before. Thanks to
+  [@Vallhalen](https://github.com/Vallhalen) (#12, #23), who asked for the flag, was told the
+  tests could not prove it worked, and went and measured it on the only machine that could.
 
 ### Changed
 
