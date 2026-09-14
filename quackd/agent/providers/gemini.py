@@ -24,9 +24,6 @@ from quackd.agent.providers.base import (
 )
 from quackd.agent.providers.catalogue import default_model_for
 
-DEFAULT_MODEL = "gemini-pro-latest"
-"""An alias, on purpose: `gemini-2.5-pro` went "no longer available to new users" within
-weeks of being the default here, and a default that 404s is worse than one that moves."""
 UNSUPPORTED_SCHEMA_KEYS = {
     "additionalProperties",
     "title",

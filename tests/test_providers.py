@@ -447,7 +447,7 @@ async def test_gemini_request_and_response_mapping() -> None:
     client = FakeGemini(response)
     turn = await GeminiProvider(client=client).step("SYS", history(), TOOLS)
     kw = client.kwargs
-    assert kw["model"] == "gemini-pro-latest"
+    assert kw["model"] == default_model_for("gemini")
     assert kw["config"]["system_instruction"] == "SYS"
     assert kw["config"]["tool_config"] == {"function_calling_config": {"mode": "ANY"}}
     decl = kw["config"]["tools"][0]["function_declarations"][0]
