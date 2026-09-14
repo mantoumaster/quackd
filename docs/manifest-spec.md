@@ -100,7 +100,7 @@ The seven shipped sheets, with each figure's confidence:
 |---|---|---|---|---|---|---|---|
 | `microduck` | 0.8 kg official | 0.25 m official | 15 official | not published | not published | not published | a beak |
 | `open_duck` | not published | 0.42 m official | 14 estimate | not published | not published | not published | none |
-| `lerobot` | 2.5 kg estimate | 0.53 m estimate | 6 official | 0.5 kg estimate | not published | mains powered | one gripper |
+| `lerobot` | not published | 0.53 m estimate | 6 official | 0.5 kg estimate | not published | mains powered | one gripper |
 | `rosbridge` | from the URDF | not published | from the URDF | not published | not published | not published | none |
 | `xlerobot` | 12 kg official | not published | 17 official | 1.0 kg official, per arm | 0.40 m official | 600 min official | two grippers |
 | `alohamini` | not published | not published | 14 official | 1.0 kg official, per arm | 0.52 m official | not published | two grippers |

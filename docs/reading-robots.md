@@ -89,6 +89,24 @@ and a gripper the build does not have.
 **What to do:** report what actually loaded, and narrow the manifest from that. A verb that is
 not in the manifest does not exist, which is better than one that exists and refuses.
 
+## A connection flag that is a port flag
+
+The LeRobot arm's `is_connected` is the serial port's open flag and nothing more. Pull the
+cable and it stays `True` until something tries to read and fails, so a heartbeat that checks
+the flag would have kept a run alive with no arm on the end of it.
+
+**What to do:** treat a boolean the SDK computes without talking to the robot as a
+statement about the host, and make the heartbeat a real round trip.
+
+## A clamp that covers two of three modes
+
+The same motors bus bounds a goal to its calibrated range in both of its 0..100 modes and
+not in its degrees mode, which is the mode the arm's body joints use. A goal past the joint's
+travel goes to the servo as-is, and what the firmware does with it is the vendor's business.
+
+**What to do:** read the clamp for the mode you are actually in, not the one the example
+uses, and refuse on your own side of the wire when it is missing.
+
 ## A name that exists, on the wrong class
 
 `default_motor_pos` is a real attribute in the ToddlerBot's upstream — on `BasePolicy`, not on

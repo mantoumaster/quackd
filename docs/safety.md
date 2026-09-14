@@ -148,14 +148,20 @@ widen it. **You are responsible for your robot.**
 
 - An arm sweeps a volume. Clear it before `move_joints`, and keep hands out of the path.
   A gripper is a pinch hazard even at the 50 % torque cap LeRobot writes at `configure()`.
+- **That cap is on the gripper and on nothing else**, so the five body joints have no
+  protection but their own firmware and quackd's heat gate: a joint at or above 60 °C refuses
+  to move.
+- **There is no e-stop and quackd cannot give it one.** Cutting the servo supply is the only
+  thing that stops this arm in every case, the one where quackd itself has died included.
 - `pick` hands the whole arm to a learned policy for up to a minute. It is confirm-gated
   for that reason. Watch it, and keep `stop` within reach.
-- `stop` holds position, it does not release. LeRobot's own `disconnect()` releases torque
-  at the end of a session by its default, so the arm can sag when the run ends: do not
-  leave it holding something fragile.
-- Calibration is interactive and quackd never triggers it. An uncalibrated arm is refused.
-- A good first contract: `allow: [observe, report_state, stop]`. It moves no joint, so it tells
-  you whether the arm answers before anything sweeps a volume.
+- `stop` holds position and never releases, and it leaves the gripper's goal alone so a
+  failed verb never drops what is held. LeRobot's own `disconnect()` releases torque at the
+  end of a session by its default, so the arm sags when the run ends: do not leave it holding
+  something fragile.
+- A good first contract is the shipped `lerobot-lookout`, which moves no joint. The order to
+  bring one up in, nothing moving until step 8:
+  [lerobot-hardware-checklist.md](lerobot-hardware-checklist.md).
 
 **A wheeled base over rosbridge:**
 
@@ -207,7 +213,7 @@ quackd goes quiet" differs per body. Each manifest says so
 | Body | Native authority | What `stop` does | Never sent |
 |---|---|---|---|
 | Microduck (`microduck:*`) | `robotd_deadman`: velocity zeroes when intents stop | `robot.stop` | `robot.relax`, `robot.init` |
-| LeRobot arm (`lerobot:*`) | `torque_limit`: the gripper's torque and current caps, plus `max_relative_target` when configured; no deadman, a position-controlled arm holds its goal | re-sends the present position as the goal (hold) | `disable_torque` (LeRobot's own `disconnect()` does, by its default, at the end of a session) |
+| LeRobot arm (`lerobot:*`) | `torque_limit`: the gripper's torque and current caps and nothing on the five body joints (`extras.torque_limit_scope` is `gripper_only`), plus a capped step per action that quackd sets; no deadman, a position-controlled arm holds its goal | re-sends the present position as the goal (hold) for the five body joints and leaves the gripper's goal alone | `disable_torque` (LeRobot's own `disconnect()` does, by its default, at the end of a session) |
 | rosbridge base (`rosbridge:*`) | `none`: neither rosbridge nor the driver has a deadman we verified | publishes a zero Twist; quackd also re-sends the Twist at 10 Hz while a verb runs | silence |
 | Open Duck Mini v2 (`open_duck:*`) | `none` in the robot, but quackd's own bridge daemon runs on it and zeroes the velocity after 300 ms of silence, inside the 50 Hz loop | zero velocity, head held, torque still on | anything that reaches torque, the head-control mode button, any direct servo or IMU read |
 | XLeRobot (`xlerobot:*`) | `none`: the host's own 500 ms watchdog is real but calls `stop_base()`, which zeroes the three wheels and **nothing else**, so the 14 arm and head servos keep holding under torque. `deadman_scope` says `base_only` | zeroes the three velocity keys and leaves every arm goal exactly where it was, deliberately not rebuilding a hold from an unstamped reading that may be cycles old | `disconnect()`, which is upstream's torque-off, and any `enable(on=False)` |
@@ -216,8 +222,6 @@ quackd goes quiet" differs per body. Each manifest says so
 
 The verbs a body lacks are not gated, they do not exist: an arm cannot `move`, a base
 cannot `say`, and `validate --robot` says so before a run starts.
-`pick` on the arm is confirm-gated in its manifest because it hands the whole arm to a
-controller quackd does not write.
 
 What each body can carry, reach and survive is its **datasheet**
 ([manifest-spec.md](manifest-spec.md)): every number with how sure quackd is of it and who

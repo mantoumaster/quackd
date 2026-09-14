@@ -66,7 +66,10 @@ mujoco = ["mujoco>=3.12,<4", "onnxruntime>=1.20"]
 # LAN: zeroconf discovery and the MQTT flock bus (docs/lan.md). Never imported by default.
 lan = ["zeroconf>=0.132", "paho-mqtt>=2,<3"]
 # LeRobot needs Python 3.12 and pulls torch; the marker keeps the lock solvable on 3.11.
-lerobot = ["lerobot>=0.6; python_version >= '3.12'"]
+# `[feetech]` is where the serial SDK lives (feetech-servo-sdk and pyserial, neither of them a
+# base dependency of lerobot). Without it `import lerobot` succeeds and opening the arm's port
+# fails, so it belongs in the extra rather than in a paragraph somebody has to read.
+lerobot = ["lerobot[feetech]>=0.6; python_version >= '3.12'"]
 rosbridge = ["roslibpy>=2,<3"]
 # XLeRobot is not an installable package: its own install is copying files into a lerobot
 # tree. So quackd speaks its ZeroMQ host protocol instead and needs only pyzmq, which keeps

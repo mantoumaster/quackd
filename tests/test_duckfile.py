@@ -55,6 +55,7 @@ def test_bundled_list() -> None:
         "xlerobot-lookout",
         "alohamini-lookout",
         "toddlerbot-lookout",
+        "lerobot-lookout",
     }
 
 

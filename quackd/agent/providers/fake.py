@@ -476,6 +476,32 @@ def flock_hello_strategy(obs: Observation, step: int, history: list[Exchange]) -
     return ToolCall(name="report_state", arguments={})
 
 
+def lerobot_lookout_strategy(obs: Observation, step: int, history: list[Exchange]) -> ToolCall:
+    """Read the arm back and report it. No camera, no voice, and nothing that moves a joint.
+
+    Every other lookout looks; this body cannot. What it can do is say whether it answered,
+    whether torque is on and whether a servo is hot, which is what the bring-up checklist
+    needs before it lets the arm sweep a volume."""
+    state = obs.features.get("state") or {}
+    extras = state.get("extras") or {}
+    if _count_calls(history, "report_state") == 0:
+        return ToolCall(name="report_state", arguments={})
+    if not extras:
+        return ToolCall(
+            name="declare_failure",
+            arguments={"reason": "the arm did not report a state; a human should check it"},
+        )
+    joints = extras.get("joints") or {}
+    where = ", ".join(f"{name} {value:.0f}" for name, value in sorted(joints.items()))
+    torque = "torque on" if extras.get("torque", True) else "TORQUE OFF"
+    hot = extras.get("hot") or []
+    heat = f"hot: {', '.join(hot)}" if hot else "nothing hot"
+    return ToolCall(
+        name="declare_success",
+        arguments={"reason": f"{where or 'no joints reported'}; {torque}; {heat}"},
+    )
+
+
 STRATEGIES: dict[str, Strategy] = {
     "flock-hello": flock_hello_strategy,
     "hello-world": hello_world_strategy,
@@ -487,6 +513,7 @@ STRATEGIES: dict[str, Strategy] = {
     "xlerobot-lookout": xlerobot_lookout_strategy,
     "alohamini-lookout": alohamini_lookout_strategy,
     "toddlerbot-lookout": toddlerbot_lookout_strategy,
+    "lerobot-lookout": lerobot_lookout_strategy,
 }
 
 

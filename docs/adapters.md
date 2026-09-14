@@ -228,5 +228,8 @@ this repository claims a robot moved unless one did.
    missing extra names itself.
 5. A row in `_ADAPTERS`, the extra in `pyproject.toml` (`uv lock`), the module in `doctor.py`.
 6. `docs/adapters/<name>.md` (every ref name, the pin, "never"), a row in the README status
-   table and in `adapter-status.md`, a CHANGELOG entry, a `docs/architecture.md` mention.
+   table and in `adapter-status.md`, a CHANGELOG entry, a `docs/architecture.md` mention. For
+   a backend that reaches hardware, a `<name>-lookout` duck that moves nothing and a
+   `docs/<name>-hardware-checklist.md`: the first thing an owner will point at the robot, and
+   the order to do it in.
 7. The gate: `uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest && uv run quackd validate ducks/*.duck`.

@@ -40,9 +40,13 @@ not before.
   host and point `alohamini-lookout` at it. What most needs a real robot: whether `+x` is
   physically forward, the camera colour order, how fast the lift travels in mm/s, and whether
   the wrapper really does leave the arms holding.
-- ⏸ **An SO-101 arm or any rosbridge base.** `lerobot:real` against a calibrated arm,
-  `rosbridge:ws` against a bridge. A coordinator flock across two machines needs a distributed
-  clock first; a pilot flock needs none and has simply never been tried across two.
+- ⏸ **An SO-101 arm.** Calibrate it with upstream's own tool and point `lerobot-lookout` at
+  it through [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md), nothing
+  moving until step 8. What most needs a real arm is that checklist's *What to report*, five
+  things chosen against Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
+- ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
+  with neither a lookout task nor a checklist. A coordinator flock across two machines needs a
+  distributed clock first; a pilot flock needs none and has simply never been tried across two.
 
 ## Open here
 

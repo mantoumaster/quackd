@@ -95,7 +95,7 @@ slug name · `allow` lists only verbs the robot provides (`quackd list-verbs --r
 phrasings if you want them enforced · body starts with `# Task` · `quackd validate
 your.duck --robot <adapter>:<backend>` passes for the robot you mean.
 
-**Ask for a note.** Every solo starter except `hello-world` and the three lookouts added in 0.7
+**Ask for a note.** Every solo starter except `hello-world` and the bring-up lookouts
 ends its numbered strategy with a `remember` and carries a short *Memory* section saying what
 is worth keeping for next time. A coordinator flock's duck has no `remember` step, because its
 members are state machines with nothing to remember with; a pilot flock's members are whole

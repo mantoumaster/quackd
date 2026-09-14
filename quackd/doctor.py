@@ -59,14 +59,17 @@ EXTRAS = {
     "lan (zeroconf)": ("zeroconf", "quackd[lan]"),
     "lan (mqtt)": ("paho.mqtt.client", "quackd[lan]"),
     "lerobot": ("lerobot", "quackd[lerobot]"),
+    "lerobot (feetech bus)": ("scservo_sdk", "quackd[lerobot]"),
     "rosbridge": ("roslibpy", "quackd[rosbridge]"),
     "microduck camera (webrtc)": ("aiortc", "quackd[microduck-camera]"),
     "xlerobot": ("zmq", "quackd[xlerobot]"),
     "alohamini": ("zmq", "quackd[alohamini]"),
 }
 # Robot SDKs are looked up by distribution metadata only: importing lerobot pulls torch
-# into a diagnostics command, which is exactly what doctor is not.
-_METADATA_ONLY = {"lerobot": "lerobot"}
+# into a diagnostics command, which is exactly what doctor is not. The Feetech SDK is the
+# half of `quackd[lerobot]` that opens the serial port, and a lerobot installed without its
+# `[feetech]` extra imports cleanly and then cannot reach an arm, so doctor asks for it by name.
+_METADATA_ONLY = {"lerobot": "lerobot", "scservo_sdk": "feetech-servo-sdk"}
 
 CORE_MODULES = (
     ("pydantic", "pydantic"),

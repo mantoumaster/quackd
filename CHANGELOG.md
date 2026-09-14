@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A bring-up checklist and a lookout task for the LeRobot arm, which were the last two
+  missing.** Every other experimental backend had both; the arm had neither, and this file
+  has said so since 0.7. [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)
+  is the order to try an SO-101 in, with nothing moving until step 8 and a hand on the power
+  switch from there, because this arm has no e-stop. `ducks/lerobot-lookout.duck` is the task
+  to point at a real arm first: it moves no joint, and it asks for `report_state` rather than
+  `observe`, because the real backend configures no camera
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
+
 - **A flock can be N pilots talking, not only a coordinator refereeing: `quackd run <duck> --flock <name>`.**
   The 0.3 flock is one deterministic referee and N state machines in one simulated arena on a
   lockstep clock, which is the right machine for finding and kicking a ball and the wrong one
@@ -203,6 +212,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The LeRobot arm adapter stops taking the arm's word for four things it never said.**
+  Re-reading upstream at the pinned commit found that `is_connected` is only the serial
+  port's open flag, that `get_observation()` reads positions and nothing else, that a degrees
+  goal past the calibrated travel is written unclamped, and that one action may slew a joint
+  its whole travel. So the heartbeat now reads the arm; torque and each servo's temperature
+  are read off the bus by register; every joint's range comes from the arm's own calibration
+  file and a goal outside it is refused; and one action moves a joint at most a capped step,
+  set by `QUACKD_LEROBOT_MAX_STEP_DEG`. What a pilot notices: `move_joints` and `gripper`
+  re-send the goal and watch the measurement, so they can now fail with where the arm stopped
+  and `duration_s` is a budget rather than a wait; a new `not_hot` precondition refuses
+  `move_joints` and `pick` when a joint reads 60 °C or more; `report_state` carries `torque`
+  as measured, `temperature_c`, `hot`, `joint_range_deg`, `calibration_file`, `step_deg` and
+  `torque_limit_scope`; `holding` is inferred from the gripper settling short of shut; `stop`
+  holds the five body joints and leaves the gripper's goal alone, so a failed verb never drops
+  what is held; and the datasheet no longer claims a mass, because vendor listings disagree by
+  a factor of three. Why each of these is the way it is:
+  [ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md).
+
 - **The one-liner changed, and every place that carried the old one followed.**
   It was *Give your Microduck a brain. Any LLM, one `.duck` file.* It is now *One CLI for all your
   robots. Connect them, command them, and let them work together, each with an LLM for a brain.*
@@ -359,6 +386,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seven adapters changed.
 
 ### Fixed
+
+- **`quackd[lerobot]` installed a LeRobot that could not open a serial port.**
+  At the pinned commit the Feetech SDK and pyserial live in lerobot's own `[feetech]` extra
+  rather than in its base dependencies, so `uv pip install 'quackd[lerobot]'` gave you a
+  lerobot that imports perfectly and then cannot reach an arm. The extra now asks for
+  `lerobot[feetech]`, and `quackd doctor` has a row for the SDK by name, because a failure
+  that arrives at `connect()` rather than at import is one a diagnostics command should be
+  the first to find.
 
 - **The system prompt no longer promises every body a verb only a duck has.**
   It opened by telling the pilot that composite verbs like `walk_to` close their own loops on

@@ -88,8 +88,8 @@ wrote to it. What works is
 putting the call **inside the numbered strategy** of the `.duck` body, right before the
 declaration (`5. When the ball has moved ≥ 0.3 m, \`remember\` where you found the ball,
 \`quack\` once and declare success.`), plus a short *Memory* section saying what is worth
-keeping. The solo starters do that, except the three lookouts added in 0.7 (`xlerobot-lookout`,
-`alohamini-lookout`, `toddlerbot-lookout`); `--goal` runs get the same line. `flock-kick`
+keeping. The solo starters do that, except the bring-up lookouts (`xlerobot-lookout`,
+`alohamini-lookout`, `toddlerbot-lookout`, `lerobot-lookout`); `--goal` runs get the same line. `flock-kick`
 does not, because a coordinator flock's member is a state machine: it never runs the
 deliberation loop and is never offered `remember`. `flock-hello` is a flock of pilots, whose
 members are whole agent loops with a memory file each, so a note there would work; it does not
