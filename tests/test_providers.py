@@ -15,10 +15,16 @@ from quackd.agent.providers.anthropic import render_messages as a_messages
 from quackd.agent.providers.base import Decision, Exchange, Observation, ProviderError, ToolCall
 from quackd.agent.providers.catalogue import default_model_for, find_model
 from quackd.agent.providers.factory import make_provider
-from quackd.agent.providers.gemini import GeminiProvider, clean_schema, render_contents
+from quackd.agent.providers.gemini import (
+    UNSUPPORTED_SCHEMA_KEYS,
+    GeminiProvider,
+    clean_schema,
+    render_contents,
+)
 from quackd.agent.providers.grok import GrokProvider
 from quackd.agent.providers.openai import OpenAIProvider
 from quackd.agent.providers.openai import render_messages as o_messages
+from quackd.verbs.registry import default_registry
 
 PNG = b"\x89PNG\r\n\x1a\nfake"
 TOOLS = [
@@ -491,6 +497,24 @@ def test_gemini_drops_the_bounds_google_genai_refuses() -> None:
     cleaned = clean_schema(schema)
     assert cleaned["properties"]["timeout_s"] == {"type": "number", "description": "seconds"}
     assert cleaned["properties"]["n"] == {"type": "integer", "minimum": 1}
+
+
+def test_gemini_cleans_the_real_verbs_not_only_a_written_one() -> None:
+    """The test above proves `clean_schema` works on a schema written here. This one proves it
+    on the schemas quackd actually sends, which is where the bug was: `move` and `go_to` are
+    core verbs, both bound with `gt=0`, so the 400 was every robot rather than some of them.
+
+    The first assertion is the one that matters. Without it this test passes for the wrong
+    reason the day no verb carries a bound any more, and stops guarding the agreement between
+    `quackd/verbs/core.py` and `UNSUPPORTED_SCHEMA_KEYS` that it exists to guard.
+    """
+    schemas = default_registry().tool_schemas()
+    carriers = [t["name"] for t in schemas if "exclusiveM" in json.dumps(t)]
+    assert carriers, "no verb carries a bound any more — this test now proves nothing, fix it"
+
+    cleaned = json.dumps([clean_schema(t) for t in schemas])
+    for key in UNSUPPORTED_SCHEMA_KEYS:
+        assert key not in cleaned, f"{key} survived clean_schema and google-genai will refuse it"
 
 
 async def test_gemini_hands_the_thought_signature_back() -> None:
