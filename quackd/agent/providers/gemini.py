@@ -9,6 +9,7 @@ rejects the field gets one retry without it, and `QUACKD_GEMINI_THOUGHTS=0` neve
 
 from __future__ import annotations
 
+import base64
 import os
 from typing import Any
 
@@ -23,7 +24,17 @@ from quackd.agent.providers.base import (
 )
 from quackd.agent.providers.catalogue import default_model_for
 
-UNSUPPORTED_SCHEMA_KEYS = {"additionalProperties", "title", "default", "$schema", "$id"}
+UNSUPPORTED_SCHEMA_KEYS = {
+    "additionalProperties",
+    "title",
+    "default",
+    "$schema",
+    "$id",
+    # pydantic writes `gt=0` as exclusiveMinimum; google-genai >= 2 validates the schema and
+    # refuses the keyword outright. The executor still enforces the bound on the way in.
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+}
 
 
 def clean_schema(schema: Any) -> Any:
@@ -79,7 +90,10 @@ def render_contents(history: list[Exchange]) -> list[dict[str, Any]]:
             model_parts: list[dict[str, Any]] = []
             if ex.decision.text:
                 model_parts.append({"text": ex.decision.text})
-            model_parts.append({"function_call": {"name": tc.name, "args": tc.arguments}})
+            call: dict[str, Any] = {"function_call": {"name": tc.name, "args": tc.arguments}}
+            if tc.signature:
+                call["thought_signature"] = base64.b64decode(tc.signature)
+            model_parts.append(call)
             contents.append({"role": "model", "parts": model_parts})
     return contents
 
@@ -104,7 +118,17 @@ def parse_response(response: Any) -> ProviderTurn:
         fc = getattr(part, "function_call", None)
         if fc is not None and getattr(fc, "name", None):
             args = dict(getattr(fc, "args", None) or {})
-            tool_calls.append(ToolCall(id=f"gemini-{i}", name=str(fc.name), arguments=args))
+            # Gemini 3 signs the call; the signature rides on the part, not on the call, and
+            # the next request is refused unless it comes back on the same function_call
+            sig = getattr(part, "thought_signature", None)
+            tool_calls.append(
+                ToolCall(
+                    id=f"gemini-{i}",
+                    name=str(fc.name),
+                    arguments=args,
+                    signature=base64.b64encode(sig).decode() if sig else "",
+                )
+            )
         elif getattr(part, "text", None):
             # a thought part is the model's reasoning, not its answer: kept out of `text`, or
             # it would be shown as the reply and replayed to the model as something it said
