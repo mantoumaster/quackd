@@ -92,7 +92,7 @@ def lerobot_manifest(
     which come off the arm's own calibration file and are unknown until it has answered."""
     own = lerobot_verbs(policy=policy)
     verbs = [
-        verb_spec(CORE["report_state"], core=True),
+        verb_spec(own["report_state"], core=True),
         verb_spec(CORE["stop"], core=True),
         verb_spec(own["move_joints"], core=False),
         verb_spec(own["gripper"], core=False),

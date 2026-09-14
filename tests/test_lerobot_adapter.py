@@ -749,3 +749,29 @@ async def test_the_pilot_is_told_the_calibrated_travel_and_not_the_schema_bound(
     health = await adapter.health()
     assert health.extras["calibration_file"].endswith("arm-01.json")
     assert health.extras["joint_range_deg"]["elbow_flex"] == [-100, 100]
+
+
+async def test_report_state_puts_the_arm_s_own_facts_where_a_pilot_can_read_them() -> None:
+    """A pilot reads a verb's summary text and never its data. The core verb's summary is a
+    posture and a policy name, which an arm has not got, so `lerobot-lookout` asked for three
+    things no real model could have seen. The arm supplies its own `report_state`."""
+    from quackd.agent.prompts import build_observation_text
+
+    adapter = LeRobotAdapter(LeRobotMock(hot_joints=("elbow_flex",)))
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    result = await ex.run_verb("report_state")
+    assert result.ok
+    for expected in ("shoulder_pan", "torque on", "TOO HOT TO MOVE: elbow_flex", "holding nothing"):
+        assert expected in result.summary, result.summary
+    # and it survives into the observation the model is actually handed
+    text = build_observation_text(
+        step=1,
+        max_steps=12,
+        state=await adapter.get_state(),
+        detections=[],
+        last_verb="report_state",
+        last_result=result,
+        budget_status="0/12",
+    )
+    assert "torque on" in text and "elbow_flex" in text

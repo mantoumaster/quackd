@@ -99,6 +99,11 @@ that is not published, not an estimate.
 
 ## Consequences
 
+- The arm supplies its own `report_state`, because a pilot reads a verb's summary text and
+  never its data, and the core verb's summary is a posture and a policy name: two facts a
+  bolted-down arm has not got and none of the four it has. Its own says where every joint is,
+  whether torque is on, how warm the servos are and whether anything is held, which is what
+  `lerobot-lookout` asks a pilot to report.
 - A pilot sees `torque` measured, `temperature_c` and `hot` per joint, `joint_range_deg`,
   `calibration_file` and `limits.step_deg` on a connected arm, a `not_hot` gate on the two
   verbs that move the body joints, and two verbs that can now fail with where the arm stopped

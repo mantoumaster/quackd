@@ -206,6 +206,32 @@ async def _drive(
 # ── the verbs ───────────────────────────────────────────────────────────────────────────
 
 
+async def report_state(ctx: VerbContext, _: NoParams) -> VerbResult:
+    """What this arm knows, in the sentence rather than in the data.
+
+    A pilot reads a verb's summary text and never its data: the dump goes to the transcript
+    and to an MCP client, and the observation the model is handed carries the summary. The
+    core verb's summary is a posture and a policy name, which on a bolted-down arm is two
+    facts it has not got and none of the four it has. So this one says them."""
+    state = await ctx.transport.get_state()
+    extras = state.extras
+    joints = _joints_of(state)
+    where = ", ".join(f"{name} {value:.0f}" for name, value in joints.items())
+    torque = "torque on" if extras.get("torque", True) else "TORQUE OFF"
+    temperatures = {str(k): float(v) for k, v in (extras.get("temperature_c") or {}).items()}
+    if hot := [str(joint) for joint in extras.get("hot", [])]:
+        heat = f"TOO HOT TO MOVE: {', '.join(hot)}"
+    elif temperatures:
+        hottest = max(temperatures, key=lambda joint: temperatures[joint])
+        heat = f"hottest {hottest} {temperatures[hottest]:.0f}°C"
+    else:
+        heat = "no temperature reported"
+    held = "holding something" if state.holding else "holding nothing"
+    return VerbResult.success(
+        f"{where or 'no joints reported'}; {torque}; {heat}; {held}", state=state.model_dump()
+    )
+
+
 async def move_joints(ctx: VerbContext, p: MoveJointsParams) -> VerbResult:
     goal = dict(p.positions)
     joints, _state, _how, why = await _drive(
@@ -287,6 +313,16 @@ async def place(ctx: VerbContext, _: NoParams) -> VerbResult:
 
 def lerobot_verbs(*, policy: bool) -> dict[str, Verb]:
     verbs = [
+        Verb(
+            "report_state",
+            "Report the arm: every joint in degrees, whether torque is on, how warm the "
+            "servos are, and whether anything is held.",
+            report_state,
+            NoParams,
+            timeout_s=5,
+            read_only=True,
+            core=True,
+        ),
         Verb(
             "move_joints",
             "Move one or more joints to goal angles in degrees (gripper 0..100). The arm's "
