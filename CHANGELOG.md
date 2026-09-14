@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A camera on the LeRobot arm: `--camera-url opencv://N`.** No SO-101 has a camera in it,
+  whatever a kit's listing says: the arm is six servos and a serial board, and every camera on
+  one is a USB webcam plugged into the computer. `lerobot:real` now opens one, so `observe`
+  exists on a real arm for the first time. The url is the OpenCV index
+  (`lerobot-find-cameras opencv` prints them and saves a frame from each, which is the only
+  honest way to tell which is which), with `?width`, `?height`, `?fps`, `?fourcc`, `?rotation`,
+  `?name`, `?fov` and `?backend=msmf` for the Windows camera that lists and then will not open.
+  Nothing is asked of the camera by default, because a mode it cannot do is a refusal at
+  connect and the webcam in a lab drawer is unknown. An unknown key or a bad value is refused
+  with the shape, before LeRobot is imported.
+  quackd builds the camera itself rather than handing it to the follower, and that is the
+  whole design: a follower's `is_connected` is the bus **and** every camera, and `send_action`
+  and `disconnect()` are gated on it, so one webcam coming unplugged would have made every
+  move and every hold raise while the arm was perfectly fine. Beside the follower, a camera
+  asked for and not opened refuses at connect naming the url, and a camera that dies later
+  costs `observe` and nothing else: the heartbeat still reads the arm, the joints still move,
+  `stop` still holds. `observe` now says what the camera said rather than "this transport has
+  no camera", `quackd doctor` gates its verdict on a real frame as it does for every other
+  body, and `?fov=` travels with the camera into `limits.camera_fov_deg` so bearings are
+  calibrated over MCP too, where there is no `--fov-deg`
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#camera), step 8 of
+  [the checklist](docs/lerobot-hardware-checklist.md)).
+
+
 - **A body field the server wants and quackd never sends: `--extra-body` and
   `QUACKD_EXTRA_BODY`.** One JSON object, merged into the top of every request body on every
   provider that speaks OpenAI's API, which is nine of the eleven cloud vendors and all five
@@ -35,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A bring-up checklist and a lookout task for the LeRobot arm, which were the last two
   missing.** Every other experimental backend had both; the arm had neither, and this file
   has said so since 0.7. [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)
-  is the order to try an SO-101 in, with nothing moving until step 8 and a hand on the power
+  is the order to try an SO-101 in, with nothing moving until step 9 and a hand on the power
   switch from there, because this arm has no e-stop. `ducks/lerobot-lookout.duck` is the task
   to point at a real arm first: it moves no joint, and it asks for `report_state` rather than
   `observe`, because the real backend configures no camera

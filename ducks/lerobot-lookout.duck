@@ -3,8 +3,9 @@
 # sweep a volume.
 #
 # `observe` is deliberately not here, though every other lookout task in quackd is built on it.
-# The real backend configures no camera, so `observe` does not exist on the arm this task is
-# for, and a bring-up task that refuses before it runs is no use to anybody. What an arm has
+# A camera on this arm is a USB webcam somebody chose to plug in, named by --camera-url, so the
+# static manifest this task is checked against cannot know there is one: allowing `observe`
+# would refuse the task before it ran on any arm without a camera. What an arm has
 # instead is `report_state`, and on this body that is the more useful question anyway: whether
 # it answers at all, whether torque is on, and how warm the servos are. Those three are what
 # the next steps of the checklist depend on.

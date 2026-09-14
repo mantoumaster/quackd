@@ -86,6 +86,8 @@ def lerobot_manifest(
     joint_range_deg: dict[str, tuple[float, float]] | None = None,
     step_deg: float | None = None,
     calibration_file: str | None = None,
+    camera_url: str | None = None,
+    camera_fov_deg: float | None = None,
 ) -> RobotManifest:
     """The arm as data. `camera` and `policy` are what the backend found at connect: the
     static manifest of `real` claims neither, the mock has both. So are the joint ranges,
@@ -112,6 +114,10 @@ def lerobot_manifest(
     limits = {"joint_deg": 180.0, "gripper": 100.0}
     if step_deg is not None:
         limits["step_deg"] = float(step_deg)
+    if camera_fov_deg is not None:
+        # what the detector calibrates bearings with; over MCP there is no --fov-deg, so
+        # the lens travels with the camera instead
+        limits["camera_fov_deg"] = float(camera_fov_deg)
     extras: dict[str, Any] = {
         "robot_type": robot_type,
         "joints": list(JOINTS),
@@ -126,6 +132,8 @@ def lerobot_manifest(
         }
     if calibration_file:
         extras["calibration_file"] = calibration_file
+    if camera_url:
+        extras["camera"] = camera_url
     return RobotManifest(
         id=robot_id or DEFAULT_ID,
         vendor="huggingface",
@@ -168,6 +176,7 @@ class LeRobotAdapter:
     async def connect(self) -> RobotManifest:
         await self.transport.connect()
         self._policy = bool(getattr(self.transport, "policy_available", False))
+        spec = getattr(self.transport, "camera_spec", None)
         self.manifest = lerobot_manifest(
             self.backend,
             self.robot_id,
@@ -177,6 +186,8 @@ class LeRobotAdapter:
             joint_range_deg=getattr(self.transport, "joint_range_deg", None) or None,
             step_deg=getattr(self.transport, "max_step_deg", None),
             calibration_file=getattr(self.transport, "calibration_file", None),
+            camera_url=getattr(spec, "url", None),
+            camera_fov_deg=getattr(spec, "fov_deg", None),
         )
         return self.manifest
 
@@ -218,6 +229,19 @@ class LeRobotAdapter:
                 j: [round(lo), round(hi)] for j, (lo, hi) in ranges.items()
             }
         return Health(ok=True, battery_percent=None, extras=extras)
+
+    @property
+    def camera_error(self) -> str | None:
+        """Why the last frame did not arrive, when the backend knows. A verb's `ctx.transport`
+        is this adapter, not the transport underneath, so the hint has to be proxied here to
+        reach `observe`."""
+        error = getattr(self.transport, "camera_error", None)
+        return str(error) if error else None
+
+    def camera_health(self) -> dict[str, Any] | None:
+        """What `doctor` probes. None on a backend with no camera of its own."""
+        probe = getattr(self.transport, "camera_health", None)
+        return dict(probe()) if callable(probe) else None
 
     @property
     def stop_error(self) -> str | None:
@@ -294,13 +318,14 @@ def make(
 
         return LeRobotAdapter(LeRobotMock(), robot_id=robot_id)
     if backend == "real":
-        from quackd.adapters.lerobot.real import LeRobotReal, step_from_env
+        from quackd.adapters.lerobot.real import LeRobotReal, parse_camera_url, step_from_env
 
         return LeRobotAdapter(
             LeRobotReal(
                 address=address,
                 robot_id=robot_id or DEFAULT_ID,
                 max_step_deg=step_from_env(),
+                camera=parse_camera_url(camera_url) if camera_url else None,
             ),
             robot_id=robot_id,
         )

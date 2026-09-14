@@ -112,8 +112,13 @@ that is not published, not an estimate.
   ([lerobot-hardware-checklist.md](../lerobot-hardware-checklist.md)), a calibration id that
   must match quackd's robot id, and one environment variable for the step. What only a real arm
   can settle is that checklist's *What to report*, and this ADR does not repeat it.
-- What was deliberately not done: the real backend still configures no camera, so `observe`
-  does not exist on it and the lookout task asks for `report_state` instead; and quackd's
+- A camera is one USB webcam named by `--camera-url opencv://N`, and quackd builds it
+  itself rather than handing it to the follower, because a follower's `is_connected`,
+  `send_action` and `disconnect()` all include its cameras and one unplugged webcam would
+  make every move and every hold raise. A camera asked for and not opened refuses at
+  connect; one that dies later costs `observe` and nothing else. The lookout task still asks
+  for `report_state`, because a `.duck` is checked against the static manifest, which cannot
+  know whether this arm has a camera; and quackd's
   executor still does not serialise concurrent verbs, so two MCP calls can still fight over one
   joint, which is a property of every adapter and not of this one.
 - The numbers named above live with their constants in `real.py` and `verbs.py`, and are

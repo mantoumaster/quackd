@@ -1,7 +1,7 @@
 # A LeRobot SO-101 arm: the order to try it in
 
 Nothing in quackd has run on an SO-101. This is the order to find out in, written so that
-each step can only fail in a way you can recover from. **Nothing moves until step 8, and
+each step can only fail in a way you can recover from. **Nothing moves until step 9, and
 from there a hand stays on the power switch.**
 
 This robot is unusual in a quiet way, and the quiet thing is what makes the order matter:
@@ -75,6 +75,29 @@ a gripper is a pinch hazard at any torque. Read
    It reads the arm and reports where the joints are, whether torque is on and whether
    anything is hot. This is the first thing to point at a real arm.
 
+8. **Add a camera, if you brought one.** No SO-101 has one built in: it is a USB webcam into
+   the laptop, and the arm's own cable carries no video. Find which index it is, which is the
+   part nobody can guess for you:
+
+   ```bash
+   lerobot-find-cameras opencv
+   ```
+
+   It lists every camera it can open and saves a frame from each under
+   `outputs/captured_images/`. Open the pictures: on a laptop index 0 is usually the built-in
+   webcam, so the one you plugged in is often 1 or 2. Then ask quackd for a frame:
+
+   ```bash
+   uv run quackd doctor --robot lerobot:real --address COM5 --camera-url "opencv://1"
+   ```
+
+   Quote the url: `&` is a command separator in PowerShell. Read the `camera` row, which says
+   `640x480` or `no frame`. If it lists and will not open, add `?backend=msmf`. If it refuses
+   because the camera would not take a size or a rate, drop them and let it keep its own mode,
+   which is the default. Then `robot_observe` over MCP to see what the pilot will see.
+
+   A camera is optional: the arm works without one, and `lerobot-lookout` never asks for it.
+
 ## Moving, one joint at a time
 
 There is no command that runs one verb. Either drive the daemon from an MCP client
@@ -84,32 +107,32 @@ what these steps assume) or give a model a goal narrow enough to reach one verb
 --max-steps 3`). `--provider fake` will not do: it answers a free-form goal with a fixed
 script that ignores it.
 
-8. **`gripper` open, then closed on nothing, and watch which way it goes.** quackd assumes
+9. **`gripper` open, then closed on nothing, and watch which way it goes.** quackd assumes
    100 is open and 0 is closed, and that is an assumption about how your arm was assembled
    and calibrated, not a fact about the model. If yours runs the other way, stop here and say
    so in an issue: everything quackd believes about holding something rests on this, and it
    would be believing the opposite.
-9. **One joint, small, in the middle of its range.** `move_joints` with
-   `{"wrist_roll": 10}`. It should take about a fifth of a second and stop. The arm moves at
-   5 degrees per action re-sent ten times a second, so 50 degrees a second, and
-   `QUACKD_LEROBOT_MAX_STEP_DEG` lowers that if it looks fast in the room.
-10. **Ask for something out of range.** A goal of 170 on a joint whose travel is about 100
+10. **One joint, small, in the middle of its range.** `move_joints` with
+    `{"wrist_roll": 10}`. It should take about a fifth of a second and stop. The arm moves at
+    5 degrees per action re-sent ten times a second, so 50 degrees a second, and
+    `QUACKD_LEROBOT_MAX_STEP_DEG` lowers that if it looks fast in the room.
+11. **Ask for something out of range.** A goal of 170 on a joint whose travel is about 100
     either way. It is refused with the range in the reason and nothing reaches the arm. This
     is worth doing deliberately, because LeRobot does not clamp a degrees goal and the servo
     is the only thing downstream of it.
-11. **Pull the USB cable mid-move.** The run should end within about a second, saying the arm
+12. **Pull the USB cable mid-move.** The run should end within about a second, saying the arm
     did not answer. The arm holds its last goal under torque: it must not sag and it must not
     carry on. Plug it back in and reconnect before the next step.
-12. **Ctrl-C mid-move.** quackd's kill switch sends `stop`, which re-sends the present
+13. **Ctrl-C mid-move.** quackd's kill switch sends `stop`, which re-sends the present
     position as the goal. The arm should freeze where it is rather than sag, and rather than
     finish the motion it was in the middle of.
 
 ## The gripper, and only then a policy
 
-13. **Close the gripper on something soft and forgiving.** A foam block, not a cup. It should
+14. **Close the gripper on something soft and forgiving.** A foam block, not a cup. It should
     stop short of shut, `report_state` should say it is holding, and `stop` should not drop
     it: a hold deliberately leaves the gripper's goal alone. Then `place` to let go.
-14. **`pick`, only if you have a policy for this arm**, and only with somebody watching. It
+15. **`pick`, only if you have a policy for this arm**, and only with somebody watching. It
     is confirm-gated because it hands the whole arm to a controller quackd did not write, for
     up to a minute. Keep the hand on the switch, and remember that the policy's actions are
     capped and range-refused exactly like a verb's, which is quackd's rule rather than
@@ -132,6 +155,8 @@ a real arm:
   run, not anything upstream recommends for this arm, and it has never been watched.
 - **Whether a stall is caught.** Hold a joint gently against its goal and see whether the verb
   fails with where it stopped.
+- **Which OpenCV index the camera turned out to be**, if you brought one, and whether it
+  needed `?backend=msmf`. Nobody has pointed quackd at a webcam either.
 
 Only flip the `real` row in [adapter-status.md](adapter-status.md) once a real arm has done
 it, and say in the same commit what it did.

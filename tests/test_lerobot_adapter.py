@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from quackd.adapters.base import AdapterNotInstalled, RobotAdapter
+from quackd.adapters.base import AdapterError, AdapterNotInstalled, RobotAdapter
 from quackd.adapters.factory import RobotSpec, describe, make_adapter, parse_robot_spec
 from quackd.adapters.lerobot import JOINTS, LeRobotAdapter, lerobot_manifest
 from quackd.adapters.lerobot.mock import GRIP_ON_OBJECT, LeRobotMock
@@ -20,6 +20,7 @@ from quackd.adapters.lerobot.real import (
     LeRobotReal,
     check_port,
     load_policy,
+    parse_camera_url,
     step_from_env,
 )
 from quackd.duckfile.parser import load_duck, parse_duck_text
@@ -233,6 +234,7 @@ class FakeArm:
         self.stuck = set(stuck)
         self.connected = False
         self.dead = False
+        self.send_fails = False
         self.bus_error = False
         self.torque = True
         self.temperature: dict[str, float] = dict.fromkeys(JOINTS, 30.0)
@@ -278,6 +280,8 @@ class FakeArm:
         return obs
 
     def send_action(self, action: dict[str, float]) -> dict[str, float]:
+        if self.send_fails:
+            raise ConnectionError("Failed to sync write 'Goal_Position'")
         self.actions.append(dict(action))
         sent = {}
         for key, value in action.items():
@@ -320,8 +324,10 @@ async def test_real_backend_maps_intents_to_verified_names_and_never_limps() -> 
     adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
     manifest = await adapter.connect()
     assert arm.calls[0] == ("connect", False)  # calibration is interactive: never triggered
-    assert manifest.provides("observe") and not manifest.provides("pick")
-    assert "camera" in manifest.sensors and manifest.backend == "real"
+    # no camera without --camera-url, whatever the arm's own features say: quackd passes
+    # cameras={} to the follower and owns any webcam itself
+    assert not manifest.provides("observe") and not manifest.provides("pick")
+    assert "camera" not in manifest.sensors and manifest.backend == "real"
     # the joint ranges come off the arm's own calibration: 200 degrees of travel, centred
     assert manifest.extras["joint_range_deg"]["shoulder_pan"] == [-100.0, 100.0]
     assert manifest.extras["joint_range_deg"]["gripper"] == [0.0, 100.0]
@@ -343,8 +349,7 @@ async def test_real_backend_maps_intents_to_verified_names_and_never_limps() -> 
     assert set(arm.actions[-1]) == {f"{j}.pos" for j in JOINTS if j != "gripper"}
     assert arm.actions[-1]["shoulder_pan.pos"] == 10.0 and arm.torque_disabled == 0
     assert (await adapter.get_state()).holding  # the stop did not drop it
-    frame = await adapter.get_frame()
-    assert frame is not None and frame.size == (64, 48)
+    assert await adapter.get_frame() is None
     state = await adapter.get_state()
     assert state.extras["joints"]["shoulder_pan"] == 10.0 and state.battery_percent is None
     assert state.extras["torque"] is True and state.extras["temperature_c"]["elbow_flex"] == 30
@@ -775,3 +780,177 @@ async def test_report_state_puts_the_arm_s_own_facts_where_a_pilot_can_read_them
         budget_status="0/12",
     )
     assert "torque on" in text and "elbow_flex" in text
+
+
+# ── the camera: one USB webcam, quackd's own, beside the follower ───────────────────────
+
+
+class FakeCamera:
+    """The slice of a LeRobot `Camera` quackd touches, verified names only."""
+
+    def __init__(self, *, fail_open: bool = False, stalled: bool = False) -> None:
+        self.fail_open = fail_open
+        self.stalled = stalled
+        self.connected = False
+        self.calls: list[str] = []
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def connect(self, warmup: bool = True) -> None:
+        self.calls.append("connect")
+        if self.fail_open:
+            raise ConnectionError(
+                "Failed to open OpenCVCamera(7).Run `lerobot-find-cameras opencv` to find "
+                "available cameras."
+            )
+        self.connected = True
+
+    def read_latest(self, max_age_ms: int = 500) -> Any:
+        if self.stalled:
+            raise TimeoutError("OpenCVCamera(0) latest frame is too old: 1200.0 ms")
+        return np.zeros((48, 64, 3), dtype=np.uint8)
+
+    def disconnect(self) -> None:
+        self.calls.append("disconnect")
+        self.connected = False
+
+
+def _camera_url(**query: Any) -> str:
+    tail = "&".join(f"{k}={v}" for k, v in query.items())
+    return f"opencv://0?{tail}" if tail else "opencv://0"
+
+
+def test_a_camera_url_is_read_strictly_or_refused() -> None:
+    spec = parse_camera_url("opencv://0?width=640&height=480&fps=30&backend=msmf&name=wrist")
+    assert spec.index_or_path == 0 and spec.name == "wrist" and spec.backend == "msmf"
+    assert (spec.width, spec.height, spec.fps) == (640, 480, 30)
+    bare = parse_camera_url("opencv://0")
+    # nothing is asked of the camera by default, so it keeps the mode it already has
+    assert (bare.width, bare.height, bare.fps, bare.fourcc) == (None, None, None, None)
+    assert bare.name == "front" and bare.backend == "any" and bare.rotation == 0
+    assert parse_camera_url("opencv:///dev/video2").index_or_path == "/dev/video2"
+    assert parse_camera_url("opencv://0?fov=70").fov_deg == 70.0
+    for bad in (
+        "http://host/snapshot.jpg",
+        "0",
+        "opencv://",
+        "opencv://0?width=abc",
+        "opencv://0?height=0",
+        "opencv://0?backend=cuda",
+        "opencv://0?rotation=45",
+        "opencv://0?fourcc=MJP",
+        "opencv://0?zoom=2",
+    ):
+        with pytest.raises(AdapterError, match="opencv://0"):
+            parse_camera_url(bad)
+
+
+def test_the_camera_is_not_the_followers_and_the_config_says_so() -> None:
+    """A follower's cameras are part of its connected state, so a webcam that came unplugged
+    would make every move and every hold raise. quackd passes cameras={} and owns its own."""
+    transport = LeRobotReal("COM5", camera=parse_camera_url("opencv://0"))
+    assert transport._config_kwargs()["cameras"] == {}
+
+
+async def test_a_camera_gives_the_arm_observe_and_a_frame() -> None:
+    camera = FakeCamera()
+    adapter = LeRobotAdapter(
+        LeRobotReal(
+            "COM5",
+            robot=FakeArm(),
+            camera=parse_camera_url(_camera_url(fov=70)),
+            camera_object=camera,
+        )
+    )
+    manifest = await adapter.connect()
+    assert camera.calls == ["connect"]
+    assert manifest.provides("observe") and "camera" in manifest.sensors
+    assert manifest.extras["camera"] == "opencv://0?fov=70"
+    assert manifest.limits["camera_fov_deg"] == 70.0
+    frame = await adapter.get_frame()
+    assert frame is not None and frame.size == (64, 48)
+    health = adapter.camera_health()
+    assert health is not None and health["ok"] and health["size"] == "64x48"
+    ex = _executor(adapter, manifest, detector=ColorBlobDetector())
+    assert (await ex.run_verb("observe")).ok
+    await adapter.close()
+    assert camera.calls == ["connect", "disconnect"]
+
+
+async def test_a_camera_that_will_not_open_refuses_and_leaves_the_arm_clean() -> None:
+    arm = FakeArm()
+    adapter = LeRobotAdapter(
+        LeRobotReal(
+            "COM5",
+            robot=arm,
+            camera=parse_camera_url("opencv://7"),
+            camera_object=FakeCamera(fail_open=True),
+        )
+    )
+    with pytest.raises(TransportError, match="opencv://7"):
+        await adapter.connect()
+    assert ("disconnect",) in arm.calls  # the arm is not left open behind a dead camera
+
+
+async def test_a_stalled_camera_costs_the_picture_and_not_the_run() -> None:
+    """`observe` moves nothing, so a camera that stopped delivering must not end a session:
+    the arm keeps answering and the frame says why it is missing."""
+    arm = FakeArm()
+    camera = FakeCamera()
+    transport = LeRobotReal(
+        "COM5", robot=arm, camera=parse_camera_url("opencv://0"), camera_object=camera
+    )
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    camera.stalled = True
+    assert await adapter.get_frame() is None
+    assert "TimeoutError" in (adapter.camera_error or "")
+    health = adapter.camera_health()
+    assert health is not None and not health["ok"] and "too old" in health["error"]
+    observed = await ex.run_verb("observe")
+    assert not observed.ok and "too old" in observed.summary
+    # the arm is untouched by any of it
+    await adapter.heartbeat()
+    assert (await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}})).ok
+
+
+async def test_the_policy_is_handed_the_frame_under_the_cameras_own_name() -> None:
+    seen: list[str] = []
+
+    class Peeking:
+        def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
+            seen.extend(k for k in observation if not k.endswith(".pos"))
+            return None
+
+    adapter = LeRobotAdapter(
+        LeRobotReal(
+            "COM5",
+            robot=FakeArm(object_in_jaws=True),
+            policy=Peeking(),
+            camera=parse_camera_url(_camera_url(name="wrist")),
+            camera_object=FakeCamera(),
+        )
+    )
+    manifest = await adapter.connect()
+    ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
+    await ex.run_verb("pick", {"target": "cup", "max_s": 3})
+    assert "wrist" in seen
+    await adapter.close()
+
+
+async def test_a_hold_that_never_reached_the_arm_is_not_reported_as_stopped() -> None:
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm)
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    # reads still work, the write does not: the arm answers every question and obeys none
+    arm.send_fails = True
+    stopped = await ex.run_verb("stop")
+    assert not stopped.ok and "could not be delivered" in stopped.summary
+    assert "Goal_Position" in (adapter.stop_error or "")
+    arm.send_fails = False
+    assert (await ex.run_verb("stop")).ok and adapter.stop_error is None

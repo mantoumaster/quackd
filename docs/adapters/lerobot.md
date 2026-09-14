@@ -34,7 +34,7 @@ uv pip install "quackd[lerobot]" && quackd doctor --robot lerobot:real --address
 | `--robot` | Status | What it is |
 |---|---|---|
 | `lerobot:mock` | ✅ | an arm in memory: goals land instantly, the gripper stops on the object, a scripted policy answers `pick`, and it refuses an out-of-range goal in the same words the real one does |
-| `lerobot:real` | 🧪 | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch); every name VERIFIED at the pin, exercised against a fake arm, never on hardware |
+| `lerobot:real` | 🧪 | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch), and one USB webcam when `--camera-url` names one; every name VERIFIED at the pin, exercised against a fake arm and a fake camera, never on hardware |
 
 `--address` is the arm's serial port (`/dev/ttyACM0`, `COM5`), and quackd checks that it
 looks like one before LeRobot opens anything. The `real` backend calls
@@ -66,12 +66,12 @@ the file every joint's range is read from: step 4 of
 ```
 
 That is the mock's static manifest. The static manifest of `lerobot:real` claims neither a
-camera nor a policy; `connect()` adds `observe` when the arm's `observation_features` name a
-camera and `pick` when a policy object was injected. It also adds what cannot be known until
+camera nor a policy; `connect()` adds `observe` when `--camera-url` named a camera and it
+opened, and `pick` when a policy object was injected. It also adds what cannot be known until
 the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
-the calibration file, `extras.calibration_file`, the path that came from, and
-`limits.step_deg`, how far one action may move a joint (`QUACKD_LEROBOT_MAX_STEP_DEG` sets
-it).
+the calibration file, `extras.calibration_file`, the path that came from, `limits.step_deg`,
+how far one action may move a joint (`QUACKD_LEROBOT_MAX_STEP_DEG` sets it), and
+`extras.camera` with `limits.camera_fov_deg` when there is a camera.
 
 | Verb | Kind | What it does here |
 |---|---|---|
@@ -103,6 +103,65 @@ And what it cannot do whatever the task says, which is the half a refusal usuall
 - know its own mass: vendor listings disagree by a factor of three
 
 A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
+## Camera
+
+No SO-101 has a camera in it. Whatever the kit's listing said, the arm is six servos and a
+serial board, and every camera on one is a USB webcam that plugs into the *computer*: the
+arm's own USB cable carries motor traffic and no video. So quackd's camera is a separate
+thing you point it at.
+
+```bash
+uv run quackd doctor --robot lerobot:real --address COM5 --camera-url "opencv://0"
+```
+
+The index is OpenCV's, and `lerobot-find-cameras opencv` is what tells you which is which:
+it lists every camera it can open and saves a frame from each under
+`outputs/captured_images/`, so you can look at the pictures rather than guess. On a laptop
+index 0 is usually the built-in webcam, so a plugged-in one is often 1 or 2. An index is a
+scan position and not an identity: it can move when you replug or reboot.
+
+| Key | Default | What it is |
+|---|---|---|
+| (the index) | required | `opencv://0`, or a device path, `opencv:///dev/video2` |
+| `name` | `front` | what the frame is called in a policy's observation |
+| `width`, `height`, `fps` | the camera's own | a mode the camera cannot do is a refusal at connect, so these are worth setting only when you know it can |
+| `fourcc` | the camera's own | `MJPG` is the one worth asking for if you add a second camera later: raw YUYV eats USB bandwidth |
+| `rotation` | `0` | 90, 180 or 270, for a camera mounted sideways |
+| `backend` | `any` | `msmf` or `dshow` on Windows, when a camera lists and then will not open |
+| `fov` | unset | the lens's horizontal field of view in degrees, which is what bearings are computed from |
+
+Anything else in the query is refused, with the shape, before LeRobot is even imported.
+
+**The camera is quackd's, not the arm's.** LeRobot lets you give a follower its cameras, and
+quackd deliberately does not: a follower's `is_connected` is the bus *and* every camera, and
+`send_action` and `disconnect()` are gated on it, so one unplugged webcam would make every
+move and every hold raise while the arm itself was perfectly fine. Beside the follower, a
+camera that dies costs you `observe` and nothing else: the heartbeat still reads the arm, the
+joints still move, `stop` still holds.
+
+What that means at the bench:
+
+- A camera you asked for and did not get is a **refusal at connect**, naming the url. You
+  asked for it, and `doctor` gates its verdict on a real frame, so failing quietly would
+  leave you believing you had eyes. The arm connects without `--camera-url`.
+- A camera that stops delivering later is **not** a refusal. `observe` fails with what the
+  camera said (`the camera gave no frame: TimeoutError: ... too old`), `report_state` and
+  the moving verbs carry on, and `quackd doctor` shows the same thing under `camera`.
+- `observe` gives you bearings in the camera's own frame. Without `?fov=` the detector is
+  uncalibrated and says so, and its distances assume the simulator's ball, so treat them as
+  rough. Bearing is the half a webcam on a desk honestly gives you.
+
+**One camera.** `observe` returns one frame, so the url names one. A second view is a later
+feature, not a flag that exists and is ignored.
+
+**What a `.duck` cannot do yet.** `quackd run` and `--goal` check a task against the
+*static* manifest, which claims no camera for `lerobot:real`, because the camera is not known
+until the arm has answered. So no `.duck` may put `observe` in its allowlist for a real arm,
+and that is why `lerobot-lookout` asks for `report_state`. Two routes work today: over MCP
+(`quackd serve-mcp --robot lerobot:real --address COM5 --camera-url opencv://0`, then
+`robot_observe`), and `quackd run ... --vision`, which hands the model a frame every step
+whatever the allowlist says.
 
 ## Safety
 
@@ -202,7 +261,19 @@ reasoning is in [ADR-0036](../adr/0036-what-the-arm-does-not-say.md).
 | `Camera.async_read(timeout_ms)` | the most recent new frame |
 | `Camera.read()` | |
 | `OpenCVCamera converts BGR to RGB when color_mode is RGB` | channel order is a config choice |
-| `OpenCVCameraConfig.color_mode defaults to ColorMode.RGB` | the shipped real backend configures no camera at all |
+| `OpenCVCameraConfig.color_mode defaults to ColorMode.RGB` | quackd passes RGB explicitly anyway |
+| `lerobot.cameras.opencv.OpenCVCamera(config)` | the camera quackd builds and owns, beside the follower |
+| `OpenCVCameraConfig(index_or_path, fps=None, width=None, height=None, color_mode=ColorMode.RGB, rotation=Cv2Rotation.NO_ROTATION, warmup_s=1, fourcc=None, backend=Cv2Backends.ANY)` | what `--camera-url`'s query keys fill in |
+| `lerobot.cameras exports Camera, CameraConfig, ColorMode, Cv2Backends, Cv2Rotation` | the config is deliberately not among them, so quackd imports from both |
+| `Cv2Backends: ANY, V4L2, DSHOW, AVFOUNDATION, MSMF` | the backend is a config field, so `?backend=msmf` needs no patched source |
+| `Camera.connect(warmup=True)` | it reads frames before returning, so a camera that opens and never delivers fails here |
+| `connect() raises ConnectionError on an index that will not open` | quackd passes its words through, and they name `lerobot-find-cameras opencv` |
+| `a requested fps or size that the camera refuses raises RuntimeError` | why quackd asks for no mode unless you name one |
+| `an unset fps, width or height keeps the camera's own mode` | what makes an unknown webcam in a lab drawer work |
+| `Camera.read_latest(max_age_ms=500)` | the newest buffered frame; it raises when the camera has stalled, and `get_frame` turns that into a reason |
+| `Camera.disconnect()` | |
+| `a follower's cameras are part of its connected state` | `is_connected`, `send_action` and `disconnect()` all include them, which is why quackd's camera is not the follower's |
+| `lerobot-find-cameras opencv` | how an owner learns which index is which: it saves a frame per camera |
 | `lerobot.policies.pretrained.PreTrainedPolicy` | |
 | `PreTrainedPolicy.from_pretrained(path, *, config=None, local_files_only=False, revision=None, strict=False)` | a local directory or a Hub repo id |
 | `PreTrainedPolicy.select_action(batch: dict[str, Tensor]) -> Tensor` | one action per call |
@@ -222,6 +293,8 @@ reasoning is in [ADR-0036](../adr/0036-what-the-arm-does-not-say.md).
 | `JOINT_RANGES` | each joint's travel is computed from the calibration file and a goal outside it is refused; whether that is the mechanical limit is unverified |
 | `SERIAL_PORT` | `--address` is checked for shape and nothing more |
 | `THREAD_SAFETY` | every call is serialised under one lock in a worker thread with a deadline; a blown deadline wedges the transport |
+| `CAMERA_INDEX_MOVES` | an index is a scan position, not an identity: it can move on a replug or a reboot, and a laptop's own webcam usually holds 0. quackd records the index it opened and cannot tell you it is the camera you meant |
+| `WINDOWS_CAMERA_BACKEND` | which backend a Windows machine needs for a given webcam is not knowable in advance, so quackd keeps upstream's ANY and gives the owner `?backend=msmf` |
 
 ## Status
 
@@ -234,6 +307,6 @@ serial port). Nobody has run it on an arm, and this page will say so until someo
 
 If you have an SO-101 on a desk, work through
 [lerobot-hardware-checklist.md](../lerobot-hardware-checklist.md) in order: nothing moves
-until step 8. `lerobot-lookout` is the first task to point at it; it asks for `report_state`
+until step 9. `lerobot-lookout` is the first task to point at it; it asks for `report_state`
 rather than `observe`, because the real backend configures no camera. What most needs a real
 arm is that checklist's *What to report*. Open an issue with the transcript.

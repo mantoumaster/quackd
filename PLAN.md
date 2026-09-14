@@ -42,7 +42,8 @@ not before.
   the wrapper really does leave the arms holding.
 - ⏸ **An SO-101 arm.** Calibrate it with upstream's own tool and point `lerobot-lookout` at
   it through [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md), nothing
-  moving until step 8. What most needs a real arm is that checklist's *What to report*, five
+  moving until step 9, and a USB webcam through `--camera-url opencv://N` at step 8 if the lab
+  arm has none of its own. What most needs a real arm is that checklist's *What to report*, six
   things chosen against Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
 - ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
   with neither a lookout task nor a checklist. A coordinator flock across two machines needs a

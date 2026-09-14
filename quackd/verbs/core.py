@@ -195,7 +195,13 @@ async def _see_holding(
 async def observe(ctx: VerbContext, _: NoParams) -> VerbResult:
     img = await ctx.transport.get_frame()
     if img is None:
-        return VerbResult.fail("this transport has no camera")
+        # a backend that knows why it has no picture says so. A camera quackd was told to
+        # open and then lost is a different problem from a body that never had one, and
+        # only the first is worth going to look at (the LeRobot arm sets this today)
+        why = getattr(ctx.transport, "camera_error", None)
+        return VerbResult.fail(
+            f"the camera gave no frame: {why}" if why else "this transport has no camera"
+        )
     ctx.on_frame(img, "observe")
     detections = ctx.detector.detect(img) if ctx.detector else []
     return VerbResult.success(

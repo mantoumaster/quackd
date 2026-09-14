@@ -1606,7 +1606,10 @@ _CAMERA_URL = typer.Option(
     help="Where frames come from, overriding whatever the robot advertises. An HTTP snapshot "
     "(http://host:9872/snapshot.jpg), or webrtc://host:8443 to pull mediad's video track off a "
     r"Microduck, which is the only camera upstream offers and needs quackd\[microduck-camera]. "
-    "Needed when you reach the robot through a tunnel and its own URL is not routable.",
+    "Needed when you reach the robot through a tunnel and its own URL is not routable. On a "
+    "LeRobot arm it is a USB webcam by its OpenCV index, opencv://0, with ?width, ?height, "
+    "?fps, ?fourcc, ?rotation, ?fov, ?name and ?backend=msmf for a Windows camera that lists "
+    "and will not open. Find the index with lerobot-find-cameras opencv.",
     rich_help_panel="Robot",
 )
 _FOV = typer.Option(

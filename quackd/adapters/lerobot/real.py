@@ -33,12 +33,14 @@ import re
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 from PIL import Image
 
-from quackd.adapters.base import AdapterNotInstalled
+from quackd.adapters.base import AdapterError, AdapterNotInstalled
 from quackd.adapters.lerobot import upstream_api as up
 from quackd.adapters.lerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN, JOINTS
 from quackd.transport.base import Ack, DuckState, HeartbeatError, Intent, TransportError
@@ -73,6 +75,109 @@ OUT_OF_RANGE_DEG = 2.0
 PORT_SHAPE = re.compile(r"^(COM\d+|/dev/[\w./-]+)$", re.IGNORECASE)
 """A serial port looks like COM5 or /dev/ttyACM0. Which one is the arm is not our business
 (`up.SERIAL_PORT`); a goal pasted into --address by mistake is."""
+
+CAMERA_SCHEME = "opencv"
+CAMERA_NAME = "front"
+CAMERA_BACKENDS = ("any", "v4l2", "dshow", "avfoundation", "msmf")
+CAMERA_ROTATIONS = (0, 90, 180, 270)
+CAMERA_KEYS = ("name", "width", "height", "fps", "fourcc", "backend", "rotation", "fov")
+CAMERA_CONNECT_S = 15.0
+"""Long enough for the open plus upstream's warmup, which reads frames before returning."""
+
+
+@dataclass(frozen=True)
+class CameraSpec:
+    """One USB webcam, as `--camera-url` described it.
+
+    quackd owns this camera rather than handing it to the follower. A follower's cameras are
+    part of its connected state (`up.SO_CAMERAS_ARE_THE_FOLLOWERS`): `send_action` and
+    `disconnect()` are gated on `is_connected`, which is the bus AND every camera, so a
+    webcam that came unplugged mid-session would make every move and every hold raise while
+    the arm itself was fine. Beside the follower, a dead camera costs you `observe`."""
+
+    url: str
+    name: str
+    index_or_path: int | str
+    width: int | None
+    height: int | None
+    fps: int | None
+    fourcc: str | None
+    backend: str
+    rotation: int
+    fov_deg: float | None
+
+
+def _camera_int(key: str, raw: str, url: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        raise _camera_refusal(f"{key}={raw!r} is not a whole number", url) from None
+    if value <= 0:
+        raise _camera_refusal(f"{key}={raw!r} must be above 0", url)
+    return value
+
+
+def _camera_refusal(why: str, url: str) -> AdapterError:
+    return AdapterError(
+        f"lerobot real: --camera-url {url!r}: {why}. A camera is one USB webcam named by "
+        "its OpenCV index, opencv://0, or by a device path, opencv:///dev/video2, with any "
+        f"of {', '.join(CAMERA_KEYS)} after a ?. Run `lerobot-find-cameras opencv` to see "
+        "which index is which: it saves a frame per camera"
+    )
+
+
+def parse_camera_url(url: str) -> CameraSpec:
+    """`opencv://0?width=640&height=480&fps=30&backend=msmf` into a `CameraSpec`.
+
+    Strict, in the shape of the rosbridge adapter's address parser: an unknown scheme, key
+    or value is refused with the shape rather than quietly ignored, because the alternative
+    is an owner who believes they configured a camera and did not. Nothing here imports
+    lerobot, so a bad url is refused before the extra is even looked for.
+
+    Size and rate are left unset by default, which keeps whatever mode the camera already
+    has (`up.OPENCV_MODE_DEFAULTS_TO_THE_CAMERA`). Asking for one it cannot do is a refusal
+    at connect (`up.OPENCV_MODE_IS_A_DEMAND`), and the webcam in a lab drawer is unknown."""
+    parts = urlsplit(url)
+    if parts.scheme != CAMERA_SCHEME:
+        seen = f"{parts.scheme!r} is not a scheme quackd knows" if parts.scheme else "no scheme"
+        raise _camera_refusal(seen, url)
+    target = (parts.netloc + parts.path).rstrip("/")
+    if not target:
+        raise _camera_refusal("no camera index or device path", url)
+    index_or_path: int | str = int(target) if target.isdigit() else target
+    query = parse_qs(parts.query, keep_blank_values=True)
+    if unknown := sorted(set(query) - set(CAMERA_KEYS)):
+        raise _camera_refusal(f"unknown {'keys' if len(unknown) > 1 else 'key'} {unknown}", url)
+
+    def one(key: str) -> str | None:
+        values = query.get(key)
+        return values[-1].strip() if values else None
+
+    name = one("name") or CAMERA_NAME
+    if not name.replace("_", "").replace("-", "").isalnum():
+        raise _camera_refusal(f"name={name!r} is not a plain name", url)
+    fourcc = one("fourcc")
+    if fourcc is not None and len(fourcc) != 4:
+        raise _camera_refusal(f"fourcc={fourcc!r} must be four characters", url)
+    backend = (one("backend") or "any").lower()
+    if backend not in CAMERA_BACKENDS:
+        raise _camera_refusal(f"backend={backend!r} is not one of {CAMERA_BACKENDS}", url)
+    rotation = _camera_int("rotation", one("rotation") or "0", url) if one("rotation") else 0
+    if rotation not in CAMERA_ROTATIONS:
+        raise _camera_refusal(f"rotation={rotation} is not one of {CAMERA_ROTATIONS}", url)
+    fov = one("fov")
+    return CameraSpec(
+        url=url,
+        name=name,
+        index_or_path=index_or_path,
+        width=_camera_int("width", w, url) if (w := one("width")) else None,
+        height=_camera_int("height", h, url) if (h := one("height")) else None,
+        fps=_camera_int("fps", f, url) if (f := one("fps")) else None,
+        fourcc=fourcc,
+        backend=backend,
+        rotation=rotation,
+        fov_deg=float(_camera_int("fov", fov, url)) if fov else None,
+    )
 
 
 def step_from_env(default: float = MAX_STEP_DEG) -> float:
@@ -144,6 +249,8 @@ class LeRobotReal:
         robot_id: str = "arm-01",
         timeout_s: float = 1.0,
         max_step_deg: float = MAX_STEP_DEG,
+        camera: CameraSpec | None = None,
+        camera_object: Any = None,
     ) -> None:
         self.port = address or ""
         self.robot_type = robot_type
@@ -151,6 +258,8 @@ class LeRobotReal:
         self.timeout_s = timeout_s
         self.max_step_deg = max_step_deg
         self._robot: Any = robot  # injected in tests; built in connect() otherwise
+        self.camera_spec = camera
+        self._camera: Any = camera_object  # injected in tests; built in connect() otherwise
         self._policy = policy
         self._lock = asyncio.Lock()
         self._closed = False
@@ -169,6 +278,9 @@ class LeRobotReal:
         self.joint_range_deg: dict[str, tuple[float, float]] = {}
         self.calibration_file: str | None = None
         self.camera_keys: tuple[str, ...] = ()
+        self.camera_error: str | None = None
+        self._frame_size: tuple[int, int] | None = None
+        self._frame_at: float | None = None
         self.lerobot_version: str | None = None
         self.stop_error: str | None = None
         self.post_sleep: Callable[[], None] | None = None
@@ -238,6 +350,7 @@ class LeRobotReal:
             "id": self.robot_id,
             "use_degrees": True,
             "disable_torque_on_disconnect": True,
+            # quackd owns its camera instead: up.SO_CAMERAS_ARE_THE_FOLLOWERS
             "cameras": {},
             "max_relative_target": float(self.max_step_deg),
         }
@@ -255,6 +368,28 @@ class LeRobotReal:
             raise TransportError(f"lerobot real: only {up.ROBOT_TYPE_SO101.name} is wired")
         config = SO101FollowerConfig(**self._config_kwargs())
         return make_robot_from_config(config)
+
+    def _build_camera(self) -> Any:
+        """The webcam, built by quackd and not by the follower (`up.OPENCV_CAMERA`)."""
+        spec = self.camera_spec
+        assert spec is not None
+        try:
+            from lerobot.cameras import ColorMode, Cv2Backends, Cv2Rotation
+            from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
+        except ImportError as e:  # up.CAMERA_EXPORTS: the config is not in lerobot.cameras
+            raise AdapterNotInstalled("lerobot", "quackd[lerobot]") from e
+        return OpenCVCamera(
+            OpenCVCameraConfig(
+                index_or_path=spec.index_or_path,
+                fps=spec.fps,
+                width=spec.width,
+                height=spec.height,
+                color_mode=ColorMode.RGB,
+                rotation=Cv2Rotation(spec.rotation if spec.rotation != 270 else -90),
+                fourcc=spec.fourcc,
+                backend=Cv2Backends[spec.backend.upper()],
+            )
+        )
 
     # ── protocol ────────────────────────────────────────────────────────────────────
 
@@ -285,9 +420,31 @@ class LeRobotReal:
         self.joint_range_deg = joint_ranges(calibration)
         path = getattr(self._robot, "calibration_fpath", None)
         self.calibration_file = str(path) if path else None
-        features = dict(self._robot.observation_features)
-        self.camera_keys = tuple(k for k, v in features.items() if isinstance(v, tuple))
+        # the follower is built with cameras={}, so its observation_features never name
+        # one; the only camera here is the one quackd opened (up.SO_CAMERAS_ARE_THE_FOLLOWERS)
         await self._probe()
+        await self._connect_camera()
+
+    async def _connect_camera(self) -> None:
+        """A camera the owner asked for and did not get is a refusal, not a warning.
+
+        They named an index on the command line and `doctor` gates its verdict on a frame,
+        so failing quietly would leave somebody believing they had eyes. The arm is
+        disconnected cleanly first: it has no camera of its own to be missing
+        (`up.SO_CAMERAS_ARE_THE_FOLLOWERS`), so it connects again without --camera-url."""
+        spec = self.camera_spec
+        if spec is None:
+            return
+        if self._camera is None:
+            self._camera = await asyncio.to_thread(self._build_camera)
+        try:
+            await self._call(self._camera.connect, deadline_s=CAMERA_CONNECT_S)
+        except Exception as e:
+            await self._give_up(
+                f"lerobot real: --camera-url {spec.url!r} did not open: {e}. The arm itself "
+                "is fine and connects without --camera-url"
+            )
+        self.camera_keys = (spec.name,)
 
     async def _give_up(self, why: str) -> None:
         with contextlib.suppress(Exception):
@@ -297,6 +454,9 @@ class LeRobotReal:
     async def close(self) -> None:
         self._closed = True
         await self._cancel_policy()
+        if self._camera is not None:
+            with contextlib.suppress(Exception):
+                await self._call(self._camera.disconnect)  # up.CAMERA_DISCONNECT
         if self._robot is not None:
             with contextlib.suppress(Exception):
                 await self._call(self._robot.disconnect, deadline_s=5.0)  # up.SO_DISCONNECT_TORQUE
@@ -335,9 +495,16 @@ class LeRobotReal:
         return obs
 
     async def _observe(self) -> dict[str, Any]:
-        """The plain observation, for the policy loop and the camera. `_probe` is the one
-        that also reads registers; a policy ticking at 10 Hz does not need them."""
+        """The plain observation for the policy loop. `_probe` is the one that also reads
+        registers; a policy ticking at 10 Hz does not need them.
+
+        The camera is added under its own name, which is the dict the follower would have
+        built had it owned the camera (`up.SO_CAMERA_KEYS`), so a policy trained against
+        that key sees what it expects. A camera failure here ends the pick and says why,
+        rather than being swallowed the way `observe`'s is."""
         obs: dict[str, Any] = await self._call(self._robot.get_observation)
+        if self._camera is not None and self.camera_spec is not None:
+            obs[self.camera_spec.name] = await asyncio.to_thread(self._camera.read_latest)
         return obs
 
     @staticmethod
@@ -345,13 +512,38 @@ class LeRobotReal:
         return {k.removesuffix(".pos"): float(v) for k, v in obs.items() if k.endswith(".pos")}
 
     async def get_frame(self) -> Image.Image | None:
-        if not self.camera_keys:
+        """The newest frame, or None and a reason. Never raises.
+
+        `observe` moves nothing, so a camera that has stopped delivering should cost the
+        picture and not the run: the agent loop asks for a frame every step and `doctor`
+        polls for one, and neither expects an exception. The read does not go through
+        `_call`, because it touches no serial bus and a wedge must never be filed as a
+        camera fault (`up.CAMERA_READ_LATEST`)."""
+        if self._camera is None:
             return None
-        obs = await self._observe()
-        frame = obs.get(self.camera_keys[0])
-        if frame is None:
+        try:
+            frame = await asyncio.to_thread(self._camera.read_latest)
+            image = Image.fromarray(np.asarray(frame))  # up.CAMERA_COLOR_MODE_DEFAULT: RGB
+        except Exception as e:
+            self.camera_error = f"{type(e).__name__}: {e}"
             return None
-        return Image.fromarray(np.asarray(frame))  # up.CAMERA_COLOR_MODE_DEFAULT: RGB
+        self.camera_error = None
+        self._frame_size = image.size
+        self._frame_at = self.now()
+        return image
+
+    def camera_health(self) -> dict[str, Any]:
+        """What `doctor` prints and gates its verdict on, shaped like every other backend's."""
+        spec = self.camera_spec
+        size = f"{self._frame_size[0]}x{self._frame_size[1]}" if self._frame_size else None
+        return {
+            "configured": spec is not None,
+            "url": spec.url if spec else None,
+            "ok": spec is not None and self.camera_error is None and self._frame_at is not None,
+            "age_s": None if self._frame_at is None else round(self.now() - self._frame_at, 2),
+            "size": size,
+            "error": self.camera_error,
+        }
 
     @property
     def hot_joints(self) -> list[str]:
@@ -540,10 +732,18 @@ class LeRobotReal:
         re-sent the gripper's measured position would open a hand that is holding something
         against its own goal, and every failed verb ends in a stop."""
         await self._cancel_policy()
-        await self._probe()
-        body = {k: v for k, v in self._joints.items() if k in JOINTS and k != "gripper"}
-        if body:
-            await self._send(body, clip=False)
+        try:
+            await self._probe()
+            body = {k: v for k, v in self._joints.items() if k in JOINTS and k != "gripper"}
+            if body:
+                await self._send(body, clip=False)
+        except Exception as e:
+            # the core `stop` verb reads this and refuses to say "stopped" over a hold that
+            # never reached the arm; a wedged call has already set its own, better, reason
+            if self.stop_error is None:
+                self.stop_error = f"the hold did not reach the arm: {type(e).__name__}: {e}"
+            raise
+        self.stop_error = None
 
     async def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:  # type: ignore[override]
         while not self._closed:
