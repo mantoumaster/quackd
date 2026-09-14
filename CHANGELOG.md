@@ -443,7 +443,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it as base64 text (`signature`, empty for every other provider) and `render_contents` puts
   the bytes back on the part. Both are on the default path: the catalogue's first Gemini entry
   is a Gemini 3 model. Verified with a two-step run to success on `gemini-3.5-flash`
-  with thought summaries on.
+  with thought summaries on. The first of the two is older than Gemini 3 and wider than it:
+  google-genai has validated function declarations since 2.x, so the schema bug refused every
+  verb call on every robot for every Gemini model, and it sat there because 0.8.0's own
+  "non-Anthropic default model IDs are unverified" bullet was literally true — Gemini's default
+  had never been sent a request from here. A `--provider` nobody runs is a `--provider` nobody
+  finds the bugs in. Thanks to [@Bayway](https://github.com/Bayway) (#13), who ran it.
 
 ## [0.8.0] — 2026-09-09
 
