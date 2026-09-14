@@ -137,20 +137,29 @@ Anything else in the query is refused, with the shape, before LeRobot is even im
 quackd deliberately does not: a follower's `is_connected` is the bus *and* every camera, and
 `send_action` and `disconnect()` are gated on it, so one unplugged webcam would make every
 move and every hold raise while the arm itself was perfectly fine. Beside the follower, a
-camera that dies costs you `observe` and nothing else: the heartbeat still reads the arm, the
-joints still move, `stop` still holds.
+camera that dies costs you `observe`, and a `pick` already running, and nothing else: the
+heartbeat still reads the arm, the joints still move, `stop` still holds.
 
 What that means at the bench:
 
 - A camera you asked for and did not get is a **refusal at connect**, naming the url. You
   asked for it, and `doctor` gates its verdict on a real frame, so failing quietly would
-  leave you believing you had eyes. The arm connects without `--camera-url`.
+  leave you believing you had eyes. The camera opens *before* the arm is touched, so a wrong
+  index energises nothing and leaves nothing to undo; the arm connects without
+  `--camera-url`.
 - A camera that stops delivering later is **not** a refusal. `observe` fails with what the
-  camera said (`the camera gave no frame: TimeoutError: ... too old`), `report_state` and
-  the moving verbs carry on, and `quackd doctor` shows the same thing under `camera`.
-- `observe` gives you bearings in the camera's own frame. Without `?fov=` the detector is
-  uncalibrated and says so, and its distances assume the simulator's ball, so treat them as
-  rough. Bearing is the half a webcam on a desk honestly gives you.
+  camera said (`the camera gave no frame: TimeoutError: ... too old`), and a `pick` running
+  at that moment ends as a policy error, because the policy is handed the frame.
+  `report_state` and the moving verbs carry on, and `quackd doctor` shows the same thing
+  under `camera`.
+- `observe` gives you bearings in the camera's own frame, and the detector behind it is an
+  HSV threshold whose colour ranges are the *simulator's*. On a real desk it labels whatever
+  happens to fall in one of those bands — `ball` for an orange thing, `person` for a blue one
+  — and reports nothing when nothing does, so the label is a colour range's name rather than
+  recognition. Distances assume the simulated ball's size, and without `?fov=` the bearing is
+  uncalibrated and says so. Tuning the ranges to your own ball is in [the FAQ](../faq.md).
+  What is honest whatever the detector makes of it is the frame, which `--vision` puts in
+  front of the model every step.
 
 **One camera.** `observe` returns one frame, so the url names one. A second view is a later
 feature, not a flag that exists and is ignored.
@@ -308,5 +317,6 @@ serial port). Nobody has run it on an arm, and this page will say so until someo
 If you have an SO-101 on a desk, work through
 [lerobot-hardware-checklist.md](../lerobot-hardware-checklist.md) in order: nothing moves
 until step 9. `lerobot-lookout` is the first task to point at it; it asks for `report_state`
-rather than `observe`, because the real backend configures no camera. What most needs a real
-arm is that checklist's *What to report*. Open an issue with the transcript.
+rather than `observe`, because a `.duck` is checked against the static manifest, which
+cannot know whether you brought a webcam. What most needs a real arm is that checklist's
+*What to report*, and a camera is the last line of it. Open an issue with the transcript.

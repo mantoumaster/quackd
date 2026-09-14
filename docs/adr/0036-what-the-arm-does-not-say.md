@@ -116,7 +116,8 @@ that is not published, not an estimate.
   itself rather than handing it to the follower, because a follower's `is_connected`,
   `send_action` and `disconnect()` all include its cameras and one unplugged webcam would
   make every move and every hold raise. A camera asked for and not opened refuses at
-  connect; one that dies later costs `observe` and nothing else. The lookout task still asks
+  connect, before the arm is touched at all; one that dies later costs `observe` and a `pick`
+  in flight and nothing else. The lookout task still asks
   for `report_state`, because a `.duck` is checked against the static manifest, which cannot
   know whether this arm has a camera; and quackd's
   executor still does not serialise concurrent verbs, so two MCP calls can still fight over one

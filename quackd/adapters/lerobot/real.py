@@ -83,6 +83,8 @@ CAMERA_ROTATIONS = (0, 90, 180, 270)
 CAMERA_KEYS = ("name", "width", "height", "fps", "fourcc", "backend", "rotation", "fov")
 CAMERA_CONNECT_S = 15.0
 """Long enough for the open plus upstream's warmup, which reads frames before returning."""
+CAMERA_CLOSE_S = 10.0
+"""A release stops a read thread and joins it; a few seconds is routine on Windows."""
 
 
 @dataclass(frozen=True)
@@ -162,21 +164,40 @@ def parse_camera_url(url: str) -> CameraSpec:
     backend = (one("backend") or "any").lower()
     if backend not in CAMERA_BACKENDS:
         raise _camera_refusal(f"backend={backend!r} is not one of {CAMERA_BACKENDS}", url)
-    rotation = _camera_int("rotation", one("rotation") or "0", url) if one("rotation") else 0
+    raw_rotation = one("rotation")
+    rotation = 0
+    if raw_rotation:
+        try:
+            rotation = int(raw_rotation)
+        except ValueError:
+            raise _camera_refusal(f"rotation={raw_rotation!r} is not a whole number", url) from None
     if rotation not in CAMERA_ROTATIONS:
         raise _camera_refusal(f"rotation={rotation} is not one of {CAMERA_ROTATIONS}", url)
-    fov = one("fov")
+    fov_deg: float | None = None
+    if raw_fov := one("fov"):
+        try:
+            fov_deg = float(raw_fov)
+        except ValueError:
+            raise _camera_refusal(f"fov={raw_fov!r} is not a number of degrees", url) from None
+        if not 0.0 < fov_deg < 180.0:
+            raise _camera_refusal(f"fov={raw_fov!r} must be between 0 and 180", url)
+    width = _camera_int("width", w, url) if (w := one("width")) else None
+    height = _camera_int("height", h, url) if (h := one("height")) else None
+    if (width is None) != (height is None):
+        # upstream keeps the camera's own mode unless BOTH are set, so one alone would be
+        # accepted here and quietly dropped there
+        raise _camera_refusal("width and height come together or not at all", url)
     return CameraSpec(
         url=url,
         name=name,
         index_or_path=index_or_path,
-        width=_camera_int("width", w, url) if (w := one("width")) else None,
-        height=_camera_int("height", h, url) if (h := one("height")) else None,
+        width=width,
+        height=height,
         fps=_camera_int("fps", f, url) if (f := one("fps")) else None,
         fourcc=fourcc,
         backend=backend,
         rotation=rotation,
-        fov_deg=float(_camera_int("fov", fov, url)) if fov else None,
+        fov_deg=fov_deg,
     )
 
 
@@ -259,6 +280,8 @@ class LeRobotReal:
         self.max_step_deg = max_step_deg
         self._robot: Any = robot  # injected in tests; built in connect() otherwise
         self.camera_spec = camera
+        self.camera_connect_s = CAMERA_CONNECT_S
+        self.camera_close_s = CAMERA_CLOSE_S
         self._camera: Any = camera_object  # injected in tests; built in connect() otherwise
         self._policy = policy
         self._lock = asyncio.Lock()
@@ -397,9 +420,13 @@ class LeRobotReal:
         self._closed = False
         if self._robot is None:
             self._robot = await asyncio.to_thread(self._build_robot)
+        # the camera first, before the arm is touched: a bad index then refuses with the
+        # arm never energised, never de-torqued on the way back out, and nothing to undo
+        await self._connect_camera()
         try:
             await self._call(self._robot.connect, False, deadline_s=30.0)  # never calibrate
         except Exception as e:
+            await self._close_camera()
             raise TransportError(f"lerobot real: connect failed: {e}") from e
         if not bool(self._robot.is_calibrated):
             await self._give_up(
@@ -423,40 +450,75 @@ class LeRobotReal:
         # the follower is built with cameras={}, so its observation_features never name
         # one; the only camera here is the one quackd opened (up.SO_CAMERAS_ARE_THE_FOLLOWERS)
         await self._probe()
-        await self._connect_camera()
+
+    async def _camera_call(self, fn: Callable[..., Any], *args: Any, timeout_s: float) -> Any:
+        """A camera call: its own thread and its own deadline, and never the serial lock.
+
+        The camera touches no bus, so it has no business under `_lock`. Worse than needless:
+        `_call` files a call that blows its deadline as a wedged serial thread and refuses
+        every later call until it returns, so a webcam whose open or release takes a few
+        seconds (routine on Windows) would have refused the arm's own disconnect and left
+        torque on. A camera that hangs here is simply abandoned, and says so."""
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout_s)
+        except TimeoutError:
+            raise TimeoutError(
+                f"{getattr(fn, '__name__', 'the call')}() did not return within {timeout_s:g} s"
+            ) from None
 
     async def _connect_camera(self) -> None:
         """A camera the owner asked for and did not get is a refusal, not a warning.
 
         They named an index on the command line and `doctor` gates its verdict on a frame,
-        so failing quietly would leave somebody believing they had eyes. The arm is
-        disconnected cleanly first: it has no camera of its own to be missing
-        (`up.SO_CAMERAS_ARE_THE_FOLLOWERS`), so it connects again without --camera-url."""
+        so failing quietly would leave somebody believing they had eyes. It runs before the
+        arm is touched, so a refusal here has energised nothing and let nothing go slack; the
+        arm connects without --camera-url."""
         spec = self.camera_spec
         if spec is None:
             return
-        if self._camera is None:
-            self._camera = await asyncio.to_thread(self._build_camera)
+        self.camera_keys = ()
+        self.camera_error = None
+        self._frame_size = None
+        self._frame_at = None
         try:
-            await self._call(self._camera.connect, deadline_s=CAMERA_CONNECT_S)
+            if self._camera is None:
+                self._camera = await asyncio.to_thread(self._build_camera)
+            # warmup reads frames before it returns (up.CAMERA_CONNECT); an index that will
+            # not open raises here, with upstream's own instructions in it
+            # (up.OPENCV_OPEN_FAILS)
+            await self._camera_call(self._camera.connect, timeout_s=self.camera_connect_s)
+        except AdapterNotInstalled:
+            raise
         except Exception as e:
-            await self._give_up(
-                f"lerobot real: --camera-url {spec.url!r} did not open: {e}. The arm itself "
-                "is fine and connects without --camera-url"
-            )
+            await self._close_camera()
+            raise TransportError(
+                f"lerobot real: --camera-url {spec.url!r} did not open: {e}. The arm was not "
+                "touched, and it connects without --camera-url"
+            ) from e
         self.camera_keys = (spec.name,)
 
-    async def _give_up(self, why: str) -> None:
+    async def _close_camera(self) -> None:
+        if self._camera is None:
+            return
         with contextlib.suppress(Exception):
-            await self._call(self._robot.disconnect)
+            # up.CAMERA_DISCONNECT
+            await self._camera_call(self._camera.disconnect, timeout_s=self.camera_close_s)
+        self.camera_keys = ()
+
+    async def _give_up(self, why: str) -> None:
+        """Let go of everything opened so far, then say why. The arm's disconnect is the one
+        LeRobot ships, and it drops torque (`up.SO_DISCONNECT_TORQUE`)."""
+        await self._close_camera()
+        with contextlib.suppress(Exception):
+            await self._call(self._robot.disconnect, deadline_s=5.0)
         raise TransportError(why)
 
     async def close(self) -> None:
         self._closed = True
         await self._cancel_policy()
-        if self._camera is not None:
-            with contextlib.suppress(Exception):
-                await self._call(self._camera.disconnect)  # up.CAMERA_DISCONNECT
+        # the camera on its own deadline and never the serial lock, so however long its
+        # release takes, the arm's disconnect below still runs
+        await self._close_camera()
         if self._robot is not None:
             with contextlib.suppress(Exception):
                 await self._call(self._robot.disconnect, deadline_s=5.0)  # up.SO_DISCONNECT_TORQUE

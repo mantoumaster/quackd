@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import time
 from typing import Any
 
 import numpy as np
@@ -788,9 +789,18 @@ async def test_report_state_puts_the_arm_s_own_facts_where_a_pilot_can_read_them
 class FakeCamera:
     """The slice of a LeRobot `Camera` quackd touches, verified names only."""
 
-    def __init__(self, *, fail_open: bool = False, stalled: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_open: bool = False,
+        stalled: bool = False,
+        slow_open_s: float = 0.0,
+        slow_close_s: float = 0.0,
+    ) -> None:
         self.fail_open = fail_open
         self.stalled = stalled
+        self.slow_open_s = slow_open_s
+        self.slow_close_s = slow_close_s
         self.connected = False
         self.calls: list[str] = []
 
@@ -800,6 +810,8 @@ class FakeCamera:
 
     def connect(self, warmup: bool = True) -> None:
         self.calls.append("connect")
+        if self.slow_open_s:
+            time.sleep(self.slow_open_s)
         if self.fail_open:
             raise ConnectionError(
                 "Failed to open OpenCVCamera(7).Run `lerobot-find-cameras opencv` to find "
@@ -814,6 +826,8 @@ class FakeCamera:
 
     def disconnect(self) -> None:
         self.calls.append("disconnect")
+        if self.slow_close_s:
+            time.sleep(self.slow_close_s)
         self.connected = False
 
 
@@ -891,7 +905,9 @@ async def test_a_camera_that_will_not_open_refuses_and_leaves_the_arm_clean() ->
     )
     with pytest.raises(TransportError, match="opencv://7"):
         await adapter.connect()
-    assert ("disconnect",) in arm.calls  # the arm is not left open behind a dead camera
+    # the camera opens before the arm is touched, so a bad index energises nothing and
+    # lets nothing go slack on the way out
+    assert arm.calls == []
 
 
 async def test_a_stalled_camera_costs_the_picture_and_not_the_run() -> None:
@@ -954,3 +970,67 @@ async def test_a_hold_that_never_reached_the_arm_is_not_reported_as_stopped() ->
     assert "Goal_Position" in (adapter.stop_error or "")
     arm.send_fails = False
     assert (await ex.run_verb("stop")).ok and adapter.stop_error is None
+
+
+async def test_a_slow_camera_release_never_costs_the_arm_its_disconnect() -> None:
+    """The camera touches no bus, so it is never under the serial lock: a webcam whose
+    release takes seconds (routine on Windows) must not be filed as a wedged serial call,
+    which would refuse the arm's own disconnect and leave torque on."""
+    arm = FakeArm()
+    camera = FakeCamera(slow_close_s=0.4)
+    transport = LeRobotReal(
+        "COM5", robot=arm, camera=parse_camera_url("opencv://0"), camera_object=camera
+    )
+    transport.camera_close_s = 0.1
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    await adapter.close()
+    assert ("disconnect",) in arm.calls, "the arm's disconnect was skipped"
+    assert transport._wedged is None and transport.stop_error is None
+
+
+async def test_a_camera_that_hangs_on_open_says_so_and_leaves_the_arm_alone() -> None:
+    arm = FakeArm()
+    transport = LeRobotReal(
+        "COM5",
+        robot=arm,
+        camera=parse_camera_url("opencv://3"),
+        camera_object=FakeCamera(slow_open_s=0.4),
+    )
+    transport.camera_connect_s = 0.1
+    with pytest.raises(TransportError, match="did not return within"):
+        await LeRobotAdapter(transport).connect()
+    assert arm.calls == [] and transport._wedged is None
+
+
+async def test_an_arm_that_refuses_after_the_camera_opened_lets_the_camera_go() -> None:
+    camera = FakeCamera()
+    adapter = LeRobotAdapter(
+        LeRobotReal(
+            "COM5",
+            robot=FakeArm(calibrated=False),
+            camera=parse_camera_url("opencv://0"),
+            camera_object=camera,
+        )
+    )
+    with pytest.raises(TransportError, match="not calibrated"):
+        await adapter.connect()
+    assert camera.calls == ["connect", "disconnect"]
+
+
+@pytest.mark.skipif(not NO_LEROBOT, reason="lerobot is installed here")
+async def test_a_camera_that_cannot_be_built_never_touches_the_arm() -> None:
+    arm = FakeArm()
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm, camera=parse_camera_url("opencv://0")))
+    with pytest.raises(AdapterNotInstalled):
+        await adapter.connect()
+    assert arm.calls == []
+
+
+def test_the_documented_defaults_and_a_real_lens_are_accepted() -> None:
+    assert parse_camera_url("opencv://0?rotation=0").rotation == 0
+    assert parse_camera_url("opencv://0?rotation=270").rotation == 270
+    assert parse_camera_url("opencv://0?fov=62.5").fov_deg == 62.5
+    for bad in ("opencv://0?width=1280", "opencv://0?height=720", "opencv://0?fov=0"):
+        with pytest.raises(AdapterError, match="opencv://0"):
+            parse_camera_url(bad)

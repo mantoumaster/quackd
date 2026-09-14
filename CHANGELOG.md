@@ -23,9 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole design: a follower's `is_connected` is the bus **and** every camera, and `send_action`
   and `disconnect()` are gated on it, so one webcam coming unplugged would have made every
   move and every hold raise while the arm was perfectly fine. Beside the follower, a camera
-  asked for and not opened refuses at connect naming the url, and a camera that dies later
-  costs `observe` and nothing else: the heartbeat still reads the arm, the joints still move,
-  `stop` still holds. `observe` now says what the camera said rather than "this transport has
+  asked for and not opened refuses at connect naming the url, before the arm is touched at
+  all, and a camera that dies later costs `observe` and a `pick` in flight and nothing else:
+  the heartbeat still reads the arm, the joints still move, `stop` still holds. `observe` now says what the camera said rather than "this transport has
   no camera", `quackd doctor` gates its verdict on a real frame as it does for every other
   body, and `?fov=` travels with the camera into `limits.camera_fov_deg` so bearings are
   calibrated over MCP too, where there is no `--fov-deg`
@@ -62,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is the order to try an SO-101 in, with nothing moving until step 9 and a hand on the power
   switch from there, because this arm has no e-stop. `ducks/lerobot-lookout.duck` is the task
   to point at a real arm first: it moves no joint, and it asks for `report_state` rather than
-  `observe`, because the real backend configures no camera
+  `observe`, because a `.duck` is checked against the static manifest, which cannot know
+  whether a webcam is plugged in
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
 
 - **A flock can be N pilots talking, not only a coordinator refereeing: `quackd run <duck> --flock <name>`.**

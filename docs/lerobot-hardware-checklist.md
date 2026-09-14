@@ -88,13 +88,16 @@ a gripper is a pinch hazard at any torque. Read
    webcam, so the one you plugged in is often 1 or 2. Then ask quackd for a frame:
 
    ```bash
-   uv run quackd doctor --robot lerobot:real --address COM5 --camera-url "opencv://1"
+   uv run quackd doctor --robot lerobot:real --address /dev/ttyACM0 --camera-url "opencv://1"
    ```
 
-   Quote the url: `&` is a command separator in PowerShell. Read the `camera` row, which says
-   `640x480` or `no frame`. If it lists and will not open, add `?backend=msmf`. If it refuses
-   because the camera would not take a size or a rate, drop them and let it keep its own mode,
-   which is the default. Then `robot_observe` over MCP to see what the pilot will see.
+   Quote the url: `&` starts another command in PowerShell and backgrounds one in bash. A
+   camera you asked for and did not get is a refusal, and it happens before the arm is
+   touched, so a wrong index costs you nothing but the message: try another index, add
+   `?backend=msmf` if the camera listed and would not open, or drop a size or a rate you
+   pinned and let it keep its own mode, which is the default. When it does open, `doctor`
+   grows a `camera` row with the frame size in it, or `no frame` if it opened and then gave
+   nothing. Then `robot_observe` over MCP to see what the pilot will see.
 
    A camera is optional: the arm works without one, and `lerobot-lookout` never asks for it.
 
@@ -140,7 +143,7 @@ script that ignores it.
 
 ## What to report
 
-Open an issue with the transcript and `quackd doctor` output. The five things that most need
+Open an issue with the transcript and `quackd doctor` output. The six things that most need
 a real arm:
 
 - **Which end of the gripper's 0..100 range is open.** Assumed, and everything about holding
