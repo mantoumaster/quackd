@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/rokbenko/quackd/main/docs/assets/logo.svg?v=3" alt="quackd" width="360">
+  <img src="https://raw.githubusercontent.com/rokbenko/quackd/main/web/assets/duck-mark.png" alt="" width="128">
 </p>
+
+<h1 align="center">quackd</h1>
 
 <p align="center"><strong>One CLI for all your robots. Connect them, command them, and let them work together, each with an LLM for a brain.</strong><br>
 <sub>quackd, pronounced “quacked”, began as the brain daemon the Microduck was missing, named like that robot's own <code>robotd</code>, <code>mediad</code>, <code>padd</code> and <code>tofd</code>. That is where the ducks come from: a task is a <code>.duck</code> file and a group of robots is a flock. Seven robots today, every one of them in a simulator or a mock so far, and one of them a duck you can print and build yourself.</sub></p>
