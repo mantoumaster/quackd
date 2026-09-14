@@ -111,6 +111,37 @@ def test_no_image_under_docs_assets_ships_in_the_sdist() -> None:
         )
 
 
+def test_the_card_and_the_readme_open_with_the_same_mark() -> None:
+    """One mark, one file, and a test that says so.
+
+    The README serves it over raw.githubusercontent and `social_preview.py` pastes the same
+    bytes off disk into the social card. Until 0.9 neither was tied to the other: the script
+    drew its own copy of the old logo in Pillow, so the front door and the link preview could
+    drift a redesign apart and nothing here would notice. The mark itself lives under `web/`,
+    beside the browser demo that serves it too, so it is also the one README image that no
+    longer sits in `docs/assets` and that `test_readme_images_are_absolute_and_exist` is
+    therefore the only other guard on."""
+    import importlib.util
+    from pathlib import Path
+
+    source = REPO / "docs" / "assets" / "social_preview.py"
+    spec = importlib.util.spec_from_file_location("_social_preview_under_test", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    mark = Path(module.MARK)
+    assert mark.is_file(), f"the card generator pastes {mark}, and it is not there"
+
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    first = re.search(r'<img src="https://raw\.githubusercontent\.com/[^"]+?/main/([^"?]+)', readme)
+    assert first is not None, "the README no longer opens with an image"
+    assert REPO / first.group(1) == mark, (
+        f"the README opens with {first.group(1)} and the card pastes "
+        f"{mark.relative_to(REPO).as_posix()}. Point both at one file, or they drift."
+    )
+
+
 def test_the_hero_script_uses_the_cap_the_pre_commit_hook_is_configured_with() -> None:
     """`check-added-large-files` only inspects files being *added*, so regenerating the hero
     in place past the cap is invisible to it. The script's own check is the one that fires,

@@ -85,6 +85,13 @@ What the page does serve from this directory is three PNGs, and they are quackd'
 one. They replaced a 🦆 emoji and an inline-SVG favicon built around the same emoji. There
 are no other images: the arena is drawn with WebGL and the film grain is a data URI.
 
+`assets/duck-mark.png` is no longer only this page's. It is the project mark, kept once here
+rather than copied: the repository README opens with it over raw.githubusercontent, and
+`docs/assets/social_preview.py` opens this exact path to paste it into the social card. Rename
+or move it and both break, so the three references move together. `tests/test_web.py` checks
+that this page asks for it, `tests/test_docs.py` that the README's copy resolves, and
+`tests/test_pypi_readme.py` that the card generator still finds it.
+
 ## Your API key
 
 It is read from an input, kept in a variable for the life of the tab, and sent straight to
@@ -318,7 +325,7 @@ Deliberately, and none of it is a bug. This list is the canonical one: `README.m
 | `serve.py` | the mount, locally: stdlib only, serves this directory under `/simulator` the way the deploy does |
 | `build_catalogue.py` | writes `src/catalogue.js` from Python's catalogue. Stdlib only. Run it after adding a model |
 | `style.css` | hand-authored, in the quackd-web design language |
-| `assets/` | quackd's own mark: the header logo, the favicon, the touch icon |
+| `assets/` | quackd's own mark: the header logo, the favicon, the touch icon. `duck-mark.png` is the project mark: the repository README and the social card read it from here |
 | `src/microduck.js` | the robot: MJCF, the 50 Hz loop, the policy, the gait floor |
 | `src/pilot.js` | quackd itself: the clock, the verbs, the contract, the loop |
 | `src/catalogue.js` | GENERATED. the model list, from `quackd/agent/providers/catalogue.py` |

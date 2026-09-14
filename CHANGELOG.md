@@ -221,6 +221,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The README and the social card wear the duck head quackd.org uses, and `logo.svg` is
+  gone.** The README opened with a flat biped and a wordmark that set `quack` in yellow and
+  the `d` in purple. It opens with the 3D duck head instead, the same drawing quackd.org
+  shows in a browser tab, over a plain `<h1>` in whatever colour the reader's GitHub theme
+  uses for a heading. The two marks had been diverging since the landing page shipped, and a
+  project whose front door and whose website do not look like the same project is paying for
+  two identities and getting neither. The head was already in this repository at
+  `web/assets/duck-mark.png`, vendored for the browser demo in 0.8, so the README, the card
+  and the demo now read one file. `docs/assets/social_preview.py` stops transcribing
+  `logo.svg`'s geometry into Pillow and pastes that PNG instead, after the resample rather
+  than before, so the art is never resized, and it measures the mark's own ink and the type's
+  own height to place them rather than trusting a coordinate, because `_FACES` resolves to a
+  different typeface on every machine. The wordmark loses the two-colour split for the same
+  white the headline uses. `docs/assets/logo.svg` is deleted, because a second mark nothing
+  renders is a second mark that goes stale. What kept the two in step before was nothing, so
+  `tests/test_pypi_readme.py` now asserts that the file the README opens with and the file the
+  card pastes are the same one, and `web/README.md` records that `web/assets/` stopped being
+  the browser demo's private chrome the moment two other things started reading it. The
+  uploaded social preview is a manual follow-up as always: GitHub has no API for it, and
+  PLAN.md carries it.
+
 - **The LeRobot arm adapter stops taking the arm's word for four things it never said.**
   Re-reading upstream at the pinned commit found that `is_connected` is only the serial
   port's open flag, that `get_observation()` reads positions and nothing else, that a degrees

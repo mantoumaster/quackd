@@ -2,22 +2,29 @@
 
     uv run python docs/assets/social_preview.py        # writes docs/assets/social-preview.png
 
+Run it from a checkout. The sdist carries `docs/` and not `web/`, so the mark this pastes is
+not in a published package, the same way `hero3d.py` needs upstream's model fetched first.
+
 The card carried the one-liner, so it went stale the day the positioning changed
 ([ADR-0035](../adr/0035-one-cli-for-all-your-robots.md)). It had been made by hand and the
 script was never committed, which is why `docs/assets/README.md` used to point at a commit
 that does not contain one. This is that script, so the next person who changes a word here
 does not have to redraw a duck.
 
-Two things are drawn rather than loaded. The mark and the wordmark are `logo.svg`'s own
-geometry, transcribed, because rasterising SVG would add a dependency for one asset. The two
-panels on the right are real `sim2d` renders of a three robot arena, through the same
-`render_topdown` and `render_duckcam` a run writes its GIF with, so what the card shows is
-what the simulator draws.
+The mark is loaded rather than drawn. It is `web/assets/duck-mark.png`, the duck head the
+README opens with, the same art quackd.org shows in a browser tab, and it is pasted at its own
+resolution after the card is resampled, so the one piece of finished art here is never
+resized. Until 0.9 this script transcribed `logo.svg`'s geometry into Pillow instead, and
+`logo.svg` is gone with it. The two panels on the right are real `sim2d` renders of a three
+robot arena, through the same `render_topdown` and `render_duckcam` a run writes its GIF
+with, so what the card shows is what the simulator draws.
 
-Everything is drawn at `SS` times scale and resampled down, which is what gives the rounded
-corners and the type their edges. Fonts are the one machine-dependent part: a bold and a
-regular face are looked up from `_FACES` and the script stops with a readable error if
-neither is found, rather than silently falling back to a bitmap font that would not fit.
+Everything this script draws is drawn at `SS` times scale and resampled down, which is what
+gives the type its edges. The mark is the exception above: it is art rather than geometry,
+and it lands after that resample at the size it was exported. Fonts are the one
+machine-dependent part: a bold and a regular face are looked up from `_FACES` and the script
+stops with a readable error if neither is found, rather than silently falling back to a
+bitmap font that would not fit.
 
 Uploading it is still manual: GitHub has no API for Settings, Social preview.
 """
@@ -34,21 +41,19 @@ from quackd.sim2d.world import World
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "social-preview.png"
+#: The mark, kept once. `web/assets` serves it to the browser demo and the README opens with
+#: it, so this reads that copy rather than taking a second one into `docs/assets`. The tab
+#: icon beside it, `favicon-96.png`, is the same drawing exported small, not this file.
+MARK = HERE.parent.parent / "web" / "assets" / "duck-mark.png"
 
 W, H = 1280, 640
 SS = 4  # supersample factor: draw big, resample once, keep the curves clean
 
-# Sampled from the card this replaces, so the two sit side by side in a timeline without
-# one of them looking like a different project. `logo.svg` is the source for the first four.
+# Sampled from the card this replaces, so the two sit side by side in a timeline without one
+# of them looking like a different project. The brand colours are no longer among them: the
+# mark brings its own and the name is set in the same white as the headline, because a
+# wordmark that recolours two letters competes with a piece of art that did not need help.
 BG = (24, 24, 28)
-YELLOW = (245, 197, 24)
-YELLOW_DARK = (217, 165, 14)
-LAVENDER = (183, 166, 223)
-PURPLE = (156, 134, 214)
-INK = (43, 43, 48)
-GREY = (85, 85, 92)
-WHITE = (255, 255, 255)
-EYE = (26, 26, 30)
 HEADLINE = (245, 245, 245)
 BODY = (200, 200, 205)
 MUTED = (140, 140, 150)
@@ -92,100 +97,38 @@ def s(x: float, y: float) -> tuple[float, float]:
     return x * SS, y * SS
 
 
-# ── the mark, transcribed from logo.svg ─────────────────────────────────────────────────
+# ── the lockup ──────────────────────────────────────────────────────────────────────────
 #
-# logo.svg draws in a 470x150 viewBox with the bird under `translate(8,6)`. Everything below
-# is in those coordinates and `_mark` applies the scale, so a change upstream can be copied
-# across by reading the two files next to each other.
+# Where the mark's own pixels land on the finished 1280x640 card. The name is placed off the
+# mark rather than at a coordinate of its own, so moving one moves both.
+MARK_XY = (57, 58)  # top left of the 256x256 PNG, chosen so its ink starts at the headline's x
+MARK_GAP = 48  # from the mark's right-hand ink to the start of the name
+WORDMARK_PT = 112
 
 
-def _bird_body(d: ImageDraw.ImageDraw, ox: float, oy: float, k: float) -> None:
-    """Legs, feet and torso: the part of the group that is not rotated."""
+def load_mark() -> tuple[Image.Image, tuple[int, int, int, int]]:
+    """The mark and the box its opaque pixels occupy on the finished card.
 
-    def p(x: float, y: float) -> tuple[float, float]:
-        return ox + x * k, oy + y * k
-
-    for pts in ((58, 96, 50, 116, 62, 130), (84, 96, 78, 116, 92, 130)):
-        d.line(
-            [p(pts[0], pts[1]), p(pts[2], pts[3]), p(pts[4], pts[5])],
-            fill=INK,
-            width=round(9 * k),
-            joint="curve",
-        )
-        # `joint="curve"` rounds the corner but not the ends, which the SVG rounds too
-        for cx, cy in ((pts[0], pts[1]), (pts[4], pts[5])):
-            r = 4.5 * k
-            d.ellipse(
-                [p(cx, cy)[0] - r, p(cx, cy)[1] - r, p(cx, cy)[0] + r, p(cx, cy)[1] + r], fill=INK
-            )
-    for cx, cy in ((50, 116), (78, 116)):
-        r = 5.5 * k
-        d.ellipse(
-            [p(cx, cy)[0] - r, p(cx, cy)[1] - r, p(cx, cy)[0] + r, p(cx, cy)[1] + r], fill=GREY
-        )
-    for x in (46, 78):  # feet
-        d.rounded_rectangle([p(x, 126), p(x + 34, 139)], radius=6.5 * k, fill=YELLOW)
-    for cx in (74, 106):
-        r = 3 * k
-        d.ellipse(
-            [p(cx, 132.5)[0] - r, p(cx, 132.5)[1] - r, p(cx, 132.5)[0] + r, p(cx, 132.5)[1] + r],
-            fill=INK,
-        )
-    d.rounded_rectangle([p(34, 60), p(100, 100)], radius=16 * k, fill=LAVENDER)
-    d.rounded_rectangle([p(42, 66), p(60, 76)], radius=5 * k, fill=(70, 70, 76))
-    d.rounded_rectangle([p(70, 34), p(81, 66)], radius=4 * k, fill=INK)  # neck
-    for cy in (46, 58):
-        r = 4 * k
-        d.ellipse(
-            [p(75.5, cy)[0] - r, p(75.5, cy)[1] - r, p(75.5, cy)[0] + r, p(75.5, cy)[1] + r],
-            fill=GREY,
-        )
+    The PNG is padded with transparency on three sides, so its file corner is not its visual
+    corner. Everything is aligned to the ink, and the ink is measured rather than assumed, so
+    redrawing the duck one day moves the name with it.
+    """
+    mark = Image.open(MARK).convert("RGBA")
+    box = mark.getbbox() or (0, 0, *mark.size)
+    x, y = MARK_XY
+    return mark, (x + box[0], y + box[1], x + box[2], y + box[3])
 
 
-def _bird_head(size: tuple[int, int], ox: float, oy: float, k: float) -> Image.Image:
-    """Beak, head and eye on their own layer, so the SVG's `rotate(-8 92 26)` is one call."""
-    layer = Image.new("RGBA", size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
+def draw_wordmark(d: ImageDraw.ImageDraw, x: float, cy: float, size: int) -> None:
+    """`quackd` in the headline's white, its ink centred on `cy`. Supersampled coordinates.
 
-    def p(x: float, y: float) -> tuple[float, float]:
-        return ox + x * k, oy + y * k
-
-    d.rounded_rectangle([p(72, 43), p(130, 56)], radius=6.5 * k, fill=YELLOW)
-    d.line([p(80, 49.5), p(124, 49.5)], fill=YELLOW_DARK, width=round(2 * k))
-    d.rounded_rectangle([p(54, 2), p(132, 48)], radius=23 * k, fill=LAVENDER)
-    d.rounded_rectangle([p(64, 16), p(134, 46)], radius=15 * k, fill=INK)  # visor
-    for r, fill in ((12.5, WHITE), (8.5, YELLOW), (4.0, EYE)):
-        rr = r * k
-        d.ellipse(
-            [p(104, 30)[0] - rr, p(104, 30)[1] - rr, p(104, 30)[0] + rr, p(104, 30)[1] + rr],
-            fill=fill,
-        )
-    rr = 1.6 * k
-    d.ellipse(
-        [
-            p(106.5, 27.5)[0] - rr,
-            p(106.5, 27.5)[1] - rr,
-            p(106.5, 27.5)[0] + rr,
-            p(106.5, 27.5)[1] + rr,
-        ],
-        fill=WHITE,
-    )
-    pivot = p(92, 26)
-    return layer.rotate(-8, resample=Image.Resampling.BICUBIC, center=pivot)
-
-
-def draw_mark(canvas: Image.Image, x: float, y: float, k: float) -> None:
-    """The bird from `logo.svg`, its (8,6) group offset folded in, at `k` pixels per unit."""
-    ox, oy = x + 8 * k, y + 6 * k
-    _bird_body(ImageDraw.Draw(canvas), ox, oy, k)
-    canvas.alpha_composite(_bird_head(canvas.size, ox, oy, k))
-
-
-def draw_wordmark(d: ImageDraw.ImageDraw, x: float, y: float, size: int) -> None:
-    """`quack` in yellow, `d` in purple, which is the one thing the wordmark must keep."""
+    Measured rather than placed. `_FACES` resolves to a different typeface on every machine,
+    so a nominal point size is not an ink height, and a hardcoded baseline would sit the name
+    at a different height on Windows than on CI.
+    """
     f = font("bold", size)
-    d.text((x, y), "quack", font=f, fill=YELLOW, anchor="ls")
-    d.text((x + d.textlength("quack", font=f), y), "d", font=f, fill=PURPLE, anchor="ls")
+    _, top, _, bottom = d.textbbox((x, 0.0), "quackd", font=f, anchor="ls")
+    d.text((x, cy - (top + bottom) / 2), "quackd", font=f, fill=HEADLINE, anchor="ls")
 
 
 # ── the panels ──────────────────────────────────────────────────────────────────────────
@@ -210,9 +153,8 @@ def build() -> Image.Image:
     canvas = Image.new("RGBA", (W * SS, H * SS), (*BG, 255))
     d = ImageDraw.Draw(canvas)
 
-    draw_mark(canvas, *s(78, 48), 2.02 * SS)
-    d = ImageDraw.Draw(canvas)
-    draw_wordmark(d, *s(408, 272), 112)
+    mark, ink = load_mark()
+    draw_wordmark(d, *s(ink[2] + MARK_GAP, (ink[1] + ink[3]) / 2), WORDMARK_PT)
 
     d.text(
         s(70, 432),
@@ -252,7 +194,12 @@ def build() -> Image.Image:
         d.rectangle([left, top, left + side - 1, top + side - 1], outline=(70, 62, 55), width=SS)
         d.text((left, top + side + 26 * SS), label, font=small, fill=LABEL, anchor="ls")
 
-    return canvas.resize((W, H), Image.Resampling.LANCZOS).convert("RGB")
+    # The mark goes on last, at its own resolution. Drawing it into the supersampled canvas
+    # would mean scaling it up four times and back down once, which is two resamples of the
+    # only art here that was not drawn by this script.
+    card = canvas.resize((W, H), Image.Resampling.LANCZOS)
+    card.alpha_composite(mark, MARK_XY)
+    return card.convert("RGB")
 
 
 def main() -> None:
