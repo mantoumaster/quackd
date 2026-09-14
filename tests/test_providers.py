@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from collections.abc import Callable
 from types import SimpleNamespace as NS
 from typing import Any
@@ -22,7 +23,7 @@ from quackd.agent.providers.gemini import (
     render_contents,
 )
 from quackd.agent.providers.grok import GrokProvider
-from quackd.agent.providers.openai import OpenAIProvider
+from quackd.agent.providers.openai import OpenAIProvider, parse_extra_body
 from quackd.agent.providers.openai import render_messages as o_messages
 from quackd.verbs.registry import default_registry
 
@@ -394,6 +395,116 @@ async def test_openai_reasoning_effort_can_be_set_by_hand() -> None:
     p = OpenAIProvider(model="gpt-5", client=client, reasoning_effort="low")
     await p.step("SYS", history(), TOOLS)
     assert client.kwargs["reasoning_effort"] == "low"
+
+
+# ── extra_body: a field the server wants and quackd never sends (#12) ────────────────────
+
+BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+BODY_JSON = '{"chat_template_kwargs": {"enable_thinking": false}}'
+
+
+async def test_extra_body_reaches_the_chat_body() -> None:
+    """Nothing is added unless it was asked for, and what was asked for arrives as the SDK's
+    own `extra_body`, which merges it into the top level of the request."""
+    client = FakeOpenAI(openai_response("stop", "{}"))
+    await OpenAIProvider(model="gpt-5", client=client).step("SYS", history(), TOOLS)
+    assert "extra_body" not in client.kwargs
+
+    await OpenAIProvider(model="gpt-5", client=client, extra_body=BODY).step(
+        "SYS", history(), TOOLS
+    )
+    assert client.kwargs["extra_body"] == BODY
+
+
+async def test_extra_body_survives_the_switch_to_responses(_no_effort_env: None) -> None:
+    """`step` moves a run from Chat Completions to Responses when the API asks for it, and the
+    passthrough has to still be there afterwards. A knob that quietly stops working halfway
+    through a run is worse than one the server ignores, which is why it is sent on both."""
+    client = RefusesToolsOnChat(responses_result("walk", '{"vx": 0.2}'))
+    p = OpenAIProvider(model=UNHINTED, client=client, extra_body=BODY)
+    turn = await p.step("SYS", history(), TOOLS)
+    assert p.api == "responses" and turn.tool_calls[0].name == "walk"
+    assert client.chat_calls[0]["extra_body"] == BODY
+    assert client.responses_calls[0]["extra_body"] == BODY
+
+
+async def test_extra_body_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QUACKD_EXTRA_BODY", BODY_JSON)
+    client = FakeOpenAI(openai_response("stop", "{}"))
+    await OpenAIProvider(model="gpt-5", client=client).step("SYS", history(), TOOLS)
+    assert client.kwargs["extra_body"] == BODY
+
+    # blanked rather than deleted, which is what a commented-out `.env` line leaves behind
+    monkeypatch.setenv("QUACKD_EXTRA_BODY", "   ")
+    client = FakeOpenAI(openai_response("stop", "{}"))
+    await OpenAIProvider(model="gpt-5", client=client).step("SYS", history(), TOOLS)
+    assert "extra_body" not in client.kwargs
+
+
+async def test_the_flag_outranks_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flag reaches a provider as the dict the factory parsed, so a dict beats the
+    variable. An empty one is not None, so it skips the variable and sends nothing: that is
+    how a `.env` line is silenced for a single run."""
+    monkeypatch.setenv("QUACKD_EXTRA_BODY", '{"from": "the environment"}')
+    client = FakeOpenAI(openai_response("stop", "{}"))
+    await OpenAIProvider(model="gpt-5", client=client, extra_body=BODY).step(
+        "SYS", history(), TOOLS
+    )
+    assert client.kwargs["extra_body"] == BODY
+
+    client = FakeOpenAI(openai_response("stop", "{}"))
+    await OpenAIProvider(model="gpt-5", client=client, extra_body={}).step("SYS", history(), TOOLS)
+    assert "extra_body" not in client.kwargs
+
+
+@pytest.mark.parametrize("bad", ["{not json", "[1, 2]", '"text"', "42", "null"])
+def test_extra_body_must_be_a_json_object(bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both doors refuse it, and each says which one it was: a flag somebody has just typed
+    and a line in a `.env` they have forgotten want different answers."""
+    monkeypatch.setenv("QUACKD_EXTRA_BODY", bad)
+    with pytest.raises(ProviderError, match="QUACKD_EXTRA_BODY"):
+        OpenAIProvider(model="gpt-5", client=FakeOpenAI(None))
+
+    monkeypatch.setenv("QUACKD_EXTRA_BODY", "")
+    with pytest.raises(ProviderError, match="--extra-body"):
+        # the parse is what fails, before the SDK this machine does not have is imported
+        make_provider("vllm", model="m", base_url="http://gpu:8000/v1", extra_body=bad)
+
+
+@pytest.mark.parametrize("provider", ["openai", "grok", "vllm"])
+def test_extra_body_reaches_every_provider_that_speaks_openais_api(
+    provider: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scope of this knob is the whole OpenAI-compatible family, and every other test of
+    it happens to use a local preset. Without this one the cloud branches of the factory could
+    stop forwarding it and nothing would go red."""
+    seen: dict[str, Any] = {}
+
+    def record(self: Any, *a: Any, **kw: Any) -> None:
+        seen.update(kw)
+        self.name, self.model, self.supports_vision = provider, "m", False
+
+    monkeypatch.setattr(OpenAIProvider, "__init__", record)
+    make_provider(provider, model=None, base_url="http://host:8000/v1", extra_body=BODY_JSON)
+    assert seen["extra_body"] == BODY, f"{provider} was not handed the parsed object"
+
+
+@pytest.mark.parametrize("key", ["model", "messages", "input", "instructions", "tools", "stream"])
+def test_extra_body_refuses_the_keys_quackd_owns(key: str) -> None:
+    """`model` would put a model on the wire that `run_start` does not name, and `stream`
+    changes the shape of the reply without telling the SDK, which then fails on the content
+    type long after the robot has connected."""
+    with pytest.raises(ProviderError, match=re.escape(repr(key))):
+        make_provider(
+            "vllm", model="m", base_url="http://gpu:8000/v1", extra_body=json.dumps({key: "x"})
+        )
+
+
+def test_extra_body_lets_you_override_what_quackd_sends() -> None:
+    """The refusal list is short on purpose. Replacing `tool_choice` is the escape hatch the
+    passthrough exists to be, and the SDK merges last, so it wins."""
+    body = parse_extra_body('{"tool_choice": "auto"}', source="--extra-body")
+    assert body == {"tool_choice": "auto"}
 
 
 async def test_openai_bad_json_arguments_do_not_crash() -> None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib
 import os
+from typing import Any
 
 from quackd.agent.providers.base import LLMProvider, ProviderError
 from quackd.agent.providers.catalogue import CATALOGUE as CATALOGUE
@@ -136,6 +137,17 @@ def resolve_model(provider: str, model: str | None, *, source: str = "--model") 
     raise ProviderError(_unknown_model(provider, model, source))
 
 
+def _extra_body(text: str | None) -> dict[str, Any] | None:
+    """`--extra-body` as the dict a provider takes, parsed here so a bad value names the flag
+    and stops before a key is read or a packet is sent. None hands the provider nothing, and it
+    reads `QUACKD_EXTRA_BODY` itself: that is how the flag outranks the variable."""
+    if text is None:
+        return None
+    from quackd.agent.providers.openai import parse_extra_body
+
+    return parse_extra_body(text, source="--extra-body")
+
+
 def make_provider(
     name: str,
     *,
@@ -145,8 +157,14 @@ def make_provider(
     base_url: str | None = None,
     api_key: str | None = None,
     vision: bool | None = None,
+    extra_body: str | None = None,
 ) -> LLMProvider:
     name = name.lower()
+    # Before the branches, so a typo is refused the same way whichever provider was named,
+    # `fake` included. Anthropic and Gemini ignore the value as they ignore `--base-url`,
+    # but ignoring a field is not the same as swallowing a mistake, and `--provider fake`
+    # is then the cheapest way to find out whether a shell mangled the quoting.
+    body = _extra_body(extra_body)
     if name == "fake":
         from quackd.agent.providers.fake import FakeProvider
 
@@ -163,7 +181,13 @@ def make_provider(
     if name == "openai":
         from quackd.agent.providers.openai import OpenAIProvider
 
-        return OpenAIProvider(model=model, api_key=api_key, base_url=base_url, vision=vision)
+        return OpenAIProvider(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            vision=vision,
+            extra_body=body,
+        )
     if name == "gemini":
         from quackd.agent.providers.gemini import GeminiProvider
 
@@ -172,11 +196,22 @@ def make_provider(
         module = importlib.import_module(f"quackd.agent.providers.{name}")
         vendor = getattr(module, OPENAI_COMPATIBLE[name])
         provider: LLMProvider = vendor(
-            model=model, api_key=api_key, base_url=base_url, vision=vision
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            vision=vision,
+            extra_body=body,
         )
         return provider
     if name in LOCAL_NAMES:
         from quackd.agent.providers.local import LocalProvider
 
-        return LocalProvider(model, preset=name, base_url=base_url, api_key=api_key, vision=vision)
+        return LocalProvider(
+            model,
+            preset=name,
+            base_url=base_url,
+            api_key=api_key,
+            vision=vision,
+            extra_body=body,
+        )
     raise ProviderError(f"unknown provider {name!r}; choose one of {', '.join(PROVIDER_NAMES)}")

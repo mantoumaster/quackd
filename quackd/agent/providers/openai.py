@@ -289,6 +289,53 @@ def parse_response(response: Any) -> ProviderTurn:
     )
 
 
+REFUSED_EXTRA_BODY_KEYS = frozenset(
+    {"model", "messages", "input", "instructions", "tools", "stream"}
+)
+"""Keys quackd owns, and will not let a passthrough replace. `model` would walk past the
+catalogue and put a model on the wire that `run_start` does not name. `messages`, `input`,
+`instructions` and `tools` are the conversation itself, and `instructions` is the one that is
+easy to miss: on Chat Completions the system prompt is the first of `messages`, but on
+Responses it is a field of its own, so leaving it out would have let a passthrough quietly
+replace the whole contract on one API and not the other. `stream` changes the shape of the
+reply without telling the SDK, which then fails on the content type long after the robot has
+connected. Everything else goes through, `tool_choice` and `reasoning_effort` included:
+overriding those is the point."""
+
+_EXTRA_BODY_EXAMPLE = '{"chat_template_kwargs": {"enable_thinking": false}}'
+
+
+def parse_extra_body(text: str | None, *, source: str) -> dict[str, Any] | None:
+    """`--extra-body` or `QUACKD_EXTRA_BODY` as the object the SDK merges into the request.
+
+    One JSON object and nothing else: a list or a bare string has no top level to merge into.
+    The error names the flag or the variable and echoes what arrived, because python-dotenv
+    truncates an unquoted value at a `  #` and drops a double-quoted one entirely, and both
+    look fine in the file. Empty is unset, so a `.env` line can be blanked rather than deleted,
+    and `--extra-body '{}'` silences one for a single run.
+    """
+    if text is None or not text.strip():
+        return None
+    try:
+        body = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ProviderError(
+            f"{source}: not valid JSON ({e.msg} at column {e.colno}) in {text.strip()[:60]!r}: "
+            f"one object, e.g. {_EXTRA_BODY_EXAMPLE}"
+        ) from e
+    if not isinstance(body, dict):
+        kind = "null" if body is None else type(body).__name__
+        raise ProviderError(
+            f"{source}: a JSON object was expected, not {kind}: e.g. {_EXTRA_BODY_EXAMPLE}"
+        )
+    for key in sorted(REFUSED_EXTRA_BODY_KEYS & body.keys()):
+        raise ProviderError(
+            f"{source}: {key!r} is quackd's to send and cannot be replaced here. "
+            f"Anything the server wants beside it can: e.g. {_EXTRA_BODY_EXAMPLE}"
+        )
+    return body
+
+
 class OpenAIProvider:
     """OpenAI's own API. Subclasses (Grok, the local servers) only change the class knobs."""
 
@@ -318,6 +365,7 @@ class OpenAIProvider:
         vision: bool | None = None,
         reasoning_effort: str | None = None,
         api: str | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         # No model means the catalogue's default. The empty string is what the local presets
         # pass up, and it means the opposite: ask the server (`LocalProvider.ensure_model`).
@@ -330,6 +378,17 @@ class OpenAIProvider:
         #: Completions, `reasoning={"effort": ...}` on Responses.
         self.reasoning_effort = reasoning_effort or _os.environ.get(
             "QUACKD_OPENAI_REASONING_EFFORT"
+        )
+        #: Fields the server wants and quackd never sends, merged into the top level of every
+        #: request body by the SDK's own `extra_body`, on either API. `{"chat_template_kwargs":
+        #: {"enable_thinking": false}}` is how Qwen3's thinking is turned off on vLLM (#12).
+        #: A dict from the caller wins over the environment, which is how `--extra-body` beats
+        #: `QUACKD_EXTRA_BODY`: the factory parses the flag and hands it down. An empty dict is
+        #: not None, so it skips the environment and sends nothing.
+        self.extra_body = (
+            extra_body
+            if extra_body is not None
+            else parse_extra_body(_os.environ.get("QUACKD_EXTRA_BODY"), source="QUACKD_EXTRA_BODY")
         )
         #: "chat" or "responses". A model the catalogue marks `responses` starts there, which
         #: saves the failed call `step` would otherwise pay to learn it, and is the only way in
@@ -383,6 +442,8 @@ class OpenAIProvider:
             params["parallel_tool_calls"] = False
         if self.reasoning_effort:
             params["reasoning_effort"] = self.reasoning_effort
+        if self.extra_body:
+            params["extra_body"] = self.extra_body
         return params
 
     def _params_responses(
@@ -400,6 +461,8 @@ class OpenAIProvider:
             params["parallel_tool_calls"] = False
         if self.reasoning_effort:
             params["reasoning"] = {"effort": self.reasoning_effort}
+        if self.extra_body:
+            params["extra_body"] = self.extra_body
         return params
 
     async def _call(self, system: str, history: list[Exchange], tools: list[dict[str, Any]]):

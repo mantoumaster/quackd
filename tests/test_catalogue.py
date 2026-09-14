@@ -256,6 +256,7 @@ def test_the_local_branch_is_handed_exactly_what_it_was_before(
         "base_url": "http://gpu:8000/v1",
         "api_key": None,
         "vision": True,
+        "extra_body": None,
     }
 
 

@@ -120,7 +120,8 @@ is more than one to choose from: Qwen goes to DashScope's *international* endpoi
 (`dashscope-intl.aliyuncs.com`), so a key issued on Alibaba's China console will not
 authenticate, and Cohere goes to its OpenAI compatibility path rather than its native one.
 `--base-url` moves any vendor that speaks OpenAI's API, which is every one of them except
-Anthropic and Gemini, where the flag is accepted and ignored.
+Anthropic and Gemini, where the flag is accepted and ignored. `--extra-body` adds a field
+that vendor wants and quackd never sends, on the same terms.
 
 **Why did my OpenAI run move to a different API mid-flight?** Because some OpenAI models refuse
 function tools on `/v1/chat/completions` at every reasoning effort and name `/v1/responses` in
@@ -137,7 +138,8 @@ OpenAI's Chat Completions API, so `--provider ollama`, `vllm`, `llamacpp`, `lmst
 `local --base-url http://host:port/v1` works with no API key. Tool calling must be enabled
 on the server (`llama-server --jinja`, `vllm serve --enable-auto-tool-choice
 --tool-call-parser …`), vision is off unless you pass `--vision`, and a small model that
-writes its tool call as plain JSON is still understood. Details: [local-llms.md](local-llms.md).
+writes its tool call as plain JSON is still understood. A field the server wants in the
+body goes in with `--extra-body`, which is how Qwen3 is told not to think on vLLM. Details: [local-llms.md](local-llms.md).
 
 ## Seeing what happened
 
