@@ -417,6 +417,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The duck's chin was missing from the mark, and nothing recorded how to put it back.**
+  `web/assets/duck-mark.png` and `web/assets/favicon-96.png` had both been exported with the
+  crop window about twenty rows too high, so the head ran off the bottom of its own canvas and
+  took the chin, the lower jaw and the orange mouth with it. Opaque pixels sat on the last row
+  of each file, which is the tell. The README has opened with that mark since earlier in this
+  release and the social card is built around it, so the same slice showed up in three places
+  at once. Both are re-cut from quackd-web's `src/assets/duck-source.png`, the only original
+  there is, by a new `web/make_mark.py` that exists because the answer to "how was this made"
+  was nothing at all. It keeps the old scale deliberately, recovering it by measuring the dark
+  visor panel in both images rather than trusting a number, so the mark's weight on the README
+  and on the card is unchanged and only the missing part is new. It drops the body at the neck,
+  lifts out the heart speech bubble, and refuses to write a file whose ink reaches an edge,
+  which is the check that would have caught this. `web/assets/apple-touch-icon.png` was already
+  whole and is left alone. quackd-web carries its own copies of the two bad exports and needs
+  the same fix, which is a separate repository and a manual follow-up.
+
 - **`quackd[lerobot]` installed a LeRobot that could not open a serial port.**
   At the pinned commit the Feetech SDK and pyserial live in lerobot's own `[feetech]` extra
   rather than in its base dependencies, so `uv pip install 'quackd[lerobot]'` gave you a

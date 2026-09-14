@@ -92,6 +92,13 @@ or move it and both break, so the three references move together. `tests/test_we
 that this page asks for it, `tests/test_docs.py` that the README's copy resolves, and
 `tests/test_pypi_readme.py` that the card generator still finds it.
 
+Neither it nor `assets/favicon-96.png` is drawn here. Both are cut out of quackd-web's
+`src/assets/duck-source.png` by [`make_mark.py`](make_mark.py), which is in this directory
+because until 0.9 nothing recorded how they were made, and both had shipped with the bottom of
+the duck's head sliced off at the image boundary. Run it after a checkout of quackd-web, and
+fix that repository's own copies at the same time. `assets/apple-touch-icon.png` is not one of
+its outputs: that head was already whole and it sits on a plate the script does not redraw.
+
 ## Your API key
 
 It is read from an input, kept in a variable for the life of the tab, and sent straight to
@@ -323,6 +330,7 @@ Deliberately, and none of it is a bug. This list is the canonical one: `README.m
 |---|---|
 | `index.html` | the page: the fonts, the onnxruntime tag, the copy, the keycap legend |
 | `serve.py` | the mount, locally: stdlib only, serves this directory under `/simulator` the way the deploy does |
+| `make_mark.py` | cuts `assets/duck-mark.png` and `assets/favicon-96.png` out of quackd-web's duck. Run it after that repository's art changes |
 | `build_catalogue.py` | writes `src/catalogue.js` from Python's catalogue. Stdlib only. Run it after adding a model |
 | `style.css` | hand-authored, in the quackd-web design language |
 | `assets/` | quackd's own mark: the header logo, the favicon, the touch icon. `duck-mark.png` is the project mark: the repository README and the social card read it from here |

@@ -162,6 +162,8 @@ ignore = ["RUF012", "B008"]
 "web/serve.py" = ["T20"]
 # The same, for the generator beside it: it is run by hand and reports what it wrote.
 "web/build_catalogue.py" = ["T20"]
+# And the third: it cuts the mark out of quackd-web's duck and says where it put it.
+"web/make_mark.py" = ["T20"]
 # Prose-heavy files: upstream citations and LLM-facing prompt text read better unwrapped.
 "quackd/transport/upstream_api.py" = ["E501"]
 "quackd/agent/prompts.py" = ["E501"]
