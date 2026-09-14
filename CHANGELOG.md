@@ -210,6 +210,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through `web/src/catalogue.js`, generated from the Python and grouped by status, with a test that
   fails when the generated file has drifted from `catalogue.py`.
 
+- Two transcripts of `find-and-kick` piloted by **Qwen 2.5 Coder 14B on LM Studio**, seeds
+  5 and 6, land in `docs/assets/transcripts/` with a table reading them in
+  `docs/local-llms.md`, from the contributor whose memory feature they were recorded for.
+  The README, `local-llms.md` and PLAN.md no longer say "no transcript in this
+  repository". The pair is not a chain: they ran against different memory directories,
+  so one shows the write and the other the read, and neither shows a note surviving
+  from one run into the next. Thanks to [@Bayway](https://github.com/Bayway) (#7),
+  whose runs and whose transcripts these are.
+
 ### Changed
 
 - **The LeRobot arm adapter stops taking the arm's word for four things it never said.**

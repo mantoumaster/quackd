@@ -103,10 +103,12 @@ not before.
   one is assumed equal to the training maximum, so every lateral request is sent at full
   scale. The assumption is in `GAIT_THRESHOLD`'s note and in the state's `assumptions`, and
   the fix is the same script that produced the other two.
-- 🔨 **A transcript from a live local server** (Ollama, vLLM, llama.cpp). None on the dev
-  machine. PR #5's contributor reports `find-and-kick` against Qwen 2.5 Coder 14B through LM
-  Studio on seeds 5 and 6, both successes with memory read and written, but no transcript from
-  it is in the repository, so the README says exactly that.
+- 🔨 **A transcript from a live local server other than LM Studio** (Ollama, vLLM,
+  llama.cpp). Still none on the dev machine. LM Studio is now covered: #7 landed two
+  `find-and-kick` transcripts against Qwen 2.5 Coder 14B in `docs/assets/transcripts/`,
+  read in [docs/local-llms.md](docs/local-llms.md). They are one model on one machine on
+  one afternoon, and they are not a chain, so what is still open is a second server and a
+  run where a note written by one run is read by the next.
 - ⏸ **Exercise `remember` against a cloud model.** The scripted pilot has no script for it, so
   `--provider fake` writes episodes and never a note.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
