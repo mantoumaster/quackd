@@ -2,6 +2,12 @@ version: 2
 updates:
   - package-ecosystem: "uv"
     directory: "/"
+    # uv.lock is what CI actually tests; the floors in pyproject.toml are hand-written and say
+    # what a consumer may install against. Without this, a weekly bump raises those floors to
+    # whatever it just locked -- #15 turned openai>=1.50 into >=3.11.0 across ten lines, and
+    # narrowed all eight vendor extras for a reason no test ever asked for. Lock-only keeps the
+    # two apart: dependabot moves the lock, a person moves a floor and says why.
+    versioning-strategy: "lockfile-only"
     schedule:
       interval: "weekly"
     groups:
