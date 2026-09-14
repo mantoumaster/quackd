@@ -313,6 +313,10 @@ Deliberately, and none of it is a bug. This list is the canonical one: `README.m
 - **A seed means the same distributions, not the same layout.** The arena here is laid out by a
   xorshift and in Python by numpy's PCG64. The spawn ranges and the rejection rules match; the
   stream does not, so seed 3 is a different arena in each.
+- **No `extra_body`.** The CLI can merge a JSON object into every request body, with
+  `--extra-body` or `QUACKD_EXTRA_BODY`, for a field a server wants and quackd never sends.
+  This page has no such door, so a model that has to be told something in the body, Qwen3 and
+  its thinking being the one that came up, cannot be told it here.
 - **There is no scripted pilot.** Python's `--provider fake` walks the whole task with no
   model. Here the pre-filled goal still needs a key, or a local server, before anything
   happens.

@@ -132,7 +132,7 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 
 | Kind | What it records |
 |---|---|
-| `run_start` | contract, system prompt, tool names, robot manifest, how long connecting took |
+| `run_start` | contract, system prompt, tool names, robot manifest, any `extra_body` sent with every request, how long connecting took |
 | `observation` | what the model was shown this turn, and how long gathering it took |
 | `llm_request` | how many messages went out, how many still carry an image, whether this is the re-prompt |
 | `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total), stop_reason, latency, or `error` when the call failed |

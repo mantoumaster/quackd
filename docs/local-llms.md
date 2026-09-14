@@ -58,6 +58,33 @@ quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B
 The `--tool-call-parser` value depends on the model family (`hermes` for Qwen and Hermes
 models, `llama3_json` for Llama 3.x, `mistral` for Mistral). vLLM's docs list the pairs.
 
+Qwen3 thinks before it answers unless the request says otherwise, and the switch is a chat
+template argument rather than a sampling parameter. One reported step of `find-and-kick` spent
+150 s and 1717 output tokens on the reasoning before deciding (#12). There are two places to
+turn it off. On a server you run yourself, do it once at serve time:
+
+```bash
+vllm serve Qwen/Qwen3-8B --enable-auto-tool-choice --tool-call-parser hermes \n  --reasoning-parser qwen3 --default-chat-template-kwargs '{"enable_thinking": false}'
+```
+
+On a server somebody else runs, or when you want it per run, send it with the request:
+
+```bash
+quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B \n  --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'
+```
+
+That flag is a JSON string, and no single spelling of one survives every shell: the line above
+is for bash, PowerShell 5.1 wants `'{\"chat_template_kwargs\": {\"enable_thinking\": false}}'`,
+and `cmd.exe` wants the whole thing in double quotes with the inner ones escaped. The way round
+all of it is a line in `.env`, which every shell leaves alone:
+
+```
+QUACKD_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'
+```
+
+Single quotes there, or none. Double quotes around JSON make python-dotenv drop the variable
+without setting it, and the run then thinks out loud as though you had never written the line.
+
 **LM Studio**
 
 Developer tab → Start Server (default port 1234), load a model that supports tools, then
@@ -93,8 +120,22 @@ servers reject image parts. The text observation already carries what the camera
 | `--api-key` / `LOCAL_API_KEY` | any string | `not-needed` (servers ignore it) |
 | `QUACKD_TOOL_CHOICE` | `auto`, `required`, `none` | `auto` (`none` omits the field for servers that reject it) |
 | `--vision` / `QUACKD_VISION` | on, off | off |
+| `--extra-body` / `QUACKD_EXTRA_BODY` | one JSON object, merged into the top of every request body | nothing extra is sent |
 
-`parallel_tool_calls` is never sent to local servers, because some reject unknown fields.
+`parallel_tool_calls` is never sent to local servers, because some reject unknown fields, and
+nothing else is added unless `--extra-body` asks for it.
+
+`--extra-body` works on every provider that speaks OpenAI's API, which is nine of the eleven
+cloud vendors and all five local presets, and on Chat Completions and Responses alike, so it
+keeps working when a run moves from one to the other. The flag beats the variable, and an empty
+object sends nothing, which is how a `.env` line is silenced for a single run. Six keys are
+refused because they are quackd's to send: `model`, `messages`, `input`, `instructions`,
+`tools` and `stream`. The odd one there is `instructions`, which is the system prompt on the
+Responses API the way `messages` carries it on Chat Completions. Everything else replaces what
+quackd would have sent, `tool_choice` included, because overriding it is the point. That cuts
+both ways: `n` or `response_format` will reach the server too, and what the model answers with
+afterwards is yours to live with. In a flock the object goes to every member that speaks
+OpenAI's API, and there is no per robot value in the registry.
 
 Add physics by asking for both extras and naming the backend:
 

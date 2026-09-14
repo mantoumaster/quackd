@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A body field the server wants and quackd never sends: `--extra-body` and
+  `QUACKD_EXTRA_BODY`.** One JSON object, merged into the top of every request body on every
+  provider that speaks OpenAI's API, which is nine of the eleven cloud vendors and all five
+  local presets, and sent on Chat Completions and Responses both, so it keeps working when a
+  run moves from one to the other mid-flight. The case that asked for it: Qwen3 on vLLM thinks
+  before it answers unless the request body says `{"chat_template_kwargs": {"enable_thinking":
+  false}}`, and that switch is a chat template argument rather than a sampling parameter, so on
+  a server somebody else runs there was nowhere to say it. One reported step spent 150 s and
+  1717 output tokens deliberating before a decision that was correct anyway. The flag beats the
+  variable, an empty object sends nothing, and a value that is not one JSON object is refused
+  before a robot is connected, naming the flag or the variable it came from. Six keys are
+  refused because they are quackd's to send — `model`, `messages`, `input`, `instructions`,
+  `tools` and `stream`, the fourth being the system prompt on Responses the way the second is
+  on Chat Completions — and everything else replaces what quackd would have sent, `tool_choice`
+  included, because overriding it is the point. `run_start` records the object, since a run
+  whose model was told not to think reads nothing like one that was. Anthropic and Gemini
+  ignore it, as they already ignore `--base-url`. It is in `.env.example` with the others,
+  where single quotes matter: double ones make python-dotenv drop the line without a word. If
+  you run the server yourself, vLLM's own `--default-chat-template-kwargs` does the same thing
+  once at serve time, and the docs now name both. Thanks to
+  [@Vallhalen](https://github.com/Vallhalen) (#12), who measured it and proposed the
+  passthrough ([docs/local-llms.md](docs/local-llms.md#knobs)).
+
 - **A bring-up checklist and a lookout task for the LeRobot arm, which were the last two
   missing.** Every other experimental backend had both; the arm had neither, and this file
   has said so since 0.7. [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)

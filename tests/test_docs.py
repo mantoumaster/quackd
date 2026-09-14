@@ -254,6 +254,32 @@ def test_the_docs_name_every_gate_the_code_can_fire() -> None:
     assert not missing, f"architecture.md and mcp.md name no gate called: {missing}"
 
 
+def test_extra_body_is_documented_where_it_is_configured() -> None:
+    """A knob nobody can find is a knob nobody has. This one is worse than most to discover by
+    reading the source, because the field it carries belongs to the server rather than to
+    quackd, so the name to search for is never in this repository at all."""
+    for path, needles in (
+        ("README.md", ("--extra-body", "QUACKD_EXTRA_BODY")),
+        (
+            "docs/local-llms.md",
+            (
+                "--extra-body",
+                "QUACKD_EXTRA_BODY",
+                "chat_template_kwargs",
+                # the serve-time way round, so the docs do not imply the client is the only one
+                "--default-chat-template-kwargs",
+            ),
+        ),
+        ("docs/faq.md", ("--extra-body",)),
+        (".env.example", ("QUACKD_EXTRA_BODY", "chat_template_kwargs")),
+        # the page has no such door, and its own list of differences is where that is recorded
+        ("web/README.md", ("extra_body",)),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+
+
 def test_the_trace_is_documented_where_it_is_configured() -> None:
     for path, needles in (
         (
