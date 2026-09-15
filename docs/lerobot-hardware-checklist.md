@@ -9,7 +9,10 @@ This robot is unusual in a quiet way, and the quiet thing is what makes the orde
 body joints run with whatever their firmware defaults to, so the elbow has no cap to save
 your finger or its own gears. An arm also sweeps a volume rather than occupying a spot, and
 a gripper is a pinch hazard at any torque. Read
-[adapters/lerobot.md](adapters/lerobot.md) first.
+[adapters/lerobot.md](adapters/lerobot.md) first, or
+[lerobot-first-run.md](lerobot-first-run.md) if you have never run quackd or LeRobot at all:
+it is the same ground at walking pace, and it hands back to this file the moment anything is
+about to move.
 
 ## Before you power anything
 

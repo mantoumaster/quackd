@@ -249,7 +249,7 @@ Seven robots, and one table for how far each one has actually got. Each name lin
 | **[Open Duck Mini v2](docs/adapters/open_duck.md)** | `open_duck:sim2d`, `mock` | a 42 cm 3D printed biped you can build yourself | ✅ simulator, ✅ mock |
 | | `open_duck:bridge` | the real one, through a daemon quackd ships for its Raspberry Pi | 🧪 daemon. **The nearest of these to a first real run**, because the hardware is buildable today ([checklist](docs/open-duck-hardware-checklist.md)) |
 | **[LeRobot arm](docs/adapters/lerobot.md)** | `lerobot:mock` | an SO-101 class desktop arm | ✅ mock |
-| | `lerobot:real` | the real one, through LeRobot | 🧪 names, behind `quackd[lerobot]`, Python 3.12 or newer ([checklist](docs/lerobot-hardware-checklist.md)) |
+| | `lerobot:real` | the real one, through LeRobot | 🧪 names, behind `quackd[lerobot]`, Python 3.12 or newer ([first run](docs/lerobot-first-run.md), [checklist](docs/lerobot-hardware-checklist.md)) |
 | **[Any ROS base](docs/adapters/rosbridge.md)** | `rosbridge:mock` | any wheeled base that takes a Twist | ✅ mock |
 | | `rosbridge:ws` | the real one, over `rosbridge_server` | 🧪 names, behind `quackd[rosbridge]` |
 | **[XLeRobot](docs/adapters/xlerobot.md)** | `xlerobot:mock` | a dual-arm mobile manipulator on an IKEA cart, about $660 to build | ✅ mock |
@@ -267,7 +267,7 @@ Seven robots, and one table for how far each one has actually got. Each name lin
 
 **If you own one of these, the Open Duck Mini is where help is worth the most.** It is a body a stranger can build from scratch, the daemon and the protocol are already exercised against each other, and the only untested part left is the duck. [docs/open-duck-hardware-checklist.md](docs/open-duck-hardware-checklist.md) is the order to try it in, feet off the ground until step 10.
 
-**If you own an SO-101, the path is short**, because LeRobot is a `pip install` and quackd ships no daemon for the arm: the setup is `uv pip install "quackd[lerobot]"` and a calibration you have already done. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) is written for someone who already drives this arm and wants to know what quackd adds to it, what it deliberately does not touch, and what to do when it refuses. Nothing moves until step 10 of [its checklist](docs/lerobot-hardware-checklist.md).
+**If you own an SO-101, the path is short**, because LeRobot is a `pip install` and quackd ships no daemon for the arm: the setup is `uv pip install "quackd[lerobot]"` and a calibration you have already done. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) is written for someone who already drives this arm and wants to know what quackd adds to it, what it deliberately does not touch, and what to do when it refuses. Nothing moves until step 10 of [its checklist](docs/lerobot-hardware-checklist.md). If you have never run either, [docs/lerobot-first-run.md](docs/lerobot-first-run.md) is the long way round, from an empty laptop to the arm noticing you on a webcam and waving, with whichever model you bring.
 
 <br>
 

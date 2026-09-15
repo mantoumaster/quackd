@@ -62,6 +62,11 @@ everything below:
 
 ## Start here
 
+If you have never run quackd or LeRobot before, start at
+[lerobot-first-run.md](../lerobot-first-run.md) instead: it is this arm from an empty laptop,
+including which model to bring and what it can actually see. This page assumes you already
+drive the arm.
+
 1. **Run it with no arm attached.** `lerobot:mock` is the same verbs, the same executor and
    the same refusals, in memory, so you can see what a run looks like before you risk
    anything:
