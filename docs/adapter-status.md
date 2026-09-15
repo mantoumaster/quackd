@@ -10,7 +10,7 @@ it). A test proves UNVERIFIED names stay inside the backend that needs them.
 | Adapter | `--robot` | Status | Upstream file | Page |
 |---|---|---|---|---|
 | Microduck | `microduck:sim2d` | ✅ default | | this page |
-| | `microduck:mujoco` | ✅ physics simulator (MuJoCo, `quackd[mujoco]`): `find-and-kick` 10 of 10 seeds on both bodies, the stand-in and the trained gait, on one machine rather than in CI | [`quackd/sim3d/upstream_api.py`](../quackd/sim3d/upstream_api.py) | |
+| | `microduck:mujoco` | ✅ physics simulator (MuJoCo, `quackd[mujoco]`): `find-and-kick` 10 of 10 seeds on the stand-in, and 9 or 10 of 10 on the trained gait depending on the machine and the run, seed 4 being the marginal one | [`quackd/sim3d/upstream_api.py`](../quackd/sim3d/upstream_api.py) | |
 | | `microduck:mock` | ✅ | | |
 | | `microduck:jsonrpc` | 🧪 experimental: every method VERIFIED, never run on a duck | [`quackd/transport/upstream_api.py`](../quackd/transport/upstream_api.py) | |
 | | `microduck:websocket` | ⏳ stub: raises with a link until upstream ships it | | |
