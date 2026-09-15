@@ -23,8 +23,10 @@ quackd robot add scout open_duck:bridge --address tcp://10.0.0.5:9871 --token 8f
 quackd run fetch --robot scout
 ```
 
-`--robot NAME` works wherever `--robot` does: `run`, `record`, `validate`, `list-verbs`,
-`doctor`, `serve-mcp` and `quackd memory`.
+`--robot NAME` works wherever a robot is run or inspected: `run`, `validate`, `list-verbs`,
+`doctor`, `serve-mcp` and `quackd memory`. Two commands take `--robot` and not a registered
+name: `record`, which pins the simulator, and `announce`, which advertises a static manifest
+and so wants an `<adapter>:<backend>` spec.
 
 ## The commands
 

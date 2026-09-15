@@ -57,7 +57,7 @@ You do not need a robot to try it. Two simulators ship with quackd. The **physic
 
 > **"Find the ball and kick it."** · **"Find the ball, walk up to it and say where it is."** *(an Open Duck Mini v2, which cannot kick)* · **"Split the search, the closest duck kicks."** *(a flock)*
 
-The first of those also passes 10 of 10 on the physics simulator, with the duck on its own gait rather than a sprite on rails: that is `test_find_and_kick_on_the_real_duck`, which needs upstream's model in the cache, so a nightly job fetches it the way your first run would and CI's own gating job runs the stand-in. The rest are cartoon only, because the other six bodies have no physics model here.
+The first of those has passed 10 of 10 on the physics simulator too, with the duck on its own gait rather than a sprite on rails, though not on every run: that is `test_find_and_kick_on_the_real_duck`, which needs upstream's model in the cache, so a nightly job fetches it the way your first run would and CI's own gating job runs the stand-in. The Status section below says what that sweep actually returns. The rest are cartoon only, because the other six bodies have no physics model here.
 
 **Nothing here has run on a real robot yet, on any of the seven adapters, and no flock has yet crossed from one machine to a second.** Every hardware backend speaks names read from upstream source at a pinned commit and has only ever talked to fakes. For the Open Duck Mini and the ToddlerBot those fakes are the daemons quackd itself ships for the robot, exercised over loopback, so there only the body is untested. Goals like *"find my keys"*, handed to a flock that sorts out who does what, are where this is going, not what it does yet. The honest label for today is *LLM driven, goal directed control of simulated robots, alone or in flocks*, and [Which robots work](#which-robots-work) says exactly how far each one has got.
 
@@ -113,8 +113,6 @@ same time, so a key can take the duck off the model mid-run. [The browser demo](
 says what it does and how to run it from a checkout.
 
 Put keys in the environment or in a `.env` file (copy [`.env.example`](.env.example)). `quackd doctor` tells you what is missing. Needs Python 3.11 or newer and [`uv`](https://docs.astral.sh/uv/), nothing else.
-
-Every line above runs on the released package, which is 0.8. Naming robots and giving a flock one pilot each are the next release, so `quackd robot`, `quackd flock` and `flock-hello` want a checkout (`uv sync`) until then, and everything below that shows them is written for one.
 
 <br>
 
@@ -206,12 +204,12 @@ And the same shape with two robots instead of one, from the `flock.jsonl` of a `
 
 ## Status
 
-Version 0.8, simulator and mocks. What has been built, and how far each piece has actually been exercised:
+Version 0.9, simulator and mocks. What has been built, and how far each piece has actually been exercised:
 
 | Piece | Status |
 |---|---|
 | `sim2d` bundled simulator (default) | ✅ 10 of 10 seeds on `find-and-kick`, GIF and transcript per run |
-| `mujoco` physics simulator (`quackd[mujoco]`) | ✅ 10 of 10 seeds on `find-and-kick` twice over: once on the kinematic stand-in and once with the duck walking on **upstream's own trained policy**, both ground truth checked, and both named tests rather than remembered numbers. The trained-gait sweep needs upstream's model in the cache, so a nightly job runs it and the gating job on every push runs the stand-in. The model and the policy are fetched from upstream at a pinned commit and hash checked, never shipped |
+| `mujoco` physics simulator (`quackd[mujoco]`) | ✅ 10 of 10 seeds on `find-and-kick` on the kinematic stand-in, which is what the gating job runs on every push. 🧪 On **upstream's own trained policy** the same sweep is not reliably 10 of 10. The nightly job had all ten on each of its first five runs and 9 of 10 on 2026-09-14, and by hand on the machine that cut 0.9.0 it is 9 of 10, seed 4 going in both. It clears the 8 the shipped test asks for every time and the 10 that `QUACKD_STRICT_SEEDS=1` asks for only sometimes. Both sweeps are ground truth checked and both are named tests rather than remembered numbers. The model and the policy are fetched from upstream at a pinned commit and hash checked, never shipped |
 | Browser demo ([`web/`](web/)) | 🧪 the same physics, the same two upstream policies, seven of the same verbs and the same allowlist-and-budget machinery in a static page, with the sentence box and the keyboard live on one duck at the same time. Bring your own key, or point it at Ollama. CI checks everything that can be checked without a browser, which `tests/test_web.py` lists. The page has been booted in a browser twice and a held `W` walks the duck, but a full model-driven run, a barge-in out of one and the recording have never been watched. Live at <https://www.quackd.org/simulator> |
 | Manifests and core verbs (`quackd list-adapters`, `quackd list-verbs --robot`) | ✅ seven adapters, eight core verbs that appear only where the manifest meets their requirements, speed limits from the manifest, `manifest.schema.json` generated and drift tested |
 | MCP server (`quackd serve-mcp`) | ✅ Claude Code and Claude Desktop, one robot or a flock with `--robots` or `--flock NAME` (nine `robot_*` tools, tested in process against the simulator and the mocks), no Claude Desktop session on record |
@@ -245,7 +243,7 @@ Seven robots, and one table for how far each one has actually got. Each name lin
 | Robot | `--robot` | The body | How far it has got |
 |---|---|---|---|
 | **[Microduck](docs/adapter-status.md#microduck)** | `microduck:sim2d`, `mock` | a 25 cm biped from Pollen Robotics | ✅ simulator, ✅ mock |
-| | `microduck:mujoco` | the same robot in MuJoCo, on its own walking policy | ✅ physics. `find-and-kick` 10 of 10 seeds while it really walks (`test_find_and_kick_on_the_real_duck`), nightly, because the model is fetched rather than shipped ([ADR-0030](docs/adr/0030-mujoco-physics-backend.md)) |
+| | `microduck:mujoco` | the same robot in MuJoCo, on its own walking policy | ✅ physics. `find-and-kick` 9 or 10 of 10 seeds while it really walks (`test_find_and_kick_on_the_real_duck`), run nightly because the model is fetched rather than shipped, with seed 4 the marginal one ([ADR-0030](docs/adr/0030-mujoco-physics-backend.md)) |
 | | `microduck:jsonrpc` | the real one, over `robotd` | 🧪 names. Early pre-orders arrive around Christmas 2026, later orders in four to six months ([checklist](docs/microduck-hardware-checklist.md)) |
 | | `microduck:websocket` | upstream's planned agent gateway | ⏳ stub |
 | **[Open Duck Mini v2](docs/adapters/open_duck.md)** | `open_duck:sim2d`, `mock` | a 42 cm 3D printed biped you can build yourself | ✅ simulator, ✅ mock |
@@ -339,7 +337,7 @@ uvx quackd run --goal "find the ball and kick it" --provider fake
 # the same goal with Claude
 uvx --from "quackd[anthropic]" quackd run --goal "find the ball and kick it" --provider anthropic
 
-# a task file (thirteen ship with the package, the starter table below lists them)
+# a task file (fourteen ship with the package, the starter table below lists them)
 uvx quackd run find-and-kick --provider fake --seed 3
 ```
 
@@ -449,7 +447,7 @@ robots: microduck:sim2d                 # the default body, so `quackd run` need
 requires: [search_scan, walk_to, kick]  # the honest minimum a body must provide
 ```
 
-`quackd validate --robot` checks `requires` against a robot's manifest before anything moves: `quackd validate find-and-kick --robot lerobot:mock` exits 1 with `requires kick, but arm-01 (lerobot-so101) does not provide it`. For a `duck: 0` file the whole allowlist counts as required. Of the thirteen bundled starters, the six written before 0.4 keep their 0.3 spellings at `duck: 0` and the seven written since are `duck: 1`. A `duck: 2` file can also correct the robot's datasheet for the build in front of you with a `datasheet:` block, and the prompt labels those numbers as coming from the task file.
+`quackd validate --robot` checks `requires` against a robot's manifest before anything moves: `quackd validate find-and-kick --robot lerobot:mock` exits 1 with `requires kick, but arm-01 (lerobot-so101) does not provide it`. For a `duck: 0` file the whole allowlist counts as required. Of the fourteen bundled starters, the six written before 0.4 keep their 0.3 spellings at `duck: 0` and the eight written since are `duck: 1`. A `duck: 2` file can also correct the robot's datasheet for the build in front of you with a `datasheet:` block, and the prompt labels those numbers as coming from the task file.
 
 | Starter | Goal | Notes |
 |---|---|---|
@@ -604,7 +602,7 @@ browser test.
 |---|---|---|
 | Microduck | `microduck:jsonrpc --address unix:///run/robotd.sock` on the robot, or `tcp://127.0.0.1:9870` after `ssh -L 9870:/run/robotd.sock <robot>`. For a picture, `--camera-url webrtc://<robot>:8443`, because `robotd` serves no frames | `quackd[microduck-camera]` for the camera |
 | Open Duck Mini v2 | `open_duck:bridge --address tcp://open-duck.local:9871 --camera-url http://open-duck.local:9872/snapshot.jpg --token <the bridge token>` | nothing: the daemon runs on the robot |
-| LeRobot arm | `lerobot:real --address /dev/ttyACM0` (the arm's serial port, `COM5` on Windows) | `quackd[lerobot]`, Python 3.12 or newer |
+| LeRobot arm | `lerobot:real --address /dev/ttyACM0` (the arm's serial port, `COM5` on Windows), and `--camera-url opencv://N` for a USB webcam, which is the only camera this arm can have (`lerobot-find-cameras opencv` prints the indices) | `quackd[lerobot]`, Python 3.12 or newer |
 | Any ROS base | `rosbridge:ws --address "ws://robot.local:9090?cmd_vel=/cmd_vel&odom=/odom&image=/camera/image/compressed"` | `quackd[rosbridge]` |
 | XLeRobot | `xlerobot:zmq --address tcp://xlerobot.local:5555` (add `?variant=diff2` or `?variant=mecanum` for a base other than the default three-omniwheel one, or `?swap_colour=0`, if you need them) | `quackd[xlerobot]` |
 | AlohaMini | `alohamini:zmq --address tcp://alohamini.local:5555` | `quackd[alohamini]` |

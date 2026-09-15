@@ -114,7 +114,13 @@ Apple Silicon, and no GPU. There is no Intel Mac wheel.
 
 - The one thing the cartoon could never show is now on the table: `find-and-kick` succeeds
   on 10 of 10 seeds with the scripted pilot **and the duck walking on its own trained
-  policy**, ground truth checked. That sweep is `test_find_and_kick_on_the_real_duck`; it runs
+  policy**, ground truth checked. *Amended 2026-09-15 (0.9):* that 10 of 10 is not reproducible.
+  The nightly job returned it on each of its first five runs and 9 of 10 on 2026-09-14, and by
+  hand on the developer's laptop it is 9 of 10, seed 4 going in both cases and on the `mujoco`
+  and `onnxruntime` versions either side of this release's bump. The failing seed ends on the
+  duck's own *same verb fails 3 times in a row* rule with the duck standing and the ball
+  unmoved, so seed 4 is marginal and platform dependent rather than the gait being broken. The
+  shipped threshold outside `QUACKD_STRICT_SEEDS` is 8, which it does clear. That sweep is `test_find_and_kick_on_the_real_duck`; it runs
   only where upstream's model is already cached, and the sweep beside it runs the same ten
   seeds on the puppet. A pilot that works here has met a robot that undershoots.
 - Rendering is the cost. On an Intel iGPU a head-camera frame is 4 ms with the shell hidden
@@ -148,8 +154,10 @@ Apple Silicon, and no GPU. There is no Intel Mac wheel.
   make a context. A nightly job fetches the model into a runner it then destroys — no cache
   entry, because a keyed one is restorable by any run including a fork's, and `licenses.md`
   says no CI fixture carries a byte of these meshes — and runs the trained gait's sweep there.
-  The 10 of 10 is a named test now rather than a memory, and it asserts the body really is the
-  trained one, because a silent fall back to the puppet passing it is the point.
+  The sweep is a named test now rather than a memory, and it asserts the body really is the
+  trained one, because a silent fall back to the puppet passing it is the point. What that
+  named test has actually returned under strict seeds is 10 of 10 on some machines and runs and
+  9 of 10 on others, per the amendment above.
 - Two upstreams now have to be tracked rather than one, both pinned, both in
   `quackd/sim3d/upstream_api.py`. A new export from either is a new pin and a new sha256.
 - Flock mode stays `sim2d` only. `FlockClock` was generalised to any world with a `t` and a

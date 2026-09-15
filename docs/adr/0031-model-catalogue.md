@@ -87,8 +87,10 @@ Three other things pointed the same way.
 
 ## Consequences
 
-- **This is breaking for anyone passing an id quackd does not list**, and that includes the three
-  old defaults. `--provider openai` with no `--model` now runs `gpt-5.6-sol` rather than `gpt-5`,
+- **This is breaking for anyone passing an id quackd does not list**, which is two of the three
+  old defaults. `gpt-5` and `grok-4` are refused by name; `gemini-2.5-pro` is still listed as
+  `legacy`, because the vendor still serves it with no end announced, so naming it explicitly
+  keeps working and only the default moved. `--provider openai` with no `--model` now runs `gpt-5.6-sol` rather than `gpt-5`,
   `--provider gemini` runs `gemini-3.8-flash` rather than `gemini-2.5-pro`, and `--provider grok`
   runs `grok-4.6` rather than a `grok-4` that was being answered by something else anyway. A
   `QUACKD_MODEL` line that has sat in a `.env` since then now stops the run instead of starting a

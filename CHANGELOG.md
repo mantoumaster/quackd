@@ -7,116 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-15
+
+A robot has a name now. `quackd robot add scout open_duck:bridge --address ... --token ...`
+writes it once to `~/.quackd/robots.json`, and `--robot scout` then means the same thing in
+every command that runs or inspects a robot, so reaching a real body stops being four flags, one
+of them a secret, retyped into shell history on every run. A flock is a list of those names you keep, and it can
+be a second kind of thing now: run a task file that asks for pilots, or one with no `flock:`
+block at all, as `quackd run <duck> --flock <name>` and every member gets a whole
+pilot of its own, with its own provider, executor, allowlist, budgets, heartbeat, memory and
+feasibility verdict, all at once on wall-clock time and on any mix of bodies, dividing the work
+by talking to each other rather than by an auction a referee runs. A file that asks for an
+auction still gets the 0.3 coordinator, whatever it is started with. And every robot carries a
+datasheet: what it weighs, what it can carry and reach, the band of heights its hands work at,
+how long it runs, and the things it cannot do whatever the task says, with a confidence label
+and a source on every number and "not published" where the maker never said. Nothing that
+moves the body runs until the pilot has read that sheet and recorded a verdict, and `infeasible`
+is its own outcome rather than a failure: nothing moved, the exit code is 3, and the reason
+names which shipped bodies could have done it. The CLI got a house style in the same release,
+which is where `--json`, `--no-color`, grouped `--help`, `-h`, the panels and `doctor --json`
+come from.
+
+Two things are breaking. `--model` and `QUACKD_MODEL` now take an id from a curated catalogue,
+115 of them across eleven vendors, so an unlisted id is refused before a key is read rather
+than by the vendor after the robot has connected — and the three defaults that had quietly
+gone wrong, `gpt-5`, `gemini-2.5-pro` and a `grok-4` that was being silently answered by
+`grok-4.3`, are replaced. And the Reachy Mini adapter is gone, which is why every count here
+reads seven bodies where 0.8 read eight.
+
+Still nothing has run on a robot, on any of the seven adapters. The SO-101 arm got more work
+than any other body in this release, a camera, a checklist, a lookout task and an audit that
+stopped it taking the arm's word for four things, and no arm was driven for any of it. Of the
+eleven cloud vendors, two have answered a real request: OpenAI here, and Gemini on a
+contributor's machine, which is where both of this release's Gemini bugs came from. No real
+model has yet refused a task on feasibility grounds, no pilot flock has been driven by a real
+model or by a robot, and the two nightly jobs that watch upstream have been red since before
+0.8.0 shipped. Known limitations, below, says what each of those leaves open.
+
 ### Added
 
-- **The LeRobot pages rewritten for someone who owns the arm rather than someone who wrote
-  the adapter, and four things they said that were not true.** An SO-101 owner is the likeliest
-  first external user of quackd, and the two pages assumed a reader who already knew what
-  quackd was for. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) now opens with what
-  LeRobot already does for you and what quackd deliberately does not touch (teleoperation,
-  recording, training), the three properties of this body that shape every guard, and a
-  starting path that begins with the mock and no arm at all. It gained the install trap in
-  full (the `[feetech]` extra, and the `python_version >= '3.12'` marker that makes an install
-  on 3.11 resolve to nothing while `doctor` keeps saying `not installed`), a section on the
-  calibration id, which is the name you give the robot and the one thing that silently breaks
-  a connection after a calibration you watched succeed, the three ways to drive the arm with
-  the MCP config written out, `--dry-run` as a rehearsal that connects for real and sends
-  nothing, and a troubleshooting section that quotes every refusal the code can raise beside
-  what to do about it, followed by a short list of failures SO-101 owners report that nobody
-  here has verified, labelled as such.
-  The four corrections: a task that allows `observe` is refused on **every** real arm rather
-  than only on one without a camera, because `quackd run` checks the allowlist as well as
-  `requires` against the static manifest, and the place it does work is MCP, where
-  `robot_load_duckfile` validates against the robot already connected, so the same task loads
-  on a session started with `--camera-url`; the pilot gets detections every step whether or
-  not `observe` is allowed, which makes `--vision` the picture rather than the sight;
-  `load_policy()` imports
-  `lerobot.configs.policies.PreTrainedConfig`, which had no ref, so "every name quackd spells
-  lives in `upstream_api.py`" was false until this commit added it; and `pick` is not reachable
-  from the CLI or from MCP at all, because `make()` has no policy parameter and `load_policy()`
-  has no caller, which the checklist had presented as something to try at the bench.
-  The checklist could not be followed as written: step 4 ran `lerobot-calibrate`, which step 5
-  installed. Installing now comes first, finding the port with upstream's own `lerobot-find-port`
-  comes with the calibration, and the claim that Windows needs a CH340 or CP210x driver is gone,
-  because the arm enumerates as a USB CDC device and no primary source names that chip. It also
-  gained the `--dry-run` rehearsal as step 9, so nothing moves until step 10, and a
-  [hardware report template](.github/ISSUE_TEMPLATE/lerobot-hardware-report.yml) that asks for
-  exactly what *What to report* asks for.
-  Two things changed in the code because writing the pages found them. **A camera that dies
-  mid-run was invisible on a `quackd run`**: `camera_error` was read only by `observe` and by
-  `doctor`, and `observe` cannot be in a `.duck`'s allowlist on this backend, so the frames
-  simply stopped and nothing said why. The camera's health now rides in the arm's own state
-  beside the policy and register errors, which puts it in the transcript and in front of an
-  MCP client, and `report_state` says `CAMERA DOWN:` with the reason when a read has actually
-  failed, staying quiet for a camera that is merely unread. And **`doctor`'s no-frame
-  advisory named `go_to`, `search_scan` and `approach_and`**, none of which exist on an arm
-  bolted to a table; it now names the camera verbs the robot in front of it actually has. A
-  `camera_health()` proxy on the adapter went with them: `doctor` reaches the transport's own
-  method, as it does on every other body, so the proxy was called by nothing but the tests
-  that were meant to be covering `doctor`.
+- **A robot has a name now, and quackd keeps it: `quackd robot add|list|show|edit|remove`.**
+  Reaching a real body took four flags, one of them a secret: `--robot open_duck:bridge
+  --address tcp://10.0.0.5:9871 --token ... --camera-url ...`, retyped on every run and
+  therefore in shell history from then on. `--robots name=<adapter>:<backend>,...` gave a name
+  that died with the process. `quackd robot add scout open_duck:bridge --address ... --token
+  ...` writes it once to `~/.quackd/robots.json`, and `--robot scout` then means the same thing
+  in `run`, `validate`, `list-verbs`, `doctor`, `serve-mcp` and `quackd memory`. Two commands are
+  outside it: `record`, which pins the simulator, and `announce`, which advertises a static
+  manifest and so takes an `<adapter>:<backend>` spec and nothing else. An
+  entry may also name the provider and model that pilot that robot, so a real duck can default
+  to Claude and the simulator to the scripted rule without a flag; a flag on the line still
+  wins, field by field, because reaching the same robot through a tunnel today is not renaming
+  it. `quackd robot list` is static, because it is what you run to remember a name, and
+  `--probe` connects to each robot and says whether it answered, exiting 1 if any did not.
+  `--registry-dir` beats `QUACKD_REGISTRY_DIR` beats `~/.quackd`, which is the precedence
+  `--memory-dir` already has. A name may not be a number, an adapter name, or an
+  `adapter-backend` memory slug, because each of those already means something else on a
+  command line. The honest part: the token is stored in plain text in a file in your home
+  directory, quackd masks it in everything it prints, and `SECURITY.md` says so
+  ([docs/registry.md](docs/registry.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
 
-  One thing neither page knew: **upstream's calibration does not sweep `wrist_roll`.** It
-  prints *move all joints except 'wrist_roll'* and records a full encoder turn for it, so that
-  joint's travel comes out as -180..180 and quackd's out-of-range refusal, which is real on the
-  other four body joints, cannot catch anything on that one. Both pages now say so, and the
-  checklist's out-of-range step says which joint not to test it on.
-
-- **A camera on the LeRobot arm: `--camera-url opencv://N`.** No SO-101 has a camera in it,
-  whatever a kit's listing says: the arm is six servos and a serial board, and every camera on
-  one is a USB webcam plugged into the computer. `lerobot:real` now opens one, so `observe`
-  exists on a real arm for the first time. The url is the OpenCV index
-  (`lerobot-find-cameras opencv` prints them and saves a frame from each, which is the only
-  honest way to tell which is which), with `?width`, `?height`, `?fps`, `?fourcc`, `?rotation`,
-  `?name`, `?fov` and `?backend=msmf` for the Windows camera that lists and then will not open.
-  Nothing is asked of the camera by default, because a mode it cannot do is a refusal at
-  connect and the webcam in a lab drawer is unknown. An unknown key or a bad value is refused
-  with the shape, before LeRobot is imported.
-  quackd builds the camera itself rather than handing it to the follower, and that is the
-  whole design: a follower's `is_connected` is the bus **and** every camera, and `send_action`
-  and `disconnect()` are gated on it, so one webcam coming unplugged would have made every
-  move and every hold raise while the arm was perfectly fine. Beside the follower, a camera
-  asked for and not opened refuses at connect naming the url, before the arm is touched at
-  all, and a camera that dies later costs `observe` and a `pick` in flight and nothing else:
-  the heartbeat still reads the arm, the joints still move, `stop` still holds. `observe` now says what the camera said rather than "this transport has
-  no camera", `quackd doctor` gates its verdict on a real frame as it does for every other
-  body, and `?fov=` travels with the camera into `limits.camera_fov_deg` so bearings are
-  calibrated over MCP too, where there is no `--fov-deg`
-  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#camera), step 8 of
-  [the checklist](docs/lerobot-hardware-checklist.md)).
-
-
-- **A body field the server wants and quackd never sends: `--extra-body` and
-  `QUACKD_EXTRA_BODY`.** One JSON object, merged into the top of every request body on every
-  provider that speaks OpenAI's API, which is nine of the eleven cloud vendors and all five
-  local presets, and sent on Chat Completions and Responses both, so it keeps working when a
-  run moves from one to the other mid-flight. The case that asked for it: Qwen3 on vLLM thinks
-  before it answers unless the request body says `{"chat_template_kwargs": {"enable_thinking":
-  false}}`, and that switch is a chat template argument rather than a sampling parameter, so on
-  a server somebody else runs there was nowhere to say it. One reported step spent 150 s and
-  1717 output tokens deliberating before a decision that was correct anyway. The flag beats the
-  variable, an empty object sends nothing, and a value that is not one JSON object is refused
-  before a robot is connected, naming the flag or the variable it came from. Six keys are
-  refused because they are quackd's to send — `model`, `messages`, `input`, `instructions`,
-  `tools` and `stream`, the fourth being the system prompt on Responses the way the second is
-  on Chat Completions — and everything else replaces what quackd would have sent, `tool_choice`
-  included, because overriding it is the point. `run_start` records the object, since a run
-  whose model was told not to think reads nothing like one that was. Anthropic and Gemini
-  ignore it, as they already ignore `--base-url`. It is in `.env.example` with the others,
-  where single quotes matter: double ones make python-dotenv drop the line without a word. If
-  you run the server yourself, vLLM's own `--default-chat-template-kwargs` does the same thing
-  once at serve time, and the docs now name both. Thanks to
-  [@Vallhalen](https://github.com/Vallhalen) (#12), who measured it and proposed the
-  passthrough ([docs/local-llms.md](docs/local-llms.md#knobs)).
-
-- **A bring-up checklist and a lookout task for the LeRobot arm, which were the last two
-  missing.** Every other experimental backend had both; the arm had neither, and this file
-  has said so since 0.7. [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)
-  is the order to try an SO-101 in, with nothing moving until step 10 and a hand on the power
-  switch from there, because this arm has no e-stop. `ducks/lerobot-lookout.duck` is the task
-  to point at a real arm first: it moves no joint, and it asks for `report_state` rather than
-  `observe`, because a `.duck` is checked against the static manifest, which cannot know
-  whether a webcam is plugged in
-  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
+- **A flock is a list of names you keep: `quackd flock create|list|show|edit|delete`.**
+  Members are robots registered with `quackd robot add`, so a flock is a composition rather
+  than a command line, and `~/.quackd/flocks.json` remembers it between runs. `create` with no
+  `--robot` prints what you have registered, numbered, and asks which to include; numbers and
+  names can be mixed, a bad answer says what was wrong and asks again, and where there is no
+  terminal to ask on it says so and tells you to pass `--robot` instead, because a script must
+  never hang on a prompt. Order is kept, because it is the order the members are listed and
+  coloured in when the flock runs. A flock stores up to 8 robots and runs with 2 to 8, so one
+  you are still building, or one edited down to nothing, is stored and marked rather than refused. The one broken state either
+  file can be in is a flock naming a robot nobody registered: `quackd robot remove` refuses
+  while a flock lists it and names the flocks, `--force` drops it from them, and a flock that a
+  hand edit left dangling is marked in every listing and refuses to run rather than quietly
+  running smaller ([docs/registry.md](docs/registry.md),
+  [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
 
 - **A flock can be N pilots talking, not only a coordinator refereeing: `quackd run <duck> --flock <name>`.**
   The 0.3 flock is one deterministic referee and N state machines in one simulated arena on a
@@ -124,9 +88,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for two robots whose bodies differ, because an auction has no way to express half a task.
   A pilot flock is the other kind: one whole `AgentLoop` per body, all at once, on wall-clock
   time, on any adapter and backend including mixed ones, 2 to 8 of them. Each member keeps its
-  own provider, executor, allowlist, budgets, heartbeat, memory and feasibility verdict, and
-  nothing about it is a special case, so what a pilot flock can do is what one pilot can do
-  times the number of bodies. Each member is handed the part of the contract its own body can
+  own provider, executor, allowlist, budgets, heartbeat, memory and feasibility verdict, so what
+  a pilot flock can do is close to what one pilot can do times the number of bodies. What a
+  member gives up is what N concurrent pilots cannot have: nobody prompts a person, so a task
+  with a `verbs.confirm` needs `--yes` and an `uncertain` verdict cannot be put to anyone, and
+  there is one live view and one rollup for the flock rather than one per member. Each member is handed the part of the contract its own body can
   answer for, so an arm in a walking flock is not turned away at the door for having no legs,
   while what the task *requires* is still checked against the union of every body before
   anything connects. Every pilot declares for itself and the flock succeeds only when all of
@@ -146,8 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next observation under "Messages from your flock". `to` is a member name or `all`, a pilot
   never hears its own words back, and every message is a `TALK` in `flock.jsonl` like any other
   bus kind. It is not a verb, it is in no manifest, and no robot ever executes one. Each
-  pilot's system prompt also gains a `## Your flock` section naming every peer and giving its
-  datasheet in the same paragraph form the pilot's own body is described in, so a pilot
+  pilot's system prompt also gains a `## Your flock` section naming every peer and giving the
+  short one-paragraph form of its datasheet, which says less than the bulleted sheet a pilot gets
+  for its own body and says so out loud, so a pilot
   deciding who fetches and who holds is reading data rather than guessing, and saying that
   `assess_task` judges its own part rather than the whole task. The runner speaks too, under
   the name `flock`, when a member's loop ends, because otherwise a pilot waiting on somebody
@@ -176,40 +143,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is still refused over MCP, whichever kind it is ([docs/mcp.md](docs/mcp.md),
   [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
 
-- **A flock is a list of names you keep: `quackd flock create|list|show|edit|delete`.**
-  Members are robots registered with `quackd robot add`, so a flock is a composition rather
-  than a command line, and `~/.quackd/flocks.json` remembers it between runs. `create` with no
-  `--robot` prints what you have registered, numbered, and asks which to include; numbers and
-  names can be mixed, a bad answer says what was wrong and asks again, and where there is no
-  terminal to ask on it says so and tells you to pass `--robot` instead, because a script must
-  never hang on a prompt. Order is kept, because it is the order the members are listed and
-  coloured in when the flock runs. A flock stores 1 to 8 robots and runs with 2 to 8, so one
-  you are still building is stored and marked rather than refused. The one broken state either
-  file can be in is a flock naming a robot nobody registered: `quackd robot remove` refuses
-  while a flock lists it and names the flocks, `--force` drops it from them, and a flock that a
-  hand edit left dangling is marked in every listing and refuses to run rather than quietly
-  running smaller ([docs/registry.md](docs/registry.md),
-  [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
-
-- **A robot has a name now, and quackd keeps it: `quackd robot add|list|show|edit|remove`.**
-  Reaching a real body took five flags, one of them a secret: `--robot open_duck:bridge
-  --address tcp://10.0.0.5:9871 --token ... --camera-url ...`, retyped on every run and
-  therefore in shell history from then on. `--robots name=<adapter>:<backend>,...` gave a name
-  that died with the process. `quackd robot add scout open_duck:bridge --address ... --token
-  ...` writes it once to `~/.quackd/robots.json`, and `--robot scout` then means the same thing
-  in `run`, `record`, `validate`, `list-verbs`, `doctor`, `serve-mcp` and `quackd memory`. An
-  entry may also name the provider and model that pilot that robot, so a real duck can default
-  to Claude and the simulator to the scripted rule without a flag; a flag on the line still
-  wins, field by field, because reaching the same robot through a tunnel today is not renaming
-  it. `quackd robot list` is static, because it is what you run to remember a name, and
-  `--probe` connects to each robot and says whether it answered, exiting 1 if any did not.
-  `--registry-dir` beats `QUACKD_REGISTRY_DIR` beats `~/.quackd`, which is the precedence
-  `--memory-dir` already has. A name may not be a number, an adapter name, or an
-  `adapter-backend` memory slug, because each of those already means something else on a
-  command line. The honest part: the token is stored in plain text in a file in your home
-  directory, quackd masks it in everything it prints, and `SECURITY.md` says so
-  ([docs/registry.md](docs/registry.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
-
 - **Every robot carries a datasheet, and the pilot is told to check the task against it before anything moves.**
   A pilot used to be told one line about the body it was driving and a list of verbs, and nothing
   numeric: no payload, no reach, no working height, no endurance, and no way to say "this body
@@ -223,24 +156,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stay out of it: `limits` is what quackd clamps to, which is a rule about what quackd sends
   rather than a fact about the body, and the prompt renders those separately as clamps. The same
   sheet describes a body on every backend, which is what keeps a robot's digest equal across
-  sim2d, mock and the real thing. The numbers were read from the makers' pages, repositories and
+  sim2d, mock and the real thing. `rosbridge` is the deliberate exception, and this release is
+  what made it one: its sheet is whatever the bridge answered, so `mock` and `ws` describe
+  different bodies on purpose, and a test asserts that they differ. The numbers were read from the makers' pages, repositories and
   one paper on 2026-09-13, and none of them were measured here, which is what the confidence
   labels are for ([ADR-0032](docs/adr/0032-datasheets-and-the-verdict.md)).
 
 - **Nothing moves until the pilot has said the body can do the task.**
   The only way out of a task was `declare_failure`, which means "I tried and could not". A new
-  meta tool, `assess_task` (`robot_assess_task` over MCP), records a verdict first: `feasible`,
+  meta tool, `assess_task` (`robot_assess_task` over MCP, the ninth `robot_*` tool and the first
+  new one since 0.6), records a verdict first: `feasible`,
   `infeasible` or `uncertain`, with the reason, the datasheet fields it read, the estimates it
   made about the world and what the task would need. The executor gains a `verdict` gate that
   refuses every verb that moves the body until a feasible verdict exists; looking, speaking and
   the brake run before it, because that is how a pilot works out what it has been asked to do.
-  `infeasible` is its own outcome, not a failure: nothing moved, `quackd run` exits 3, and the
-  run's reason names which shipped bodies could do it by their own datasheets. `uncertain` asks
+  `infeasible` is its own outcome, not a failure: the run ends where it stands, `quackd run` exits
+  3, and the run's reason names which shipped bodies could do it by their own datasheets. On the
+  first call, which is where the gate forces it, that means nothing moved. A pilot may record a
+  verdict again later, so a run that drove and then declared `infeasible` ends the same way with
+  the distance already travelled. `uncertain` asks
   the person at the terminal, and a no ends the run the way the kill switch does; over MCP, where
   there is no terminal, it stays pending and the model is told to ask the person it is chatting
   with, because a reachable human is a better answer than a flag. A model cannot clear its own
-  doubt: the tool has no field for it. A flock member is a state machine with no pilot to ask, so
-  its executor never asks, and the scripted pilot answers the gate as a rule and says so in its
+  doubt: the tool has no field for it. The two kinds of flock member differ here: a coordinator
+  member is a state machine with no pilot at all, so there is no gate to ask with, while a pilot
+  flock member has the gate and no terminal, so an `uncertain` there is told that nobody is
+  present to answer for the human. The scripted pilot answers the gate as a rule and says so in its
   reason, which keeps every keyless example and all ten acceptance seeds running as before
   ([ADR-0032](docs/adr/0032-datasheets-and-the-verdict.md)).
 
@@ -277,8 +218,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vendor will accept. The first entry of a vendor is its default, so a default is no longer a second
   place the id gets written down and falls out of step. `quackd list-models` prints the whole table
   and `--provider NAME` narrows it to one vendor; the notes column marks the default, the OpenAI
-  models that open on the Responses API, and the vendors that do not document image input, where
-  quackd sends the detections as text instead of the camera frame and `--vision` overrides.
+  models that open on the Responses API, and the individual models whose vendor does not document
+  image input, where
+  quackd sends the detections as text instead of the camera frame and `--vision` overrides. That
+  last one is a per-model fact rather than a per-vendor one: several vendors carry both kinds.
   `QUACKD_MODEL` is checked exactly as `--model` is, and the refusal says which of the two the id
   came from, because a flag you just typed and a line you forgot in a `.env` want different answers.
   `--model` also completes in the shell, following whichever `--provider` is already on the command
@@ -287,6 +230,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passing none still means "ask the server what it has". `quackd serve-mcp` picks no model at all —
   the client's own model is the pilot and `QUACKD_MODEL` is irrelevant there — which was already
   true and is now written down ([ADR-0031](docs/adr/0031-model-catalogue.md)).
+
+- **`quackd list-models`**, the command that prints what `--model` will accept. Five columns per
+  id: the vendor, the id as that vendor spells it, a label a human can read, its status, and a
+  notes column that marks each vendor's default, the OpenAI ids that open on the Responses API,
+  and the individual ids whose vendor does not document image input. `--provider NAME` narrows it to one vendor
+  and `--json` prints one object per line. It is the answer to a question the catalogue's refusal
+  raises, so the refusal names it.
+
 - **Seven more cloud vendors: Mistral, DeepSeek, Cohere, Qwen, Kimi, GLM and Meta.** All seven serve
   an OpenAI-shaped endpoint, so each is one small `OpenAIProvider` subclass with a base URL and a
   key variable, exactly as Grok has been since the first release. `--provider mistral` reads `MISTRAL_API_KEY`,
@@ -295,22 +246,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MOONSHOT_API_KEY`, `glm` reads `ZAI_API_KEY`, and `meta` reads `META_API_KEY` (or
   `MODEL_API_KEY`). Each has its own extra — `quackd[mistral]`, `quackd[deepseek]` and so on — and
   every one of them installs the same `openai>=1.50` wheel that `quackd[openai]` and `quackd[grok]`
-  do. Eight vendors, one package: the extra exists so that a missing-SDK error can name the install
+  do. Nine vendors, one package: the extra exists so that a missing-SDK error can name the install
   the reader actually wants rather than a package name they will not connect to the vendor they
   asked for. Meta here is not Llama — Meta retired the hosted Llama API in July 2026, and its
   replacement, the Meta Model API, serves Muse Spark; two of those are a contributor tier, cheaper
   because Meta trains on your prompts, and the label in `list-models` says so. The honest part: of
-  the eleven cloud vendors, only OpenAI has been run against a real key on the machine that wrote
-  this. The other ten are wired from their own published documentation and held by tests that stub
-  the SDK client, which is enough to prove each one is built with the right base URL, key variable,
-  extra and default model, and is not enough to prove that any of them answers.
+  the eleven cloud vendors, two have answered a real request. OpenAI on the machine that wrote
+  this, and Gemini from a contributor's, which is how the two Gemini bugs under Fixed were found.
+  The other nine are wired from their own published documentation and held by tests that stub
+  the SDK client. For the eight that speak OpenAI's API that proves the base URL, the key
+  variable, the extra and the default model; Anthropic sets no base URL of its own, so for that
+  one it proves the extra and the request shape. None of it proves that any vendor answers.
+
 - **The browser demo picks its model from a dropdown.** The page declared a `models:` array per
   vendor that nothing ever read, and offered a free-text box instead, so a visitor who came to click
   one thing had to already know a model id to type. The dropdown is now fed by the same catalogue
   through `web/src/catalogue.js`, generated from the Python and grouped by status, with a test that
   fails when the generated file has drifted from `catalogue.py`.
 
-- Two transcripts of `find-and-kick` piloted by **Qwen 2.5 Coder 14B on LM Studio**, seeds
+- **A bring-up checklist and a lookout task for the LeRobot arm, which had neither.**
+  Every other body quackd ships a lookout for had both, and this file has said the arm did not
+  since 0.7. [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)
+  is the order to try an SO-101 in, with nothing moving until step 10 and a hand on the power
+  switch from there, because this arm has no e-stop. `ducks/lerobot-lookout.duck` is the task
+  to point at a real arm first: it moves no joint, and it asks for `report_state` rather than
+  `observe`, because a `.duck` is checked against the static manifest, which cannot know
+  whether a webcam is plugged in
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
+  One body still has neither, and it is the one that names a transport rather than a robot: a
+  `rosbridge:ws` base gets no lookout task and no checklist in this release either, so it goes
+  on blocks and a person reads [docs/adapters/rosbridge.md](docs/adapters/rosbridge.md) instead.
+
+- **A camera on the LeRobot arm: `--camera-url opencv://N`.** No SO-101 has a camera in it,
+  whatever a kit's listing says: the arm is six servos and a serial board, and every camera on
+  one is a USB webcam plugged into the computer. `lerobot:real` now opens one, so `observe`
+  exists on a real arm for the first time. The url is the OpenCV index
+  (`lerobot-find-cameras opencv` prints them and saves a frame from each, which is the only
+  honest way to tell which is which) or a device path, `opencv:///dev/video2`, with `?width`,
+  `?height`, `?fps`, `?fourcc`, `?rotation`,
+  `?name`, `?fov` and `?backend=msmf` for the Windows camera that lists and then will not open.
+  Nothing is asked of the camera by default, because a mode it cannot do is a refusal at
+  connect and the webcam in a lab drawer is unknown. An unknown key or a bad value is refused
+  with the shape, before LeRobot is imported.
+  quackd builds the camera itself rather than handing it to the follower, and that is the
+  whole design: a follower's `is_connected` is the bus **and** every camera, and `send_action`
+  and `disconnect()` are gated on it, so one webcam coming unplugged would have made every
+  move and every hold raise while the arm was perfectly fine. Beside the follower, a camera
+  asked for and not opened refuses at connect naming the url, before the arm is touched at
+  all, and a camera that dies later costs `observe` and a `pick` in flight and nothing else:
+  the heartbeat still reads the arm, the joints still move, `stop` still holds. `observe` now says what the camera said rather than "this transport has
+  no camera", `quackd doctor` gates its verdict on a real frame as it does on every body whose
+  transport reports camera health, which is the Microduck over robotd and the Open Duck's bridge
+  and not the four that report none, and `?fov=` travels with the camera into `limits.camera_fov_deg` so bearings are
+  calibrated over MCP too, where there is no `--fov-deg`
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#camera), step 8 of
+  [the checklist](docs/lerobot-hardware-checklist.md)).
+
+- **The LeRobot pages rewritten for someone who owns the arm rather than someone who wrote
+  the adapter, and five things they said that were not true.** An SO-101 owner is the likeliest
+  first external user of quackd, and the two pages assumed a reader who already knew what
+  quackd was for. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) now opens with what
+  LeRobot already does for you and what quackd deliberately does not touch (teleoperation,
+  recording, training), the three properties of this body that shape every guard, and a
+  starting path that begins with the mock and no arm at all. It gained the install trap in
+  full (the `[feetech]` extra, and the `python_version >= '3.12'` marker that makes an install
+  on 3.11 resolve to nothing while `doctor` keeps saying `not installed`), a section on the
+  calibration id, which is the name you give the robot and the one thing that silently breaks
+  a connection after a calibration you watched succeed, the three ways to drive the arm with
+  the MCP config written out, `--dry-run` as a rehearsal that connects for real and sends
+  nothing, and a troubleshooting section whose every row quotes a refusal from the code that
+  raises it, beside what to do about it, followed by a short list of failures SO-101 owners report that nobody
+  here has verified, labelled as such.
+  The five corrections: a task that allows `observe` is refused on **every** real arm rather
+  than only on one without a camera, because `quackd run` checks the allowlist as well as
+  `requires` against the static manifest, and the place it does work is MCP, where
+  `robot_load_duckfile` validates against the robot already connected, so the same task loads
+  on a session started with `--camera-url`; the pilot gets detections every step whether or
+  not `observe` is allowed, which makes `--vision` the picture rather than the sight;
+  `load_policy()` imports
+  `lerobot.configs.policies.PreTrainedConfig`, which had no ref, so "every name quackd spells
+  lives in `upstream_api.py`" was false until this commit added it; and `pick` is not reachable
+  from the CLI or from MCP at all, because `make()` has no policy parameter and `load_policy()`
+  has no caller outside a test, which the checklist had presented as something to try at the bench.
+  The checklist could not be followed as written: step 4 ran `lerobot-calibrate`, which step 5
+  installed. Installing now comes first, finding the port with upstream's own `lerobot-find-port`
+  comes with the calibration, and the claim that Windows needs a CH340 or CP210x driver is gone,
+  because the arm enumerates as a USB CDC device and no primary source names that chip. It also
+  gained the `--dry-run` rehearsal as step 9, so nothing moves until step 10, and a
+  [hardware report template](.github/ISSUE_TEMPLATE/lerobot-hardware-report.yml) that asks for
+  exactly what *What to report* asks for. Two things in the code changed because writing the
+  pages found them, and they are under Fixed: a camera that dies mid-run used to be invisible
+  on a `quackd run`, and `doctor` advised about verbs an arm does not have.
+
+  One thing neither page knew: **upstream's calibration does not sweep `wrist_roll`.** It
+  prints *move all joints except 'wrist_roll'* and records a full encoder turn for it, so that
+  joint's travel comes out as -180..180 and quackd's out-of-range refusal, which is real on the
+  other four body joints, cannot catch anything on that one. Both pages now say so, and the
+  checklist's out-of-range step says which joint not to test it on.
+
+- **A body field the server wants and quackd never sends: `--extra-body` and
+  `QUACKD_EXTRA_BODY`.** One JSON object, merged into the top of every request body on every
+  provider that speaks OpenAI's API, which is nine of the eleven cloud vendors and all five
+  local presets, and sent on Chat Completions and Responses both, so it keeps working when a
+  run moves from one to the other mid-flight. The case that asked for it: Qwen3 on vLLM thinks
+  before it answers unless the request body says `{"chat_template_kwargs": {"enable_thinking":
+  false}}`, and that switch is a chat template argument rather than a sampling parameter, so on
+  a server somebody else runs there was nowhere to say it. One reported step spent 150 s and
+  1717 output tokens deliberating before a decision that was correct anyway. The flag beats the
+  variable, an empty object sends nothing, and a value that is not one JSON object is refused
+  before a robot is connected, naming the flag or the variable it came from. Six keys are
+  refused because they are quackd's to send — `model`, `messages`, `input`, `instructions`,
+  `tools` and `stream`, the fourth being the system prompt on Responses the way the second is
+  on Chat Completions — and everything else replaces what quackd would have sent, `tool_choice`
+  included, because overriding it is the point. `run_start` records the object, since a run
+  whose model was told not to think reads nothing like one that was. Anthropic and Gemini
+  ignore it, as they already ignore `--base-url`. It is in `.env.example` with the others,
+  where single quotes matter: double ones make python-dotenv drop the line without a word. If
+  you run the server yourself, vLLM's own `--default-chat-template-kwargs` does the same thing
+  once at serve time, and the docs now name both. Thanks to
+  [@Vallhalen](https://github.com/Vallhalen) (#12), who measured it and proposed the
+  passthrough ([docs/local-llms.md](docs/local-llms.md#knobs)).
+
+- **Two transcripts of `find-and-kick` piloted by Qwen 2.5 Coder 14B on LM Studio**, seeds
   5 and 6, land in `docs/assets/transcripts/` with a table reading them in
   `docs/local-llms.md`, from the contributor whose memory feature they were recorded for.
   The README, `local-llms.md` and PLAN.md no longer say "no transcript in this
@@ -387,9 +444,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set by `QUACKD_LEROBOT_MAX_STEP_DEG`. What a pilot notices: `move_joints` and `gripper`
   re-send the goal and watch the measurement, so they can now fail with where the arm stopped
   and `duration_s` is a budget rather than a wait; a new `not_hot` precondition refuses
-  `move_joints` and `pick` when a joint reads 60 °C or more; `report_state` carries `torque`
-  as measured, `temperature_c`, `hot`, `joint_range_deg`, `calibration_file`, `step_deg` and
-  `torque_limit_scope`; `holding` is inferred from the gripper settling short of shut; `stop`
+  `move_joints` and `pick` when one of the five body joints reads 60 °C or more, the gripper
+  being left out on purpose because opening it is how you put down what it is holding;
+  `report_state` carries `torque` as measured, `temperature_c`, `hot`, `out_of_range` and
+  `step_deg`, and the manifest of a connected arm gains `joint_range_deg`, `calibration_file`
+  and `torque_limit_scope`; `holding` is inferred from the gripper settling short of shut; `stop`
   holds the five body joints and leaves the gripper's goal alone, so a failed verb never drops
   what is held; and the datasheet no longer claims a mass, because vendor listings disagree by
   a factor of three. Why each of these is the way it is:
@@ -403,14 +462,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section made a robot a name you keep and a flock a list of those names, so what quackd is is the
   place you connect the robots you own, the place you command all of them, and where they divide a
   task between themselves, each with an LLM for a brain. quackd is the CLI, not the brain. The new
-  sentence is in the README, in `pyproject.toml`'s description, which PyPI shows at the next
-  release, in the `quackd --help` banner, in `quackd/__init__.py`'s docstring, in the demo's title
-  and meta tags, in `LAUNCH.md`, and in the opening lines of
-  [docs/architecture.md](docs/architecture.md) and [docs/mcp.md](docs/mcp.md). "Fleet" is retired
+  sentence is in the README, in `pyproject.toml`'s description, which is what PyPI shows from this
+  release on, and in its keywords, where `reachy-mini` gave way to nine vendor names and to
+  `multi-robot` and `robot-fleet`, the one place the retired word stays on
+  purpose, in the `quackd --help` banner, in `quackd/__init__.py`'s docstring and in `LAUNCH.md`.
+  The demo's title and meta tags, [docs/architecture.md](docs/architecture.md) and
+  [docs/mcp.md](docs/mcp.md) did not take the sentence itself: they lost the retired tagline and
+  had the new positioning written into their own words. "Fleet" is retired
   from prose and from help text in favour of "flock", while the code identifiers keep it, because
   renaming `build_fleet_server` would be churn no reader sees. [docs/flock.md](docs/flock.md) now
   reads pilots-first. Nothing new ships here: the features this describes landed in this same
-  Unreleased section, every body is still simulated or mocked, and flock mode is still EXPERIMENTAL
+  release, every body is still simulated or mocked, and flock mode is still EXPERIMENTAL
   ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)).
 
 - **A registered robot keys its memory by its name, not by its body.**
@@ -423,7 +485,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [ADR-0025](docs/adr/0025-memory-between-runs.md)
   ([docs/memory.md](docs/memory.md), [ADR-0034](docs/adr/0034-registered-robots-and-pilot-flocks.md)).
 
-- **`--model` and `QUACKD_MODEL` now take a catalogue id, and three of the four defaults moved.**
+- **Breaking. `--model` and `QUACKD_MODEL` now take a catalogue id, and three of the four defaults moved.**
   [ADR-0010](docs/adr/0010-providers.md) shipped four defaults with the first release and marked
   three of them "(verify)". Nobody ever did, and by 2026-09-12 all three were wrong: `gpt-5` has
   an announced shutdown date, `gemini-2.5-pro` is legacy, and `grok-4` was retired in May 2026 and
@@ -431,8 +493,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key is billed and the transcript records a model that did not run. The defaults are now
   `gpt-5.6-sol` for `openai`, `gemini-3.8-flash` for `gemini` and `grok-4.6` for `grok`;
   `claude-opus-5` for `anthropic` is unchanged. This is breaking for anyone passing an id quackd
-  does not list, the three old defaults included, and that is the point: the refusal arrives
-  before a key is read or a packet is sent, and it says what to pass instead.
+  does not list, and that is the point: the refusal arrives
+  before a key is read or a packet is sent, and it says what to pass instead. Two of the three
+  old defaults are in that position, `gpt-5` and `grok-4`, both of which the catalogue refuses by
+  name. The third is not: `gemini-2.5-pro` is still listed as `legacy`, because the rule for
+  being listed is that the vendor still serves it with no end announced, so a run that names it
+  explicitly keeps working and only the default moved out from under it.
 
       error: openai: unknown model 'gpt-5' from --model. Valid ids: gpt-5.6-sol (default),
       gpt-6-astra, gpt-5.6-terra, ... See `quackd list-models --provider openai`.
@@ -441,10 +507,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --provider grok)` — because that is the commonest mistake and the hardest to see, the id looking
   perfectly valid. A `QUACKD_MODEL` line that has sat in a `.env` since then now stops the run rather
   than starting a wrong one, and `quackd doctor` shows the id each provider would actually be given
-  instead of guessing at it. One more thing rides on the same list: `gpt-6-astra` and the OpenAI pro
-  tier are marked as Responses-API models, so a run with one of them opens on `/v1/responses`
+  instead of guessing at it. One more thing rides on the same list: five OpenAI entries are marked
+  as Responses-API models, `gpt-6-astra`, the three pro ids and `gpt-5.3-codex`, so a run with one
+  of them opens on `/v1/responses`
   instead of paying a failed Chat Completions call to find that out. The 400 reader 0.8 added stays,
   because it is what covers a model the catalogue has not been told about yet.
+
 - **The CLI has a house style, and a way out of it.** quackd's colours had grown inline: a
   `[green]` in one command, a `Table` in another, an emoji in a third, with nothing saying
   which green meant *this worked* and which meant *this is installed*. `quackd/ui.py` is now
@@ -457,8 +525,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while answers go to stdout, so `quackd list-adapters > adapters.txt` gets the table and
   nothing else. On a Windows pipe, where every decoration used to arrive as a question mark,
   the adapter roster now reads `[ok] built-in: sim2d` and `[exp] jsonrpc`.
-- **`--no-color`, and `--json` on `validate`, `list-verbs`, `list-adapters` and `list-models`.** The tables
-  are for a person. `--json` prints one object per line on stdout and nothing else, keeping
+
+- **`--no-color`, and `--json` on `validate`, `list-verbs`, `list-adapters`, `list-models` and the
+  four registry listings.** The tables are for a person. `--json` prints one object per line on stdout and nothing else, keeping
   the exit code it would have had, so `quackd validate ducks/*.duck --json` still exits 1 on
   a failure and a script can read which file and why. `--no-color` sets `NO_COLOR` as well as
   quackd's own consoles, because Typer builds a console of its own for every `--help` it
@@ -466,10 +535,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `quackd list-models` arrived in the same release from the other direction and wears the
   house style too: its model ids still fold rather than elide, and none of the five columns
   goes through Rich's markup on the way, so a label with a bracket in it survives.
+
 - **`-h` works**, everywhere `--help` does, and `--help` groups what it shows. `quackd run`
   offered twenty seven flags in one flat list. They are sorted into Task, Model, Robot,
   Output and Memory now, the commands are grouped the same way, and the root help ends with
   three worked examples.
+
 - **A line saying what the run is waiting for.** A run spends nearly all its wall clock
   inside two calls, a model deciding and a verb steering a robot, and said nothing until
   each of them finished. With `--no-trace` it said nothing at all between the header and the
@@ -480,15 +551,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redirects stdout and would otherwise swallow the question until after it was answered.
   `quackd doctor`, `quackd discover`, `quackd announce` and GIF encoding get a spinner for
   the same reason.
+
 - **A run opens and closes with a panel.** The header used to be one line of middle dots and
   the verdict three lines under it, and on a long run the two ends of the story were the two
   things hardest to find in a screenful of trace. They are now bordered, the verdict is
   coloured by its outcome, and the run directory and the GIF are links where the terminal
   allows it. `quackd trace` prints the same verdict from the transcript, so a replay still
   ends the way the run did.
+
 - **`quackd memory show` is two tables**, notes and recent runs, rather than the block of
   dim text the model is given. The outcome has its own column and its own colour, and an
   episode no longer repeats the duck and the outcome inside the sentence that follows them.
+
 - **`quackd doctor --json`**, and a verdict at the end of the human version. doctor knew
   whether this machine could run anything and said so only through its exit code, which
   nobody reads off a screen. It now closes with one line: what works here, how many extras
@@ -497,6 +571,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   functions rather than one: the collector answers in dataclasses with no styling in them,
   and it could not have been serialised before, because every cell it produced *was* a
   markup string.
+
 - **The trace is drawn for the person reading it.** The arrow is a glyph in a gutter now and
   the column says the word it stood for, so `-> sound(...)` reads `→  send    sound(...)`
   and a result is `✓` or `✗` or, for a handover that ended a verb early on purpose, `•`.
@@ -508,35 +583,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applies where it was earned: the MCP tool result carries exactly the bytes it always did,
   frozen case by case by a new golden, and the terminal asks the stream it is writing to
   which half of the glyph table it can carry. A redirected stderr on Windows still gets
-  `->`, `+` and `x`, and the degree signs and dashes that used to arrive as question marks
-  now arrive as words.
+  `->`, `+` and `x`, and the degree signs, section signs and dashes that used to arrive as
+  question marks now arrive as ASCII quackd chose rather than as the terminal's guess.
+
 - **A closed pipe is not an error.** `quackd list-verbs | head` answered with a wall of
   traceback about a broken pipe printed on top of the output that was asked for. The console
   entry point is now `quackd.cli:main`, which leaves quietly, and Typer's pretty exceptions
   are off because they print local variables and this process's locals hold an API key, a
   robot's address and its bridge token. A Rich traceback without locals is installed instead,
   so a real crash still reads well.
+
 - **`quackd validate` counts in English** (`12 files valid`, `1 of 3 files failed`), names
   where to look next when it fails, and no longer lets a long file path squeeze the column
   that carries the answer down to nothing.
-- **`quackd doctor` reads as a report rather than a wall.** Thirteen tables arrived stacked
+
+- **`quackd doctor` reads as a report rather than a wall.** Fourteen tables arrived stacked
   with nothing between them, and eight of them were per-upstream lists of unverified
   assumptions, each followed by its own dim footer. Those sixteen blocks are now two: one
   sectioned table of assumptions, and one table of pins that puts the eight upstreams side
   by side where they can be compared, with the doc paths on a line under it. The sections
   are ruled off and named, and the five local LLM servers are probed behind a spinner
   rather than ten seconds of silence.
+
 - **Extras in `--help` keep their brackets.** `--live` advertised an install called `quackd`
   rather than `quackd[live]`, because Rich had read the extra as markup and eaten it. Same
   for `quackd[microduck-camera]` and `quackd[lan]`.
 
 ### Removed
 
-- **The Reachy Mini adapter.** `--robot reachy_mini:{sim2d,mock,sdk}`, `quackd[reachy]`, the
-  `reachy-spotter` and `reachy-spots-duck-kicks` starters, and the `reachy-mini` GitHub topic
-  are gone, along with its doc page and every mention that described it as a robot quackd
-  still drives. The ADRs and design records that document it keep their text, marked
-  superseded or amended. quackd ships seven adapters now: Microduck, Open Duck Mini v2, LeRobot arm, any rosbridge
+- **Breaking. The Reachy Mini adapter.** `--robot reachy_mini:{sim2d,mock,sdk}`, `quackd[reachy]`,
+  the `reachy-spotter` and `reachy-spots-duck-kicks` starters, the `reachy-mini` GitHub topic and
+  the PyPI keyword are gone, along with its doc page, its `hetero.gif` and every mention that
+  described it as a robot quackd still drives. A command line or a `.duck` naming that adapter
+  fails at `--robot` now, which is the correct failure for a body that is not there. The ADRs
+  that document it keep their text, marked superseded or amended. The design records under
+  `docs/design/` keep their text unmarked, `multi-robot.md` still describing the adapter in the
+  present tense, because those are the record of what 0.4 designed rather than of what ships. quackd ships seven adapters now: Microduck, Open Duck Mini v2, LeRobot arm, any rosbridge
   base, XLeRobot, AlohaMini and ToddlerBot. Reachy Mini was the only "stationary head"
   embodiment quackd ever carried, so the machinery that existed solely to pair one with a
   Microduck goes with it: `StationaryHead` and the fixed head poses in `sim2d/world.py` and
@@ -550,7 +632,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   readable as the record of what 0.4 through 0.8 actually shipped. Nothing about the other
   seven adapters changed.
 
+- **`docs/assets/logo.svg`**, the flat biped and the two-colour wordmark the README opened with
+  until this release. The mark entry under Changed says what replaced it and why a second mark
+  nothing renders is a second mark that goes stale.
+
 ### Fixed
+
+- **The trained gait's 10 of 10 is not reproducible, and four documents stated it as a
+  property.** 0.8 shipped that number in this file, in the README three times, in
+  [docs/adapter-status.md](docs/adapter-status.md) and in
+  [ADR-0030](docs/adr/0030-mujoco-physics-backend.md). What the evidence supports is narrower.
+  The nightly job that runs the sweep had 10 of 10 on each of its first five runs, 2026-09-09
+  to 09-13, and 9 of 10 on 09-14, seed 4 aborting. Run by hand on the machine that cut this
+  release it is 9 of 10, seed 4 again, and it is 9 of 10 there on the `mujoco` and
+  `onnxruntime` versions 0.8 shipped as well as the ones this release bumps to, so the bump is
+  not what moved it. The failing seed is not a fall: the duck is standing, the ball has not
+  moved, and the run ends on the duck's own *same verb fails 3 times in a row* rule after three
+  steps. So seed 4 is marginal and platform dependent rather than the gait being broken, and
+  the honest claim is that the sweep has returned 10 of 10 and does not always. The shipped
+  threshold outside `QUACKD_STRICT_SEEDS` is 8, which it clears every time. Every one of those
+  four documents now says what was measured instead of a round number, the ADR by dated
+  amendment rather than by rewriting what it decided. The kinematic stand-in is untouched and
+  still gates every push at 10 of 10.
+
+- **A camera that died mid-run was invisible on a `quackd run`.** `camera_error` was read only
+  by `observe` and by `doctor`, and `observe` cannot be in a `.duck`'s allowlist on the arm, so
+  on the one body where a camera is a thing you plugged in yourself the frames simply stopped
+  and nothing said why. The camera's health now rides in the arm's own state beside the policy
+  and the register errors, which puts it in the transcript and in front of an MCP client, and
+  `report_state` says `CAMERA DOWN:` with the reason when a read has actually failed, staying
+  quiet for a camera that is merely unread.
+
+- **`quackd doctor` advised about verbs the robot in front of it does not have.** Its no-frame
+  advisory named `go_to`, `search_scan` and `approach_and`, none of which exist on an arm bolted
+  to a table. It names that body's own camera verbs now. A `camera_health()` proxy on the adapter
+  went with it: `doctor` reaches the transport's own method, as it does on every other body, so
+  the proxy was called by nothing but the tests that were meant to be covering `doctor`.
+
+- **`lerobot-lookout` asked the pilot for three things it could never see.** A pilot reads a
+  verb's summary text and never its data: the dump goes to the transcript and to an MCP client,
+  and the observation the model is handed carries the summary. The core `report_state`
+  summarises a posture and a policy name, which on a bolted-down arm is two facts it has not got
+  and none of the four it has, so the lookout task asked a real model to report where the joints
+  are, whether torque is on and whether anything is too hot, none of which had ever reached it.
+  The scripted pilot passed the task because it reads the feature dict instead, which no LLM
+  gets. The arm supplies its own `report_state` now, and a test pins it through the observation
+  text the model actually receives.
+
+- **quackd's log records no longer stop at quackd's own handler.** `install_logging` set
+  `propagate = False`, which is the obvious way to stop a record being printed twice and also
+  cuts every quackd logger off from the root: an application embedding quackd saw nothing
+  through its own `logging.basicConfig`, and `caplog` caught nothing in a test. Propagation is
+  left alone now, and the double print is prevented where it starts instead.
 
 - **The duck's chin was missing from the mark, and nothing recorded how to put it back.**
   `web/assets/duck-mark.png` and `web/assets/favicon-96.png` had both been exported with the
@@ -611,12 +744,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they ever disagree, which reading them for the right words could not do: that passes
   happily on an `and` quietly turned into an `or`, and an `or` would move a run on any 400
   that said `responses`. The Chat Completions path the rewrite lifted out and re-keyed is
-  still every `gpt-5` run and every local server, and it now has the guard it never had.
+  still every run on a model the catalogue does not mark Responses, and every local server, and it
+  now has the guard it never had.
 
 - **Gemini 3 as the pilot.** Two things stood between the provider and a current Gemini
   model, found by pointing a duck at `gemini-3.5-flash`. The schema cleaner did not strip
   `exclusiveMinimum` / `exclusiveMaximum` — pydantic writes `gt=0` that way, and `move` and
-  `go_to` are core verbs that both do, so this was every robot, not some of them — and
+  `go_to` are core verbs that both do, so this was every robot that walks or drives, six of the
+  seven, rather than some of them; the arm, which provides neither verb, never sent a schema
+  the validator could refuse — and
   google-genai 2.x validates the declaration and refuses the keyword; the executor still
   enforces the bound on the way in. And Gemini 3 signs each function call with a
   `thought_signature` the
@@ -626,10 +762,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is a Gemini 3 model. Verified with a two-step run to success on `gemini-3.5-flash`
   with thought summaries on. The first of the two is older than Gemini 3 and wider than it:
   google-genai has validated function declarations since 2.x, so the schema bug refused every
-  verb call on every robot for every Gemini model, and it sat there because 0.8.0's own
+  verb call on every one of those six robots for every Gemini model, and it sat there because 0.8.0's own
   "non-Anthropic default model IDs are unverified" bullet was literally true — Gemini's default
   had never been sent a request from here. A `--provider` nobody runs is a `--provider` nobody
   finds the bugs in. Thanks to [@Bayway](https://github.com/Bayway) (#13), who ran it.
+
+### Known limitations
+
+- **Nothing has run on hardware, on any of the seven adapters.** 0.8 said eight, and the
+  difference is a removal rather than a robot. The arm had the most attention of any body in
+  this release, a camera, a checklist, a lookout task and an audit that stopped it taking the
+  arm's word for four things, and no SO-101 was driven for any of it. The rosbridge base is the
+  one body with neither a lookout task nor a checklist, so it goes on blocks first. The
+  Microduck's own hardware ships around Christmas 2026.
+
+- **The trained gait does not reliably do 10 of 10 seeds.** Seed 4 is the one that goes, and
+  the entry under Fixed says on which machines, with which physics versions, and what the
+  shipped threshold actually asks for. Nobody has worked out why that seed is marginal. The
+  other nine walk, and the cartoon's own sweeps are unaffected and still gate every push.
+
+- **No real model has ever refused a task on feasibility grounds here.** The gate, the
+  `infeasible` outcome, the hint and the flock handoff are exercised with scripted verdicts and
+  an in-process MCP client. Whether a frontier model reaches for `uncertain` when it should, or
+  for `infeasible` too readily, is unknown. There is one `live_llm` test waiting for a key. Over
+  MCP an `uncertain` verdict stays pending and the model is told to ask the person it is
+  chatting with, which has never been watched happening either.
+
+- **No pilot flock has been driven by a real model, or by a real robot.** `flock-hello` runs a
+  duck and an arm on the scripted rule, which cannot reason about a datasheet, so what a real
+  model does with the `Your flock` section and with `tell` is unknown. N simulated pilots are
+  also N separate worlds: nothing checks one member's claimed success against ground truth the
+  way the coordinator's shared arena does, a seed does not make a pilot flock reproducible, and
+  it costs one budget and one model call per member per turn. No asset shows a pilot flock,
+  because N members are N worlds and there is no single GIF to record.
+
+- **The coordinator flock still knows one adapter.** `flock/runner.py` builds Microducks, so
+  `flock.roles.<role>.needs`, which validates and is matched against the datasheet a bid
+  carries, has nothing heterogeneous to be exercised against end to end. The latent ordering bug
+  [ADR-0020](docs/adr/0020-heterogeneous-flocks.md) records is inherited with it: the
+  coordinator judges eligibility before members report their vocabulary.
+
+- **Two of the eleven cloud vendors have answered a real request.** OpenAI from the machine that
+  wrote this and Gemini from a contributor's. The other nine are built from their own published
+  documentation and held by tests that stub the SDK client, which proves the base URL, the key
+  variable, the extra and the default id, and proves nothing about whether the vendor answers.
+  The catalogue is a hand-read snapshot of 2026-09-12 rather than a live list, so a vendor that
+  renames or retires an id between releases leaves this build refusing something real.
+
+- **The browser demo is not at parity with the backend, and nobody has watched it finish.**
+  Seven of the manifest's fifteen verbs and none of the three composites, a contract and a
+  prompt of its own, an arena that is not upstream's scene, geometric perception, no hash check
+  on what it fetches, and a seed that means the same distributions rather than the same layout.
+  It has no datasheet and no feasibility gate, so a page asked to carry something will try. The
+  page has been booted, a held `W` walks the duck and a real model has answered once, all on the
+  machine that wrote it. A run reaching its own end, the recording, the switch thrown mid-run and
+  any other browser or machine are still unwatched. The model dropdown and the Responses
+  fallback this release adds are tested under `node` with a stubbed `fetch`, which is not a
+  browser.
+
+- **Both nightly jobs are red, and always have been.** `microduck assets` fails the trained-gait
+  sweep described above and a fall-recovery heading check that passes on the developer's laptop
+  and not on the runner. `toddlerbot contract` fails a `stand` that never reports settling and
+  loses the deadman test's connection. Neither gates anything by construction, which their own
+  headers say in as many words, and `ci` is the job that gates and is green on this tag. Nothing
+  in this release touched those code paths. They are three separate things to go and look at.
+
+- **The physics backend is still measured on one machine**, `follow-me` is cartoon only because
+  nobody stands in the physics arena, a coordinator flock member must be `sim2d` so the physics
+  backend does not fly in one, `GAIT_FLOOR_VY` was never measured but assumed equal to the
+  training maximum, so a lateral request that clears the dead zone is sent at full scale while
+  one below it is dropped entirely, and `--live` on macOS needs `mjpython` because MuJoCo's
+  viewer must own the main thread.
+
+- **Outside this repository.** The social preview GitHub serves is a version behind, and there
+  is no API that would let a commit here replace it. quackd-web carries its own copies of the
+  two mark files this release re-cut, so the chinless duck is still live there, and its landing
+  copy was written around 0.5.
 
 ## [0.8.0] — 2026-09-09
 
@@ -2236,7 +2444,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/rokbenko/quackd/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rokbenko/quackd/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rokbenko/quackd/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rokbenko/quackd/compare/v0.5.0...v0.6.0

@@ -112,6 +112,25 @@ not before.
   between them. Both ends are in `docs/assets/transcripts/`, read in
   [docs/local-llms.md](docs/local-llms.md). What is still open is Ollama, llama.cpp, a run on
   this machine, and any task harder than the starter duck.
+- ⬜ **Both nightly jobs are red, and neither has ever been green.** Three separate things,
+  none of them a release gate and none of them touched by 0.9.
+  `microduck assets` (red on every run since 2026-09-09) fails one test on five of its six runs
+  and two on the sixth. The constant one is the fall-recovery test below. The other is the
+  trained-gait sweep `test_find_and_kick_on_the_real_duck`, which had 10 of 10 under
+  `QUACKD_STRICT_SEEDS=1` on 2026-09-09 to 09-13 and 9 of 10 on 09-14, seed 4 going, and which
+  returns 9 of 10 by hand on the laptop that cut 0.9.0 on the `mujoco` and `onnxruntime`
+  versions either side of this release's bump, so the bump is not what moved it. That seed ends
+  on the duck's own same-verb-fails-three-times rule with the duck standing and the ball
+  unmoved. Why seed 4 is the marginal one is unknown.
+  And `test_a_duck_that_fell_on_its_face_stands_up_facing_the_way_it_was_going` asserts the
+  recovered heading is π and gets 0.0 on the runner while passing on that same laptop, so it is
+  environment specific and osmesa is the obvious suspect.
+  `toddlerbot contract` (red on every run since 2026-09-07) fails
+  `test_stand_settles_on_a_body_that_pushes_back` with *stand never finished*, and
+  `test_a_client_that_goes_quiet_trips_the_deadman_on_real_physics` loses the connection.
+  Both jobs say in their own headers that a red run means go and look rather than stop the
+  release, which is why 0.7.0, 0.8.0 and 0.9.0 all shipped over them. Nobody has gone and looked.
+
 - ⏸ **Exercise `remember` against a cloud model.** The scripted pilot has no script for it, so
   `--provider fake` writes episodes and never a note.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
@@ -136,7 +155,7 @@ Things no commit in this repository can finish.
   commit that can set them. Topics are at the cap of 20, so the next one has to replace one.
 - ⏸ **The landing page.** <https://www.quackd.org/> is built from quackd-web, a separate
   repository, and it was written around 0.5: quackd was a brain for one small robot, there were
-  five adapters, and one of the five was the Reachy Mini, which this project removed in 0.8. Its
+  five adapters, and one of the five was the Reachy Mini, which this project removed in 0.9. Its
   copy is being corrected there. The part no commit in either repository can fix is
   `public/og.png`, the card a social network shows for quackd.org. It is a designed asset with
   no generator, and its headline is set in a display weight of Nunito Sans that Google now
