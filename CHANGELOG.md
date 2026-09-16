@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The feasibility verdict gate now lets a verb declared `read_only` by its adapter run before
+  the verdict, the way `observe` and `report_state` do. Before, a third-party body's own
+  sensing verb (a `locate` that reads where things are) was refused as "moves the body", and
+  the pilot had to judge feasibility without the one tool that answers the question; a local
+  14B model given a humanoid with two objects in reach declared the task infeasible twice
+  without a single look. Learned verbs are unchanged: they never carry the flag.
+
 ## [0.9.0] — 2026-09-15
 
 A robot has a name now. `quackd robot add scout open_duck:bridge --address ... --token ...`

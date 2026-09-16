@@ -33,8 +33,11 @@ BEFORE_VERDICT = frozenset(
 """What runs before a verdict: the verbs that speak, look, or read, and the brake.
 
 A pilot has to be able to look at the thing before judging whether it can lift it. Everything
-else waits, including a verb quackd has never heard of: the gate reads this set and nothing
-else, so a learned verb is refused until somebody classifies it on purpose."""
+else waits, including a verb quackd has never heard of: the gate reads this set and one
+other thing, the verb's own `read_only` flag, so a body quackd has never shipped can still
+say "this one only looks" about its own sensing verbs. A learned verb never carries that
+flag (`learned.py` registers it as `confirm`, unproven), so it is refused until somebody
+classifies it on purpose."""
 
 MOVES_THE_BODY = frozenset(
     {

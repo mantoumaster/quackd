@@ -22,7 +22,7 @@ the trace and the transcript print, so a refusal tells you which row you are on.
 | `abort` | the run has been aborted. `stop` is exempt, so the brake still works | nothing: the run is over |
 | `allowlist` | the verb is in `verbs.allow`. `stop` is always allowed | the `.duck`'s `verbs.allow` |
 | `unknown` | quackd has never heard of this verb | the spelling, or the robot (`quackd list-verbs`) |
-| `verdict` | the pilot has judged the task feasible against the datasheet. `stop`, `observe`, `report_state`, `say`, `quack`, `express`, `gaze`, `look` and `introspect` run before it, because a pilot has to look at a thing before judging whether it can lift it | nothing: the model calls `assess_task` |
+| `verdict` | the pilot has judged the task feasible against the datasheet. `stop`, `observe`, `report_state`, `say`, `quack`, `express`, `gaze`, `look` and `introspect` run before it, and so does any verb its adapter declared `read_only`, because a pilot has to look at a thing before judging whether it can lift it | nothing: the model calls `assess_task` |
 | `params` | the arguments fit the verb's schema | the call. This is feedback to the model, not a crash |
 | `confirm` | `verbs.confirm`, or a `safety_class` of `confirm` or `dangerous`. y/N in the terminal; over MCP it refuses unless `--yes` | answer y, or pass `--yes` |
 | `budget` | `max_steps` and `max_minutes`. These cap an MCP session too, which has no loop of its own; `max_llm_calls` is the loop's | the `.duck`'s `budgets`, or `--max-steps` |

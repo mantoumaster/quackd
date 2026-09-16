@@ -80,7 +80,8 @@ class Verb:
     kind: VerbKind = "builtin"
     preconditions: list[Precondition] = field(default_factory=list)
     read_only: bool = False
-    """Read-only verbs (get_frame) still run under --dry-run."""
+    """A verb that only reads (get_frame, report_state, a body's own `locate`): it still runs
+    under --dry-run and before the feasibility verdict, like `observe` does."""
     done_condition: str = ""
     """Human-readable: what 'done' means. Shown to the LLM after the description."""
     core: bool = False

@@ -348,7 +348,11 @@ class Executor:
             )
             raise VerbNotAllowed(f"unknown verb {name!r}") from None
 
-        if self.require_verdict and canonical not in BEFORE_VERDICT and not self.cleared:
+        # A verb declared `read_only` by whoever wrote it is a sensor, whatever body it came
+        # with: a third-party `locate` that reads where things are must run before the
+        # verdict for the same reason `observe` does, or the pilot judges feasibility blind.
+        looks = canonical in BEFORE_VERDICT or verb.read_only
+        if self.require_verdict and not looks and not self.cleared:
             why = (
                 self.verdict.blocking_reason()
                 if self.verdict is not None
