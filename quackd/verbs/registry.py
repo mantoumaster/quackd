@@ -240,10 +240,30 @@ def registry_from_manifest(
     return registry
 
 
+def core_registry() -> VerbRegistry:
+    """The verbs every body has, and no body's own.
+
+    The base `installed_vocabulary()` builds on when it unions what the installed bodies can
+    do. It is deliberately not the placeholder the loop, a flock member and the MCP server
+    use before a robot has described itself: those accept a bare `DuckTransport` as well as
+    an adapter, and a bare transport is a Microduck transport whose `connect()` returns no
+    manifest to rebuild from, so the Microduck's own list is the honest fallback there."""
+    from quackd.verbs.core import CORE
+
+    registry = VerbRegistry()
+    for verb in CORE.values():
+        registry.register(verb)
+    return registry
+
+
 def default_registry() -> VerbRegistry:
-    """The Microduck's vocabulary without a connection: tests, `validate` and `list-verbs`
-    without `--robot`, the MCP server before its lifespan, flock members before connect.
-    Learned verbs are added by whoever has one (v2)."""
+    """The Microduck's vocabulary without a connection.
+
+    The fallback for a caller holding a bare `DuckTransport` rather than an adapter, which is
+    a Microduck transport by definition: `sim2d`, `mock` and `jsonrpc` all are, and none of
+    them returns a manifest to rebuild a vocabulary from. It imports the Microduck adapter,
+    so it belongs to that robot rather than to the core, and it moves there when the adapters
+    become their own packages. Learned verbs are added by whoever has one (v2)."""
     from quackd.adapters.microduck import MICRODUCK_VERBS, microduck_conditions, microduck_manifest
 
     return registry_from_manifest(

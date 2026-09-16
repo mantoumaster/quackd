@@ -6,6 +6,7 @@ Adapter packages are imported lazily, so listing adapters never imports an SDK.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.metadata
 import importlib.util
@@ -18,7 +19,7 @@ from typing import Any
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, RobotAdapter, camera_urls
 from quackd.adapters.catalogue import BY_NAME, ENTRY_POINT_GROUP, OFFICIAL, AdapterInfo
 from quackd.adapters.manifest import RobotManifest
-from quackd.verbs.registry import VerbRegistry, registry_from_manifest
+from quackd.verbs.registry import VerbRegistry, core_registry, registry_from_manifest
 
 DEFAULT_ROBOT = "microduck:sim2d"
 """The body a command falls back to when nothing named one and several are installed.
@@ -238,6 +239,29 @@ def list_adapters() -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def installed_vocabulary() -> VerbRegistry:
+    """Every verb any body installed here provides, under one registry.
+
+    What `quackd validate` checks a task file against when the file names no robot. A `.duck`
+    is a contract rather than a robot, so a task that allows `kick` is a coherent task as long
+    as something here can kick; asking whether one particular body can keep it is what
+    `validate --robot NAME` is for, and that path reads the body's own manifest instead.
+
+    The union rather than the Microduck's list, which is what it used to be. On a machine with
+    only an arm installed, a duck that allows `kick` should be told nothing here kicks, rather
+    than being checked against a duck that is not present."""
+    registry = core_registry()
+    for name in adapter_names():
+        if not is_installed(name):
+            continue
+        with contextlib.suppress(AdapterError, ImportError):
+            body = registry_for(RobotSpec(name, info(name).backends[0]))
+            for verb_name in body.names():
+                if verb_name not in registry:
+                    registry.register(body.get(verb_name))
+    return registry
 
 
 def shipped_manifests() -> list[tuple[str, RobotManifest]]:
