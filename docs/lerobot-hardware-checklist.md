@@ -42,11 +42,16 @@ about to move.
    uv run quackd doctor
    ```
 
+   That extra is two packages rather than one: `quackd-lerobot`, the arm adapter, which
+   installs on any Python quackd supports, and through its own `[sdk]` extra, LeRobot. A
+   plain `uv pip install quackd` brings neither, and no other robot's extra does either.
+
    Two rows matter: `lerobot`, and `lerobot (feetech bus)`. The Feetech SDK lives in
    lerobot's own `[feetech]` extra rather than its base dependencies, so a lerobot installed
    without it imports perfectly and then cannot open a serial port. If `lerobot` itself stays
-   `not installed` after a successful install, check `python --version`: the extra carries a
-   `python_version >= '3.12'` marker and resolves to nothing below that.
+   `not installed` after a successful install, check `python --version`: the SDK half carries
+   a `python_version >= '3.12'` marker and resolves to nothing below that, which leaves you
+   the adapter, `lerobot:mock` and no arm.
 
 ## First power: the port, then the calibration
 

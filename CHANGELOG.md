@@ -116,6 +116,67 @@ reports that it did.
 
 ### Changed
 
+- **Breaking. `uv pip install quackd` now installs no robot at all.** Every adapter is its own
+  distribution, built out of this repository as a uv workspace: `quackd-microduck`,
+  `quackd-lerobot`, `quackd-rosbridge`, `quackd-open-duck`, `quackd-xlerobot`, `quackd-alohamini`
+  and `quackd-toddlerbot`. The extras you already know are still how you ask for a body, and each
+  of them now buys the adapter itself rather than only the SDK behind it: `quackd[microduck]`,
+  `quackd[lerobot]`, `quackd[rosbridge]`, `quackd[open_duck]`, `quackd[xlerobot]`,
+  `quackd[alohamini]`, `quackd[toddlerbot]`, and `quackd[robots]` for all seven at once, each
+  with the SDK its real backend needs. `quackd[mujoco]` is the duck plus its physics simulator
+  and `quackd[microduck-camera]` the duck plus its WebRTC camera, both of them
+  `quackd-microduck`'s own extras under the names they already had. **The migration is one line:
+  anybody who installed `quackd` and ran the simulator now needs `quackd[microduck]`.** `uvx
+  quackd run find-and-kick` with no extra refuses and names what to install rather than running
+  anything, and that extra on the install line is what everything else in this entry costs.
+
+  An installed adapter announces itself through the `quackd.adapters` entry point group, so a
+  robot is available because something in the environment declared it rather than because quackd
+  shipped it. That is the whole of the contract, which means somebody can publish an adapter for
+  a body nobody here owns and quackd will find it, with no pull request to this repository. The
+  core keeps a catalogue of the seven it does publish (`quackd/adapters/catalogue.py`), as
+  strings that import none of them, so `quackd list-adapters` and `quackd doctor` still print the
+  whole table on a machine with none of them installed, every row marked `not installed`, and a
+  robot can be registered, listed and shown on a machine that cannot build it.
+
+  There is no default robot any more, with one exception kept on purpose. With nothing installed,
+  every command that needs a body refuses with `no robot adapter is installed: uv pip install
+  "quackd[microduck]" (or lerobot, rosbridge, open_duck, xlerobot, alohamini, toddlerbot;
+  quackd[robots] installs all seven), then --robot <adapter>:<backend>`. With exactly one adapter
+  installed that one is the default, because a machine with one robot has no ambiguity to resolve
+  and making its owner type the name would be ceremony, so a task file that names no robot runs
+  on whichever body is there. With several installed and the Microduck among them,
+  `microduck:sim2d` is still the default, because the six `duck: 0` starters carry no
+  `robots:` line and have always meant the cartoon. With several and no Microduck, quackd lists
+  what is installed and asks you to name one. An adapter named but not installed says what to
+  buy: `adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot]'`. `quackd record`
+  still pins `microduck:sim2d` and a `--flock N` auction is still sim2d Microducks only, because
+  that is what each of them is, and both now stop with the duck's extra named rather than
+  assuming it is there.
+
+  What moved is what was only ever the duck's: the `robotd` JSON-RPC transport, the WebSocket
+  stub, the MuJoCo backend, the transport factory, the whole `sim3d` physics simulator and the
+  `upstream_api.py` that names what robotd promises, all of them now under
+  `adapters/microduck/src/quackd_microduck/`. What stayed in the core is the 2D cartoon arena
+  (`quackd/sim2d/`) and the mock transport (`quackd/transport/mock.py`), because those were never
+  the duck's either: four of the seven bodies run in that arena, the duck's mock backend is
+  `MockTransport` itself, and the other six subclass it and draw their frames with the 2D
+  renderer. `UpstreamRef` is `quackd/upstream.py` now, because every adapter cites upstreams and
+  none of them should import a duck to do it. An adapter that was `quackd/adapters/<name>/` is
+  `adapters/<name>/src/quackd_<name>/`, imported as `quackd_<name>`, which is the part of this
+  that breaks a fork or an out-of-tree patch rather than an install. No manifest, verb, datasheet or safety rule changed, and no body gained or
+  lost a backend.
+
+  The rest of the cost is ours and it recurs. A release is eight wheels and eight sdists instead
+  of one and one, they carry one version between them, which `scripts/set_version.py X.Y.Z`
+  writes in all eight places at once, and PyPI takes the core first because every adapter depends
+  on it and a resolver meeting `quackd-lerobot` before `quackd` has nothing to resolve against.
+  CI gained `uv lock --check`, so a lock that has drifted fails a job rather than reaching a
+  release, and a `packaging` job that builds every package, installs the core wheel on its own
+  and proves it carries no adapter and says what to install. Contributors run `uv sync --extra
+  dev`, which installs the core and all seven adapters as editable workspace members and not one
+  robot SDK ([ADR-0037](docs/adr/0037-adapters-are-their-own-packages.md)).
+
 - **A `doctor` probe or a dry run on an arm away from its rest pose now leaves torque on where it
   used to drop it.** `quackd doctor --robot <arm>`, `quackd robot list --probe` and a `--dry-run`
   all connect and disconnect, and disconnecting is what let the arm go. An arm at its recorded rest

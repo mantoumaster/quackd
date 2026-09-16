@@ -33,7 +33,8 @@ what these steps assume) or give a model a goal narrow enough to reach one verb
 --max-steps 3`). `--provider fake` will not do: it answers a free-form goal with a fixed
 script that ignores it.
 
-4. Start upstream's own host. `uv pip install 'quackd[alohamini]'`, then
+4. Start upstream's own host. `uv pip install 'quackd[alohamini]'`, which installs the
+   `quackd-alohamini` package and pyzmq and nothing of upstream's, then
 
    ```bash
    uv run quackd doctor --robot alohamini:zmq --address tcp://<host>:5555

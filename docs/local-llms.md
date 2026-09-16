@@ -5,14 +5,16 @@ tools works: llama.cpp's `llama-server`, vLLM, Ollama, LM Studio, and any other
 OpenAI-compatible endpoint. No API key is needed.
 
 ```bash
-uvx --from "quackd[openai]" quackd run find-and-kick --provider ollama --model qwen3:8b
-uvx --from "quackd[openai]" quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B
-uvx --from "quackd[openai]" quackd run find-and-kick --provider llamacpp
-uvx --from "quackd[openai]" quackd run find-and-kick --provider lmstudio
-uvx --from "quackd[openai]" quackd run find-and-kick --provider local --base-url http://gpu-box:8000/v1
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider ollama --model qwen3:8b
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider llamacpp
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider lmstudio
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider local --base-url http://gpu-box:8000/v1
 ```
 
-The `openai` extra is the `openai` Python package, which is the client for all of these.
+The `openai` extra is the `openai` Python package, which is the client for all of these. The
+`microduck` extra is there because a bare `quackd` carries no robot at all: `find-and-kick`
+means the cartoon duck, and that is the package the duck lives in.
 Leave `--model` off and quackd asks the server for its model list and takes the first one.
 `--model` here is free text: any id your server serves is accepted, because the model catalogue
 `quackd list-models` prints, and that `--model` is checked against, covers the cloud vendors

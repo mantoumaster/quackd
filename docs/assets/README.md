@@ -46,4 +46,4 @@ cannot. It is labelled in the table above, in [licenses.md](../licenses.md) and 
 caption; it is the only such file, and it is non-commercial and share-alike where the rest of
 quackd is Apache-2.0. No upstream mesh, policy, logo or brand asset is committed here in its own
 form, and none ever will be: the simulator fetches those at run time (see
-[`quackd/sim3d/assets.py`](../../quackd/sim3d/assets.py)).
+[`adapters/microduck/src/quackd_microduck/sim3d/assets.py`](../../adapters/microduck/src/quackd_microduck/sim3d/assets.py)).

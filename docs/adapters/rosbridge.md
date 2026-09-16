@@ -10,11 +10,16 @@ verb of its own, `introspect`, which asks the bridge what the body under it actu
 `ws` backend has **never been run against a bridge by us**.
 
 ```bash
-uvx quackd list-verbs --robot rosbridge:mock
-uvx quackd run patrol-and-quack --robot rosbridge:mock --provider fake   # exit 1: requires quack, but base-01 (rosbridge-base) does not provide it
+uvx --from "quackd[rosbridge]" quackd list-verbs --robot rosbridge:mock
+uvx --from "quackd[rosbridge]" quackd run patrol-and-quack --robot rosbridge:mock --provider fake   # exit 1: requires quack, but base-01 (rosbridge-base) does not provide it
 uv pip install "quackd[rosbridge]"
 quackd doctor --robot rosbridge:ws --address "ws://robot.local:9090?cmd_vel=/cmd_vel&odom=/odom&image=/camera/image/compressed"
 ```
+
+The extra is two packages: `quackd-rosbridge`, quackd's own adapter, and roslibpy, which only
+the `ws` backend imports. A bare `uv pip install quackd` carries no robot at all, so `mock`
+needs the extra as much as `ws` does. `uv pip install quackd-rosbridge` is the adapter without
+roslibpy, which is enough for `mock` and for reading the manifest.
 
 The address carries everything: host, port, `ws` or `wss`, and the topics as query
 parameters (`cmd_vel` and `odom` default to `/cmd_vel` and `/odom`; `image` is optional

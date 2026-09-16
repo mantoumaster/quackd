@@ -11,7 +11,7 @@ Upstream pinned at
 [`fbb811f`](https://github.com/huggingface/lerobot/tree/fbb811fca92504439792b97d216f0d00c2268382)
 (`main`, 2026-09-01), first read 2026-09-02 and read again on 2026-09-13. Every name quackd
 spells lives in
-[`quackd/adapters/lerobot/upstream_api.py`](../../quackd/adapters/lerobot/upstream_api.py),
+[`adapters/lerobot/src/quackd_lerobot/upstream_api.py`](../../adapters/lerobot/src/quackd_lerobot/upstream_api.py),
 and why the adapter is shaped the way it is is
 [ADR-0036](../adr/0036-what-the-arm-does-not-say.md).
 
@@ -28,9 +28,9 @@ and why the adapter is shaped the way it is is
 # offline, the default
 uv run quackd run lerobot-lookout --robot lerobot:mock --provider fake
 
-uvx quackd list-verbs --robot lerobot:mock
-uvx quackd validate ducks/find-and-kick.duck --robot lerobot:mock     # exit 1: requires ... does not provide it
-uvx quackd serve-mcp --robots arm=lerobot:mock,duck=microduck:sim2d   # an arm and a duck behind one MCP server
+uvx --from "quackd[lerobot]" quackd list-verbs --robot lerobot:mock
+uvx --from "quackd[lerobot]" quackd validate ducks/find-and-kick.duck --robot lerobot:mock     # exit 1: requires ... does not provide it
+uvx --from "quackd[lerobot,microduck]" quackd serve-mcp --robots arm=lerobot:mock,duck=microduck:sim2d   # an arm and a duck behind one MCP server
 
 # a real arm, after LeRobot's own calibration (see the checklist)
 uv pip install "quackd[lerobot]" && quackd doctor --robot lerobot:real --address /dev/ttyACM0   # Python 3.12+
@@ -79,7 +79,7 @@ drive the arm.
    anything:
 
    ```bash
-   uvx quackd run lerobot-lookout --robot lerobot:mock --provider fake
+   uvx --from "quackd[lerobot]" quackd run lerobot-lookout --robot lerobot:mock --provider fake
    ```
 
    The scripted pilot needs no API key. It answers `assess_task`, calls `report_state`, and
@@ -119,16 +119,25 @@ the file every joint's range is read from: step 5 of
 
 ## Installing it
 
+A bare `uv pip install quackd` brings no robot at all, this arm included. The adapter is its
+own distribution, `quackd-lerobot`, and the extra is what pulls it in:
+
 ```bash
 uv pip install "quackd[lerobot]"
 uv run quackd doctor
 ```
 
+That is two packages: quackd's own adapter, which is where `lerobot:mock` and `lerobot:real`
+both live, and `lerobot[feetech]`, the SDK `real` drives the arm with. The adapter announces
+itself through the `quackd.adapters` entry point group, so there is nothing to register by
+hand. `uv pip install quackd-lerobot` is that adapter without the SDK, which is enough for
+`lerobot:mock` and for reading the manifest, and enough for nothing else.
+
 Two rows in `doctor` decide whether a serial port can be opened at all:
 
 ```
-- lerobot                    not installed (quackd[lerobot])
-- lerobot (feetech bus)      not installed (quackd[lerobot])
+· lerobot                    not installed (quackd[lerobot])
+· lerobot (feetech bus)      not installed (quackd[lerobot])
 ```
 
 The second one is the trap. The Feetech SDK lives in LeRobot's own `[feetech]` extra rather
@@ -136,9 +145,10 @@ than in its base dependencies, so a `pip install lerobot` gives you a package th
 perfectly and then cannot talk to a motor. `quackd[lerobot]` asks for `lerobot[feetech]` for
 that reason. Both rows have to be green before `lerobot:real` can do anything.
 
-The extra carries a `python_version >= '3.12'` marker, because that is LeRobot's floor while
-quackd's own is 3.11. On 3.11 the extra resolves to nothing at all and `doctor` keeps saying
-`not installed` however many times you install it: check `python --version` first.
+The SDK carries a `python_version >= '3.12'` marker, because that is LeRobot's floor while
+quackd's own is 3.11. On 3.11 the extra installs the adapter and the SDK resolves to nothing,
+so `lerobot:mock` works and `doctor` keeps saying `not installed` however many times you
+install it: check `python --version` first.
 
 Without the extra, every real-arm command ends the same way, and this is what it looks like:
 
@@ -731,7 +741,7 @@ touched by anything in the first block: these all happen before or during connec
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot]'` | the extra is not installed in the environment you are running from | install it, and check `python --version` is 3.12 or newer, because the extra's marker silently resolves to nothing below that |
+| `adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot]'` | either the adapter package or LeRobot itself is missing from the environment you are running from | install the extra, and check `python --version` is 3.12 or newer, because the SDK's marker silently resolves to nothing below that |
 | `doctor` shows `lerobot` green and `lerobot (feetech bus)` missing | LeRobot is installed without its `[feetech]` extra, so it imports and cannot open a serial port | `uv pip install "quackd[lerobot]"`, which asks for `lerobot[feetech]` |
 | `lerobot real: --address must be the arm's serial port` | no `--address` at all | pass the port. `--address needs --robot, so quackd knows what it is connecting to` means the opposite mistake, an address with no robot to apply it to |
 | `lerobot real: --address 'x' is not a serial port; it looks like COM5 on Windows or /dev/ttyACM0 elsewhere` | the address is not port-shaped | on Windows find it in Device Manager under Ports; on Linux it is usually `/dev/ttyACM0` |

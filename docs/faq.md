@@ -2,7 +2,8 @@
 
 ## Simulators and the browser demo
 
-**Which simulator should I use?** Both ship, and the cartoon is still the default. `sim2d`
+**Which simulator should I use?** Both come with the Microduck adapter, `quackd[microduck]`
+for the cartoon and `quackd[mujoco]` for the physics, and the cartoon is still the default. `sim2d`
 starts in a second, needs no network, runs anywhere, and is what the three other bodies that have a simulator and
 every CI sweep use. It tests the *agent loop* — search, approach, act, verify — and it will
 never tell you whether a gait works, because it has no joints
@@ -58,8 +59,9 @@ map is in [web/README.md](../web/README.md).
 policy has a floor and quackd will not hide it. Under the model's own actuators the gait does
 not start below about 0.22 m/s or 1.0 rad/s, and above that it achieves roughly 0.42 of what it
 is asked. Both were measured here on one machine and are tagged UNVERIFIED in
-`quackd/sim3d/upstream_api.py`. `move` defaults to 0.15 m/s, so a non-zero twist below the floor
-is scaled up bodily, keeping the ratio between its axes so an arc stays an arc, and a twist
+`adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py`. `move` defaults to 0.15 m/s,
+so a non-zero twist below the floor is scaled up bodily, keeping the ratio between its axes
+so an arc stays an arc, and a twist
 below a third of the floor is dropped to zero rather than turned into a lurch nobody asked for.
 What was asked and what was sent are both in the state (`twist_commanded`, `twist_sent`,
 `gait_floor`) and in the prompt. Upstream trains and deploys with a different actuator model, so
@@ -75,10 +77,14 @@ letting an OpenGL traceback out. Rendering is this backend's real cost, not phys
 
 ## Models and providers
 
-**Does `uvx quackd run … --provider anthropic` work with no extras?** The default install
-is light on purpose (no vendor SDKs). Use `uvx --from "quackd[anthropic]" quackd run …`, or
-`uv pip install "quackd[anthropic]"`. Without the extra, quackd prints exactly that command.
-`--provider fake` needs nothing.
+**Does `uvx quackd run … --provider anthropic` work with no extras?** No, and it now takes
+two of them rather than one: the default install is light on purpose, so a bare `uvx quackd`
+has no vendor SDK and no robot either. Name the brain and the body together:
+`uvx --from "quackd[anthropic,microduck]" quackd run find-and-kick --provider anthropic`, or
+`uv pip install "quackd[anthropic,microduck]"`. Whichever half is missing, quackd prints the
+command that fixes it: the provider one names `quackd[anthropic]`, the robot one names
+`quackd[microduck]` and the six other adapters. `--provider fake` still needs no key and no
+extra for itself, but it does need a body to drive.
 
 **Which models can I pick?** Whatever the catalogue lists for the vendor you named. It is one
 hand-written table of 115 ids across eleven cloud vendors, and `quackd list-models` prints it,
@@ -325,6 +331,26 @@ a cloud provider sees. `quackd memory show` prints it, `quackd memory clear` del
 
 ## What it can and cannot drive
 
+**What does `uv pip install quackd` give me?** The loop, and no robot at all. Every adapter is
+its own distribution built from the same repository, so the core carries the CLI, the executor,
+the verb registry, the 2D arena every simulated body draws itself in and the MCP server, and
+you choose the bodies:
+
+```bash
+uv pip install "quackd[microduck]"    # the duck: the cartoon, the mock and the real one
+uv pip install "quackd[lerobot]"      # an SO-101 arm, with LeRobot on Python 3.12 or newer
+uv pip install "quackd[robots]"       # all seven, each with the SDK its real backend needs
+```
+
+The seven names are `microduck`, `lerobot`, `rosbridge`, `open_duck`, `xlerobot`, `alohamini`
+and `toddlerbot`. `quackd list-adapters` prints the whole table whether or not you have any of
+them, marking each row `installed` or `not installed`, so it is a shopping list before it is an
+inventory. A command that needs a body and finds none refuses by naming what to install rather
+than failing somewhere confusing. Install exactly one adapter and that one is the default, so
+`--robot` is something you start typing when you own a second robot. Install several including
+the Microduck and `microduck:sim2d` stays the default, because that is what the starter `.duck`
+files have always meant.
+
 **Can two different robots share a task?** Yes, with a pilot flock. Register them, group
 them, run it:
 
@@ -355,7 +381,9 @@ Duck Mini v2, an XLeRobot dual-arm cart, an AlohaMini with two arms on a lift, a
 ToddlerBot humanoid), `quackd list-verbs --robot microduck:sim2d` shows what one of them can do,
 and `quackd validate your.duck --robot lerobot:mock` tells you, field by field, whether
 your task fits that body. The rule never bends: a verb that is not in the manifest does
-not exist on that robot. Writing one: [adapters.md](adapters.md).
+not exist on that robot. Those seven are each their own package, and an adapter somebody else
+publishes is found exactly the same way, through the `quackd.adapters` entry point group, with
+no pull request to this repository. Writing one: [adapters.md](adapters.md).
 
 **Why does `validate` say "requires kick, but arm-01 (lerobot-so101) does not provide
 it"?** Because it is true. A `.duck` lists what it needs (`requires`, or for a `duck: 0`

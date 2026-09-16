@@ -31,9 +31,28 @@ ToddlerBot. None of it carries model or perception code of its own.
 Since 0.4 the robot side is an **adapter** that declares a **manifest**: what body it has,
 which intents and sensors, which verbs. The registry, the tool list, the allowlist universe
 and the system prompt are all built from that manifest at connect time; a verb that is not
-in it does not exist. The Microduck is the first adapter, wrapping the five transports
-below unchanged. ([ADR-0017](adr/0017-robot-adapters-and-manifest.md),
+in it does not exist. The Microduck was the first adapter and is still the one the starter
+tasks mean. ([ADR-0017](adr/0017-robot-adapters-and-manifest.md),
 [design/multi-robot.md](design/multi-robot.md))
+
+Each of the seven adapters is also a distribution of its own, built from this repository as a
+uv workspace member and installed by the extra that names it: `quackd[microduck]`,
+`quackd[lerobot]`, `quackd[rosbridge]`, `quackd[open_duck]`, `quackd[xlerobot]`,
+`quackd[alohamini]`, `quackd[toddlerbot]`, and `quackd[robots]` for all seven.
+`uv pip install quackd` installs the core and no robot at all. An installed adapter announces
+itself through the `quackd.adapters` entry point group, which is how the factory finds it and
+the only way an adapter nobody here wrote can be found, so a third party can publish one
+without a pull request to this repository. The core keeps a catalogue of the seven it publishes
+(`quackd/adapters/catalogue.py`), which is why `quackd list-adapters` and `quackd doctor`
+print the whole table on a machine with none of them installed, each row marked not
+installed.
+
+> [!IMPORTANT]
+> With nothing installed there is no default robot: every command that needs a body refuses
+> and names what to install. With exactly one adapter installed, that one is the default,
+> because a machine with one robot has no ambiguity to resolve. With several installed
+> including the Microduck, `microduck:sim2d` stays the default, because the six `duck: 0`
+> starter files mean the cartoon and always have.
 
 ```mermaid
 sequenceDiagram
@@ -70,13 +89,15 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 |---|---|
 | `quackd/cli.py` | The front door: `run · validate · doctor · serve-mcp · list-verbs · list-adapters · list-models · record · trace · memory · robot · flock · discover · announce`. `--robot <adapter>:<backend>` or a registered name everywhere, with `--address`, `--camera-url` and `--token` for a real robot. `--camera-url` repeats for a body that reads several cameras, which today is the LeRobot arm and nothing else. |
 | `quackd/duckfile/` | The `.duck` contract (v0, v1 and v2): strict pydantic frontmatter, parser, generated `schema.json`, `validate.py` (a task against one or more manifests). |
-| `quackd/adapters/` | `RobotManifest` (data: what a robot is and can do), the `RobotAdapter` protocol, the factory behind `--robot`, and one package per robot: `microduck/` wraps the five transports and declares its manifest and extension verbs; `lerobot/` is a desktop arm (`mock`, `real`, [adapters/lerobot.md](adapters/lerobot.md)); `rosbridge/` is any wheeled base over rosbridge (`mock`, `ws`, [adapters/rosbridge.md](adapters/rosbridge.md)); `open_duck/` is an Open Duck Mini v2 (`sim2d`, `mock`, `bridge`, [adapters/open_duck.md](adapters/open_duck.md)), the first body whose robot side quackd also ships, in `bridge/open_duck/`, because its runtime has no network control API; `xlerobot/` is a dual-arm mobile manipulator (`mock`, `zmq`, [adapters/xlerobot.md](adapters/xlerobot.md)), the first body with both a base and arms, and the one quackd talks to by speaking its ZeroMQ host protocol rather than importing it, because upstream is not an installable package; `alohamini/` is two arms on a lift on a wheeled base (`mock`, `sim2d`, `zmq`, [adapters/alohamini.md](adapters/alohamini.md)), which quackd also reaches by speaking its ZeroMQ host protocol; `toddlerbot/` is a small humanoid (`mock`, `sim2d`, `bridge`, [adapters/toddlerbot.md](adapters/toddlerbot.md)), the third body whose robot side quackd ships, because upstream has no network API at all. Every SDK-touching package owns an `upstream_api.py` and a containment test. |
+| `quackd/adapters/` | The robot-shaped part of the core, which contains no robot: `RobotManifest` (data: what a robot is and can do), the `RobotAdapter` protocol, `catalogue.py` (the seven bodies quackd publishes, as strings, importing none of them), and `factory.py`, the factory behind `--robot`, which finds an installed adapter through the `quackd.adapters` entry point group, imports it lazily, and refuses an adapter that is not installed with the extra to type. |
+| `adapters/` | One distribution per robot, seven of them, each a member of the uv workspace and each imported as `quackd_<name>` rather than from the core. `microduck/` is the row below; `lerobot/` is a desktop arm (`mock`, `real`, [adapters/lerobot.md](adapters/lerobot.md)); `rosbridge/` is any wheeled base over rosbridge (`mock`, `ws`, [adapters/rosbridge.md](adapters/rosbridge.md)); `open_duck/` is an Open Duck Mini v2 (`sim2d`, `mock`, `bridge`, [adapters/open_duck.md](adapters/open_duck.md)), the first body whose robot side quackd also ships, in `bridge/open_duck/`, because its runtime has no network control API; `xlerobot/` is a dual-arm mobile manipulator (`mock`, `zmq`, [adapters/xlerobot.md](adapters/xlerobot.md)), the first body with both a base and arms, and the one quackd talks to by speaking its ZeroMQ host protocol rather than importing it, because upstream is not an installable package; `alohamini/` is two arms on a lift on a wheeled base (`mock`, `sim2d`, `zmq`, [adapters/alohamini.md](adapters/alohamini.md)), which quackd also reaches by speaking its ZeroMQ host protocol; `toddlerbot/` is a small humanoid (`mock`, `sim2d`, `bridge`, [adapters/toddlerbot.md](adapters/toddlerbot.md)), the third body whose robot side quackd ships, because upstream has no network API at all. Each declares its own `quackd.adapters` entry point, each depends on the core rather than the other way round, and every SDK-touching package owns an `upstream_api.py` and a containment test. |
+| `adapters/microduck/` | The duck's own package, `quackd_microduck`, holding what only a Microduck has. `transports/` holds `jsonrpc` over `robotd`'s unix socket (experimental), `mujoco` (physics, needs `quackd[mujoco]`, which is `quackd-microduck[mujoco]`), the `websocket` stub and the factory that picks between them; `upstream_api.py` is the only file allowed to spell a Microduck upstream method; `webrtc.py` is the camera peer behind `quackd[microduck-camera]`. `sim3d/` is the physics world: the cartoon's arena minus its person, plus its seeds, deadman, kick cone and scoop, in MuJoCo. `world.py` steps a `Body`, and two exist, a kinematic puppet that needs no download and upstream's own Microduck model walking on upstream's own `alpha_walking.onnx` at 50 Hz. `assets.py` fetches the model and the policies at a pinned commit into `~/.quackd/cache` and checks every file against a recorded sha256; `sim3d/upstream_api.py` is the only file allowed to spell a `microduck_rl` name ([ADR-0030](adr/0030-mujoco-physics-backend.md)). |
+| `quackd/upstream.py` | `UpstreamRef`: one upstream name and whether it is VERIFIED or UNVERIFIED, with its source. Every adapter's `upstream_api.py` is a list of these, so the type belongs to no robot. It lived in the Microduck's own file until the packages split, which made an arm import a duck to cite LeRobot ([adapter-status.md](adapter-status.md), [ADR-0022](adr/0022-per-adapter-upstream-refs.md)). |
 | `quackd/verbs/` | `core.py`: the verbs any robot can carry and what each requires; `aliases.py`: the one alias table; `registry.py`: built from a manifest at connect time; `learned.py`: the v2 interface. |
 | `quackd/safety.py` | The layer that does not trust the LLM: `Executor`, `Budget`, `Heartbeat`, `KillSwitch`. Preconditions arrive from the adapter; the executor spells none. |
 | `quackd/verdict.py` | Whether this body can do this task at all: the words a pilot says it in, which verbs wait for the answer, and the matcher that says which other body could. Read by the prompt, the executor, the loop, the MCP server and a flock role, so a refusal and a role are worded the same ([ADR-0032](adr/0032-datasheets-and-the-verdict.md)). |
-| `quackd/transport/` | The Microduck backend layer: the `DuckTransport` protocol; `sim2d`, `mujoco` (physics, needs `quackd[mujoco]`), `mock`, `jsonrpc` (experimental), `websocket` (stub); `upstream_api.py` is the only file allowed to spell a Microduck upstream method. |
+| `quackd/transport/` | The backend layer every body is built on: the `DuckTransport` protocol (frames in, state in, intents out, plus a heartbeat, a stop and time), the `sim2d` transport and the `mock`. Those two stayed in the core when the duck's transports left, because they were never the duck's: four other bodies subclass them, and every adapter's mock draws itself with the 2D renderer. |
 | `quackd/sim2d/` | The cartoon world, two renders (top-down, duck-cam), the GIF recorder, the optional live window. |
-| `quackd/sim3d/` | The physics world: the cartoon's arena minus its person, plus its seeds, deadman, kick cone and scoop, in MuJoCo. `world.py` steps a `Body`, and two exist, a kinematic puppet that needs no download and upstream's own Microduck model walking on upstream's own `alpha_walking.onnx` at 50 Hz. `assets.py` fetches the model and the policies at a pinned commit into `~/.quackd/cache` and checks every file against a recorded sha256; `upstream_api.py` is the only file allowed to spell a `microduck_rl` name ([ADR-0030](adr/0030-mujoco-physics-backend.md)). |
 | `quackd/perception/` | `Detection` + `Detector`; the HSV colour-blob default; the lazy YOLO extra. |
 | `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
 | `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
@@ -222,6 +243,10 @@ its logs.
   stream becomes one more detector that reads a socket.
 - **Robots** — a package under `adapters/` with `describe()` (the static manifest),
   `make()` (a `RobotAdapter`), `implementations()` (its own verbs) and `conditions()`
-  (its named preconditions); keep upstream names in its own `upstream_api.py`.
+  (its named preconditions); keep upstream names in its own `upstream_api.py`. The factory
+  finds that package by its `quackd.adapters` entry point, so it does not have to be one of
+  the seven here: publish `quackd-<robot>`, declare the entry point, and
+  `--robot <name>:<backend>` reaches it with no change to this repository
+  ([adapters.md](adapters.md)).
 - **Learned verbs** — `register_learned_verb(registry, spec, runner)`; see
   [learned-verbs.md](learned-verbs.md).

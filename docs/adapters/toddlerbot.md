@@ -14,13 +14,20 @@ non-commercial**, so quackd vendors none of it.
 **Nothing here has ever run on a robot.**
 
 ```bash
+uv pip install 'quackd[toddlerbot]'
+
 # offline
-uv run quackd run toddlerbot-lookout --robot toddlerbot:sim2d --provider fake
+quackd run toddlerbot-lookout --robot toddlerbot:sim2d --provider fake
 
 # a real robot, once quackd's daemon is running on it
-uv run quackd run toddlerbot-lookout --robot toddlerbot:bridge \
+quackd run toddlerbot-lookout --robot toddlerbot:bridge \
   --address tcp://toddlerbot.local:9873
 ```
+
+That extra is new, and it installs exactly one package: `quackd-toddlerbot`, quackd's own
+Apache-2.0 adapter, whose only dependency is quackd itself. The client is stdlib, and nothing
+of upstream's is in it, the non-commercial `descriptions/` included. Before this release the
+adapter was part of the core wheel, which is why there was no extra to name.
 
 ## Backends
 

@@ -7,6 +7,13 @@ flock bus), never YAML on disk. The JSON Schema is exported to
 drift-tested. Every adapter's `connect()` returns one; `describe()` returns the static
 version without touching the robot.
 
+The model is core and the robots are not. Each adapter is its own package under `adapters/`,
+imported as `quackd_<name>` and installed by its own extra, and it reaches this file the way
+anyone would: `from quackd.adapters.manifest import RobotManifest`. No module in the core
+imports an adapter by name, which is why an adapter quackd does not publish declares its
+manifest on exactly the same terms ([architecture.md](architecture.md),
+[adapters.md](adapters.md)).
+
 ## Fields
 
 | Field | Type | Meaning |
@@ -94,7 +101,7 @@ equal across `sim2d`, `mock` and the real thing. `rosbridge` is the one exceptio
 names a transport rather than a body: its sheet is whatever the bridge answered when asked
 ([adapters/rosbridge.md](adapters/rosbridge.md)).
 
-The seven shipped sheets, with each figure's confidence:
+The seven sheets quackd publishes, with each figure's confidence:
 
 | Robot | Mass | Height | Joints | Payload | Reach | Endurance | Hands |
 |---|---|---|---|---|---|---|---|
@@ -131,7 +138,10 @@ and MCP `robot_list` returns it.
 
 ## Examples
 
-The seven shipped manifests, from `quackd list-verbs --robot ...` or `describe()`:
+The seven manifests quackd publishes, from `quackd list-verbs --robot ...` or `describe()`.
+Both read the static manifest without connecting to anything, and both need that body's
+package installed: on a machine without it, `quackd list-verbs --robot lerobot:mock` refuses
+with `adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot]'`.
 
 | Robot | embodiment / mobility | intents | verbs |
 |---|---|---|---|

@@ -16,11 +16,21 @@ Apache-2.0) and
 on-robot code). Read on 2026-09-03 at `3203734` and `b23317a`.
 
 ```bash
+uv pip install 'quackd[open_duck]'
+
 quackd list-verbs --robot open_duck:sim2d
 quackd run open-duck-scout --robot open_duck:sim2d --provider fake
 quackd validate ducks/find-and-kick.duck --robot open_duck:sim2d
 # exit 1: requires kick, but open-duck-01 (open-duck-mini-v2) does not provide it
 ```
+
+That extra is new, and it installs exactly one package: `quackd-open-duck`, quackd's own
+Apache-2.0 adapter, whose only dependency is quackd itself. It still pulls nothing from
+upstream, and that is deliberate. The Open Duck Mini Runtime has no license file, so quackd
+never vendors it and never depends on it; the daemon below is copied onto the duck's own Pi
+and lives beside upstream's code there, not in any wheel ([licenses.md](../licenses.md)).
+Before this release the adapter was part of the core wheel, which is why there was no extra
+to name.
 
 ## Backends
 

@@ -19,10 +19,15 @@ and step 8 is where you find out what happens when that socket is not there.
 the two tasks you will run on the robot run against it unchanged:
 
 ```bash
-uv pip install 'quackd[mujoco,anthropic]'
+uv pip install 'quackd[mujoco,anthropic]'   # the duck's package with its simulator, and your provider
 quackd run microduck-lookout --robot microduck:mujoco --provider anthropic
 quackd run find-and-kick --robot microduck:mujoco --provider anthropic
 ```
+
+`quackd[mujoco]` is `quackd-microduck[mujoco]`, the duck's own package plus its physics
+simulator, so this one install is also what puts `microduck:jsonrpc` on the laptop for every
+step below. A plain `uv pip install quackd` carries no robot at all and would get you to
+step 1 with nothing to connect with.
 
 The first run fetches the model and the policies into `~/.quackd/cache`, so do that before you
 are standing next to somebody else's robot rather than on their Wi-Fi.
@@ -110,7 +115,8 @@ quackd doctor --robot microduck:jsonrpc --address tcp://127.0.0.1:9870 \
   --camera-url webrtc://127.0.0.1:8443
 ```
 
-`doctor` fetches a frame and prints its size. Needs `quackd[microduck-camera]`.
+`doctor` fetches a frame and prints its size. Needs `quackd[microduck-camera]`, which is the
+same duck package with its WebRTC camera: `uv pip install 'quackd[microduck-camera]'`.
 
 This takes the robot's one media session, so the browser console cannot be open at the same
 time. It installs nothing on the duck.

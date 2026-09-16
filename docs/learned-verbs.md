@@ -55,7 +55,7 @@ skill intent that the arm's own learned policy executes ([adapters/lerobot.md](a
 Every shipped policy is `obs[1,61] → actions[1,14]` at 50 Hz: 48 proprioception values +
 a 13-value command `[vel(3), head(4), body(6)]`; the observation normaliser is baked into
 the ONNX at export. The whole contract is cited at a pin in
-[`quackd/sim3d/upstream_api.py`](../quackd/sim3d/upstream_api.py) (`OBSERVATION`, `COMMAND`,
+[`adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py`](../adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py) (`OBSERVATION`, `COMMAND`,
 `CONTROL`, `POLICY_METADATA`), which is what the MuJoCo backend reads. Upstream's
 `manifest.json` lists every policy with its kind (perpetual, scripted or episodic) and its
 command encoding. `robotd` checks the shape at load and points at policies by role in
@@ -71,7 +71,7 @@ sit↔stand, ground pick, kick left/right, roller, roller crouch, roulade.
 2. **A sim runner.** This is the part that changed. `microduck:mujoco` runs upstream's
    walking and standing policies on upstream's model at 50 Hz on a laptop
    ([ADR-0030](adr/0030-mujoco-physics-backend.md)), so the machinery a learned verb needs
-   already exists in `quackd/sim3d/microduck.py`: an onnxruntime session, the 61-value
+   already exists in `adapters/microduck/src/quackd_microduck/sim3d/microduck.py`: an onnxruntime session, the 61-value
    observation built from the model's own state, and `ctrl = default_pose + action *
    action_scale` written every tick. What is missing is a way in. `MicroduckBody` loads
    exactly two sessions in `__init__` and chooses between them in `control()` by the twist
@@ -85,7 +85,7 @@ sit↔stand, ground pick, kick left/right, roller, roller crouch, roulade.
    `alpha_ground_pick`, `alpha_sitstand`) did nothing from a standing pose when quackd tried
    them, which is why `kick`, `grab` and `sit` on `microduck:mujoco` are stand-ins rather
    than policies (`KICK_STANDIN` in
-   [`quackd/sim3d/upstream_api.py`](../quackd/sim3d/upstream_api.py)). The entry pose, the
+   [`adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py`](../adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py)). The entry pose, the
    start condition and the stop condition are not in the 61-value observation, and nobody
    has worked out where they belong. Until that is answered, the cheapest first learned verb
    to attempt in sim is a perpetual one with the same contract: a different gait rather than
