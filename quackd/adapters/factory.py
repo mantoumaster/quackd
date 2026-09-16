@@ -155,13 +155,45 @@ def parse_robots(text: str) -> list[RobotSpec]:
     return specs
 
 
+class NoRobotNamed(AdapterError):
+    """Nothing said which body, and quackd will not pick one for you."""
+
+
+def default_spec() -> RobotSpec:
+    """The body a command means when nothing named one, or a refusal saying why there is none.
+
+    Three answers, and which one you get depends only on what is installed here. With nothing
+    installed there is no robot to default to and the message says what to install. With
+    exactly one adapter installed that one is the default, because a machine with one robot
+    has no ambiguity to resolve and making its owner type the name would be ceremony. With
+    several, quackd refuses to guess: picking the duck because it used to be the default is
+    how somebody ends up running a task against a simulator they forgot they had."""
+    usable = [name for name in adapter_names() if is_installed(name)]
+    if not usable:
+        publishes = ", ".join(n for n in BY_NAME if n != "microduck")
+        raise NoRobotNamed(
+            'no robot adapter is installed: uv pip install "quackd[microduck]" '
+            f"(or {publishes}; quackd[robots] installs all seven), "
+            "then --robot <adapter>:<backend>"
+        )
+    if len(usable) == 1:
+        only = usable[0]
+        return RobotSpec(only, info(only).backends[0])
+    if DEFAULT_ROBOT.split(":", 1)[0] in usable:
+        return parse_robot_spec(DEFAULT_ROBOT)
+    raise NoRobotNamed(
+        "no robot named: --robot <adapter>:<backend> or a registered name "
+        f"(quackd robot list); installed here: {', '.join(usable)}"
+    )
+
+
 def resolve_robot(robot: str | None, *, duck_default: str | None = None) -> RobotSpec:
-    """`--robot` wins; without it, the duck's own `robots:` default, then `microduck:sim2d`."""
+    """`--robot` wins; without it, the duck's own `robots:` default, then whatever is here."""
     if robot:
         return parse_robot_spec(robot)
     if duck_default:
         return parse_robot_spec(duck_default)
-    return parse_robot_spec(DEFAULT_ROBOT)
+    return default_spec()
 
 
 def _module(adapter: str) -> Any:

@@ -14,7 +14,16 @@ from typer.testing import CliRunner
 
 from quackd.adapters.base import RobotAdapter
 from quackd.adapters.factory import make_adapter, parse_robot_spec
-from quackd.adapters.toddlerbot import (
+from quackd.agent.prompts import build_system_prompt
+from quackd.cli import app
+from quackd.duckfile.parser import load_duck
+from quackd.duckfile.validate import validate_duck
+from quackd.perception.color_blob import ColorBlobDetector
+from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all
+from quackd.transport.base import Intent
+from quackd.verbs.core import scan_mode
+from quackd.verbs.registry import VerbNotFound, registry_from_manifest
+from quackd_toddlerbot import (
     MAX_VX,
     MAX_VY,
     MAX_WZ,
@@ -25,18 +34,9 @@ from quackd.adapters.toddlerbot import (
     implementations,
     toddlerbot_manifest,
 )
-from quackd.adapters.toddlerbot.mock import ToddlerBotMock
-from quackd.adapters.toddlerbot.sim2d import ToddlerBotSim2D
-from quackd.adapters.toddlerbot.verbs import MOTIONS, SHIPPED_MOTIONS, neck_limits
-from quackd.agent.prompts import build_system_prompt
-from quackd.cli import app
-from quackd.duckfile.parser import load_duck
-from quackd.duckfile.validate import validate_duck
-from quackd.perception.color_blob import ColorBlobDetector
-from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all
-from quackd.transport.base import Intent
-from quackd.verbs.core import scan_mode
-from quackd.verbs.registry import VerbNotFound, registry_from_manifest
+from quackd_toddlerbot.mock import ToddlerBotMock
+from quackd_toddlerbot.sim2d import ToddlerBotSim2D
+from quackd_toddlerbot.verbs import MOTIONS, SHIPPED_MOTIONS, neck_limits
 
 runner = CliRunner()
 
@@ -409,7 +409,7 @@ def test_the_factory_builds_every_backend(backend: str) -> None:
 
 
 def test_an_unknown_backend_names_the_real_ones() -> None:
-    from quackd.adapters.toddlerbot import make
+    from quackd_toddlerbot import make
 
     with pytest.raises(ValueError, match="unknown toddlerbot backend"):
         make("real")

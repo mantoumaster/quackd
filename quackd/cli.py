@@ -2129,10 +2129,17 @@ def _can_prompt() -> bool:
 
 
 def _rest_pose_text(pose: dict[str, float]) -> Any:
-    """A recorded pose on one line per joint, in the arm's own bus order where it has one."""
-    from quackd_lerobot import JOINTS
+    """A recorded pose on one line per joint, in the arm's own bus order where it has one.
 
-    order = {joint: i for i, joint in enumerate(JOINTS)}
+    Alphabetical when the arm's package is not installed, because a pose is worth printing
+    whether or not the adapter that recorded it is still here: `quackd robot show` is how you
+    read a registry on a machine that cannot drive half of it."""
+    joints: tuple[str, ...] = ()
+    with contextlib.suppress(ImportError):
+        from quackd_lerobot import JOINTS
+
+        joints = JOINTS
+    order = {joint: i for i, joint in enumerate(joints)}
     listed = sorted(pose.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0]))
     return Text("\n".join(f"{joint} {value:.1f}" for joint, value in listed))
 

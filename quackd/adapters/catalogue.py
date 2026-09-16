@@ -51,6 +51,7 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
             "🧪 jsonrpc · ⏳ websocket"
         ),
         summary="a 25 cm biped duck from Pollen Robotics",
+        extra="quackd[microduck]",
     ),
     AdapterInfo(
         name="lerobot",
@@ -84,6 +85,7 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
             "never run on a robot)"
         ),
         summary="an Open Duck Mini v2, the one you can build yourself",
+        extra="quackd[open_duck]",
     ),
     # XLeRobot is not an installable package, so quackd speaks its ZeroMQ host protocol rather
     # than importing it: the extra is pyzmq and nothing else (ADR-0026).
@@ -121,6 +123,7 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
             "never run on a robot)"
         ),
         summary="a small open-source humanoid",
+        extra="quackd[toddlerbot]",
     ),
 )
 

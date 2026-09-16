@@ -20,9 +20,9 @@ from typing import Any
 
 import pytest
 
-from quackd.sim3d import assets
-from quackd.sim3d import upstream_api as up
-from quackd.sim3d.assets import (
+from quackd_microduck.sim3d import assets
+from quackd_microduck.sim3d import upstream_api as up
+from quackd_microduck.sim3d.assets import (
     NOTICE_FILE,
     AssetError,
     cache_root,

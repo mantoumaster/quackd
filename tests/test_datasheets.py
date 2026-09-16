@@ -11,9 +11,9 @@ import pytest
 
 from quackd.adapters.factory import ADAPTER_NAMES, BACKENDS, RobotSpec, describe
 from quackd.adapters.manifest import Datasheet, Figure, RobotManifest, VerbSpec
-from quackd.adapters.microduck import microduck_manifest
-from quackd.adapters.xlerobot import xlerobot_manifest
 from quackd.agent.prompts import BODY_HEADING, body_lines, body_section, body_summary
+from quackd_microduck import microduck_manifest
+from quackd_xlerobot import xlerobot_manifest
 
 SPECS = [RobotSpec(adapter, backend) for adapter in ADAPTER_NAMES for backend in BACKENDS[adapter]]
 

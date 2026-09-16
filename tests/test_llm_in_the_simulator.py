@@ -31,14 +31,14 @@ import pytest
 pytest.importorskip("mujoco")
 
 from quackd.adapters.factory import RobotSpec, registry_for
-from quackd.adapters.microduck import MicroduckAdapter
 from quackd.agent.loop import RunConfig, run_duck
 from quackd.agent.prompts import build_system_prompt
 from quackd.duckfile.parser import duck_from_goal, load_duck
 from quackd.duckfile.schema import Budgets
 from quackd.perception.color_blob import ColorBlobDetector
-from quackd.sim3d.world import MujocoWorld
-from quackd.transport.mujoco import MujocoTransport
+from quackd_microduck import MicroduckAdapter
+from quackd_microduck.sim3d.world import MujocoWorld
+from quackd_microduck.transports.mujoco import MujocoTransport
 from tests.gl import require_render
 
 #: The stand-in body: no download, no ONNX, and the gait is not what is under test here.

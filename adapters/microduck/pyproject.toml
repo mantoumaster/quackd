@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quackd-microduck"
+dynamic = ["version"]
+description = "The Microduck adapter for quackd, with its simulators. Install it as quackd[microduck]."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Rok Benko" }]
+dependencies = ["quackd>=0.9,<0.10"]
+
+[project.optional-dependencies]
+# The physics simulator: MuJoCo on the CPU, no GPU, both imported only inside connect().
+# onnxruntime is what runs the robot's own walking policy; the meshes and that policy are
+# fetched at run time and never shipped here (docs/licenses.md).
+mujoco = ["mujoco>=3.12,<4", "onnxruntime>=1.20"]
+# The duck's camera reaches clients only as an H.264 WebRTC track from mediad, so a picture
+# means being a WebRTC peer. Heavy, and needed by nobody who is not pointing quackd at a
+# real Microduck.
+camera = ["aiortc>=1.9", "av>=12", "websockets>=13"]
+
+[project.entry-points."quackd.adapters"]
+microduck = "quackd_microduck"
+
+[project.urls]
+Homepage = "https://github.com/rokbenko/quackd"
+Documentation = "https://github.com/rokbenko/quackd/blob/main/docs/adapter-status.md"
+
+[tool.hatch.version]
+path = "src/quackd_microduck/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quackd_microduck"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md", "pyproject.toml"]
+
+[tool.uv.sources]
+quackd = { workspace = true }

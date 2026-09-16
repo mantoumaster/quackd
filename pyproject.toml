@@ -62,7 +62,19 @@ live = ["pygame>=2.5"]
 # The physics simulator: MuJoCo on the CPU, no GPU, both imported only inside connect().
 # onnxruntime is what runs the robot's own walking policy; the Microduck's meshes and that
 # policy are fetched at run time and never shipped here (docs/licenses.md).
-mujoco = ["mujoco>=3.12,<4", "onnxruntime>=1.20"]
+mujoco = ["quackd-microduck[mujoco]"]
+microduck = ["quackd-microduck"]
+# Every robot quackd publishes, each with the SDK its real backend needs. The honest "all":
+# it pulls torch on Python 3.12 because the arm does.
+robots = [
+  "quackd-microduck",
+  "quackd-lerobot[sdk]",
+  "quackd-rosbridge[sdk]",
+  "quackd-open-duck",
+  "quackd-xlerobot",
+  "quackd-alohamini",
+  "quackd-toddlerbot",
+]
 # LAN: zeroconf discovery and the MQTT flock bus (docs/lan.md). Never imported by default.
 lan = ["zeroconf>=0.132", "paho-mqtt>=2,<3"]
 # LeRobot needs Python 3.12 and pulls torch; the marker keeps the lock solvable on 3.11.
@@ -70,19 +82,21 @@ lan = ["zeroconf>=0.132", "paho-mqtt>=2,<3"]
 # base dependency of lerobot). Without it `import lerobot` succeeds and opening the arm's port
 # fails, so it belongs in the extra rather than in a paragraph somebody has to read.
 lerobot = ["quackd-lerobot[sdk]"]
-rosbridge = ["roslibpy>=2,<3"]
+rosbridge = ["quackd-rosbridge[sdk]"]
 # XLeRobot is not an installable package: its own install is copying files into a lerobot
 # tree. So quackd speaks its ZeroMQ host protocol instead and needs only pyzmq, which keeps
 # the 3.11 floor and works on Windows (ADR-0026, docs/adapters/xlerobot.md).
-xlerobot = ["pyzmq>=26"]
+xlerobot = ["quackd-xlerobot"]
 # AlohaMini is a fork of LeRobot that calls itself lerobot and is not published, so it
 # cannot be a dependency at all. quackd speaks its ZeroMQ host protocol instead.
-alohamini = ["pyzmq>=26"]
+alohamini = ["quackd-alohamini"]
+open_duck = ["quackd-open-duck"]
+toddlerbot = ["quackd-toddlerbot"]
 # The Microduck's camera reaches clients only as an H.264 WebRTC track from mediad — there is
 # no camera method in duck-ipc-proto and no snapshot endpoint — so a picture means being a
 # WebRTC peer. Heavy (aiortc pulls av, which pulls FFmpeg), needed by nobody who is not
 # pointing quackd at a real Microduck, and never imported unless --camera-url says webrtc://.
-microduck-camera = ["aiortc>=1.9", "av>=12", "websockets>=13"]
+microduck-camera = ["quackd-microduck[camera]"]
 dev = [
   # hatchling is already the build backend; dev gets it so tests/test_pypi_readme.py
   # can import the metadata hook that rewrites the README for PyPI.
@@ -94,7 +108,13 @@ dev = [
   "types-PyYAML",
   "pre-commit>=3.7",
   # every adapter, without the SDKs: the suite drives each one against fakes and a mock
+  "quackd-microduck",
   "quackd-lerobot",
+  "quackd-rosbridge",
+  "quackd-open-duck",
+  "quackd-xlerobot",
+  "quackd-alohamini",
+  "quackd-toddlerbot",
   # The one robot SDK dev carries, because it is the only way the xlerobot wire protocol is
   # exercised for real: tests/test_xlerobot_host.py runs quackd's client against a fake host
   # over loopback sockets. It is a small pure wheel on every platform CI runs, unlike torch
@@ -104,17 +124,6 @@ dev = [
 
 [project.scripts]
 quackd = "quackd.cli:main"
-
-# How an adapter says it is here. quackd's own seven are declared so the mechanism is the
-# same one a third party's adapter uses, rather than a path only outsiders take; the core
-# also finds its own by looking, so a stale editable install still works.
-[project.entry-points."quackd.adapters"]
-microduck = "quackd.adapters.microduck"
-rosbridge = "quackd.adapters.rosbridge"
-open_duck = "quackd.adapters.open_duck"
-xlerobot = "quackd.adapters.xlerobot"
-alohamini = "quackd.adapters.alohamini"
-toddlerbot = "quackd.adapters.toddlerbot"
 
 [project.urls]
 Homepage = "https://github.com/rokbenko/quackd"
@@ -128,7 +137,13 @@ Changelog = "https://github.com/rokbenko/quackd/blob/main/CHANGELOG.md"
 members = ["adapters/*"]
 
 [tool.uv.sources]
+quackd-microduck = { workspace = true }
 quackd-lerobot = { workspace = true }
+quackd-rosbridge = { workspace = true }
+quackd-open-duck = { workspace = true }
+quackd-xlerobot = { workspace = true }
+quackd-alohamini = { workspace = true }
+quackd-toddlerbot = { workspace = true }
 
 [tool.hatch.version]
 path = "quackd/__init__.py"
@@ -172,7 +187,13 @@ extend-exclude = ["runs"]
 [tool.ruff.lint.isort]
 known-first-party = [
   "quackd",
+  "quackd_alohamini",
+  "quackd_microduck",
   "quackd_lerobot",
+  "quackd_open_duck",
+  "quackd_rosbridge",
+  "quackd_toddlerbot",
+  "quackd_xlerobot",
   "tests",
 ]
 
@@ -187,6 +208,9 @@ ignore = ["RUF012", "B008"]
 # The scripts that build the README's assets and the social card are run by hand and
 # report as they go.
 "docs/assets/*.py" = ["T20"]
+# Run by hand at a release and reports which of the eight files it rewrote, which is the
+# whole of its user interface.
+"scripts/*.py" = ["T20"]
 # The browser demo's dev server. It is a command a person runs, and printing the URL it
 # mounted on is the whole of its user interface.
 "web/serve.py" = ["T20"]
@@ -195,7 +219,7 @@ ignore = ["RUF012", "B008"]
 # And the third: it cuts the mark out of quackd-web's duck and says where it put it.
 "web/make_mark.py" = ["T20"]
 # Prose-heavy files: upstream citations and LLM-facing prompt text read better unwrapped.
-"quackd/transport/upstream_api.py" = ["E501"]
+"adapters/microduck/src/quackd_microduck/upstream_api.py" = ["E501"]
 "quackd/agent/prompts.py" = ["E501"]
 
 [tool.ruff.format]

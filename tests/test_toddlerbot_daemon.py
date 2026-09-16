@@ -23,14 +23,14 @@ from types import ModuleType
 import numpy as np
 import pytest
 
-from quackd.adapters.toddlerbot import ToddlerBotAdapter
-from quackd.adapters.toddlerbot.bridge import (
+from quackd.transport.base import HeartbeatError, Intent, TransportError
+from quackd_toddlerbot import ToddlerBotAdapter
+from quackd_toddlerbot.bridge import (
     DEFAULT_PORT,
     PROTOCOL,
     PROTOCOL_VERSION,
     ToddlerBotBridge,
 )
-from quackd.transport.base import HeartbeatError, Intent, TransportError
 from tests.conftest import REPO
 
 DAEMON = REPO / "bridge" / "toddlerbot" / "quackd_toddlerbot_bridge.py"

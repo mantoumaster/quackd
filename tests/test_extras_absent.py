@@ -40,7 +40,12 @@ assert [r["name"] for r in rows] == [
     "alohamini",
     "toddlerbot",
 ], rows
-assert not any(r["installed"] for r in rows if r["extra"] != "built-in"), rows
+# every adapter that needs a library reports itself unusable when that library is gone. Asked
+# through `sdk` rather than through `extra`, because an extra now also buys the adapter package
+# itself, and a body with no SDK at all (the Open Duck, the ToddlerBot) is unaffected by torch
+# being absent and should not claim to be.
+assert not any(r["installed"] for r in rows if r["sdk"] is not None), rows
+assert not any(r["sdk"] for r in rows), rows
 for adapter, backends in BACKENDS.items():
     for backend in backends:
         m = describe(RobotSpec(adapter, backend))
@@ -63,7 +68,6 @@ def test_everything_imports_without_any_extra() -> None:
 
 
 def test_the_default_path_did_not_import_a_heavy_module() -> None:
-    import quackd.adapters.rosbridge
     import quackd.flock.mqtt_bus  # noqa: F401
 
     for name in ("torch", "lerobot", "roslibpy"):

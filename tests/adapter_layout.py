@@ -2,7 +2,7 @@
 
 The adapters are moving out of the core wheel one at a time, so for a while `lerobot` is
 `quackd_lerobot` in `adapters/lerobot/src/` and `toddlerbot` is still
-`quackd.adapters.toddlerbot` in `quackd/`. A test that cares which robot a file belongs to
+`quackd_toddlerbot` in `quackd/`. A test that cares which robot a file belongs to
 should not also have to care which half of that move it is in, so it asks here instead.
 """
 

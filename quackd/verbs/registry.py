@@ -257,14 +257,19 @@ def core_registry() -> VerbRegistry:
 
 
 def default_registry() -> VerbRegistry:
-    """The Microduck's vocabulary without a connection.
+    """The vocabulary a caller gets when it holds a transport that never described itself.
 
-    The fallback for a caller holding a bare `DuckTransport` rather than an adapter, which is
-    a Microduck transport by definition: `sim2d`, `mock` and `jsonrpc` all are, and none of
-    them returns a manifest to rebuild a vocabulary from. It imports the Microduck adapter,
-    so it belongs to that robot rather than to the core, and it moves there when the adapters
-    become their own packages. Learned verbs are added by whoever has one (v2)."""
-    from quackd.adapters.microduck import MICRODUCK_VERBS, microduck_conditions, microduck_manifest
+    A bare `DuckTransport` returns no manifest from `connect()`, so there is nothing to build
+    a vocabulary from. Historically that meant the Microduck's list, because every bare
+    transport was a Microduck's. Now that the duck is a package of its own, it is asked when
+    it is installed and the core verbs answer when it is not: a body that never said what it
+    can do gets the verbs every body has, which is the honest floor.
+
+    Learned verbs are added by whoever has one (v2)."""
+    try:
+        from quackd_microduck import MICRODUCK_VERBS, microduck_conditions, microduck_manifest
+    except ImportError:
+        return core_registry()
 
     return registry_from_manifest(
         microduck_manifest("sim2d"),

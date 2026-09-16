@@ -46,8 +46,8 @@ from quackd.adapters.base import MULTI_CAMERA_SPECS, AdapterError, camera_urls
 from quackd.adapters.factory import (
     ADAPTER_NAMES,
     BACKENDS,
-    DEFAULT_ROBOT,
     RobotSpec,
+    default_spec,
     parse_robot_spec,
 )
 from quackd.memory import robot_slug
@@ -669,7 +669,11 @@ def resolve_robot_ref(
     has always been, and `check_name` refuses registering a robot under an adapter's name."""
     reg = registry if registry is not None else Registry()
     if text is None:
-        return Resolved(parse_robot_spec(duck_default or DEFAULT_ROBOT))
+        if duck_default:
+            return Resolved(parse_robot_spec(duck_default))
+        # no flag and no `robots:` line, so it is whatever is installed here, or a refusal
+        # naming what to install. quackd stopped shipping a body to fall back to.
+        return Resolved(default_spec())
     text = text.strip()
     if ":" not in text:
         entry = reg.get_robot(text)

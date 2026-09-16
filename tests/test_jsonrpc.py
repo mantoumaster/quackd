@@ -18,15 +18,15 @@ from PIL import Image
 
 from quackd.duckfile.parser import parse_duck_text
 from quackd.safety import Executor
-from quackd.transport import upstream_api as up
 from quackd.transport.base import HeartbeatError, Intent, TransportError
-from quackd.transport.jsonrpc_unix import (
+from quackd.verbs.registry import VerbRegistry
+from quackd_microduck import upstream_api as up
+from quackd_microduck.transports.jsonrpc_unix import (
     JsonRpcUnixTransport,
     camera_stale_after_s,
     parse_address,
     state_stale_after_s,
 )
-from quackd.verbs.registry import VerbRegistry
 
 DUCK = parse_duck_text(
     "---\nduck: 0\nname: t\ndescription: d\nverbs:\n  allow: [walk, kick, quack, gaze]\n"

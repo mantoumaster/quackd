@@ -12,16 +12,6 @@ from typer.testing import CliRunner
 
 from quackd.adapters.base import RobotAdapter
 from quackd.adapters.factory import make_adapter, parse_robot_spec
-from quackd.adapters.open_duck import (
-    OpenDuckAdapter,
-    conditions,
-    describe,
-    implementations,
-    open_duck_manifest,
-)
-from quackd.adapters.open_duck.mock import OpenDuckMock
-from quackd.adapters.open_duck.sim2d import OpenDuckSim2D
-from quackd.adapters.open_duck.verbs import GAZE_YAW_DEG, MAX_VX, MAX_VY, MAX_WZ, mood_for
 from quackd.agent.prompts import build_system_prompt
 from quackd.cli import app
 from quackd.duckfile.parser import load_duck, parse_duck_text
@@ -31,6 +21,16 @@ from quackd.safety import Executor, allow_all
 from quackd.transport.base import Intent
 from quackd.verbs.core import scan_mode
 from quackd.verbs.registry import VerbNotFound, registry_from_manifest
+from quackd_open_duck import (
+    OpenDuckAdapter,
+    conditions,
+    describe,
+    implementations,
+    open_duck_manifest,
+)
+from quackd_open_duck.mock import OpenDuckMock
+from quackd_open_duck.sim2d import OpenDuckSim2D
+from quackd_open_duck.verbs import GAZE_YAW_DEG, MAX_VX, MAX_VY, MAX_WZ, mood_for
 
 runner = CliRunner()
 
@@ -292,7 +292,7 @@ def test_the_factory_makes_every_backend() -> None:
         adapter = make_adapter(parse_robot_spec(f"open_duck:{backend}"))
         assert adapter.name == "open_duck" and adapter.backend == backend
     with pytest.raises(ValueError, match="unknown open_duck backend"):
-        from quackd.adapters.open_duck import make
+        from quackd_open_duck import make
 
         make("mujoco")
 
@@ -313,11 +313,11 @@ async def test_a_fall_blind_robot_asks_the_human_once_before_it_walks() -> None:
     IMU has one owner and it is upstream's loop — so refusing per verb would refuse every
     locomotion verb forever and decommission the robot. Ask the person in the room once,
     before a leg moves, and let them say no."""
-    from quackd.adapters.open_duck.mock import OpenDuckMock
     from quackd.agent.loop import AgentLoop, RunConfig
     from quackd.agent.providers.fake import FakeProvider
     from quackd.duckfile.parser import parse_duck_text
     from quackd.safety import Aborted
+    from quackd_open_duck.mock import OpenDuckMock
 
     duck = parse_duck_text(
         "---\nduck: 1\nname: t\ndescription: d\nrequires: [move]\nverbs:\n"

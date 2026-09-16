@@ -389,3 +389,15 @@ __all__ = [
     "lerobot_manifest",
     "make",
 ]
+
+
+# What this adapter reads from upstream, for `quackd doctor`. Declared here rather than in a
+# table in the core, because the list belongs to whoever wrote the adapter (ADR-0022). The
+# import is deferred so that naming the upstream costs nothing until doctor asks.
+def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
+    from quackd_lerobot import upstream_api
+
+    return (("lerobot", upstream_api, "docs/adapters/lerobot.md", "an arm (the real backend)"),)
+
+
+UPSTREAMS = _upstream_rows()

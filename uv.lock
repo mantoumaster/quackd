@@ -23,7 +23,13 @@ resolution-markers = [
 [manifest]
 members = [
     "quackd",
+    "quackd-alohamini",
     "quackd-lerobot",
+    "quackd-microduck",
+    "quackd-open-duck",
+    "quackd-rosbridge",
+    "quackd-toddlerbot",
+    "quackd-xlerobot",
 ]
 
 [[package]]
@@ -3545,7 +3551,7 @@ all = [
     { name = "openai" },
 ]
 alohamini = [
-    { name = "pyzmq" },
+    { name = "quackd-alohamini" },
 ]
 anthropic = [
     { name = "anthropic" },
@@ -3563,7 +3569,13 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pyzmq" },
+    { name = "quackd-alohamini" },
     { name = "quackd-lerobot" },
+    { name = "quackd-microduck" },
+    { name = "quackd-open-duck" },
+    { name = "quackd-rosbridge" },
+    { name = "quackd-toddlerbot" },
+    { name = "quackd-xlerobot" },
     { name = "ruff" },
     { name = "types-pyyaml" },
 ]
@@ -3592,17 +3604,20 @@ live = [
 meta = [
     { name = "openai" },
 ]
+microduck = [
+    { name = "quackd-microduck" },
+]
 microduck-camera = [
-    { name = "aiortc" },
-    { name = "av" },
-    { name = "websockets" },
+    { name = "quackd-microduck", extra = ["camera"] },
 ]
 mistral = [
     { name = "openai" },
 ]
 mujoco = [
-    { name = "mujoco" },
-    { name = "onnxruntime" },
+    { name = "quackd-microduck", extra = ["mujoco"] },
+]
+open-duck = [
+    { name = "quackd-open-duck" },
 ]
 openai = [
     { name = "openai" },
@@ -3610,11 +3625,23 @@ openai = [
 qwen = [
     { name = "openai" },
 ]
+robots = [
+    { name = "quackd-alohamini" },
+    { name = "quackd-lerobot", extra = ["sdk"] },
+    { name = "quackd-microduck" },
+    { name = "quackd-open-duck" },
+    { name = "quackd-rosbridge", extra = ["sdk"] },
+    { name = "quackd-toddlerbot" },
+    { name = "quackd-xlerobot" },
+]
 rosbridge = [
-    { name = "roslibpy" },
+    { name = "quackd-rosbridge", extra = ["sdk"] },
+]
+toddlerbot = [
+    { name = "quackd-toddlerbot" },
 ]
 xlerobot = [
-    { name = "pyzmq" },
+    { name = "quackd-xlerobot" },
 ]
 yolo = [
     { name = "ultralytics", version = "8.4.123", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and sys_platform == 'darwin'" },
@@ -3623,18 +3650,14 @@ yolo = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiortc", marker = "extra == 'microduck-camera'", specifier = ">=1.9" },
     { name = "anthropic", marker = "extra == 'all'", specifier = ">=1.0,<2" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=1.0,<2" },
-    { name = "av", marker = "extra == 'microduck-camera'", specifier = ">=12" },
     { name = "google-genai", marker = "extra == 'all'", specifier = ">=1.0" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "hatchling", marker = "extra == 'dev'", specifier = ">=1.25" },
     { name = "mcp", specifier = ">=2.0,<3" },
-    { name = "mujoco", marker = "extra == 'mujoco'", specifier = ">=3.12,<4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "onnxruntime", marker = "extra == 'mujoco'", specifier = ">=1.20" },
     { name = "openai", marker = "extra == 'all'", specifier = ">=1.50" },
     { name = "openai", marker = "extra == 'cohere'", specifier = ">=1.50" },
     { name = "openai", marker = "extra == 'deepseek'", specifier = ">=1.50" },
@@ -3655,21 +3678,52 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "pyzmq", marker = "extra == 'alohamini'", specifier = ">=26" },
     { name = "pyzmq", marker = "extra == 'dev'", specifier = ">=26" },
-    { name = "pyzmq", marker = "extra == 'xlerobot'", specifier = ">=26" },
+    { name = "quackd-alohamini", marker = "extra == 'alohamini'", editable = "adapters/alohamini" },
+    { name = "quackd-alohamini", marker = "extra == 'dev'", editable = "adapters/alohamini" },
+    { name = "quackd-alohamini", marker = "extra == 'robots'", editable = "adapters/alohamini" },
     { name = "quackd-lerobot", marker = "extra == 'dev'", editable = "adapters/lerobot" },
     { name = "quackd-lerobot", extras = ["sdk"], marker = "extra == 'lerobot'", editable = "adapters/lerobot" },
+    { name = "quackd-lerobot", extras = ["sdk"], marker = "extra == 'robots'", editable = "adapters/lerobot" },
+    { name = "quackd-microduck", marker = "extra == 'dev'", editable = "adapters/microduck" },
+    { name = "quackd-microduck", marker = "extra == 'microduck'", editable = "adapters/microduck" },
+    { name = "quackd-microduck", marker = "extra == 'robots'", editable = "adapters/microduck" },
+    { name = "quackd-microduck", extras = ["camera"], marker = "extra == 'microduck-camera'", editable = "adapters/microduck" },
+    { name = "quackd-microduck", extras = ["mujoco"], marker = "extra == 'mujoco'", editable = "adapters/microduck" },
+    { name = "quackd-open-duck", marker = "extra == 'dev'", editable = "adapters/open_duck" },
+    { name = "quackd-open-duck", marker = "extra == 'open-duck'", editable = "adapters/open_duck" },
+    { name = "quackd-open-duck", marker = "extra == 'robots'", editable = "adapters/open_duck" },
+    { name = "quackd-rosbridge", marker = "extra == 'dev'", editable = "adapters/rosbridge" },
+    { name = "quackd-rosbridge", extras = ["sdk"], marker = "extra == 'robots'", editable = "adapters/rosbridge" },
+    { name = "quackd-rosbridge", extras = ["sdk"], marker = "extra == 'rosbridge'", editable = "adapters/rosbridge" },
+    { name = "quackd-toddlerbot", marker = "extra == 'dev'", editable = "adapters/toddlerbot" },
+    { name = "quackd-toddlerbot", marker = "extra == 'robots'", editable = "adapters/toddlerbot" },
+    { name = "quackd-toddlerbot", marker = "extra == 'toddlerbot'", editable = "adapters/toddlerbot" },
+    { name = "quackd-xlerobot", marker = "extra == 'dev'", editable = "adapters/xlerobot" },
+    { name = "quackd-xlerobot", marker = "extra == 'robots'", editable = "adapters/xlerobot" },
+    { name = "quackd-xlerobot", marker = "extra == 'xlerobot'", editable = "adapters/xlerobot" },
     { name = "rich", specifier = ">=13.7" },
-    { name = "roslibpy", marker = "extra == 'rosbridge'", specifier = ">=2,<3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "typer", specifier = ">=0.12" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
     { name = "ultralytics", marker = "extra == 'yolo'", specifier = ">=8.2" },
-    { name = "websockets", marker = "extra == 'microduck-camera'", specifier = ">=13" },
     { name = "zeroconf", marker = "extra == 'lan'", specifier = ">=0.132" },
 ]
-provides-extras = ["all", "alohamini", "anthropic", "cohere", "deepseek", "dev", "gemini", "glm", "grok", "kimi", "lan", "lerobot", "live", "meta", "microduck-camera", "mistral", "mujoco", "openai", "qwen", "rosbridge", "xlerobot", "yolo"]
+provides-extras = ["all", "alohamini", "anthropic", "cohere", "deepseek", "dev", "gemini", "glm", "grok", "kimi", "lan", "lerobot", "live", "meta", "microduck", "microduck-camera", "mistral", "mujoco", "open-duck", "openai", "qwen", "robots", "rosbridge", "toddlerbot", "xlerobot", "yolo"]
+
+[[package]]
+name = "quackd-alohamini"
+source = { editable = "adapters/alohamini" }
+dependencies = [
+    { name = "pyzmq" },
+    { name = "quackd" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pyzmq", specifier = ">=26" },
+    { name = "quackd", editable = "." },
+]
 
 [[package]]
 name = "quackd-lerobot"
@@ -3689,6 +3743,88 @@ requires-dist = [
     { name = "quackd", editable = "." },
 ]
 provides-extras = ["sdk"]
+
+[[package]]
+name = "quackd-microduck"
+source = { editable = "adapters/microduck" }
+dependencies = [
+    { name = "quackd" },
+]
+
+[package.optional-dependencies]
+camera = [
+    { name = "aiortc" },
+    { name = "av" },
+    { name = "websockets" },
+]
+mujoco = [
+    { name = "mujoco" },
+    { name = "onnxruntime" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiortc", marker = "extra == 'camera'", specifier = ">=1.9" },
+    { name = "av", marker = "extra == 'camera'", specifier = ">=12" },
+    { name = "mujoco", marker = "extra == 'mujoco'", specifier = ">=3.12,<4" },
+    { name = "onnxruntime", marker = "extra == 'mujoco'", specifier = ">=1.20" },
+    { name = "quackd", editable = "." },
+    { name = "websockets", marker = "extra == 'camera'", specifier = ">=13" },
+]
+provides-extras = ["camera", "mujoco"]
+
+[[package]]
+name = "quackd-open-duck"
+source = { editable = "adapters/open_duck" }
+dependencies = [
+    { name = "quackd" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "quackd", editable = "." }]
+
+[[package]]
+name = "quackd-rosbridge"
+source = { editable = "adapters/rosbridge" }
+dependencies = [
+    { name = "quackd" },
+]
+
+[package.optional-dependencies]
+sdk = [
+    { name = "roslibpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "quackd", editable = "." },
+    { name = "roslibpy", marker = "extra == 'sdk'", specifier = ">=2,<3" },
+]
+provides-extras = ["sdk"]
+
+[[package]]
+name = "quackd-toddlerbot"
+source = { editable = "adapters/toddlerbot" }
+dependencies = [
+    { name = "quackd" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "quackd", editable = "." }]
+
+[[package]]
+name = "quackd-xlerobot"
+source = { editable = "adapters/xlerobot" }
+dependencies = [
+    { name = "pyzmq" },
+    { name = "quackd" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pyzmq", specifier = ">=26" },
+    { name = "quackd", editable = "." },
+]
 
 [[package]]
 name = "referencing"

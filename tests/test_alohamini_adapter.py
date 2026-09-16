@@ -13,29 +13,6 @@ import sys
 import pytest
 from typer.testing import CliRunner
 
-from quackd.adapters.alohamini import (
-    MAX_VX,
-    MAX_VY,
-    MAX_WZ,
-    AlohaMiniAdapter,
-    alohamini_manifest,
-    conditions,
-    describe,
-    implementations,
-    parse_model,
-)
-from quackd.adapters.alohamini.mock import AlohaMiniMock
-from quackd.adapters.alohamini.sim2d import AlohaMiniSim2D
-from quackd.adapters.alohamini.verbs import (
-    GRIPPER_CLOSED,
-    JOINTS_5DOF,
-    JOINTS_6DOF,
-    LIFT_MAX_MM,
-    LIFT_MIN_MM,
-    MoveJointsParams,
-    joints_for,
-    model_from_keys,
-)
 from quackd.adapters.base import AdapterNotInstalled, RobotAdapter
 from quackd.adapters.factory import make_adapter, parse_robot_spec
 from quackd.agent.prompts import build_system_prompt
@@ -47,6 +24,29 @@ from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all
 from quackd.transport.base import Intent
 from quackd.verbs.core import scan_mode
 from quackd.verbs.registry import VerbNotFound, registry_from_manifest
+from quackd_alohamini import (
+    MAX_VX,
+    MAX_VY,
+    MAX_WZ,
+    AlohaMiniAdapter,
+    alohamini_manifest,
+    conditions,
+    describe,
+    implementations,
+    parse_model,
+)
+from quackd_alohamini.mock import AlohaMiniMock
+from quackd_alohamini.sim2d import AlohaMiniSim2D
+from quackd_alohamini.verbs import (
+    GRIPPER_CLOSED,
+    JOINTS_5DOF,
+    JOINTS_6DOF,
+    LIFT_MAX_MM,
+    LIFT_MIN_MM,
+    MoveJointsParams,
+    joints_for,
+    model_from_keys,
+)
 
 runner = CliRunner()
 
@@ -392,7 +392,7 @@ def test_the_factory_builds_every_backend(backend: str) -> None:
 
 
 def test_an_unknown_backend_names_the_real_ones() -> None:
-    from quackd.adapters.alohamini import make
+    from quackd_alohamini import make
 
     with pytest.raises(ValueError, match="unknown alohamini backend"):
         make("serial")

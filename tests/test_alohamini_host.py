@@ -14,15 +14,15 @@ from collections.abc import Callable
 
 import pytest
 
-from quackd.adapters.alohamini import AlohaMiniAdapter
-from quackd.adapters.alohamini.zmq_host import (
+from quackd.transport.base import HeartbeatError, Intent, TransportError
+from quackd_alohamini import AlohaMiniAdapter
+from quackd_alohamini.zmq_host import (
     LIFT_HEIGHT_KEY,
     LIFT_VEL_KEY,
     VEL_KEYS,
     AlohaMiniZmq,
     split_address,
 )
-from quackd.transport.base import HeartbeatError, Intent, TransportError
 from tests.fake_alohamini_host import FakeAlohaMiniHost
 
 pytest.importorskip("zmq", reason="the alohamini zmq backend needs quackd[alohamini]")

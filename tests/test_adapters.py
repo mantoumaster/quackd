@@ -8,12 +8,12 @@ import pytest
 
 import quackd.safety
 from quackd.adapters.base import RobotAdapter, adapter_name, backend_name
-from quackd.adapters.microduck import MicroduckAdapter
 from quackd.duckfile.parser import parse_duck_text
 from quackd.safety import Executor
 from quackd.transport.base import DuckState, Intent
 from quackd.transport.mock import MockTransport
 from quackd.verbs.registry import default_registry, registry_from_manifest
+from quackd_microduck import MicroduckAdapter
 
 DUCK = parse_duck_text(
     "---\nduck: 0\nname: t\ndescription: d\nverbs:\n  allow: [walk, kick, quack, get_frame]\n"
@@ -33,7 +33,7 @@ async def test_a_microduck_with_no_camera_does_not_advertise_the_verbs_that_need
     The manifest used to say `camera` either way, which made `observe` a core verb on a run
     that could only ever answer "this transport has no camera".
     """
-    from quackd.adapters.microduck import microduck_manifest
+    from quackd_microduck import microduck_manifest
 
     seeing = microduck_manifest("jsonrpc", camera=True)
     blind = microduck_manifest("jsonrpc", camera=False)

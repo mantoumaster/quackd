@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from quackd.agent.providers.factory import CLOUD_NAMES, KEY_ENV, default_model_for
-from quackd.transport import upstream_api as up
 from quackd.verbs.registry import default_registry
+from quackd_microduck import upstream_api as up
 from tests.adapter_layout import adapter_module
 
 REPO = Path(__file__).resolve().parents[1]
@@ -25,7 +25,7 @@ def test_adapter_status_lists_every_microduck_upstream_ref() -> None:
     through `test_adapter_doc_lists_every_upstream_ref` and `robotd` through this one. Without
     the second loop the newest table is the only one that can go stale in silence.
     """
-    from quackd.sim3d import upstream_api as microduck_rl
+    from quackd_microduck.sim3d import upstream_api as microduck_rl
 
     doc = (REPO / "docs" / "adapter-status.md").read_text(encoding="utf-8")
     missing = [ref.name for ref in up.all_refs() if ref.name not in doc]
