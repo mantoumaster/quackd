@@ -14,13 +14,14 @@ from types import ModuleType
 import pytest
 
 from quackd.adapters.alohamini import upstream_api as alohamini_api
-from quackd.adapters.lerobot import upstream_api as lerobot_api
 from quackd.adapters.open_duck import upstream_api as open_duck_api
 from quackd.adapters.rosbridge import upstream_api as rosbridge_api
 from quackd.adapters.toddlerbot import upstream_api as toddlerbot_api
 from quackd.adapters.xlerobot import upstream_api as xlerobot_api
 from quackd.sim3d import upstream_api as microduck_rl_api
 from quackd.transport import upstream_api
+from quackd_lerobot import upstream_api as lerobot_api
+from tests.adapter_layout import canonical_rel, source_roots
 
 PKG = Path(__file__).resolve().parents[1] / "quackd"
 
@@ -149,18 +150,21 @@ def test_unverified_refs_only_used_in_experimental_backends(
     pattern = re.compile(r"\b(" + "|".join(map(re.escape, idents)) + r")\b")
     # an adapter's assumptions are its own vocabulary: another adapter may name its own
     # THREAD_SAFETY, so an adapter row scans its package and the core, never a sibling
-    owner = Path(str(module.__file__)).resolve().relative_to(PKG).as_posix()
+    # `canonical_rel` gives one name per file whichever layout it is in, so `allowed` reads
+    # the same whether an adapter is still in the core wheel or already its own package
+    owner = canonical_rel(Path(str(module.__file__)))
     own_pkg = owner.rsplit("/", 1)[0] if owner.startswith("adapters/") else None
     offenders = []
-    for path in PKG.rglob("*.py"):
-        rel = path.relative_to(PKG).as_posix()
-        if rel in allowed:
-            continue
-        if own_pkg and rel.startswith("adapters/") and not rel.startswith(own_pkg + "/"):
-            continue
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if pattern.search(line):
-                offenders.append(f"{rel}:{lineno}: {line.strip()}")
+    for root in source_roots():
+        for path in root.rglob("*.py"):
+            rel = canonical_rel(path)
+            if rel in allowed:
+                continue
+            if own_pkg and rel.startswith("adapters/") and not rel.startswith(own_pkg + "/"):
+                continue
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if pattern.search(line):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
     assert not offenders, "\n".join(offenders)
 
 

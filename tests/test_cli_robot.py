@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from quackd.adapters.lerobot.mock import REST
 from quackd.cli import app
 from quackd.registry import Registry, RobotEntry, StoredFlock
+from quackd_lerobot.mock import REST
 
 runner = CliRunner()
 

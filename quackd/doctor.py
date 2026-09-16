@@ -588,12 +588,12 @@ def _upstreams() -> list[tuple[str, Any, str, str]]:
     """(name, module, doc, what nobody has run it against). Imported in here rather than at
     module scope because doctor must not pull in an SDK to answer a question about it."""
     from quackd.adapters.alohamini import upstream_api as alohamini_api
-    from quackd.adapters.lerobot import upstream_api as lerobot_api
     from quackd.adapters.open_duck import upstream_api as open_duck_api
     from quackd.adapters.rosbridge import upstream_api as rosbridge_api
     from quackd.adapters.toddlerbot import upstream_api as toddlerbot_api
     from quackd.adapters.xlerobot import upstream_api as xlerobot_api
     from quackd.sim3d import upstream_api as rl
+    from quackd_lerobot import upstream_api as lerobot_api
 
     return [
         ("microduck", up, "docs/adapter-status.md", "a robotd (the jsonrpc backend)"),

@@ -42,9 +42,14 @@ def _installed() -> dict[str, str]:
 
     Cached: `entry_points()` walks the whole environment, and this is on the path of every
     `doctor`. Nothing installs an adapter mid-process."""
-    found: dict[str, str] = {
-        ep.name: ep.value for ep in importlib.metadata.entry_points(group=ENTRY_POINT_GROUP)
-    }
+    found: dict[str, str] = {}
+    for ep in importlib.metadata.entry_points(group=ENTRY_POINT_GROUP):
+        # an editable install keeps the metadata it was built with, so a module that has been
+        # moved or removed since is still announced here. Believing that turns a missing
+        # adapter into an ImportError from somewhere far away.
+        with contextlib.suppress(ImportError, ValueError):
+            if importlib.util.find_spec(ep.value) is not None:
+                found[ep.name] = ep.value
     for name in BY_NAME:
         if name in found:
             continue

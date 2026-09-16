@@ -47,8 +47,16 @@ import numpy as np
 from PIL import Image
 
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, RestResult
-from quackd.adapters.lerobot import upstream_api as up
-from quackd.adapters.lerobot.verbs import (
+from quackd.transport.base import (
+    Ack,
+    CameraFrame,
+    DuckState,
+    HeartbeatError,
+    Intent,
+    TransportError,
+)
+from quackd_lerobot import upstream_api as up
+from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     JOINTS,
@@ -60,14 +68,6 @@ from quackd.adapters.lerobot.verbs import (
     rest_budget_s,
     rest_goal,
     shortfall,
-)
-from quackd.transport.base import (
-    Ack,
-    CameraFrame,
-    DuckState,
-    HeartbeatError,
-    Intent,
-    TransportError,
 )
 
 STATUS = "LeRobot names verified at a pinned commit; one SO-101 driven on 2026-09-15"

@@ -2130,7 +2130,7 @@ def _can_prompt() -> bool:
 
 def _rest_pose_text(pose: dict[str, float]) -> Any:
     """A recorded pose on one line per joint, in the arm's own bus order where it has one."""
-    from quackd.adapters.lerobot import JOINTS
+    from quackd_lerobot import JOINTS
 
     order = {joint: i for i, joint in enumerate(JOINTS)}
     listed = sorted(pose.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0]))

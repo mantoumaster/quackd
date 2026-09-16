@@ -19,7 +19,10 @@ import math
 from PIL import Image, ImageDraw
 
 from quackd.adapters.base import RestResult
-from quackd.adapters.lerobot.verbs import (
+from quackd.sim2d.render import BALL, FLOOR, HORIZON, SKY, focal_px
+from quackd.transport.base import Ack, DuckState, Intent
+from quackd.transport.mock import MockTransport
+from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     JOINTS,
@@ -28,9 +31,6 @@ from quackd.adapters.lerobot.verbs import (
     rest_goal,
     shortfall,
 )
-from quackd.sim2d.render import BALL, FLOOR, HORIZON, SKY, focal_px
-from quackd.transport.base import Ack, DuckState, Intent
-from quackd.transport.mock import MockTransport
 
 REST = {
     "shoulder_pan": 0.0,

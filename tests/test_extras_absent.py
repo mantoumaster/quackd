@@ -63,7 +63,6 @@ def test_everything_imports_without_any_extra() -> None:
 
 
 def test_the_default_path_did_not_import_a_heavy_module() -> None:
-    import quackd.adapters.lerobot
     import quackd.adapters.rosbridge
     import quackd.flock.mqtt_bus  # noqa: F401
 

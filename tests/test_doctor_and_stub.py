@@ -18,12 +18,12 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from quackd import doctor
-from quackd.adapters.lerobot import LeRobotAdapter
-from quackd.adapters.lerobot.mock import REST, LeRobotMock
 from quackd.agent.providers.factory import CLOUD_NAMES, KEY_ENV, PROVIDER_NAMES
 from quackd.cli import app
 from quackd.transport.base import CameraFrame, TransportError
 from quackd.transport.websocket_stub import WebSocketTransport
+from quackd_lerobot import LeRobotAdapter
+from quackd_lerobot.mock import REST, LeRobotMock
 
 
 def test_doctor_runs() -> None:

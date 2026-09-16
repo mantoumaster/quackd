@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quackd-lerobot"
+dynamic = ["version"]
+description = "The LeRobot SO-101 arm adapter for quackd. Install it as quackd[lerobot]."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Rok Benko" }]
+dependencies = ["quackd>=0.9,<0.11"]
+
+# The arm's own SDK. LeRobot needs Python 3.12 and pulls torch, and the marker keeps the lock
+# solvable on 3.11, where this package still installs and still gives you `lerobot:mock`.
+# `[feetech]` is where the serial SDK lives: without it `import lerobot` succeeds and opening
+# the arm's port fails, which is a worse thing to find out at a bench than at an install.
+[project.optional-dependencies]
+sdk = ["lerobot[feetech]>=0.6; python_version >= '3.12'"]
+
+[project.entry-points."quackd.adapters"]
+lerobot = "quackd_lerobot"
+
+[project.urls]
+Homepage = "https://github.com/rokbenko/quackd"
+Documentation = "https://github.com/rokbenko/quackd/blob/main/docs/adapters/lerobot.md"
+
+[tool.hatch.version]
+path = "src/quackd_lerobot/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quackd_lerobot"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md", "pyproject.toml"]
+
+[tool.uv.sources]
+quackd = { workspace = true }

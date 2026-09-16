@@ -553,7 +553,7 @@ def _hand_back(monkeypatch: pytest.MonkeyPatch, arm: Any, seen: dict[str, Any]) 
 
     `probe_entry` imports `make_adapter` inside the call, so the factory's module attribute
     is the seam: there is no other way to hand a probe a body it did not make itself."""
-    from quackd.adapters.lerobot import LeRobotAdapter
+    from quackd_lerobot import LeRobotAdapter
 
     def fake_make_adapter(spec: Any, **kwargs: Any) -> Any:
         seen.clear()
@@ -574,7 +574,7 @@ async def test_a_probe_hands_the_rest_pose_over_and_drives_the_arm_nowhere(
     The pose still has to reach the adapter, because it is what decides whether torque may
     drop when the probe disconnects. An arm away from it keeps torque, and the row says so on
     the same line that says the arm answered: somebody has to hold it before the power goes."""
-    from quackd.adapters.lerobot.mock import LeRobotMock
+    from quackd_lerobot.mock import LeRobotMock
 
     seen: dict[str, Any] = {}
     arm = LeRobotMock(rest_pose=_FOLDED)
@@ -598,7 +598,7 @@ async def test_a_probe_on_an_arm_already_at_its_pose_says_nothing_about_torque(
 ) -> None:
     """The other half of the same rule: the torque line is news, and an arm that is where it
     rests is let go of the way it always was, with nothing added to the row."""
-    from quackd.adapters.lerobot.mock import REST, LeRobotMock
+    from quackd_lerobot.mock import REST, LeRobotMock
 
     seen: dict[str, Any] = {}
     arm = LeRobotMock(rest_pose=dict(REST))

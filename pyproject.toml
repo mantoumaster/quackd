@@ -69,7 +69,7 @@ lan = ["zeroconf>=0.132", "paho-mqtt>=2,<3"]
 # `[feetech]` is where the serial SDK lives (feetech-servo-sdk and pyserial, neither of them a
 # base dependency of lerobot). Without it `import lerobot` succeeds and opening the arm's port
 # fails, so it belongs in the extra rather than in a paragraph somebody has to read.
-lerobot = ["lerobot[feetech]>=0.6; python_version >= '3.12'"]
+lerobot = ["quackd-lerobot[sdk]"]
 rosbridge = ["roslibpy>=2,<3"]
 # XLeRobot is not an installable package: its own install is copying files into a lerobot
 # tree. So quackd speaks its ZeroMQ host protocol instead and needs only pyzmq, which keeps
@@ -93,6 +93,8 @@ dev = [
   "mypy>=1.10",
   "types-PyYAML",
   "pre-commit>=3.7",
+  # every adapter, without the SDKs: the suite drives each one against fakes and a mock
+  "quackd-lerobot",
   # The one robot SDK dev carries, because it is the only way the xlerobot wire protocol is
   # exercised for real: tests/test_xlerobot_host.py runs quackd's client against a fake host
   # over loopback sockets. It is a small pure wheel on every platform CI runs, unlike torch
@@ -108,7 +110,6 @@ quackd = "quackd.cli:main"
 # also finds its own by looking, so a stale editable install still works.
 [project.entry-points."quackd.adapters"]
 microduck = "quackd.adapters.microduck"
-lerobot = "quackd.adapters.lerobot"
 rosbridge = "quackd.adapters.rosbridge"
 open_duck = "quackd.adapters.open_duck"
 xlerobot = "quackd.adapters.xlerobot"
@@ -120,6 +121,14 @@ Homepage = "https://github.com/rokbenko/quackd"
 Repository = "https://github.com/rokbenko/quackd"
 Issues = "https://github.com/rokbenko/quackd/issues"
 Changelog = "https://github.com/rokbenko/quackd/blob/main/CHANGELOG.md"
+
+# One repository, several distributions. The adapters are their own packages so that
+# `uv pip install quackd` brings no robot and you choose the one you own.
+[tool.uv.workspace]
+members = ["adapters/*"]
+
+[tool.uv.sources]
+quackd-lerobot = { workspace = true }
 
 [tool.hatch.version]
 path = "quackd/__init__.py"
@@ -158,6 +167,15 @@ target-version = "py311"
 # builds the README's hero. Only the binaries are excluded now.
 extend-exclude = ["runs"]
 
+# The adapter packages are quackd's own code in their own distributions, so they sort with
+# the core rather than with somebody else's library.
+[tool.ruff.lint.isort]
+known-first-party = [
+  "quackd",
+  "quackd_lerobot",
+  "tests",
+]
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ASYNC", "T20"]
 ignore = ["RUF012", "B008"]
@@ -188,7 +206,7 @@ line-ending = "lf"
 # mypy reject numpy's stubs (PEP 695 `type` statements) when running under 3.12.
 # `bridge/` is the code that runs on the robot, and it was the only Python here that nothing
 # type-checked. mypy takes packages OR files, not both, so both are listed as paths.
-files = ["quackd", "bridge", "docs/assets"]
+files = ["quackd", "adapters", "bridge", "docs/assets"]
 ignore_missing_imports = true
 warn_unused_ignores = false
 check_untyped_defs = true

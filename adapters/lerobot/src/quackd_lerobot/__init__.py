@@ -16,7 +16,6 @@ from typing import Any
 from PIL import Image
 
 from quackd.adapters.base import RestResult, camera_urls, go_to_rest_if_any, one_camera_url
-from quackd.adapters.lerobot.verbs import JOINTS, lerobot_conditions, lerobot_verbs
 from quackd.adapters.manifest import (
     Datasheet,
     Figure,
@@ -37,6 +36,11 @@ from quackd.transport.base import (
 )
 from quackd.verbs.core import CORE
 from quackd.verbs.registry import Precondition, Verb
+from quackd_lerobot.verbs import JOINTS, lerobot_conditions, lerobot_verbs
+
+__version__ = "0.9.0"
+"""Kept in step with quackd's own version by scripts/set_version.py. It lives here rather
+than being read from the core, because this file is all an adapter's sdist contains."""
 
 BACKENDS = ("mock", "real")
 DEFAULT_ID = "arm-01"
@@ -351,7 +355,7 @@ def make(
     rest_pose: dict[str, float] | None = None,
 ) -> LeRobotAdapter:
     if backend == "mock":
-        from quackd.adapters.lerobot.mock import LeRobotMock
+        from quackd_lerobot.mock import LeRobotMock
 
         # the mock draws its own view and reads no url, but a second camera is still refused
         # rather than dropped: only the real arm opens more than one, and a task rehearsed
@@ -359,7 +363,7 @@ def make(
         one_camera_url(camera_url, spec="lerobot:mock")
         return LeRobotAdapter(LeRobotMock(rest_pose=rest_pose), robot_id=robot_id)
     if backend == "real":
-        from quackd.adapters.lerobot.real import LeRobotReal, parse_camera_urls, step_from_env
+        from quackd_lerobot.real import LeRobotReal, parse_camera_urls, step_from_env
 
         return LeRobotAdapter(
             LeRobotReal(

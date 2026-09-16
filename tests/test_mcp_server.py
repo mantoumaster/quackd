@@ -17,12 +17,12 @@ from mcp.client.session import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 from PIL import Image
 
-from quackd.adapters.lerobot import LeRobotAdapter
-from quackd.adapters.lerobot.mock import REST, LeRobotMock
 from quackd.mcp_server import DuckSession, build_server
 from quackd.transport.base import DEFAULT_CAMERA_NAME, CameraFrame, TransportError
 from quackd.transport.mock import MockTransport
 from quackd.transport.sim2d import Sim2DTransport
+from quackd_lerobot import LeRobotAdapter
+from quackd_lerobot.mock import REST, LeRobotMock
 
 TOOLS = {
     # 0.4: six fleet tools
