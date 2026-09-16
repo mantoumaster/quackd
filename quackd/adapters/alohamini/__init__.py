@@ -23,7 +23,7 @@ advertises itself; without that wrapper the three arm verbs refuse rather than p
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -38,6 +38,7 @@ from quackd.adapters.alohamini.verbs import (
     alohamini_verbs,
     joints_for,
 )
+from quackd.adapters.base import RestResult, one_camera_url, refuse_rest_pose
 from quackd.adapters.manifest import (
     Datasheet,
     Figure,
@@ -287,6 +288,11 @@ class AlohaMiniAdapter:
     async def stop(self) -> None:
         await self.transport.stop()
 
+    async def go_to_rest(self) -> RestResult:
+        """This is not a body quackd parks: make() refuses a rest pose for it, so there is
+        nothing here to drive to."""
+        return RestResult.none()
+
     def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:
         return self.transport.subscribe(topic)
 
@@ -359,9 +365,14 @@ def make(
     seed: int | None = None,
     address: str | None = None,
     live: bool = False,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
+    rest_pose: dict[str, float] | None = None,
 ) -> AlohaMiniAdapter:
+    refuse_rest_pose("alohamini", rest_pose)
+    # No backend here opens a camera by url: mock and sim2d carry their own, and the zmq host
+    # publishes whichever it has. A second one is still refused rather than silently dropped.
+    _url = one_camera_url(camera_url, spec=f"alohamini:{backend}")
     if backend == "mock":
         from quackd.adapters.alohamini.mock import AlohaMiniMock
 

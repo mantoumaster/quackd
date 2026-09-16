@@ -21,12 +21,13 @@ once a camera has actually been seen on the wire.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from PIL import Image
 
+from quackd.adapters.base import RestResult, one_camera_url, refuse_rest_pose
 from quackd.adapters.manifest import (
     Datasheet,
     Figure,
@@ -312,6 +313,11 @@ class XLerobotAdapter:
     async def stop(self) -> None:
         await self.transport.stop()
 
+    async def go_to_rest(self) -> RestResult:
+        """quackd keeps no rest pose for this cart, so there is nothing to drive it to: the
+        wheels stop where the host's watchdog stopped them and the arms hold their last angles."""
+        return RestResult.none()
+
     def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:
         return self.transport.subscribe(topic)
 
@@ -369,9 +375,15 @@ def make(
     seed: int | None = None,
     address: str | None = None,
     live: bool = False,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
+    rest_pose: dict[str, float] | None = None,
 ) -> XLerobotAdapter:
+    refuse_rest_pose("xlerobot", rest_pose)
+    # This cart's cameras come from the host's own config rather than from a url, so there is
+    # no backend here to hand one to. It is still collapsed rather than ignored, so a second
+    # --camera-url is refused by name instead of being dropped without a word.
+    _url = one_camera_url(camera_url, spec=f"xlerobot:{backend}")
     if backend == "mock":
         from quackd.adapters.xlerobot.mock import XLerobotMock
 

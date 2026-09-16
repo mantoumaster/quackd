@@ -428,6 +428,72 @@ def test_robot_flag_errors_are_clean(tmp_path: Path) -> None:
     assert bad_backend.exit_code == 1 and "unknown backend" in bad_backend.output  # type: ignore[attr-defined]
 
 
+def test_a_second_camera_url_is_refused_by_a_one_camera_body_before_anything_runs(
+    tmp_path: Path,
+) -> None:
+    """`--camera-url` became repeatable for the LeRobot arm's several cameras, and a
+    repeatable flag is repeatable on every command line. A body that reads one has to say so
+    before the run starts: opening the first url and dropping the second would leave the
+    reason a camera is missing nowhere but in a transcript nobody reads twice."""
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "hello-world",
+            "--provider",
+            "fake",
+            "--robot",
+            "microduck:mock",
+            "--runs-dir",
+            str(tmp_path),
+            "--no-gif",
+            "--camera-url",
+            "http://10.0.0.5:9872/snapshot.jpg",
+            "--camera-url",
+            "http://10.0.0.6:9872/snapshot.jpg",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    out = " ".join(result.output.split())  # the console wraps the line at the terminal width
+    assert "microduck:mock takes one --camera-url and 2 were given" in out
+    assert "only lerobot:real takes several" in out
+    assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
+
+
+def test_doctor_json_reports_a_second_camera_url_inside_its_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--json` promises one JSON document and nothing else, whatever went wrong, so a
+    refusal raised while the robot is being built belongs in the probe rather than in a line
+    of prose printed above the document a script is trying to parse."""
+    from quackd import doctor
+
+    # doctor probes four local model servers at 1.5 s each and nothing here is about them
+    monkeypatch.setattr(doctor, "_probe_models", lambda url, timeout_s=1.5: ("down", "not running"))
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--json",
+            "--robot",
+            "microduck:mock",
+            "--address",
+            "tcp://127.0.0.1:9",
+            "--camera-url",
+            "http://10.0.0.5:9872/snapshot.jpg",
+            "--camera-url",
+            "http://10.0.0.6:9872/snapshot.jpg",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    report = json.loads(result.output)  # one document, not a refusal and then a document
+    probe = report["robot"]["probe"]
+    assert probe["ok"] is False and probe["rows"] == []
+    assert "takes one --camera-url and 2 were given" in probe["error"]
+    assert "only lerobot:real takes several" in probe["error"]
+    assert report["ok"] is False  # and the exit code follows the report, as it always did
+
+
 def test_list_adapters() -> None:
     result = runner.invoke(app, ["list-adapters"])
     assert result.exit_code == 0, result.output
@@ -946,3 +1012,40 @@ def test_an_infeasible_run_exits_3_and_says_what_could(
     assert "far past a beak" in out
     assert "No shipped body meets needs" in out
     assert "toddlerbot at 1.484 kg" in out
+
+
+# ── .env ────────────────────────────────────────────────────────────────────────────────
+
+
+def test_env_is_also_read_from_the_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `uv tool install`ed quackd lives in its own directory, and the bare `load_dotenv()`
+    walks up from there, so it finds the `.env` beside the venv and never the one beside the
+    project you are standing in. The file next to the command you typed is read first.
+
+    Neither file overrides a variable the environment already carries, which is what lets
+    `QUACKD_REGISTRY_DIR=... quackd robot list` mean what it says on a machine whose `.env`
+    names a different directory.
+    """
+    from quackd.registry import Registry, RobotEntry
+
+    beside_the_command, in_the_environment = tmp_path / "beside", tmp_path / "exported"
+    Registry(beside_the_command).add_robot(RobotEntry(name="dotenv-duck", spec="microduck:mock"))
+    Registry(in_the_environment).add_robot(RobotEntry(name="exported-duck", spec="microduck:mock"))
+    work = tmp_path / "work"
+    work.mkdir()
+    # as_posix: an unquoted dotenv value keeps its backslashes, and a Windows path is a
+    # string of escapes to everything that reads one afterwards
+    (work / ".env").write_text(
+        f"QUACKD_REGISTRY_DIR={beside_the_command.as_posix()}\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.delenv("QUACKD_REGISTRY_DIR")  # the suite points it at a throwaway directory
+
+    listed = runner.invoke(app, ["robot", "list"])
+    assert listed.exit_code == 0, listed.output
+    assert "dotenv-duck" in listed.output, "the .env in the working directory was not read"
+
+    monkeypatch.setenv("QUACKD_REGISTRY_DIR", str(in_the_environment))
+    again = runner.invoke(app, ["robot", "list"])
+    assert again.exit_code == 0, again.output
+    assert "exported-duck" in again.output and "dotenv-duck" not in again.output

@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import sys
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ from mcp.server.mcpserver import Image
 from pydantic import ValidationError
 
 from quackd import __version__
-from quackd.adapters.base import adapter_name, backend_name
+from quackd.adapters.base import adapter_name, backend_name, go_to_rest_if_any
 from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
 from quackd.agent.prompts import body_summary
 from quackd.agent.transcript import png_bytes
@@ -64,7 +65,7 @@ from quackd.trace import (
     trace_enabled_default,
     unless_capturing,
 )
-from quackd.transport.base import DuckTransport
+from quackd.transport.base import CameraFrame, DuckTransport, TransportError
 from quackd.verbs.registry import (
     Verb,
     VerbRegistry,
@@ -153,13 +154,17 @@ def _stderr_view(name: str) -> Sink:
     return unless_capturing(write)
 
 
-def _stash_frames(session: RobotSession) -> Callable[[Any, str], None]:
-    """The executor's `on_frame` hook: keep the frame `observe` captured for `robot_observe`."""
+def _stash_frames(session: RobotSession) -> Callable[[Sequence[CameraFrame], str], None]:
+    """The executor's `on_frames` hook: keep what `observe` captured for `robot_observe`.
 
-    def on_frame(img: Any, _cause: str) -> None:
-        session.last_frame = img
+    Every camera rather than the last one to arrive. The single slot this replaced held one
+    picture, so a body with two cameras would have returned whichever was read second and
+    called it the view."""
 
-    return on_frame
+    def on_frames(frames: Sequence[CameraFrame], _cause: str) -> None:
+        session.last_frames = list(frames)
+
+    return on_frames
 
 
 @dataclass
@@ -178,8 +183,9 @@ class RobotSession:
     frames: int = 0
     calls: int = 0
     log_lines: list[str] = field(default_factory=list)
-    last_frame: Any = None
-    """The most recent frame an `observe` captured, so `robot_observe` can return it."""
+    last_frames: list[CameraFrame] = field(default_factory=list)
+    """What the last `observe` captured, one entry per camera, so `robot_observe` can return
+    them. Empty when nothing was captured: refused, no camera, or a dry run."""
     explicit_registry: bool = False
     """A caller-supplied registry is kept as is; otherwise the manifest builds one."""
     memory: RobotMemory | None = None
@@ -278,7 +284,22 @@ class RobotSession:
         return self.executor.manifest or self.manifest
 
     async def connect(self) -> None:
-        connected = await self.transport.connect()
+        await self._adopt(await self.transport.connect())
+        # before the heartbeat starts, so the arm this session is handed is the arm the last
+        # one put down rather than wherever it was left. A session that cannot get there is
+        # refused: the client is about to drive a body nobody has established the pose of.
+        if not self.executor.dry_run and getattr(self.transport, "rest_pose", None) is not None:
+            parked = await go_to_rest_if_any(self.transport)
+            log.info("%s: %s", self.name, parked.reason)
+            if not parked.reached:
+                with contextlib.suppress(Exception):
+                    await self.transport.close()
+                raise TransportError(
+                    f"{self.name}: the arm did not reach its rest pose: {parked.reason}"
+                )
+        self.heartbeat.start()
+
+    async def _adopt(self, connected: Any) -> None:
         if isinstance(connected, RobotManifest):
             # an adapter: the vocabulary is the manifest's, not the Microduck default
             self.manifest = connected
@@ -288,14 +309,20 @@ class RobotSession:
             if not self.explicit_registry:
                 self.registry = registry_from_manifest(connected, self.transport)
                 self.executor.registry = self.registry
-        self.heartbeat.start()
 
     async def close(self) -> None:
         await self.heartbeat.stop()
         with contextlib.suppress(Exception):
             await self.transport.stop()
+        if not self.executor.dry_run:
+            # between the stop and the close, which is the only window where putting the arm
+            # down changes whether it falls when torque is released
+            with contextlib.suppress(Exception):
+                await go_to_rest_if_any(self.transport)
         with contextlib.suppress(Exception):
             await self.transport.close()
+        if note := getattr(self.transport, "close_note", None):
+            log.warning("%s: %s", self.name, note)
 
     async def run(self, name: str, params: dict[str, Any] | None) -> dict[str, Any]:
         """`robot_run_verb`: the verb through the executor, with its trace."""
@@ -458,21 +485,34 @@ class RobotSession:
         }
 
     async def observe(self) -> list[str | Image]:
-        """The `observe` verb through the executor, then the frame it captured, then the
+        """The `observe` verb through the executor, then the frames it captured, then the
         trace as one text block (this tool returns content, not a dict)."""
-        self.last_frame = None
+        self.last_frames = []
         result = await self._call("robot_observe", {}, lambda: self._run("observe", {}))
         content: list[str | Image]
-        if not result["ok"] or self.last_frame is None:
+        if not result["ok"] or not self.last_frames:
             # refused, no camera, or a dry run (nothing was captured): words only
             content = [f"{self.name}: {result['summary']}"]
-        else:
+        elif len(self.last_frames) == 1:
             self.frames += 1
             summary = str(result["summary"]).removeprefix("frame captured; ")
             content = [
                 f"{self.name} camera: {summary}",
-                Image(data=png_bytes(self.last_frame), format="png"),
+                Image(data=png_bytes(self.last_frames[0].image), format="png"),
             ]
+        else:
+            # several cameras: each picture is named, and the summary is the primary's,
+            # because the detector reads one view and a bearing from another means nothing
+            self.frames += len(self.last_frames)
+            names = [f.name for f in self.last_frames]
+            summary = re.sub(r"^frames? captured[^;]*; ", "", str(result["summary"]))
+            content = [
+                f"{self.name} cameras {', '.join(names)} "
+                f"({names[0]} is the primary, the detections are its): {summary}"
+            ]
+            for frame in self.last_frames:
+                content.append(f"camera {frame.name}:")
+                content.append(Image(data=png_bytes(frame.image), format="png"))
         if result.get("trace"):
             content.append("trace:\n" + "\n".join(result["trace"]))
         return content
@@ -748,7 +788,7 @@ def build_fleet_server(
             ),
             tracer=tracer,
         )
-        executor.on_frame = _stash_frames(session)
+        executor.on_frames = _stash_frames(session)
         sessions[name] = session
     fleet = Fleet(sessions, default or _pick_default(robots), dict(manifests or {}))
     if fleet.default not in sessions:
@@ -965,7 +1005,7 @@ def fleet_from_flags(
     duckfile: str | None = None,
     seed: int | None = None,
     address: str | None = None,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
 ) -> FleetPlan:
     """Which robots this server fronts, from the flags that name them.
@@ -1052,7 +1092,7 @@ def serve(
     duckfile: str | None = None,
     seed: int | None = None,
     address: str | None = None,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
     dry_run: bool = False,
     yes: bool = False,

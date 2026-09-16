@@ -8,11 +8,12 @@ rather than moving is how "zero behaviour change" is made mechanically true (ADR
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 from PIL import Image
 
+from quackd.adapters.base import RestResult, one_camera_url, refuse_rest_pose
 from quackd.adapters.manifest import (
     Datasheet,
     Figure,
@@ -180,6 +181,11 @@ class MicroduckAdapter:
     async def stop(self) -> None:
         await self.transport.stop()
 
+    async def go_to_rest(self) -> RestResult:
+        """A rest pose is a joint-angle map for an arm, and this body takes postures through
+        its own verbs (`sit`, `stand`), so there is nothing here to drive it to."""
+        return RestResult.none()
+
     @property
     def stop_error(self) -> str | None:
         """`jsonrpc` has recorded this since 0.6, but nothing could read it: `stop` in
@@ -249,9 +255,12 @@ def make(
     seed: int | None = None,
     address: str | None = None,
     live: bool = False,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
+    rest_pose: dict[str, float] | None = None,
 ) -> MicroduckAdapter:
+    refuse_rest_pose("microduck", rest_pose)
+    url = one_camera_url(camera_url, spec=f"microduck:{backend}")
     # `token` is accepted and unused, deliberately: the factory calls every adapter's `make`
     # with the same four keywords, and this robot has nothing to authenticate to. `robotd`'s
     # socket has no auth at all — access is filesystem permissions on /run/robotd.sock — and
@@ -259,9 +268,7 @@ def make(
     # nobody". Reach both over ssh rather than trusting the network.
     from quackd.transport.factory import make_transport
 
-    transport = make_transport(
-        backend, seed=seed, address=address, live=live, camera_url=camera_url
-    )
+    transport = make_transport(backend, seed=seed, address=address, live=live, camera_url=url)
     return MicroduckAdapter(transport, robot_id=robot_id or "microduck")
 
 

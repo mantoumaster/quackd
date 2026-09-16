@@ -68,7 +68,7 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 
 | Path | Why it exists |
 |---|---|
-| `quackd/cli.py` | The front door: `run · validate · doctor · serve-mcp · list-verbs · list-adapters · list-models · record · trace · memory · robot · flock · discover · announce`. `--robot <adapter>:<backend>` or a registered name everywhere, with `--address`, `--camera-url` and `--token` for a real robot. |
+| `quackd/cli.py` | The front door: `run · validate · doctor · serve-mcp · list-verbs · list-adapters · list-models · record · trace · memory · robot · flock · discover · announce`. `--robot <adapter>:<backend>` or a registered name everywhere, with `--address`, `--camera-url` and `--token` for a real robot. `--camera-url` repeats for a body that reads several cameras, which today is the LeRobot arm and nothing else. |
 | `quackd/duckfile/` | The `.duck` contract (v0, v1 and v2): strict pydantic frontmatter, parser, generated `schema.json`, `validate.py` (a task against one or more manifests). |
 | `quackd/adapters/` | `RobotManifest` (data: what a robot is and can do), the `RobotAdapter` protocol, the factory behind `--robot`, and one package per robot: `microduck/` wraps the five transports and declares its manifest and extension verbs; `lerobot/` is a desktop arm (`mock`, `real`, [adapters/lerobot.md](adapters/lerobot.md)); `rosbridge/` is any wheeled base over rosbridge (`mock`, `ws`, [adapters/rosbridge.md](adapters/rosbridge.md)); `open_duck/` is an Open Duck Mini v2 (`sim2d`, `mock`, `bridge`, [adapters/open_duck.md](adapters/open_duck.md)), the first body whose robot side quackd also ships, in `bridge/open_duck/`, because its runtime has no network control API; `xlerobot/` is a dual-arm mobile manipulator (`mock`, `zmq`, [adapters/xlerobot.md](adapters/xlerobot.md)), the first body with both a base and arms, and the one quackd talks to by speaking its ZeroMQ host protocol rather than importing it, because upstream is not an installable package; `alohamini/` is two arms on a lift on a wheeled base (`mock`, `sim2d`, `zmq`, [adapters/alohamini.md](adapters/alohamini.md)), which quackd also reaches by speaking its ZeroMQ host protocol; `toddlerbot/` is a small humanoid (`mock`, `sim2d`, `bridge`, [adapters/toddlerbot.md](adapters/toddlerbot.md)), the third body whose robot side quackd ships, because upstream has no network API at all. Every SDK-touching package owns an `upstream_api.py` and a containment test. |
 | `quackd/verbs/` | `core.py`: the verbs any robot can carry and what each requires; `aliases.py`: the one alias table; `registry.py`: built from a manifest at connect time; `learned.py`: the v2 interface. |
@@ -85,7 +85,7 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 | `quackd/mcp_server.py` | A robot, or a flock (`--robots`, or a stored flock with `--flock NAME`), as MCP tools: nine `robot_*` tools through one executor per robot. |
 | `bridge/toddlerbot/` | quackd's own ToddlerBot daemon: the fifty hertz loop upstream has no daemon for, plus the ten things it does not do at all, enumerated in the daemon's own docstring and in `bridge/toddlerbot/README.md` rather than a third time here. It owns the control loop rather than feeding one, which is true of no other body quackd drives. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0028](adr/0028-toddlerbot.md)). |
 | `bridge/alohamini/` | quackd's own AlohaMini host: upstream's host loop with the arm torque its own `configure()` disables and never re-enables, plus three fields in every observation so quackd can tell this host from a stock one. Never imports quackd, ships in the sdist and never in the wheel ([ADR-0027](adr/0027-alohamini.md)). |
-| `bridge/open_duck/` | **The first robot side quackd shipped**, and one of the three above. It has still never run on a duck, like everything else here. Two daemons for an Open Duck Mini v2's Raspberry Pi: the bridge, which is upstream's own walk loop with the gamepad it reads replaced by a socket, and the camera server, which serves one JPEG over HTTP. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0024](adr/0024-open-duck-mini.md)). |
+| `bridge/open_duck/` | **The first robot side quackd shipped**, and one of the three above. It has still never run on a duck, and neither has either of the other two on the robot it was written for. One body in this table has been on hardware, and it is the one that needs no daemon: a LeRobot SO-101 arm, driven on 2026-09-15 ([lerobot-first-run.md](lerobot-first-run.md)). Two daemons for an Open Duck Mini v2's Raspberry Pi: the bridge, which is upstream's own walk loop with the gamepad it reads replaced by a socket, and the camera server, which serves one JPEG over HTTP. Standard library plus numpy, never imported by quackd, shipped in the sdist and never in the wheel ([ADR-0024](adr/0024-open-duck-mini.md)). |
 | `web/` | The same loop in a browser, and the only quackd code that is not Python: MuJoCo compiled to WebAssembly, the same two policies (`alpha_walking`, `alpha_stand`) in onnxruntime-web, seven of the same verbs under the same allowlist-and-budget machinery, with the model and the policies fetched from the same pinned upstreams. The kick there is quackd's own scripted impulse, as it is in `sim3d`. What the Python loop has no equivalent of is the second pair of hands: the sentence box and the keyboard are both live at once, so `runtime.manual` is a lease on the twist rather than a mode, and a key that would *move* the robot takes it mid-run while a key that only reads does not. Mounted at `/simulator`, which is why `web/serve.py` — stdlib, and the one piece of Python in `web/` — runs it locally rather than `http.server`. Live at <https://www.quackd.org/simulator>, which the separate quackd-web project builds from this directory. It shares no code with the package, so it is kept in step by hand and `tests/test_web.py` holds the parts that can be checked from Python, printing what to paste when they drift. The mechanism, the key map and where it diverges from `sim3d` are in [`web/README.md`](../web/README.md) rather than a second time here ([ADR-0030](adr/0030-mujoco-physics-backend.md)). |
 | `quackd/lan/` | LAN discovery over zeroconf (`_quackd._tcp.local.`): a pure TXT wire format, `announce`, `discover`; behind `quackd[lan]` ([lan.md](lan.md)). |
 | `quackd/flock/` | Many robots on one task, in two kinds. The coordinator: the in-process `Bus`, the typed messages, the Contract Net `Auction` and the role auction, the deterministic coordinator, the scripted member FSM, the one-call planner and the runner that judges from ground truth. The pilots: `talk.py` (the `tell` tool's end of the bus and the `Your flock` prompt section) and `pilots.py` (one `AgentLoop` per body on wall clock, no referee, each member declaring for itself) ([flock.md](flock.md), ADR-0034). |
@@ -94,14 +94,21 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 
 ## A turn, concretely
 
-1. **Observe.** `transport.get_state()` → `DuckState`; `transport.get_frame()` → PIL image →
-   `detector.detect()` → `[Detection]`. The frame is saved to `runs/<ts>/frames/`.
+1. **Observe.** `transport.get_state()` → `DuckState`; `frames_of(transport)` → every camera's
+   newest picture, the primary first → `detector.detect()` on the primary → `[Detection]`. Only
+   the primary is detected on, because a bearing is only meaningful from the lens `--fov-deg`
+   measured, and a provider with vision is still shown every frame, each labelled with its
+   camera's name. All of them are saved to `runs/<ts>/frames/`: `0000.png` for a body with one
+   camera, and `0000-top.png` beside `0000-side.png` for a body with several, so the number
+   still says which step and the name says which view. Only the LeRobot arm reads more than one
+   camera today.
 2. **Think.** The provider gets: the system prompt (contract in prose + the `.duck` body),
    the vendor-neutral history (`Exchange` = observation + decision), and the tool list
    (allowed verbs' JSON schemas + `assess_task` / `declare_success` / `declare_failure`, plus
    `tell` in a pilot flock, plus `remember` when
    memory is on). With memory on the prompt also carries what this robot remembers from
-   earlier runs. Only the last two observations keep their images. The provider must return
+   earlier runs. Only the last two observations keep their images, which is two pictures per
+   request on a body with one camera and four on a body with two. The provider must return
    one tool call.
 3. **Enforce.** Zero tool calls → one re-prompt, then failure. Several → the first. Then
    `Executor.run_verb`: abort flag → allowlist → verdict → params → confirm → budget → machine-enforced
@@ -117,7 +124,11 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 
 Step 0, before all of that: the loop calls `connect()` and, when an adapter answers with a
 manifest, builds the registry from it (`registry_from_manifest`). A bare transport answers
-`None` and gets the Microduck vocabulary.
+`None` and gets the Microduck vocabulary. A body with a rest pose recorded for it is driven
+there in the same breath, so what a model improvises from is the same body every time, and a
+run that cannot get there ends before it has spent a single LLM call. The mirror of that move
+is in the loop's `finally`, between the last `stop` and the disconnect, on every outcome below
+and on Ctrl-C. A dry run does neither, because it moves nothing ([safety.md](safety.md)).
 
 Outcomes: `success` / `failure` (the LLM's claim via the meta tools), `infeasible` (the
 pilot judged the task beyond this body before anything moved, and `quackd run` exits 3),
@@ -144,7 +155,7 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | `verb` | the loop's own record of the call it made (name, params, ok, summary, data) |
 | `assess` | the pilot's feasibility verdict on this task against this body: the word, the reason, the datasheet fields it read, what it estimated about the world and how, what the task would need, whether a person cleared it, and whether the run ends there |
 | `talk` | one pilot to another in a flock: who said it, to whom (a member name or `all`), the words, and whether the message was accepted. Sent through the `tell` tool, so it moves nothing and counts as no step ([flock.md](flock.md)) |
-| `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame, the summary (with `trace_dropped`: events a view raised on and never showed) |
+| `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame (one record per camera, each naming its own, on a body with several), the summary (with `trace_dropped`: events a view raised on and never showed) |
 
 Example: [`assets/transcript-example.jsonl`](assets/transcript-example.jsonl), recorded
 before the trace kinds existed.

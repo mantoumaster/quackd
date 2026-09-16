@@ -11,15 +11,18 @@ from __future__ import annotations
 import io
 import json
 import sys
+from typing import Any
 
 import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
 from quackd import doctor
+from quackd.adapters.lerobot import LeRobotAdapter
+from quackd.adapters.lerobot.mock import REST, LeRobotMock
 from quackd.agent.providers.factory import CLOUD_NAMES, KEY_ENV, PROVIDER_NAMES
 from quackd.cli import app
-from quackd.transport.base import TransportError
+from quackd.transport.base import CameraFrame, TransportError
 from quackd.transport.websocket_stub import WebSocketTransport
 
 
@@ -184,3 +187,195 @@ def test_the_progress_callback_names_the_slow_questions() -> None:
     doctor.collect(progress=said.append)
     assert any("probing ollama" in line for line in said)
     assert any("extras" in line for line in said)
+
+
+# ── what the probe does to a real arm: park it, and look through every camera ───────────
+
+AWAY_FROM_REST = {"shoulder_pan": 40.0, "shoulder_lift": -80.0}
+"""A pose the mock arm does not start in, so reaching it takes an actual move."""
+
+
+def _probe_of(report: doctor.DoctorReport) -> doctor.ProbeReport:
+    assert report.robot is not None and report.robot.error is None, report.robot
+    assert report.robot.probe is not None and report.robot.probe.error is None, report.robot.probe
+    return report.robot.probe
+
+
+def _row(report: doctor.DoctorReport, what: str) -> doctor.ProbeRow:
+    rows = _probe_of(report).rows
+    found = [r for r in rows if r.what == what]
+    assert len(found) == 1, f"wanted one {what!r} row, the probe reported {[r.what for r in rows]}"
+    return found[0]
+
+
+def _probed(monkeypatch: pytest.MonkeyPatch, transport: Any, **kwargs: Any) -> doctor.DoctorReport:
+    """Probe one transport the test built and can read afterwards.
+
+    `probe` makes its own adapter through the factory, so that call is the only seam a fake
+    fits through. What these tests need on the other side of it reaches no command line: an
+    arm that refuses to move, and a second camera."""
+    monkeypatch.setattr(
+        "quackd.adapters.factory.make_adapter", lambda *_a, **_k: LeRobotAdapter(transport)
+    )
+    return doctor.collect("lerobot:mock", address="mock://arm", **kwargs)
+
+
+def test_doctor_returns_a_probed_arm_to_its_rest_pose_and_reports_that_it_did() -> None:
+    """The probe is the one command that moves an arm without being given a task, and it has
+    to be. It used to connect, ask its questions and disconnect, and a LeRobot arm goes limp
+    the moment it is disconnected, which is how the bench arm fell at the end of a check.
+
+    The factory is left alone here on purpose: a pose handed to `collect` reaching the arm at
+    all is half of what this pins, and "returned to it" is only possible if it arrived."""
+    report = doctor.collect("lerobot:mock", address="mock://arm", rest_pose=AWAY_FROM_REST)
+    row = _row(report, "rest pose")
+    assert (row.value, row.state) == ("returned to it", "ok")
+    assert report.ok is True, "parking the arm is how a probe ends, not a fault to report"
+    advisories = _probe_of(report).advisories
+    assert not any("torque was left on" in a for a in advisories), advisories
+
+
+def test_an_arm_already_at_its_rest_pose_says_so_rather_than_driving_it_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing on this arm reports whether a goal was reached, so the rest move compares the
+    goal with the measured position. An arm that is already parked is left alone: re-sending
+    the pose would push servos at a goal they are already holding, for a row that would read
+    the same either way."""
+    arm = LeRobotMock(rest_pose=dict(REST))
+    report = _probed(monkeypatch, arm, rest_pose=dict(REST))
+    row = _row(report, "rest pose")
+    assert (row.value, row.state) == ("at it already", "ok")
+    assert arm.actions == [], f"an arm already at rest was sent {arm.actions}"
+    assert arm.sequence == ["rest", "close"], arm.sequence
+    assert arm.torque is False, "an arm at its rest pose can be let go of"
+    assert report.ok is True
+
+
+def test_a_robot_with_no_rest_pose_recorded_says_how_to_record_one_and_still_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not recording a pose is a choice, the way an extra nobody installed is a choice, and a
+    robot that has always been let go of where it stood is not suddenly broken. Torque still
+    drops, which is the behaviour of every body here except an arm with a pose to hold."""
+    arm = LeRobotMock()
+    report = _probed(monkeypatch, arm)
+    row = _row(report, "rest pose")
+    assert row.value == "none recorded (quackd robot rest-pose <name>)"
+    assert row.state == "plain", "a pose nobody recorded is not a failure"
+    assert report.ok is True
+    assert arm.torque is False, "with no pose to hold, the arm is released as it always was"
+    assert arm.close_note is None
+
+
+def test_an_arm_that_cannot_reach_its_rest_pose_fails_the_verdict_and_says_torque_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An arm that stalled on the way to its rest pose is the one case where the disconnect
+    must not drop torque, because dropping it is how the arm falls. That leaves the arm
+    holding itself up with nothing on the machine saying so, so doctor fails the verdict and
+    repeats the note the close left behind."""
+    arm = LeRobotMock(rest_pose=AWAY_FROM_REST, rest_fails="elbow_flex is at 12 with a goal of 90")
+    report = _probed(monkeypatch, arm, rest_pose=AWAY_FROM_REST)
+    row = _row(report, "rest pose")
+    assert row.value == "not reached: elbow_flex is at 12 with a goal of 90"
+    assert row.state == "fail"
+    assert _probe_of(report).ok is False
+    assert report.ok is False, "an arm left holding itself up is not a machine in a good state"
+    advisories = _probe_of(report).advisories
+    assert any("torque was left on" in a for a in advisories), advisories
+    assert arm.torque is True and arm.close_note is not None
+    buf = io.StringIO()
+    Console(file=buf, width=200).print(doctor.verdict(report))
+    said = " ".join(buf.getvalue().split())
+    assert "FAILURE" in said and "rest pose: not reached" in said, said
+
+
+class _TwoEyes(LeRobotMock):
+    """An arm with two cameras, answering `camera_health()` the shape the real backend does.
+
+    Each row leaves its size out: `probe` fills that in from the frames it actually read, so
+    a camera can only claim a size by having handed a picture over."""
+
+    camera_keys = ("top", "side")
+
+    def __init__(self, *, blind: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.blind = blind
+
+    async def get_frames(self) -> list[CameraFrame]:
+        image = await self.get_frame()
+        if image is None:
+            return []
+        live = [name for name in self.camera_keys if name not in self.blind]
+        # the first camera is the primary, and it is marked rather than assumed: a body whose
+        # primary lens is the blind one must not promote the other into its place
+        return [CameraFrame(n, image, primary=n == self.camera_keys[0]) for n in live]
+
+    def camera_health(self) -> dict[str, Any]:
+        return {
+            "configured": True,
+            "url": "opencv://0?name=top",
+            "ok": "top" not in self.blind,
+            "age_s": 0.0,
+            "size": None,
+            "error": None,
+            "cameras": [
+                {
+                    "name": name,
+                    "url": f"opencv://{index}?name={name}",
+                    "ok": name not in self.blind,
+                    "age_s": None if name in self.blind else 0.0,
+                    "size": None,
+                    "error": "TimeoutError: no frame in 2.0 s" if name in self.blind else None,
+                }
+                for index, name in enumerate(self.camera_keys)
+            ],
+        }
+
+
+class _OneEye(LeRobotMock):
+    """One camera, answering exactly the dict every backend answered before there were two."""
+
+    def camera_health(self) -> dict[str, Any]:
+        return {
+            "configured": True,
+            "url": "opencv://0",
+            "ok": True,
+            "age_s": 0.0,
+            "size": "128x128",
+            "error": None,
+        }
+
+
+def test_the_probe_gives_each_camera_a_row_and_names_the_one_that_gave_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A camera URL nothing checks is a camera URL that fails at the first observe, which is
+    why the probe asks for a picture rather than accepting the url. With two of them, "no
+    frame came back" does not say which eye closed, and the arm goes on working with the
+    other one, so both the row and the advisory have to name it."""
+    arm = _TwoEyes(blind=("side",))
+    report = _probed(monkeypatch, arm, camera_url="opencv://0?name=top")
+    top, side = _row(report, "camera top"), _row(report, "camera side")
+    assert (top.value, top.state) == ("128x128", "ok")
+    assert (side.value, side.state) == ("no frame", "fail")
+    assert _probe_of(report).ok is False
+    assert report.ok is False, "a camera that sent nothing fails the machine's verdict"
+    advisories = _probe_of(report).advisories
+    assert any("from side" in a and "observe" in a for a in advisories), advisories
+
+
+def test_a_single_camera_still_reads_under_the_row_label_it_always_had(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A camera's name is only spoken by a body that has more than one. Labelling the row
+    "camera camera" on every one-camera robot would rename the row everybody reading this
+    output already knows, in exchange for a word that is quackd's own default and not
+    anything its owner chose."""
+    report = _probed(monkeypatch, _OneEye(), camera_url="opencv://0")
+    row = _row(report, "camera")
+    assert (row.value, row.state) == ("128x128", "ok")
+    labels = [r.what for r in _probe_of(report).rows if r.what.startswith("camera")]
+    assert labels == ["camera"], labels
+    assert report.ok is True

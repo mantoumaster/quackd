@@ -21,6 +21,7 @@ from quackd.agent.providers.base import (
     ProviderTurn,
     ToolCall,
     Usage,
+    labelled,
 )
 from quackd.agent.providers.catalogue import default_model_for
 
@@ -82,8 +83,13 @@ def render_contents(history: list[Exchange]) -> list[dict[str, Any]]:
                 parts.append({"text": obs.text})
         else:
             parts.append({"text": obs.text})
-        if obs.image_png:
-            parts.append({"inline_data": {"mime_type": "image/png", "data": obs.image_png}})
+        parts.extend(
+            labelled(
+                obs.images,
+                lambda png: {"inline_data": {"mime_type": "image/png", "data": png}},
+                lambda text: {"text": text},
+            )
+        )
         contents.append({"role": "user", "parts": parts})
         if ex.decision is not None:
             tc = ex.decision.tool_call

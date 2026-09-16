@@ -9,8 +9,12 @@ Source of truth: https://github.com/huggingface/lerobot at commit
 fbb811fca92504439792b97d216f0d00c2268382 (main, 2026-09-01). First read 2026-09-02; read
 again on 2026-09-13, at the same commit, when the arm adapter was hardened, which is where
 most of the rows below come from. PyPI had 0.6.1 on both days; the pinned tree calls itself
-0.6.2. Nothing here has been run against an arm, and LeRobot is never imported outside the
-`real` backend.
+0.6.2. LeRobot is never imported outside the `real` backend.
+
+First run against an arm on 2026-09-15, on lerobot 0.6.1 (Windows 11, Python 3.12.12):
+connect, `get_observation`, `send_action`, the two register reads and `disconnect` behaved
+as the rows below say. The rows still carry the status they were read with, because one
+afternoon on one arm confirms what was exercised and says nothing about the rest.
 """
 
 from __future__ import annotations
@@ -244,7 +248,21 @@ SO_DISCONNECT_TORQUE = UpstreamRef(
     src(_SO, 234),
     "disable_torque_on_disconnect defaults to True (config line 31): LeRobot lets the arm go "
     "limp when the session ends, and quackd keeps that default and says so. It fires on "
-    "every clean exit, a doctor probe included, and not at all when the process is killed",
+    "every clean exit, a doctor probe included, and not at all when the process is killed. "
+    "Since the rest pose, quackd turns it off for the one case where letting go would drop "
+    "the arm: one that did not reach the pose it was recorded resting in "
+    "(SO_DISCONNECT_READS_ITS_CONFIG_LATE)",
+)
+SO_DISCONNECT_READS_ITS_CONFIG_LATE = UpstreamRef(
+    "disconnect() reads config.disable_torque_on_disconnect when it runs",
+    "VERIFIED",
+    src(_SO, 234),
+    "the flag is read off the config instance inside disconnect() rather than copied at "
+    "construction, and SOFollowerConfig is a plain dataclass, so setting it False on the "
+    "instance just before the call is what leaves an arm holding. quackd uses that for one "
+    "case only, an arm that is not at its rest pose; _config_kwargs() still asks for True, "
+    "and MotorsBus.disconnect(False) closes the port with every motor still holding its goal "
+    "(BUS_DISCONNECT). Read against lerobot 0.6.1, the version the first real arm ran",
 )
 SO_GRIPPER_TORQUE_LIMIT = UpstreamRef(
     "Max_Torque_Limit 500 on the gripper",
@@ -297,7 +315,14 @@ BUS_DISABLE_TORQUE = UpstreamRef(
     "MotorsBus.disable_torque()", "VERIFIED", src(_BUS, 118), "NEVER called by quackd (limp)"
 )
 BUS_ENABLE_TORQUE = UpstreamRef("MotorsBus.enable_torque()", "VERIFIED", src(_BUS, 113))
-BUS_DISCONNECT = UpstreamRef("MotorsBus.disconnect(disable_torque=True)", "VERIFIED", src(_BUS, 82))
+BUS_DISCONNECT = UpstreamRef(
+    "MotorsBus.disconnect(disable_torque=True)",
+    "VERIFIED",
+    src(_BUS, 82),
+    "the disable_torque call is inside `if disable_torque`, so False closes the port and "
+    "leaves every motor holding the goal it was last written: what an arm that missed its "
+    "rest pose gets instead of falling",
+)
 BUS_IS_CONNECTED = UpstreamRef(
     "MotorsBus.is_connected is port_handler.is_open",
     "VERIFIED",

@@ -8,12 +8,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 
+from quackd.adapters.lerobot import LeRobotAdapter
+from quackd.adapters.lerobot.mock import LeRobotMock
 from quackd.agent.loop import AgentLoop, RunConfig, run_duck
 from quackd.agent.providers.base import Exchange, ProviderError, ProviderTurn, ToolCall, Usage
 from quackd.agent.providers.fake import FakeProvider
 from quackd.agent.transcript import Transcript
 from quackd.duckfile.schema import Budgets, DuckFile
+from quackd.transport.base import CameraFrame
 from quackd.transport.mock import MockTransport
 
 # the verdict comes first on every run now: the scripted pilot answers it as a rule, and the
@@ -1029,3 +1033,387 @@ async def test_the_prompt_offers_the_tool_and_states_the_rule(
     assert "Before the first verb that moves the body, call " in system
     assert "assess_task" in system
     assert "the run ends, nothing moves" in system
+
+
+# ── the rest pose: the arm is put down however the run ended ────────────────────────────
+
+
+ARM_REST = {
+    "shoulder_pan": 45.0,
+    "shoulder_lift": -40.0,
+    "elbow_flex": 20.0,
+    "wrist_flex": 0.0,
+    "wrist_roll": 0.0,
+}
+"""Somewhere the mock arm does not already start, so every rest move here is a real move
+rather than a reading of `already`."""
+
+
+def _arm_duck() -> DuckFile:
+    """A task an arm can run: it looks, it reads its own state, it stops."""
+    from quackd.duckfile.parser import parse_duck_text
+
+    return parse_duck_text(ARM_DUCK.format(version=1, block=""))
+
+
+def _says_no(_why: str) -> bool:
+    """The person in the room, refusing. `decide` is asked when the pilot says it is unsure."""
+    return False
+
+
+class ExplodingProvider:
+    """A pilot whose call raises whatever it was handed."""
+
+    name, model, supports_vision = "exploding", "test", False
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    async def step(self, system: Any, history: Any, tools: Any) -> ProviderTurn:
+        raise self.error
+
+
+class StallingProvider:
+    """A pilot that never answers, so the run can be cancelled while it waits."""
+
+    name, model, supports_vision = "stalling", "test", False
+
+    async def step(self, system: Any, history: Any, tools: Any) -> ProviderTurn:
+        await asyncio.sleep(10)
+        raise AssertionError("never reached")
+
+
+#: Every way `run()` can leave its own `try`, and the outcome `run_end` records for it.
+ENDINGS = {
+    "budget": "budget",
+    "cancelled": "aborted",
+    "failure": "failure",
+    "infeasible": "infeasible",
+    "keyboard_interrupt": "aborted",
+    "provider_error": "error",
+    "success": "success",
+    "uncertain_no_go": "aborted",
+}
+#: The two endings the loop re-raises after recording. `cancelled` is driven differently.
+RAISES: dict[str, type[BaseException]] = {
+    "keyboard_interrupt": KeyboardInterrupt,
+    "provider_error": ProviderError,
+}
+
+
+def _ending_setup(ending: str) -> tuple[Any, dict[str, Any]]:
+    """The provider, and the `RunConfig` fields, that make a run end this way."""
+    if ending == "success":
+        script = [ToolCall(name="declare_success", arguments={"reason": "the mug is up"})]
+        return FakeProvider(script=script), {}
+    if ending == "failure":
+        script = [ToolCall(name="declare_failure", arguments={"reason": "it slipped"})]
+        return FakeProvider(script=script), {}
+    if ending == "infeasible":
+        script = [_verdict_call("infeasible", "that is a filing cabinet, not a mug")]
+        return FakeProvider(script=script), {}
+    if ending == "uncertain_no_go":
+        script = [_verdict_call("uncertain", "the mug is out of frame")]
+        return FakeProvider(script=script), {"decide": _says_no}
+    if ending == "budget":
+        return FakeProvider(script=[ToolCall(name="report_state")]), {"max_steps": 1}
+    if ending == "provider_error":
+        return ExplodingProvider(ProviderError("anthropic: rate limited")), {}
+    if ending == "keyboard_interrupt":
+        return ExplodingProvider(KeyboardInterrupt()), {}
+    return StallingProvider(), {}
+
+
+@pytest.mark.parametrize("ending", sorted(ENDINGS))
+async def test_every_way_a_run_ends_returns_the_arm_to_rest(ending: str, tmp_path: Path) -> None:
+    """A LeRobot arm goes limp the moment it is disconnected, so one left anywhere but its rest
+    pose falls. On the bench on 2026-09-15 that is what happened at the end of every run,
+    whatever the run had been doing. So the rest move sits in the `finally`, between the stop
+    that holds the arm where it is and the close that lets it go, and it has to survive every
+    way out: a budget, a task the pilot refused, a person saying no, a crash, and the two
+    `BaseException` endings that are not `Exception` at all and so miss any branch written for
+    one.
+    """
+    mock = LeRobotMock(rest_pose=ARM_REST)
+    provider, extra = _ending_setup(ending)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cfg = RunConfig(
+        duck=_arm_duck(),
+        provider=provider,
+        transport=LeRobotAdapter(mock),
+        run_dir=run_dir,
+        runs_dir=tmp_path,
+        **extra,
+    )
+    if ending == "cancelled":
+        task = asyncio.create_task(run_duck(cfg))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    elif (error := RAISES.get(ending)) is not None:
+        with pytest.raises(error):
+            await run_duck(cfg)
+    else:
+        await run_duck(cfg)
+
+    events = Transcript.read(run_dir / "transcript.jsonl")
+    end = next(e for e in events if e["kind"] == "run_end")
+    assert end["outcome"] == ENDINGS[ending], end["reason"]
+    assert mock.sequence[-3:] == ["stop", "rest", "close"], mock.sequence
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert any("at the rest pose" in note for note in notes), notes
+    assert mock.torque is False, "the arm is down, so torque could be released"
+    assert mock.close_note is None, "nothing to warn about: it did not end up in mid-air"
+
+
+async def test_an_arm_the_run_left_elsewhere_is_driven_home_before_the_torque_drops(
+    tmp_path: Path,
+) -> None:
+    """The order in the teardown is not the whole of it. The arm has to actually travel: a run
+    that ends with the elbow out over the desk has to put it back, and only then let go. The
+    stop holds the arm where it is and the close releases it, so the move between them is the
+    only thing standing between the arm and the desk."""
+    mock = LeRobotMock(rest_pose=ARM_REST)
+    duck = _arm_duck()
+    duck.frontmatter.verbs.allow = [*duck.frontmatter.verbs.allow, "move_joints"]
+    script = [
+        ToolCall(name="move_joints", arguments={"positions": {"shoulder_pan": -20.0}}),
+        ToolCall(name="declare_success", arguments={"reason": "moved and stopped"}),
+    ]
+    result = await run_duck(
+        RunConfig(
+            duck=duck,
+            provider=FakeProvider(script=script),
+            transport=LeRobotAdapter(mock),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assert mock.joints["shoulder_pan"] == ARM_REST["shoulder_pan"], "driven back, not left there"
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert notes[-1] == "at the rest pose", notes
+    assert mock.torque is False, "and only an arm that is down has its torque released"
+    assert mock.close_note is None
+
+
+async def test_a_dry_run_never_moves_the_arm_to_its_rest_pose(tmp_path: Path) -> None:
+    """A dry run sends nothing to the robot, and the rest move is the one thing in the teardown
+    that is not narration: it is a real motion, so it is the one that has to be checked by
+    name.
+
+    The close is still real, because the link has to be let go of either way, and an arm that
+    is not at its rest pose is disconnected with its torque still on. So a dry run can still
+    end with the warning about torque. That sentence is about the body in the room and not
+    about the run, which is exactly why it is not suppressed here."""
+    mock = LeRobotMock(rest_pose=ARM_REST)
+    script = [ToolCall(name="declare_success", arguments={"reason": "pretended"})]
+    result = await run_duck(
+        RunConfig(
+            duck=_arm_duck(),
+            provider=FakeProvider(script=script),
+            transport=LeRobotAdapter(mock),
+            runs_dir=tmp_path,
+            dry_run=True,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assert "rest" not in mock.sequence, mock.sequence
+    assert mock.actions == [], "no goal was sent to a joint"
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert not any(note.startswith("moving to the rest pose") for note in notes), notes
+    assert not any("did not reach its rest pose" in note for note in notes), notes
+    assert mock.torque is True, "and the arm it never moved is left holding itself up"
+
+
+async def test_a_run_whose_first_rest_move_fails_never_asks_the_model_anything(
+    tmp_path: Path,
+) -> None:
+    """A run starts from the pose it will end at, so the pilot improvises from the same arm
+    every time. An arm that cannot get there is in an unknown place, and paying a model to
+    improvise from that is worse than not starting at all: the abort happens before the first
+    request, so the run costs nothing and the record still says why."""
+    stalled = "shoulder_lift is at -90 with a goal of -40"
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=stalled)
+    script = [ToolCall(name="declare_success", arguments={"reason": "never asked"})]
+    result = await run_duck(
+        RunConfig(
+            duck=_arm_duck(),
+            provider=FakeProvider(script=script),
+            transport=LeRobotAdapter(mock),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "aborted", result.reason
+    assert "did not reach its rest pose" in result.reason and stalled in result.reason
+    assert result.llm_calls == 0, "no model was asked anything"
+    assert mock.actions == [], "the move stalled, so nothing was ever sent to a joint"
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert events[0]["kind"] == "run_start", "the abort is inside the run, not before it"
+    end = next(e for e in events if e["kind"] == "run_end")
+    assert end["outcome"] == "aborted" and end["llm_calls"] == 0
+
+
+async def test_the_note_about_torque_left_on_reaches_the_transcript(tmp_path: Path) -> None:
+    """An arm that is not at its rest pose keeps torque when quackd closes it, or it drops on
+    the desk. That leaves a robot holding itself up after the run is over, and the person in
+    the room has to be told so they can hold it and cut the power by hand. The transport
+    records the sentence and prints nothing itself; the run is what says it out loud."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails="the elbow is against the table")
+    lines: list[str] = []
+    script = [ToolCall(name="declare_success", arguments={"reason": "never asked"})]
+    result = await run_duck(
+        RunConfig(
+            duck=_arm_duck(),
+            provider=FakeProvider(script=script),
+            transport=LeRobotAdapter(mock),
+            runs_dir=tmp_path,
+            log=lines.append,
+        )
+    )
+    assert result.outcome == "aborted", result.reason
+    assert mock.torque is True, "an arm away from its rest pose keeps torque and does not fall"
+    assert mock.close_note is not None and "torque was left on" in mock.close_note
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert mock.close_note in notes, "the warning is a line of the record"
+    assert mock.close_note in lines, "`log` gets it too; that is what the CLI prints"
+
+
+async def test_a_body_with_no_rest_pose_says_nothing_about_one(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Most bodies quackd drives have no arm to put down, and their runs have to read exactly
+    as they did before there was a rest pose at all. Every golden in this suite is one of
+    them."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert not any("rest pose" in note for note in notes), notes
+    calls = [tc["name"] for e in events if e["kind"] == "llm" for tc in e["tool_calls"]]
+    assert calls == GOLDEN_HELLO, "and the run itself is unchanged"
+
+
+# ── several cameras ─────────────────────────────────────────────────────────────────────
+
+
+class TwoCameraDuck(MockTransport):
+    """A body with two cameras. `top` is the primary, the one the detections describe; `side`
+    watches the bench from beside it. The two pictures differ, so a test can tell them apart
+    on disk as well as by name."""
+
+    async def get_frames(self) -> list[CameraFrame]:
+        return [
+            CameraFrame("top", Image.new("RGB", (16, 16), (200, 40, 40)), primary=True),
+            CameraFrame("side", Image.new("RGB", (16, 16), (40, 40, 200))),
+        ]
+
+
+class SeeingProvider:
+    """A pilot that can see, and writes down which camera every picture in the request came
+    from, exchange by exchange."""
+
+    name = "seeing"
+    model = "test"
+    supports_vision = True
+
+    def __init__(self, *script: ToolCall) -> None:
+        self.script = list(script)
+        self.requests: list[list[list[str]]] = []
+        self.calls = 0
+
+    async def step(
+        self, system: str, history: list[Exchange], tools: list[dict[str, Any]]
+    ) -> ProviderTurn:
+        self.requests.append([[img.name for img in ex.observation.images] for ex in history])
+        call = self.script[min(self.calls, len(self.script) - 1)]
+        self.calls += 1
+        return ProviderTurn(tool_calls=[call])
+
+
+async def test_every_camera_frame_reaches_the_provider_and_the_transcript(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Two unlabelled pictures in one request are two views of a room with nothing to say which
+    is which, and two frames written to one `0000.png` are one view lost. So the camera's name
+    travels with its picture the whole way: into the request, into the file name, and into the
+    record's own `camera` field, while the step number still says which turn it was."""
+    provider = SeeingProvider(
+        ToolCall(name="quack", arguments={"text": "hi"}),
+        ToolCall(name="declare_success", arguments={"reason": "seen"}),
+    )
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=provider,
+            transport=TwoCameraDuck(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assert provider.requests[0][-1] == ["top", "side"], "both cameras, the primary first"
+
+    frames = result.run_dir / "frames"
+    top, side = frames / "0000-top.png", frames / "0000-side.png"
+    assert top.exists() and side.exists(), sorted(p.name for p in frames.iterdir())
+    assert top.read_bytes() != side.read_bytes(), "two views, not one picture written twice"
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    records = [e for e in events if e["kind"] == "frame"]
+    assert [r["camera"] for r in records[:2]] == ["top", "side"]
+
+    observation = next(e for e in events if e["kind"] == "observation")
+    assert "cameras: top (detections above), side" in observation["text"]
+
+    requests = [e for e in events if e["kind"] == "llm_request"]
+    assert requests[0]["with_image"] == 1 and requests[0]["images"] == 2
+    assert all(r["images"] == 2 * r["with_image"] for r in requests), requests
+
+
+async def test_only_the_last_n_exchanges_keep_their_images(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`keep_images_for_last_n` is the only thing bounding what a run costs in pictures: every
+    turn adds one per camera, and a run of twenty that sent them all would send forty. N counts
+    exchanges rather than images, so a second camera doubles the bill and the bound still
+    holds. The trim is a copy, so the run's own history keeps every picture it was shown."""
+    hello_duck.frontmatter.budgets = Budgets()
+    keep = 3
+    provider = SeeingProvider(
+        *[ToolCall(name="quack", arguments={"text": "hi"})] * 4,
+        ToolCall(name="declare_success", arguments={"reason": "done"}),
+    )
+    loop = AgentLoop(
+        RunConfig(
+            duck=hello_duck,
+            provider=provider,
+            transport=TwoCameraDuck(),
+            runs_dir=tmp_path,
+            keep_images_for_last_n=keep,
+        )
+    )
+    result = await loop.run()
+    assert result.outcome == "success", result.reason
+
+    last = provider.requests[-1]
+    assert len(last) == 5, "five exchanges, the last of them the one being answered"
+    assert last[-keep:] == [["top", "side"]] * keep, "the newest keep both views"
+    assert last[:-keep] == [[], []], "and the older ones carry no picture at all"
+    assert all(ex.observation.images for ex in loop.history), (
+        "the run's own history keeps every picture; only the request is trimmed"
+    )
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    requests = [e for e in events if e["kind"] == "llm_request"]
+    assert requests[-1]["with_image"] == keep and requests[-1]["images"] == 2 * keep

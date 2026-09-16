@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -190,6 +191,186 @@ def test_the_memory_key_is_the_name_registered_and_the_spec_otherwise(tmp_path: 
     assert resolve_robot_ref("microduck:mock", reg).memory_key == "microduck:mock"
 
 
+# ── the rest pose ───────────────────────────────────────────────────────────────────────
+
+_FOLDED = {
+    "shoulder_pan": 0.0,
+    "shoulder_lift": -113.5,
+    "elbow_flex": 95.0,
+    "wrist_flex": 12.5,
+}
+"""The pose the bench arm was folded into. `shoulder_lift` is past the travel its own
+calibration file gives it, which is normal for a pose a person pushed the arm into by hand,
+and the reason nothing here treats a recorded pose as a goal it may range-check."""
+
+
+def test_a_rest_pose_survives_the_file_and_a_file_written_without_one_still_loads(
+    tmp_path: Path,
+) -> None:
+    """A robots.json written before arms were parked has no `rest_pose` key at all, and
+    upgrading quackd must not mean editing it: the field is absent rather than null, and
+    every robot in that file has to keep loading, with no pose recorded for it."""
+    reg = Registry(tmp_path)
+    reg.add_robot(_entry("arm", "lerobot:real", rest_pose=_FOLDED))
+    again = Registry(tmp_path).robot("arm")
+    assert again.rest_pose == _FOLDED
+    assert again.public()["rest_pose"] == _FOLDED
+    stored = json.loads((tmp_path / "robots.json").read_text(encoding="utf-8"))
+    assert stored["robots"]["arm"]["rest_pose"] == _FOLDED, "degrees by joint, as they were read"
+
+    (tmp_path / "robots.json").write_text(
+        json.dumps({"version": 1, "robots": {"arm": {"spec": "lerobot:real"}}}), encoding="utf-8"
+    )
+    older = Registry(tmp_path).robot("arm")
+    assert older.rest_pose is None
+    assert older.public()["rest_pose"] is None
+    assert older.adapter_kwargs()["rest_pose"] is None
+
+
+@pytest.mark.parametrize(
+    ("pose", "why"),
+    [
+        ({}, "rest_pose must name at least one joint"),
+        ({"elbow_flex": float("inf")}, r"rest_pose\.elbow_flex must be a finite number of degrees"),
+        (
+            {"elbow_flex": float("-inf")},
+            r"rest_pose\.elbow_flex must be a finite number of degrees",
+        ),
+        ({"elbow_flex": float("nan")}, r"rest_pose\.elbow_flex must be a finite number of degrees"),
+    ],
+)
+def test_a_rest_pose_that_is_not_finite_degrees_by_joint_is_refused(
+    pose: dict[str, float], why: str
+) -> None:
+    """`inf` and `nan` are floats as far as pydantic is concerned, so they reach the field
+    itself. An arm told to park at infinity would push until it stalled, and one told to park
+    at `nan` compares false against every reading and so is never at its pose."""
+    with pytest.raises(ValidationError, match=why):
+        _entry("arm", "lerobot:real", rest_pose=pose)
+
+
+def test_a_rest_pose_angle_that_is_not_a_number_names_the_joint_it_sits_on() -> None:
+    """Here the joint is in the locator rather than in the sentence: pydantic refuses the
+    value before the field validator ever runs, so the wording is its own. What matters is
+    that a person editing robots.json is told which joint to look at."""
+    for bad in ("sideways", None, [1]):
+        with pytest.raises(
+            ValidationError, match=r"rest_pose\.elbow_flex\n\s+Input should be a valid number"
+        ):
+            _entry("arm", "lerobot:real", rest_pose={"elbow_flex": bad})
+
+
+def test_adapter_kwargs_carries_the_rest_pose_and_an_unregistered_spec_has_none(
+    tmp_path: Path,
+) -> None:
+    reg = Registry(tmp_path)
+    reg.add_robot(_entry("arm", "lerobot:real", rest_pose=_FOLDED))
+    kwargs = resolve_robot_ref("arm", reg).adapter_kwargs()
+    assert kwargs["rest_pose"] == _FOLDED
+    kwargs["rest_pose"]["elbow_flex"] = 0.0
+    assert reg.robot("arm").rest_pose == _FOLDED, "the kwargs hold a copy, not the stored dict"
+    bare = resolve_robot_ref("lerobot:real", reg)
+    assert not bare.registered
+    assert bare.adapter_kwargs()["rest_pose"] is None, "a pose is something you get by naming it"
+
+
+# ── cameras ─────────────────────────────────────────────────────────────────────────────
+
+_TOP = "http://arm:9872/top.jpg"
+_SIDE = "http://arm:9873/side.jpg"
+
+
+def test_one_camera_is_stored_as_a_string_and_several_as_a_list(tmp_path: Path) -> None:
+    """The string form is not a leftover: a robot with one camera has to write a file an
+    older quackd can still read, so the list shape appears only when there is a second."""
+    reg = Registry(tmp_path)
+    reg.add_robot(_entry("arm", "lerobot:real", camera_url=_TOP))
+    one = Registry(tmp_path).robot("arm")
+    assert one.camera_url == _TOP
+    assert one.camera_urls == (_TOP,), "everything reads camera_urls, which is always a tuple"
+    stored = json.loads((tmp_path / "robots.json").read_text(encoding="utf-8"))
+    assert stored["robots"]["arm"]["camera_url"] == _TOP, "an older quackd reads this file too"
+
+    reg.update_robot("arm", {"camera_url": [_TOP, _SIDE]})
+    both = Registry(tmp_path).robot("arm")
+    assert both.camera_url == [_TOP, _SIDE]
+    assert both.camera_urls == (_TOP, _SIDE), "the order given is kept: the first is the primary"
+    stored = json.loads((tmp_path / "robots.json").read_text(encoding="utf-8"))
+    assert stored["robots"]["arm"]["camera_url"] == [_TOP, _SIDE]
+
+
+def test_a_robots_json_written_before_the_second_camera_still_loads(tmp_path: Path) -> None:
+    """The back-compat guarantee for anyone upgrading: 0.9 wrote `camera_url` as a plain
+    string, and that file has to load without an edit and mean one camera."""
+    (tmp_path / "robots.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "robots": {"duck-a": {"spec": "microduck:mock", "camera_url": "http://old:9872"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    entry = Registry(tmp_path).robot("duck-a")
+    assert entry.camera_url == "http://old:9872"
+    assert entry.camera_urls == ("http://old:9872",)
+    assert entry.adapter_kwargs()["camera_url"] == ("http://old:9872",)
+
+
+def test_a_blank_or_repeated_camera_url_is_refused_in_its_own_words() -> None:
+    with pytest.raises(ValidationError, match="camera_url: an empty url is not a camera"):
+        _entry("arm", "lerobot:real", camera_url="")
+    with pytest.raises(ValidationError, match="camera_url: an empty url is not a camera"):
+        _entry("arm", "lerobot:real", camera_url=[_TOP, "   "])
+    with pytest.raises(ValidationError, match=f"camera_url: '{_TOP}' is listed twice"):
+        _entry("arm", "lerobot:real", camera_url=[_TOP, _TOP])
+
+
+def test_a_second_camera_is_refused_on_a_body_that_reads_one(tmp_path: Path) -> None:
+    """A hand-edited file is the only way a duck gets two urls, and the rule is that a file
+    saying something untrue names itself rather than having the extra camera quietly
+    dropped: the duck would open the first one and nobody would learn why."""
+    with pytest.raises(
+        ValidationError,
+        match="microduck:mock takes one camera url; only lerobot:real takes several",
+    ):
+        _entry("duck-a", "microduck:mock", camera_url=["http://duck:1", "http://duck:2"])
+    (tmp_path / "robots.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "robots": {
+                    "duck-a": {
+                        "spec": "microduck:mock",
+                        "camera_url": ["http://duck:1", "http://duck:2"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RegistryError, match=r"duck-a: .*takes one camera url"):
+        Registry(tmp_path).robots()
+    arm = _entry("arm", "lerobot:real", camera_url=[_TOP, _SIDE])
+    assert arm.camera_urls == (_TOP, _SIDE), "the one body that reads several takes them"
+
+
+def test_adapter_kwargs_carries_every_camera_and_a_flag_replaces_the_whole_set(
+    tmp_path: Path,
+) -> None:
+    """`--camera-url` on the line says where the cameras are today, so it replaces the stored
+    set rather than adding to it. An arm whose side camera is unplugged is run by naming the
+    one that is plugged in, not by editing the registry and putting it back afterwards."""
+    reg = Registry(tmp_path)
+    reg.add_robot(_entry("arm", "lerobot:real", camera_url=[_TOP, _SIDE]))
+    resolved = resolve_robot_ref("arm", reg)
+    assert resolved.adapter_kwargs()["camera_url"] == (_TOP, _SIDE)
+    today = resolved.adapter_kwargs(camera_url=["http://laptop:8080/usb0"])
+    assert today["camera_url"] == ("http://laptop:8080/usb0",), "a flag replaces, never appends"
+    assert reg.robot("arm").camera_urls == (_TOP, _SIDE), "and it changes nothing on the file"
+    assert resolve_robot_ref("lerobot:real", reg).adapter_kwargs()["camera_url"] == ()
+
+
 # ── flocks ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -365,3 +546,66 @@ def test_probe_all_answers_for_every_robot_at_once() -> None:
     rows = probe_all([_entry("a", "microduck:mock"), _entry("b", "lerobot:mock")])
     assert set(rows) == {"a", "b"}
     assert all(r.reachable for r in rows.values())
+
+
+def _hand_back(monkeypatch: pytest.MonkeyPatch, arm: Any, seen: dict[str, Any]) -> None:
+    """Every probe builds this one in-memory arm, and `seen` keeps what it was built with.
+
+    `probe_entry` imports `make_adapter` inside the call, so the factory's module attribute
+    is the seam: there is no other way to hand a probe a body it did not make itself."""
+    from quackd.adapters.lerobot import LeRobotAdapter
+
+    def fake_make_adapter(spec: Any, **kwargs: Any) -> Any:
+        seen.clear()
+        seen["spec"] = spec.key
+        seen.update(kwargs)
+        return LeRobotAdapter(arm)
+
+    monkeypatch.setattr("quackd.adapters.factory.make_adapter", fake_make_adapter)
+
+
+async def test_a_probe_hands_the_rest_pose_over_and_drives_the_arm_nowhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe reads and lets go, so it must never move the arm: `quackd robot list --probe`
+    is something you type while the arm is holding something, and a probe that parked it
+    would put whatever it held on the floor.
+
+    The pose still has to reach the adapter, because it is what decides whether torque may
+    drop when the probe disconnects. An arm away from it keeps torque, and the row says so on
+    the same line that says the arm answered: somebody has to hold it before the power goes."""
+    from quackd.adapters.lerobot.mock import LeRobotMock
+
+    seen: dict[str, Any] = {}
+    arm = LeRobotMock(rest_pose=_FOLDED)
+    _hand_back(monkeypatch, arm, seen)
+
+    result = await probe_entry(_entry("arm", "lerobot:real", rest_pose=_FOLDED))
+
+    assert seen["spec"] == "lerobot:real"
+    assert seen["rest_pose"] == _FOLDED, "the probe builds the arm with the pose it registered"
+    assert "rest" not in arm.sequence, f"the probe drove the arm: {arm.sequence}"
+    assert arm.sequence == ["close"]
+    assert arm.actions == [], "and sent it no goal of any kind"
+    assert result.reachable is True
+    assert result.detail.startswith("ok")
+    assert result.detail.endswith("torque left on: not at its rest pose"), result.detail
+    assert arm.torque is True, "torque is what the note is about"
+
+
+async def test_a_probe_on_an_arm_already_at_its_pose_says_nothing_about_torque(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the same rule: the torque line is news, and an arm that is where it
+    rests is let go of the way it always was, with nothing added to the row."""
+    from quackd.adapters.lerobot.mock import REST, LeRobotMock
+
+    seen: dict[str, Any] = {}
+    arm = LeRobotMock(rest_pose=dict(REST))
+    _hand_back(monkeypatch, arm, seen)
+
+    result = await probe_entry(_entry("arm", "lerobot:real", rest_pose=dict(REST)))
+
+    assert "rest" not in arm.sequence
+    assert result.detail == "ok"
+    assert arm.torque is False, "an arm at its rest pose may be let go of"

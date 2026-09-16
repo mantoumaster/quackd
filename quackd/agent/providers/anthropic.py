@@ -26,6 +26,7 @@ from quackd.agent.providers.base import (
     ProviderTurn,
     ToolCall,
     Usage,
+    labelled,
 )
 from quackd.agent.providers.catalogue import default_model_for
 
@@ -48,18 +49,14 @@ def render_messages(history: list[Exchange]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     for ex in history:
         obs = ex.observation
+        pictures = labelled(obs.images, _image_block, lambda text: {"type": "text", "text": text})
         if obs.tool_call_id:
-            inner: list[dict[str, Any]] = [{"type": "text", "text": obs.text}]
-            if obs.image_png:
-                inner.append(_image_block(obs.image_png))
+            inner: list[dict[str, Any]] = [{"type": "text", "text": obs.text}, *pictures]
             content: list[dict[str, Any]] = [
                 {"type": "tool_result", "tool_use_id": obs.tool_call_id, "content": inner}
             ]
         else:
-            content = []
-            if obs.image_png:
-                content.append(_image_block(obs.image_png))
-            content.append({"type": "text", "text": obs.text})
+            content = [*pictures, {"type": "text", "text": obs.text}]
         messages.append({"role": "user", "content": content})
         if ex.decision is not None:
             if isinstance(ex.decision.raw, list) and ex.decision.raw:

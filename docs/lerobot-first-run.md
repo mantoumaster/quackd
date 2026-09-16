@@ -13,11 +13,24 @@ Three documents cover this arm and they do different jobs:
 - [adapters/lerobot.md](adapters/lerobot.md) is the reference: the manifest, every verb, the
   camera query keys, and the full table of what quackd refuses and why.
 
-> [!IMPORTANT]
-> Nothing in quackd has ever run on a real SO-101. The `lerobot:real` backend speaks names
-> read from LeRobot's source at a pinned commit and has only ever talked to a fake arm. You
-> are not retracing a path here, you are the first person down it. [What to
-> report](#13-what-to-report) is the part that matters most, whether or not the arm waves.
+> [!NOTE]
+> One SO-101 has now been down this path. On 2026-09-15 an arm calibrated as `arm-01` ran
+> `lerobot-lookout`, and then free-form `--goal` runs, on Windows 11 with Python
+> 3.12.12, lerobot 0.6.1 and quackd 0.9.0, piloted by OpenAI's `gpt-6-astra`. It waved by
+> rolling the wrist about 27 degrees either way, waved again with `shoulder_lift` at -39 and
+> `elbow_flex` between 24 and 30, opened and closed the gripper, and in one run mimed a duck
+> quacking with the jaws. A USB webcam on `opencv://1` gave it pictures. It also went limp and
+> fell at the end of every one of those runs, which is what [section 07](#07-record-the-rest-pose)
+> now exists to fix.
+>
+> Two things that account does not cover. It was reached as `--robot lerobot:real --address
+> COM5`, with no registered name, so the registry steps below have not been run on hardware
+> either; `arm-01` is both the id that run calibrated under and the id a bare
+> `--robot lerobot:real` uses when you have not named the robot, which is why the two look
+> alike. And the rest pose in section 07 was written after that day and has not been tried on
+> an arm at all. So you are the second person down this path rather than the first, and what
+> differs from that account is the part worth writing down. [What to
+> report](#14-what-to-report) still matters most, whether or not the arm waves.
 
 <br>
 
@@ -41,7 +54,7 @@ is a colour threshold carrying the simulator's own ranges, so on a real desk `pe
 "a saturated blue thing" and nothing else. A model that accepts images sees the actual
 webcam frame every step and can simply look. A model that does not gets one line of text.
 [Choose your pilot](#03-choose-your-pilot) is where that decision gets made, and
-[Wave to me](#11-wave-to-me) is where it pays off or does not.
+[Wave to me](#12-wave-to-me) is where it pays off or does not.
 
 > [!CAUTION]
 > There is no e-stop on an SO-101 and quackd cannot give it one. LeRobot writes a torque and
@@ -140,9 +153,8 @@ would use, and `quackd list-models` prints every model id quackd knows for every
 
 ### A cloud vendor
 
-Put the key in the environment or in a `.env` file beside where you run quackd, then name
-the provider. The key variable per vendor is in [`.env.example`](../.env.example) and in
-`quackd doctor`.
+Put the key in the environment or in a `.env` file, then name the provider. The key variable
+per vendor is in [`.env.example`](../.env.example) and in `quackd doctor`.
 
 ```bash
 quackd run lerobot-lookout --robot lerobot:real --address COM5 --provider openai
@@ -151,6 +163,49 @@ quackd run lerobot-lookout --robot lerobot:real --address COM5 --provider openai
 > [!NOTE]
 > The provider for Claude is spelled `anthropic`. There is no `--provider claude`, and an
 > unknown name is refused before anything connects, with the full list in the message.
+
+### Where the key goes
+
+This cost time at the lab, so it gets its own subsection. quackd reads a `.env` from two
+places: the folder you are standing in when you type the command, and the venv root above its
+own install, which is the one a `uv venv` user is most likely to have. This is the layout that
+worked, verified on the machine that drove the arm:
+
+```
+D:\Development\lerobot-test\
+├── .venv\
+│   ├── Lib\
+│   ├── Scripts\
+│   ├── share\
+│   ├── .env            <- the file you create
+│   ├── .gitignore      (uv writes these three)
+│   ├── .lock
+│   ├── CACHEDIR.TAG
+│   └── pyvenv.cfg
+├── outputs\
+└── runs\
+```
+
+and the file itself is one line:
+
+```
+OPENAI_API_KEY=sk-...
+```
+
+`quackd doctor` prints a row per provider with the key it found, masked down to its first four
+and last two characters, which is the quickest way to see whether your file was read at all.
+
+> [!NOTE]
+> Either place works, so put the file wherever you will remember it: next to the command you
+> type, or in the venv root as above. Neither file overrides a variable that is already in
+> your shell, so a key exported by hand wins over both, and if both files name the same
+> variable the first one read wins, which is the one beside the command you typed.
+
+> [!WARNING]
+> The variable name is case sensitive everywhere except Windows. The file at the lab read
+> `OPENAI_API_Key`, which Windows happily resolves and macOS and Linux do not, so that same
+> file would have found no key at all on either. Copy the name out of
+> [`.env.example`](../.env.example) rather than typing it.
 
 ### A local model, no key
 
@@ -206,7 +261,7 @@ few keywords in a goal.
 > declaring success: `--goal "wave to me" --provider fake` ends with every joint exactly
 > where it started, and exits 0, with no refusal printed to warn you. Worse, a goal containing
 > the word *person* selects the patrol script, which reaches for verbs this body does not
-> have and gets refused one at a time. Use `fake` to prove the wiring in section 07, and a
+> have and gets refused one at a time. Use `fake` to prove the wiring in section 08, and a
 > real model for anything that has to think.
 
 <br>
@@ -253,12 +308,12 @@ lerobot-calibrate --robot.type=so101_follower --robot.port=COM5 --robot.id=arm-0
 ```
 
 > [!IMPORTANT]
-> The id has to be the one quackd will use. `arm-01` is the default behind a bare
-> `--robot lerobot:real`. Name the robot anything else later, with
-> `--robots arm=lerobot:real` or `quackd robot add lab-arm lerobot:real`, and the id becomes
-> that name instead, so calibrate under it. Two arms sharing an id share one file with
-> nothing in it to say which arm it came from, so if this is not the only SO-101 in the room
-> today, pick an id nobody else is using.
+> The id has to be the one quackd will use, which is why the command above says `arm-01`:
+> [section 06](#06-first-contact) registers this arm under that name, and a registered name
+> becomes the manifest id and therefore the calibration id quackd goes looking for. Register
+> it as `lab-arm` instead and you have to calibrate as `lab-arm`. Two arms sharing an id share
+> one file with nothing in it to say which arm it came from, so if this is not the only SO-101
+> in the room today, pick a name nobody else is using and use that name in both places.
 
 It writes `<calibration dir>/robots/so_follower/<id>.json`, where the directory is
 `$HF_LEROBOT_CALIBRATION`, else `$HF_LEROBOT_HOME/calibration`, else
@@ -269,7 +324,7 @@ connecting as `arm-01`.
 > [!NOTE]
 > Upstream will ask you to move every joint through its range **except** `wrist_roll`, and it
 > records a full encoder turn for that one rather than anything you swept. That is not a
-> mistake you can correct. It is why the out of range refusal in section 10 works on the
+> mistake you can correct. It is why the out of range refusal in section 11 works on the
 > other body joints and cannot fire on that one.
 
 <br>
@@ -283,10 +338,12 @@ quackd doctor --robot lerobot:real --address COM5
 ```
 
 > [!CAUTION]
-> Support the arm while this starts and before it finishes. `configure()` runs with torque
-> off, so connecting drops it for a moment, and LeRobot's `disconnect()` disables it again by
-> default at the end of every clean session, a `doctor` probe included. An arm folded
-> somewhere awkward will fall at either end.
+> Support the arm while this starts. `configure()` runs with torque off, so connecting drops
+> it for a moment whatever else is true, and an arm folded somewhere awkward falls at that
+> moment. Support it at the end too, for now: until [section 07](#07-record-the-rest-pose)
+> has recorded a rest pose there is nothing for quackd to put the arm back to, so LeRobot's
+> `disconnect()` disables torque where the arm stands, a `doctor` probe included. Once a pose
+> is recorded, `doctor` returns the arm to it and leaves torque on if it cannot get there.
 
 Read four things off it:
 
@@ -296,28 +353,179 @@ Read four things off it:
 - What the servos report for temperature with the arm cold. Write that number down. It is
   the baseline for everything later.
 
-<br>
+### Name it
 
-## 07. The first task
-
-`lerobot-lookout` ships with quackd, moves no joint, and asks only for `report_state`. It is
-the first thing to point at an arm nobody has driven. The scripted pilot is enough here,
-because there is nothing to improvise:
+Every command from here on names the arm rather than respelling the backend and the port, and
+the next section needs a name to keep a pose under. Register it with the same id you
+calibrated:
 
 ```bash
-quackd run lerobot-lookout --robot lerobot:real --address COM5 --provider fake
+quackd robot add arm-01 lerobot:real --address COM5 --provider openai
+```
+
+```
+✓ added arm-01: lerobot:real at COM5
+  quackd run <duck> --robot arm-01
+```
+
+`--provider` is whichever pilot you settled on in section 03, and it becomes this robot's
+default, so a run that names no provider uses it. The registry file is `~/.quackd/robots.json`
+and `quackd robot show arm-01` prints everything in it.
+
+> [!IMPORTANT]
+> The name you register is the manifest id, and the manifest id is the calibration id quackd
+> looks for. `arm-01` here is the reason section 05 calibrated `arm-01`. If you registered a
+> different name, calibrate that name instead, or `doctor` will report an arm with no
+> calibration file and refuse to drive it.
+
+Then prove the name resolves to the same arm:
+
+```bash
+quackd doctor --robot arm-01
+```
+
+It should print exactly what the command before it printed, with the address coming from the
+registry instead of from your hand.
+
+<br>
+
+## 07. Record the rest pose
+
+An SO-101 has no brake. It holds its own weight up because torque is on, and LeRobot's
+`disconnect()` disables torque by its own default, which quackd keeps. So until quackd had a
+rest pose, the arm went limp and fell at the end of every clean run, and at the end of every
+`doctor` probe: that is what happened on the bench on 2026-09-15, on every run of the day.
+Runs also began from wherever the last one left the arm, so no two started from the same
+shape.
+
+A rest pose fixes both. It is one folded pose, recorded once, that the arm can hold with
+torque off because it is resting on itself or on the desk rather than held up.
+
+**Fold the arm by hand first, with nothing connected.** An arm nobody has connected has no
+torque on it, so it is limp and you can move it. Fold it low and compact, into the shape you
+would leave it in overnight. Then record it:
+
+```bash
+quackd robot rest-pose arm-01
+```
+
+It connects, reads every joint, prints them, asks you whether that is the pose, and keeps the
+answer in the registry beside the address and the camera. The capture below is the mock arm
+with `--yes`, which answers the question for you, so the numbers are the mock's and yours will
+be your own folded arm's:
+
+```
+arm-01 (lerobot:mock) is at
+shoulder_pan   0.0
+shoulder_lift  -90.0
+elbow_flex     90.0
+wrist_flex     0.0
+wrist_roll     0.0
+gripper        100.0
+✓ recorded arm-01's rest pose (6 joints)
+  quackd run <duck> --robot arm-01 starts from it and returns to it before letting go
+```
+
+Without `--yes` the same joint table appears and then the question, and nothing is written
+until you answer it. `--json` prints the whole registry entry instead and needs `--yes` with
+it, because a script cannot answer a prompt: run with no terminal to ask on and the command
+refuses with `no terminal to ask on: pass --yes to record it` rather than guessing.
+
+> [!WARNING]
+> A pose the arm cannot hold with torque off is a pose it will fall from, and quackd cannot
+> tell the difference: it reads the angles you folded the arm into and believes you. Let go of
+> the arm before you run the command and watch whether it stays there. If it sags, fold it
+> lower and record again.
+
+### What a run then does with it
+
+| When | What happens |
+|---|---|
+| The start of a run | the arm is driven to the pose before the pilot is given control, so what a model improvises from is the same arm every time. A run that cannot get there aborts before a single LLM call is made |
+| The end of a run | between the `stop` and the disconnect, on every exit path there is: success, failure, infeasible, out of budget, an abort, an error, and Ctrl-C |
+| Torque, at the end | released only where the arm is known to have reached the pose. Where it has not, quackd turns LeRobot's disconnect flag off, leaves the arm holding itself up, and says so in one line |
+| `--dry-run` | nothing. A dry run never moves the arm, at either end, so unless the arm happens to be at the pose already it is let go of with torque on |
+| `quackd doctor` | a probe returns the arm to the pose too, and prints a `rest pose` row: `at it already`, `returned to it`, `not reached: ...`, or `none recorded (quackd robot rest-pose <name>)` |
+| `quackd robot list --probe` | does not move the arm. It says `torque left on: not at its rest pose` when it had to keep holding it |
+
+Said plainly, because it is a change in behaviour rather than an addition: a probe or a dry
+run on an arm that is away from its recorded rest pose now leaves torque **on**, where it used
+to drop it. The arm stays up instead of falling, and it stays energised until you cut power or
+run something that can put it down.
+
+The line when it could not get there reads:
+
+```
+the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the
+arm and cut its power, or run again
+```
+
+Something is in the way, or a servo tripped. The arm is still energised and still holding
+itself up, so hold it and cut power rather than walking away from it.
+
+Two details worth knowing before they surprise you:
+
+- **Only the five body joints are ever driven.** The gripper is recorded and printed, and it
+  is never commanded, for the same reason `stop` leaves it alone: re-sending it would open a
+  hand that is holding something.
+- **The pose is sent without the range clamp.** A folded arm often sits outside the travel its
+  calibration recorded, and the bench arm folded to `shoulder_lift` -113.5 against a
+  calibrated range of about plus or minus 84.2. The usual out of range refusal would refuse to
+  put the arm down, so the rest move does not go through it.
+
+To forget the pose:
+
+```bash
+quackd robot rest-pose arm-01 --clear
+```
+
+```
+✓ cleared arm-01's rest pose
+  a run now leaves the arm where it stands, and torque drops there
+```
+
+> [!NOTE]
+> Only the LeRobot arm is parked today. Every other body refuses a rest pose rather than
+> accepting one and quietly ignoring it: a body with no joints says so, and a body with joints
+> that quackd does not drive home says that only the LeRobot arm does this today.
+
+<br>
+
+## 08. The first task
+
+`lerobot-lookout` ships with quackd, moves no joint, and asks only for `report_state`. It is
+the first thing to point at an arm nobody has driven, and it is the first thing that ran on
+the bench arm on 2026-09-15, both with a real pilot and once with `--provider fake`. The
+scripted pilot is enough here, because there is nothing to improvise:
+
+```bash
+quackd run lerobot-lookout --robot arm-01 --provider fake
 ```
 
 Expect one sentence naming where the joints are, whether torque is on, and whether anything
 reads hot. A joint at or above 60 degrees Celsius is hot and worth naming; the servo's own
 cut-off is 70.
 
+The run also says where the arm is against the pose you recorded, once as it starts and again
+as it finishes, so the four lines below are two pairs rather than one. This is the mock arm
+again, which was already at its pose both times:
+
+```
+·  note    moving to the rest pose
+·  note    already at the rest pose
+·  note    moving to the rest pose
+·  note    already at the rest pose
+```
+
+The arm was already folded there, so nothing moved. On a real arm the second line reads `at
+the rest pose` when it had to travel to get there.
+
 Every run writes `runs/<timestamp>-<name>/` with the full transcript, every frame quackd
 captured and a summary. `quackd trace` replays any of it afterwards.
 
 <br>
 
-## 08. Add the camera
+## 09. Add the camera
 
 Find which OpenCV index your webcam is, which is the part nobody can guess for you:
 
@@ -328,12 +536,14 @@ lerobot-find-cameras opencv
 It lists every camera it can open and saves a frame from each under
 `outputs/captured_images/`, so you can look at the pictures rather than guess. On a laptop
 index 0 is usually the built-in webcam, so a plugged-in one is often 1 or 2. An index is a
-scan position and not an identity: it can move when you replug or reboot.
+scan position and not an identity: it can move when you replug or reboot. On the bench the
+plugged-in webcam was `opencv://1` at first and `opencv://2` later, at 640x480, and it needed
+no `?backend=` key on Windows.
 
 Then ask quackd for a frame through it:
 
 ```bash
-quackd doctor --robot lerobot:real --address COM5 --camera-url "opencv://1"
+quackd doctor --robot arm-01 --camera-url "opencv://1"
 ```
 
 Quote the url. A bare `&` is a parse error in PowerShell and backgrounds the command in
@@ -344,24 +554,82 @@ Windows camera lists and then will not open.
 A camera you asked for and did not get is a refusal at connect, and it happens before the
 arm is touched, so a wrong index costs you nothing but the message.
 
+Once the index is the right one, keep it in the registry so no later command has to carry it:
+
+```bash
+quackd robot edit arm-01 --camera-url "opencv://1"
+```
+
+```
+✓ updated arm-01: camera-url
+```
+
+Every `--camera-url` on that command replaces the whole stored set, so naming a camera says
+where the cameras are today, the way `--address` already does. `quackd robot edit arm-01
+--clear camera-url` takes it away again.
+
 > [!TIP]
 > Aim the webcam now at wherever you will actually stand, and pass `--fov-deg` for your lens
 > once you know it. Without it quackd assumes the simulator's 90 degrees, says so in every
 > detection line, and every bearing and distance is scaled wrong.
 
+### More than one camera
+
+`--camera-url` repeats. One view of a desk is rarely enough to tell whether the gripper is
+above the thing or in front of it, so the arm takes a second camera:
+
+```bash
+quackd robot edit arm-01 \
+  --camera-url "opencv://1?name=top" --camera-url "opencv://2?name=side"
+```
+
+The same pair of flags works on `quackd robot add`, `quackd run`, `quackd doctor` and
+`quackd serve-mcp`. This arm is the only body that reads more than one: every other robot
+quackd drives refuses a second `--camera-url` with a message naming who takes several, rather
+than opening the first and dropping the rest. The rules are few, and all of them are enforced
+before the arm is energised:
+
+| Rule | Why |
+|---|---|
+| With several, every url carries `?name=`, and the names differ | the name is the only thing telling two views apart, in what the model is shown, in a pick policy's observation, and in `frames/NNNN-<name>.png` |
+| An index may not repeat | two handles on one webcam is not two views, it is a camera that will not open twice |
+| The **first** url is the primary | it is the camera `--fov-deg` describes, the one the `camera:` detections line reports, and the only one the verbs that steer by sight read. Those run at 10 Hz, and fetching every camera there would blow the deadman window |
+| A second camera that will not open refuses the whole connect | it happens before the arm is energised, and it lets go of the first camera on the way out |
+
+Every frame reaches the model on every step, each one labelled with its camera name, on
+Claude, both OpenAI APIs, Gemini, and any OpenAI-compatible local server with `--vision` on.
+
+A camera that stalls later costs its own picture and nothing else: the others keep arriving,
+and `report_state` and `doctor` name which one went, in a `camera <name>` row each. If the one
+that died is the **primary**, the other views still reach the model, and the detections line
+reports nothing seen, because a bearing read off a different lens would point somewhere else.
+
+> [!NOTE]
+> Two cameras is twice the pictures, and the bill is larger than that. The last two exchanges
+> keep their images, so two cameras means four pictures in every request rather than two. Add
+> the second one because you need the view, not because it is there.
+
+> [!WARNING]
+> A local server, or the model inside it, may accept only one image per message. If a server
+> rejects a request that carries two frames, go back to a single `--camera-url`: nothing in
+> quackd can make a one-image endpoint take two.
+
+`robots.json` keeps a string when there is one camera and a list when there are several, so a
+registry file written by quackd 0.9 loads unchanged.
+
 <br>
 
-## 09. Rehearse with `--dry-run`
+## 10. Rehearse with `--dry-run`
 
 `--dry-run` connects to the arm for real and sends it nothing. Read-only verbs actually run,
 so `report_state` reads the servos and the heartbeat keeps its round trip going; every other
-verb is printed and skipped.
+verb is printed and skipped. The rest move is skipped with them, at both ends, so a dry run
+leaves the arm exactly where it found it.
 
 Rehearse the goal you actually intend to give it:
 
 ```bash
-quackd run --goal "wave to me" --robot lerobot:real --address COM5 \
-  --camera-url "opencv://1" --provider openai --max-steps 6 --dry-run
+quackd run --goal "wave to me" --robot arm-01 --provider openai --max-steps 6 --dry-run
 ```
 
 Every verb that would move a joint is printed and skipped. This is what that looks like,
@@ -382,6 +650,12 @@ have dropped out mid move in the next section.
 This costs a handful of API calls and is the cheapest rehearsal you will get. Run it more
 than once if the plan looks odd.
 
+Two of the bench's dry runs on 2026-09-15 ended early, and both endings were the rehearsal
+doing its job. One aborted with `the arm did not answer: TimeoutError` when a single heartbeat
+round trip failed, and it did not happen again that day or at all since. The other aborted
+because the pilot answered `assess_task` with `uncertain` and the person at the keyboard
+answered no.
+
 > [!NOTE]
 > `--max-steps` counts verb executions, not model calls. `assess_task` and the declarations
 > cost no step. `max_llm_calls` and `max_minutes` exist too, but only a `.duck` file can set
@@ -389,12 +663,14 @@ than once if the plan looks odd.
 
 <br>
 
-## 10. Prove the safety net
+## 11. Prove the safety net
 
 From here the [hardware checklist](lerobot-hardware-checklist.md) is the authority on order
 and on what a hand stays near. What follows is the same five checks expressed as commands.
 
-Drop `--dry-run`, keep `--max-steps` small, and watch the arm rather than the terminal.
+Drop `--dry-run`, keep `--max-steps` small, and watch the arm rather than the terminal. The
+first movement of each of these runs is not the model's: the arm travels to the rest pose you
+recorded before the pilot is given control, and returns to it at the end.
 
 > [!CAUTION]
 > This is where the arm starts moving, so from here **a hand stays on the power switch**.
@@ -405,19 +681,20 @@ Drop `--dry-run`, keep `--max-steps` small, and watch the arm rather than the te
 
 ```bash
 quackd run --goal "open the gripper fully, then close it on nothing, then stop" \
-  --robot lerobot:real --address COM5 --provider openai --max-steps 4
+  --robot arm-01 --provider openai --max-steps 4
 ```
 
 quackd assumes 100 is open and 0 is closed, and that is an assumption about how your arm was
-assembled and calibrated rather than a fact about the model. If yours runs the other way,
-stop here and say so in an issue: everything quackd believes about holding something rests
-on it.
+assembled and calibrated rather than a fact about the model. The bench arm agreed: commanded
+100 it reported 98 and stood open, and closed it settled at 3 with the jaws almost touching.
+That is one arm. If yours runs the other way, stop here and say so in an issue: everything
+quackd believes about holding something rests on it.
 
 **2. One joint, small, in the middle of its range.**
 
 ```bash
-quackd run --goal "roll the wrist ten degrees and stop" --robot lerobot:real \
-  --address COM5 --provider openai --max-steps 3
+quackd run --goal "roll the wrist ten degrees and stop" --robot arm-01 \
+  --provider openai --max-steps 3
 ```
 
 It should take about a fifth of a second and stop. The arm moves at five degrees per action
@@ -427,8 +704,8 @@ lowers that if it looks fast in the room.
 **3. A goal outside the calibrated range.**
 
 ```bash
-quackd run --goal "move shoulder_pan to 170 degrees" --robot lerobot:real \
-  --address COM5 --provider openai --max-steps 3
+quackd run --goal "move shoulder_pan to 170 degrees" --robot arm-01 \
+  --provider openai --max-steps 3
 ```
 
 It should be refused with the real range in the reason, and nothing should reach the arm.
@@ -448,21 +725,27 @@ the next step.
 
 **5. Ctrl-C mid move.** quackd's kill switch sends `stop`, which re-sends the present
 position as the goal. The arm should freeze where it is rather than sag, and rather than
-finish the motion it was in the middle of. `q` at the terminal does the same thing.
+finish the motion it was in the middle of. `q` at the terminal does the same thing. Then watch
+what follows, because Ctrl-C is an exit path like any other: the arm goes to its rest pose
+before quackd lets go of it, and if it cannot get there it stays energised and says so rather
+than dropping. Press Ctrl-C a second time and quackd quits at once, which is what the hint
+under the header offers; if that lands while the arm is on its way to the pose, the process
+exits without disconnecting at all and the arm holds where it stopped. That is the safe
+direction and it is still a surprise, so expect it rather than pressing twice out of habit
+([safety.md](safety.md)).
 
 > [!CAUTION]
 > If any of these five surprises you, stop. Cut power and read
-> [When it will not work](#12-when-it-will-not-work) before going further.
+> [When it will not work](#13-when-it-will-not-work) before going further.
 
 <br>
 
-## 11. Wave to me
+## 12. Wave to me
 
 Stand where the camera can see you, and ask:
 
 ```bash
-quackd run --goal "wave to me" --robot lerobot:real --address COM5 \
-  --camera-url "opencv://1" --fov-deg 62 --provider openai --max-steps 12
+quackd run --goal "wave to me" --robot arm-01 --fov-deg 62 --provider openai --max-steps 12
 ```
 
 `62` there is an example, not a default: it is the figure for one common camera module. Use
@@ -474,6 +757,13 @@ What should happen: the model reads an observation that includes the camera, ans
 about a neutral pose, before stopping. The motion is genuinely the arm's own joints doing
 something nobody scripted. That is the whole thesis under test.
 
+It is also the part that has now happened once. On 2026-09-15 `gpt-6-astra` answered a bare
+`--goal` with wrist-roll waves of about 27 degrees either side of where the wrist sat, and in
+a later run with a wider gesture: `shoulder_lift` at -39 and `elbow_flex` between 24 and 30,
+the whole forearm moving rather than the wrist alone. Another run opened and closed the
+gripper, and one mimed a duck quacking with it. None of that is a script in quackd. What your
+model does with the same sentence is its own.
+
 For a first attempt, a goal that says more gives you a better idea of what is coming:
 
 ```bash
@@ -481,7 +771,7 @@ quackd run --goal "If you can see a person in the camera, greet them: move wrist
 shoulder_pan and elbow_flex back and forth a few times, no more than about 20 degrees from \
 where each one is now, in several small moves rather than one big one. Keep any wrist_roll \
 move especially small. Do not touch the gripper. Then return to the start and stop." \
-  --robot lerobot:real --address COM5 --camera-url "opencv://1" --provider openai --max-steps 12
+  --robot arm-01 --provider openai --max-steps 12
 ```
 
 quackd's own ceilings hold underneath whatever the model decides. It cannot put a joint
@@ -496,6 +786,12 @@ This is the honest part, and it differs by pilot.
 **A model that takes images** receives the webcam frame on every step and can simply look and
 decide. Only the last two exchanges keep their image, so it cannot compare a frame from six
 steps ago, but it can see you now.
+
+Aiming is the part that went wrong on the bench, and it is worth learning from. The webcam was
+framed on the gripper, which cropped the raised arm out of the picture, so the model checked
+its own waves against the joint angles in `report_state` rather than against anything it could
+see. It still waved. It could not watch itself do it. Point the camera at the volume the
+arm will move through, not at the end of it, or add a second view as in section 09.
 
 **A model that does not** receives one line of text built by quackd's colour detector, and
 that detector carries the simulator's ranges. It emits exactly four labels and `person`
@@ -547,7 +843,7 @@ Greet the person in front of you with a wave, using only small joint moves.
 Check it against this body before you run it, which happens before anything connects:
 
 ```bash
-quackd validate wave-hello.duck --robot lerobot:real
+quackd validate wave-hello.duck --robot arm-01
 ```
 
 Note what the allowlist does **not** contain. A task that so much as allows `observe` is
@@ -556,7 +852,7 @@ the observation.
 
 <br>
 
-## 12. When it will not work
+## 13. When it will not work
 
 The arm is not touched by anything in the first group: these all happen before or during
 connect.
@@ -570,6 +866,7 @@ connect.
 | `the arm is not calibrated` | the motors do not match a calibration | run `lerobot-calibrate` under the id quackd will use |
 | `the arm reports no calibration file` | there is no file for this id | the same fix, and check the path `doctor` prints |
 | `--camera-url ... did not open` | wrong index, or it will not open under this backend | try another index, add `?backend=msmf`, or drop a pinned size. The arm was not touched |
+| `it has no ?name= and 2 cameras were given` | several `--camera-url` and one of them is unnamed | name every url, `opencv://1?name=top --camera-url opencv://2?name=side`. Nothing was opened |
 
 And once it is running:
 
@@ -580,37 +877,54 @@ And once it is running:
 | `and it has stopped moving` | a stall: five ticks in which no watched joint moved | something is in the way, or a servo tripped. The arm is held first |
 | `the camera gave no frame` | the webcam stalled or was unplugged | the arm carries on, and `report_state` starts saying `CAMERA DOWN:` |
 | `the arm's torque is off` | torque reads off | quackd never toggles torque. A fresh connect re-enables it, so this points at a tripped servo or the supply |
-| the run ends saying the arm did not answer | the heartbeat's round trip failed | the cable, the power, or a tripped servo. The arm holds its last goal under torque |
-| the arm sags when the run ends | LeRobot's `disconnect()` disables torque by its own default | support it, or fold it somewhere it can rest before you exit |
+| the run ends saying the arm did not answer | the heartbeat's round trip failed | the cable, the power, or a tripped servo. The arm holds its last goal under torque. Seen once on 2026-09-15, in a dry run, and not since |
+| the arm sags when the run ends | no rest pose is recorded, so torque drops where the arm stands | `quackd robot rest-pose arm-01`, with the arm folded by hand first |
+| `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose` | hold the arm, cut its power, clear whatever stopped it, and run again. It stays energised until you do |
 
 [adapters/lerobot.md](adapters/lerobot.md) has the full table, including the failures SO-101
 owners report that nobody here has reproduced.
 
 <br>
 
-## 13. What to report
+## 14. What to report
 
 [Open a LeRobot hardware report](https://github.com/rokbenko/quackd/issues/new?template=lerobot-hardware-report.yml),
 or a plain issue with the transcript and your `quackd doctor` output. A report that says it
-did not work is worth as much as one that says it did. The six things that most need a real
-arm:
+did not work is worth as much as one that says it did.
 
-- **Which end of the gripper's 0..100 range is open.** Assumed, and everything about holding
-  depends on it.
+One arm has been down this path, so some of these questions have one answer and none of them
+have two. The four that nobody has measured at all:
+
 - **Whether the holding band is anywhere near right.** quackd calls it holding when the
-  gripper is told to close, settles, and settles between 8 and 90 of 100.
+  gripper is told to close, settles, and settles between 8 and 90 of 100. Nothing was held on
+  the bench, so the band has never been tested against an object.
 - **What a joint reads in degrees Celsius**, cold and after ten minutes of work. Both the 60
-  refusal and the 70 cut-off are Feetech's documentation rather than anything measured here.
-- **Whether five degrees an action felt right** in the room.
-- **Whether a stall is caught.** Hold a joint gently against its goal and see whether the
-  verb fails with where it stopped.
-- **Which OpenCV index the camera turned out to be**, and whether it needed `?backend=msmf`.
+  refusal and the 70 cut-off are Feetech's documentation rather than anything measured here,
+  and the bench run was too short to warm anything up.
+- **Whether a stall is caught on purpose.** Hold a joint gently against its goal and see
+  whether the verb fails with where it stopped. Nobody has deliberately tried it.
+- **Whether five degrees an action felt right** in the room. One person has watched this arm
+  move, and they did not write down an opinion on the speed.
 
-And one this guide adds: **which model you used, and whether it could tell you were there.**
-Nobody has pointed any pilot at a real webcam on a real desk.
+And the two the bench answered once, where a second answer is what turns one arm's behaviour
+into something true of the SO-101:
 
-Only flip the `real` row in [adapter-status.md](adapter-status.md) once a real arm has done
-it, and say in the same commit what it did.
+- **Which end of the gripper's 0..100 range is open.** On the bench, 100 is open: commanded
+  100 it reported 98, and closed it settled at 3. Everything quackd believes about holding
+  rests on this being the same on your arm.
+- **Which model you used, and whether it could tell you were there.** `gpt-6-astra` waved, and
+  it verified its own waves from joint readings rather than from the picture, because the
+  camera was framed on the gripper. Whether a model can actually see you, on a camera aimed
+  properly, is still open.
+
+The webcam question is closed enough to stop asking: the plugged-in camera was `opencv://1`
+and later `opencv://2` at 640x480, and it needed no `?backend=` key on Windows. Say so anyway
+if yours needed one, because that is the interesting case now.
+
+If your arm does something this one did not, change the row in
+[adapter-status.md](adapter-status.md) and say in the same commit what it did. One SO-101 is
+one SO-101: six of quackd's seven bodies have still never been near hardware of any kind, so
+most of that page is a description rather than a record.
 
 <br>
 
@@ -625,8 +939,12 @@ tools over stdio, so the client spawns it as a subprocess and the client's own m
 pilot. quackd chooses no model in this mode and reads no key.
 
 ```bash
-quackd serve-mcp --robot lerobot:real --address COM5 --camera-url "opencv://1"
+quackd serve-mcp --robot arm-01
 ```
+
+A session does the same thing with the rest pose that a run does, at both ends: it puts the
+arm at the pose before the client's model gets a verb, and refuses to start at all if it
+cannot get there.
 
 The tools are `robot_list_verbs`, `robot_observe`, `robot_assess_task`, `robot_run_verb` and
 the rest. `robot_run_verb` refuses anything other than `report_state`, `observe` and `stop`

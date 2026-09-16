@@ -1,8 +1,11 @@
 # Reading someone else's robot
 
-quackd drives seven bodies and has never run on any of them. Almost everything it does was
-worked out by reading upstream code closely enough to be safe without executing it, and the same
-handful of traps came up on robot after robot. They are collected here by pattern, because
+quackd drives seven bodies and has run on one of them: a LeRobot SO-101 follower arm, on
+2026-09-15, the first and so far the only time any of this met hardware
+([adapter-status.md](adapter-status.md) says what that run covered and what it did not). The
+other six it has never touched. Almost everything it does was worked out by reading upstream
+code closely enough to be safe without executing it, and the same handful of traps came up on
+robot after robot. They are collected here by pattern, because
 that is how they recur: the next robot will not have the AlohaMini's bug, it will have a bug
 of the AlohaMini's *shape*. The one exception is the Microduck's own model and walking policy,
 which `microduck:mujoco` runs on a desktop ([ADR-0030](adr/0030-mujoco-physics-backend.md)), and

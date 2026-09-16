@@ -141,8 +141,11 @@ def _joints_of(state: DuckState) -> dict[str, float]:
     return {str(k): float(v) for k, v in dict(state.extras.get("joints", {})).items()}
 
 
-def _shortfall(goal: dict[str, float], joints: dict[str, float]) -> str:
-    """The joint furthest from where it was asked to be, in words."""
+def shortfall(goal: dict[str, float], joints: dict[str, float]) -> str:
+    """The joint furthest from where it was asked to be, in words.
+
+    Public because the rest move says it too, and it reads from the transport rather
+    than through a verb."""
     behind = {k: abs(joints[k] - v) for k, v in goal.items() if k in joints}
     if not behind:
         return "the arm reported no joint positions"
@@ -197,10 +200,52 @@ async def _drive(
                 joints,
                 state,
                 "stalled",
-                f"{_shortfall(goal, joints)}, and it has stopped moving",
+                f"{shortfall(goal, joints)}, and it has stopped moving",
             )
     await ctx.transport.stop()
-    return joints, state, "timeout", f"{_shortfall(goal, joints)} when the time ran out"
+    return joints, state, "timeout", f"{shortfall(goal, joints)} when the time ran out"
+
+
+# ── the rest pose, shared by both backends ──────────────────────────────────────────────
+
+REST_MARGIN_S = 2.0
+"""Slack on top of the time the step cap says the move needs, for the reads between sends."""
+REST_MIN_S = 2.0
+REST_MAX_S = 30.0
+"""A teardown is bounded. `QUACKD_LEROBOT_MAX_STEP_DEG` can be lowered until a long move
+would take minutes, and an arm nobody is watching must not hold a run open that long."""
+
+TORQUE_LEFT_ON = (
+    "the arm is not at its rest pose ({why}), so torque was left on and it will not fall: "
+    "hold the arm and cut its power, or run again"
+)
+"""Said once, by whichever caller closed the arm. The transport records it and prints
+nothing itself: a library that writes to a terminal has picked one, and quackd has four."""
+
+
+def rest_goal(rest_pose: dict[str, float]) -> dict[str, float]:
+    """The part of a recorded pose that is ever driven: the five body joints.
+
+    The gripper is left out for the reason `_hold()` leaves it out. LeRobot writes only the
+    keys it is given, so omitting it keeps whatever squeeze is already commanded, and a rest
+    move that re-sent the gripper would open a hand that is holding something."""
+    return {j: float(v) for j, v in rest_pose.items() if j in JOINTS and j != "gripper"}
+
+
+def at_rest(goal: dict[str, float], joints: dict[str, float]) -> bool:
+    """Every joint of the goal is reported, and every one of them is close enough."""
+    if not goal or any(j not in joints for j in goal):
+        return False
+    return all(abs(joints[j] - v) <= TOL_DEG for j, v in goal.items())
+
+
+def rest_budget_s(distance_deg: float, step_deg: float) -> float:
+    """How long to give the rest move: the travel at the step cap, plus slack, bounded.
+
+    One `send_action` moves a joint at most the step cap and they go out every `TICK_S`, so
+    the fastest the arm can cross a gap is that distance divided by that rate."""
+    rate = max(step_deg, 0.01) / TICK_S
+    return min(REST_MAX_S, max(REST_MIN_S, distance_deg / rate + REST_MARGIN_S))
 
 
 # ── the verbs ───────────────────────────────────────────────────────────────────────────
@@ -233,8 +278,17 @@ async def report_state(ctx: VerbContext, _: NoParams) -> VerbResult:
     # asked yet is not news. A working one is already in every observation as detections,
     # and a dead one is otherwise silent on a run that cannot call `observe`.
     camera = extras.get("camera")
-    if isinstance(camera, dict) and camera.get("error"):
-        parts.append(f"CAMERA DOWN: {camera['error']}")
+    if isinstance(camera, dict):
+        # with several cameras each is named, because "CAMERA DOWN" over two views does not
+        # say which eye closed, and the arm keeps working with the other one
+        rows = camera.get("cameras")
+        if isinstance(rows, list):
+            dead = [r for r in rows if isinstance(r, dict) and r.get("error")]
+            if dead:
+                named = "; ".join(f"{r.get('name')}: {r['error']}" for r in dead)
+                parts.append(f"CAMERA DOWN: {named}")
+        elif camera.get("error"):
+            parts.append(f"CAMERA DOWN: {camera['error']}")
     return VerbResult.success("; ".join(parts), state=state.model_dump())
 
 

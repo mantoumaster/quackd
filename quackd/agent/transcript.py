@@ -10,11 +10,14 @@ from __future__ import annotations
 import io
 import json
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PIL import Image
+
+from quackd.transport.base import CameraFrame
 
 if TYPE_CHECKING:
     from quackd.trace import TraceEvent
@@ -78,6 +81,31 @@ class Transcript:
         self.write("frame", path=str(path.relative_to(self.run_dir)), caption=caption)
         self.frame_count += 1
         return path
+
+    def save_frames(self, frames: Sequence[CameraFrame], caption: str = "") -> list[Path]:
+        """Every camera's picture for one step, under one number.
+
+        A body with one camera writes `0000.png` and a record with no camera in it, which is
+        what every run before there could be two wrote. A body with several writes
+        `0000-top.png` beside `0000-side.png` and names the camera in each record, so the
+        file name says which view it is and the number still says which step."""
+        if len(frames) == 1:
+            return [self.save_frame(frames[0].image, caption)]
+        self.frames_dir.mkdir(exist_ok=True)
+        paths: list[Path] = []
+        for frame in frames:
+            path = self.frames_dir / f"{self.frame_count:04d}-{frame.name}.png"
+            frame.image.save(path, format="PNG")
+            self.write(
+                "frame",
+                path=str(path.relative_to(self.run_dir)),
+                caption=caption,
+                camera=frame.name,
+            )
+            paths.append(path)
+        # one step, one number, however many cameras were pointed at it
+        self.frame_count += 1
+        return paths
 
     def write_summary(self, summary: dict[str, Any]) -> Path:
         path = self.run_dir / "summary.json"

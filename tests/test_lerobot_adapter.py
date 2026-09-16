@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -12,8 +13,8 @@ import pytest
 
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, RobotAdapter
 from quackd.adapters.factory import RobotSpec, describe, make_adapter, parse_robot_spec
-from quackd.adapters.lerobot import JOINTS, LeRobotAdapter, lerobot_manifest
-from quackd.adapters.lerobot.mock import GRIP_ON_OBJECT, LeRobotMock
+from quackd.adapters.lerobot import JOINTS, LeRobotAdapter, lerobot_manifest, make
+from quackd.adapters.lerobot.mock import GRIP_ON_OBJECT, REST, LeRobotMock
 from quackd.adapters.lerobot.real import (
     ENCODER_TICKS,
     MAX_STEP_DEG,
@@ -22,13 +23,22 @@ from quackd.adapters.lerobot.real import (
     check_port,
     load_policy,
     parse_camera_url,
+    parse_camera_urls,
     step_from_env,
+)
+from quackd.adapters.lerobot.verbs import (
+    REST_MAX_S,
+    REST_MIN_S,
+    TOL_DEG,
+    at_rest,
+    rest_budget_s,
+    rest_goal,
 )
 from quackd.duckfile.parser import load_duck, parse_duck_text
 from quackd.duckfile.validate import validate_duck
 from quackd.perception.color_blob import ColorBlobDetector
 from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all, deny_all
-from quackd.transport.base import HeartbeatError, Intent, TransportError
+from quackd.transport.base import HeartbeatError, Intent, TransportError, primary_of
 from quackd.verbs.registry import registry_from_manifest
 
 ARM_VERBS = {"observe", "report_state", "stop", "move_joints", "gripper", "place", "pick"}
@@ -248,6 +258,10 @@ class FakeArm:
         self.calibration = {joint: FakeCalibration(200.0) for joint in JOINTS}
         self.calibration_fpath = "/tmp/lerobot/calibration/robots/so_follower/arm-01.json"
         self.bus = FakeBus(self)
+        self.config = SimpleNamespace(disable_torque_on_disconnect=True)
+        """`disconnect()` reads this flag off the config instance when it runs rather than
+        copying it at construction (`up.SO_DISCONNECT_READS_ITS_CONFIG_LATE`), which is the
+        seam `close()` uses to leave an arm holding a pose it could not reach."""
 
     @property
     def observation_features(self) -> dict[str, Any]:
@@ -271,6 +285,9 @@ class FakeArm:
     def disconnect(self) -> None:
         self.calls.append(("disconnect",))
         self.connected = False
+        if self.config.disable_torque_on_disconnect:
+            self.torque_disabled += 1
+            self.torque = False
 
     def get_observation(self) -> dict[str, Any]:
         if self.dead:
@@ -1065,3 +1082,446 @@ async def test_an_arm_without_a_camera_says_nothing_about_one() -> None:
     said = await _executor(adapter, manifest).run_verb("report_state")
     assert said.ok and "CAMERA" not in said.summary
     assert "camera" not in said.data["state"]["extras"]
+
+
+# ── the rest pose: where the arm is put down before torque is let go ────────────────────
+
+FOLDED = {
+    "shoulder_pan": -20.0,
+    "shoulder_lift": -90.0,
+    "elbow_flex": 90.0,
+    "wrist_flex": 45.0,
+    "wrist_roll": 30.0,
+    "gripper": 100.0,
+}
+BODY_JOINTS = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"}
+"""Named here rather than derived from `rest_goal`, so a `rest_goal` that quietly stopped
+parking one of them has something to fail against. Every value in `FOLDED` is away from the
+zero a `FakeArm` starts at, for the same reason: a joint that never had to move proves nothing."""
+"""A pose recorded off an arm, gripper and all. Only the five body joints are ever driven."""
+
+
+async def test_the_rest_move_drives_the_five_body_joints_and_never_the_gripper() -> None:
+    """The gripper is left out of the goal for the reason a hold leaves it out: LeRobot
+    writes only the keys it is given, so a rest move that re-sent the gripper would open a
+    hand that is holding something on its way to being put down. The move also has to happen
+    while the arm is still connected, which is the failure the whole thing exists for."""
+    arm = FakeArm(step=40.0)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    result = await adapter.go_to_rest()
+    assert result.how == "arrived", result.reason
+    assert result.reached and result.recorded
+    assert arm.actions, "the rest goal never reached the arm"
+    assert all("gripper.pos" not in action for action in arm.actions), arm.actions
+    sent = {key.removesuffix(".pos") for action in arm.actions for key in action}
+    assert sent == BODY_JOINTS, "every body joint is driven, and only those"
+    for joint in BODY_JOINTS:
+        assert abs(arm.positions[joint] - FOLDED[joint]) <= TOL_DEG, (
+            joint,
+            arm.positions[joint],
+        )
+    assert arm.positions["gripper"] == 100.0, "the rest move squeezed the gripper"
+    assert ("disconnect",) not in arm.calls, "the arm was let go of before it was parked"
+    await adapter.close()
+    assert ("disconnect",) in arm.calls
+    assert arm.torque_disabled == 1 and arm.torque is False
+    assert transport.close_note is None and adapter.close_note is None
+
+
+async def test_a_transport_that_missed_its_pose_once_does_not_keep_torque_on_for_ever() -> None:
+    """The flag lives on the robot rather than on the call, so writing it only when torque had
+    to stay on left it off afterwards. A later session that did reach the pose would then let
+    go of an arm it had quietly kept energised, on the strength of a session that had already
+    ended, and say nothing about it."""
+    arm = FakeArm(step=40.0, stuck=("shoulder_lift",))
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.go_to_rest()).how == "stalled"
+    await adapter.close()
+    assert arm.torque is True, "the arm never reached its pose, so it keeps holding"
+    assert transport.close_note is not None
+
+    # the same transport again, this time already where it was asked to be
+    arm.stuck = ()
+    arm.positions.update(rest_goal(FOLDED))
+    await adapter.connect()
+    assert (await adapter.go_to_rest()).how == "already"
+    await adapter.close()
+    assert arm.torque is False, "the arm is at its pose, so torque may drop"
+    assert transport.close_note is None, "nothing to warn about the second time"
+
+
+def test_a_pose_the_arm_did_not_report_is_not_a_pose_it_is_resting_in() -> None:
+    """`at_rest` is read inside `close()`, where its answer decides whether torque drops. An
+    arm that answered but said nothing about a joint the pose names is an arm nobody can
+    place, and reading a missing joint as a match would let go of it on a guess."""
+    goal = rest_goal(FOLDED)
+    assert at_rest(goal, dict(goal))
+    silent = {joint: value for joint, value in goal.items() if joint != "wrist_flex"}
+    assert not at_rest(goal, silent), "a joint that did not report is not a joint at rest"
+    assert not at_rest(goal, {}), "an arm that reported nothing is not at rest"
+
+
+async def test_the_primary_camera_is_marked_rather_than_read_off_the_order() -> None:
+    """A camera that gave nothing is absent from the list, so on a two-camera arm whose primary
+    lens died the first entry is the other camera. Position is not identity: the detector reads
+    the frame that says it is the primary, and a bearing taken off the wrong lens points
+    somewhere `--fov-deg` never measured."""
+    top, side = FakeCamera(), FakeCamera()
+    transport = LeRobotReal(
+        "COM5",
+        robot=FakeArm(),
+        cameras=parse_camera_urls(("opencv://1?name=top", "opencv://2?name=side")),
+        camera_objects={"top": top, "side": side},
+    )
+    await transport.connect()
+    frames = await transport.get_frames()
+    assert [(f.name, f.primary) for f in frames] == [("top", True), ("side", False)]
+    assert primary_of(frames) is not None
+
+    top.stalled = True
+    frames = await transport.get_frames()
+    assert [f.name for f in frames] == ["side"], "the live camera still answers"
+    assert not any(f.primary for f in frames), "the primary is dead, so no frame claims to be it"
+    assert primary_of(frames) is None, "nothing to run the detector over"
+
+
+async def test_a_rest_pose_outside_the_calibrated_range_is_still_driven_to() -> None:
+    """The bench arm's folded pose read shoulder_lift -113.5 against a calibrated travel of
+    plus or minus 84.2 degrees. A pose recorded off the arm is where the arm physically was,
+    so the range refusal that guards a pilot's goal would refuse this arm its own resting
+    place and leave it standing up with the torque about to drop."""
+    arm = FakeArm(step=200.0)
+    arm.calibration["shoulder_lift"] = FakeCalibration(168.4)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose={"shoulder_lift": -113.5})
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    assert manifest.extras["joint_range_deg"]["shoulder_lift"] == [-84.2, 84.2]
+    result = await adapter.go_to_rest()
+    assert result.how == "arrived", result.reason
+    assert {"shoulder_lift.pos": -113.5} in arm.actions, arm.actions
+    assert arm.positions["shoulder_lift"] == -113.5
+    assert transport._range_clips == 0, "the rest goal was walked back inside the range"
+
+
+async def test_an_arm_that_cannot_reach_its_rest_pose_keeps_its_torque_and_says_so() -> None:
+    """LeRobot's disconnect drops torque by its own default, which is right for an arm that
+    is folded down and wrong for one stopped halfway there: on the bench on 2026-09-15 the
+    arm fell at the end of every run. The flag is read off the config instance inside
+    disconnect() rather than copied at construction, so close() turns it off for this case
+    and this case only, and the arm is still let go of either way."""
+    arm = FakeArm(step=40.0, stuck=("shoulder_lift",))
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    result = await adapter.go_to_rest()
+    assert result.how == "stalled" and not result.reached and result.recorded
+    assert "shoulder_lift" in result.reason and "stopped moving" in result.reason
+    # a hold followed, so the servo stops pushing at a goal it has been told it cannot reach
+    assert set(arm.actions[-1]) == {f"{j}.pos" for j in JOINTS if j != "gripper"}
+    await adapter.close()
+    assert ("disconnect",) in arm.calls, "the arm was never let go of"
+    assert arm.config.disable_torque_on_disconnect is False
+    assert arm.torque_disabled == 0 and arm.torque is True
+    note = adapter.close_note
+    assert note is not None
+    assert "torque was left on" in note and "it will not fall" in note
+    assert "shoulder_lift" in note, note
+
+
+async def test_an_arm_with_no_rest_pose_recorded_moves_nothing_and_goes_limp() -> None:
+    """The whole thing is opt-in. Without a recorded pose there is nothing to check the
+    joints against, so the rest move is a no-op and LeRobot's own default stands."""
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert adapter.rest_pose is None
+    result = await adapter.go_to_rest()
+    assert result.how == "none" and not result.recorded and not result.reached
+    assert arm.actions == [], "an arm with no rest pose was driven somewhere"
+    await adapter.close()
+    assert arm.config.disable_torque_on_disconnect is True
+    assert arm.torque_disabled == 1 and arm.torque is False
+    assert adapter.close_note is None
+
+
+async def test_an_arm_already_at_its_rest_pose_sends_nothing() -> None:
+    arm = FakeArm()
+    where_it_sits = {j: arm.positions[j] for j in JOINTS if j != "gripper"}
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=where_it_sits)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    result = await adapter.go_to_rest()
+    assert result.how == "already" and result.reached and result.recorded
+    assert arm.actions == [], "an arm that was already there was driven anyway"
+    await adapter.close()
+    assert arm.torque_disabled == 1 and arm.torque is False and adapter.close_note is None
+
+
+async def test_close_reads_the_joints_itself_even_when_no_rest_move_ran() -> None:
+    """close() is the last thing to touch the arm and the only one that knows whether
+    letting go would drop it, so it reads the pose rather than trusting that somebody called
+    the rest move first. A run that died between the two is exactly that case, and it is the
+    case where an unchecked disconnect costs you the arm."""
+    away = FakeArm()
+    strayed = LeRobotAdapter(LeRobotReal("COM5", robot=away, rest_pose={"shoulder_lift": -90.0}))
+    await strayed.connect()
+    await strayed.close()
+    assert away.torque_disabled == 0 and away.torque is True
+    note = strayed.close_note
+    assert note is not None and "nothing moved it there" in note, note
+    assert "shoulder_lift is at 0 with a goal of -90" in note
+
+    parked = FakeArm()
+    rested = LeRobotAdapter(LeRobotReal("COM5", robot=parked, rest_pose={"shoulder_lift": 0.0}))
+    await rested.connect()
+    await rested.close()
+    assert parked.torque_disabled == 1 and parked.torque is False
+    assert rested.close_note is None
+
+
+async def test_the_rest_move_on_a_wedged_bus_is_an_answer_and_not_an_exception() -> None:
+    """Every caller of the rest move is a teardown or the first moment of a run, and a
+    teardown that raised would cost the arm the disconnect it was in the middle of. A wedged
+    bus is the one state where nothing at all can be asked of the arm."""
+    import threading
+
+    release = threading.Event()
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm, timeout_s=0.2, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+
+    def block() -> None:
+        release.wait(5.0)
+
+    try:
+        with pytest.raises(TimeoutError):
+            await transport._call(block, deadline_s=0.2)
+        result = await adapter.go_to_rest()
+        assert result.how == "refused" and not result.reached
+        assert "one owner" in result.reason, result.reason
+        assert arm.actions == [], "a goal was written onto a bus with a thread still on it"
+    finally:
+        release.set()
+
+
+async def test_a_rest_goal_that_never_reaches_the_arm_leaves_it_holding() -> None:
+    """The arm answers every question and obeys none: the reads that decide whether it is
+    resting still work, so close() can tell that it is not, and keeps the torque."""
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    arm.send_fails = True
+    result = await adapter.go_to_rest()
+    assert result.how == "refused" and not result.reached
+    assert "Goal_Position" in result.reason, result.reason
+    await adapter.close()
+    assert arm.torque_disabled == 0 and arm.torque is True
+    note = adapter.close_note
+    assert note is not None and "torque was left on" in note
+    assert "Goal_Position" in note, "the note does not say why the arm is not where it should be"
+
+
+def test_the_rest_budget_is_the_travel_at_the_step_cap_plus_slack_and_is_bounded() -> None:
+    """One send_action moves a joint at most the step cap and they go out every tick, so the
+    fastest the arm can cross a gap is that distance divided by that rate. The upper bound is
+    there because the cap can be lowered by the environment until a long move would take
+    minutes, and an arm nobody is watching must not hold a run open that long."""
+    assert rest_budget_s(0.0, 5.0) == REST_MIN_S
+    assert rest_budget_s(90.0, 5.0) == pytest.approx(3.8)  # 90 degrees at 50 a second, plus 2
+    assert rest_budget_s(90.0, 1.0) == pytest.approx(11.0)  # a fifth of the step, far longer
+    assert rest_budget_s(180.0, 10.0) == pytest.approx(3.8)  # twice as far at twice the step
+    assert rest_budget_s(10_000.0, 5.0) == REST_MAX_S
+    assert rest_budget_s(1.0, 0.0) == pytest.approx(12.0)  # a zero step is not a division
+
+
+async def test_the_mock_arm_goes_to_its_rest_pose_and_records_the_order_it_happened_in() -> None:
+    """A teardown is an order as much as a set: the rest move has to land before the close,
+    because after the close there is no arm to move."""
+    mock = LeRobotMock(rest_pose=dict(REST))
+    adapter = LeRobotAdapter(mock)
+    await adapter.connect()
+    assert (await adapter.send_intent(Intent.joint({"shoulder_pan": 30.0}, 1.0))).accepted
+    assert mock.sequence == []
+    result = await adapter.go_to_rest()
+    assert result.how == "arrived" and result.reached
+    assert mock.actions[-1] == rest_goal(REST), mock.actions
+    assert "gripper" not in mock.actions[-1]
+    assert mock.joints["shoulder_pan"] == 0.0
+    await adapter.close()
+    assert mock.sequence == ["rest", "close"]
+    assert mock.torque is False and mock.close_note is None
+
+
+async def test_a_mock_arm_told_to_fail_its_rest_move_stalls_without_moving() -> None:
+    """Offline, goals land the instant they are sent, so the one thing a mock cannot do to
+    itself is fail to arrive. Every caller of the rest move has to handle that, so the mock
+    can be told to."""
+    mock = LeRobotMock(rest_pose=dict(REST), rest_fails="elbow_flex is stuck against the desk")
+    adapter = LeRobotAdapter(mock)
+    await adapter.connect()
+    assert (await adapter.send_intent(Intent.joint({"shoulder_pan": 30.0}, 1.0))).accepted
+    sent = len(mock.actions)
+    result = await adapter.go_to_rest()
+    assert result.how == "stalled" and not result.reached and result.recorded
+    assert result.reason == "elbow_flex is stuck against the desk"
+    assert len(mock.actions) == sent, "a rest move that was told to fail moved the arm anyway"
+    await adapter.close()
+    assert mock.sequence == ["rest", "close"]
+    assert mock.torque is True, "the mock let go of an arm that is not at its rest pose"
+    note = adapter.close_note
+    assert note is not None and "torque was left on" in note
+
+
+def test_the_lerobot_factory_hands_the_rest_pose_to_both_backends() -> None:
+    pose = dict(FOLDED)
+    mock = make("mock", rest_pose=pose)
+    assert mock.supports_rest_pose and mock.rest_pose == pose
+    real = make("real", address="COM5", rest_pose=pose)
+    assert real.rest_pose == pose
+    assert make("mock").rest_pose is None
+    # and through the general factory, which is what the CLI and the registry call
+    assert getattr(make_adapter("lerobot:mock", rest_pose=pose), "rest_pose", None) == pose
+
+
+# ── several cameras: the same arm with two views of the table ───────────────────────────
+
+
+def test_several_camera_urls_each_name_their_own_camera_and_no_name_repeats() -> None:
+    """With one camera the name is quackd's own default and nothing depends on it. With
+    several it is the only thing telling two views apart, in the model's prompt, in a
+    policy's observation dict and in frames/NNNN-<name>.png. Two handles on one webcam is
+    not two views either: it is a camera that will not open twice."""
+    specs = parse_camera_urls(("opencv://1?name=top", "opencv://2?name=side"))
+    assert [s.name for s in specs] == ["top", "side"] and all(s.name_given for s in specs)
+    assert parse_camera_urls(("opencv://0",))[0].name == "front"  # one camera needs no name
+    assert parse_camera_urls(()) == ()
+    with pytest.raises(AdapterError, match=r"has no \?name= and 2 cameras were given"):
+        parse_camera_urls(("opencv://1?name=top", "opencv://2"))
+    with pytest.raises(AdapterError, match="already the name of"):
+        parse_camera_urls(("opencv://1?name=top", "opencv://2?name=top"))
+    with pytest.raises(AdapterError, match="One url per camera"):
+        parse_camera_urls(("opencv://1?name=top", "opencv://1?name=side"))
+
+
+async def test_two_cameras_open_in_order_and_every_frame_carries_its_own_name() -> None:
+    arm = FakeArm(camera=False)
+    top, side = FakeCamera(), FakeCamera()
+    transport = LeRobotReal(
+        "COM5",
+        robot=arm,
+        cameras=parse_camera_urls(("opencv://1?name=top", "opencv://2?name=side")),
+        camera_objects={"top": top, "side": side},
+    )
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    assert transport.camera_keys == ("top", "side")
+    assert top.calls == ["connect"] and side.calls == ["connect"]
+    frames = await adapter.get_frames()
+    assert [f.name for f in frames] == ["top", "side"]
+    assert all(f.image.size == (64, 48) for f in frames)
+    primary = await adapter.get_frame()  # the first url's camera, and only it
+    assert primary is not None and primary.size == frames[0].image.size
+    assert manifest.extras["cameras"] == ["top", "side"]
+    assert manifest.extras["camera"] == "opencv://1?name=top"
+    await adapter.close()
+    assert top.calls == ["connect", "disconnect"] and side.calls == ["connect", "disconnect"]
+
+
+async def test_a_stalled_second_camera_costs_its_picture_and_nothing_else() -> None:
+    """A camera that stopped delivering is absent from the frames rather than an empty slot:
+    the model is shown the views that exist, and the health is where the missing one says
+    what happened to it."""
+    arm = FakeArm(camera=False)
+    top, side = FakeCamera(), FakeCamera()
+    transport = LeRobotReal(
+        "COM5",
+        robot=arm,
+        cameras=parse_camera_urls(("opencv://1?name=top", "opencv://2?name=side")),
+        camera_objects={"top": top, "side": side},
+    )
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    ex = _executor(adapter, manifest)
+    side.stalled = True
+    frames = await adapter.get_frames()
+    assert [f.name for f in frames] == ["top"], "a dead camera took the live one with it"
+    health = transport.camera_health()
+    assert health["ok"], "the one-camera keys still describe the primary"
+    rows = health["cameras"]
+    assert [row["name"] for row in rows] == ["top", "side"]
+    assert rows[0]["ok"] and rows[0]["error"] is None and rows[0]["size"] == "64x48"
+    assert not rows[1]["ok"] and "too old" in rows[1]["error"]
+    assert (await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}})).ok
+
+
+async def test_a_second_camera_that_will_not_open_refuses_before_the_arm_is_energised() -> None:
+    """Half a set of eyes nobody asked for is worse than the refusal, because the frames
+    would still arrive: everything reading them would believe that was all there was to see.
+    So the one that opened is let go of and the arm is never touched."""
+    arm = FakeArm()
+    top = FakeCamera()
+    adapter = LeRobotAdapter(
+        LeRobotReal(
+            "COM5",
+            robot=arm,
+            cameras=parse_camera_urls(("opencv://1?name=top", "opencv://7?name=side")),
+            camera_objects={"top": top, "side": FakeCamera(fail_open=True)},
+        )
+    )
+    with pytest.raises(TransportError, match="opencv://7"):
+        await adapter.connect()
+    assert arm.calls == [], "the arm was energised before the cameras were known good"
+    assert top.calls == ["connect", "disconnect"], "the camera that opened was not let go of"
+
+
+async def test_the_policy_is_handed_every_camera_under_its_own_name() -> None:
+    seen: list[list[str]] = []
+
+    class Peeking:
+        def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
+            seen.append([k for k in observation if not k.endswith(".pos")])
+            return None
+
+    adapter = LeRobotAdapter(
+        LeRobotReal(
+            "COM5",
+            robot=FakeArm(camera=False),
+            policy=Peeking(),
+            cameras=parse_camera_urls(("opencv://1?name=top", "opencv://2?name=side")),
+            camera_objects={"top": FakeCamera(), "side": FakeCamera()},
+        )
+    )
+    manifest = await adapter.connect()
+    ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
+    await ex.run_verb("pick", {"target": "cup", "max_s": 3})
+    assert seen and seen[0] == ["top", "side"], seen
+    await adapter.close()
+
+
+async def test_one_camera_keeps_its_default_name_and_the_health_shape_it_always_had() -> None:
+    """The compatibility guarantee. Everything written when an arm had at most one camera
+    reads the same dict and the same manifest: `doctor` gates its verdict on these keys, and
+    a pilot told its only camera is called `front` would start naming it in sentences that
+    nobody needs."""
+    arm = FakeArm(camera=False)
+    camera = FakeCamera()
+    transport = LeRobotReal(
+        "COM5", robot=arm, camera=parse_camera_url("opencv://0"), camera_object=camera
+    )
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    assert transport.camera_keys == ("front",)
+    assert "cameras" not in manifest.extras, "a single camera named itself to the pilot"
+    assert manifest.extras["camera"] == "opencv://0"
+    frames = await adapter.get_frames()
+    assert [f.name for f in frames] == ["front"]
+    health = transport.camera_health()
+    assert set(health) == {"configured", "url", "ok", "age_s", "size", "error"}
+    assert health["configured"] and health["ok"] and health["size"] == "64x48"

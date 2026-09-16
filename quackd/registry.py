@@ -33,9 +33,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-from quackd.adapters.base import AdapterError
+from quackd.adapters.base import MULTI_CAMERA_SPECS, AdapterError, camera_urls
 from quackd.adapters.factory import (
     ADAPTER_NAMES,
     BACKENDS,
@@ -142,7 +149,13 @@ class RobotEntry(BaseModel):
     """`<adapter>:<backend>`, normalised: `microduck` is stored as `microduck:sim2d`."""
     address: str | None = None
     token: str | None = None
-    camera_url: str | None = None
+    camera_url: str | list[str] | None = None
+    """One camera as a string, or several as a list in the order given, the first being the
+    primary. Read it through `camera_urls`, which is always a tuple. A file written before
+    an arm could have two cameras holds a string and still loads."""
+    rest_pose: dict[str, float] | None = None
+    """Where this arm rests, read off the arm by `quackd robot rest-pose`. A run starts from
+    it and returns to it before torque is released. None for every body quackd does not park."""
     provider: str | None = None
     """The provider a run uses for this robot when `--provider` is absent."""
     model: str | None = None
@@ -160,6 +173,60 @@ class RobotEntry(BaseModel):
             # re-raised as a ValueError so pydantic folds it into the one-line message that
             # names which robot in the file is wrong; the wording stays the adapter's own
             raise ValueError(str(e)) from e
+
+    @field_validator("camera_url")
+    @classmethod
+    def _camera_url(cls, value: str | list[str] | None) -> str | list[str] | None:
+        if value is None:
+            return None
+        given = [value] if isinstance(value, str) else list(value)
+        urls: list[str] = []
+        for raw in given:
+            url = str(raw).strip()
+            if not url:
+                raise ValueError("camera_url: an empty url is not a camera")
+            if url in urls:
+                raise ValueError(f"camera_url: {url!r} is listed twice")
+            urls.append(url)
+        if not urls:
+            return None
+        # one camera is stored as a string, so a file written by a version that had no second
+        # camera reads back byte for byte the way it was written
+        return urls[0] if len(urls) == 1 else urls
+
+    @field_validator("rest_pose")
+    @classmethod
+    def _rest_pose(cls, value: dict[str, float] | None) -> dict[str, float] | None:
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("rest_pose must name at least one joint")
+        pose: dict[str, float] = {}
+        for joint, raw in value.items():
+            try:
+                degrees = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"rest_pose.{joint} must be a finite number of degrees") from None
+            if degrees != degrees or degrees in (float("inf"), float("-inf")):
+                raise ValueError(f"rest_pose.{joint} must be a finite number of degrees")
+            pose[str(joint)] = degrees
+        return pose
+
+    @model_validator(mode="after")
+    def _one_camera_bodies(self) -> RobotEntry:
+        """A second camera on a body that reads one is a file saying something untrue, and
+        the rule here is that such a file names itself rather than being quietly trimmed."""
+        if len(self.camera_urls) > 1 and self.spec not in MULTI_CAMERA_SPECS:
+            raise ValueError(
+                f"{self.spec} takes one camera url; "
+                f"only {', '.join(MULTI_CAMERA_SPECS)} takes several"
+            )
+        return self
+
+    @property
+    def camera_urls(self) -> tuple[str, ...]:
+        """Every camera this robot was registered with, primary first."""
+        return camera_urls(self.camera_url)
 
     @field_validator("provider")
     @classmethod
@@ -199,15 +266,19 @@ class RobotEntry(BaseModel):
         self,
         *,
         address: str | None = None,
-        camera_url: str | None = None,
+        camera_url: str | Sequence[str] | None = None,
         token: str | None = None,
-    ) -> dict[str, str | None]:
+    ) -> dict[str, Any]:
         """The `make_adapter` keywords for this robot. A flag on the command line wins: you
-        are reaching the same robot through a tunnel today, not renaming it."""
+        are reaching the same robot through a tunnel today, not renaming it.
+
+        `--camera-url` on the line replaces the whole stored set rather than adding to it, for
+        the same reason: naming a camera today says where the cameras are today."""
         return {
             "address": address or self.address,
-            "camera_url": camera_url or self.camera_url,
+            "camera_url": camera_urls(camera_url) or self.camera_urls,
             "token": token or self.token,
+            "rest_pose": dict(self.rest_pose) if self.rest_pose else None,
         }
 
     def public(self) -> dict[str, Any]:
@@ -219,6 +290,7 @@ class RobotEntry(BaseModel):
             "backend": self.backend,
             "address": self.address,
             "camera_url": self.camera_url,
+            "rest_pose": dict(self.rest_pose) if self.rest_pose else None,
             "token_set": self.token is not None,
             "provider": self.provider,
             "model": self.model,
@@ -296,12 +368,19 @@ class Resolved:
         self,
         *,
         address: str | None = None,
-        camera_url: str | None = None,
+        camera_url: str | Sequence[str] | None = None,
         token: str | None = None,
-    ) -> dict[str, str | None]:
+    ) -> dict[str, Any]:
         if self.entry is not None:
             return self.entry.adapter_kwargs(address=address, camera_url=camera_url, token=token)
-        return {"address": address, "camera_url": camera_url, "token": token}
+        # an unregistered robot has nothing recorded, so a rest pose is one more thing you
+        # only get by naming the robot first
+        return {
+            "address": address,
+            "camera_url": camera_urls(camera_url),
+            "token": token,
+            "rest_pose": None,
+        }
 
 
 class Registry:
@@ -408,7 +487,7 @@ class Registry:
         self._save_robots(entries)
         return entry
 
-    def update_robot(self, name: str, changes: Mapping[str, str | None]) -> RobotEntry:
+    def update_robot(self, name: str, changes: Mapping[str, Any]) -> RobotEntry:
         """Set or clear fields. A key mapped to None clears it; a key absent is left alone."""
         entries = self.robots()
         current = entries.get(name)
@@ -638,19 +717,31 @@ async def probe_entry(entry: RobotEntry, *, timeout_s: float = PROBE_TIMEOUT_S) 
         return round(time.perf_counter() - started, 3)
 
     adapter: Any = None
+    closed = False
     try:
         adapter = make_adapter(
             entry.robot_spec,
             seed=0,
             address=entry.address,
-            camera_url=entry.camera_url,
+            camera_url=entry.camera_urls,
             token=entry.token,
+            # a probe reads and lets go; it never drives the arm anywhere, so the pose it was
+            # registered with is what decides whether torque may drop at the end
+            rest_pose=entry.rest_pose,
         )
         await asyncio.wait_for(adapter.connect(), timeout=timeout_s)
         health = await asyncio.wait_for(adapter.health(), timeout=timeout_s)
         detail = health.reason or "ok"
         if health.battery_percent is not None:
             detail = f"{detail}, battery {health.battery_percent:.0f}%"
+        # closed here rather than only in the finally, so a robot that kept its torque says so
+        # on the same line that says it answered. A probe reads and lets go: it never drives
+        # the arm to its rest pose, so an arm away from that pose keeps torque and is named.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(adapter.close(), timeout=timeout_s)
+        closed = True
+        if getattr(adapter, "close_note", None):
+            detail = f"{detail}, torque left on: not at its rest pose"
         return ProbeResult(bool(health.ok), detail, elapsed())
     except TimeoutError:
         return ProbeResult(False, f"timed out after {timeout_s:g} s", elapsed())
@@ -658,7 +749,7 @@ async def probe_entry(entry: RobotEntry, *, timeout_s: float = PROBE_TIMEOUT_S) 
         first = str(e).splitlines()[0] if str(e) else type(e).__name__
         return ProbeResult(False, first, elapsed())
     finally:
-        if adapter is not None:
+        if adapter is not None and not closed:
             with contextlib.suppress(Exception):
                 await adapter.close()
 

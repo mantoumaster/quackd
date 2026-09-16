@@ -15,8 +15,12 @@ from typing import Any
 import pytest
 from mcp.client.session import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
+from PIL import Image
 
+from quackd.adapters.lerobot import LeRobotAdapter
+from quackd.adapters.lerobot.mock import REST, LeRobotMock
 from quackd.mcp_server import DuckSession, build_server
+from quackd.transport.base import DEFAULT_CAMERA_NAME, CameraFrame, TransportError
 from quackd.transport.mock import MockTransport
 from quackd.transport.sim2d import Sim2DTransport
 
@@ -529,3 +533,105 @@ async def test_the_robot_list_row_carries_the_body_as_data_and_as_a_sentence() -
         assert row["datasheet"]["mass_kg"]["value"] == 0.8
         assert row["datasheet"]["payload_kg"] is None  # nobody published one
         assert "a beak, no arms" in row["datasheet_text"]
+
+
+def _arm_away_from_its_rest_pose(**kwargs: Any) -> LeRobotMock:
+    """A mock arm with a rest pose recorded and its joints somewhere else, which is where a
+    run that ended badly leaves a real one."""
+    arm = LeRobotMock(rest_pose=dict(REST), **kwargs)
+    arm.joints["shoulder_pan"] = 45.0
+    return arm
+
+
+async def test_a_session_starts_from_and_returns_to_the_rest_pose() -> None:
+    """A LeRobot arm goes limp the moment it is disconnected, so one left mid-reach falls at
+    the end of every session. The rest move brackets the session: once on connect, so the
+    pilot is handed the arm the last session put down rather than wherever it was abandoned,
+    and once between the stop and the close, which is the only window where putting the arm
+    down changes whether it falls."""
+    arm = _arm_away_from_its_rest_pose()
+    _server, session = build_server(LeRobotAdapter(arm), heartbeat_period_s=0.05)
+    await session.connect()
+    try:
+        assert arm.sequence[0] == "rest", f"something came before the rest move: {arm.sequence}"
+        assert arm.joints["shoulder_pan"] == REST["shoulder_pan"], "the arm never got there"
+    finally:
+        await session.close()
+    assert arm.sequence[-3:] == ["stop", "rest", "close"], arm.sequence
+    assert arm.torque is False, "at its rest pose the arm is a thing that can be let go of"
+    assert arm.close_note is None
+
+
+async def test_a_dry_run_session_never_moves_the_arm() -> None:
+    """`--dry-run` is a promise that nothing is sent, and the rest move is quackd's own send
+    rather than the pilot's, which makes it the one most easily forgotten."""
+    arm = _arm_away_from_its_rest_pose()
+    _server, session = build_server(LeRobotAdapter(arm), dry_run=True, heartbeat_period_s=0.05)
+    await session.connect()
+    await session.close()
+    assert "rest" not in arm.sequence, f"a dry run drove the arm: {arm.sequence}"
+    assert arm.actions == [], "a dry run sent a goal"
+    assert arm.joints["shoulder_pan"] == 45.0
+
+
+async def test_a_session_refuses_to_start_when_the_arm_cannot_reach_its_rest_pose() -> None:
+    """Nothing here reads joint angles before it acts, so the rest pose is how the pilot
+    knows where the arm is. An arm that stalled on the way to it is at a pose nobody has
+    established, and a client is about to drive it: the session is refused rather than handed
+    over with a guess, and the transport is closed on the way out."""
+    arm = _arm_away_from_its_rest_pose(rest_fails="shoulder_lift stopped 40 deg short")
+    _server, session = build_server(LeRobotAdapter(arm), heartbeat_period_s=0.05)
+    with pytest.raises(TransportError) as raised:
+        await session.connect()
+    assert "rest pose" in str(raised.value)
+    assert "shoulder_lift stopped 40 deg short" in str(raised.value), "the reason is dropped"
+    assert arm.sequence == ["rest", "close"], arm.sequence
+    assert arm.connected is False
+    assert arm.heartbeats == 0, "a session that never started must not be watching the link"
+    assert arm.torque is True, "the arm is not somewhere it can be let go of, so torque stays"
+
+
+class TwoCameraMock(MockTransport):
+    """A body with two cameras. `get_frames` is the seam `observe` reads: a transport that
+    has it is asked for every view, and one that does not is asked for its only picture."""
+
+    async def get_frames(self) -> list[CameraFrame]:
+        return [
+            CameraFrame("top", Image.new("RGB", (32, 32), (200, 40, 40)), primary=True),
+            CameraFrame("side", Image.new("RGB", (32, 32), (40, 80, 200))),
+        ]
+
+
+async def test_robot_observe_returns_every_camera_as_its_own_named_image() -> None:
+    """The session held a single picture, so a body with two cameras returned whichever was
+    read second and called it the view. Every camera comes back now, each behind a text block
+    naming it, because an unlabelled pair of images is two views the pilot cannot tell apart
+    and the detections belong to exactly one of them."""
+    async with connected(TwoCameraMock()) as (client, session, _transport):
+        frame = await client.call_tool("robot_observe", {})
+        kinds = [c.type for c in frame.content]
+        assert kinds == ["text", "text", "image", "text", "image", "text"], kinds
+        texts = [c.text for c in frame.content if c.type == "text"]
+        images = [c for c in frame.content if c.type == "image"]
+        assert "top, side" in texts[0] and "top is the primary" in texts[0], texts[0]
+        assert texts[1] == "camera top:" and texts[2] == "camera side:"
+        assert texts[-1].startswith("trace:")
+        assert [i.mime_type for i in images] == ["image/png", "image/png"]
+        assert images[0].data != images[1].data, "both cameras returned the same picture"
+        assert [f.name for f in session.last_frames] == ["top", "side"]
+        assert session.frames == 2
+
+
+async def test_a_one_camera_observe_reads_back_exactly_as_it_did_before() -> None:
+    """Camera names are for the bodies that have more than one. A single camera's name is
+    quackd's own default rather than anything its owner chose, so saying it would put a word
+    in the pilot's mouth: one summary line, one picture, and no name anywhere."""
+    async with connected() as (client, session, _transport):
+        frame = await client.call_tool("robot_observe", {})
+        assert [c.type for c in frame.content] == ["text", "image", "text"]
+        lead = frame.content[0].text
+        assert lead.startswith("duck camera: ")
+        assert "frame captured" not in lead, "the prefix is stripped, as it always was"
+        labels = [c for c in frame.content if c.type == "text" and c.text.startswith("camera ")]
+        assert not labels, f"a one-camera body named its camera: {labels}"
+        assert [f.name for f in session.last_frames] == [DEFAULT_CAMERA_NAME]

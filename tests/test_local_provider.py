@@ -8,7 +8,13 @@ from typing import Any
 
 import pytest
 
-from quackd.agent.providers.base import Exchange, Observation, ProviderError, ToolCall
+from quackd.agent.providers.base import (
+    Exchange,
+    NamedPng,
+    Observation,
+    ProviderError,
+    ToolCall,
+)
 from quackd.agent.providers.factory import LOCAL_NAMES, PROVIDER_NAMES, make_provider
 from quackd.agent.providers.local import (
     PRESETS,
@@ -50,7 +56,9 @@ def reply(text: str | None = None, tool_calls: list[Any] | None = None) -> Any:
 
 
 def history() -> list[Exchange]:
-    return [Exchange(observation=Observation(text="obs", image_png=b"png"))]
+    return [
+        Exchange(observation=Observation(text="obs", images=[NamedPng(name="camera", png=b"png")]))
+    ]
 
 
 # ── presets and construction ────────────────────────────────────────────────────────────

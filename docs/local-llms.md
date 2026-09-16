@@ -112,6 +112,15 @@ servers reject image parts. The text observation already carries what the camera
 (`ball at bearing 18° left, ~0.6 m`), which is the designed path. For a vision model
 (qwen2.5-vl, gemma3, llava and friends) pass `--vision` or set `QUACKD_VISION=1`.
 
+> [!NOTE]
+> A robot registered with several `--camera-url` values sends every picture in one message,
+> each image preceded by a text part naming its camera (`camera top:`), and the last two
+> exchanges keep their images, so two cameras is four pictures in a request rather than two.
+> Some servers and some models accept only one image per message and refuse a request that
+> carries more. If yours does, register the robot with a single `--camera-url`. Only the
+> LeRobot arm reads more than one camera at all, and none of this reaches a local server
+> unless `--vision` is on.
+
 ## Knobs
 
 | Setting | Values | Default for local |
