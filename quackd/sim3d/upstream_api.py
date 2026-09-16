@@ -23,7 +23,7 @@ Nothing here has been run against a physical Microduck.
 
 from __future__ import annotations
 
-from quackd.transport.upstream_api import UpstreamRef
+from quackd.upstream import UpstreamRef
 
 REPO = "https://github.com/pollen-robotics/microduck_rl"
 PIN = "2b25a48b08f1f17bc38c90bb03144c81fbd9ed07"  # develop, 2026-09-06

@@ -103,6 +103,18 @@ dev = [
 [project.scripts]
 quackd = "quackd.cli:main"
 
+# How an adapter says it is here. quackd's own seven are declared so the mechanism is the
+# same one a third party's adapter uses, rather than a path only outsiders take; the core
+# also finds its own by looking, so a stale editable install still works.
+[project.entry-points."quackd.adapters"]
+microduck = "quackd.adapters.microduck"
+lerobot = "quackd.adapters.lerobot"
+rosbridge = "quackd.adapters.rosbridge"
+open_duck = "quackd.adapters.open_duck"
+xlerobot = "quackd.adapters.xlerobot"
+alohamini = "quackd.adapters.alohamini"
+toddlerbot = "quackd.adapters.toddlerbot"
+
 [project.urls]
 Homepage = "https://github.com/rokbenko/quackd"
 Repository = "https://github.com/rokbenko/quackd"

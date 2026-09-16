@@ -22,7 +22,7 @@ Nothing here has been run against a physical duck.
 
 from __future__ import annotations
 
-from quackd.transport.upstream_api import UpstreamRef
+from quackd.upstream import UpstreamRef
 
 REPO = "https://github.com/apirrone/Open_Duck_Mini_Runtime"
 PIN = "32037347dc43186a017f2116bcfde7c461b81f54"  # branch v2, 2025-06-24

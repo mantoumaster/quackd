@@ -15,7 +15,7 @@ has been run against a bridge, and roslibpy is never imported outside the `ws` b
 
 from __future__ import annotations
 
-from quackd.transport.upstream_api import UpstreamRef
+from quackd.upstream import UpstreamRef
 
 REPO = "https://github.com/gramaziokohler/roslibpy"
 PIN = "f5793dbc28578275b0ac93ae84b736dad822db4b"

@@ -23,7 +23,7 @@ Nothing here has been run against an XLeRobot.
 
 from __future__ import annotations
 
-from quackd.transport.upstream_api import UpstreamRef
+from quackd.upstream import UpstreamRef
 
 REPO = "https://github.com/Vector-Wangel/XLeRobot"
 PIN = "3d14695e40c9c68229c0aacffca6053c75cd3eb6"  # main, 2026-07-22

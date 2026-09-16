@@ -23,7 +23,7 @@ Nothing here has been run against a ToddlerBot.
 
 from __future__ import annotations
 
-from quackd.transport.upstream_api import UpstreamRef
+from quackd.upstream import UpstreamRef
 
 REPO = "https://github.com/hshi74/toddlerbot"
 PIN = "84e02d14261292eec5d06f896e3145b35c54856c"  # what tag v2.0.0 points at

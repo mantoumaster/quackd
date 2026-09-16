@@ -19,7 +19,7 @@ afternoon on one arm confirms what was exercised and says nothing about the rest
 
 from __future__ import annotations
 
-from quackd.transport.upstream_api import UpstreamRef
+from quackd.upstream import UpstreamRef
 
 REPO = "https://github.com/huggingface/lerobot"
 PIN = "fbb811fca92504439792b97d216f0d00c2268382"

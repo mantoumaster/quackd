@@ -21,10 +21,7 @@ Nothing here has been run against a physical Microduck.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
-Status = Literal["VERIFIED", "UNVERIFIED"]
+from quackd.upstream import Status, UpstreamRef
 
 REPO = "https://github.com/pollen-robotics/microduck"
 PIN = "bc41fb5c9a9b39894669c1e022e375cf83800382"  # main, 2026-09-03
@@ -44,18 +41,7 @@ ROADMAP = src("docs/project/roadmap.md")
 WEBRTC_DOC = src("docs/design/remote-webrtc.md")
 
 
-@dataclass(frozen=True)
-class UpstreamRef:
-    """A named upstream thing and how sure we are that it exists as described."""
-
-    name: str
-    status: Status
-    source: str
-    note: str = ""
-
-    def __str__(self) -> str:
-        return self.name
-
+__all__ = ["Status", "UpstreamRef"]  # re-exported: this file's own refs are the Microduck's
 
 # ── protocol ────────────────────────────────────────────────────────────────────────────
 

@@ -22,7 +22,7 @@ Nothing here has been run against an AlohaMini.
 
 from __future__ import annotations
 
-from quackd.transport.upstream_api import UpstreamRef
+from quackd.upstream import UpstreamRef
 
 REPO = "https://github.com/liyiteng/lerobot_alohamini"
 PIN = "ab4462b713aeb24d0473f1ec6c8812290ab19510"  # main, 2026-07-24

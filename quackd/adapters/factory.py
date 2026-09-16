@@ -7,87 +7,91 @@ Adapter packages are imported lazily, so listing adapters never imports an SDK.
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import importlib.util
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
-from quackd.adapters.base import AdapterError, RobotAdapter, camera_urls
+from quackd.adapters.base import AdapterError, AdapterNotInstalled, RobotAdapter, camera_urls
+from quackd.adapters.catalogue import BY_NAME, ENTRY_POINT_GROUP, OFFICIAL, AdapterInfo
 from quackd.adapters.manifest import RobotManifest
 from quackd.verbs.registry import VerbRegistry, registry_from_manifest
 
 DEFAULT_ROBOT = "microduck:sim2d"
+"""The body a command falls back to when nothing named one and several are installed.
 
-# name -> (backends, status line, pip extra for the SDK backends, SDK import to probe)
-_ADAPTERS: dict[str, tuple[tuple[str, ...], str, str | None, str | None]] = {
-    # No extra and no probe, even though `mujoco` needs one: this column asks whether the
-    # *adapter* is usable here, and the Microduck's is built in. Probing for mujoco made
-    # `list-adapters` report the whole robot as missing on a machine that can still run
-    # sim2d, mock and a real duck. The extra is named in the status line, in the transports
-    # table and in `doctor`'s optional extras, which is where a per-backend answer belongs.
-    "microduck": (
-        ("sim2d", "mujoco", "mock", "jsonrpc", "websocket"),
-        "✅ built-in: sim2d (default), mock · ✅ mujoco (physics, needs quackd[mujoco]) · "
-        "🧪 jsonrpc · ⏳ websocket",
-        None,
-        None,
-    ),
-    "lerobot": (
-        ("mock", "real"),
-        "✅ built-in: mock · ✅ real (one SO-101 driven on 2026-09-15: the lookout, waves, "
-        "the gripper and a webcam; Python 3.12+)",
-        "quackd[lerobot]",
-        "lerobot",
-    ),
-    "rosbridge": (
-        ("mock", "ws"),
-        "✅ built-in: mock · 🧪 ws via roslibpy (verified names, never run against a bridge)",
-        "quackd[rosbridge]",
-        "roslibpy",
-    ),
-    # Appended, never inserted: the doctor and list-adapters tables are order-sensitive, and
-    # tests/test_adapters.py pins the order. No extra: the client is stdlib, and the robot's
-    # own runtime is not installable here.
-    "open_duck": (
-        ("sim2d", "mock", "bridge"),
-        "✅ built-in: sim2d, mock · 🧪 bridge (quackd's own daemon on the duck's Pi, "
-        "never run on a robot)",
-        None,
-        None,
-    ),
-    # XLeRobot is not an installable package, so quackd speaks its ZeroMQ host protocol
-    # rather than importing it: the extra is pyzmq and nothing else (ADR-0026).
-    "xlerobot": (
-        ("mock", "zmq"),
-        "✅ built-in: mock · 🧪 zmq (wire format VERIFIED at a pinned commit, exercised "
-        "against a fake host over loopback, never run on a cart)",
-        "quackd[xlerobot]",
-        "zmq",
-    ),
-    # Also not an installable package: a fork of LeRobot that calls itself lerobot and is not
-    # on PyPI, so quackd speaks its ZeroMQ host protocol too (ADR-0027).
-    "alohamini": (
-        ("mock", "sim2d", "zmq"),
-        "✅ built-in: mock, sim2d · 🧪 zmq (wire format VERIFIED at a pinned commit, "
-        "exercised against a fake host over loopback, never run on a robot)",
-        "quackd[alohamini]",
-        "zmq",
-    ),
-    # No network API of any kind upstream: no socket, no daemon, no IPC. So quackd ships
-    # the daemon, as it does for the Open Duck Mini, and the client is stdlib (ADR-0028).
-    "toddlerbot": (
-        ("mock", "sim2d", "bridge"),
-        "✅ built-in: mock, sim2d · 🧪 bridge (quackd's own daemon on the robot, "
-        "never run on a robot)",
-        None,
-        None,
-    ),
-}
-ADAPTER_NAMES = tuple(_ADAPTERS)
-BACKENDS = {name: info[0] for name, info in _ADAPTERS.items()}
-ADAPTER_STATUS = {name: info[1] for name, info in _ADAPTERS.items()}
-ADAPTER_EXTRAS = {name: info[2] for name, info in _ADAPTERS.items() if info[2]}
+It survives because `find-and-kick` and the other v0 starters carry no `robots:` line and a
+reader who types `quackd run find-and-kick` means the cartoon. Where exactly one adapter is
+installed, that one is the default instead, and where none is, there is no default at all."""
+
+
+@lru_cache(maxsize=1)
+def _installed() -> dict[str, str]:
+    """Every adapter that can be built here, name to the module that builds it.
+
+    Two ways in, and they are the same question asked before and after the adapters became
+    their own distributions. An installed adapter announces itself through the entry point
+    group, which is how a third party's is found and the only way one can be. An adapter
+    that still lives inside the core wheel is found by looking, because it is installed by
+    virtue of being here at all, and asking the metadata about it would answer only whether
+    somebody had reinstalled since the entry points were declared.
+
+    Cached: `entry_points()` walks the whole environment, and this is on the path of every
+    `doctor`. Nothing installs an adapter mid-process."""
+    found: dict[str, str] = {
+        ep.name: ep.value for ep in importlib.metadata.entry_points(group=ENTRY_POINT_GROUP)
+    }
+    for name in BY_NAME:
+        if name in found:
+            continue
+        module = f"quackd.adapters.{name}"
+        if importlib.util.find_spec(module) is not None:
+            found[name] = module
+    return found
+
+
+def adapter_names() -> tuple[str, ...]:
+    """Every adapter quackd can talk about: the seven it publishes, in their fixed order,
+    then anything else installed here, alphabetically. A name quackd publishes keeps its
+    place whether or not it is installed, because the tables that list them are a catalogue
+    rather than an inventory."""
+    third_party = sorted(name for name in _installed() if name not in BY_NAME)
+    return tuple(BY_NAME) + tuple(third_party)
+
+
+def info(name: str) -> AdapterInfo:
+    """What quackd knows about this adapter without importing it.
+
+    A third party's adapter has no catalogue row, so its own module is asked instead, which
+    means importing it. That is fine: it is installed, or this raises anyway."""
+    if (known := BY_NAME.get(name)) is not None:
+        return known
+    module = _module(name)
+    return AdapterInfo(
+        name=name,
+        backends=tuple(getattr(module, "BACKENDS", ())),
+        status=str(getattr(module, "STATUS", "installed here, not published by quackd")),
+        summary=str(getattr(module, "SUMMARY", "a robot quackd does not publish")),
+        extra=getattr(module, "EXTRA", None),
+        sdk=getattr(module, "SDK", None),
+    )
+
+
+def is_installed(name: str) -> bool:
+    return name in _installed()
+
+
+def is_official(name: str) -> bool:
+    return name in BY_NAME
+
+
+ADAPTER_NAMES = tuple(BY_NAME)
+BACKENDS = {i.name: i.backends for i in OFFICIAL}
+ADAPTER_STATUS = {i.name: i.status for i in OFFICIAL}
+ADAPTER_EXTRAS = {i.name: i.extra for i in OFFICIAL if i.extra}
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -110,12 +114,17 @@ class RobotSpec:
 
 
 def parse_robot_spec(text: str) -> RobotSpec:
-    """`microduck:sim2d`, or `microduck` (its first backend). Unknown names list the choices."""
+    """`microduck:sim2d`, or `microduck` (its first backend). Unknown names list the choices.
+
+    A name quackd publishes parses whether or not it is installed here, so a robot can be
+    registered, listed and printed on a machine that cannot build it. Asking for the body
+    itself is what refuses."""
     text = text.strip().lower()
     adapter, _, backend = text.partition(":")
-    if adapter not in _ADAPTERS:
-        raise AdapterError(f"unknown adapter {adapter!r}; choose one of {', '.join(ADAPTER_NAMES)}")
-    backends = BACKENDS[adapter]
+    known = adapter_names()
+    if adapter not in known:
+        raise AdapterError(f"unknown adapter {adapter!r}; choose one of {', '.join(known)}")
+    backends = info(adapter).backends
     backend = backend or backends[0]
     if backend not in backends:
         raise AdapterError(
@@ -150,7 +159,17 @@ def resolve_robot(robot: str | None, *, duck_default: str | None = None) -> Robo
 
 
 def _module(adapter: str) -> Any:
-    return importlib.import_module(f"quackd.adapters.{adapter}")
+    """The module that builds this robot, or a refusal naming what to install.
+
+    Imported here and nowhere earlier, so listing adapters, parsing a spec and printing a
+    registry all work on a machine where the adapter is not installed at all."""
+    where = _installed().get(adapter)
+    if where is None:
+        if (row := BY_NAME.get(adapter)) is not None:
+            raise AdapterNotInstalled(adapter, row.extra or f"quackd[{adapter}]")
+        known = ", ".join(adapter_names())
+        raise AdapterError(f"unknown adapter {adapter!r}; installed here: {known}")
+    return importlib.import_module(where)
 
 
 def describe(spec: RobotSpec) -> RobotManifest:
@@ -195,17 +214,27 @@ def make_adapter(
 
 
 def list_adapters() -> list[dict[str, Any]]:
-    """Rows for `quackd list-adapters` and `doctor`, without importing any SDK."""
+    """Rows for `quackd list-adapters` and `doctor`, without importing any SDK.
+
+    `installed` is whether the adapter itself is here, and `sdk` whether the library its
+    real backend needs is. They are separate questions: an adapter with a mock is useful
+    with no SDK at all, and reporting the whole robot missing because a wheel it only needs
+    for hardware is absent told a simulator user their duck was gone."""
     rows = []
-    for name, (backends, status, extra, probe) in _ADAPTERS.items():
-        installed = True if probe is None else importlib.util.find_spec(probe) is not None
+    for name in adapter_names():
+        row = info(name)
+        sdk = None if row.sdk is None else importlib.util.find_spec(row.sdk) is not None
         rows.append(
             {
                 "name": name,
-                "backends": list(backends),
-                "status": status,
-                "extra": extra or "built-in",
-                "installed": installed,
+                "backends": list(row.backends),
+                "status": row.status,
+                "extra": row.extra or "built-in",
+                "official": is_official(name),
+                # an adapter with no SDK to probe is usable as soon as it is here at all
+                "installed": is_installed(name) and sdk is not False,
+                "adapter_installed": is_installed(name),
+                "sdk": sdk,
             }
         )
     return rows
