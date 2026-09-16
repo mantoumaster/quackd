@@ -83,7 +83,7 @@ Also in scope:
   the vendor's own guard against exactly this. Use a key with a spend cap, or pick Local and
   nothing leaves the machine. What the demo cannot do: it is a simulation with no transport to
   any robot, so nothing in it moves hardware.
-- **The model and the policies the physics backend fetches** (`quackd/sim3d/assets.py`).
+- **The model and the policies the physics backend fetches** (`adapters/microduck/src/quackd_microduck/sim3d/assets.py`).
   `--robot microduck:mujoco` downloads upstream's MJCF and 38 meshes from codeload.github.com
   and two ONNX policies from huggingface.co, both pinned, and then runs the policy. The defences
   are worth naming because they are the answer: only paths in a fixed allowlist are extracted

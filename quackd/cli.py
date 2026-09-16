@@ -1,8 +1,9 @@
 """The command line is the product's front door.
 
-`uvx quackd run find-and-kick --provider anthropic --robot microduck:sim2d` is the
-north-star demo; every command here exists to make that line, and the debugging around it,
-boring. Commands are thin: they parse, load `.env`, wire objects together, and hand off.
+`uvx --from "quackd[microduck]" quackd run find-and-kick --provider anthropic --robot
+microduck:sim2d` is the north-star demo; every command here exists to make that line, and the
+debugging around it, boring. The `--from` is there because the core ships no robot and the
+demo needs one. Commands are thin: they parse, load `.env`, wire objects together, hand off.
 """
 
 from __future__ import annotations

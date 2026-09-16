@@ -463,7 +463,7 @@ one verb and stop:
   "mcpServers": {
     "arm": {
       "command": "uvx",
-      "args": ["quackd", "serve-mcp", "--robot", "lerobot:real",
+      "args": ["--from", "quackd[lerobot]", "quackd", "serve-mcp", "--robot", "lerobot:real",
                "--address", "COM5", "--camera-url", "opencv://1"]
     }
   }
