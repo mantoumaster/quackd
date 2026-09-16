@@ -7,6 +7,10 @@ message type, enum or convention it relies on lives in one file per upstream, ta
 it). A test proves UNVERIFIED names stay inside the backend that needs them.
 `quackd doctor` prints every UNVERIFIED list on your machine.
 
+One row below has met hardware: `lerobot:real`, on 2026-09-15, on a LeRobot SO-101 arm. Six of
+the seven bodies here have still never been driven by quackd, and the row that has was driven
+on one bench for one afternoon. What that afternoon did and did not settle is under the table.
+
 | Adapter | `--robot` | Status | Upstream file | Page |
 |---|---|---|---|---|
 | Microduck | `microduck:sim2d` | ✅ default | | this page |
@@ -15,7 +19,7 @@ it). A test proves UNVERIFIED names stay inside the backend that needs them.
 | | `microduck:jsonrpc` | 🧪 experimental: every method VERIFIED, never run on a duck | [`quackd/transport/upstream_api.py`](../quackd/transport/upstream_api.py) | |
 | | `microduck:websocket` | ⏳ stub: raises with a link until upstream ships it | | |
 | LeRobot | `lerobot:mock` | ✅ | | [adapters/lerobot.md](adapters/lerobot.md) |
-| | `lerobot:real` | 🧪 every LeRobot name VERIFIED at a pinned commit, exercised with a fake arm, never run on an arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`quackd/adapters/lerobot/upstream_api.py`](../quackd/adapters/lerobot/upstream_api.py) | |
+| | `lerobot:real` | ✅ **run on a real arm on 2026-09-15**, the only row here that has been: an SO-101 follower calibrated as `arm-01` and reached as `--robot lerobot:real --address COM5` with no registered name, on Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0, piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, once with `--provider fake` as well. Free-form `--goal` runs waved the wrist roll about plus or minus 27 degrees, reached wider with `shoulder_lift` -39 and `elbow_flex` 24 to 30, opened and closed the gripper (commanded 100, reported 98 open and 3 closed with the jaws nearly touching), and one of them mimed a duck quacking with the gripper. A USB webcam answered at `opencv://1`, and at `opencv://2` after a replug, 640x480, with no `?backend=` key needed. **The arm fell at the end of every run**, which is the fault the rest pose was written to fix and has not yet been tried on that arm. Every LeRobot name is still VERIFIED at a pinned commit, and still exercised with a fake arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`quackd/adapters/lerobot/upstream_api.py`](../quackd/adapters/lerobot/upstream_api.py) | |
 | rosbridge | `rosbridge:mock` | ✅ | | [adapters/rosbridge.md](adapters/rosbridge.md) |
 | | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics and fake services, including reading the robot's own description off the bridge, never run against a bridge | [`quackd/adapters/rosbridge/upstream_api.py`](../quackd/adapters/rosbridge/upstream_api.py) | |
 | Open Duck Mini v2 | `open_duck:sim2d` | ✅ `open-duck-scout` 10 of 10 seeds | | [adapters/open_duck.md](adapters/open_duck.md) |
@@ -29,6 +33,20 @@ it). A test proves UNVERIFIED names stay inside the backend that needs them.
 | ToddlerBot | `toddlerbot:mock` | ✅ | | [adapters/toddlerbot.md](adapters/toddlerbot.md) |
 | | `toddlerbot:sim2d` | ✅ `toddlerbot-lookout` 10 of 10 seeds | | |
 | | `toddlerbot:bridge` | 🧪 every upstream name VERIFIED at the commit the v2.0.0 tag points at, the protocol and the daemon's own safety machinery exercised against a fake body over loopback, never run on a robot | [`quackd/adapters/toddlerbot/upstream_api.py`](../quackd/adapters/toddlerbot/upstream_api.py) | |
+
+**The first real run, and what it does not prove.** One SO-101, one bench, one afternoon.
+The arm fell at the end of every run, because LeRobot's `disconnect()` disables torque by its
+own default and quackd kept that default: `quackd robot rest-pose`, and the parking at both
+ends of a run that goes with it, exist because of those falls. One dry run aborted with `the
+arm did not answer: TimeoutError` after a single heartbeat round trip failed, and nothing like
+it happened again. One dry run aborted because the pilot answered `uncertain` and the human
+said no. The camera framed the gripper and cropped the raised arm, so the model checked its own
+waves against joint readings rather than against the picture. And four questions came back
+unanswered: whether the holding band is anywhere near right, what a joint reads after ten
+minutes of work, whether a stall is caught when you cause one on purpose, and whether 5 degrees
+an action felt right in the room. They are the list at the foot of
+[lerobot-hardware-checklist.md](lerobot-hardware-checklist.md), and they are why that ✅ is a
+robot quackd has worked on rather than a robot quackd is tested on.
 
 **Pilot flocks** (`flock.allocation.method: pilots`, `--flock NAME`) run one LLM pilot per body
 on wall-clock time, on any adapter and backend including mixed ones, and have run on `mock` and
@@ -197,8 +215,9 @@ its allowlist moves a leg.
 
 Ran `--robot open_duck:bridge` against a duck you built, `toddlerbot:bridge` against a
 ToddlerBot on its stand, `xlerobot:zmq` against a cart, `alohamini:zmq` against an AlohaMini,
-`microduck:jsonrpc` against a real duck, `lerobot:real` against an arm, or `rosbridge:ws`
-against a bridge?
+`microduck:jsonrpc` against a real duck, or `rosbridge:ws` against a bridge?
 Open an issue with `quackd doctor` output and the first lines of
 `transcript.jsonl`. Every row above that flips from 🧪/⏳ to ✅ is one line in an
-`upstream_api.py` and one row here.
+`upstream_api.py` and one row here. `lerobot:real` is the one that has already flipped, on one
+arm on one bench, so a second run against an SO-101 is still worth an issue: it either widens
+that row or contradicts it, and the one that contradicts it is worth more.

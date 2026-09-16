@@ -16,7 +16,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -26,7 +26,7 @@ from quackd.adapters.base import backend_name
 from quackd.duckfile.schema import Budgets, DuckFrontmatter
 from quackd.perception.base import Detector
 from quackd.trace import TracedTransport, Tracer, counting
-from quackd.transport.base import DuckState, DuckTransport
+from quackd.transport.base import CameraFrame, DuckState, DuckTransport
 from quackd.verbs.registry import Verb, VerbContext, VerbNotFound, VerbRegistry, VerbResult
 from quackd.verdict import BEFORE_VERDICT, Verdict
 
@@ -135,6 +135,9 @@ class Executor:
     confirm: ConfirmFn = deny_all
     log: Callable[[str], None] = lambda _m: None
     on_frame: Callable[[Any, str], None] = lambda _i, _c: None
+    on_frames: Callable[[Sequence[CameraFrame], str], None] = lambda _f, _c: None
+    """Beside `on_frame`, because a body with several cameras has no single picture: whoever
+    records or returns what a verb saw wants all of them, and the steering loops want one."""
     abort: asyncio.Event = field(default_factory=asyncio.Event)
     consecutive_failures: dict[str, int] = field(default_factory=dict)
     history: list[tuple[str, dict[str, Any], VerbResult]] = field(default_factory=list)
@@ -222,6 +225,7 @@ class Executor:
             # cannot see. Not the executor's own arrows: those would double `verb_start`.
             log=self._note,
             on_frame=self.on_frame,
+            on_frames=self.on_frames,
             run_verb=lambda name, params: self.run_verb(name, params, source=source, nested=True),
             # an adapter carries its manifest after connect; a bare transport has none
             manifest=self.manifest or getattr(self.transport, "manifest", None),

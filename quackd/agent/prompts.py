@@ -389,6 +389,17 @@ def build_system_prompt(
         "\n".join(f"- {a}" for a in advisory) if advisory else "- (none beyond the enforced ones)"
     )
     body = body_section(manifest) if manifest is not None else ""
+    cameras = list(manifest.extras.get("cameras") or []) if manifest is not None else []
+    if cameras:
+        # only written when the body reported more than one camera, so a pilot with one is
+        # never told the name of the only view it has
+        listed = ", ".join(cameras)
+        body += (
+            f"\nThis body has {len(cameras)} cameras: {listed}. Every frame reaches you each "
+            f"step, labelled with the name of the camera that took it. {cameras[0]} is the "
+            "primary: the `camera:` line in your observation describes that view and no "
+            "other, and the verbs that steer by sight read it alone.\n"
+        )
     stand_ins = ""
     if assumptions:
         listed = "\n".join(f"- {a}" for a in assumptions)
@@ -490,12 +501,18 @@ def build_observation_text(
     budget_status: str,
     inbox: Sequence[Mapping[str, Any]] | None = None,
     inbox_for: str | None = None,
+    cameras: Sequence[str] | None = None,
 ) -> str:
     lines = [
         f"[step {step}/{max_steps} · {budget_status}]",
         f"state: {state.summary()}",
         f"camera: {summarize_detections(detections)}",
     ]
+    if cameras and len(cameras) > 1:
+        # only with more than one, and only as a pointer: the pictures are labelled where
+        # they are, and the `camera:` line above is the primary's and says nothing of the rest
+        rest = ", ".join(cameras[1:])
+        lines.append(f"cameras: {cameras[0]} (detections above), {rest}")
     if last_verb is not None and last_result is not None:
         lines.append(
             f"last verb `{last_verb}`: {'ok' if last_result.ok else 'FAILED'} — {last_result.summary}"

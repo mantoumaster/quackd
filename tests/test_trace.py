@@ -385,6 +385,33 @@ def test_an_llm_call_that_failed_is_a_line_too() -> None:
     assert "rate limited" in text and style == "red"
 
 
+def test_llm_request_says_when_there_are_more_images_than_messages() -> None:
+    """A body with two cameras puts two pictures in one exchange, so the old single count
+    could no longer stand for both. It is still one number wherever they agree, which is
+    every one-camera run, and the second is only spelled out where they differ.
+
+    The third case is why the fallback exists. A transcript recorded before the loop split
+    the count carries `images` alone, and there it meant exchanges: `quackd trace` replays
+    those run directories and `tests/golden/trace_lines.json` holds the lines they printed,
+    so an old event has to render the string it always did.
+    """
+
+    def line(**counts: Any) -> str:
+        data = {"step": 2, "messages": 7, "provider": "openai", "model": "gpt-5", **counts}
+        ((text, _),) = render_lines(TraceEvent("llm_request", 0.0, data))
+        return text
+
+    assert line(images=4, with_image=2) == (
+        "llm>    step 2: 7 messages (2 with image, 4 images) to openai gpt-5"
+    )
+    assert line(images=2, with_image=2) == (
+        "llm>    step 2: 7 messages (2 with image) to openai gpt-5"
+    )
+    assert line(images=1) == "llm>    step 2: 7 messages (1 with image) to openai gpt-5", (
+        "an old transcript carries no with_image and must replay line for line"
+    )
+
+
 def test_a_gate_says_which_rule_refused_and_why() -> None:
     event = TraceEvent(
         "gate",

@@ -26,16 +26,19 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from quackd.agent.providers.base import (
     Exchange,
+    NamedPng,
     ProviderError,
     ProviderMissingKey,
     ProviderNotInstalled,
     ProviderTurn,
     ToolCall,
     Usage,
+    labelled,
 )
 from quackd.agent.providers.catalogue import default_model_for, find_model
 
@@ -45,26 +48,31 @@ def _image_part(png: bytes) -> dict[str, Any]:
     return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}}
 
 
+def _frame_lead(images: Sequence[NamedPng]) -> str:
+    """The sentence in front of the pictures that follow a tool result, which cannot carry
+    an image itself. Plural only when there is more than one camera to be plural about."""
+    return "Current camera frame:" if len(images) == 1 else "Current camera frames:"
+
+
 def render_messages(system: str, history: list[Exchange]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for ex in history:
         obs = ex.observation
+        pictures = labelled(obs.images, _image_part, lambda text: {"type": "text", "text": text})
         if obs.tool_call_id:
             messages.append({"role": "tool", "tool_call_id": obs.tool_call_id, "content": obs.text})
-            if obs.image_png:
+            if pictures:
                 messages.append(
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "Current camera frame:"},
-                            _image_part(obs.image_png),
+                            {"type": "text", "text": _frame_lead(obs.images)},
+                            *pictures,
                         ],
                     }
                 )
         else:
-            parts: list[dict[str, Any]] = [{"type": "text", "text": obs.text}]
-            if obs.image_png:
-                parts.append(_image_part(obs.image_png))
+            parts: list[dict[str, Any]] = [{"type": "text", "text": obs.text}, *pictures]
             messages.append({"role": "user", "content": parts})
         if ex.decision is not None:
             tc = ex.decision.tool_call
@@ -155,6 +163,11 @@ def render_input(history: list[Exchange]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for ex in history:
         obs = ex.observation
+        pictures = labelled(
+            obs.images,
+            _image_part_responses,
+            lambda text: {"type": "input_text", "text": text},
+        )
         if obs.tool_call_id:
             items.append(
                 {
@@ -163,20 +176,18 @@ def render_input(history: list[Exchange]) -> list[dict[str, Any]]:
                     "output": obs.text,
                 }
             )
-            if obs.image_png:
+            if pictures:
                 items.append(
                     {
                         "role": "user",
                         "content": [
-                            {"type": "input_text", "text": "Current camera frame:"},
-                            _image_part_responses(obs.image_png),
+                            {"type": "input_text", "text": _frame_lead(obs.images)},
+                            *pictures,
                         ],
                     }
                 )
         else:
-            parts: list[dict[str, Any]] = [{"type": "input_text", "text": obs.text}]
-            if obs.image_png:
-                parts.append(_image_part_responses(obs.image_png))
+            parts: list[dict[str, Any]] = [{"type": "input_text", "text": obs.text}, *pictures]
             items.append({"role": "user", "content": parts})
         if ex.decision is not None:
             tc = ex.decision.tool_call

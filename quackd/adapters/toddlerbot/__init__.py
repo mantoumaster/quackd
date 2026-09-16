@@ -23,11 +23,12 @@ Backends: `mock` and `sim2d` run offline; `bridge` talks to the daemon quackd sh
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 from PIL import Image
 
+from quackd.adapters.base import RestResult, one_camera_url, refuse_rest_pose
 from quackd.adapters.manifest import (
     Datasheet,
     Figure,
@@ -349,6 +350,11 @@ class ToddlerBotAdapter:
     async def stop(self) -> None:
         await self.transport.stop()
 
+    async def go_to_rest(self) -> RestResult:
+        """Nothing records a rest pose for this body: the only pose it goes to on its own is
+        the daemon's safe pose on a deadman, and quackd never asks for that one."""
+        return RestResult.none()
+
     def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:
         return self.transport.subscribe(topic)
 
@@ -419,9 +425,15 @@ def make(
     seed: int | None = None,
     address: str | None = None,
     live: bool = False,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
+    rest_pose: dict[str, float] | None = None,
 ) -> ToddlerBotAdapter:
+    refuse_rest_pose("toddlerbot", rest_pose)
+    # The daemon owns the camera and reports it at connect, so no backend here has a url to
+    # open. The value is still collapsed rather than ignored, so a second camera is refused
+    # instead of being taken and dropped.
+    _url = one_camera_url(camera_url, spec=f"toddlerbot:{backend}")
     if backend == "mock":
         from quackd.adapters.toddlerbot.mock import ToddlerBotMock
 

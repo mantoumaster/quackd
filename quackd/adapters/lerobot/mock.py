@@ -18,7 +18,16 @@ import math
 
 from PIL import Image, ImageDraw
 
-from quackd.adapters.lerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN, JOINTS
+from quackd.adapters.base import RestResult
+from quackd.adapters.lerobot.verbs import (
+    GRIPPER_CLOSED,
+    GRIPPER_OPEN,
+    JOINTS,
+    TORQUE_LEFT_ON,
+    at_rest,
+    rest_goal,
+    shortfall,
+)
 from quackd.sim2d.render import BALL, FLOOR, HORIZON, SKY, focal_px
 from quackd.transport.base import Ack, DuckState, Intent
 from quackd.transport.mock import MockTransport
@@ -75,6 +84,8 @@ class LeRobotMock(MockTransport):
         fail_heartbeat_after: int | None = None,
         refuse_kinds: set[str] | None = None,
         hot_joints: tuple[str, ...] = (),
+        rest_pose: dict[str, float] | None = None,
+        rest_fails: str | None = None,
     ) -> None:
         super().__init__(
             states=[DuckState(policy="idle", posture="unknown", battery_percent=None)],
@@ -91,6 +102,14 @@ class LeRobotMock(MockTransport):
         self.object_distance_m = object_distance_m
         self.actions: list[dict[str, float]] = []
         self.policy_runs: list[str] = []
+        self.rest_pose = dict(rest_pose) if rest_pose else None
+        self.rest_fails = rest_fails
+        """Set to a reason and the rest move stalls without moving, which is the one thing
+        an offline arm cannot do to itself and every caller of the rest move has to handle."""
+        self.close_note: str | None = None
+        self.sequence: list[str] = []
+        """`stop`, `rest` and `close` in the order they were called. A run's teardown is an
+        order as much as a set, and this is what a test reads to check it."""
         self.temperature_c = {joint: MOCK_TEMPERATURE_C for joint in JOINTS}
         for joint in hot_joints:
             self.temperature_c[joint] = 65.0
@@ -211,4 +230,32 @@ class LeRobotMock(MockTransport):
 
     async def stop(self) -> None:
         await super().stop()
+        self.sequence.append("stop")
         self.policy = "idle"
+
+    async def go_to_rest(self) -> RestResult:
+        """The real arm's rest move, in memory: goals land at once, so it either is there
+        already, gets there in one action, or was told to fail."""
+        self.sequence.append("rest")
+        if self.rest_pose is None:
+            return RestResult.none("no rest pose is recorded for this arm")
+        goal = rest_goal(self.rest_pose)
+        if not goal:
+            return RestResult.none("the recorded pose names no body joint")
+        if self.rest_fails is not None:
+            return RestResult("stalled", self.rest_fails)
+        if at_rest(goal, self.joints):
+            return RestResult("already", "already at the rest pose")
+        self._goto(goal)
+        return RestResult("arrived", "moved to the rest pose")
+
+    async def close(self) -> None:
+        """Torque drops only where the arm can be let go of, as it does on a real one."""
+        self.sequence.append("close")
+        self.close_note = None
+        goal = rest_goal(self.rest_pose or {})
+        if goal and not at_rest(goal, self.joints):
+            self.close_note = TORQUE_LEFT_ON.format(why=shortfall(goal, self.joints))
+        else:
+            self.torque = False
+        await super().close()

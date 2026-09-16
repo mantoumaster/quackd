@@ -7,7 +7,8 @@ real time while the real robot keeps its deadman fed.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from PIL import Image
@@ -36,6 +37,28 @@ class TransportError(RuntimeError):
 
 class HeartbeatError(TransportError):
     """A heartbeat failed. The caller must stop the robot and abort."""
+
+
+DEFAULT_CAMERA_NAME = "camera"
+"""What a single frame is called when the transport names no camera. Never shown to a
+model: a camera's name is only spoken when a body has more than one."""
+
+
+@dataclass(frozen=True)
+class CameraFrame:
+    """One camera's newest picture, and which camera it came from.
+
+    `name` is what the model, the transcript file and a policy's observation tell two
+    views apart by, so it is required here even though a one-camera body never shows it.
+
+    `primary` is carried rather than inferred from the position in the list. A camera that
+    gave nothing is absent from that list, so on a two-camera arm whose primary lens died the
+    first entry is the *other* camera, and a detector reading it would report bearings off a
+    lens `--fov-deg` never measured."""
+
+    name: str
+    image: Image.Image
+    primary: bool = False
 
 
 class DuckState(BaseModel):
@@ -143,7 +166,14 @@ class Intent(BaseModel):
 
 @runtime_checkable
 class DuckTransport(Protocol):
-    """Every transport implements exactly this. Verbs see nothing else."""
+    """Every transport implements exactly this. Verbs see nothing else.
+
+    A transport whose body has several cameras may also offer
+    `get_frames() -> list[CameraFrame]`. It is not part of this protocol, because a
+    protocol cannot carry an optional member: `frames_of()` is how callers ask, and a
+    transport that has not got one is a transport with a single camera. One that has must
+    mark its primary camera's frame `primary=True`, and mark none when that camera gave
+    nothing this time, because that flag is what the detector reads."""
 
     name: str
 
@@ -179,3 +209,25 @@ class DuckTransport(Protocol):
     async def sleep(self, seconds: float) -> None:
         """Let `seconds` of transport time pass (advancing the sim, or actually waiting)."""
         ...
+
+
+async def frames_of(transport: Any) -> list[CameraFrame]:
+    """Every camera's newest frame, the primary first.
+
+    `get_frames()` where the transport has one, otherwise `get_frame()` wrapped as a single
+    frame, so a body with one camera and a body with four are read the same way. An empty
+    list means no picture, which is `get_frame`'s own contract: this never raises for a
+    camera that failed, because every caller is an observation or a teardown."""
+    getter = getattr(transport, "get_frames", None)
+    if callable(getter):
+        return list(await getter())
+    image = await transport.get_frame()
+    return [] if image is None else [CameraFrame(DEFAULT_CAMERA_NAME, image, primary=True)]
+
+
+def primary_of(frames: Sequence[CameraFrame]) -> Image.Image | None:
+    """The view the detections describe, or None when that camera gave nothing this time.
+
+    None with frames still in the list is a real state: the other cameras are worth showing a
+    model even when the one the bearings are calibrated for has stopped answering."""
+    return next((f.image for f in frames if f.primary), None)

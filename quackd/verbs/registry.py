@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from quackd.perception.base import Detector
-from quackd.transport.base import DuckState, DuckTransport
+from quackd.transport.base import CameraFrame, DuckState, DuckTransport
 from quackd.verbs.aliases import ALIASES
 
 if TYPE_CHECKING:
@@ -57,6 +57,10 @@ class VerbContext:
     dry_run: bool = False
     log: Callable[[str], None] = lambda _msg: None
     on_frame: Callable[[Any, str], None] = lambda _img, _caption: None
+    """The one view that steers: the primary camera's frame."""
+    on_frames: Callable[[Sequence[CameraFrame], str], None] = lambda _frames, _caption: None
+    """Every camera's frame, named. A body with four lenses handed to `on_frame` alone
+    arrives as whichever one was read last, which is nobody's picture."""
     run_verb: Callable[[str, dict[str, Any]], Awaitable[VerbResult]] | None = None
     """Composites call other verbs through the executor, so allowlists still apply."""
     manifest: RobotManifest | None = None

@@ -20,6 +20,7 @@ import contextlib
 import math
 from typing import TYPE_CHECKING, Any
 
+from quackd.adapters.base import RestResult, go_to_rest_if_any
 from quackd.adapters.manifest import RobotManifest
 from quackd.duckfile.schema import DuckFrontmatter
 from quackd.flock.bus import Bus
@@ -198,6 +199,32 @@ class FlockMember:
             )
         )
 
+    # ── the rest pose ───────────────────────────────────────────────────────────────
+
+    def _note(self, text: str) -> None:
+        """One free-text line on both of this member's surfaces, where its executor's own
+        notes land: `flock.jsonl` for the flock, this duck's stream for this duck."""
+        self.flock_transcript.write("member_log", duck=self.name, message=text)
+        self.tracer.emit("note", text=text)
+
+    async def _rest(self) -> RestResult | None:
+        """The rest move, narrated. None for a dry run, and for a body with no rest pose.
+
+        Called directly on the transport rather than through the executor: this runs at the
+        end of every run including the one the flock stopped, and by then the executor's
+        abort is set and would cancel the move that puts the arm down."""
+        if self.executor.dry_run or getattr(self.transport, "rest_pose", None) is None:
+            return None
+        self._note("moving to the rest pose")
+        parked = await go_to_rest_if_any(self.transport)
+        if parked.reached:
+            self._note(
+                "already at the rest pose" if parked.how == "already" else "at the rest pose"
+            )
+        else:
+            self._note(f"the arm did not reach its rest pose: {parked.reason}")
+        return parked
+
     # ── the loop ────────────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -211,6 +238,12 @@ class FlockMember:
                 self.executor.registry = registry_from_manifest(manifest, self.transport)
                 self.executor.manifest = manifest
             self.provides = sorted(self.executor.registry.names())
+            # a member starts from the pose it will end at, so what it acts from is the same
+            # arm every time rather than wherever the last run put it down. Before the
+            # heartbeat, so an arm that will not park aborts instead of joining the flock.
+            parked = await self._rest()
+            if parked is not None and parked.recorded and not parked.reached:
+                raise Aborted(f"{self.name}: the arm did not reach its rest pose: {parked.reason}")
             self.heartbeat.start()
             self.budget.start()
             while not self._done:
@@ -248,7 +281,14 @@ class FlockMember:
             await self.heartbeat.stop()
             self.sub.close()
             with contextlib.suppress(Exception):
+                # after the stop and before the close: the stop holds the arm where it is,
+                # and the close is what releases torque, so this is the only window in which
+                # putting it down changes whether it falls
+                await self._rest()
+            with contextlib.suppress(Exception):
                 await self.transport.close()  # unregisters from the clock: never wedge time
+            if note := getattr(self.transport, "close_note", None):
+                self._note(str(note))
             self.flock_transcript.write(
                 "member_end", duck=self.name, status=self.final_status, steps=self.steps
             )

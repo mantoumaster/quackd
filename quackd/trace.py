@@ -449,9 +449,16 @@ def render_events(
             return [TraceLine("obs", f"ERROR {d['error']}", "red", mark="fail")]
         return [TraceLine("obs", str(d.get("text", "")), "", multiline=True)]
     if k == "llm_request":
+        # transcripts recorded before the loop split the count carry `images` alone, and there
+        # it meant exchanges, so read it as `with_image` and an old run replays line for line
+        images = d.get("images", 0)
+        with_image = d.get("with_image", images)
+        seen = f"{with_image} with image"
+        if images != with_image:  # more than one camera, so pictures outnumber the exchanges
+            seen += f", {images} images"
         text = (
             f"step {d.get('step')}: {d.get('messages')} messages "
-            f"({d.get('images', 0)} with image) to {d.get('provider')} {d.get('model')}"
+            f"({seen}) to {d.get('provider')} {d.get('model')}"
         )
         if d.get("reprompt"):
             text += " (re-prompt: it made no tool call)"

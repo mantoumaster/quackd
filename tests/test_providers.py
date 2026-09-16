@@ -13,7 +13,14 @@ import pytest
 
 from quackd.agent.providers.anthropic import AnthropicProvider
 from quackd.agent.providers.anthropic import render_messages as a_messages
-from quackd.agent.providers.base import Decision, Exchange, Observation, ProviderError, ToolCall
+from quackd.agent.providers.base import (
+    Decision,
+    Exchange,
+    NamedPng,
+    Observation,
+    ProviderError,
+    ToolCall,
+)
 from quackd.agent.providers.catalogue import default_model_for, find_model
 from quackd.agent.providers.factory import make_provider
 from quackd.agent.providers.gemini import (
@@ -24,10 +31,13 @@ from quackd.agent.providers.gemini import (
 )
 from quackd.agent.providers.grok import GrokProvider
 from quackd.agent.providers.openai import OpenAIProvider, parse_extra_body
+from quackd.agent.providers.openai import render_input as o_input
 from quackd.agent.providers.openai import render_messages as o_messages
 from quackd.verbs.registry import default_registry
 
 PNG = b"\x89PNG\r\n\x1a\nfake"
+PNG_TOP = b"\x89PNG\r\n\x1a\ntop"
+PNG_SIDE = b"\x89PNG\r\n\x1a\nside"
 TOOLS = [
     {
         "name": "walk",
@@ -43,15 +53,46 @@ TOOLS = [
 
 def history() -> list[Exchange]:
     first = Exchange(
-        observation=Observation(text="obs 1", image_png=PNG),
+        observation=Observation(text="obs 1", images=[NamedPng(name="camera", png=PNG)]),
         decision=Decision(
             tool_call=ToolCall(id="call-1", name="walk", arguments={"vx": 0.1}), text="going"
         ),
     )
     second = Exchange(
-        observation=Observation(text="obs 2 (result)", image_png=PNG, tool_call_id="call-1")
+        observation=Observation(
+            text="obs 2 (result)",
+            images=[NamedPng(name="camera", png=PNG)],
+            tool_call_id="call-1",
+        )
     )
     return [first, second]
+
+
+def two_camera_history() -> list[Exchange]:
+    """The same two turns as `history`, from a body whose cameras are `top` and `side`.
+
+    The two PNGs differ so a renderer that put the right labels in front of the wrong
+    pictures is caught: swapping them would leave every type and every word in place.
+    """
+    images = [NamedPng(name="top", png=PNG_TOP), NamedPng(name="side", png=PNG_SIDE)]
+    first = Exchange(
+        observation=Observation(text="obs 1", images=images),
+        decision=Decision(
+            tool_call=ToolCall(id="call-1", name="walk", arguments={"vx": 0.1}), text="going"
+        ),
+    )
+    second = Exchange(
+        observation=Observation(text="obs 2 (result)", images=images, tool_call_id="call-1")
+    )
+    return [first, second]
+
+
+def b64(png: bytes) -> str:
+    return base64.standard_b64encode(png).decode("ascii")
+
+
+def data_url(png: bytes) -> str:
+    return f"data:image/png;base64,{b64(png)}"
 
 
 # ── anthropic ───────────────────────────────────────────────────────────────────────────
@@ -138,6 +179,31 @@ async def test_anthropic_request_and_response_mapping() -> None:
     assert turn.raw[0]["type"] == "thinking"  # replayed verbatim next turn
 
 
+def test_anthropic_names_each_camera_before_its_picture_in_both_kinds_of_turn() -> None:
+    """Two pictures in one message are two views of a room with nothing to say which is which.
+
+    Each label sits in front of the picture it names, so the order of the blocks is the whole
+    guarantee: a renderer that sent both labels and then both pictures would carry every right
+    word and still be wrong. Both branches are checked because a tool result nests its blocks a
+    level deeper and builds them in the other order, the text first rather than last.
+    """
+    msgs = a_messages(two_camera_history())
+    plain = msgs[0]["content"]
+    assert [b["type"] for b in plain] == ["text", "image", "text", "image", "text"]
+    assert plain[0]["text"] == "camera top:" and plain[2]["text"] == "camera side:"
+    assert plain[1]["source"]["data"] == b64(PNG_TOP)
+    assert plain[3]["source"]["data"] == b64(PNG_SIDE), "the side label kept the side picture"
+    assert plain[4]["text"] == "obs 1", "the observation text still closes a plain turn"
+
+    result = msgs[2]["content"][0]
+    assert result["type"] == "tool_result" and result["tool_use_id"] == "call-1"
+    inner = result["content"]
+    assert [b["type"] for b in inner] == ["text", "text", "image", "text", "image"]
+    assert inner[0]["text"] == "obs 2 (result)", "the result text still opens the tool result"
+    assert inner[1]["text"] == "camera top:" and inner[2]["source"]["data"] == b64(PNG_TOP)
+    assert inner[3]["text"] == "camera side:" and inner[4]["source"]["data"] == b64(PNG_SIDE)
+
+
 def test_anthropic_replays_raw_blocks() -> None:
     ex = Exchange(
         observation=Observation(text="o"),
@@ -222,6 +288,34 @@ async def test_openai_request_and_response_mapping() -> None:
     assert kw["messages"][4]["content"][1]["type"] == "image_url"
     assert turn.tool_calls == [ToolCall(id="call_9", name="walk", arguments={"vx": 0.3})]
     assert turn.usage.input_tokens == 50 and turn.stop_reason == "tool_calls"
+
+
+def test_openai_names_each_camera_and_says_frames_only_when_there_are_several() -> None:
+    """A `tool` message cannot carry an image, so the pictures follow in a user message of
+    their own, and the sentence leading that message is the one place the count is spoken.
+
+    One camera still goes out the way it did before a body could have two: the singular lead,
+    and one bare picture with no label in front of it. A pilot told its only view is called
+    `camera` would start naming it in sentences nobody asked for.
+    """
+    msgs = o_messages("SYS", two_camera_history())
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "tool", "user"]
+    plain = msgs[1]["content"]
+    assert [p["type"] for p in plain] == ["text", "text", "image_url", "text", "image_url"]
+    assert plain[0]["text"] == "obs 1", "the observation text still opens a plain turn"
+    assert plain[1]["text"] == "camera top:" and plain[2]["image_url"]["url"] == data_url(PNG_TOP)
+    assert plain[3]["text"] == "camera side:" and plain[4]["image_url"]["url"] == data_url(PNG_SIDE)
+
+    after = msgs[4]["content"]
+    assert after[0] == {"type": "text", "text": "Current camera frames:"}
+    assert [p["type"] for p in after] == ["text", "text", "image_url", "text", "image_url"]
+    assert after[1]["text"] == "camera top:" and after[2]["image_url"]["url"] == data_url(PNG_TOP)
+    assert after[3]["text"] == "camera side:" and after[4]["image_url"]["url"] == data_url(PNG_SIDE)
+
+    one = o_messages("SYS", history())
+    assert one[4]["content"][0] == {"type": "text", "text": "Current camera frame:"}
+    assert [p["type"] for p in one[4]["content"]] == ["text", "image_url"], "no label for one"
+    assert [p["type"] for p in one[1]["content"]] == ["text", "image_url"]
 
 
 def responses_result(name: str, args: str, text: str | None = None) -> Any:
@@ -365,6 +459,31 @@ async def test_openai_responses_round_trip_shapes(_no_effort_env: None) -> None:
     assert turn.text == "going" and turn.thinking == "thinking"
     assert turn.usage.input_tokens == 11 and turn.usage.reasoning_tokens == 3
     assert turn.stop_reason == "tool_calls"
+
+
+def test_openai_responses_names_each_camera_before_its_picture() -> None:
+    """Responses builds the same two shapes out of `input_text` and `input_image`, in a
+    renderer of its own: a label added to `render_messages` is not added here for free, and a
+    run that switched API mid-way would otherwise lose the labels from that turn onwards.
+    """
+    items = o_input(two_camera_history())
+    plain = items[0]["content"]
+    kinds = ["input_text", "input_text", "input_image", "input_text", "input_image"]
+    assert [p["type"] for p in plain] == kinds
+    assert plain[0]["text"] == "obs 1", "the observation text still opens a plain item"
+    assert plain[1]["text"] == "camera top:" and plain[2]["image_url"] == data_url(PNG_TOP)
+    assert plain[3]["text"] == "camera side:" and plain[4]["image_url"] == data_url(PNG_SIDE)
+
+    after = items[3]["content"]
+    assert after[0] == {"type": "input_text", "text": "Current camera frames:"}
+    assert [p["type"] for p in after] == kinds
+    assert after[1]["text"] == "camera top:" and after[2]["image_url"] == data_url(PNG_TOP)
+    assert after[3]["text"] == "camera side:" and after[4]["image_url"] == data_url(PNG_SIDE)
+
+    one = o_input(history())
+    assert one[3]["content"][0] == {"type": "input_text", "text": "Current camera frame:"}
+    assert [p["type"] for p in one[3]["content"]] == ["input_text", "input_image"]
+    assert [p["type"] for p in one[0]["content"]] == ["input_text", "input_image"]
 
 
 async def test_openai_responses_bad_json_arguments_do_not_crash(_no_effort_env: None) -> None:
@@ -578,6 +697,29 @@ async def test_gemini_request_and_response_mapping() -> None:
     assert contents[2]["parts"][1]["inline_data"]["mime_type"] == "image/png"
     assert turn.tool_calls == [ToolCall(id="gemini-0", name="walk", arguments={"vx": 0.25})]
     assert turn.usage.input_tokens == 70
+
+
+def test_gemini_names_each_camera_before_its_inline_data() -> None:
+    """google-genai reads the parts in order, so the label has to be the part immediately
+    before the `inline_data` it introduces, not a preamble that lists both cameras first."""
+    contents = render_contents(two_camera_history())
+    plain = contents[0]["parts"]
+    assert plain[0] == {"text": "obs 1"}
+    assert plain[1] == {"text": "camera top:"}
+    assert plain[2]["inline_data"] == {"mime_type": "image/png", "data": PNG_TOP}
+    assert plain[3] == {"text": "camera side:"}
+    assert plain[4]["inline_data"] == {"mime_type": "image/png", "data": PNG_SIDE}
+
+    after = contents[2]["parts"]
+    assert after[0]["function_response"]["name"] == "walk", "the result still leads the turn"
+    assert [p.get("text") for p in after[1:]] == ["camera top:", None, "camera side:", None]
+    assert after[2]["inline_data"]["data"] == PNG_TOP
+    assert after[4]["inline_data"]["data"] == PNG_SIDE, "the side label kept the side picture"
+
+    one = render_contents(history())
+    assert [next(iter(p)) for p in one[2]["parts"]] == ["function_response", "inline_data"], (
+        "one camera is one unlabelled picture, the way it was before a body could have two"
+    )
 
 
 def test_gemini_clean_schema_is_recursive() -> None:

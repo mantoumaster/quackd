@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -18,7 +18,13 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from PIL import Image
 from pydantic import ValidationError
 
-from quackd.adapters.base import AdapterError, adapter_name, backend_name
+from quackd.adapters.base import (
+    AdapterError,
+    RestResult,
+    adapter_name,
+    backend_name,
+    go_to_rest_if_any,
+)
 from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
 from quackd.agent.prompts import (
     ASSESS_TASK_NAME,
@@ -36,6 +42,7 @@ from quackd.agent.providers.base import (
     Decision,
     Exchange,
     LLMProvider,
+    NamedPng,
     Observation,
     ToolCall,
     Usage,
@@ -59,7 +66,13 @@ from quackd.safety import (
     deny_all,
 )
 from quackd.trace import Sink, Tracer
-from quackd.transport.base import DuckState, DuckTransport
+from quackd.transport.base import (
+    CameraFrame,
+    DuckState,
+    DuckTransport,
+    frames_of,
+    primary_of,
+)
 from quackd.verbs.registry import (
     VerbRegistry,
     VerbResult,
@@ -183,7 +196,9 @@ class AgentLoop:
             dry_run=cfg.dry_run,
             confirm=cfg.confirm,
             log=cfg.log,
-            on_frame=self._on_frame,
+            # every camera a verb captures, not just the one that steers: with one camera this
+            # writes exactly the frame and the record `on_frame` wrote before there were two
+            on_frames=self._on_frames,
             trace=self.tracer,
         )
         self.heartbeat = Heartbeat(
@@ -212,21 +227,52 @@ class AgentLoop:
 
     # ── frames ──────────────────────────────────────────────────────────────────────
 
-    def _on_frame(self, img: Image.Image, caption: str) -> None:
-        self.transcript.save_frame(img, caption)
+    def _on_frames(self, frames: Sequence[CameraFrame], caption: str) -> None:
+        """Every camera's picture to the record, the primary's to whoever asked for a frame.
+
+        `cfg.on_frame` is the GIF recorder and a flock's own viewer, and both draw one world
+        rather than a contact sheet, so they keep being handed the view that steers."""
+        if not frames:
+            return
+        self.transcript.save_frames(list(frames), caption)
         if self.cfg.on_frame is not None:
-            self.cfg.on_frame(img, caption)
+            primary = primary_of(frames)
+            self.cfg.on_frame(primary if primary is not None else frames[0].image, caption)
+
+    async def _rest(self) -> RestResult | None:
+        """The rest move, narrated. None for a dry run, and for a body with no rest pose.
+
+        Called directly on the transport rather than through the executor: this runs at the
+        end of every run including the one a person ended with Ctrl-C, and by then the
+        executor's abort is set and would cancel the move that puts the arm down."""
+        cfg = self.cfg
+        if cfg.dry_run or getattr(cfg.transport, "rest_pose", None) is None:
+            return None
+        self._note("moving to the rest pose")
+        parked = await go_to_rest_if_any(cfg.transport)
+        if parked.reached:
+            self._note(
+                "already at the rest pose" if parked.how == "already" else "at the rest pose"
+            )
+        else:
+            self._note(f"the arm did not reach its rest pose: {parked.reason}")
+        return parked
 
     async def _observe(
         self, last_verb: str | None, last_result: VerbResult | None
     ) -> tuple[Observation, Image.Image | None]:
         state = await self.cfg.transport.get_state()
-        img = await self.cfg.transport.get_frame()
+        frames = await frames_of(self.cfg.transport)
+        img = primary_of(frames)
         detections: list[Detection] = []
-        if img is not None:
-            if self.cfg.detector is not None:
-                detections = self.cfg.detector.detect(img)
-            self._on_frame(img, f"step {self.budget.steps}: {last_verb or 'start'}")
+        if img is not None and self.cfg.detector is not None:
+            # the primary camera and only it: the detections line describes one view, and a
+            # bearing is only meaningful from the lens --fov-deg measured
+            detections = self.cfg.detector.detect(img)
+        if frames:
+            # saved even when the primary gave nothing, because the other views are still what
+            # the model is about to be shown
+            self._on_frames(frames, f"step {self.budget.steps}: {last_verb or 'start'}")
         # drained here and nowhere else, so each message is shown exactly once: a re-prompt
         # reuses these features rather than observing again
         link = self.cfg.link
@@ -241,6 +287,7 @@ class AgentLoop:
             budget_status=self.budget.status(),
             inbox=inbox,
             inbox_for=link.name if link is not None else None,
+            cameras=[f.name for f in frames] if len(frames) > 1 else None,
         )
         features = observation_features(
             state=state,
@@ -251,8 +298,12 @@ class AgentLoop:
             inbox=inbox,
             flock=link.describe() if link is not None else None,
         )
-        image = png_bytes(img) if (img is not None and self.cfg.provider.supports_vision) else None
-        return Observation(text=text, image_png=image, features=features), img
+        images = (
+            [NamedPng(name=f.name, png=png_bytes(f.image)) for f in frames]
+            if self.cfg.provider.supports_vision
+            else []
+        )
+        return Observation(text=text, images=images, features=features), img
 
     NOBODY_TO_ASK = (
         "nobody is here to answer for the human: decide yourself and call assess_task again "
@@ -342,13 +393,17 @@ class AgentLoop:
         return VerbResult.success(f"told {to or 'all'}: {' '.join(text.split())}")
 
     def _history_for_provider(self) -> list[Exchange]:
-        """Older images are dropped to keep context small; the last N keep theirs."""
+        """Older pictures are dropped to keep context small; the last N exchanges keep theirs.
+
+        N counts exchanges rather than images, so a body with two cameras sends twice the
+        pictures of a body with one, which is the cost of the second view and is what the
+        arm's page says it costs."""
         n = self.cfg.keep_images_for_last_n
         out: list[Exchange] = []
         for i, ex in enumerate(self.history):
-            if ex.observation.image_png is not None and i < len(self.history) - n:
+            if ex.observation.images and i < len(self.history) - n:
                 ex = ex.model_copy(
-                    update={"observation": ex.observation.model_copy(update={"image_png": None})}
+                    update={"observation": ex.observation.model_copy(update={"images": []})}
                 )
             out.append(ex)
         return out
@@ -486,6 +541,10 @@ class AgentLoop:
         self.budget.start()
         self.heartbeat.start()
         try:
+            # a run starts from the pose it will end at, so what the pilot improvises from is
+            # the same arm every time rather than wherever the last run put it down
+            if (parked := await self._rest()) is not None and not parked.reached:
+                raise Aborted(f"the arm did not reach its rest pose: {parked.reason}")
             while True:
                 await asyncio.sleep(0)  # let the heartbeat and kill switch run
                 if self.executor.abort.is_set():
@@ -508,7 +567,7 @@ class AgentLoop:
                     "observation",
                     step=self.budget.steps,
                     text=obs.text,
-                    has_image=obs.image_png is not None,
+                    has_image=bool(obs.images),
                     features=obs.features,
                     elapsed_s=round(time.perf_counter() - observe_started, 3),
                 )
@@ -521,7 +580,8 @@ class AgentLoop:
                     provider=cfg.provider.name,
                     model=cfg.provider.model,
                     messages=len(history),
-                    images=sum(1 for ex in history if ex.observation.image_png is not None),
+                    images=sum(len(ex.observation.images) for ex in history),
+                    with_image=sum(1 for ex in history if ex.observation.images),
                     reprompt=retry_prompted,
                 )
                 llm_started = time.perf_counter()
@@ -691,11 +751,18 @@ class AgentLoop:
             with contextlib.suppress(Exception):
                 # the run's last intent, narrated like every other one
                 await self.executor.traced_transport().stop()
+            with contextlib.suppress(Exception):
+                # after the stop and before the close: the stop holds the arm where it is,
+                # and the close is what releases torque, so this is the only window in which
+                # putting it down changes whether it falls
+                await self._rest()
             final_state: dict[str, Any] = {}
             with contextlib.suppress(Exception):
                 final_state = (await cfg.transport.get_state()).model_dump()
             with contextlib.suppress(Exception):
                 await cfg.transport.close()
+            if note := getattr(cfg.transport, "close_note", None):
+                self._note(str(note))
             summary = {
                 "duck": self.fm.name,
                 "outcome": outcome,

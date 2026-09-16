@@ -47,8 +47,13 @@ backend's own health call elsewhere, a liveness check in sim). One failure → `
 ## Kill switch
 
 Ctrl-C and `q` (when stdin is a terminal) set the same abort flag; the loop's `finally`
-always sends `stop` and closes the transport. Works on Windows (signal handler, not
-`loop.add_signal_handler`).
+always sends `stop`, puts a body that has a recorded rest pose back into it, and closes the
+transport. Works on Windows (signal handler, not `loop.add_signal_handler`).
+
+A second Ctrl-C raises straight through that teardown. If it lands during the rest move the
+close is skipped, so the process exits without disconnecting and a LeRobot arm is left holding
+rather than sagging. That is the safe direction, and it is written up under "A LeRobot arm"
+below because it is not a tidy exit.
 
 ## When the pilot is unsure
 
@@ -81,14 +86,29 @@ It does not get you past the verdict, because that gate runs before this one. A 
 pilot judges infeasible ends with nothing logged rather than with the list of verbs it would
 have sent, which is the one case where `--dry-run` tells you less than you asked for.
 
+A dry run does not move the arm into its rest pose either, because it moves nothing. On a
+LeRobot arm with a pose recorded that is a change of behaviour worth knowing before you press
+Ctrl-C and walk away: the arm ends the dry run holding itself up, with a line saying so,
+instead of going limp.
+
 ## On hardware
 
-Nothing here has run on hardware yet, on any body. If the body is a Microduck, run the contract
-in the physics simulator first (`--robot microduck:mujoco`): it is the only place quackd can
-show you a body that undershoots, refuses and falls over, and nothing there can be hurt. When
-you do reach the robot, start with `--dry-run`
-every time, then a `.duck` whose `allow` list is the smallest thing that could work, then
-widen it. **You are responsible for your robot.**
+One of the seven bodies has run on hardware, once. On 2026-09-15 a LeRobot SO-101 follower arm
+ran `lerobot-lookout` and then a series of free-form `--goal` runs, piloted by OpenAI
+gpt-6-astra on Windows 11 with lerobot 0.6.1: it waved the wrist about 27 degrees either way,
+waved again from a raised pose, and opened and closed the gripper. **It also fell at the end of
+every one of those runs**, because LeRobot's `disconnect()` drops torque, which is the whole
+reason the rest pose below exists. [lerobot-first-run.md](lerobot-first-run.md) is the account,
+including what that day did not measure, and most of what this page would want to know is on
+that list: whether the holding band is right, what a joint reads after ten minutes of work, and
+whether a stall is caught on purpose rather than by luck. The other six bodies have not been on
+hardware at all.
+
+If the body is a Microduck, run the contract in the physics simulator first
+(`--robot microduck:mujoco`): it is the only place quackd can show you a body that undershoots,
+refuses and falls over, and nothing there can be hurt. When you do reach the robot, start with
+`--dry-run` every time, then a `.duck` whose `allow` list is the smallest thing that could work,
+then widen it. **You are responsible for your robot.**
 
 **An XLeRobot (a 12 kg dual-arm cart):**
 
@@ -156,9 +176,47 @@ widen it. **You are responsible for your robot.**
 - `pick` hands the whole arm to a learned policy for up to a minute. It is confirm-gated
   for that reason. Watch it, and keep `stop` within reach.
 - `stop` holds position and never releases, and it leaves the gripper's goal alone so a
-  failed verb never drops what is held. LeRobot's own `disconnect()` releases torque at the
-  end of a session by its default, so the arm sags when the run ends: do not leave it holding
-  something fragile.
+  failed verb never drops what is held.
+- **The arm falls when a session ends, unless you have recorded a rest pose.** LeRobot's own
+  `disconnect()` disables torque by its default and quackd keeps that default, which is why the
+  arm fell at the end of every run on 2026-09-15. Fold the arm by hand while nothing is
+  connected, record where it sits with `quackd robot rest-pose <name>`, and quackd drives it
+  back there between the `stop` and the close, on every exit path there is: success, failure,
+  infeasible, a spent budget, an abort, an error and Ctrl-C. It drives the arm there at the
+  start of a run too, before the pilot gets control, and a run that cannot reach it aborts
+  before the first LLM call. Only the five body joints are ever driven: the gripper is recorded
+  and never commanded, for the same reason `stop` leaves it alone. With no pose recorded, the
+  old behaviour stands and the arm sags where it stopped, which is also what
+  `quackd robot rest-pose <name> --clear` returns you to. An MCP session does the same at both
+  ends and refuses to open at all if it cannot get there, because a client is about to drive a
+  body nobody has established the pose of ([mcp.md](mcp.md)).
+- **The rest move is sent unclipped, so it is the one move that ignores the joint limits.** A
+  folded arm often sits outside the travel its own calibration recorded (the bench arm folded to
+  `shoulder_lift` -113.5 degrees against a calibrated ±84.2), and the refusal that keeps
+  `move_joints` inside those limits would otherwise refuse to put the arm down. Record a pose you
+  are willing to have the arm driven into from wherever a run ends, and watch the first one.
+- **An arm that did not reach that pose keeps torque instead of letting go.** quackd turns
+  LeRobot's flag off for that one case, leaves the arm holding itself up, and prints one line:
+
+  ```
+  the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut its power, or run again
+  ```
+
+  The brackets name the joint furthest from where it was asked to be, what it reads, and why
+  nothing put it there. Do what the line says. The arm is energised, the run is over, and
+  nothing is going to put it down on its own.
+- **A probe and a dry run now leave torque on where they used to drop it.** A dry run never
+  moves the arm and `quackd robot list --probe` never moves it either, so on an arm away from
+  its recorded rest pose both end with torque on: the dry run prints the line above, and the
+  probe says `ok, torque left on: not at its rest pose` in its `reachable` column.
+  `quackd doctor` is the other way round: it drives a probed arm back to the pose and says which
+  it got in a `rest pose` row, because a doctor probe disconnects like anything else, and that
+  is one of the ways the arm fell.
+- **A second Ctrl-C during the end-of-run rest move skips the close entirely.** The move is not
+  shielded from a `KeyboardInterrupt`, so the process exits with `disconnect()` never called,
+  torque never disabled, and the arm holding wherever the move had got to. That is the safe
+  direction and it is not a clean exit: the port closes with the arm still energised, so hold
+  the arm and cut its power.
 - A good first contract is the shipped `lerobot-lookout`, which moves no joint. The order to
   bring one up in, nothing moving until step 10:
   [lerobot-hardware-checklist.md](lerobot-hardware-checklist.md).
@@ -213,7 +271,7 @@ quackd goes quiet" differs per body. Each manifest says so
 | Body | Native authority | What `stop` does | Never sent |
 |---|---|---|---|
 | Microduck (`microduck:*`) | `robotd_deadman`: velocity zeroes when intents stop | `robot.stop` | `robot.relax`, `robot.init` |
-| LeRobot arm (`lerobot:*`) | `torque_limit`: the gripper's torque and current caps and nothing on the five body joints (`extras.torque_limit_scope` is `gripper_only`), plus a capped step per action that quackd sets; no deadman, a position-controlled arm holds its goal | re-sends the present position as the goal (hold) for the five body joints and leaves the gripper's goal alone | `disable_torque` (LeRobot's own `disconnect()` does, by its default, at the end of a session) |
+| LeRobot arm (`lerobot:*`) | `torque_limit`: the gripper's torque and current caps and nothing on the five body joints (`extras.torque_limit_scope` is `gripper_only`), plus a capped step per action that quackd sets; no deadman, a position-controlled arm holds its goal | re-sends the present position as the goal (hold) for the five body joints and leaves the gripper's goal alone. The rest move that follows a run's last `stop` is the only thing that puts the arm down | `disable_torque`. LeRobot's own `disconnect()` still does, by its default, at the end of a session, but only once the arm has been driven back to its recorded rest pose: an arm that did not get there has that default turned off and is left holding itself up, with one line saying so. With no rest pose recorded, the session ends the way it always did and the arm sags |
 | rosbridge base (`rosbridge:*`) | `none`: neither rosbridge nor the driver has a deadman we verified | publishes a zero Twist; quackd also re-sends the Twist at 10 Hz while a verb runs | silence |
 | Open Duck Mini v2 (`open_duck:*`) | `none` in the robot, but quackd's own bridge daemon runs on it and zeroes the velocity after 300 ms of silence, inside the 50 Hz loop | zero velocity, head held, torque still on | anything that reaches torque, the head-control mode button, any direct servo or IMU read |
 | XLeRobot (`xlerobot:*`) | `none`: the host's own 500 ms watchdog is real but calls `stop_base()`, which zeroes the three wheels and **nothing else**, so the 14 arm and head servos keep holding under torque. `deadman_scope` says `base_only` | zeroes the three velocity keys and leaves every arm goal exactly where it was, deliberately not rebuilding a hold from an unstamped reading that may be cycles old | `disconnect()`, which is upstream's torque-off, and any `enable(on=False)` |

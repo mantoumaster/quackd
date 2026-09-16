@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from quackd.adapters.base import go_to_rest_if_any
 from quackd.adapters.factory import RobotSpec, describe, make_adapter
 from quackd.adapters.manifest import RobotManifest
 from quackd.agent.loop import AgentLoop, Outcome, RunConfig, RunResult
@@ -75,7 +76,7 @@ class RosterEntry(Protocol):
     @property
     def memory_key(self) -> str: ...
 
-    def adapter_kwargs(self) -> dict[str, str | None]: ...
+    def adapter_kwargs(self) -> dict[str, Any]: ...
 
 
 Roster = Mapping[str, RosterEntry]
@@ -100,7 +101,7 @@ class SpecEntry:
     def memory_key(self) -> str:
         return self.spec.key
 
-    def adapter_kwargs(self) -> dict[str, str | None]:
+    def adapter_kwargs(self) -> dict[str, Any]:
         return {}
 
 
@@ -364,6 +365,11 @@ async def run_pilot_flock(
             # to connect, or one whose vocabulary refused the contract, is still open here
             with contextlib.suppress(Exception):
                 loop.transcript.close()
+            if not dry_run:
+                # the same window as the close below, for the same reason: a member that died
+                # in the connect never reached the rest move `AgentLoop.run`'s finally does
+                with contextlib.suppress(Exception):
+                    await go_to_rest_if_any(adapters[name])
             with contextlib.suppress(Exception):
                 await adapters[name].close()
             if not master.is_set():

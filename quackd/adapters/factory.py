@@ -9,11 +9,11 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from quackd.adapters.base import AdapterError, RobotAdapter
+from quackd.adapters.base import AdapterError, RobotAdapter, camera_urls
 from quackd.adapters.manifest import RobotManifest
 from quackd.verbs.registry import VerbRegistry, registry_from_manifest
 
@@ -35,7 +35,8 @@ _ADAPTERS: dict[str, tuple[tuple[str, ...], str, str | None, str | None]] = {
     ),
     "lerobot": (
         ("mock", "real"),
-        "✅ built-in: mock · 🧪 real (verified names, never run on an arm; Python 3.12+)",
+        "✅ built-in: mock · ✅ real (one SO-101 driven on 2026-09-15: the lookout, waves, "
+        "the gripper and a webcam; Python 3.12+)",
         "quackd[lerobot]",
         "lerobot",
     ),
@@ -171,9 +172,13 @@ def make_adapter(
     seed: int | None = None,
     address: str | None = None,
     live: bool = False,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
+    rest_pose: Mapping[str, float] | None = None,
 ) -> RobotAdapter:
+    """Build a robot. `camera_url` may name several cameras; every `make()` is handed the
+    tuple and decides whether this body reads more than one (`MULTI_CAMERA_SPECS`), and a
+    `rest_pose` reaches a body that parks or is refused by one that does not."""
     if isinstance(spec, str):
         spec = parse_robot_spec(spec)
     adapter: RobotAdapter = _module(spec.adapter).make(
@@ -182,8 +187,9 @@ def make_adapter(
         seed=seed,
         address=address,
         live=live,
-        camera_url=camera_url,
+        camera_url=camera_urls(camera_url),
         token=token,
+        rest_pose=dict(rest_pose) if rest_pose else None,
     )
     return adapter
 

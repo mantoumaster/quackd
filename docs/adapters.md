@@ -52,8 +52,9 @@ def make(
     seed=None,
     address=None,
     live=False,
-    camera_url=None,
+    camera_url=None,  # one url, a sequence of them, or None
     token=None,
+    rest_pose=None,  # {joint: degrees} read off the body, or None
 ) -> RobotAdapter: ...
 ```
 
@@ -62,6 +63,14 @@ announce` and `doctor` use, so it must never import an SDK. `make()` imports the
 module lazily. Add one row to `_ADAPTERS` in `quackd/adapters/factory.py` (backends,
 status line, the pip extra, the module `doctor` probes by metadata) and the name works
 everywhere `--robot` does.
+
+Two of those keywords arrive in a shape your body may not want, and both have a helper in
+`quackd/adapters/base.py` that answers for you:
+
+| Keyword | What arrives | What you do |
+|---|---|---|
+| `camera_url` | whatever `--camera-url` was given, as a tuple, because the flag repeats | `one_camera_url(camera_url, spec=...)` for a body with one camera: it returns the url or refuses the second with a message naming who takes several. A body that genuinely reads more (today that is `lerobot:real`, and `MULTI_CAMERA_SPECS` is the list) keeps the tuple and implements `get_frames()` |
+| `rest_pose` | degrees per joint, from the registry, for a body that parks | drive to it, or `refuse_rest_pose(name, rest_pose)`, which raises when one is present. Never accept it and ignore it |
 
 ## The manifest decides what exists
 
@@ -112,6 +121,14 @@ postures; `holding` is for grippers), `get_frame()` returns a PIL image or `None
 raises, `heartbeat()` is the watchdog and raises `HeartbeatError`. Copy
 `quackd/adapters/rosbridge/__init__.py` for the smallest complete example.
 
+Two more are optional, and a body without them is the common case. `get_frames()` returns a
+`CameraFrame` per camera with exactly one marked `primary=True`, and only a body that reads
+several needs it: callers ask through `frames_of(transport)`, which falls back to `get_frame()`
+wrapped as a single frame, so one camera and four are read the same way. `go_to_rest()` drives
+the body to the pose it was built with and answers a `RestResult` rather than raising, because
+every caller is a teardown or the first moment of a run and a teardown that raised would cost
+the body its disconnect. A body quackd does not park has neither.
+
 Intents are the whole vocabulary between verbs and backends: `move` (a twist), `look`
 (a gaze point), `sound`, `do` (a named skill, `antennas:wiggle`, `policy:pick:cup`),
 `joint`, `gripper`, `enable`, `pose`, `stop`. A backend answers each with an `Ack`; a
@@ -150,6 +167,13 @@ XLeRobot `disconnect()`: stop means stop, not collapse. This applies to teardown
 `stop`, and upstream's own `disconnect()` is usually where the trap is — four of these robots
 disable torque inside it (three by default, the ToddlerBot always), so `close()` has to stop
 and hold rather than delegate.
+
+The one exception is a body that has been put somewhere it can be let go of. A LeRobot arm
+with a recorded rest pose is driven there first, and only then is upstream's own torque-off
+allowed to happen; an arm that did not reach the pose has that flag turned off and is left
+holding itself up, with one line saying so ([safety.md](safety.md)). That is the shape any
+other body would have to take to earn a `go_to_rest()`: a pose the body holds with the power
+off, checked before anything is released, and a refusal to release when it is not there.
 
 ### If you speak a wire
 
@@ -217,11 +241,24 @@ was exercised against its real target by us. A new adapter arrives 🧪 for its 
 and stays 🧪 until a human runs it on hardware and the transcript says so. Nothing in
 this repository claims a robot moved unless one did.
 
+One backend has been through that. `lerobot:real` drove an SO-101 on 2026-09-15: the lookout
+duck, free-form waves, the gripper and a USB webcam ([lerobot-first-run.md](lerobot-first-run.md)),
+and it is the only body here any of this has been tested against. Every other adapter is still
+🧪 on the backend that reaches its robot, which is the state this page is mostly written for.
+
 ## The checklist
 
 1. `quackd/adapters/<name>/__init__.py` with the manifest (its datasheet included), the
    adapter class and the four functions, and each verb of its own classified in
    `quackd/verdict.py`.
+   - `make()` **accepts a rest pose or refuses it**, never ignores it: the only way one
+     reaches a body that does not park is a hand-edited `robots.json`, and a file that says
+     something untrue names itself rather than being quietly dropped. `refuse_rest_pose()` is
+     the one-liner for a body that does not park.
+   - `make()` calls `one_camera_url()` unless the body genuinely reads several cameras, in
+     which case it keeps the whole tuple, implements `get_frames()`, and gives each frame the
+     name its url asked for, because that name is what the model, a pick policy observation
+     and `frames/NNNN-<name>.png` tell the views apart by.
 2. `mock.py`, and a test that runs every verb through an `Executor` on it.
 3. `upstream_api.py` with pinned links; a row in `tests/test_upstream_api.py`.
 4. The SDK backend, lazily imported, injectable, with a test on fakes and a test that the

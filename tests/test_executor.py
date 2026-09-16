@@ -7,6 +7,7 @@ import contextlib
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from quackd.duckfile.parser import parse_duck_text
 from quackd.duckfile.schema import Budgets, DuckFile
@@ -23,7 +24,7 @@ from quackd.safety import (
     deny_all,
 )
 from quackd.trace import Tracer
-from quackd.transport.base import DuckState, Intent
+from quackd.transport.base import DEFAULT_CAMERA_NAME, CameraFrame, DuckState, Intent
 from quackd.transport.mock import MockTransport
 from quackd.verbs.registry import NoParams, Verb, VerbContext, VerbRegistry, VerbResult
 
@@ -719,3 +720,72 @@ async def test_a_safety_stop_from_another_layer_ends_the_verb_with_its_own_word(
     (end,) = [e for e in seen if e.kind == "verb_end"]
     assert end.data["outcome"] == "preempted"
     assert end.data["summary"] == "role change to kicker"
+
+
+# ── what a verb saw, when the body has more than one lens ───────────────────────────────
+
+
+class _TwoCameras(MockTransport):
+    """A body whose views are called `top` and `side`, with `top` the one bearings come off.
+
+    Injected rather than patched onto the mock: `frames_of` asks a transport for
+    `get_frames`, and a transport that has one is the whole of what makes a body
+    multi-camera.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.top = Image.new("RGB", (8, 8), (200, 60, 30))
+        self.side = Image.new("RGB", (8, 8), (30, 60, 200))
+
+    async def get_frame(self) -> Image.Image:
+        return self.top
+
+    async def get_frames(self) -> list[CameraFrame]:
+        return [CameraFrame("top", self.top, primary=True), CameraFrame("side", self.side)]
+
+
+async def test_observe_hands_the_primary_to_on_frame_and_every_frame_to_on_frames(
+    registry: VerbRegistry,
+) -> None:
+    """Two hooks because a two-camera body has no single picture. Whoever records what the
+    verb saw wants all of them; whoever steers wants the one the detections describe, and a
+    bearing is only meaningful off the lens `--fov-deg` measured, so handing the steering
+    hook whichever view was read last would point it somewhere nobody looked.
+    """
+    transport = _TwoCameras()
+    steered: list[tuple[Any, str]] = []
+    saved: list[tuple[list[str], str]] = []
+    ex = Executor(
+        registry,
+        transport,
+        contract=duck("observe").frontmatter,
+        on_frame=lambda img, caption: steered.append((img, caption)),
+        on_frames=lambda frames, caption: saved.append(([f.name for f in frames], caption)),
+    )
+    result = await ex.run_verb("observe")
+    assert result.ok, result.summary
+    assert steered == [(transport.top, "observe")], "the steering hook gets the primary alone"
+    assert saved == [(["top", "side"], "observe")], "and the recorder gets both, primary first"
+    assert result.summary == "frames captured from top, side; nothing detected"
+    assert result.data["cameras"] == ["top", "side"]
+
+
+async def test_a_single_camera_observe_says_exactly_what_it_said_before_there_were_several(
+    registry: VerbRegistry, mock_transport: MockTransport
+) -> None:
+    """The one-camera wording is what every pilot, every transcript and every golden line
+    has read since 0.1, and a body with one lens is still almost every body. No camera name
+    in the summary and no `cameras` key in the payload: the default name exists so the code
+    has one to carry, and is never spoken to a model."""
+    saved: list[list[str]] = []
+    ex = Executor(
+        registry,
+        mock_transport,
+        contract=duck("observe").frontmatter,
+        on_frames=lambda frames, _caption: saved.append([f.name for f in frames]),
+    )
+    result = await ex.run_verb("observe")
+    assert result.summary == "frame captured; nothing detected"
+    assert "cameras" not in result.data
+    assert saved == [[DEFAULT_CAMERA_NAME]]

@@ -13,10 +13,15 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from quackd.adapters.lerobot.mock import REST
 from quackd.cli import app
 from quackd.registry import Registry, RobotEntry, StoredFlock
 
 runner = CliRunner()
+
+FOLDED_LIFT = -113.5
+"""The bench arm's folded `shoulder_lift`, kept here so a stored pose in a test is a pose a
+real arm was actually left in rather than a round number."""
 
 
 def _reg(tmp_path: Path) -> list[str]:
@@ -27,6 +32,13 @@ def _seed(tmp_path: Path, **kw: object) -> Registry:
     registry = Registry(tmp_path)
     registry.add_robot(RobotEntry(name="duck-a", spec="microduck:mock", **kw))  # type: ignore[arg-type]
     registry.add_robot(RobotEntry(name="arm", spec="lerobot:mock"))
+    return registry
+
+
+def _seed_arm(tmp_path: Path, **kw: object) -> Registry:
+    """An arm on its own: `lerobot` is the one body quackd drives to a rest pose."""
+    registry = Registry(tmp_path)
+    registry.add_robot(RobotEntry(name="arm-01", spec="lerobot:mock", **kw))  # type: ignore[arg-type]
     return registry
 
 
@@ -83,6 +95,7 @@ def test_an_empty_registry_says_how_to_fill_it(tmp_path: Path) -> None:
         (["robot", "show", "ghost"], "no robot called 'ghost'"),
         (["robot", "edit", "ghost", "--note", "x"], "no robot called 'ghost'"),
         (["robot", "remove", "ghost", "--yes"], "no robot called 'ghost'"),
+        (["robot", "rest-pose", "ghost", "--yes"], "no robot called 'ghost'"),
     ],
 )
 def test_a_refusal_is_one_line_and_never_a_traceback(
@@ -119,6 +132,203 @@ def test_clear_empties_a_field(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     entry = Registry(tmp_path).robot("duck-a")
     assert entry.note is None and entry.address == "tcp://x:1"
+
+
+# ── the rest pose ───────────────────────────────────────────────────────────────────────
+
+
+def test_rest_pose_records_the_arms_own_joints_and_show_prints_them(tmp_path: Path) -> None:
+    """A LeRobot arm goes limp the moment it is disconnected, so an arm still standing when a
+    run ends falls. The pose is read off the arm rather than typed, because the only pose worth
+    returning to is one somebody folded the arm into by hand and watched it hold with torque
+    off, and `show` prints every joint because that is how you check you recorded that one."""
+    _seed_arm(tmp_path)
+    recorded = runner.invoke(app, ["robot", "rest-pose", "arm-01", "--yes", *_reg(tmp_path)])
+    assert recorded.exit_code == 0, recorded.output
+    assert "recorded arm-01's rest pose" in recorded.output
+    assert Registry(tmp_path).robot("arm-01").rest_pose == {
+        joint: round(value, 1) for joint, value in REST.items()
+    }, "the stored pose is where the arm was, rounded to a tenth of a degree"
+
+    shown = runner.invoke(app, ["robot", "show", "arm-01", *_reg(tmp_path)])
+    assert shown.exit_code == 0, shown.output
+    flat = " ".join(shown.output.split())
+    assert "rest pose shoulder_pan 0.0" in flat, flat
+    assert "shoulder_lift -90.0" in flat, flat
+
+    as_json = runner.invoke(app, ["robot", "show", "arm-01", "--json", *_reg(tmp_path)])
+    assert as_json.exit_code == 0, as_json.output
+    assert json.loads(as_json.output.strip())["rest_pose"]["shoulder_lift"] == -90.0
+
+
+def test_rest_pose_asks_unless_yes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_arm(tmp_path)
+    monkeypatch.setattr("quackd.cli._can_prompt", lambda: True)
+    said_no = runner.invoke(app, ["robot", "rest-pose", "arm-01", *_reg(tmp_path)], input="n\n")
+    assert said_no.exit_code == 0, said_no.output
+    assert Registry(tmp_path).robot("arm-01").rest_pose is None, "answering no records nothing"
+    said_yes = runner.invoke(app, ["robot", "rest-pose", "arm-01", *_reg(tmp_path)], input="y\n")
+    assert said_yes.exit_code == 0, said_yes.output
+    assert Registry(tmp_path).robot("arm-01").rest_pose is not None
+
+
+def test_rest_pose_refuses_a_body_with_no_joints(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    result = runner.invoke(app, ["robot", "rest-pose", "duck-a", *_reg(tmp_path)])
+    assert result.exit_code == 1, result.output
+    assert "has no joints" in " ".join(result.output.split())
+    assert "Traceback" not in result.output
+
+
+def test_rest_pose_refuses_a_body_with_joints_quackd_does_not_park(tmp_path: Path) -> None:
+    """The XLeRobot lists a `joint` intent, so the joints gate lets it straight through. The
+    second gate, on the adapter itself, is what stops a pose being recorded for a body no code
+    would ever drive back to it, which would be a promise the arm keeps and this one does not."""
+    registry = Registry(tmp_path)
+    registry.add_robot(RobotEntry(name="xarm", spec="xlerobot:mock"))
+    result = runner.invoke(app, ["robot", "rest-pose", "xarm", *_reg(tmp_path)])
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "does not drive it to a rest pose yet" in flat, flat
+    assert "has no joints" not in flat, "the joints gate is not the one that refused this body"
+    assert Registry(tmp_path).robot("xarm").rest_pose is None
+
+
+def test_rest_pose_clear_forgets_it_and_says_so_when_there_is_none(tmp_path: Path) -> None:
+    _seed_arm(tmp_path, rest_pose={"shoulder_lift": FOLDED_LIFT})
+    cleared = runner.invoke(app, ["robot", "rest-pose", "arm-01", "--clear", *_reg(tmp_path)])
+    assert cleared.exit_code == 0, cleared.output
+    assert "cleared arm-01's rest pose" in cleared.output
+    assert Registry(tmp_path).robot("arm-01").rest_pose is None
+
+    again = runner.invoke(app, ["robot", "rest-pose", "arm-01", "--clear", *_reg(tmp_path)])
+    assert again.exit_code == 1, again.output
+    assert "has no rest pose recorded" in " ".join(again.output.split())
+
+
+def test_rest_pose_json_without_yes_is_refused(tmp_path: Path) -> None:
+    """`--json` is for a script, and a script has no answer for a prompt. The pair is refused
+    before anything connects, so the arm is not read and then abandoned at the prompt."""
+    _seed_arm(tmp_path)
+    result = runner.invoke(app, ["robot", "rest-pose", "arm-01", "--json", *_reg(tmp_path)])
+    assert result.exit_code == 1, result.output
+    assert "--json is for a script" in " ".join(result.output.split())
+    assert Registry(tmp_path).robot("arm-01").rest_pose is None
+
+
+def test_rest_pose_with_no_terminal_to_ask_on_refuses_rather_than_recording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing on stdin is an answer when there is nobody at the terminal: a `y` in a pipe is
+    whatever the pipe happened to hold, and recording the wrong pose is how an arm is driven
+    into the table on the next run. The refusal names `--yes`, which is the real answer."""
+    _seed_arm(tmp_path)
+    monkeypatch.setattr("quackd.cli._can_prompt", lambda: False)
+    result = runner.invoke(app, ["robot", "rest-pose", "arm-01", *_reg(tmp_path)], input="y\n")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "no terminal to ask on" in flat, flat
+    assert "--yes" in flat, flat
+    assert Registry(tmp_path).robot("arm-01").rest_pose is None
+
+
+def test_edit_clear_rest_pose_empties_it(tmp_path: Path) -> None:
+    _seed_arm(tmp_path, rest_pose={"shoulder_lift": FOLDED_LIFT}, note="the bench arm")
+    result = runner.invoke(
+        app, ["robot", "edit", "arm-01", "--clear", "rest-pose", *_reg(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "updated arm-01: rest-pose" in result.output
+    entry = Registry(tmp_path).robot("arm-01")
+    assert entry.rest_pose is None
+    assert entry.note == "the bench arm", "clearing one field leaves the others alone"
+
+
+# ── several cameras ─────────────────────────────────────────────────────────────────────
+
+
+def test_camera_url_repeats_and_show_prints_every_camera(tmp_path: Path) -> None:
+    """The first url is the primary, the camera the detections describe and the steering verbs
+    read, so the pair is an ordered list and not a set. One camera is still stored as a bare
+    string, which is why a robots.json written before an arm could have two still loads."""
+    added = runner.invoke(
+        app,
+        [
+            "robot",
+            "add",
+            "arm-real",
+            "lerobot:real",
+            "--camera-url",
+            "opencv://0?name=top",
+            "--camera-url",
+            "opencv://1?name=side",
+            *_reg(tmp_path),
+        ],
+    )
+    assert added.exit_code == 0, added.output
+    entry = Registry(tmp_path).robot("arm-real")
+    assert entry.camera_url == ["opencv://0?name=top", "opencv://1?name=side"]
+    assert entry.camera_urls == ("opencv://0?name=top", "opencv://1?name=side")
+
+    shown = runner.invoke(app, ["robot", "show", "arm-real", *_reg(tmp_path)])
+    assert shown.exit_code == 0, shown.output
+    flat = " ".join(shown.output.split())
+    assert "camera opencv://0?name=top opencv://1?name=side" in flat, flat
+
+    as_json = runner.invoke(app, ["robot", "show", "arm-real", "--json", *_reg(tmp_path)])
+    assert as_json.exit_code == 0, as_json.output
+    assert json.loads(as_json.output.strip())["camera_url"] == [
+        "opencv://0?name=top",
+        "opencv://1?name=side",
+    ], "--json carries the list, in the order the cameras were given"
+
+
+def test_one_camera_url_on_edit_replaces_the_pair_and_clear_empties_it(tmp_path: Path) -> None:
+    """`--camera-url` on an edit says where the cameras are today, which is the rule `--address`
+    already follows: it replaces the whole stored set rather than adding a third camera to it."""
+    registry = Registry(tmp_path)
+    registry.add_robot(
+        RobotEntry(
+            name="arm-real",
+            spec="lerobot:real",
+            camera_url=["opencv://0?name=top", "opencv://1?name=side"],
+        )
+    )
+    edited = runner.invoke(
+        app, ["robot", "edit", "arm-real", "--camera-url", "opencv://2", *_reg(tmp_path)]
+    )
+    assert edited.exit_code == 0, edited.output
+    replaced = Registry(tmp_path).robot("arm-real")
+    assert replaced.camera_urls == ("opencv://2",)
+    assert replaced.camera_url == "opencv://2", "one camera goes back to being a plain string"
+
+    cleared = runner.invoke(
+        app, ["robot", "edit", "arm-real", "--clear", "camera-url", *_reg(tmp_path)]
+    )
+    assert cleared.exit_code == 0, cleared.output
+    emptied = Registry(tmp_path).robot("arm-real")
+    assert emptied.camera_url is None and emptied.camera_urls == ()
+
+
+def test_a_body_that_reads_one_camera_refuses_a_second(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "robot",
+            "add",
+            "duck-a",
+            "microduck:mock",
+            "--camera-url",
+            "http://one:9872/snapshot.jpg",
+            "--camera-url",
+            "http://two:9872/snapshot.jpg",
+            *_reg(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "only lerobot:real takes several" in flat, flat
+    assert Registry(tmp_path).get_robot("duck-a") is None
 
 
 # ── flocks hold on to their robots ──────────────────────────────────────────────────────
@@ -363,7 +573,7 @@ def test_an_unknown_bare_name_names_both_things_it_could_have_been(tmp_path: Pat
     assert "unknown adapter 'ghost'" in result.output, "the adapter's own words still show"
 
 
-@pytest.mark.parametrize("command", ["add", "list", "show", "edit", "remove"])
+@pytest.mark.parametrize("command", ["add", "list", "show", "edit", "remove", "rest-pose"])
 def test_every_robot_command_answers_help(command: str) -> None:
     result = runner.invoke(app, ["robot", command, "--help"])
     assert result.exit_code == 0, result.output

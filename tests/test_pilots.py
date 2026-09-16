@@ -458,3 +458,71 @@ async def test_a_cancelled_flock_records_every_member_rather_than_crashing(
     assert summary["outcome"] == "aborted"
     assert set(summary["per_member"]) == set(roster)
     assert all(m["outcome"] == "aborted" for m in summary["per_member"].values())
+
+
+# ── the rest pose ───────────────────────────────────────────────────────────────────────
+
+ARM_REST = {
+    "shoulder_pan": 12.0,
+    "shoulder_lift": -80.0,
+    "elbow_flex": 78.0,
+    "wrist_flex": 6.0,
+    "wrist_roll": 0.0,
+}
+
+
+def _built(monkeypatch: pytest.MonkeyPatch, member: str, **kwargs: Any) -> dict[str, Any]:
+    """Keep every adapter a run builds, and hand `member`'s `make()` some extra kwargs.
+
+    The same seam the connect failure above uses: `run_pilot_flock` builds its adapters
+    itself, from a roster that carries no rest pose, so this is where one is put on one
+    member's body and where the object is caught to read afterwards."""
+    from quackd.adapters import factory
+
+    real = factory.make_adapter
+    built: dict[str, Any] = {}
+
+    def capture(spec: Any, **kw: Any) -> Any:
+        built[spec.name] = real(spec, **(kw | kwargs)) if spec.name == member else real(spec, **kw)
+        return built[spec.name]
+
+    monkeypatch.setattr("quackd.flock.pilots.make_adapter", capture)
+    return built
+
+
+async def test_a_member_with_a_rest_pose_is_put_down_before_its_torque_is_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A LeRobot arm goes limp the moment it is disconnected, so a member that ended with
+    its arm in the air dropped it on the table. The move belongs between the stop, which
+    holds the arm where it is, and the close, which is what lets go: that window is the only
+    one in which putting the arm down changes whether it falls.
+
+    Each member tears itself down, so this has to hold for every one of them and not only
+    for a solo run."""
+    built = _built(monkeypatch, "arm", rest_pose=ARM_REST)
+    result = await _run(tmp_path)
+    assert result.outcome == "success", result.reason
+
+    arm = built["arm"].transport
+    # the first `rest` is the start of the run, so a member acts from the same arm every
+    # time; the second is the teardown, in the window the docstring names
+    assert arm.sequence == ["rest", "stop", "rest", "close"], arm.sequence
+    assert arm.actions == [dict(ARM_REST)], "one move, and it really went there"
+    assert arm.torque is False, "an arm at its rest pose may be let go of"
+    assert arm.close_note is None, "so there is nothing to warn about"
+
+
+async def test_a_dry_run_never_moves_the_arm_to_its_rest_pose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--dry-run` promises that nothing reaches the body. The rest move is sent outside the
+    executor, which is where the dry-run gate lives, so it has to refuse for itself."""
+    built = _built(monkeypatch, "arm", rest_pose=ARM_REST)
+    result = await _run(tmp_path, dry_run=True)
+    assert result.outcome == "success", result.reason
+
+    arm = built["arm"].transport
+    assert "rest" not in arm.sequence, arm.sequence
+    assert arm.actions == [], "nothing was driven anywhere"
+    assert arm.joints["shoulder_lift"] == -90.0, "still where the mock was built"

@@ -8,9 +8,14 @@ it produced). Each provider renders that into its wire format and returns one
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
+
+CAMERA_LABEL = "camera {name}:"
+"""How a picture is introduced when a body has several. Short on purpose: it sits in front
+of every frame of every step, and the observation text already says which is the primary."""
 
 
 class ToolCall(BaseModel):
@@ -40,18 +45,52 @@ class Usage(BaseModel):
         )
 
 
+class NamedPng(BaseModel):
+    """One camera's picture, and which camera took it.
+
+    The name is only ever spoken to a model when a body has more than one camera: a pilot
+    told its single view is called `front` would start naming it in sentences nobody needs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    png: bytes
+
+
 class Observation(BaseModel):
-    """What the LLM sees this turn: text, optionally an image, optionally structured features
+    """What the LLM sees this turn: text, a picture per camera, optionally structured features
     (used by the fake provider and by tests, never rendered to a real model)."""
 
     model_config = ConfigDict(extra="forbid")
 
     text: str
-    image_png: bytes | None = None
+    images: list[NamedPng] = Field(default_factory=list)
+    """One per camera that gave a frame this step, the primary first. Empty when the body has
+    no camera, when the camera gave nothing, or when the model cannot see."""
     features: dict[str, Any] = Field(default_factory=dict)
     tool_call_id: str | None = Field(
         default=None, description="Set when this is the result of a tool call."
     )
+
+
+def labelled(
+    images: Sequence[NamedPng],
+    image_part: Callable[[bytes], Any],
+    text_part: Callable[[str], Any],
+) -> list[Any]:
+    """A turn's pictures as wire parts, in order, labelled only when there are several.
+
+    With one image this is the single part every provider sent back when a body could only
+    have one camera, so a one-camera request goes out unchanged. With several, each picture
+    is preceded by a text part naming its camera: two unlabelled images in one message are
+    two views of a room with nothing to say which is which."""
+    if len(images) == 1:
+        return [image_part(images[0].png)]
+    parts: list[Any] = []
+    for image in images:
+        parts.append(text_part(CAMERA_LABEL.format(name=image.name)))
+        parts.append(image_part(image.png))
+    return parts
 
 
 class Decision(BaseModel):

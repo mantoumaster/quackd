@@ -35,12 +35,13 @@ quackd robot add NAME <adapter>[:<backend>]   # register one
 quackd robot list [--probe]                   # what is registered, and optionally who answers
 quackd robot show NAME                        # everything about one, including what it remembers
 quackd robot edit NAME [--field X] [--clear F] # change it
+quackd robot rest-pose NAME [--clear]         # read where this arm rests, off the arm
 quackd robot remove NAME [--force]            # forget it
 ```
 
 `add` takes `--address`, `--camera-url` and `--token` (the same three flags `run` takes), plus
 `--provider` and `--model` for the pilot that drives this robot, and `--note` for a line only
-people read.
+people read. `--camera-url` repeats, for the one body that reads more than one camera.
 
 ```
 $ quackd robot add duck-a microduck:mock --note "the cream one"
@@ -65,22 +66,142 @@ A column nobody has filled is left out, so the table stays readable on a narrow 
 
 ```
 $ quackd robot show arm
-name     arm
-robot    lerobot:mock
-body     lerobot-so101 (arm, mobility none) 7 verbs: observe, report_state, stop,
-         move_joints, gripper, place, pick
-address  -
-camera   -
-token    -
-pilot    fake
-note     -
-flocks   -
-added    2026-09-13T13:10:53Z
-updated  2026-09-13T13:10:53Z
-memory   0 notes, 0 runs  ~/.quackd/memory/arm.jsonl
+name       arm
+robot      lerobot:mock
+body       lerobot-so101 (arm, mobility none) 7 verbs: observe, report_state, stop,
+           move_joints, gripper, place, pick
+address    -
+camera     -
+rest pose  shoulder_pan 0.0
+           shoulder_lift -90.0
+           elbow_flex 90.0
+           wrist_flex 0.0
+           wrist_roll 0.0
+           gripper 100.0
+token      -
+pilot      fake
+note       -
+flocks     -
+added      2026-09-13T13:10:53Z
+updated    2026-09-13T13:10:53Z
+memory     0 notes, 0 runs  ~/.quackd/memory/arm.jsonl
 ```
 
-`body` is the robot's static manifest, read without connecting to anything.
+`body` is the robot's static manifest, read without connecting to anything. `rest pose` is the
+one field here that was measured rather than typed, and the section below is what it is for.
+`--json` is the same record for a script, with the token reduced to whether there is one:
+
+```
+$ quackd robot show arm --json
+{"name": "arm", "spec": "lerobot:mock", "adapter": "lerobot", "backend": "mock", "address": null,
+"camera_url": null, "rest_pose": {"shoulder_pan": 0.0, "shoulder_lift": -90.0, "elbow_flex": 90.0,
+"wrist_flex": 0.0, "wrist_roll": 0.0, "gripper": 100.0}, "token_set": false, "provider": "fake",
+"model": null, "note": null, "added": "2026-09-13T13:10:53Z", "updated": "2026-09-13T13:10:53Z",
+"flocks": []}
+```
+
+That is one line of output, wrapped here to fit the page.
+
+## Several cameras
+
+`--camera-url` can be given more than once, on `add`, on `edit` and on a run:
+
+```
+$ quackd robot add arm-01 lerobot:real --address COM5 \
+    --camera-url "opencv://1?name=top" --camera-url "opencv://2?name=side"
++ added arm-01: lerobot:real at COM5
+  quackd run <duck> --robot arm-01
+```
+
+```
+$ quackd robot show arm-01     # the camera rows
+camera     opencv://1?name=top
+           opencv://2?name=side
+```
+
+Order is kept, and the first is the primary: the camera `--fov-deg` describes, the one the
+detections line reports, and the only one the verbs that steer by sight read. Every frame still
+reaches a provider that takes images, each labelled with its camera's name, which is also what
+`frames/NNNN-<name>.png` in the run directory is named by.
+
+Only the LeRobot arm reads several. Every other body refuses a second one where it is
+registered, rather than opening the first and dropping the rest:
+
+```
+$ quackd robot add duck-a microduck:mock --camera-url a --camera-url b
+x error: microduck:mock takes one camera url; only lerobot:real takes several
+```
+
+The rules the urls themselves keep, a `?name=` on each, unique names and no index used twice,
+are the arm's and are in [adapters/lerobot.md](adapters/lerobot.md): the registry stores what
+you gave it and the arm refuses at connect. A second camera also costs what a second camera
+costs: the last two exchanges keep their images, so a two-camera run carries four pictures in
+every request where a one-camera run carries two.
+
+## The rest pose
+
+A LeRobot arm goes limp the moment it is disconnected, because LeRobot's own `disconnect()`
+disables torque by its default and quackd keeps that default. On the bench that meant the arm
+fell at the end of every run, and every run started from wherever the last one had left it. A
+rest pose answers both: one pose, kept under the robot's name, that a run drives the arm to
+before the pilot gets control and returns it to before torque is released.
+
+It is **read off the arm, never typed.** Nothing is connected while you set it up, so the arm
+is limp. Fold it by hand into a pose it holds with the power off, then record where it ended
+up:
+
+```
+$ quackd robot rest-pose arm --yes
+arm (lerobot:mock) is at
+shoulder_pan   0.0
+shoulder_lift  -90.0
+elbow_flex     90.0
+wrist_flex     0.0
+wrist_roll     0.0
+gripper        100.0
++ recorded arm's rest pose (6 joints)
+  quackd run <duck> --robot arm starts from it and returns to it before letting go
+```
+
+Those joints are the mock arm's; a real SO-101 reports its own. Without `--yes` the same
+readings are printed and the command asks before writing them, and where there is no terminal
+to ask on it says so instead of guessing. `--address` reaches an arm the registry has no
+address for yet. There is no flag that takes a pose as numbers, because a pose nobody watched
+the arm hold is a pose that may not hold.
+
+`--clear` forgets it, and `quackd robot edit NAME --clear rest-pose` is the same thing by the
+other door:
+
+```
+$ quackd robot rest-pose arm --clear
++ cleared arm's rest pose
+  a run now leaves the arm where it stands, and torque drops there
+```
+
+Only the LeRobot arm is parked today, and a body that cannot hold a pose refuses to keep one
+rather than keeping it and ignoring it:
+
+```
+$ quackd robot rest-pose duck --yes
+x error: duck (microduck:mock) has no joints, so there is no rest pose to record
+  a rest pose is for an arm: quackd list-adapters
+
+$ quackd robot rest-pose cart --yes
+x error: cart (xlerobot:mock) has joints, and quackd does not drive it to a rest pose yet: only the
+LeRobot arm does today
+```
+
+What a recorded pose then changes is [safety.md](safety.md): a run drives the arm to it before
+the pilot gets control and back to it on every exit path there is, an MCP session does the same
+at both ends and refuses to start if it cannot get there, and `quackd doctor` returns the arm
+it probed. The arm's own side of it, including why the pose is sent unclipped, is
+[adapters/lerobot.md](adapters/lerobot.md).
+
+> [!WARNING]
+> No rest pose has ever been recorded off a real arm. The SO-101 that ran on 2026-09-15 fell
+> at the end of every run, which is the reason this exists, and the rest pose landed the day
+> after ([lerobot-first-run.md](lerobot-first-run.md)). Every joint value on this page is a
+> mock's.
 
 ## Probing
 
@@ -103,7 +224,15 @@ on it. `--timeout` is per robot and they are probed at once. `microduck:mujoco` 
 connecting to it downloads a model, which is not a liveness check. Every backend named `mock`
 always answers, which is what the rows above are.
 
-Nothing here has been pointed at hardware.
+A probe reads and lets go: it never drives an arm to its rest pose. So an arm that is not at
+that pose ends a probe holding itself up rather than sagging, and the same row says so: `+ ok,
+torque left on: not at its rest pose`. `quackd doctor` is the other way round and parks the arm
+it probed ([safety.md](safety.md)).
+
+No registered robot has been probed on hardware. The one real robot quackd has driven, the
+SO-101 arm of 2026-09-15, was reached as `--robot lerobot:real --address COM5` on the command
+line, before it had a name here at all ([lerobot-first-run.md](lerobot-first-run.md)). A name,
+a probe and a stored camera are still mock-only.
 
 ## Names
 
@@ -137,6 +266,14 @@ microduck:mock` is a spec, and a bare word that is neither says so in one line.
       "address": null,
       "token": null,
       "camera_url": null,
+      "rest_pose": {
+        "shoulder_pan": 0.0,
+        "shoulder_lift": -90.0,
+        "elbow_flex": 90.0,
+        "wrist_flex": 0.0,
+        "wrist_roll": 0.0,
+        "gripper": 100.0
+      },
       "provider": "fake",
       "model": null,
       "note": null,
@@ -146,6 +283,17 @@ microduck:mock` is a spec, and a bare word that is neither says so in one line.
   }
 }
 ```
+
+Two of those fields carry more than one shape:
+
+| Field | Shape |
+|---|---|
+| `camera_url` | `null`, one url as a string, or several as a list in the order given, the first being the primary. One camera is stored as a string, so a `robots.json` written by 0.9 reads back unchanged |
+| `rest_pose` | `null`, or degrees per joint as `quackd robot rest-pose` read them off the arm. `null` on every body quackd does not park, which is every body but the LeRobot arm |
+
+A file that says something untrue names itself rather than being trimmed to fit: two camera
+urls under a body that reads one are refused when the file is read, and a rest pose under a
+body that does not park is refused when that robot is built.
 
 It is a file you can open. Each write goes to a temporary file renamed over the old one, so a
 reader never sees half of it, and nothing is serialised: two commands writing at the same
@@ -176,7 +324,13 @@ wins, and so does `--model`.
 
 **Endpoints come from it.** `--address`, `--token` and `--camera-url` on the line each override
 the stored one, field by field, because reaching the same robot through a tunnel today is not
-renaming it.
+renaming it. `--camera-url` overrides as a set rather than one url at a time: pass it twice and
+the two you passed are the cameras for that run, stored ones included.
+
+**The rest pose does not.** There is no flag for it on `run`, `doctor` or `serve-mcp`. The
+other three are addresses, and an address is a route to the same robot; a rest pose is a
+measurement of the arm in front of you, so it changes by being recorded again or cleared
+(`quackd robot rest-pose NAME`), never by a number typed on a command line.
 
 ## Flocks
 
@@ -273,4 +427,6 @@ there on purpose going missing is not a detail.
 - [flock.md](flock.md) for what happens when a flock runs
 - [memory.md](memory.md) for what each robot remembers between runs
 - [mcp.md](mcp.md) for `quackd serve-mcp --robot NAME`
+- [safety.md](safety.md) for what a recorded rest pose does at the end of a run, and what
+  happens when the arm cannot reach it
 - [ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md) for why any of this exists

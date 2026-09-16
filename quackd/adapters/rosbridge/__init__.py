@@ -15,11 +15,12 @@ payload above all, stays unknown, and `introspect` asks again (ADR-0032).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 from PIL import Image
 
+from quackd.adapters.base import RestResult, one_camera_url, refuse_rest_pose
 from quackd.adapters.manifest import (
     Datasheet,
     Frame,
@@ -199,6 +200,11 @@ class RosbridgeAdapter:
     async def stop(self) -> None:
         await self.transport.stop()
 
+    async def go_to_rest(self) -> RestResult:
+        """A wheeled base holds no pose: this adapter commands a velocity, so zeroing it in
+        `stop()` is the whole of coming to rest and there is nothing further to drive to."""
+        return RestResult.none()
+
     def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:
         return self.transport.subscribe(topic)
 
@@ -261,9 +267,15 @@ def make(
     seed: int | None = None,
     address: str | None = None,
     live: bool = False,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
+    rest_pose: dict[str, float] | None = None,
 ) -> RosbridgeAdapter:
+    refuse_rest_pose("rosbridge", rest_pose)
+    # The image topic arrives in --address, so the url itself has nowhere to go here. It is
+    # still collapsed, because a second camera is a body this adapter cannot drive and saying
+    # so beats opening the first and dropping the rest without a word.
+    _url = one_camera_url(camera_url, spec=f"rosbridge:{backend}")
     if backend == "mock":
         from quackd.adapters.rosbridge.mock import RosbridgeMock
 

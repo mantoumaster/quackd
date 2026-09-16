@@ -1,4 +1,10 @@
-"""EXPERIMENTAL: a real arm through LeRobot. Verified names, never run on an arm.
+"""A real arm through LeRobot. Every name verified at a pin, and driven on one arm.
+
+One SO-101 ran this backend on 2026-09-15 (lerobot 0.6.1, Windows 11, Python 3.12.12):
+connect, `get_observation`, `send_action`, the two register reads and `disconnect` all
+behaved as the rows in `upstream_api.py` say. The arm fell at the end of every one of those
+runs, which is why `close()` now returns it to a recorded rest pose first and keeps torque
+on when it could not get there.
 
 Every LeRobot name comes from `upstream_api.py` (ADR-0022). LeRobot is synchronous, so
 every call runs in a worker thread under one lock with a deadline, and a call that blows its
@@ -32,7 +38,7 @@ import os
 import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
@@ -40,12 +46,31 @@ from urllib.parse import parse_qs, urlsplit
 import numpy as np
 from PIL import Image
 
-from quackd.adapters.base import AdapterError, AdapterNotInstalled
+from quackd.adapters.base import AdapterError, AdapterNotInstalled, RestResult
 from quackd.adapters.lerobot import upstream_api as up
-from quackd.adapters.lerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN, JOINTS
-from quackd.transport.base import Ack, DuckState, HeartbeatError, Intent, TransportError
+from quackd.adapters.lerobot.verbs import (
+    GRIPPER_CLOSED,
+    GRIPPER_OPEN,
+    JOINTS,
+    STALL_DEG,
+    STALL_TICKS,
+    TICK_S,
+    TORQUE_LEFT_ON,
+    at_rest,
+    rest_budget_s,
+    rest_goal,
+    shortfall,
+)
+from quackd.transport.base import (
+    Ack,
+    CameraFrame,
+    DuckState,
+    HeartbeatError,
+    Intent,
+    TransportError,
+)
 
-STATUS = "EXPERIMENTAL: LeRobot names verified at a pinned commit, never run against an arm"
+STATUS = "LeRobot names verified at a pinned commit; one SO-101 driven on 2026-09-15"
 POLICY_HZ = 10.0
 
 MAX_STEP_DEG = 5.0
@@ -107,6 +132,9 @@ class CameraSpec:
     backend: str
     rotation: int
     fov_deg: float | None
+    name_given: bool = False
+    """The url said `?name=`. With several cameras it must, because the name is the only
+    thing telling two views apart; with one it may, and `front` is the default."""
 
 
 def _camera_int(key: str, raw: str, url: str) -> int:
@@ -155,7 +183,8 @@ def parse_camera_url(url: str) -> CameraSpec:
         values = query.get(key)
         return values[-1].strip() if values else None
 
-    name = one("name") or CAMERA_NAME
+    given = one("name")
+    name = given or CAMERA_NAME
     if not name.replace("_", "").replace("-", "").isalnum():
         raise _camera_refusal(f"name={name!r} is not a plain name", url)
     fourcc = one("fourcc")
@@ -198,7 +227,46 @@ def parse_camera_url(url: str) -> CameraSpec:
         backend=backend,
         rotation=rotation,
         fov_deg=fov_deg,
+        name_given=given is not None,
     )
+
+
+def parse_camera_urls(urls: Sequence[str]) -> tuple[CameraSpec, ...]:
+    """Every `--camera-url` this arm was given, in order. The first is the primary.
+
+    With one camera this is `parse_camera_url` and nothing more. With several, each url has
+    to name its own camera and the names have to differ, because the name is what the model
+    reading two pictures, a policy's observation dict and `frames/NNNN-<name>.png` all tell
+    them apart by. An index may only appear once: two handles on one webcam is not two
+    views, it is a camera that will not open twice."""
+    specs = tuple(parse_camera_url(url) for url in urls)
+    if len(specs) < 2:
+        return specs
+    by_name: dict[str, CameraSpec] = {}
+    by_index: dict[int | str, CameraSpec] = {}
+    for spec in specs:
+        if not spec.name_given:
+            raise _camera_refusal(
+                f"it has no ?name= and {len(specs)} cameras were given. With several, every "
+                "url names its own camera, opencv://1?name=top --camera-url "
+                "opencv://2?name=side, because the name is what the model, a pick policy "
+                "and frames/NNNN-<name>.png tell them apart by",
+                spec.url,
+            )
+        if (clash := by_name.get(spec.name)) is not None:
+            raise _camera_refusal(
+                f"name={spec.name!r} is already the name of {clash.url!r}. With several "
+                "cameras every name is its own",
+                spec.url,
+            )
+        if (same := by_index.get(spec.index_or_path)) is not None:
+            raise _camera_refusal(
+                f"{spec.index_or_path} is already {same.url!r}. One url per camera",
+                spec.url,
+            )
+        by_name[spec.name] = spec
+        by_index[spec.index_or_path] = spec
+    return specs
 
 
 def step_from_env(default: float = MAX_STEP_DEG) -> float:
@@ -272,6 +340,9 @@ class LeRobotReal:
         max_step_deg: float = MAX_STEP_DEG,
         camera: CameraSpec | None = None,
         camera_object: Any = None,
+        cameras: Sequence[CameraSpec] = (),
+        camera_objects: Mapping[str, Any] | None = None,
+        rest_pose: dict[str, float] | None = None,
     ) -> None:
         self.port = address or ""
         self.robot_type = robot_type
@@ -279,10 +350,23 @@ class LeRobotReal:
         self.timeout_s = timeout_s
         self.max_step_deg = max_step_deg
         self._robot: Any = robot  # injected in tests; built in connect() otherwise
-        self.camera_spec = camera
+        self.camera_specs: tuple[CameraSpec, ...] = (
+            tuple(cameras) if cameras else ((camera,) if camera is not None else ())
+        )
         self.camera_connect_s = CAMERA_CONNECT_S
         self.camera_close_s = CAMERA_CLOSE_S
-        self._camera: Any = camera_object  # injected in tests; built in connect() otherwise
+        # name -> camera object, in the order the urls were given. Injected in tests; built
+        # in connect() otherwise.
+        self._cameras: dict[str, Any] = dict(camera_objects or {})
+        if camera_object is not None:
+            self._cameras.setdefault(self._primary_name(), camera_object)
+        self.rest_pose = dict(rest_pose) if rest_pose else None
+        """Where this arm rests, recorded off the arm by `quackd robot rest-pose`. The five
+        body joints are what is ever driven; the gripper is kept for the record only."""
+        self._rest_result: RestResult | None = None
+        self.close_note: str | None = None
+        """Set by `close()` when it left torque on. Said by whichever caller closed the arm,
+        because a library that prints has picked one terminal and quackd has four callers."""
         self._policy = policy
         self._lock = asyncio.Lock()
         self._closed = False
@@ -301,12 +385,27 @@ class LeRobotReal:
         self.joint_range_deg: dict[str, tuple[float, float]] = {}
         self.calibration_file: str | None = None
         self.camera_keys: tuple[str, ...] = ()
-        self.camera_error: str | None = None
-        self._frame_size: tuple[int, int] | None = None
-        self._frame_at: float | None = None
+        self.camera_errors: dict[str, str | None] = {}
+        self._frame_sizes: dict[str, tuple[int, int]] = {}
+        self._frame_ats: dict[str, float] = {}
         self.lerobot_version: str | None = None
         self.stop_error: str | None = None
         self.post_sleep: Callable[[], None] | None = None
+
+    def _primary_name(self) -> str:
+        """The first `--camera-url`'s camera: the one the detections describe, the one
+        `--fov-deg` measures, and the only one a verb that steers by sight reads."""
+        return self.camera_specs[0].name if self.camera_specs else CAMERA_NAME
+
+    @property
+    def camera_spec(self) -> CameraSpec | None:
+        """The primary camera, for everything written when an arm had at most one."""
+        return self.camera_specs[0] if self.camera_specs else None
+
+    @property
+    def camera_error(self) -> str | None:
+        """Why the primary camera gave no frame. `camera_health()` has all of them."""
+        return self.camera_errors.get(self._primary_name())
 
     @property
     def camera_available(self) -> bool:
@@ -392,10 +491,8 @@ class LeRobotReal:
         config = SO101FollowerConfig(**self._config_kwargs())
         return make_robot_from_config(config)
 
-    def _build_camera(self) -> Any:
-        """The webcam, built by quackd and not by the follower (`up.OPENCV_CAMERA`)."""
-        spec = self.camera_spec
-        assert spec is not None
+    def _build_camera(self, spec: CameraSpec) -> Any:
+        """One webcam, built by quackd and not by the follower (`up.OPENCV_CAMERA`)."""
         try:
             from lerobot.cameras import ColorMode, Cv2Backends, Cv2Rotation
             from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
@@ -422,11 +519,11 @@ class LeRobotReal:
             self._robot = await asyncio.to_thread(self._build_robot)
         # the camera first, before the arm is touched: a bad index then refuses with the
         # arm never energised, never de-torqued on the way back out, and nothing to undo
-        await self._connect_camera()
+        await self._connect_cameras()
         try:
             await self._call(self._robot.connect, False, deadline_s=30.0)  # never calibrate
         except Exception as e:
-            await self._close_camera()
+            await self._close_cameras()
             raise TransportError(f"lerobot real: connect failed: {e}") from e
         if not bool(self._robot.is_calibrated):
             await self._give_up(
@@ -466,62 +563,106 @@ class LeRobotReal:
                 f"{getattr(fn, '__name__', 'the call')}() did not return within {timeout_s:g} s"
             ) from None
 
-    async def _connect_camera(self) -> None:
+    async def _connect_cameras(self) -> None:
         """A camera the owner asked for and did not get is a refusal, not a warning.
 
         They named an index on the command line and `doctor` gates its verdict on a frame,
         so failing quietly would leave somebody believing they had eyes. It runs before the
         arm is touched, so a refusal here has energised nothing and let nothing go slack; the
-        arm connects without --camera-url."""
-        spec = self.camera_spec
-        if spec is None:
+        arm connects without --camera-url. With several, they open in the order the urls were
+        given and the second one failing lets go of the first: half a set of eyes nobody
+        asked for is worse than the refusal, because the frames would still arrive."""
+        if not self.camera_specs:
             return
         self.camera_keys = ()
-        self.camera_error = None
-        self._frame_size = None
-        self._frame_at = None
-        try:
-            if self._camera is None:
-                self._camera = await asyncio.to_thread(self._build_camera)
-            # warmup reads frames before it returns (up.CAMERA_CONNECT); an index that will
-            # not open raises here, with upstream's own instructions in it
-            # (up.OPENCV_OPEN_FAILS)
-            await self._camera_call(self._camera.connect, timeout_s=self.camera_connect_s)
-        except AdapterNotInstalled:
-            raise
-        except Exception as e:
-            await self._close_camera()
-            raise TransportError(
-                f"lerobot real: --camera-url {spec.url!r} did not open: {e}. The arm was not "
-                "touched, and it connects without --camera-url"
-            ) from e
-        self.camera_keys = (spec.name,)
+        self.camera_errors = {}
+        self._frame_sizes = {}
+        self._frame_ats = {}
+        opened: list[str] = []
+        for spec in self.camera_specs:
+            try:
+                if spec.name not in self._cameras:
+                    self._cameras[spec.name] = await asyncio.to_thread(self._build_camera, spec)
+                # warmup reads frames before it returns (up.CAMERA_CONNECT); an index that
+                # will not open raises here, with upstream's own instructions in it
+                # (up.OPENCV_OPEN_FAILS)
+                await self._camera_call(
+                    self._cameras[spec.name].connect, timeout_s=self.camera_connect_s
+                )
+            except AdapterNotInstalled:
+                raise
+            except Exception as e:
+                await self._close_cameras()
+                raise TransportError(
+                    f"lerobot real: --camera-url {spec.url!r} did not open: {e}. The arm was "
+                    "not touched, and it connects without --camera-url"
+                ) from e
+            opened.append(spec.name)
+        self.camera_keys = tuple(opened)
 
-    async def _close_camera(self) -> None:
-        if self._camera is None:
-            return
-        with contextlib.suppress(Exception):
-            # up.CAMERA_DISCONNECT
-            await self._camera_call(self._camera.disconnect, timeout_s=self.camera_close_s)
+    async def _close_cameras(self) -> None:
+        for camera in list(self._cameras.values()):
+            with contextlib.suppress(Exception):
+                # up.CAMERA_DISCONNECT
+                await self._camera_call(camera.disconnect, timeout_s=self.camera_close_s)
         self.camera_keys = ()
 
     async def _give_up(self, why: str) -> None:
         """Let go of everything opened so far, then say why. The arm's disconnect is the one
         LeRobot ships, and it drops torque (`up.SO_DISCONNECT_TORQUE`)."""
-        await self._close_camera()
+        await self._close_cameras()
         with contextlib.suppress(Exception):
             await self._call(self._robot.disconnect, deadline_s=5.0)
         raise TransportError(why)
 
     async def close(self) -> None:
+        """Let go of the arm, and let go of its torque only where it can be let go of.
+
+        LeRobot's `disconnect()` disables torque by its own default, which quackd keeps: an
+        arm at rest should be limp, because that is what "at rest" means. An arm that is not
+        at rest is an arm that would fall, so this reads the joints one last time and, where
+        they are not the recorded pose, turns that default off and says so. Without a rest
+        pose recorded there is nothing to check against and nothing changes."""
         self._closed = True
         await self._cancel_policy()
-        # the camera on its own deadline and never the serial lock, so however long its
+        # the cameras on their own deadline and never the serial lock, so however long a
         # release takes, the arm's disconnect below still runs
-        await self._close_camera()
-        if self._robot is not None:
-            with contextlib.suppress(Exception):
-                await self._call(self._robot.disconnect, deadline_s=5.0)  # up.SO_DISCONNECT_TORQUE
+        await self._close_cameras()
+        if self._robot is None:
+            return
+        self.close_note = None
+        why = await self._not_resting() if self.rest_pose is not None else None
+        if why is not None:
+            self.close_note = TORQUE_LEFT_ON.format(why=why)
+        with contextlib.suppress(Exception):
+            # up.SO_DISCONNECT_READS_ITS_CONFIG_LATE: the flag is read off the config instance
+            # inside disconnect() rather than copied at construction, so this is the seam.
+            # _config_kwargs() still asks for True.
+            #
+            # Written every time rather than only when torque has to stay on. The flag lives
+            # on the robot, not on this call, so a transport that missed its pose once and
+            # reached it the next time would have kept the arm energised on the strength of
+            # the earlier session, with nothing said about it.
+            self._robot.config.disable_torque_on_disconnect = why is None
+        with contextlib.suppress(Exception):
+            await self._call(self._robot.disconnect, deadline_s=5.0)  # up.SO_DISCONNECT_TORQUE
+
+    async def _not_resting(self) -> str | None:
+        """Why this arm must keep its torque, or None if it may let go. Reads, never moves."""
+        goal = rest_goal(self.rest_pose or {})
+        if not goal:
+            return None
+        try:
+            await self._probe()
+        except Exception as e:
+            return f"the arm did not answer: {type(e).__name__}: {e}"
+        joints = dict(self._joints)
+        if at_rest(goal, joints):
+            return None
+        why = shortfall(goal, joints)
+        if self._rest_result is not None and not self._rest_result.reached:
+            return f"{why}; {self._rest_result.reason}"
+        return f"{why}; nothing moved it there"
 
     # ── reading ─────────────────────────────────────────────────────────────────────
 
@@ -565,47 +706,88 @@ class LeRobotReal:
         that key sees what it expects. A camera failure here ends the pick and says why,
         rather than being swallowed the way `observe`'s is."""
         obs: dict[str, Any] = await self._call(self._robot.get_observation)
-        if self._camera is not None and self.camera_spec is not None:
-            obs[self.camera_spec.name] = await asyncio.to_thread(self._camera.read_latest)
+        for name in self.camera_keys:
+            camera = self._cameras.get(name)
+            if camera is not None:
+                obs[name] = await asyncio.to_thread(camera.read_latest)
         return obs
 
     @staticmethod
     def _joints_of(obs: dict[str, Any]) -> dict[str, float]:
         return {k.removesuffix(".pos"): float(v) for k, v in obs.items() if k.endswith(".pos")}
 
-    async def get_frame(self) -> Image.Image | None:
-        """The newest frame, or None and a reason. Never raises.
+    async def _read_frame(self, name: str) -> Image.Image | None:
+        """One camera's newest frame, or None and a reason. Never raises.
 
         `observe` moves nothing, so a camera that has stopped delivering should cost the
         picture and not the run: the agent loop asks for a frame every step and `doctor`
         polls for one, and neither expects an exception. The read does not go through
         `_call`, because it touches no serial bus and a wedge must never be filed as a
         camera fault (`up.CAMERA_READ_LATEST`)."""
-        if self._camera is None:
+        camera = self._cameras.get(name)
+        if camera is None:
             return None
         try:
-            frame = await asyncio.to_thread(self._camera.read_latest)
+            frame = await asyncio.to_thread(camera.read_latest)
             image = Image.fromarray(np.asarray(frame))  # up.CAMERA_COLOR_MODE_DEFAULT: RGB
         except Exception as e:
-            self.camera_error = f"{type(e).__name__}: {e}"
+            self.camera_errors[name] = f"{type(e).__name__}: {e}"
             return None
-        self.camera_error = None
-        self._frame_size = image.size
-        self._frame_at = self.now()
+        self.camera_errors[name] = None
+        self._frame_sizes[name] = image.size
+        self._frame_ats[name] = self.now()
         return image
 
-    def camera_health(self) -> dict[str, Any]:
-        """What `doctor` prints and gates its verdict on, shaped like every other backend's."""
-        spec = self.camera_spec
-        size = f"{self._frame_size[0]}x{self._frame_size[1]}" if self._frame_size else None
+    async def get_frame(self) -> Image.Image | None:
+        """The primary camera's newest frame. What steers, and what the detector reads."""
+        return await self._read_frame(self._primary_name())
+
+    async def get_frames(self) -> list[CameraFrame]:
+        """Every camera's newest frame, primary first, each under its own name.
+
+        A camera that gave nothing this time is simply absent from the list rather than an
+        empty slot: the model is shown the views that exist, and `camera_health()` is where
+        the one that stopped says so."""
+        primary = self._primary_name()
+        frames = []
+        for name in self.camera_keys or (primary,):
+            image = await self._read_frame(name)
+            if image is not None:
+                frames.append(CameraFrame(name, image, primary=name == primary))
+        return frames
+
+    def _camera_row(self, spec: CameraSpec) -> dict[str, Any]:
+        size = self._frame_sizes.get(spec.name)
+        at = self._frame_ats.get(spec.name)
         return {
+            "name": spec.name,
+            "url": spec.url,
+            "ok": self.camera_errors.get(spec.name) is None and at is not None,
+            "age_s": None if at is None else round(self.now() - at, 2),
+            "size": f"{size[0]}x{size[1]}" if size else None,
+            "error": self.camera_errors.get(spec.name),
+        }
+
+    def camera_health(self) -> dict[str, Any]:
+        """What `doctor` prints and gates its verdict on, shaped like every other backend's.
+
+        One camera answers exactly what it always answered. Several answer that plus a
+        `cameras` list, one row each, so a reader written for one camera still reads the
+        primary and a reader that knows about several gets all of them."""
+        spec = self.camera_spec
+        at = self._frame_ats.get(self._primary_name())
+        size = self._frame_sizes.get(self._primary_name())
+        health: dict[str, Any] = {
             "configured": spec is not None,
             "url": spec.url if spec else None,
-            "ok": spec is not None and self.camera_error is None and self._frame_at is not None,
-            "age_s": None if self._frame_at is None else round(self.now() - self._frame_at, 2),
-            "size": size,
+            "ok": spec is not None and self.camera_error is None and at is not None,
+            "age_s": None if at is None else round(self.now() - at, 2),
+            "size": f"{size[0]}x{size[1]}" if size else None,
             "error": self.camera_error,
         }
+        if len(self.camera_specs) > 1:
+            health["cameras"] = [self._camera_row(s) for s in self.camera_specs]
+        return health
 
     @property
     def hot_joints(self) -> list[str]:
@@ -838,6 +1020,70 @@ class LeRobotReal:
     async def stop(self) -> None:
         with contextlib.suppress(Exception):
             await self._hold()
+
+    async def go_to_rest(self) -> RestResult:
+        """Drive the arm to the pose it was recorded resting in. Never raises.
+
+        Every caller is a teardown or the first moment of a run, so a wedged bus, an arm
+        that stopped answering or a send that never landed are answers here rather than
+        exceptions: the caller still has to disconnect, and `close()` reads the joints
+        itself before deciding whether torque may drop."""
+        if self.rest_pose is None:
+            return RestResult.none("no rest pose is recorded for this arm")
+        if self._closed:
+            return RestResult("refused", "the arm's transport is closed")
+        goal = rest_goal(self.rest_pose)
+        if not goal:
+            return RestResult.none("the recorded pose names no body joint")
+        try:
+            await self._cancel_policy()
+            await self._probe()
+            if at_rest(goal, self._joints):
+                result = RestResult("already", "already at the rest pose")
+            else:
+                result = await self._drive_to_rest(goal)
+        except Exception as e:
+            result = RestResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
+        self._rest_result = result
+        return result
+
+    async def _drive_to_rest(self, goal: dict[str, float]) -> RestResult:
+        """Re-send the rest goal until the arm is there, stops moving, or the time is up.
+
+        This looks like `verbs._drive` and cannot be it. That one goes through the executor,
+        whose abort is already set by the time a person's Ctrl-C reaches a teardown, and this
+        move has to run on exactly that path. It also sends with `clip=False`: a pose read
+        off the arm is where the arm physically was, and an arm folded to rest often sits
+        outside the travel its calibration recorded, which the range refusal would refuse."""
+        joints = dict(self._joints)
+        gap = max((abs(joints[j] - v) for j, v in goal.items() if j in joints), default=0.0)
+        budget_s = rest_budget_s(gap, self.max_step_deg)
+        stall = min(STALL_DEG, self.max_step_deg / 2) if self.max_step_deg > 0 else STALL_DEG
+        started = self.now()
+        previous: dict[str, float] = {}
+        still = 0
+        while self.now() - started < budget_s:
+            await self._send(goal, clip=False)
+            await asyncio.sleep(TICK_S)
+            await self._probe()
+            joints = dict(self._joints)
+            if at_rest(goal, joints):
+                return RestResult("arrived", "moved to the rest pose")
+            moved = [abs(joints[j] - previous[j]) for j in previous if j in joints]
+            still = still + 1 if moved and max(moved) <= stall else 0
+            previous = {j: joints[j] for j in goal if j in joints}
+            if still >= STALL_TICKS:
+                # hold, so the servo stops pushing at a goal it has been told it cannot reach
+                with contextlib.suppress(Exception):
+                    await self._hold()
+                return RestResult(
+                    "stalled", f"{shortfall(goal, joints)}, and it has stopped moving"
+                )
+        with contextlib.suppress(Exception):
+            await self._hold()
+        return RestResult(
+            "timeout", f"{shortfall(goal, joints)} when the time ran out ({budget_s:.0f} s)"
+        )
 
     def now(self) -> float:
         return time.monotonic()

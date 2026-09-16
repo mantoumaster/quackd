@@ -19,6 +19,7 @@ import importlib.metadata as md
 import os
 import platform
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from quackd import __version__, ui
-from quackd.adapters.base import AdapterError
+from quackd.adapters.base import AdapterError, RestResult, go_to_rest_if_any
 from quackd.adapters.factory import describe, list_adapters, parse_robot_spec
 from quackd.agent.providers.base import ProviderError
 from quackd.agent.providers.factory import (
@@ -388,22 +389,32 @@ def probe(
     spec: str,
     static: Any,
     address: str,
-    camera_url: str | None,
+    camera_url: str | Sequence[str] | None,
     token: str | None,
+    rest_pose: dict[str, float] | None = None,
 ) -> ProbeReport:
     """Connect, and report what the robot itself said.
 
     Everything else in this file is offline and reads the *static* manifest, which describes
     a fully built robot. A real one is whatever its owner assembled, so this is the only way
-    to see the difference before a run does."""
+    to see the difference before a run does.
+
+    It is also the one command that moves the arm without being given a task, because a probe
+    that dropped torque wherever the arm stood is how the arm fell."""
     import asyncio
 
     from quackd.adapters.factory import make_adapter
-    from quackd.transport.base import TransportError
+    from quackd.transport.base import DEFAULT_CAMERA_NAME, TransportError, frames_of
 
-    async def go() -> tuple[Any, Any, dict[str, Any] | None, dict[str, Any]]:
+    async def go() -> tuple[
+        Any, Any, dict[str, Any] | None, dict[str, Any], RestResult, str | None
+    ]:
         adapter = make_adapter(
-            parse_robot_spec(spec), address=address, camera_url=camera_url, token=token
+            parse_robot_spec(spec),
+            address=address,
+            camera_url=camera_url,
+            token=token,
+            rest_pose=rest_pose,
         )
         live = await adapter.connect()
         transport = getattr(adapter, "transport", None)
@@ -416,6 +427,7 @@ def probe(
                 told[key] = warning
         if commit := getattr(transport, "runtime_commit", None):
             told["runtime_commit"] = commit
+        closed = False
         try:
             health = await adapter.health()
             # A camera URL that nothing checks is a camera URL that fails mid-run. doctor used
@@ -427,22 +439,41 @@ def probe(
             # ignored by rosbridge, and gating its verdict on a frame from an unrelated path
             # fails a healthy robot.
             if camera_url and callable(cam_probe):
-                # Frames arrive on a timer, so ask for one and give the capture loop a moment
-                # rather than reading memory that cannot have been filled yet.
-                frame = await adapter.get_frame()
-                for _ in range(50):
-                    if frame is not None:
-                        break
-                    await asyncio.sleep(0.1)
+                # Asked once for the shape and again for the answer: how many cameras there
+                # are decides how they are read, and the read is what fills in the sizes.
+                if dict(cam_probe()).get("cameras"):
+                    # One pass over every camera, because polling them one at a time is that
+                    # many serial reads of the same bus for a picture each has already taken.
+                    frames = await frames_of(adapter)
+                    sizes = {f.name: f"{f.image.width}x{f.image.height}" for f in frames}
+                    camera = dict(cam_probe())
+                    camera["cameras"] = [
+                        {**cam, "size": sizes.get(str(cam.get("name")))}
+                        for cam in camera["cameras"]
+                    ]
+                else:
+                    # Frames arrive on a timer, so ask for one and give the capture loop a
+                    # moment rather than reading memory that cannot have been filled yet.
                     frame = await adapter.get_frame()
-                camera = dict(cam_probe())
-                camera["frame"] = f"{frame.width}x{frame.height}" if frame is not None else None
-            return live, health, camera, told
-        finally:
+                    for _ in range(50):
+                        if frame is not None:
+                            break
+                        await asyncio.sleep(0.1)
+                        frame = await adapter.get_frame()
+                    camera = dict(cam_probe())
+                    camera["frame"] = f"{frame.width}x{frame.height}" if frame is not None else None
+            parked = await go_to_rest_if_any(adapter)
+            # close_note is written by the disconnect, so the disconnect happens here and is
+            # read from; the finally below is left as the safety net for the exception path.
             await adapter.disconnect()
+            closed = True
+            return live, health, camera, told, parked, getattr(transport, "close_note", None)
+        finally:
+            if not closed:
+                await adapter.disconnect()
 
     try:
-        live, health, camera, told = asyncio.run(go())
+        live, health, camera, told, parked, note = asyncio.run(go())
     except (TransportError, OSError) as e:
         return ProbeReport(address=address, ok=False, error=f"{spec} at {address}: {e}")
 
@@ -482,14 +513,38 @@ def probe(
                 )
                 add(ProbeRow(f"  {key}", str(reported), "warn" if worrying else "plain"))
     camera_ok = True
+    several = False
+    dead: list[str] = []
     if camera is not None:
-        frame = camera.get("frame")
-        camera_ok = frame is not None
-        shown = str(frame) if camera_ok else "no frame"
-        add(ProbeRow("camera", shown, "ok" if camera_ok else "fail"))
-        add(ProbeRow("  url", str(camera.get("url") or camera_url)))
-        if camera.get("error"):
-            add(ProbeRow("  error", str(camera["error"]), "fail"))
+        cams = camera.get("cameras") or [camera]
+        several = len(cams) > 1
+        for cam in cams:
+            # a per-camera row carries its own size; the one-camera dict carries it under
+            # "frame", which is what one camera printed before any body had a second one
+            size = cam.get("frame", cam.get("size"))
+            name = str(cam.get("name") or DEFAULT_CAMERA_NAME)
+            if size is None:
+                dead.append(name)
+                camera_ok = False
+            add(
+                ProbeRow(
+                    f"camera {name}" if several else "camera",
+                    str(size) if size is not None else "no frame",
+                    "ok" if size is not None else "fail",
+                )
+            )
+            add(ProbeRow("  url", str(cam.get("url") or camera_url)))
+            if cam.get("error"):
+                add(ProbeRow("  error", str(cam["error"]), "fail"))
+    rest_ok = parked.reached or not parked.recorded
+    if not parked.recorded:
+        add(ProbeRow("rest pose", "none recorded (quackd robot rest-pose <name>)"))
+    elif parked.how == "already":
+        add(ProbeRow("rest pose", "at it already", "ok"))
+    elif parked.how == "arrived":
+        add(ProbeRow("rest pose", "returned to it", "ok"))
+    else:
+        add(ProbeRow("rest pose", f"not reached: {parked.reason}", "fail"))
     if lost:
         report.advisories.append(
             f"a .duck that requires {lost[0]} will be refused on this robot, and one that "
@@ -506,10 +561,16 @@ def probe(
             if (req := REQUIREMENTS.get(name)) is not None and req.camera
         ]
         report.advisories.append(
-            "--camera-url was given but no frame came back, so "
+            "--camera-url was given but no frame came back"
+            + (f" from {', '.join(dead)}" if several else "")
+            + ", so "
             + (", ".join(blind) if blind else "nothing that needs a camera")
             + " cannot see anything on this run"
         )
+    if note and not rest_ok:
+        # the arm did not get to its rest pose, so it is still holding itself up, and the one
+        # place that says so is the note the disconnect left behind
+        report.advisories.append(note)
     for key in ("auth_warning", "runtime_warning"):
         if warning := told.get(key):
             report.advisories.append(str(warning))
@@ -519,7 +580,7 @@ def probe(
             "verb refuses because it is down. You are the fall detector: keep it on a stand "
             "and watch it."
         )
-    report.ok = bool(health.ok) and camera_ok
+    report.ok = bool(health.ok) and camera_ok and rest_ok
     return report
 
 
@@ -555,8 +616,9 @@ def collect(
     robot: str | None = None,
     *,
     address: str | None = None,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
+    rest_pose: dict[str, float] | None = None,
     progress: Progress = None,
 ) -> DoctorReport:
     """Every question doctor asks, answered as data.
@@ -649,7 +711,7 @@ def collect(
             )
             if address:
                 say(f"connecting to {robot} at {address}")
-                report.robot.probe = probe(robot, manifest, address, camera_url, token)
+                report.robot.probe = probe(robot, manifest, address, camera_url, token, rest_pose)
 
     for name, status in TRANSPORT_STATUS.items():
         note, found = "", False

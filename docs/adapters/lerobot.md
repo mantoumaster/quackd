@@ -15,7 +15,14 @@ spells lives in
 and why the adapter is shaped the way it is is
 [ADR-0036](../adr/0036-what-the-arm-does-not-say.md).
 
-**The `real` backend has never been run against an arm by us.**
+> [!NOTE]
+> **The `real` backend has run on an arm. Once.** On 2026-09-15 an SO-101 follower, calibrated
+> as `arm-01` and reached with no registered name, ran `lerobot-lookout` and then free-form `--goal` runs
+> on Windows 11 with Python 3.12.12, lerobot 0.6.1 and quackd 0.9.0, piloted by OpenAI's
+> `gpt-6-astra`. It also went limp and fell at the end of every one of those runs, which is what
+> [the rest pose](#the-rest-pose) now exists to fix. What ran, what went wrong and what that
+> afternoon did not measure is in [Status](#status); the account from the other end, an empty
+> laptop to a waving arm, is [lerobot-first-run.md](../lerobot-first-run.md).
 
 ```bash
 # offline, the default
@@ -95,7 +102,7 @@ drive the arm.
 | `--robot` | Status | What it is |
 |---|---|---|
 | `lerobot:mock` | ✅ | an arm in memory: goals land instantly, the gripper stops on the object, a scripted policy answers `pick`, and it refuses an out-of-range goal in the same words the real one does |
-| `lerobot:real` | 🧪 | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch), and one USB webcam when `--camera-url` names one; every name VERIFIED at the pin, exercised against a fake arm and a fake camera, never on hardware |
+| `lerobot:real` | 🧪 | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch), and as many USB webcams as `--camera-url` names; every name VERIFIED at the pin, exercised against a fake arm and a fake camera, and run for one afternoon on one real arm, 2026-09-15, with lerobot 0.6.1, one webcam and no policy |
 
 `--address` is the arm's serial port (`/dev/ttyACM0`, `COM5`), and quackd checks that it
 looks like one before LeRobot opens anything. The `real` backend calls
@@ -167,9 +174,10 @@ Two arms sharing an id share one file, and nothing in it says which arm it came 
 prints the path it actually loaded, which is the fastest way to see that you calibrated `arm`
 and are connecting as `arm-01`.
 
-Registering the arm is worth it beyond the id: `quackd robot add` stores the address, the
-camera url and the token, so `--robot lab-arm` carries all three and you stop retyping a COM
-port ([registry.md](../registry.md)).
+Registering the arm is worth it beyond the id: `quackd robot add` stores the address, every
+camera url and the token, so `--robot lab-arm` carries all of them and you stop retyping a COM
+port ([registry.md](../registry.md)). It is also the only place a
+[rest pose](#the-rest-pose) can live, which is what stops the arm falling when a run ends.
 
 ## The manifest
 
@@ -195,11 +203,15 @@ the calibration file (`wrist_roll` included, where that travel is the whole turn
 records rather than anything swept, see Safety), `extras.calibration_file`, the path that came
 from, `limits.step_deg`,
 how far one action may move a joint (`QUACKD_LEROBOT_MAX_STEP_DEG` sets it), and
-`extras.camera` with `limits.camera_fov_deg` when there is a camera.
+`extras.camera` with `limits.camera_fov_deg` when there is a camera. With more than one camera
+it also carries `extras.cameras`, their names in the order the urls were given, primary first.
+That key is written only when there are two or more: a single camera's name is quackd's own
+default rather than anything you chose, and a pilot told its one view is called `front` starts
+naming it in sentences nobody needs.
 
 | Verb | Kind | What it does here |
 |---|---|---|
-| `observe` (alias `get_frame`) | core | the arm's camera frame plus detections, only when a camera is configured |
+| `observe` (alias `get_frame`) | core | one frame plus detections, only when a camera is configured. With several cameras it is the primary's frame, because a detection is a bearing and a bearing belongs to one lens |
 | `report_state` | core | joint positions in degrees, whether torque is on, each servo's temperature, whether something is held |
 | `stop` | core | hold: the present position becomes the goal. Never limp (see Safety) |
 | `move_joints(positions, duration_s)` | extension | goal angles for one or more of the six joints, re-sent at 10 Hz until the measurement arrives; a joint that stops short is a failure, and `duration_s` is the budget |
@@ -243,8 +255,8 @@ A figure nobody published is listed as not published, and the pilot is told to d
 
 No SO-101 has a camera in it. Whatever the kit's listing said, the arm is six servos and a
 serial board, and every camera on one is a USB webcam that plugs into the *computer*: the
-arm's own USB cable carries motor traffic and no video. So quackd's camera is a separate
-thing you point it at.
+arm's own USB cable carries motor traffic and no video. So a camera here is a separate thing
+you point quackd at, one of them or [several](#several-cameras).
 
 ```bash
 uv run quackd doctor --robot lerobot:real --address COM5 --camera-url "opencv://0"
@@ -259,9 +271,9 @@ scan position and not an identity: it can move when you replug or reboot.
 | Key | Default | What it is |
 |---|---|---|
 | (the index) | required | `opencv://0`, or a device path, `opencv:///dev/video2` |
-| `name` | `front` | what the frame is called in a policy's observation |
+| `name` | `front` | what the frame is called in a policy's observation, in the label the model reads and in `frames/NNNN-<name>.png`. **Required on every url once you give more than one** |
 | `width`, `height`, `fps` | the camera's own | a mode the camera cannot do is a refusal at connect, so these are worth setting only when you know it can. Width and height come together or not at all |
-| `fourcc` | the camera's own | `MJPG` is the one worth asking for if you add a second camera later: raw YUYV eats USB bandwidth |
+| `fourcc` | the camera's own | `MJPG` is the one worth asking for the moment there are two cameras: raw YUYV eats USB bandwidth |
 | `rotation` | `0` | 90, 180 or 270, for a camera mounted sideways |
 | `backend` | `any` | `msmf` or `dshow` on Windows, when a camera lists and then will not open |
 | `fov` | unset | the lens's horizontal field of view in degrees, which is what bearings are computed from |
@@ -288,7 +300,9 @@ What that means at the bench:
   verbs carry on. `report_state` keeps working and gains a `CAMERA DOWN:` clause with the
   reason, and the health goes into the arm's state, which is what puts a dead webcam in the
   transcript on a run that has no `observe` to call. `quackd doctor` shows the same thing
-  under `camera`.
+  under `camera`. With several cameras a stall costs that camera's picture and nothing else,
+  and both places name it: `CAMERA DOWN: side: ...` rather than a clause that does not say
+  which eye closed, and one `camera <name>` row per camera in `doctor`.
 - `observe` gives you bearings in the camera's own frame, and the detector behind it is an
   HSV threshold whose colour ranges are the *simulator's*. On a real desk it labels whatever
   happens to fall in one of those bands, `ball` for an orange thing and `person` for a blue
@@ -298,8 +312,81 @@ What that means at the bench:
   [the FAQ](../faq.md). What is honest whatever the detector makes of it is the frame
   itself, which a cloud model is shown every step unless you pass `--no-vision`.
 
-**One camera.** `observe` returns one frame, so the url names one. A second view is a later
-feature, not a flag that exists and is ignored.
+### Several cameras
+
+`--camera-url` repeats. This arm is the only body that reads more than one: every other one
+refuses a second rather than opening the first and dropping the rest, and says who takes
+several.
+
+```bash
+quackd robot add arm-01 lerobot:real --address COM5 \
+    --camera-url "opencv://1?name=top" --camera-url "opencv://2?name=side"
+```
+
+```
+✓ added arm-01: lerobot:real at COM5
+  quackd run <duck> --robot arm-01
+```
+
+`quackd robot show arm-01` lists them back in the order they were given (the top of it):
+
+```
+name       arm-01
+robot      lerobot:real
+body       lerobot-so101 (arm, mobility none) 5 verbs: report_state, stop, move_joints, gripper,
+           place
+address    COM5
+camera     opencv://1?name=top
+           opencv://2?name=side
+rest pose  -
+```
+
+The rules, all of them refusals rather than surprises:
+
+| Rule | Why |
+|---|---|
+| with two or more, **every** url carries `?name=` | the name is the only thing telling the views apart, in the label on each picture the model reads, in a `pick` policy's observation dict, where every camera arrives under its own name, and in `frames/NNNN-<name>.png`. With one camera the name is optional, `front` is the default, and the frames are `frames/NNNN.png` |
+| the names are unique | two views called `top` are two pictures a model cannot tell apart |
+| an index appears once | two handles on one webcam is not two views, it is a camera that will not open twice |
+| the **first** url is the primary | `--fov-deg` describes it, the `camera:` detections line reports it and nothing else, `observe` returns its frame, and the verbs that steer by sight read it alone. Those run at 10 Hz, and fetching every camera inside that loop would blow the deadman window. This arm has no such verb today, so here the rule is about the detections line and `observe` |
+
+Everything else arrives at the model. Every frame reaches it each step, labelled with the
+name of the camera that took it, on Claude, both OpenAI APIs, Gemini, and any
+OpenAI-compatible local server with `--vision` on. The pilot is also told, in as many words,
+which one is primary and that the `camera:` line describes that view and no other.
+
+What happens when one of them dies mid-run depends on which one:
+
+| Which camera stopped | What the model still gets |
+|---|---|
+| a secondary | every other view, and the `camera:` detections line unchanged. The failure is named in `report_state` and in `doctor`'s `camera <name>` row |
+| the primary | the other views still arrive as pictures, and the detections line reports nothing seen. A bearing read off a different lens would point somewhere else, so quackd reports nothing rather than something from the wrong camera |
+
+A second camera that will not open is a refusal **before the arm is energised**, and it lets
+go of the first on the way out. Half a set of eyes nobody asked for is worse than the
+refusal, because the frames would still arrive and look right.
+
+> [!WARNING]
+> Two uncompressed 640x480 streams on one USB controller can exceed its bandwidth. Both
+> cameras open, and then one or both deliver nothing. `?fourcc=MJPG` on each is the answer,
+> and a different physical USB controller for the second camera is the other one. This is an
+> owner report rather than something measured here: the 2026-09-15 bench ran one webcam.
+
+**The cost is pictures.** Each request carries the images from the last two exchanges, so two
+cameras is four pictures per request where one camera is two, and that is what you pay in
+tokens on every step of every run. It is worth it for a wrist view plus an overhead view. It
+is not worth it for two views of the same thing.
+
+> [!NOTE]
+> A local server, or a particular model behind one, may accept only one image per message.
+> If it refuses a request with two, pass a single `--camera-url`.
+
+`robots.json` stores a string for one camera and a list for several, so a registry file
+written by 0.9 loads unchanged:
+
+```json
+"camera_url": ["opencv://1?name=top", "opencv://2?name=side"]
+```
 
 **What a `.duck` may ask of this arm, and where.** `quackd run` and `quackd validate` check
 a task against the *static* manifest, before anything is connected, and that manifest claims
@@ -312,9 +399,10 @@ touched:
 x error: lerobot-lookout cannot run on lerobot:real: observe is not provided by arm-01
 ```
 
-That is why `lerobot-lookout` asks for `report_state` instead, and on an arm nobody has driven
-yet that is the better question anyway: whether it answers at all, whether torque is on, and
-how warm it is.
+That is why `lerobot-lookout` asks for `report_state` instead, and on an arm you have not
+driven before that is the better question anyway: whether it answers at all, whether torque is
+on, and how warm it is. It is what ran first on the bench on 2026-09-15, and it is what ran
+again with `--provider fake` to separate the arm from the model.
 
 Over MCP it is the other way, and better. `robot_load_duckfile` validates against the manifest
 of the robot **already connected**, so the same task loads cleanly on a session started with
@@ -322,11 +410,12 @@ of the robot **already connected**, so the same task loads cleanly on a session 
 this arm, that is where it works today.
 
 **The pilot sees the camera whether or not `observe` is allowed.** Every step, the run loop
-takes a frame and runs the detector over it, and the detections go into the observation the
-model reads. On a provider that accepts pictures the frame itself is attached as well, which
-is `--vision`, on by default for cloud models and off for local ones. What `observe` adds is
-the ability to *ask* for a look as a deliberate act and get the frame back as a verb result,
-which is what `robot_observe` does over MCP.
+takes a frame from every camera, runs the detector over the primary's, and the detections go
+into the observation the model reads. On a provider that accepts pictures the frames
+themselves are attached as well, each labelled with its camera's name, which is `--vision`, on
+by default for cloud models and off for local ones. What `observe` adds is the ability to *ask*
+for a look as a deliberate act and get the frame back as a verb result, which is what
+`robot_observe` does over MCP.
 
 ## Driving it
 
@@ -376,6 +465,10 @@ verdict, which `robot_run_verb` requires before anything that moves the body, th
 `robot_run_verb(verb="move_joints", params={...})`. Both clients, the full tool list and a
 two-minute script: [mcp.md](../mcp.md).
 
+A session parks the arm at both ends, the same as a run does, and **refuses to start** if it
+cannot reach the recorded rest pose. Repeat `--camera-url` here too, and the session reads
+every camera you name.
+
 ### The rehearsal: `--dry-run`
 
 `--dry-run` connects to the arm for real and sends it nothing. Read-only verbs actually run,
@@ -390,7 +483,15 @@ something is printed and skipped:
 This is worth doing on a real arm before the first real run. It exercises the port, the
 calibration, the temperature read, the model, the allowlist and the budgets, and proves
 which verbs the model is going to reach for, with the arm standing still. The heartbeat is
-live throughout, so a dry run also tells you whether the arm answers reliably.
+live throughout, so a dry run also tells you whether the arm answers reliably. Two of the
+bench's dry runs on 2026-09-15 ended early, and both endings were the rehearsal doing its job:
+one on a heartbeat round trip that failed once and never again, one on a pilot that answered
+`uncertain` and a human who said no.
+
+A dry run **never moves the arm**, and that includes the rest move at either end. It also means
+a dry run on an arm that is not at its recorded rest pose ends with torque left on, because
+nothing drove it there. That is [the rest pose](#the-rest-pose)'s rule and not an exception to
+it.
 
 ### What `pick` needs, and what it does not have
 
@@ -440,12 +541,188 @@ quackd, side by side, is [safety.md](../safety.md).
 - **A wedged call is not a finished call.** A call that blows its deadline leaves a thread on
   a half-duplex bus, so the transport refuses every later call until that thread comes back
   rather than starting a second one. The arm holds its goal meanwhile.
-- **Torque drops at both ends of a session.** `disconnect()` disables it by LeRobot's default,
-  which quackd keeps and documents; and `configure()` runs inside `torque_disabled()`, so
-  connecting drops it briefly too. Support the arm at both ends, including at the end of a
-  `doctor` probe.
+- **Torque is released only where the arm is known to be at its recorded rest pose.**
+  `disconnect()` disables it by LeRobot's default, which quackd keeps, because an arm at rest
+  should be limp: that is what "at rest" means. So before the disconnect quackd reads the
+  joints one last time, and where they are not the pose you recorded it turns that default off
+  and leaves the arm holding itself up, with one line saying so:
+
+  ```
+  the arm is not at its rest pose (...), so torque was left on and it will not fall:
+  hold the arm and cut its power, or run again
+  ```
+
+  With no rest pose recorded there is nothing to check against, nothing changes, and the arm
+  goes limp at the end of every clean session exactly as it did in 0.9. See
+  [The rest pose](#the-rest-pose).
+- **Connecting still drops torque briefly, and that has not changed.** `configure()` runs
+  inside `torque_disabled()`, so the arm is limp for the moment between the port opening and
+  the configuration landing, whatever any rest pose says. Support the arm when a session
+  starts, including at the start of a `doctor` probe.
 - **`pick` is confirm-gated**: a learned policy moves the whole arm. Its actions go through
   the same step cap and range check as a verb's.
+
+## The rest pose
+
+A LeRobot arm goes limp when it is disconnected, because `disconnect()` disables torque by its
+own default and quackd keeps that default. On the bench on 2026-09-15 that meant the arm fell
+at the end of every single run. Runs also started from wherever the previous one had left the
+arm, so the pose a model was improvising from was different every time.
+
+A rest pose fixes both. You fold the arm by hand, tell quackd where that is, and quackd drives
+it there at both ends of every run.
+
+> [!IMPORTANT]
+> None of this has been run on an arm. It was written after the day the arm fell, and it is
+> exercised against a fake arm and the mock, the same standing as every other `lerobot:real`
+> behaviour on this page. The first person to record a pose on real hardware is finding out
+> whether it holds, so read [section 07 of the first run](../lerobot-first-run.md#07-record-the-rest-pose)
+> with a hand near the power switch and say what happened.
+
+### Recording it
+
+```
+quackd robot rest-pose NAME [--clear] [--yes] [--address ADDR] [--registry-dir DIR] [--json]
+```
+
+Fold the arm first, with nothing connected, so the pose you record is one it can hold with
+torque off. Then run the command: it connects, reads every joint, prints them, asks, and keeps
+the pose in `~/.quackd/robots.json` beside the address and the cameras. It opens no camera,
+because reading joints needs none, and it drives the arm nowhere, because the point is to let
+go of it at the pose you are choosing now rather than the one you are replacing.
+
+```
+$ quackd robot rest-pose arm-01 --yes     # without --yes it prints the joints and asks
+arm-01 (lerobot:mock) is at
+shoulder_pan   0.0
+shoulder_lift  -90.0
+elbow_flex     90.0
+wrist_flex     0.0
+wrist_roll     0.0
+gripper        100.0
+✓ recorded arm-01's rest pose (6 joints)
+  quackd run <duck> --robot arm-01 starts from it and returns to it before letting go
+```
+
+Those numbers are the **mock** arm's, which is where that transcript was captured. A real
+SO-101 folded on a desk reports its own, and they will not look like these.
+
+`quackd robot show NAME` prints the pose back in a `rest pose` row, and `--json` puts it under
+`rest_pose`. `--clear` forgets it:
+
+```
+$ quackd robot rest-pose arm-01 --clear
+✓ cleared arm-01's rest pose
+  a run now leaves the arm where it stands, and torque drops there
+```
+
+A rest pose belongs to a **registered** robot, because it is read off the arm and kept under
+its name. There is no `--rest-pose` flag on `quackd run`.
+
+### What a run does with it
+
+| When | What happens |
+|---|---|
+| the start of every run | the arm is driven to the pose before the pilot gets control, so what the model improvises from is the same arm every time. A run that cannot get there aborts **before the first LLM call** |
+| the end of every run | between the `stop` and the disconnect, which is the only window in which putting the arm down changes whether it falls. On every exit path there is: success, failure, infeasible, a spent budget, an abort, an error and Ctrl-C |
+| a dry run | nothing. `--dry-run` never moves the arm, and that includes the rest move |
+| an MCP session | the same at both ends, and the session refuses to start if it cannot get there |
+
+Both ends are narrated, so the transcript says what happened rather than leaving you to infer
+it from a joint reading:
+
+```
+·  note    moving to the rest pose
+·  note    already at the rest pose
+```
+
+### The torque rule
+
+Torque is released **only** where the arm is known to be at the pose you recorded. A joint is
+at its recorded angle when it reads within **5 degrees** of it, the same tolerance a
+`move_joints` goal is judged by, and every joint of the pose has to be reported and within it.
+Where that does not hold, quackd turns LeRobot's `disable_torque_on_disconnect` off on the
+config instance before the call, closes the port with every motor still holding its goal, and
+prints one line:
+
+```
+the arm is not at its rest pose (...), so torque was left on and it will not fall:
+hold the arm and cut its power, or run again
+```
+
+The parenthesis names the joints and how far short they are, and, where the rest move itself
+failed, why it failed.
+
+> [!CAUTION]
+> This is a behaviour change. A probe or a dry run on an arm away from its recorded rest pose
+> now leaves torque **on** where it used to drop it. The arm is holding itself up and the
+> servos are drawing current until something stops them: hold the arm and cut its power, or run
+> again and let the arm park itself. An arm with no rest pose recorded behaves as it always
+> did.
+
+### What is driven, and what is not
+
+Only the **five body joints** are ever driven. The gripper is recorded, printed and stored, and
+never commanded, for the same reason `stop` omits it: LeRobot writes only the keys it is given,
+so leaving the gripper out keeps whatever squeeze is already commanded, and a rest move that
+re-sent the gripper would open a hand that is holding something.
+
+The rest move is also the one move quackd sends **unclipped**. A pose read off the arm is where
+the arm physically was, and an arm folded to rest often sits outside the travel its own
+calibration recorded: the bench arm folded to `shoulder_lift` -113.5 against a calibrated
+±84.2. The out-of-range refusal that guards `move_joints` would refuse to put that arm down, so
+the rest move does not go through it. Record a pose you are willing to have the arm driven to
+without that check.
+
+The move itself is re-sent at 10 Hz under the same 5 degree step cap as any other, on a budget
+computed from how far the arm has to travel and bounded so a teardown cannot hold a run open
+for minutes. It stalls the same way a `move_joints` does, five ticks of 0.1 s in which nothing
+moved, and on a stall or a spent budget it holds where it is and reports how far short it
+stopped. Either of those is an arm that keeps its torque.
+
+### doctor, and `robot list --probe`
+
+`quackd doctor` returns a probed arm to its rest pose too, and says so in a `rest pose` row.
+That matters because a `doctor` probe disconnects like anything else, and a disconnect is what
+dropped torque and put the bench arm on the desk:
+
+```
+│ rest pose         │ at it already                                                               │
+```
+
+| What the row says | What it means |
+|---|---|
+| `at it already` | the arm was within tolerance when `doctor` looked, and nothing moved |
+| `returned to it` | `doctor` drove it back, and torque dropped at the end |
+| `none recorded (quackd robot rest-pose <name>)` | nothing to park to, so the probe ended the way it always did: limp |
+| `not reached: ...` | the probe **fails**, the arm kept its torque, and the line about holding it and cutting the power comes out as an advisory under the table |
+
+`quackd robot list --probe` does **not** move the arm. It reads, lets go, and where the arm was
+not already at its pose it keeps torque and says so on the same line that says the arm
+answered:
+
+```
+┌────────┬──────────────┬────────────────────────────────────────────┐
+│ name   │ robot        │ reachable                                  │
+├────────┼──────────────┼────────────────────────────────────────────┤
+│ arm-01 │ lerobot:mock │ ✓ ok, torque left on: not at its rest pose │
+└────────┴──────────────┴────────────────────────────────────────────┘
+```
+
+### Only this arm parks
+
+Every other body refuses a rest pose rather than accepting one and ignoring it, whether it has
+joints or not:
+
+```
+$ quackd robot rest-pose duck --yes
+✗ error: duck (microduck:mock) has no joints, so there is no rest pose to record
+  a rest pose is for an arm: quackd list-adapters
+
+$ quackd robot rest-pose cart --yes     # xlerobot:mock, which HAS joints
+✗ error: cart (xlerobot:mock) has joints, and quackd does not drive it to a rest pose yet:
+only the LeRobot arm does today
+```
 
 ## When it will not work
 
@@ -464,6 +741,10 @@ touched by anything in the first block: these all happen before or during connec
 | `lerobot real: only so101_follower is wired` / `this robot has no motors bus` | the config is not an SO-101 follower | quackd drives this one body; an SO-100 shares the calibration directory but is not wired here |
 | `lerobot real: --camera-url 'opencv://7' did not open: ...` | the index is wrong, or the camera will not open under this backend | try the index `lerobot-find-cameras opencv` printed, add `?backend=msmf` on Windows, or drop a `width`/`height`/`fps` you pinned. The arm was not touched |
 | `lerobot real: --camera-url '...': fps='abc' is not a whole number` | a query key or value quackd does not accept | the message lists every key; this is refused before LeRobot is imported |
+| `lerobot real: --camera-url 'opencv://2': it has no ?name= and 2 cameras were given` | several cameras, and one of them is unnamed | add `?name=` to every url. The message shows the shape, `opencv://1?name=top --camera-url opencv://2?name=side`, and says what the name is for |
+| `lerobot real: --camera-url 'opencv://2?name=top': name='top' is already the name of 'opencv://1?name=top'` | two cameras with one name | rename one. Two views the model cannot tell apart are worse than one view |
+| `lerobot real: --camera-url 'opencv://1?name=side': 1 is already 'opencv://1?name=top'` | the same index given twice | drop the duplicate, or find the other camera's index with `lerobot-find-cameras opencv`. Two handles on one webcam is not two views |
+| `microduck:mock takes one --camera-url and 2 were given; only lerobot:real takes several` | a body that reads one camera was handed more | pass one url to that body. Only this arm reads more than one, and the message names it rather than opening the first and dropping the rest |
 
 And once it is running:
 
@@ -476,14 +757,23 @@ And once it is running:
 | `cannot move_joints: the arm's torque is off; enable it from LeRobot first (quackd never toggles torque)` | torque reads off | quackd never switches torque on or off, by design. A fresh connect re-enables it, so torque still off after one points at a tripped servo or the supply |
 | `cannot place: nothing is held: pick something first` | the `holding` precondition | holding is inferred from the gripper stopping short of shut, so an empty hand reads as nothing held |
 | the run ends saying the arm did not answer | the heartbeat's round trip to the motors failed | the cable, the power, or a servo that has tripped. The arm holds its last goal under torque |
-| the arm sags when the run ends | LeRobot's `disconnect()` disables torque by its own default, at the end of every clean session | support it, or fold it somewhere it can rest before you exit |
+| the arm sags when the run ends | no rest pose is recorded, so LeRobot's `disconnect()` disables torque by its own default, at the end of every clean session | record one: `quackd robot rest-pose <name>`. Until you do, support it or fold it somewhere it can rest before you exit |
+| `the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut its power, or run again` | the arm did not reach the pose you recorded, so quackd kept torque rather than dropping it | hold the arm and cut the servo supply, or run again and let the rest move try from where it now is. The parenthesis names the joints that fell short |
+| a run aborts with `the arm did not reach its rest pose: ...` before any model call | the run could not start from the recorded pose | something is in the way, or the pose no longer matches the arm. Clear it with `--clear` and record it again, or move whatever is blocking the fold |
 
 ### Reported by owners, not by us
 
-Nobody here has had an SO-101 on a desk, so the list above is what quackd's own code does.
-These are things SO-101 owners report, collected while writing this page and **not verified
-against hardware by anyone in this repo**. They are here because they are the failures that
-cost an afternoon, not because we can vouch for them.
+One SO-101 has been on a desk here, for one afternoon on 2026-09-15, and the list above is
+still what quackd's own code does. These are things SO-101 owners report, collected while
+writing this page and **not verified against hardware by anyone in this repo**. They are here
+because they are the failures that cost an afternoon, not because we can vouch for them.
+
+None of the first three came up that afternoon: the arm was already assembled, calibrated and
+on a working cable, which is the state this page assumes rather than the state a kit arrives
+in. The two-camera and the Linux ones could not come up either, because the bench ran one
+webcam on Windows, at 640x480 and with no `?backend=` key needed. What did come up is an index
+moving, from the other direction than the bullet describes: a single webcam, `opencv://1` on
+one session and `opencv://2` on a later one.
 
 - **No serial port appears at all.** A charge-only USB cable, or the arm's barrel jack out:
   USB does not power the controller board.
@@ -543,7 +833,8 @@ If you hit one of these, or fail to, that is exactly what the
 | `send_action() returns the goal actually sent` | the clipped goal, not the measured position |
 | `use_degrees=True -> body joints in degrees` | |
 | `gripper is 0..100` | whatever use_degrees says |
-| `disconnect() disables torque by default` | the arm goes limp at every clean exit, a doctor probe included |
+| `disconnect() disables torque by default` | `disable_torque_on_disconnect` defaults to True, so the arm goes limp at every clean exit, a `doctor` probe included, and not at all when the process is killed. quackd keeps that default, and turns it off for the one case where letting go would drop the arm: one that did not reach the pose it was recorded resting in |
+| `disconnect() reads config.disable_torque_on_disconnect when it runs` | the flag is read off the config instance inside `disconnect()` rather than copied at construction, and the config is a plain dataclass, so setting it False on the instance immediately before the call is what leaves an arm holding. quackd uses that seam for an arm away from its rest pose and nothing else; the config is still built asking for True. Read against lerobot 0.6.1, the version the first real arm ran |
 | `Max_Torque_Limit 500 on the gripper` | with Protection_Current 250 and Overload_Torque 25: the native authority |
 | `the five body joints get no torque or current cap` | the caps sit inside a check for the gripper's name |
 | `configure_motors() writes Return_Delay_Time 0 and Acceleration 254` | called inside torque_disabled(), so connecting drops torque briefly |
@@ -552,7 +843,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `no deadman: nothing stops the arm when the client goes quiet` | the class has no thread, timer or timeout; a goal stands until the next write |
 | `MotorsBus.disable_torque()` | NEVER called by quackd (limp) |
 | `MotorsBus.enable_torque()` | |
-| `MotorsBus.disconnect(disable_torque=True)` | |
+| `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling |
 | `MotorsBus.is_connected is port_handler.is_open` | a port flag, not a reply: why the heartbeat reads the arm |
 | `FeetechMotorsBus.is_calibrated reads the motors back` | a missing, stale or foreign file all read as not calibrated |
 | `write_calibration() is reached only through calibrate()` | quackd cannot move an arm's zero by accident |
@@ -608,7 +899,51 @@ If you hit one of these, or fail to, that is exactly what the
 `lerobot:mock` runs every arm verb through the executor in the test suite, including the
 confirm gate on `pick`, the `holding` precondition on `place` and the heat refusal.
 `lerobot:real` is exercised against a fake arm and a fake policy (verified method names, no
-serial port). Nobody has run it on an arm, and this page will say so until someone has.
+serial port), and it has now run on one real arm, once.
+
+### What one afternoon proved, and what it did not
+
+On 2026-09-15 an SO-101 follower, calibrated as `arm-01` and reached as `--robot lerobot:real
+--address COM5` with no registered name, ran on Windows 11 with
+Python 3.12.12, lerobot 0.6.1 and quackd 0.9.0, piloted by OpenAI's `gpt-6-astra`. This is the
+only one of quackd's seven bodies that has been on hardware at all.
+
+What ran:
+
+- `lerobot-lookout`, with a real pilot and once with `--provider fake`, which is how you tell
+  an arm that will not answer from a model that will not decide.
+- Free-form `--goal` runs. It waved by rolling the wrist about 27 degrees either way, waved
+  again from an extended pose with `shoulder_lift` at -39 and `elbow_flex` between 24 and 30,
+  and opened and closed the gripper: commanded 100, reported 98 open and 3 closed with the jaws
+  nearly touching. One run mimed a duck quacking with the gripper.
+- A USB webcam at `opencv://1`, and at `opencv://2` on a later session, 640x480, with no
+  `?backend=` key needed on that machine.
+
+What went wrong, which belongs in the same breath as the above:
+
+- **The arm fell at the end of every run**, because `disconnect()` drops torque. That is the
+  whole reason [the rest pose](#the-rest-pose) exists, and the rest pose is the one thing on
+  this page written after hardware rather than before it.
+- One dry run aborted with `the arm did not answer: TimeoutError` when a single heartbeat round
+  trip failed. It never recurred, and nothing since has explained it.
+- One dry run aborted because the pilot answered `uncertain` at `assess_task` and the human
+  said no. That is the gate working, not a fault.
+- The camera framed the gripper and cropped the raised arm, so the model verified its own waves
+  from joint readings rather than from the picture. A view that shows the whole arm is the
+  first thing the second bench should fix, and it is now two `--camera-url` flags rather than a
+  choice between views.
+
+What nobody measured, and what this page therefore still cannot tell you:
+
+- whether the `holding` band is right, or whether an empty hand that binds reads the same as a
+  grip
+- what a joint actually reads after ten minutes of work, so whether the 60 °C refusal fires
+  before anything is hot enough to matter
+- whether a stall is caught on purpose. Nothing was deliberately obstructed
+- whether 5 degrees an action felt right in the room, which is the one number on this page that
+  only a person standing next to the arm can judge
+
+`pick` and `load_policy()` are still untried on hardware: no policy was loaded that afternoon.
 
 ## How to help
 
@@ -617,4 +952,6 @@ If you have an SO-101 on a desk, work through
 until step 10. `lerobot-lookout` is the first task to point at it; it asks for `report_state`
 rather than `observe`, because a `.duck` is checked against the static manifest, which
 cannot know whether you brought a webcam. What most needs a real arm is that checklist's
-*What to report*, and a camera is the last line of it. Open an issue with the transcript.
+*What to report*, and the four unmeasured things above are the top of it. One afternoon on one
+arm is a sample of one: what differs on yours is the part worth writing down. Open an issue
+with the transcript.

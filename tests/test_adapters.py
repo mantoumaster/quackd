@@ -181,3 +181,63 @@ async def test_health_wraps_the_heartbeat() -> None:
     await sick.connect()
     report = await sick.health()
     assert not report.ok and report.reason and "heartbeat" in report.reason
+
+
+# ── the bodies that are not an arm: rest poses and cameras they do not have ─────────────
+
+PARKS_NOTHING = (
+    "microduck:mock",
+    "rosbridge:mock",
+    "open_duck:mock",
+    "xlerobot:mock",
+    "alohamini:mock",
+    "toddlerbot:mock",
+)
+"""Every adapter but lerobot: the bodies that hold their own posture when the power goes."""
+
+ONE_CAMERA = (
+    "microduck:sim2d",
+    "microduck:mock",
+    "open_duck:mock",
+    "rosbridge:mock",
+    "xlerobot:mock",
+    "alohamini:mock",
+    "toddlerbot:mock",
+    "lerobot:mock",
+)
+"""Every spec outside `MULTI_CAMERA_SPECS`, which is `lerobot:real` and nothing else."""
+
+
+@pytest.mark.parametrize("spec", PARKS_NOTHING)
+async def test_a_body_that_cannot_park_refuses_a_rest_pose_instead_of_ignoring_it(
+    spec: str,
+) -> None:
+    """A rest pose is a joint-angle map for an arm that goes limp when it is disconnected,
+    and none of these bodies is one. The only way a pose reaches one is a hand-edited
+    `robots.json`, and taking it without ever driving to it would read as a promise quackd
+    is keeping, so the file names itself instead."""
+    from quackd.adapters.base import AdapterError, RestResult
+    from quackd.adapters.factory import make_adapter
+
+    with pytest.raises(AdapterError, match="does not return to a rest pose"):
+        make_adapter(spec, rest_pose={"shoulder_pan": 1.0})
+
+    parked = await make_adapter(spec).go_to_rest()
+    assert parked == RestResult.none()
+    assert not parked.recorded and not parked.reached
+
+
+@pytest.mark.parametrize("spec", ONE_CAMERA)
+def test_a_one_camera_body_refuses_a_second_camera_url_instead_of_dropping_it(spec: str) -> None:
+    """`--camera-url` is repeatable because the LeRobot arm reads several cameras, and a flag
+    that repeats on the command line repeats for every body. Opening the first url and
+    quietly dropping the rest would put the reason the second camera is missing nowhere on
+    the screen, so a body that reads one refuses and names the body that reads several."""
+    from quackd.adapters.base import AdapterError
+    from quackd.adapters.factory import make_adapter
+
+    with pytest.raises(AdapterError) as refusal:
+        make_adapter(spec, camera_url=["opencv://0?name=top", "opencv://1?name=side"])
+    assert str(refusal.value) == (
+        f"{spec} takes one --camera-url and 2 were given; only lerobot:real takes several"
+    )

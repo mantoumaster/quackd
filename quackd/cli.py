@@ -93,6 +93,12 @@ def _main(
     # `.env` first, so a NO_COLOR line in it counts, and then the consoles: Rich reads the
     # environment and the stream's encoding when a console is built, and quackd's are built
     # at import, which is before any of this was known.
+    #
+    # The one beside where you run, then the bare call, which walks up from quackd's own
+    # installed directory and so finds the `.env` a `uv venv` user put in their venv root.
+    # Neither overrides a variable already in the environment, and the first file to define
+    # a name wins, so the file next to the command you typed is the one that counts.
+    load_dotenv(Path.cwd() / ".env")
     load_dotenv()
     ui.configure(no_color=no_color)
 
@@ -615,7 +621,7 @@ def _run_impl(
     yes: bool,
     live: bool,
     address: str | None,
-    camera_url: str | None,
+    camera_url: list[str],
     token: str | None,
     fov_deg: float | None,
     gif: bool,
@@ -1603,8 +1609,8 @@ _TOKEN = typer.Option(
     "daemon has no installer and reads QUACKD_TODDLERBOT_TOKEN instead.",
     rich_help_panel="Robot",
 )
-_CAMERA_URL = typer.Option(
-    None,
+_CAMERA_URL: list[str] = typer.Option(
+    [],
     "--camera-url",
     help="Where frames come from, overriding whatever the robot advertises. An HTTP snapshot "
     "(http://host:9872/snapshot.jpg), or webrtc://host:8443 to pull mediad's video track off a "
@@ -1612,7 +1618,10 @@ _CAMERA_URL = typer.Option(
     "Needed when you reach the robot through a tunnel and its own URL is not routable. On a "
     "LeRobot arm it is a USB webcam by its OpenCV index, opencv://0, with ?width, ?height, "
     "?fps, ?fourcc, ?rotation, ?fov, ?name and ?backend=msmf for a Windows camera that lists "
-    "and will not open. Find the index with lerobot-find-cameras opencv.",
+    "and will not open. Find the index with lerobot-find-cameras opencv. Repeat the flag for "
+    "several cameras: every frame reaches the model each step, and the first is the primary, "
+    "the one --fov-deg describes and the one the detections and the steering verbs read. "
+    "Only the LeRobot arm reads more than one.",
     rich_help_panel="Robot",
 )
 _FOV = typer.Option(
@@ -1672,7 +1681,7 @@ def run(
     yes: bool = _YES,
     live: bool = _LIVE,
     address: str | None = _ADDR,
-    camera_url: str | None = _CAMERA_URL,
+    camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
     fov_deg: float | None = _FOV,
     gif: bool = typer.Option(
@@ -1772,7 +1781,7 @@ def record(
         yes=True,
         live=False,
         address=None,
-        camera_url=None,
+        camera_url=[],
         token=None,
         fov_deg=None,
         gif=True,
@@ -1973,7 +1982,7 @@ def doctor(
         "--address",
         help="With --robot, connect to a real robot and report what it says about itself.",
     ),
-    camera_url: str | None = _CAMERA_URL,
+    camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
     registry_dir: str | None = _REGISTRY_DIR,
     as_json: bool = _JSON,
@@ -1987,6 +1996,7 @@ def doctor(
     if address and not robot:
         _fail("--address needs --robot, so quackd knows what it is connecting to")
         return
+    rest_pose: dict[str, float] | None = None
     if robot:
         # a registered name is a robot too, and it brings the address you registered it with.
         # Only a name that resolves is substituted: anything else stays exactly as typed, so
@@ -2004,15 +2014,27 @@ def doctor(
                     where["camera_url"],
                     where["token"],
                 )
+                # only a robot you registered has one, because a rest pose is read off the arm
+                # and kept under its name rather than typed on a command line
+                rest_pose = where["rest_pose"]
     if as_json:
-        report = collect(robot, address=address, camera_url=camera_url, token=token)
+        report = collect(
+            robot, address=address, camera_url=camera_url, token=token, rest_pose=rest_pose
+        )
         print(json.dumps(report.to_dict()))
         raise typer.Exit(code=0 if report.ok else 1)
     ui.install_logging()
     # the probes are the slow part: five local servers at 1.5 s each, and a real robot after
     # them. It used to sit silent for ten seconds with no sign it was doing anything.
     with ui.spinner("checking this machine") as say:
-        report = collect(robot, address=address, camera_url=camera_url, token=token, progress=say)
+        report = collect(
+            robot,
+            address=address,
+            camera_url=camera_url,
+            token=token,
+            rest_pose=rest_pose,
+            progress=say,
+        )
     render(ui.console, report)
     if not report.ok:
         raise typer.Exit(code=1)
@@ -2040,7 +2062,7 @@ def serve_mcp(
     ),
     seed: int | None = _SEED,
     address: str | None = _ADDR,
-    camera_url: str | None = _CAMERA_URL,
+    camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
     dry_run: bool = _DRY,
     yes: bool = typer.Option(
@@ -2106,6 +2128,15 @@ def _can_prompt() -> bool:
     return bool(sys.stdin is not None and sys.stdin.isatty())
 
 
+def _rest_pose_text(pose: dict[str, float]) -> Any:
+    """A recorded pose on one line per joint, in the arm's own bus order where it has one."""
+    from quackd.adapters.lerobot import JOINTS
+
+    order = {joint: i for i, joint in enumerate(JOINTS)}
+    listed = sorted(pose.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0]))
+    return Text("\n".join(f"{joint} {value:.1f}" for joint, value in listed))
+
+
 def _entry_rows(entry: Any, *, flocks: list[str]) -> list[tuple[str, Any]]:
     from quackd.adapters.factory import describe
 
@@ -2126,7 +2157,10 @@ def _entry_rows(entry: Any, *, flocks: list[str]) -> list[tuple[str, Any]]:
         ("robot", Text(entry.key, style=ui.STYLES["accent"])),
         ("body", body),
         ("address", Text(entry.address) if entry.address else dash),
-        ("camera", Text(entry.camera_url) if entry.camera_url else dash),
+        # one per line, because two urls on one line is where a reader stops being able to
+        # tell which camera is the primary
+        ("camera", Text("\n".join(entry.camera_urls)) if entry.camera_urls else dash),
+        ("rest pose", _rest_pose_text(entry.rest_pose) if entry.rest_pose else dash),
         ("token", Text("set") if entry.token else dash),
         ("pilot", pilot),
         ("note", Text(entry.note) if entry.note else dash),
@@ -2158,7 +2192,7 @@ def robot_add(
         ..., help="<adapter>[:<backend>], e.g. microduck:sim2d. See `quackd list-adapters`."
     ),
     address: str | None = _ADDR,
-    camera_url: str | None = _CAMERA_URL,
+    camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
     provider: str | None = typer.Option(
         None,
@@ -2186,7 +2220,7 @@ def robot_add(
             name=name,
             spec=spec,
             address=address,
-            camera_url=camera_url,
+            camera_url=list(camera_url) or None,
             token=token,
             provider=provider,
             model=model,
@@ -2345,7 +2379,7 @@ def robot_show(
     ui.console.print(ui.kv_grid(rows))
 
 
-_CLEARABLE = ("address", "token", "camera-url", "provider", "model", "note")
+_CLEARABLE = ("address", "token", "camera-url", "rest-pose", "provider", "model", "note")
 
 
 @robot_app.command("edit")
@@ -2353,7 +2387,7 @@ def robot_edit(
     name: str = _ROBOT_NAME,
     spec: str | None = typer.Option(None, "--spec", help="Move it to another <adapter>:<backend>."),
     address: str | None = _ADDR,
-    camera_url: str | None = _CAMERA_URL,
+    camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
     provider: str | None = typer.Option(
         None,
@@ -2381,16 +2415,18 @@ def robot_edit(
     from quackd.adapters.base import AdapterError
     from quackd.registry import RegistryError
 
-    given = {
+    given: dict[str, Any] = {
         "spec": spec,
         "address": address,
-        "camera_url": camera_url,
+        # every url given replaces the whole stored set: naming a camera today says where the
+        # cameras are today, which is the rule --address and --token already follow
+        "camera_url": list(camera_url) or None,
         "token": token,
         "provider": provider,
         "model": model,
         "note": note,
     }
-    changes: dict[str, str | None] = {k: v for k, v in given.items() if v is not None}
+    changes: dict[str, Any] = {k: v for k, v in given.items() if v is not None}
     for field in clear:
         key = field.strip().lower().replace("-", "_")
         if key not in {c.replace("-", "_") for c in _CLEARABLE}:
@@ -2410,6 +2446,147 @@ def robot_edit(
         return
     touched = ", ".join(sorted(key.replace("_", "-") for key in changes))
     ui.console.print(_ok_line(f"updated {name}: {touched}"))
+
+
+@robot_app.command("rest-pose")
+def robot_rest_pose(
+    name: str = _ROBOT_NAME,
+    clear: bool = typer.Option(False, "--clear", help="Forget the pose recorded for it."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask."),
+    address: str | None = _ADDR,
+    registry_dir: str | None = _REGISTRY_DIR,
+    as_json: bool = _JSON,
+) -> None:
+    """Record where this arm rests: connect, read every joint, and keep the pose under NAME.
+
+    A run starts from it and returns to it before torque is released, so the arm stops falling
+    when a run ends. Fold the arm by hand first, with nothing connected, so the pose you record
+    is one it can hold with torque off.
+    """
+    from quackd.adapters.base import AdapterError
+    from quackd.adapters.factory import describe, make_adapter
+    from quackd.registry import RegistryError
+    from quackd.transport.base import TransportError
+
+    registry = _registry(registry_dir)
+    try:
+        entry = registry.robot(name)
+    except RegistryError as e:
+        _fail(str(e), hint="quackd robot list")
+        return
+
+    if clear:
+        if entry.rest_pose is None:
+            _fail(
+                f"{name} has no rest pose recorded",
+                hint=f"quackd robot rest-pose {name}",
+            )
+            return
+        try:
+            entry = registry.update_robot(name, {"rest_pose": None})
+        except (RegistryError, AdapterError, ValidationError) as e:
+            _registry_fail(_one_line(e))
+            return
+        if as_json:
+            print(json.dumps(entry.public()))
+            return
+        ui.console.print(_ok_line(f"cleared {name}'s rest pose"))
+        ui.console.print(
+            Text(
+                "  a run now leaves the arm where it stands, and torque drops there",
+                style=ui.STYLES["muted"],
+            )
+        )
+        return
+
+    if as_json and not yes:
+        _fail("--json is for a script, and a script cannot answer a prompt: add --yes")
+        return
+
+    try:
+        static = describe(entry.robot_spec)
+    except AdapterError as e:
+        _registry_fail(e)
+        return
+    if "joint" not in static.intents:
+        _fail(
+            f"{name} ({entry.key}) has no joints, so there is no rest pose to record",
+            hint="a rest pose is for an arm: quackd list-adapters",
+        )
+        return
+
+    kwargs = entry.adapter_kwargs(address=address)
+    # no camera: reading joints needs none, and a webcam that will not open refuses the whole
+    # connect. No rest pose either: the arm must be let go of at the pose you are choosing now,
+    # not driven back to the one it is replacing.
+    kwargs.update(camera_url=(), rest_pose=None)
+    try:
+        adapter = make_adapter(entry.robot_spec, **kwargs)
+    except (AdapterError, ImportError) as e:
+        _registry_fail(e if isinstance(e, AdapterError) else AdapterError(str(e)))
+        return
+    if not getattr(adapter, "supports_rest_pose", False):
+        _fail(
+            f"{name} ({entry.key}) has joints, and quackd does not drive it to a rest pose "
+            "yet: only the LeRobot arm does today"
+        )
+        return
+
+    # the same shape `Resolved.label` prints, which is what every other line about a
+    # registered robot says: the name you gave it, and the body under it
+    label = f"{entry.name} ({entry.key})"
+
+    async def read() -> dict[str, float]:
+        await adapter.connect()
+        try:
+            state = await adapter.get_state()
+            return {str(k): float(v) for k, v in dict(state.extras.get("joints", {})).items()}
+        finally:
+            with contextlib.suppress(Exception):
+                await adapter.close()
+
+    try:
+        with ui.spinner(f"reading {label}"):
+            joints = asyncio.run(read())
+    except (TransportError, OSError) as e:
+        where = f" at {kwargs['address']}" if kwargs.get("address") else ""
+        _fail(f"{entry.key}{where}: {e}")
+        return
+    if not joints:
+        _fail(f"{label} reported no joint positions")
+        return
+
+    ui.console.print(Text(f"{label} is at", style=ui.STYLES["muted"]))
+    ui.console.print(ui.kv_grid((j, f"{v:.1f}") for j, v in joints.items()))
+    if not yes:
+        if not _can_prompt():
+            _fail(
+                "no terminal to ask on: pass --yes to record it",
+                hint=f"quackd robot rest-pose {name} --yes",
+            )
+            return
+        already = ", replacing the one already recorded" if entry.rest_pose else ""
+        with ui.pause_status():
+            if not typer.confirm(f"record this as {name}'s rest pose{already}?"):
+                raise typer.Exit()
+
+    pose = {joint: round(value, 1) for joint, value in joints.items()}
+    try:
+        entry = registry.update_robot(name, {"rest_pose": pose})
+    except (RegistryError, AdapterError, ValidationError) as e:
+        _registry_fail(_one_line(e))
+        return
+    if as_json:
+        print(json.dumps(entry.public()))
+        return
+    ui.console.print(_ok_line(f"recorded {name}'s rest pose ({_plural(len(pose), 'joint')})"))
+    ui.console.print(
+        Text(
+            f"  quackd run <duck> --robot {name} starts from it and returns to it "
+            "before letting go",
+            style=ui.STYLES["muted"],
+        )
+    )
 
 
 @robot_app.command("remove")

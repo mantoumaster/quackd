@@ -22,7 +22,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from quackd.perception.base import Detection, summarize_detections
-from quackd.transport.base import Intent
+from quackd.transport.base import Intent, frames_of, primary_of
 from quackd.verbs.registry import NoParams, Verb, VerbContext, VerbResult
 
 if TYPE_CHECKING:
@@ -193,8 +193,8 @@ async def _see_holding(
 
 
 async def observe(ctx: VerbContext, _: NoParams) -> VerbResult:
-    img = await ctx.transport.get_frame()
-    if img is None:
+    frames = await frames_of(ctx.transport)
+    if not frames:
         # a backend that knows why it has no picture says so. A camera quackd was told to
         # open and then lost is a different problem from a body that never had one, and
         # only the first is worth going to look at (the LeRobot arm sets this today)
@@ -202,11 +202,23 @@ async def observe(ctx: VerbContext, _: NoParams) -> VerbResult:
         return VerbResult.fail(
             f"the camera gave no frame: {why}" if why else "this transport has no camera"
         )
-    ctx.on_frame(img, "observe")
-    detections = ctx.detector.detect(img) if ctx.detector else []
+    # the primary camera and only it: a detection's bearing is read off the lens --fov-deg
+    # measured, so the same angle from a second view would point somewhere else. A body whose
+    # primary lens gave nothing this time still shows its other views and reports nothing
+    # seen, which is what a one-camera body does when its only camera fails.
+    primary = primary_of(frames)
+    ctx.on_frame(primary if primary is not None else frames[0].image, "observe")
+    ctx.on_frames(frames, "observe")
+    detections = ctx.detector.detect(primary) if (ctx.detector and primary is not None) else []
+    dumped = [d.model_dump() for d in detections]
+    seen = summarize_detections(detections)
+    if len(frames) == 1:
+        return VerbResult.success(f"frame captured; {seen}", detections=dumped)
+    # the camera names only where there are views to tell apart, so a one-camera body reads
+    # back exactly the line and the payload it did before there were several
+    names = [frame.name for frame in frames]
     return VerbResult.success(
-        f"frame captured; {summarize_detections(detections)}",
-        detections=[d.model_dump() for d in detections],
+        f"frames captured from {', '.join(names)}; {seen}", detections=dumped, cameras=names
     )
 
 

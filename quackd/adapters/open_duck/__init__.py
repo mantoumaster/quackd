@@ -18,11 +18,12 @@ here, they are simply never declared, so they do not exist anywhere in quackd fo
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 from PIL import Image
 
+from quackd.adapters.base import RestResult, one_camera_url, refuse_rest_pose
 from quackd.adapters.manifest import (
     Datasheet,
     Figure,
@@ -310,6 +311,11 @@ class OpenDuckAdapter:
     async def stop(self) -> None:
         await self.transport.stop()
 
+    async def go_to_rest(self) -> RestResult:
+        """The walk policy holds every joint on this duck, so there is no pose quackd can
+        park it at: zeroing the velocity in `stop()` is the whole of parking here."""
+        return RestResult.none()
+
     @property
     def stop_error(self) -> str | None:
         """Forwarded from the transport, because `stop` in `verbs/core.py` reads this off
@@ -386,9 +392,14 @@ def make(
     seed: int | None = None,
     address: str | None = None,
     live: bool = False,
-    camera_url: str | None = None,
+    camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
+    rest_pose: dict[str, float] | None = None,
 ) -> OpenDuckAdapter:
+    # both run before the branch so a rest pose this duck cannot hold and a second camera are
+    # refused on every backend, not only on the one that would have opened the camera
+    refuse_rest_pose("open_duck", rest_pose)
+    url = one_camera_url(camera_url, spec=f"open_duck:{backend}")
     if backend == "sim2d":
         from quackd.adapters.open_duck.sim2d import OpenDuckSim2D
 
@@ -403,7 +414,7 @@ def make(
         from quackd.adapters.open_duck.bridge import OpenDuckBridge
 
         return OpenDuckAdapter(
-            OpenDuckBridge(address=address, camera_url=camera_url, token=token),
+            OpenDuckBridge(address=address, camera_url=url, token=token),
             robot_id=robot_id,
         )
     raise ValueError(f"unknown open_duck backend {backend!r}; choose one of {BACKENDS}")
