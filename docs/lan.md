@@ -9,7 +9,7 @@ answers discovery is registered by hand with `quackd robot add` ([registry.md](r
 and discovery feeds no flock by itself.
 
 ```bash
-uv pip install 'quackd[lan]'     # zeroconf + paho-mqtt
+uv pip install 'quackd[lan,microduck]'   # zeroconf + paho-mqtt, and a robot to announce
 ```
 
 ## Discovery (`_quackd._tcp.local.`)

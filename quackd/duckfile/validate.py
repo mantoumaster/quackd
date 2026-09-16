@@ -51,9 +51,11 @@ def validate_duck(
     problems: list[Problem] = []
     if not manifests:
         if registry is None:
-            from quackd.verbs.registry import default_registry
+            from quackd.adapters.factory import installed_vocabulary
 
-            registry = default_registry()
+            # every body installed here, not one of them: a task file that named no robot is
+            # being checked for coherence rather than against a particular arm
+            registry = installed_vocabulary()
         unknown = registry.unknown(fm.verbs.allow)
         if unknown:
             problems.append(Problem("verbs.allow", f"unknown verbs: {', '.join(unknown)}"))

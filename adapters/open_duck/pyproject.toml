@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quackd-open-duck"
+dynamic = ["version"]
+description = "The Open Duck Mini v2 adapter for quackd. Install it as quackd[open_duck]."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Rok Benko" }]
+dependencies = ["quackd>=0.9,<0.10"]
+
+
+[project.entry-points."quackd.adapters"]
+open_duck = "quackd_open_duck"
+
+[project.urls]
+Homepage = "https://github.com/rokbenko/quackd"
+Documentation = "https://github.com/rokbenko/quackd/blob/main/docs/adapters/open_duck.md"
+
+[tool.hatch.version]
+path = "src/quackd_open_duck/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quackd_open_duck"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md", "pyproject.toml"]
+
+[tool.uv.sources]
+quackd = { workspace = true }

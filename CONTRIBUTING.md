@@ -7,12 +7,41 @@ Thanks for taking a toy duck seriously. Two kinds of contribution matter most: *
 
 ```bash
 git clone https://github.com/rokbenko/quackd && cd quackd
-uv sync --extra dev            # add --extra anthropic etc. if you want a real provider
+uv sync --extra dev            # the core and all seven robots, editable, no robot SDKs
 uv sync --extra dev --extra mujoco   # the physics simulator, or its tests just skip
 uv run pre-commit install
 uv run pytest                  # the whole suite, a few minutes, no network, no keys
-uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run quackd validate ducks/*.duck
+uv lock --check && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run quackd validate ducks/*.duck
 ```
+
+Add `--extra anthropic`, `--extra openai` or `--extra gemini` if you want a real provider.
+
+This repository is a uv workspace: `quackd` is one distribution and each robot under
+`adapters/` is another (`quackd-microduck`, `quackd-lerobot`, `quackd-rosbridge`,
+`quackd-open-duck`, `quackd-xlerobot`, `quackd-alohamini`, `quackd-toddlerbot`). The dev
+extra installs the core and all seven of them editable, so an edit anywhere is live in the
+next test run with nothing to reinstall. None of the robot SDKs come with them, and none is
+needed: the suite drives every adapter against a mock or a fake.
+
+> [!IMPORTANT]
+> What a user gets is not what you have. `uv pip install quackd` installs no robot at all,
+> and every command that needs a body refuses with the list of extras. You are working with
+> all seven present, so a message that only fires when one is missing is a message you will
+> never see by accident. CI's `packaging` job is the one that checks it: it builds all eight
+> packages, installs the core wheel alone, and asserts that `quackd doctor --json` reports
+> seven adapters and none of them installed.
+
+`uv lock --check` runs before anything else in CI. Eight packages share one lock file and
+`uv sync` re-locks in silence when a `pyproject.toml` has drifted, which is how an unlocked
+extra once reached a release. Change a dependency anywhere, run `uv lock`, and commit
+`uv.lock` with the change that caused it.
+
+Versions move together. The core and each adapter carry their own `__version__`, because an
+adapter's sdist holds only its own source and cannot read the core's, and each one pins a
+window on the core (`quackd>=0.9,<0.10`). `uv run python scripts/set_version.py X.Y.Z`
+rewrites all eight and the windows that tie them together; nothing here is edited by hand. A
+release then builds eight wheels and eight sdists with `uv build --all-packages`, core first
+to PyPI because every adapter depends on it. The full order is in [PLAN.md](PLAN.md).
 
 `uv run mypy` checks with whatever interpreter your venv has. CI runs it twice,
 under 3.11 and 3.12, and `[tool.mypy]` pins no `python_version` on purpose (pinning 3.11
@@ -23,12 +52,30 @@ Windows, macOS and Linux are all first-class. Tests must never touch the network
 third of that is the seeded acceptance sweeps, which CI holds at 10 of 10 by setting
 `QUACKD_STRICT_SEEDS=1`; locally they pass at 8 of 10 so a slow machine does not block you.
 
-Touching `quackd/sim3d/` or `quackd/transport/mujoco.py`? Install `--extra mujoco` or your work
+## Where things live
+
+| Path | What is there |
+|---|---|
+| `quackd/` | the core, and nothing that is one robot's: the loop, the executor, the verb registry, the `.duck` contract, the MCP server, the 2D arena (`quackd/sim2d/`) and the mock transport (`quackd/transport/mock.py`) |
+| `quackd/adapters/` | what every adapter shares: `base.py` (the `RobotAdapter` protocol and its helpers), `manifest.py`, `catalogue.py` (the seven quackd publishes, as strings), `factory.py` (`--robot` to a body) |
+| `adapters/<name>/` | one robot, one distribution: `pyproject.toml`, `README.md`, and the code in `src/quackd_<name>/` |
+| `bridge/<name>/` | the daemon that runs on the robot itself (`open_duck`, `alohamini`, `toddlerbot`), which never imports quackd |
+| `ducks/`, `docs/`, `tests/`, `web/`, `scripts/` | the starter task files, the documentation, the whole suite, the browser demo, `set_version.py` |
+
+A robot's code is imported as `quackd_<name>`, never as `quackd.adapters.<name>`. The 2D
+arena and the mock transport stayed in the core on purpose: three bodies subclass
+`Sim2DTransport` and a fourth uses it as it is, and six of the seven mocks draw their frame
+with `quackd/sim2d/render.py`, so neither was ever the duck's. `UpstreamRef`
+lives in `quackd/upstream.py` for the same reason, since every adapter cites an upstream and
+none of them should import a duck to do it.
+
+Touching `adapters/microduck/src/quackd_microduck/sim3d/` or that package's
+`transports/mujoco.py`? Install `--extra mujoco` or your work
 is untested locally: both test modules start with `pytest.importorskip("mujoco")` and vanish
 without it. CI's `physics` job installs the extra and runs them on the kinematic stand-in, which
 touches no network. The tests marked `real_duck` need upstream's model in `~/.quackd/cache`, so
 they skip until you have run `--robot microduck:mujoco` once, and a nightly job runs them there.
-The gait arithmetic itself lives in `quackd/sim3d/gait.py`, which imports no `mujoco`, so
+The gait arithmetic itself lives in that package's `sim3d/gait.py`, which imports no `mujoco`, so
 `tests/test_sim3d_gait.py` runs whether you installed the extra or not.
 
 Touching anything under `bridge/`? That is the code that runs on a robot, and there are
@@ -111,8 +158,8 @@ nothing in your `allow` list. Skip it for a smoke test, the way `hello-world` do
 1. Decide the kind. **Core** (`quackd/verbs/core.py`) = the same on every robot whose
    manifest meets a requirement (a camera, a `twist` intent, a `sound` intent); add its
    `Requirement` to `REQUIREMENTS`. **Extension** = one robot's own behaviour, in that
-   adapter's `verbs.py` (Microduck: `quackd/adapters/microduck/verbs.py`; it needs a
-   VERIFIED upstream method in `quackd/transport/upstream_api.py`). **Learned** = v2, see
+   adapter's `verbs.py` (Microduck: `adapters/microduck/src/quackd_microduck/verbs.py`; it
+   needs a VERIFIED upstream method in that package's `upstream_api.py`). **Learned** = v2, see
    [docs/learned-verbs.md](docs/learned-verbs.md). If the thing you are adding never
    touches the body, it is probably not a verb at all: `remember` sits next to
    `declare_success` as a *meta tool* precisely so that the rule "the vocabulary comes from
@@ -186,22 +233,26 @@ Four things the tracing depends on, none of them optional:
 
 ## Add an adapter
 
-A robot joins quackd as a package under `quackd/adapters/<name>/` that declares a
-`RobotManifest` and moves the body through intents its own controllers execute. The
-recipe, the rules the manifest enforces and the checklist are in
+A robot joins quackd as its own distribution, built from `adapters/<name>/` and imported as
+`quackd_<name>`. It declares a `RobotManifest`, moves the body through intents its own
+controllers execute, and announces itself to the core through the `quackd.adapters` entry
+point group. That group is the whole of the contract, so an adapter for a robot nobody here
+owns can be published to PyPI without a pull request against this repository. The recipe,
+the rules the manifest enforces and the checklist are in
 [docs/adapters.md](docs/adapters.md); the honesty rules are
 [ADR-0022](docs/adr/0022-per-adapter-upstream-refs.md). In short: write `mock` first; put
 every SDK name in the package's `upstream_api.py` with a pinned link and a row in
-`tests/test_upstream_api.py`; import the SDK inside `connect()` behind an extra; never
-send the SDK's "go limp" call; write `docs/adapters/<name>.md` listing every ref; and
-arrive 🧪 in the status tables until someone runs it against the real thing.
+`tests/test_upstream_api.py`; import the SDK inside `connect()` behind that package's `[sdk]`
+extra; never send the SDK's "go limp" call; write `docs/adapters/<name>.md` listing every ref;
+and arrive 🧪 in the status tables until someone runs it against the real thing.
 
 ## Working agreements
 
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `test:`).
 - Consequential decisions get a short ADR in `docs/adr/` (copy the shape of an existing one).
 - Every module opens with a docstring saying *why it exists*.
-- Keep the default install light: provider SDKs and YOLO stay optional extras.
+- Keep the default install light: robots, provider SDKs and YOLO are all optional extras,
+  and `uv pip install quackd` brings none of them.
 - **Never commit an upstream asset.** No logos, meshes, CAD, MJCF, ONNX policies or videos,
   from Pollen Robotics or anyone else, in a commit, a test fixture or a docs asset. This got
   sharper in 0.8: a real `--robot microduck:mujoco` run puts upstream's `robot_walk.xml` and

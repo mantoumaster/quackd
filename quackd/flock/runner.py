@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from quackd.adapters.base import AdapterError
 from quackd.adapters.factory import RobotSpec, describe, parse_robot_spec
 from quackd.agent.providers.base import LLMProvider, Usage
 from quackd.agent.transcript import new_run_dir
@@ -92,7 +93,15 @@ def make_sim_flock(
 ) -> tuple[World, FlockClock, dict[str, Any]]:
     """One arena, one clock, one adapter per member in sorted member order, via the 0.3
     path (`make_flock`), so its worlds stay byte-identical."""
-    from quackd.adapters.microduck import MicroduckAdapter
+    try:
+        from quackd_microduck import MicroduckAdapter
+    except ImportError as e:
+        # a coordinator flock is N views of one simulated Microduck world by definition, so
+        # there is no other body to fall back to and nothing sensible to guess
+        raise AdapterError(
+            "a coordinator flock (--flock N) is N simulated Microducks, and adapter "
+            'microduck is not installed: uv pip install "quackd[microduck]"'
+        ) from e
 
     ordered = sorted(specs)
     ducks = [n for n in ordered if specs[n].adapter == "microduck"]

@@ -26,7 +26,8 @@ e-stop, and nothing reports a battery, so no run will ever abort on a flat one. 
    unit, autostart or supervisor anywhere upstream. Its exit is upstream's `disconnect()`, which
    drops arm torque, so whatever an arm holds at the hour mark falls. A session longer than
    an hour needs it restarted, and quackd will report the silence as a heartbeat failure.
-6. `uv pip install 'quackd[xlerobot]'`, then
+6. `uv pip install 'quackd[xlerobot]'`, which installs the `quackd-xlerobot` package and
+   pyzmq and nothing of upstream's, then
 
    ```bash
    uv run quackd doctor --robot xlerobot:zmq --address tcp://<host>:5555

@@ -28,9 +28,9 @@ import threading
 
 import pytest
 
-from quackd.adapters.toddlerbot import ToddlerBotAdapter
-from quackd.adapters.toddlerbot.bridge import ToddlerBotBridge
 from quackd.transport.base import Intent
+from quackd_toddlerbot import ToddlerBotAdapter
+from quackd_toddlerbot.bridge import ToddlerBotBridge
 from tests.conftest import REPO
 
 DAEMON = REPO / "bridge" / "toddlerbot" / "quackd_toddlerbot_bridge.py"

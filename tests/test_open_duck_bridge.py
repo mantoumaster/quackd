@@ -15,8 +15,13 @@ from typing import Any
 
 import pytest
 
-from quackd.adapters.open_duck import OpenDuckAdapter
-from quackd.adapters.open_duck.bridge import (
+from quackd.duckfile.parser import parse_duck_text
+from quackd.perception.color_blob import ColorBlobDetector
+from quackd.safety import Executor, allow_all
+from quackd.transport.base import HeartbeatError, Intent, TransportError
+from quackd.verbs.registry import registry_from_manifest
+from quackd_open_duck import OpenDuckAdapter
+from quackd_open_duck.bridge import (
     COMMAND,
     MIN_LOOP_HZ,
     PROTOCOL,
@@ -25,12 +30,7 @@ from quackd.adapters.open_duck.bridge import (
     OpenDuckBridge,
     parse_address,
 )
-from quackd.adapters.open_duck.verbs import HEAD_YAW_RANGE
-from quackd.duckfile.parser import parse_duck_text
-from quackd.perception.color_blob import ColorBlobDetector
-from quackd.safety import Executor, allow_all
-from quackd.transport.base import HeartbeatError, Intent, TransportError
-from quackd.verbs.registry import registry_from_manifest
+from quackd_open_duck.verbs import HEAD_YAW_RANGE
 
 DUCK = parse_duck_text(
     "---\nduck: 1\nname: t\ndescription: d\nrequires: [move]\nverbs:\n"
@@ -438,7 +438,7 @@ async def test_a_state_that_could_not_be_read_is_not_a_healthy_duck() -> None:
     assert "UNREADABLE" in state.summary()
     assert state.x is None and state.y is None and state.theta is None
 
-    from quackd.adapters.open_duck.verbs import open_duck_conditions
+    from quackd_open_duck.verbs import open_duck_conditions
 
     for name, check in open_duck_conditions().items():
         assert check(state) is not None, f"{name} must refuse on a state it could not read"

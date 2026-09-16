@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from quackd.sim3d import upstream_api as up
+from quackd_microduck.sim3d import upstream_api as up
 from tests.conftest import REPO
 
 WEB = REPO / "web"
@@ -788,7 +788,7 @@ def test_the_browser_pins_the_same_upstream_commits_python_does() -> None:
 
 
 def test_the_browser_uses_the_same_gait_numbers_python_does() -> None:
-    from quackd.sim3d import gait
+    from quackd_microduck.sim3d import gait
 
     js = _js("microduck.js")
     floor = re.search(r"GAIT_FLOOR\s*=\s*\{([^}]*)\}", js)

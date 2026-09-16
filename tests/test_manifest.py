@@ -19,8 +19,8 @@ from quackd.adapters.manifest import (
     apply_datasheet_override,
     manifest_json_schema,
 )
-from quackd.adapters.microduck import microduck_manifest
 from quackd.verbs.registry import ManifestError, default_registry, registry_from_manifest
+from quackd_microduck import microduck_manifest
 
 
 def _manifest(**over: Any) -> RobotManifest:

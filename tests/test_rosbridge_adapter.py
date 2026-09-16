@@ -15,22 +15,22 @@ from PIL import Image
 
 from quackd.adapters.base import AdapterNotInstalled
 from quackd.adapters.factory import describe, make_adapter, parse_robot_spec
-from quackd.adapters.microduck import microduck_manifest
-from quackd.adapters.rosbridge import DATASHEET, RosbridgeAdapter, rosbridge_manifest
-from quackd.adapters.rosbridge.introspection import datasheet_from_introspection, parse_urdf
-from quackd.adapters.rosbridge.mock import MOCK_URDF, RosbridgeMock, mock_introspection
-from quackd.adapters.rosbridge.ws import (
+from quackd.perception.color_blob import ColorBlobDetector
+from quackd.safety import Executor
+from quackd.transport.base import HeartbeatError, Intent, TransportError
+from quackd.verbs.core import speed_limits
+from quackd.verbs.registry import registry_from_manifest
+from quackd_microduck import microduck_manifest
+from quackd_rosbridge import DATASHEET, RosbridgeAdapter, rosbridge_manifest
+from quackd_rosbridge.introspection import datasheet_from_introspection, parse_urdf
+from quackd_rosbridge.mock import MOCK_URDF, RosbridgeMock, mock_introspection
+from quackd_rosbridge.ws import (
     RosbridgeWs,
     decode_compressed_image,
     parse_address,
     twist_message,
     yaw_from_quaternion,
 )
-from quackd.perception.color_blob import ColorBlobDetector
-from quackd.safety import Executor
-from quackd.transport.base import HeartbeatError, Intent, TransportError
-from quackd.verbs.core import speed_limits
-from quackd.verbs.registry import registry_from_manifest
 
 MOCK_VERBS = {
     "observe",

@@ -29,7 +29,11 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - name: Sync (default deps + dev extra — no provider SDKs, no keys)
+      - name: Lock is current
+        # `uv sync` re-locks in silence when pyproject has drifted, so a stale lock used to
+        # reach a release rather than a CI failure. quackd[alohamini] once shipped unlocked.
+        run: uv lock --check
+      - name: Sync (default deps + dev extra — every adapter, no SDKs, no keys)
         run: uv sync --python ${{ matrix.python }} --extra dev
       - name: Lint
         run: uv run ruff check .
@@ -46,6 +50,43 @@ jobs:
         # a glob for an external command, so this would hand quackd the literal `ducks/*.duck`.
         shell: bash
         run: uv run quackd validate ducks/*.duck
+
+  # The claim the split exists to make: the core on its own is the loop and no robot, and it
+  # says so rather than failing somewhere confusing. Proven against built wheels rather than
+  # the working tree, because that is what somebody actually installs.
+  packaging:
+    name: a bare install brings no robot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Build every package
+        run: uv build --all-packages --out-dir dist
+      - name: Install the core alone
+        run: |
+          uv venv --python 3.12 bare
+          uv pip install --python bare dist/quackd-*.whl
+      - name: The core carries no adapter, and says what to install
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./bare/bin/quackd doctor --json > report.json
+          python - <<'PY'
+          import json
+          rows = json.load(open("report.json"))["adapters"]
+          assert len(rows) == 7, rows
+          assert not any(r["adapter_installed"] for r in rows), rows
+          PY
+          ! ./bare/bin/quackd run hello-world --provider fake 2>err.txt
+          grep -q "no robot adapter is installed" err.txt
+      - name: One adapter installed is one adapter usable
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python bare dist/quackd_lerobot-*.whl
+          ./bare/bin/quackd list-verbs --robot lerobot:mock | grep -q move_joints
 
   physics:
     name: physics · mujoco + osmesa

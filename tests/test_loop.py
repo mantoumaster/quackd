@@ -10,8 +10,6 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from quackd.adapters.lerobot import LeRobotAdapter
-from quackd.adapters.lerobot.mock import LeRobotMock
 from quackd.agent.loop import AgentLoop, RunConfig, run_duck
 from quackd.agent.providers.base import Exchange, ProviderError, ProviderTurn, ToolCall, Usage
 from quackd.agent.providers.fake import FakeProvider
@@ -19,6 +17,8 @@ from quackd.agent.transcript import Transcript
 from quackd.duckfile.schema import Budgets, DuckFile
 from quackd.transport.base import CameraFrame
 from quackd.transport.mock import MockTransport
+from quackd_lerobot import LeRobotAdapter
+from quackd_lerobot.mock import LeRobotMock
 
 # the verdict comes first on every run now: the scripted pilot answers it as a rule, and the
 # duck's own three verbs follow exactly as they did

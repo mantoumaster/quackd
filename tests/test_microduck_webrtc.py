@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from quackd.adapters.microduck.webrtc import WebRtcCamera, is_webrtc_url, signalling_url
+from quackd_microduck.webrtc import WebRtcCamera, is_webrtc_url, signalling_url
 
 OFFER = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n"
 

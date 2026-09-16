@@ -9,18 +9,19 @@ Read on **2026-09-04**, pinned at
 [`3d14695`](https://github.com/Vector-Wangel/XLeRobot/tree/3d14695e40c9c68229c0aacffca6053c75cd3eb6)
 (`main`, 2026-07-22). The repository has **zero git tags and zero releases**, so a commit hash
 is the only honest pin there is. Every name quackd spells lives in
-[`quackd/adapters/xlerobot/upstream_api.py`](../../quackd/adapters/xlerobot/upstream_api.py).
+[`adapters/xlerobot/src/quackd_xlerobot/upstream_api.py`](../../adapters/xlerobot/src/quackd_xlerobot/upstream_api.py).
 
 **Nothing here has ever run on a cart.** The `zmq` backend is exercised against a fake host
 over loopback sockets and against nothing else.
 
 ```bash
+uv pip install 'quackd[xlerobot]'     # quackd's own adapter package, plus pyzmq
+
 # offline, the default
-uv run quackd run xlerobot-lookout --robot xlerobot:mock --provider fake
+quackd run xlerobot-lookout --robot xlerobot:mock --provider fake
 
 # a real cart, once its host is running (see "Before it will answer" below)
-uv pip install 'quackd[xlerobot]'
-uv run quackd run xlerobot-lookout --robot xlerobot:zmq --address tcp://192.168.1.42:5555
+quackd run xlerobot-lookout --robot xlerobot:zmq --address tcp://192.168.1.42:5555
 ```
 
 ## Backends
@@ -36,9 +37,10 @@ XLeRobot is **not an installable package**: no PyPI entry, no `pyproject.toml`, 
 and it is absent from upstream `huggingface/lerobot`. Its documented install is copying files
 into an existing lerobot source tree, which is not a dependency quackd can express.
 
-It does, however, already ship a network API. So quackd speaks that wire directly and its extra
-is `pyzmq` and nothing else — no `lerobot`, no torch, no Python 3.12 floor. `quackd[xlerobot]`
-installs on the 3.11 floor and on Windows.
+It does, however, already ship a network API. So quackd speaks that wire directly, and
+`quackd[xlerobot]` is `quackd-xlerobot`, quackd's own Apache-2.0 adapter package, plus `pyzmq`
+and nothing else: no `lerobot`, no torch, no Python 3.12 floor. It installs on the 3.11 floor
+and on Windows, and it still pulls nothing from upstream.
 
 Two other routes were considered and rejected. `lerobot:real` refuses any `robot_type` that is
 not an SO-101 follower and declares `mobility="none"`, which would delete every verb a mobile

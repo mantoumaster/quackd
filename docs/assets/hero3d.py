@@ -38,15 +38,15 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from quackd.adapters.factory import parse_robot_spec, registry_for
-from quackd.adapters.microduck import MicroduckAdapter
 from quackd.agent.loop import RunConfig, run_duck
 from quackd.agent.providers.fake import FakeProvider
 from quackd.duckfile.parser import duck_from_goal
 from quackd.perception.color_blob import ColorBlobDetector
-from quackd.sim3d.render import render_overview
-from quackd.sim3d.scene import ARENA_HALF
-from quackd.sim3d.world import CONTROL_DT, MujocoWorld
-from quackd.transport.mujoco import MujocoTransport
+from quackd_microduck import MicroduckAdapter
+from quackd_microduck.sim3d.render import render_overview
+from quackd_microduck.sim3d.scene import ARENA_HALF
+from quackd_microduck.sim3d.world import CONTROL_DT, MujocoWorld
+from quackd_microduck.transports.mujoco import MujocoTransport
 
 GOAL = "walk in a square, half a metre a side"
 SAMPLE_S = 0.4  # sim seconds between recorded frames

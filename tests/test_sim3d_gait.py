@@ -14,7 +14,7 @@ import math
 
 import pytest
 
-from quackd.sim3d.gait import GAIT_FLOOR_VX, GAIT_FLOOR_WZ, tilt_deg, usable_twist
+from quackd_microduck.sim3d.gait import GAIT_FLOOR_VX, GAIT_FLOOR_WZ, tilt_deg, usable_twist
 
 
 def test_the_gait_floor_scales_a_twist_instead_of_dropping_or_lurching() -> None:

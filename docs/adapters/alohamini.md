@@ -11,17 +11,18 @@ Apache-2.0, pinned at
 the only pin there is. The hardware repository
 [liyiteng/AlohaMini](https://github.com/liyiteng/AlohaMini) (`17c6a98d`) holds the CAD and the
 BOM and no software quackd uses. Every name quackd spells lives in
-[`quackd/adapters/alohamini/upstream_api.py`](../../quackd/adapters/alohamini/upstream_api.py).
+[`adapters/alohamini/src/quackd_alohamini/upstream_api.py`](../../adapters/alohamini/src/quackd_alohamini/upstream_api.py).
 
 **Nothing here has ever run on a robot.**
 
 ```bash
+uv pip install 'quackd[alohamini]'    # quackd's own adapter package, plus pyzmq
+
 # offline
-uv run quackd run alohamini-lookout --robot alohamini:sim2d --provider fake
+quackd run alohamini-lookout --robot alohamini:sim2d --provider fake
 
 # a real robot, once quackd's host is running on its Raspberry Pi
-uv pip install 'quackd[alohamini]'
-uv run quackd run alohamini-lookout --robot alohamini:zmq --address tcp://192.168.1.50:5555
+quackd run alohamini-lookout --robot alohamini:zmq --address tcp://192.168.1.50:5555
 ```
 
 ## Backends
@@ -39,7 +40,8 @@ published to PyPI, so it installs only from a 133 MB git clone, on Python 3.12, 
 under a distribution name that collides with HuggingFace's own package. That is not a
 dependency quackd can express at all.
 
-It does ship a network API, so quackd speaks that and its extra is `pyzmq` and nothing else.
+It does ship a network API, so quackd speaks that, and `quackd[alohamini]` is
+`quackd-alohamini`, quackd's own Apache-2.0 adapter package, plus `pyzmq` and nothing else.
 Speaking the wire also buys something importing would not: upstream's own client discards the
 host's `_images` list and trusts its own config instead, and its `robot_model` default
 disagrees with the host's. Reading the wire makes both impossible to get wrong.

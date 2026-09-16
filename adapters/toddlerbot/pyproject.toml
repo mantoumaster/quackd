@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quackd-toddlerbot"
+dynamic = ["version"]
+description = "The ToddlerBot humanoid adapter for quackd. Install it as quackd[toddlerbot]."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Rok Benko" }]
+dependencies = ["quackd>=0.9,<0.10"]
+
+
+[project.entry-points."quackd.adapters"]
+toddlerbot = "quackd_toddlerbot"
+
+[project.urls]
+Homepage = "https://github.com/rokbenko/quackd"
+Documentation = "https://github.com/rokbenko/quackd/blob/main/docs/adapters/toddlerbot.md"
+
+[tool.hatch.version]
+path = "src/quackd_toddlerbot/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quackd_toddlerbot"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md", "pyproject.toml"]
+
+[tool.uv.sources]
+quackd = { workspace = true }

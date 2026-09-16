@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import re
 from pathlib import Path
@@ -10,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from quackd.agent.providers.factory import CLOUD_NAMES, KEY_ENV, default_model_for
-from quackd.transport import upstream_api as up
 from quackd.verbs.registry import default_registry
+from quackd_microduck import upstream_api as up
+from tests.adapter_layout import adapter_module
 
 REPO = Path(__file__).resolve().parents[1]
 README = (REPO / "README.md").read_text(encoding="utf-8")
@@ -25,7 +25,7 @@ def test_adapter_status_lists_every_microduck_upstream_ref() -> None:
     through `test_adapter_doc_lists_every_upstream_ref` and `robotd` through this one. Without
     the second loop the newest table is the only one that can go stale in silence.
     """
-    from quackd.sim3d import upstream_api as microduck_rl
+    from quackd_microduck.sim3d import upstream_api as microduck_rl
 
     doc = (REPO / "docs" / "adapter-status.md").read_text(encoding="utf-8")
     missing = [ref.name for ref in up.all_refs() if ref.name not in doc]
@@ -61,7 +61,7 @@ def test_adapter_guide_and_manifest_spec_match_the_code() -> None:
     ["lerobot", "rosbridge", "open_duck", "xlerobot", "alohamini", "toddlerbot"],
 )
 def test_adapter_doc_lists_every_upstream_ref(adapter: str) -> None:
-    api = importlib.import_module(f"quackd.adapters.{adapter}.upstream_api")
+    api = adapter_module(adapter, "upstream_api")
     doc = (REPO / "docs" / "adapters" / f"{adapter}.md").read_text(encoding="utf-8")
     missing = [ref.name for ref in api.all_refs() if ref.name not in doc]
     assert not missing, f"docs/adapters/{adapter}.md is missing: {missing}"
@@ -645,9 +645,8 @@ _CORE_VERBS = frozenset(
 
 async def _implementable(adapter: str) -> set[str]:
     """Every verb this adapter has an implementation for, across all its builds."""
-    import importlib
 
-    module = importlib.import_module(f"quackd.adapters.{adapter}")
+    module = adapter_module(adapter)
     return set(module.implementations())
 
 

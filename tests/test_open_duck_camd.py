@@ -21,8 +21,8 @@ from types import ModuleType
 import pytest
 from PIL import Image
 
-from quackd.adapters.open_duck import OpenDuckAdapter
-from quackd.adapters.open_duck.bridge import OpenDuckBridge
+from quackd_open_duck import OpenDuckAdapter
+from quackd_open_duck.bridge import OpenDuckBridge
 
 REPO = Path(__file__).resolve().parents[1]
 CAMD = REPO / "bridge" / "open_duck" / "quackd_duck_camd.py"
@@ -434,7 +434,7 @@ async def test_quackd_refuses_a_frozen_frame_and_says_why(camd: ModuleType) -> N
     """The client half. camd expires the frame; the bridge client must not then treat the
     503 as a hard error that ends the session — `jsonrpc`'s own docstring records that one
     dropped HTTP response did exactly that once — nor walk on regardless."""
-    from quackd.adapters.open_duck.bridge import OpenDuckBridge
+    from quackd_open_duck.bridge import OpenDuckBridge
 
     store = camd.FrameStore()
     store.put(camd.FakeCamera(96).jpeg()[0], (96, 96), now=time.monotonic())
@@ -459,7 +459,7 @@ async def test_doctor_can_finally_probe_this_robots_camera(camd: ModuleType) -> 
     """`doctor` gates its frame probe on a `camera_health` method that only the Microduck
     transport had, so `--camera-url` was accepted here, never checked, and a typo passed the
     checklist's go/no-go step to fail at the first observe with the duck on the floor."""
-    from quackd.adapters.open_duck.bridge import OpenDuckBridge
+    from quackd_open_duck.bridge import OpenDuckBridge
 
     assert callable(getattr(OpenDuckBridge(), "camera_health", None))
     unreachable = OpenDuckBridge(camera_url="http://127.0.0.1:1/snapshot.jpg")

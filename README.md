@@ -53,7 +53,7 @@
 
 The first robot is the [Microduck](https://pollen-robotics.com/microduck/) from Pollen Robotics: a 25 cm, 800 g biped with fifteen small servos, a camera in its head, a depth sensor, a speaker and an onboard computer, open source and about $399, which already knows how to walk, turn, kick, scoop something off the floor, look around and quack at 50 Hz on its own hardware. It is the robot quackd started on, independently and unofficially. Six more bodies follow it through adapters that declare what each can do: an [Open Duck Mini v2](https://github.com/apirrone/Open_Duck_Mini) you can print and build yourself, an SO-101 class arm through LeRobot, any wheeled base over rosbridge, an XLeRobot dual-arm cart, an AlohaMini with two arms on a lift, and a ToddlerBot humanoid.
 
-You do not need a robot to try it. Two simulators ship with quackd. The **physics** one puts the real Microduck in [MuJoCo](https://github.com/google-deepmind/mujoco) and runs the walking policy Pollen trained for it, so the duck walks instead of sliding and a command below its gait floor produces nothing at all. The **cartoon** starts in a second, downloads nothing, and is what the three other bodies that have a simulator use, along with every seeded sweep in CI. These goals succeed on 10 of 10 seeds with the scripted pilot and a ground truth check:
+You do not need a robot to try it. Two simulators, and they come from different places. The **cartoon** is the core's own arena, which is why the three other bodies that have a simulator use it too, along with every seeded sweep in CI: it starts in a second and downloads nothing, and `quackd[microduck]` is what gives it a duck to put in it. The **physics** one is `quackd[mujoco]`, which puts the real Microduck in [MuJoCo](https://github.com/google-deepmind/mujoco) and runs the walking policy Pollen trained for it, so the duck walks instead of sliding and a command below its gait floor produces nothing at all. These goals succeed on 10 of 10 seeds with the scripted pilot and a ground truth check:
 
 > **"Find the ball and kick it."** · **"Find the ball, walk up to it and say where it is."** *(an Open Duck Mini v2, which cannot kick)* · **"Split the search, the closest duck kicks."** *(a flock)*
 
@@ -97,13 +97,15 @@ The first of those has passed 10 of 10 on the physics simulator too, with the du
 
 ```bash
 uvx --from "quackd[mujoco]" quackd run --goal "walk in a square" --robot microduck:mujoco --provider fake   # the duck above: real physics, its own trained gait (first run fetches about 10 MB)
-uvx quackd run find-and-kick --provider fake                                        # the cartoon: no download, done in a second
-claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d               # or just chat with it: "find the ball and kick it"
-uvx quackd run open-duck-scout --provider fake                                     # a duck you can build: it finds the ball and walks up, no kick
+uvx --from "quackd[microduck]" quackd run find-and-kick --provider fake             # the cartoon: no download, done in a second
+claude mcp add quackd -- uvx --from "quackd[microduck]" quackd serve-mcp --robot microduck:sim2d   # or just chat with it: "find the ball and kick it"
+uvx --from "quackd[open_duck]" quackd run open-duck-scout --provider fake           # a duck you can build: it finds the ball and walks up, no kick
 uvx --from "quackd[mujoco,anthropic]" quackd run find-and-kick --provider anthropic --robot microduck:mujoco   # a real model on the real gait, needs ANTHROPIC_API_KEY
-uvx --from "quackd[openai]" quackd run find-and-kick --provider ollama --model qwen3:8b          # local model, no key
+uvx --from "quackd[microduck,openai]" quackd run find-and-kick --provider ollama --model qwen3:8b   # local model, no key
 open runs/*/run.gif                                                                 # a GIF in either simulator, a transcript every time
 ```
+
+Every quackd line there names a body with `--from`, because quackd itself ships none: the core is the loop, the executor and the contract, and each robot is a package the extra of the same name pulls in ([Installation](#installation)).
 
 **Or open the browser demo and install no quackd at all.** It is live at
 <https://www.quackd.org/simulator>, with the same physics, the same two upstream policies, seven
@@ -208,7 +210,7 @@ Version 0.9, simulator and mocks. What has been built, and how far each piece ha
 
 | Piece | Status |
 |---|---|
-| `sim2d` bundled simulator (default) | ✅ 10 of 10 seeds on `find-and-kick`, GIF and transcript per run |
+| `sim2d` cartoon simulator (the core's own arena) | ✅ 10 of 10 seeds on `find-and-kick`, GIF and transcript per run |
 | `mujoco` physics simulator (`quackd[mujoco]`) | ✅ 10 of 10 seeds on `find-and-kick` on the kinematic stand-in, which is what the gating job runs on every push. 🧪 On **upstream's own trained policy** the same sweep is not reliably 10 of 10. The nightly job had all ten on each of its first five runs and 9 of 10 on 2026-09-14, and by hand on the machine that cut 0.9.0 it is 9 of 10, seed 4 going in both. It clears the 8 the shipped test asks for every time and the 10 that `QUACKD_STRICT_SEEDS=1` asks for only sometimes. Both sweeps are ground truth checked and both are named tests rather than remembered numbers. The model and the policy are fetched from upstream at a pinned commit and hash checked, never shipped |
 | Browser demo ([`web/`](web/)) | 🧪 the same physics, the same two upstream policies, seven of the same verbs and the same allowlist-and-budget machinery in a static page, with the sentence box and the keyboard live on one duck at the same time. Bring your own key, or point it at Ollama. CI checks everything that can be checked without a browser, which `tests/test_web.py` lists. The page has been booted in a browser twice and a held `W` walks the duck, but a full model-driven run, a barge-in out of one and the recording have never been watched. Live at <https://www.quackd.org/simulator> |
 | Manifests and core verbs (`quackd list-adapters`, `quackd list-verbs --robot`) | ✅ seven adapters, eight core verbs that appear only where the manifest meets their requirements, speed limits from the manifest, `manifest.schema.json` generated and drift tested |
@@ -230,6 +232,8 @@ Everything quackd assumes about each robot's API, and how sure we are: [docs/ada
 ## Which robots work
 
 Seven robots, and one table for how far each one has actually got. Each name links to that robot's own page. The distinction that matters is between code we have run and hardware we have not: **exactly one of the seven has driven the real robot, an SO-101 arm on 2026-09-15, and the other six have not**, so for those six the honest question is still how much of the path to a first run is tested.
+
+Each of the seven is its own package, pulled in by the extra that carries its name (`quackd[microduck]`, `quackd[lerobot]` and so on, or `quackd[robots]` for all of them), so a build knows only the bodies you asked for. `quackd list-adapters` prints the whole table either way and marks the ones this machine cannot run, whether that is the adapter missing or the library its real backend needs.
 
 | How far it has got | What that means |
 |---|---|
@@ -276,7 +280,7 @@ Seven robots, and one table for how far each one has actually got. Each name lin
 
 Three loops, three rates, three owners. The LLM decides **what**, at 0.2 to 1 Hz. The steering loop decides **how to get there**, at 10 Hz, and never waits for the model. The robot's own controllers do the **moving**, at their own rate: balance on a biped, a pick policy on an arm, a gait policy on a humanoid, the driver on a wheeled base. The table with the rates and the owners is in [docs/architecture.md](docs/architecture.md).
 
-The robot is an *adapter* that declares a *manifest*: what body it has, which intents and sensors, which verbs, what stops it. The registry, the tool list, the verbs a `.duck` may allow and the system prompt are built from that manifest when the robot connects. A verb that is not in it does not exist. All seven bodies go through the same loop, executor and contract ([ADR-0017](docs/adr/0017-robot-adapters-and-manifest.md)). A flock of pilots is that whole stack once per robot, side by side, with one bus between the pilots and one kill switch that reaches every executor.
+The robot is an *adapter* that declares a *manifest*: what body it has, which intents and sensors, which verbs, what stops it. The registry, the tool list, the verbs a `.duck` may allow and the system prompt are built from that manifest when the robot connects. A verb that is not in it does not exist. All seven bodies go through the same loop, executor and contract ([ADR-0017](docs/adr/0017-robot-adapters-and-manifest.md)). Each adapter is also a distribution of its own, written in [`adapters/`](adapters/) here and installed beside the core as `quackd_<name>`, so the only robot code on your machine is the robot you own. A flock of pilots is that whole stack once per robot, side by side, with one bus between the pilots and one kill switch that reaches every executor.
 
 ```mermaid
 flowchart LR
@@ -287,10 +291,10 @@ flowchart LR
         EXEC["safety executor<br/>allowlist · confirm gates · budgets · abort rules · heartbeat"]
         VERBS["verb registry<br/>built from the robot's manifest: core · the robot's own · aliases · learned (v2)"]
         PERC["perception<br/>frame → detections → “ball at bearing 18° left, ~0.6 m”"]
-        ADAPTER["robot adapter<br/>microduck · lerobot · rosbridge · open_duck · xlerobot · alohamini · toddlerbot<br/>returns a manifest (embodiment, intents, sensors, verbs, limits, safety authority)<br/>sends intents, never motor writes<br/>backends: sim2d ✅ · mujoco ✅ · mock ✅ · real 🤖 one arm, once · jsonrpc, ws, zmq, bridge 🧪 never run on a robot · websocket ⏳"]
     end
+    ADAPTER["robot adapter, a package of its own<br/>microduck · lerobot · rosbridge · open_duck · xlerobot · alohamini · toddlerbot<br/>installed beside the core and found through the quackd.adapters entry point, which is how an adapter nobody here wrote is found too<br/>returns a manifest (embodiment, intents, sensors, verbs, limits, safety authority)<br/>sends intents, never motor writes<br/>backends: sim2d ✅ · mujoco ✅ · mock ✅ · real 🤖 one arm, once · jsonrpc, ws, zmq, bridge 🧪 never run on a robot · websocket ⏳"]
     ROBOT["Robot<br/>its own controllers: robotd at 50 Hz on a Microduck, the position controller and pick policy on an arm, the driver on a base"]
-    SIM["simulators and mocks<br/>the cartoon world and the MuJoCo one, duck cam and head cam, offline doubles for every adapter"]
+    SIM["simulators and mocks<br/>the cartoon arena and the mock transport are the core's, because every adapter draws its mock with them. The MuJoCo world is the duck's own package<br/>duck cam and head cam, offline doubles for every adapter"]
     HUMAN --> LLM
     LLM -- "exactly one tool call per turn" --> LOOP
     LOOP --> EXEC --> VERBS --> ADAPTER
@@ -318,28 +322,34 @@ The full map, with a "why it exists" line per module: [docs/architecture.md](doc
 
 ## Installation
 
-Requirements: Python 3.11 or newer and [`uv`](https://docs.astral.sh/uv/). Windows, macOS and Linux. No GPU. The default install is about 250 MB (OpenCV is most of it). Provider SDKs, robot SDKs and the LAN libraries are optional extras, so `uvx` stays fast and the default install never imports a robot SDK.
+Requirements: Python 3.11 or newer and [`uv`](https://docs.astral.sh/uv/). Windows, macOS and Linux. No GPU. The core is about 250 MB (OpenCV is most of it) and it is the loop, the executor, the contract and the cartoon arena, with no robot in it.
+
+**`uv pip install quackd` installs no robot.** You choose the body next, and each of the seven is its own package on PyPI (`quackd-microduck`, `quackd-lerobot` and five more) that the extra of the same name pulls in. Until one of them is installed, every command that needs a body refuses and says what to install.
 
 ```bash
-uvx quackd --version                                   # nothing to install, uvx fetches it
-uv pip install "quackd[anthropic]"                     # or: openai, gemini, grok, mistral, deepseek, cohere, qwen, kimi, glm, meta, all, yolo, live
-uv pip install "quackd[lerobot]"                       # Python 3.12+; or: rosbridge, xlerobot, alohamini, lan. Never imported by default
-git clone https://github.com/rokbenko/quackd && cd quackd && uv sync --extra dev   # contributors
+uvx quackd --version                                   # the core on its own: the loop, the executor, the contract
+uv pip install "quackd[microduck]"                     # then a body: or lerobot, rosbridge, open_duck, xlerobot, alohamini, toddlerbot
+uv pip install "quackd[robots]"                        # or all seven at once, each with the SDK its real backend needs
+uv pip install "quackd[mujoco]"                        # the duck plus its physics simulator, and quackd[microduck-camera] is the duck plus its WebRTC camera
+uv pip install "quackd[anthropic]"                     # the brain: or openai, gemini, grok, mistral, deepseek, cohere, qwen, kimi, glm, meta, all
+git clone https://github.com/rokbenko/quackd && cd quackd && uv sync --extra dev   # contributors: the core and all seven adapters, editable
 ```
+
+The extras are independent and they compose, so a body and a brain are one install (`uv pip install "quackd[microduck,anthropic]"`) or none at all (`uvx --from "quackd[microduck,anthropic]" quackd run ...`). `quackd[lerobot]` installs anywhere and reaches a real arm only on Python 3.12 or newer, because LeRobot itself does: below that floor the marker resolves to no SDK and you are left with `lerobot:mock`, which is why `quackd doctor` is where you check rather than the install output. And `quackd[yolo]`, `quackd[live]` and `quackd[lan]` are the other detector, the live window and LAN discovery. Which body a command means when you do not name one is in [Configuration](#configuration), and `quackd doctor` says what this machine has.
 
 <br>
 
 ## Usage
 
 ```bash
-# a goal in human language (bundled simulator, scripted pilot, no key needed)
-uvx quackd run --goal "find the ball and kick it" --provider fake
+# a goal in human language (the duck's cartoon simulator, scripted pilot, no key needed)
+uvx --from "quackd[microduck]" quackd run --goal "find the ball and kick it" --provider fake
 
 # the same goal with Claude
-uvx --from "quackd[anthropic]" quackd run --goal "find the ball and kick it" --provider anthropic
+uvx --from "quackd[microduck,anthropic]" quackd run --goal "find the ball and kick it" --provider anthropic
 
-# a task file (fourteen ship with the package, the starter table below lists them)
-uvx quackd run find-and-kick --provider fake --seed 3
+# a task file (fourteen ship with the core, the starter table below lists them)
+uvx --from "quackd[microduck]" quackd run find-and-kick --provider fake --seed 3
 ```
 
 Every run writes `runs/<timestamp>-<name>/` (`--runs-dir` replaces `runs/`) with `transcript.jsonl` (every prompt, tool call, gate, intent, result and token count, plus the robot's manifest in `run_start`), every frame quackd captured, `summary.json`, and `run.gif` on the simulator. `quackd trace` replays any of it afterwards.
@@ -348,25 +358,25 @@ Cloud or local, same command.
 
 | Provider | Extra | Key | Run |
 |---|---|---|---|
-| Claude | `quackd[anthropic]` | `ANTHROPIC_API_KEY` | `uvx --from "quackd[anthropic]" quackd run find-and-kick --provider anthropic` |
-| OpenAI | `quackd[openai]` | `OPENAI_API_KEY` | `uvx --from "quackd[openai]" quackd run find-and-kick --provider openai` |
-| Gemini | `quackd[gemini]` | `GEMINI_API_KEY` | `uvx --from "quackd[gemini]" quackd run find-and-kick --provider gemini` |
-| Grok | `quackd[grok]` | `XAI_API_KEY` | `uvx --from "quackd[grok]" quackd run find-and-kick --provider grok` |
-| Mistral | `quackd[mistral]` | `MISTRAL_API_KEY` | `uvx --from "quackd[mistral]" quackd run find-and-kick --provider mistral` |
-| DeepSeek | `quackd[deepseek]` | `DEEPSEEK_API_KEY` | `uvx --from "quackd[deepseek]" quackd run find-and-kick --provider deepseek` |
-| Cohere | `quackd[cohere]` | `COHERE_API_KEY` | `uvx --from "quackd[cohere]" quackd run find-and-kick --provider cohere` |
-| Qwen | `quackd[qwen]` | `DASHSCOPE_API_KEY` | `uvx --from "quackd[qwen]" quackd run find-and-kick --provider qwen` |
-| Kimi | `quackd[kimi]` | `MOONSHOT_API_KEY` | `uvx --from "quackd[kimi]" quackd run find-and-kick --provider kimi` |
-| GLM | `quackd[glm]` | `ZAI_API_KEY` | `uvx --from "quackd[glm]" quackd run find-and-kick --provider glm` |
-| Meta | `quackd[meta]` | `META_API_KEY` | `uvx --from "quackd[meta]" quackd run find-and-kick --provider meta` |
-| fake (scripted) | none | none | `uvx quackd run find-and-kick --provider fake` |
-| Ollama (local) | `quackd[openai]` | none | `uvx --from "quackd[openai]" quackd run find-and-kick --provider ollama --model qwen3:8b` |
-| vLLM (local) | `quackd[openai]` | none | `uvx --from "quackd[openai]" quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B` |
-| llama.cpp (local) | `quackd[openai]` | none | `uvx --from "quackd[openai]" quackd run find-and-kick --provider llamacpp` |
-| LM Studio (local) | `quackd[openai]` | none | `uvx --from "quackd[openai]" quackd run find-and-kick --provider lmstudio` |
-| any OpenAI compatible server | `quackd[openai]` | optional | `uvx --from "quackd[openai]" quackd run find-and-kick --provider local --base-url http://host:8000/v1` |
+| Claude | `quackd[anthropic]` | `ANTHROPIC_API_KEY` | `uvx --from "quackd[microduck,anthropic]" quackd run find-and-kick --provider anthropic` |
+| OpenAI | `quackd[openai]` | `OPENAI_API_KEY` | `uvx --from "quackd[microduck,openai]" quackd run find-and-kick --provider openai` |
+| Gemini | `quackd[gemini]` | `GEMINI_API_KEY` | `uvx --from "quackd[microduck,gemini]" quackd run find-and-kick --provider gemini` |
+| Grok | `quackd[grok]` | `XAI_API_KEY` | `uvx --from "quackd[microduck,grok]" quackd run find-and-kick --provider grok` |
+| Mistral | `quackd[mistral]` | `MISTRAL_API_KEY` | `uvx --from "quackd[microduck,mistral]" quackd run find-and-kick --provider mistral` |
+| DeepSeek | `quackd[deepseek]` | `DEEPSEEK_API_KEY` | `uvx --from "quackd[microduck,deepseek]" quackd run find-and-kick --provider deepseek` |
+| Cohere | `quackd[cohere]` | `COHERE_API_KEY` | `uvx --from "quackd[microduck,cohere]" quackd run find-and-kick --provider cohere` |
+| Qwen | `quackd[qwen]` | `DASHSCOPE_API_KEY` | `uvx --from "quackd[microduck,qwen]" quackd run find-and-kick --provider qwen` |
+| Kimi | `quackd[kimi]` | `MOONSHOT_API_KEY` | `uvx --from "quackd[microduck,kimi]" quackd run find-and-kick --provider kimi` |
+| GLM | `quackd[glm]` | `ZAI_API_KEY` | `uvx --from "quackd[microduck,glm]" quackd run find-and-kick --provider glm` |
+| Meta | `quackd[meta]` | `META_API_KEY` | `uvx --from "quackd[microduck,meta]" quackd run find-and-kick --provider meta` |
+| fake (scripted) | none | none | `uvx --from "quackd[microduck]" quackd run find-and-kick --provider fake` |
+| Ollama (local) | `quackd[openai]` | none | `uvx --from "quackd[microduck,openai]" quackd run find-and-kick --provider ollama --model qwen3:8b` |
+| vLLM (local) | `quackd[openai]` | none | `uvx --from "quackd[microduck,openai]" quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B` |
+| llama.cpp (local) | `quackd[openai]` | none | `uvx --from "quackd[microduck,openai]" quackd run find-and-kick --provider llamacpp` |
+| LM Studio (local) | `quackd[openai]` | none | `uvx --from "quackd[microduck,openai]" quackd run find-and-kick --provider lmstudio` |
+| any OpenAI compatible server | `quackd[openai]` | optional | `uvx --from "quackd[microduck,openai]" quackd run find-and-kick --provider local --base-url http://host:8000/v1` |
 
-Every row above runs the cartoon, which is the default robot. To put the same model on the physics simulator instead, ask for both extras and name the backend: `uvx --from "quackd[mujoco,anthropic]" quackd run find-and-kick --provider anthropic --robot microduck:mujoco`. The extras are independent, so `quackd[anthropic]` alone gives you the model and no physics. Nobody stands in the physics arena, so `follow-me`, whose whole task is to follow somebody, cannot succeed there and nothing stops you pointing it at that backend anyway.
+Every row above runs the cartoon, because `quackd[microduck]` is the body those lines ask for and `find-and-kick` names no robot of its own. To put the same model on the physics simulator instead, swap that extra for `quackd[mujoco]`, which is the same duck with MuJoCo behind it, and name the backend: `uvx --from "quackd[mujoco,anthropic]" quackd run find-and-kick --provider anthropic --robot microduck:mujoco`. The extras are independent, so `quackd[anthropic]` alone gives you a brain and no body at all. Nobody stands in the physics arena, so `follow-me`, whose whole task is to follow somebody, cannot succeed there and nothing stops you pointing it at that backend anyway.
 
 A cloud model that takes an image sees the camera frame. Where a vendor does not document image input, `quackd list-models` marks that model `no frames` and quackd sends it the detections as text instead. Local models get the text detections by default and the frame too with `--vision`, which also overrides a `no frames` mark. `--no-vision` is the other direction, for a vision model you would rather send text to. The scripted pilot only reads the detection summary. A body that reads several cameras sends every frame each step, each one labelled with the camera's own name, on Claude, both OpenAI APIs, Gemini and any OpenAI compatible local server with `--vision` on. That costs what it sounds like, because the last two exchanges keep their images: two cameras is four pictures in every request rather than two, and a local server or a model that takes one image per message needs a single `--camera-url`. Local setup, tool calling flags per server and what to expect from small models: [docs/local-llms.md](docs/local-llms.md).
 
@@ -384,7 +394,7 @@ A cloud model that takes an image sees the camera frame. Where a vendor does not
 | `quackd memory show\|add\|clear` | What one robot remembers between runs: the notes a pilot saved and how recent runs ended. `--robot` picks the body by spec or by registered name, `--raw` prints the file, `--memory-dir` points elsewhere, `clear --yes` skips the prompt. See [docs/memory.md](docs/memory.md) |
 | `quackd robot add\|list\|show\|edit\|rest-pose\|remove` | The robots you have named: which body, where it is, its token and its camera or cameras, and optionally the provider and model that pilot it. Kept in `~/.quackd/robots.json`, so `--robot NAME` means the same thing in every command. `list --probe` connects to each and says whether it answered. `rest-pose NAME` records the folded pose an arm is driven to at both ends of a run, so it stops falling when the run ends, and `--clear` forgets it. `--registry-dir` points elsewhere. See [docs/registry.md](docs/registry.md) |
 | `quackd flock create\|list\|show\|edit\|delete` | Named groups of registered robots, for `--flock NAME` on `run` and `serve-mcp`. `create` with no `--robot` prints what you have registered, numbered, and asks which to include. Kept in `~/.quackd/flocks.json`. Not the `flock:` block of a task file, which says how the work is shared out. See [docs/registry.md](docs/registry.md) |
-| `quackd record <duck>` | `run` pinned to `microduck:sim2d` (no `--robot`) that always writes a GIF. `--seed` defaults to 0 and gated verbs are auto accepted, as with `--yes`. `--no-trace` and `--no-trace-prompt` work here too |
+| `quackd record <duck>` | `run` pinned to `microduck:sim2d` (no `--robot`, so it wants `quackd[microduck]`) that always writes a GIF. `--seed` defaults to 0 and gated verbs are auto accepted, as with `--yes`. `--no-trace` and `--no-trace-prompt` work here too |
 | `quackd trace [run]` | Replay a finished run from its transcript, on stdout, as the same lines it printed while it ran. No argument means the newest run under `--runs-dir`, and a name, a timestamp prefix or a transcript file all work. `--no-prompt`, `--thinking all|N`, `--from-step N`, `--frames` |
 
 ### Your robots, by name
@@ -518,7 +528,7 @@ Full spec: [docs/duck-spec.md](docs/duck-spec.md). Add yours to [`ducks/`](ducks
 ### Pilot it from Claude (MCP)
 
 ```bash
-claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d
+claude mcp add quackd -- uvx --from "quackd[microduck]" quackd serve-mcp --robot microduck:sim2d
 ```
 
 Then, in Claude Code or Claude Desktop: *"List the duck's verbs, then find the ball and kick it."* Before the first verb that moves the body, the model has to say whether this body can do the task at all, judged against the datasheet in its `robot_list` row, and `robot_run_verb` refuses anything that moves until it has. Without a `.duck` loaded the session runs on a default budget of 40 verb steps and five minutes. Load one with `robot_load_duckfile`, or start with `--duckfile`, and its allowlist and budgets apply instead. Pass `--robots duck=microduck:sim2d,arm=lerobot:mock` to front several robots at once, or `--flock NAME` to front a stored flock, with one executor, budget and heartbeat per robot. Simulated robots here each get their own world (a shared arena over MCP is future work), and this session is one model driving each of them in turn, so for robots that pilot themselves and divide the work use flock mode instead (`quackd run <duck> --flock NAME`). Config for both clients, the nine `robot_*` tools, and a two minute script: [docs/mcp.md](docs/mcp.md).
@@ -534,14 +544,16 @@ A run does not start from nothing. Each robot has a small memory under `~/.quack
 Any robot with a way in can join: through its own SDK, through the protocol its host already speaks, or through a small daemon quackd puts on the robot when its runtime has no network API at all. Two of the seven are in that last category, and a third gets a host wrapper from quackd because the one upstream ships leaves its arms limp. A robot joins as an **adapter** that answers one question, what is this body and what can it do, as a **manifest**: its embodiment, the intents its controllers accept (a velocity, a named skill, a gaze, a sound, a joint goal, a pose, a gripper), its sensors, the limits its verbs clamp to, who stops it when quackd goes quiet, its verbs, and a **datasheet** of what it weighs, can carry and can reach, with a confidence and a source on every number. Everything else (the loop, the executor, the contract, the MCP server) is shared.
 
 ```bash
-uvx quackd list-adapters                                                # the seven adapters, for your build
-uvx quackd list-verbs --robot open_duck:sim2d                           # a buildable duck's vocabulary
-uvx quackd run open-duck-scout --provider fake                          # it finds the ball and walks up, 10 of 10 seeds
-uvx quackd validate ducks/find-and-kick.duck --robot open_duck:mock     # exit 1: requires kick, but open-duck-01 (open-duck-mini-v2) does not provide it
-uvx quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock     # a duck and an arm behind one MCP server
+uvx quackd list-adapters                                                          # the seven, installed here or not
+uvx --from "quackd[open_duck]" quackd list-verbs --robot open_duck:sim2d          # a buildable duck's vocabulary
+uvx --from "quackd[open_duck]" quackd run open-duck-scout --provider fake         # it finds the ball and walks up, 10 of 10 seeds
+uvx --from "quackd[open_duck]" quackd validate ducks/find-and-kick.duck --robot open_duck:mock   # exit 1: requires kick, but open-duck-01 (open-duck-mini-v2) does not provide it
+uvx --from "quackd[microduck,lerobot]" quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock   # a duck and an arm behind one MCP server
 ```
 
-The backends that need a library sit behind extras (`quackd[lerobot]`, `quackd[rosbridge]`, `quackd[xlerobot]`, `quackd[alohamini]`), import it only on connect, spell every upstream name in one pinned `upstream_api.py`, and never use a body's go limp call as stop. `open_duck:bridge` and `toddlerbot:bridge` need no extra at all, because the part that touches the robot runs on the robot: quackd ships a daemon for the duck's Raspberry Pi and another for the ToddlerBot, since neither runtime has a network control API to talk to. Adding a body of your own takes a manifest and a mock, about a day: [docs/adapters.md](docs/adapters.md), the fields in [docs/manifest-spec.md](docs/manifest-spec.md), what has and has not run in [docs/adapter-status.md](docs/adapter-status.md).
+Each adapter is a package of its own, and the extra that carries its name is what installs it. `quackd[lerobot]` brings the arm's own SDK with it and `quackd[rosbridge]` brings roslibpy, `quackd[xlerobot]` and `quackd[alohamini]` bring a ZeroMQ client instead, because neither of those robots is an installable package, and `quackd[microduck]`, `quackd[open_duck]` and `quackd[toddlerbot]` need no robot library at all. Each imports its library only on connect, spells every upstream name in one pinned `upstream_api.py`, and never uses a body's go limp call as stop. `open_duck:bridge` and `toddlerbot:bridge` ask nothing else of PyPI, because the part that touches the robot runs on the robot: quackd ships a daemon for the duck's Raspberry Pi and another for the ToddlerBot, since neither runtime has a network control API to talk to. Adding a body of your own takes a manifest and a mock, about a day: [docs/adapters.md](docs/adapters.md), the fields in [docs/manifest-spec.md](docs/manifest-spec.md), what has and has not run in [docs/adapter-status.md](docs/adapter-status.md).
+
+**Your adapter does not have to live in this repository.** An installed adapter announces itself through the `quackd.adapters` entry point group, one line from the robot's name to the module that builds it, and that is how quackd finds a body at all. So an adapter nobody here wrote can be a package on PyPI that depends on `quackd`, installing it is the whole integration, and `quackd list-adapters` then prints it beside the seven and `--robot <name>:<backend>` reaches it. The seven are the robots this project publishes and supports, which is not the same as the robots quackd can drive.
 
 <br>
 
@@ -550,8 +562,8 @@ The backends that need a library sit behind extras (`quackd[lerobot]`, `quackd[r
 Several robots can work one task together, and every member gets its own LLM pilot: its own executor, allowlist, budgets, heartbeat, memory and feasibility verdict, all at once, on wall clock, on any backend. Same bodies or different ones, 2 to 8 of them.
 
 ```bash
-uvx quackd run flock-hello --provider fake                   # the bundled demo: a duck and an arm, no key and no registry
-uvx quackd run <duck> --flock pair --provider anthropic      # your own robots, from the registry
+uvx --from "quackd[microduck,lerobot]" quackd run flock-hello --provider fake             # the bundled demo: a duck and an arm, no key and no registry
+uvx --from "quackd[microduck,lerobot,anthropic]" quackd run <duck> --flock pair --provider anthropic   # your own robots, from the registry, one extra per body
 ```
 
 They divide the work with a `tell` tool that reaches the addressee in its next observation, and each pilot's prompt carries every peer's datasheet, so the work is divided on data rather than on guesses. Each one declares for itself and the flock succeeds only when all of them did, and one Ctrl+C reaches every executor.
@@ -563,7 +575,7 @@ The honest part: N simulated members are N separate worlds with no shared arena 
 **The other kind of flock has one referee instead of N pilots**, and it is the one that ships a choreography: the flock splits the search for a ball, holds a quick auction, and the closest duck takes the shot.
 
 ```bash
-uvx quackd run flock-kick --provider fake --seed 3
+uvx --from "quackd[microduck]" quackd run flock-kick --provider fake --seed 3
 ```
 
 <p align="center">
@@ -631,7 +643,7 @@ browser test.
 | Claude reasoning effort | `QUACKD_EFFORT` (`low` to `max`, default `medium`). `QUACKD_ANTHROPIC_FALLBACKS=0` disables server side refusal fallbacks. `QUACKD_THINKING_DISPLAY=omitted` stops Claude returning a summary of its reasoning, and `QUACKD_GEMINI_THOUGHTS=0` does the same for Gemini |
 | OpenAI API and effort | `QUACKD_OPENAI_API=responses` opens on the Responses API instead of Chat Completions, and `QUACKD_OPENAI_REASONING_EFFORT` sets the effort on either. Neither is usually needed: quackd already knows which models want Responses, and moves a run there by itself when one says so ([FAQ](docs/faq.md)) |
 | Local models | `--provider ollama`, `vllm`, `llamacpp`, `lmstudio` or `local --base-url http://host:port/v1`. No key. `--model` takes any id the server serves, and without it quackd uses the first model the server lists. The catalogue is for cloud vendors only, so nothing here is refused for being unlisted. `--vision` sends frames. `QUACKD_TOOL_CHOICE=auto`, `required` or `none` for picky servers. `--extra-body` or `QUACKD_EXTRA_BODY` merges a JSON object into every request body, which is how Qwen3 is told not to think on vLLM, and it works on every vendor that speaks OpenAI's API. See [docs/local-llms.md](docs/local-llms.md) |
-| Robot | `--robot <adapter>:<backend>` or a name from `quackd robot add`, or a `robots:` line in the `.duck`, the flag wins. Default `microduck:sim2d`. `quackd list-adapters` lists the seven that ship, `quackd list-verbs --robot X` what each can do |
+| Robot | `--robot <adapter>:<backend>` or a name from `quackd robot add`, or a `robots:` line in the `.duck`, the flag wins. There is no built-in default any more, because the core installs no robot. With nothing installed, every command that needs a body refuses with `no robot adapter is installed` and the install line for each of the seven. With exactly one adapter installed, that one is the default, since a machine with one robot has no ambiguity to resolve. With several including the Microduck, `microduck:sim2d` stays the default, because the starter files that name no robot mean the cartoon and always have. With several and no Microduck among them, quackd lists what is installed and refuses to guess. Naming one that is not installed refuses too: `adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot]'`. `quackd list-adapters` lists the seven that ship, installed here or not, and `quackd list-verbs --robot X` what each can do |
 | Physics simulator | `--robot microduck:mujoco`, with `quackd[mujoco]`. The model and the policies are fetched once into `~/.quackd/cache`, where `QUACKD_CACHE_DIR` moves them and `QUACKD_MICRODUCK_ASSETS` points at your own `microduck_rl` checkout instead. `QUACKD_MUJOCO_BODY=puppet` runs the kinematic stand-in, which downloads nothing and is the body the tests build. `--live` opens MuJoCo's own viewer |
 | Determinism | `--seed N` makes a simulator run repeatable |
 | Budgets | in the `.duck`. `--max-steps` overrides for one run |
@@ -643,17 +655,17 @@ browser test.
 | Memory | on by default, under `~/.quackd/memory/`. `--no-memory` runs fresh, `--memory-dir` or `QUACKD_MEMORY_DIR` moves it |
 | Registered robots | `~/.quackd/robots.json` and `~/.quackd/flocks.json`, written by `quackd robot` and `quackd flock`. `--registry-dir` or `QUACKD_REGISTRY_DIR` moves both. Tokens are stored in plain text there. See [docs/registry.md](docs/registry.md) |
 
-**Real robots.** Each needs `--robot` and `--address`, and the extra named. One of the seven has been run against its target, the LeRobot arm on 2026-09-15, and the other six have not, so those six are still 🧪 ([docs/adapter-status.md](docs/adapter-status.md)).
+**Real robots.** Each needs `--robot`, `--address` and its own adapter package, which the extra in the last column installs. One of the seven has been run against its target, the LeRobot arm on 2026-09-15, and the other six have not, so those six are still 🧪 ([docs/adapter-status.md](docs/adapter-status.md)).
 
 | Body | `--robot ... --address ...` | Needs |
 |---|---|---|
-| Microduck | `microduck:jsonrpc --address unix:///run/robotd.sock` on the robot, or `tcp://127.0.0.1:9870` after `ssh -L 9870:/run/robotd.sock <robot>`. For a picture, `--camera-url webrtc://<robot>:8443`, because `robotd` serves no frames | `quackd[microduck-camera]` for the camera |
-| Open Duck Mini v2 | `open_duck:bridge --address tcp://open-duck.local:9871 --camera-url http://open-duck.local:9872/snapshot.jpg --token <the bridge token>` | nothing: the daemon runs on the robot |
+| Microduck | `microduck:jsonrpc --address unix:///run/robotd.sock` on the robot, or `tcp://127.0.0.1:9870` after `ssh -L 9870:/run/robotd.sock <robot>`. For a picture, `--camera-url webrtc://<robot>:8443`, because `robotd` serves no frames | `quackd[microduck]`, and `quackd[microduck-camera]` for the camera |
+| Open Duck Mini v2 | `open_duck:bridge --address tcp://open-duck.local:9871 --camera-url http://open-duck.local:9872/snapshot.jpg --token <the bridge token>` | `quackd[open_duck]`, and no robot library: the daemon runs on the robot |
 | LeRobot arm | `lerobot:real --address /dev/ttyACM0` (the arm's serial port, `COM5` on Windows), and `--camera-url opencv://N` for a USB webcam (`lerobot-find-cameras opencv` prints the indices), which repeats, because this is the one body that reads more than one camera | `quackd[lerobot]`, Python 3.12 or newer, and `quackd robot rest-pose NAME` recorded for it, or the arm falls when the run ends |
 | Any ROS base | `rosbridge:ws --address "ws://robot.local:9090?cmd_vel=/cmd_vel&odom=/odom&image=/camera/image/compressed"` | `quackd[rosbridge]` |
 | XLeRobot | `xlerobot:zmq --address tcp://xlerobot.local:5555` (add `?variant=diff2` or `?variant=mecanum` for a base other than the default three-omniwheel one, or `?swap_colour=0`, if you need them) | `quackd[xlerobot]` |
 | AlohaMini | `alohamini:zmq --address tcp://alohamini.local:5555` | `quackd[alohamini]` |
-| ToddlerBot | `toddlerbot:bridge --address tcp://toddlerbot.local:9873 --token <the daemon token>` | nothing: the daemon runs on the robot |
+| ToddlerBot | `toddlerbot:bridge --address tcp://toddlerbot.local:9873 --token <the daemon token>` | `quackd[toddlerbot]`, and no robot library: the daemon runs on the robot |
 
 **Several cameras, on the arm and nowhere else.** `--camera-url` repeats, and `lerobot:real` is the only body that reads a second one. Every other body refuses a second url, with a message naming who takes several.
 
@@ -668,7 +680,7 @@ With several, every url has to carry `?name=`, the names have to be unique and a
 
 ## Performance
 
-On the simulator with the scripted pilot, `find-and-kick` takes 3 to 8 verb steps, one model call each plus one to declare success, and under a second of loop wall clock per run on a laptop. Interpreter start and GIF rendering add a few seconds to the whole command, and simulated time runs as fast as the CPU allows. With a real model each decision is one API call: the system prompt and the tool schemas are about 7 k characters (roughly 2 k tokens) with memory on, each observation a few hundred characters plus a 256 px PNG for vision models, and the transcript records each provider's own usage per turn. Model latency never affects control, because the steering loop runs at 10 Hz and the robot's own controllers run regardless of how long the model thinks. That holds for local models too. The default install is about 250 MB, needs no GPU, and the simulator renders at 256 px (`--gif-size` for prettier GIFs).
+On the simulator with the scripted pilot, `find-and-kick` takes 3 to 8 verb steps, one model call each plus one to declare success, and under a second of loop wall clock per run on a laptop. Interpreter start and GIF rendering add a few seconds to the whole command, and simulated time runs as fast as the CPU allows. With a real model each decision is one API call: the system prompt and the tool schemas are about 7 k characters (roughly 2 k tokens) with memory on, each observation a few hundred characters plus a 256 px PNG for vision models, and the transcript records each provider's own usage per turn. Model latency never affects control, because the steering loop runs at 10 Hz and the robot's own controllers run regardless of how long the model thinks. That holds for local models too. The core install is about 250 MB, needs no GPU, and the simulator renders at 256 px (`--gif-size` for prettier GIFs).
 
 The physics simulator costs what physics costs. Measured here on one Windows laptop with an integrated GPU, `walk in a circle` on `microduck:mujoco` took about 8 seconds of wall clock without a GIF and 15 with one, against under a second of loop time in the cartoon, and the first run downloads about 10 MB of model and policy into `~/.quackd/cache` and leaves 23 MB on disk. Rendering is the cost rather than physics, which steps at roughly 24 times real time, so shadows are off unless `QUACKD_MUJOCO_SHADOWS=1` asks for them and the recorder samples half as often as the cartoon's. The arena is upstream's own scene: the blue checker floor, the gradient sky and the lighting come from the `scene*.xml` wrappers in `microduck_rl`, so a duck here stands where a duck there stands. The head camera is the exception, and [ADR-0030](docs/adr/0030-mujoco-physics-backend.md) says why.
 
@@ -702,7 +714,7 @@ Why a task can refuse a body, whether two robots can share a task, and more: [do
 
 - **Hardware:** one of the seven has done it, the SO-101 arm on 2026-09-15, and six have not. The Open Duck Mini v2 is the nearest of those six ([its checklist](docs/open-duck-hardware-checklist.md)). A rosbridge base, an XLeRobot, an AlohaMini and a ToddlerBot also exist today, so their backends can flip from 🧪 to 🤖 with one real run each. On the arm the next thing is the measuring nobody has done: the band that infers `holding`, what a joint reads after ten minutes of work, and whether a stall is caught on purpose. `microduck:jsonrpc` waits for a Microduck to arrive and the `websocket` stub waits for upstream to ship its WebSocket surface. Open an issue with `quackd doctor` output and the first lines of `transcript.jsonl`.
 - **Flocks next:** a pilot flock against a real model rather than the scripted one, then a pilot flock across two machines over the MQTT bus ([docs/lan.md](docs/lan.md)), which needs a `--bus` flag and a run that proves it rather than a clock, and then hardware flocks. For the coordinator: more choreographies from the verbs the robots already have (a patrol that splits the area, a follow chain), a clock that crosses machines so that bus can carry one across a room instead of a process, and a second body so Open Ducks can join one.
-- **More bodies:** whichever robots people own. An adapter is a manifest and a mock, about a day ([docs/adapters.md](docs/adapters.md)).
+- **More bodies:** whichever robots people own. An adapter is a manifest and a mock, about a day, and it can be your own package on PyPI rather than a pull request here ([docs/adapters.md](docs/adapters.md)).
 - **Talk to it from anywhere:** the MCP server speaks `stdio` today, so it is a local subprocess of Claude Code or Claude Desktop. An HTTP or SSE transport would make it a remote connector, which is what a phone talks to. That needs a long lived process, a reachable address and auth the server does not have yet ([docs/mcp.md](docs/mcp.md#why-not-from-my-phone-yet)).
 - **v1:** a starter task on a real duck, on video. An Open Duck Mini can get there first, and a Microduck once it ships.
 - **v2, learned verbs.** LLM written rewards ([Eureka](https://eureka-research.github.io/) and [DrEureka](https://eureka-research.github.io/dr-eureka/) style) train new policies in `microduck_rl` that register as one more verb. The registry hook exists today. The training loop does not.
@@ -713,7 +725,7 @@ Why a task can refuse a body, whether two robots can share a task, and more: [do
 
 ## Contributing
 
-**Add your `.duck` to [`ducks/`](ducks/). PRs welcome.** That is the community funnel and the number we actually care about. Adding a verb to a robot is one function plus one manifest entry. Both are described in [CONTRIBUTING.md](CONTRIBUTING.md), and design decisions live in [docs/adr/](docs/adr/). Tests run with no network and no keys: `uv sync --extra dev && uv run pytest`.
+**Add your `.duck` to [`ducks/`](ducks/). PRs welcome.** That is the community funnel and the number we actually care about. Adding a verb to a robot is one function plus one manifest entry. Both are described in [CONTRIBUTING.md](CONTRIBUTING.md), and design decisions live in [docs/adr/](docs/adr/). Tests run with no network and no keys: `uv sync --extra dev && uv run pytest`, which installs the core and all seven adapters as editable workspace members and not one robot SDK.
 
 **Thank you to everyone who has sent quackd code.** 0.6 was the first release built on other people's pull requests, and both of them changed the project: one gave every robot a memory between runs, the other closed a budget a slow model could walk straight through. A bug report or a `.duck` that mostly fails counts too, because that is data.
 

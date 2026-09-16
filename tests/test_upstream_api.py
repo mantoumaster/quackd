@@ -13,14 +13,15 @@ from types import ModuleType
 
 import pytest
 
-from quackd.adapters.alohamini import upstream_api as alohamini_api
-from quackd.adapters.lerobot import upstream_api as lerobot_api
-from quackd.adapters.open_duck import upstream_api as open_duck_api
-from quackd.adapters.rosbridge import upstream_api as rosbridge_api
-from quackd.adapters.toddlerbot import upstream_api as toddlerbot_api
-from quackd.adapters.xlerobot import upstream_api as xlerobot_api
-from quackd.sim3d import upstream_api as microduck_rl_api
-from quackd.transport import upstream_api
+from quackd_alohamini import upstream_api as alohamini_api
+from quackd_lerobot import upstream_api as lerobot_api
+from quackd_microduck import upstream_api
+from quackd_microduck.sim3d import upstream_api as microduck_rl_api
+from quackd_open_duck import upstream_api as open_duck_api
+from quackd_rosbridge import upstream_api as rosbridge_api
+from quackd_toddlerbot import upstream_api as toddlerbot_api
+from quackd_xlerobot import upstream_api as xlerobot_api
+from tests.adapter_layout import canonical_rel, source_roots
 
 PKG = Path(__file__).resolve().parents[1] / "quackd"
 
@@ -28,21 +29,26 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
     (
         upstream_api,
         {
-            "transport/upstream_api.py",
-            "transport/jsonrpc_unix.py",
-            "transport/websocket_stub.py",
-            "doctor.py",
+            "adapters/microduck/upstream_api.py",
+            "adapters/microduck/transports/jsonrpc_unix.py",
+            "adapters/microduck/transports/websocket_stub.py",
         },
         ("https://github.com/pollen-robotics/microduck",),
     ),
     (
         lerobot_api,
-        {"adapters/lerobot/upstream_api.py", "adapters/lerobot/real.py", "doctor.py"},
+        {
+            "adapters/lerobot/upstream_api.py",
+            "adapters/lerobot/real.py",
+        },
         ("https://github.com/huggingface/lerobot",),
     ),
     (
         rosbridge_api,
-        {"adapters/rosbridge/upstream_api.py", "adapters/rosbridge/ws.py", "doctor.py"},
+        {
+            "adapters/rosbridge/upstream_api.py",
+            "adapters/rosbridge/ws.py",
+        },
         (
             "https://github.com/gramaziokohler/roslibpy",
             "https://github.com/RobotWebTools/rosbridge_suite",
@@ -57,7 +63,6 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
         {
             "adapters/open_duck/upstream_api.py",
             "adapters/open_duck/bridge.py",
-            "doctor.py",
         },
         (
             "https://github.com/apirrone/Open_Duck_Mini_Runtime",
@@ -69,7 +74,6 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
         {
             "adapters/xlerobot/upstream_api.py",
             "adapters/xlerobot/zmq_host.py",
-            "doctor.py",
         },
         ("https://github.com/Vector-Wangel/XLeRobot",),
     ),
@@ -78,7 +82,6 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
         {
             "adapters/alohamini/upstream_api.py",
             "adapters/alohamini/zmq_host.py",
-            "doctor.py",
         },
         (
             "https://github.com/liyiteng/lerobot_alohamini",
@@ -90,20 +93,18 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
         {
             "adapters/toddlerbot/upstream_api.py",
             "adapters/toddlerbot/bridge.py",
-            "doctor.py",
         },
         ("https://github.com/hshi74/toddlerbot",),
     ),
     (
         microduck_rl_api,
         {
-            "sim3d/upstream_api.py",
-            "sim3d/assets.py",
-            "sim3d/microduck.py",
+            "adapters/microduck/sim3d/upstream_api.py",
+            "adapters/microduck/sim3d/assets.py",
+            "adapters/microduck/sim3d/microduck.py",
             # the measured gait envelope `GAIT_THRESHOLD` documents; it moved out of
             # `microduck.py` so it could be tested without the extra, and cites its source
-            "sim3d/gait.py",
-            "doctor.py",
+            "adapters/microduck/sim3d/gait.py",
         },
         (
             "https://github.com/pollen-robotics/microduck_rl",
@@ -149,18 +150,21 @@ def test_unverified_refs_only_used_in_experimental_backends(
     pattern = re.compile(r"\b(" + "|".join(map(re.escape, idents)) + r")\b")
     # an adapter's assumptions are its own vocabulary: another adapter may name its own
     # THREAD_SAFETY, so an adapter row scans its package and the core, never a sibling
-    owner = Path(str(module.__file__)).resolve().relative_to(PKG).as_posix()
+    # `canonical_rel` gives one name per file whichever layout it is in, so `allowed` reads
+    # the same whether an adapter is still in the core wheel or already its own package
+    owner = canonical_rel(Path(str(module.__file__)))
     own_pkg = owner.rsplit("/", 1)[0] if owner.startswith("adapters/") else None
     offenders = []
-    for path in PKG.rglob("*.py"):
-        rel = path.relative_to(PKG).as_posix()
-        if rel in allowed:
-            continue
-        if own_pkg and rel.startswith("adapters/") and not rel.startswith(own_pkg + "/"):
-            continue
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if pattern.search(line):
-                offenders.append(f"{rel}:{lineno}: {line.strip()}")
+    for root in source_roots():
+        for path in root.rglob("*.py"):
+            rel = canonical_rel(path)
+            if rel in allowed:
+                continue
+            if own_pkg and rel.startswith("adapters/") and not rel.startswith(own_pkg + "/"):
+                continue
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if pattern.search(line):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
     assert not offenders, "\n".join(offenders)
 
 

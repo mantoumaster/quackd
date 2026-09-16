@@ -14,14 +14,13 @@ there was nothing underneath to serialise.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.metadata as md
 import os
 import platform
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -30,7 +29,16 @@ from rich.text import Text
 
 from quackd import __version__, ui
 from quackd.adapters.base import AdapterError, RestResult, go_to_rest_if_any
-from quackd.adapters.factory import describe, list_adapters, parse_robot_spec
+from quackd.adapters.factory import (
+    _module as _adapter_module,
+)
+from quackd.adapters.factory import (
+    adapter_names,
+    describe,
+    is_installed,
+    list_adapters,
+    parse_robot_spec,
+)
 from quackd.agent.providers.base import ProviderError
 from quackd.agent.providers.factory import (
     EXTRA_FOR,
@@ -43,8 +51,6 @@ from quackd.agent.providers.factory import (
 )
 from quackd.agent.providers.local import PRESETS
 from quackd.duckfile.parser import list_bundled_ducks
-from quackd.transport import upstream_api as up
-from quackd.transport.factory import TRANSPORT_STATUS
 
 # The optional extras table, which is about packages rather than providers: the providers table
 # builds its own rows from SDK_FOR and EXTRA_FOR. One wheel now serves nine vendors, so naming
@@ -584,32 +590,37 @@ def probe(
     return report
 
 
-def _upstreams() -> list[tuple[str, Any, str, str]]:
-    """(name, module, doc, what nobody has run it against). Imported in here rather than at
-    module scope because doctor must not pull in an SDK to answer a question about it."""
-    from quackd.adapters.alohamini import upstream_api as alohamini_api
-    from quackd.adapters.lerobot import upstream_api as lerobot_api
-    from quackd.adapters.open_duck import upstream_api as open_duck_api
-    from quackd.adapters.rosbridge import upstream_api as rosbridge_api
-    from quackd.adapters.toddlerbot import upstream_api as toddlerbot_api
-    from quackd.adapters.xlerobot import upstream_api as xlerobot_api
-    from quackd.sim3d import upstream_api as rl
+def _microduck_api_version() -> str:
+    """The `duck-ipc-proto` version quackd speaks, when the duck is installed to say so.
 
-    return [
-        ("microduck", up, "docs/adapter-status.md", "a robotd (the jsonrpc backend)"),
-        ("lerobot", lerobot_api, "docs/adapters/lerobot.md", "an arm (the real backend)"),
-        ("rosbridge", rosbridge_api, "docs/adapters/rosbridge.md", "a bridge (the ws backend)"),
-        ("open_duck", open_duck_api, "docs/adapters/open_duck.md", "a duck (the bridge backend)"),
-        ("xlerobot", xlerobot_api, "docs/adapters/xlerobot.md", "a cart (the zmq backend)"),
-        ("alohamini", alohamini_api, "docs/adapters/alohamini.md", "a robot (the zmq backend)"),
-        ("toddlerbot", toddlerbot_api, "docs/adapters/toddlerbot.md", "a humanoid (the bridge)"),
-        (
-            "microduck_rl",
-            rl,
-            "docs/adr/0030-mujoco-physics-backend.md",
-            "a robot: the model and the policies are fetched at run time and never shipped",
-        ),
-    ]
+    Empty when it is not, which is what a machine with no Microduck on it should read: the
+    number belongs to that robot's protocol and means nothing without it."""
+    with contextlib.suppress(Exception):
+        from quackd_microduck import upstream_api as robotd
+
+        return str(robotd.API_VERSION.name)
+    return ""
+
+
+def _upstreams() -> list[tuple[str, Any, str, str]]:
+    """(name, module, doc, what nobody has run it against), for every adapter installed here.
+
+    Each adapter declares its own row as `UPSTREAMS`, because the list of what an adapter
+    reads from upstream belongs to that adapter rather than to a table in the core that has
+    to be edited whenever somebody publishes one. An adapter that declares none contributes
+    none, which is what a body with no upstream to cite looks like.
+
+    Imported inside this function rather than at module scope because doctor must not pull in
+    an SDK to answer a question about it."""
+    from quackd.adapters.factory import _module, adapter_names, is_installed
+
+    rows: list[tuple[str, Any, str, str]] = []
+    for name in adapter_names():
+        if not is_installed(name):
+            continue
+        with contextlib.suppress(Exception):
+            rows.extend(tuple(row) for row in getattr(_module(name), "UPSTREAMS", ()))
+    return rows
 
 
 def collect(
@@ -634,7 +645,7 @@ def collect(
         version=__version__,
         python=platform.python_version(),
         platform=f"{platform.system()} {platform.release()}",
-        api_version=str(up.API_VERSION.name),
+        api_version=_microduck_api_version(),
     )
 
     say("checking the core packages")
@@ -713,24 +724,17 @@ def collect(
                 say(f"connecting to {robot} at {address}")
                 report.robot.probe = probe(robot, manifest, address, camera_url, token, rest_pose)
 
-    for name, status in TRANSPORT_STATUS.items():
-        note, found = "", False
-        if name == "jsonrpc":
-            root = os.environ.get(up.RUNTIME_DIR_ENV.name, "/run")
-            sock = Path(root) / "robotd.sock"
-            if sys.platform == "win32":
-                note = (
-                    "Windows: use --address tcp://host:port via "
-                    "`ssh -L 9870:/run/robotd.sock robot`"
-                )
-            elif sock.exists():
-                note = f"{sock} present"
-                found = True
-            else:
-                note = f"{sock} not found (not on a robot?)"
-        if name == "websocket":
-            note = up.WEBSOCKET_GATEWAY.note
-        report.transports.append(TransportRow(name, status, note, found))
+    # An adapter that has backends worth probing on this machine says so itself. The
+    # Microduck's are the only ones today: whether robotd's socket is where it should be, and
+    # what upstream has and has not shipped. That knowledge belongs to the duck rather than
+    # to a table here that would have to be edited whenever somebody publishes an adapter.
+    for name in adapter_names():
+        if not is_installed(name):
+            continue
+        with contextlib.suppress(Exception):
+            rows = getattr(_adapter_module(name), "doctor_rows", None)
+            if callable(rows):
+                report.transports.extend(rows())
 
     say("checking the optional extras")
     for label, (module, extra) in EXTRAS.items():

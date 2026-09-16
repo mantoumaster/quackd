@@ -13,9 +13,15 @@ import pytest
 
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, RobotAdapter
 from quackd.adapters.factory import RobotSpec, describe, make_adapter, parse_robot_spec
-from quackd.adapters.lerobot import JOINTS, LeRobotAdapter, lerobot_manifest, make
-from quackd.adapters.lerobot.mock import GRIP_ON_OBJECT, REST, LeRobotMock
-from quackd.adapters.lerobot.real import (
+from quackd.duckfile.parser import load_duck, parse_duck_text
+from quackd.duckfile.validate import validate_duck
+from quackd.perception.color_blob import ColorBlobDetector
+from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all, deny_all
+from quackd.transport.base import HeartbeatError, Intent, TransportError, primary_of
+from quackd.verbs.registry import registry_from_manifest
+from quackd_lerobot import JOINTS, LeRobotAdapter, lerobot_manifest, make
+from quackd_lerobot.mock import GRIP_ON_OBJECT, REST, LeRobotMock
+from quackd_lerobot.real import (
     ENCODER_TICKS,
     MAX_STEP_DEG,
     STEP_ENV,
@@ -26,7 +32,7 @@ from quackd.adapters.lerobot.real import (
     parse_camera_urls,
     step_from_env,
 )
-from quackd.adapters.lerobot.verbs import (
+from quackd_lerobot.verbs import (
     REST_MAX_S,
     REST_MIN_S,
     TOL_DEG,
@@ -34,12 +40,6 @@ from quackd.adapters.lerobot.verbs import (
     rest_budget_s,
     rest_goal,
 )
-from quackd.duckfile.parser import load_duck, parse_duck_text
-from quackd.duckfile.validate import validate_duck
-from quackd.perception.color_blob import ColorBlobDetector
-from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all, deny_all
-from quackd.transport.base import HeartbeatError, Intent, TransportError, primary_of
-from quackd.verbs.registry import registry_from_manifest
 
 ARM_VERBS = {"observe", "report_state", "stop", "move_joints", "gripper", "place", "pick"}
 DUCK_ONLY = {"move", "walk", "go_to", "walk_to", "search_scan", "say", "gaze", "kick", "sit"}

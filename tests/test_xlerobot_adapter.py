@@ -16,7 +16,16 @@ from typer.testing import CliRunner
 
 from quackd.adapters.base import AdapterNotInstalled, RobotAdapter
 from quackd.adapters.factory import make_adapter, parse_robot_spec
-from quackd.adapters.xlerobot import (
+from quackd.agent.prompts import build_system_prompt
+from quackd.cli import app
+from quackd.duckfile.parser import load_duck, parse_duck_text
+from quackd.duckfile.validate import validate_duck
+from quackd.perception.color_blob import ColorBlobDetector
+from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all
+from quackd.transport.base import Intent, TransportError
+from quackd.verbs.core import scan_mode
+from quackd.verbs.registry import VerbNotFound, registry_from_manifest
+from quackd_xlerobot import (
     DEFAULT_VARIANT,
     MAX_VX,
     MAX_VY,
@@ -30,17 +39,8 @@ from quackd.adapters.xlerobot import (
     parse_variant,
     xlerobot_manifest,
 )
-from quackd.adapters.xlerobot.mock import XLerobotMock
-from quackd.adapters.xlerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN, JOINTS
-from quackd.agent.prompts import build_system_prompt
-from quackd.cli import app
-from quackd.duckfile.parser import load_duck, parse_duck_text
-from quackd.duckfile.validate import validate_duck
-from quackd.perception.color_blob import ColorBlobDetector
-from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all
-from quackd.transport.base import Intent, TransportError
-from quackd.verbs.core import scan_mode
-from quackd.verbs.registry import VerbNotFound, registry_from_manifest
+from quackd_xlerobot.mock import XLerobotMock
+from quackd_xlerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN, JOINTS
 from tests.conftest import REPO
 
 runner = CliRunner()
@@ -385,7 +385,7 @@ async def test_a_silent_host_refuses_every_moving_verb_but_never_stop() -> None:
 def test_joint_goals_are_normalised_and_not_degrees() -> None:
     """The SO-101 adapter next door sets use_degrees=True and validates -180..180. This robot
     does not, so the same number means a different angle and the schema must differ."""
-    from quackd.adapters.xlerobot.verbs import MoveJointsParams
+    from quackd_xlerobot.verbs import MoveJointsParams
 
     assert MoveJointsParams(positions={"left_arm_shoulder_pan": 100.0}).positions
     with pytest.raises(ValueError, match="outside"):
@@ -447,7 +447,7 @@ async def test_stop_never_raises_even_when_the_socket_does() -> None:
     its own library's error rather than one of ours. If that escaped, a stop would be reported
     as a failed verb and the reason the base actually stopped - the host's own watchdog - would
     be hidden behind it."""
-    from quackd.adapters.xlerobot.zmq_host import XLerobotZmq
+    from quackd_xlerobot.zmq_host import XLerobotZmq
 
     link = XLerobotZmq(address="tcp://127.0.0.1:5555", client=_BrokenLink(), connect_timeout_s=0.05)
     with pytest.raises(TransportError, match="no observation"):
@@ -458,7 +458,7 @@ async def test_stop_never_raises_even_when_the_socket_does() -> None:
 
 def test_an_unknown_backend_names_the_real_ones() -> None:
     with pytest.raises(ValueError, match="unknown xlerobot backend"):
-        from quackd.adapters.xlerobot import make
+        from quackd_xlerobot import make
 
         make("serial")
 

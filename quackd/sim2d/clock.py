@@ -12,7 +12,7 @@ Rule for participants: every await in your loop must bottom out in `sleep()` her
 must `unregister()` when you finish (or you wedge time for everyone else).
 
 The clock asks nothing of the world beyond a time and a way to advance it, so the cartoon and
-the MuJoCo world (`quackd.sim3d`) share it, each at its own `dt`: 50 ms for the cartoon's
+the MuJoCo world (`quackd_microduck.sim3d`) share it, each at its own `dt`: 50 ms for the cartoon's
 kinematics, 20 ms for a walking policy that runs at 50 Hz.
 """
 

@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from quackd.adapters.factory import ADAPTER_NAMES, BACKENDS, RobotSpec, describe
 from quackd.adapters.manifest import Datasheet, Figure, RobotManifest, Span, VerbSpec
-from quackd.adapters.microduck import microduck_manifest
 from quackd.agent.prompts import ASSESS_TASK, DECLARE_NAMES, META_TOOL_NAMES
 from quackd.safety import Executor, VerdictRequired
 from quackd.transport.mock import MockTransport
@@ -25,6 +24,7 @@ from quackd.verdict import (
     missing_needs_in,
     solo_hint,
 )
+from quackd_microduck import microduck_manifest
 
 
 def _body(**over: object) -> RobotManifest:

@@ -4,9 +4,15 @@ Several robots cooperating on one task. Labelled experimental, and there are two
 it, which differ in who decides what each robot does next.
 
 ```bash
-uvx quackd run flock-hello --provider fake            # the pilots: a duck and an arm say hello
-uvx quackd run flock-kick --provider fake --seed 3    # the coordinator: ducks bid, closest one kicks
+# the pilots: a duck and an arm say hello
+uvx --from "quackd[microduck,lerobot]" quackd run flock-hello --provider fake
+# the coordinator: ducks bid, closest one kicks
+uvx --from "quackd[microduck]" quackd run flock-kick --provider fake --seed 3
 ```
+
+Every body is its own package, so the install names each robot the run will open: the pilot
+demo wants the duck and the arm, the coordinator wants only the duck. `quackd[lerobot]` pulls
+torch on Python 3.12 because the arm's SDK does, and this demo never leaves `lerobot:mock`.
 
 ## Two kinds of flock
 
@@ -42,7 +48,7 @@ The members divide the task between them by saying what they are going to do
 ([ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)).
 
 ```bash
-uvx quackd run flock-hello --provider fake
+uvx --from "quackd[microduck,lerobot]" quackd run flock-hello --provider fake
 ```
 
 That is the bundled demo: a simulated duck and a mock arm, no registry, no API key.
@@ -456,7 +462,10 @@ only influences failure path timing, as in solo runs.
 
 The coordinator knows the **Microduck** on `sim2d`. Any other adapter is refused when the run
 starts, with the names it does know, and so is a stored flock whose members are not all
-`microduck:sim2d`. That is a limit of `quackd/flock/runner.py`, not of the robots.
+`microduck:sim2d`. That is a limit of `quackd/flock/runner.py`, not of the robots. It also
+needs that duck installed at all. `--flock N` is N simulated Microducks and nothing else, so
+without `quackd-microduck` the run refuses before anything connects, says that is what a
+coordinator flock is, and names `quackd[microduck]` as the install.
 
 So a role with physical `needs` validates and its matching is tested here, but no coordinator
 flock quackd can start has two different bodies in it to match. A flock of two different bodies

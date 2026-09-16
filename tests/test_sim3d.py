@@ -20,11 +20,11 @@ mujoco = pytest.importorskip("mujoco")
 from quackd.perception.color_blob import ColorBlobDetector  # noqa: E402
 from quackd.sim2d.recorder import FrameRecorder  # noqa: E402
 from quackd.sim2d.world import World  # noqa: E402
-from quackd.sim3d.render import render_headcam, render_overview  # noqa: E402
-from quackd.sim3d.scene import BALL_PARK  # noqa: E402
-from quackd.sim3d.world import CONTROL_DT, DEADMAN_S, MujocoWorld, Puppet  # noqa: E402
 from quackd.transport.base import Intent, TransportError  # noqa: E402
-from quackd.transport.mujoco import MujocoTransport  # noqa: E402
+from quackd_microduck.sim3d.render import render_headcam, render_overview  # noqa: E402
+from quackd_microduck.sim3d.scene import BALL_PARK  # noqa: E402
+from quackd_microduck.sim3d.world import CONTROL_DT, DEADMAN_S, MujocoWorld, Puppet  # noqa: E402
+from quackd_microduck.transports.mujoco import MujocoTransport  # noqa: E402
 from tests.gl import require_render  # noqa: E402
 
 
@@ -313,7 +313,7 @@ def test_upstreams_blue_scene_is_never_mistaken_for_a_person() -> None:
 
 def test_the_two_floors_are_the_same_floor_seen_by_different_eyes() -> None:
     """One collides and one does not, so the physics cannot notice which is drawn."""
-    from quackd.sim3d.scene import FLOOR_CAM_GROUP, FLOOR_GROUP
+    from quackd_microduck.sim3d.scene import FLOOR_CAM_GROUP, FLOOR_GROUP
 
     w = MujocoWorld(seed=0, body=Puppet())
     groups = {}
@@ -379,8 +379,8 @@ def test_standing_up_does_not_leave_the_duck_inside_something() -> None:
 
     The ball is the only thing left in this arena to be inside of, now that nobody stands in
     it, so it is the ball that covers the obstacle branch the person used to cover."""
-    from quackd.sim3d.scene import ARENA_HALF, BALL_R
-    from quackd.sim3d.world import DUCK_R
+    from quackd_microduck.sim3d.scene import ARENA_HALF, BALL_R
+    from quackd_microduck.sim3d.world import DUCK_R
 
     w = MujocoWorld(seed=0, body=Puppet())
     bx, by = w.ball_x, w.ball_y
@@ -401,8 +401,8 @@ def test_standing_up_does_not_leave_the_duck_inside_something() -> None:
 def test_a_frame_bigger_than_the_offscreen_buffer_is_refused_by_name() -> None:
     """The buffer is compiled into the model, so a larger frame fails inside MuJoCo. Refuse it
     where the number lives, and bound `--gif-size` to the same figure."""
-    from quackd.sim3d.scene import OFFSCREEN_PX
-    from quackd.sim3d.world import RenderError
+    from quackd_microduck.sim3d.scene import OFFSCREEN_PX
+    from quackd_microduck.sim3d.world import RenderError
 
     w = MujocoWorld(seed=0, body=Puppet())
     with pytest.raises(RenderError, match="OFFSCREEN_PX"):
@@ -415,7 +415,7 @@ def test_the_cli_caps_a_gif_pane_at_the_size_the_model_can_actually_render() -> 
     """`cli.py` spells 1024 rather than importing it, because importing `sim3d` on the default
     path would drag in the physics extra. This is the thread between the two numbers."""
     from quackd.cli import _GIFSIZE
-    from quackd.sim3d.scene import OFFSCREEN_PX
+    from quackd_microduck.sim3d.scene import OFFSCREEN_PX
 
     assert _GIFSIZE.max == OFFSCREEN_PX
 
@@ -425,7 +425,7 @@ def test_a_machine_with_no_opengl_is_told_which_variable_to_set(
 ) -> None:
     """docs/faq.md promises this sentence. A bare OpenGL traceback is the least useful thing
     to hand someone on a server."""
-    from quackd.sim3d.world import RenderError
+    from quackd_microduck.sim3d.world import RenderError
 
     w = MujocoWorld(seed=0, body=Puppet())
 
@@ -439,7 +439,7 @@ def test_a_machine_with_no_opengl_is_told_which_variable_to_set(
 
 def test_a_world_can_be_closed_twice_and_refuses_to_render_after() -> None:
     w = MujocoWorld(seed=0, body=Puppet())
-    from quackd.sim3d.world import RenderError
+    from quackd_microduck.sim3d.world import RenderError
 
     w.close()
     w.close()
@@ -578,7 +578,7 @@ def test_a_policy_of_the_wrong_shape_is_refused_by_name() -> None:
     would have failed inside onnxruntime on the first tick, with nothing naming the file."""
     from types import SimpleNamespace
 
-    from quackd.sim3d.microduck import ACTION_LEN, OBS_LEN, PolicyError, _check_io
+    from quackd_microduck.sim3d.microduck import ACTION_LEN, OBS_LEN, PolicyError, _check_io
 
     def session(inputs: list[Any], outputs: list[Any]) -> Any:
         return SimpleNamespace(get_inputs=lambda: inputs, get_outputs=lambda: outputs)
@@ -609,7 +609,7 @@ def test_a_policy_of_the_wrong_shape_is_refused_by_name() -> None:
 #: caller carries `@pytest.mark.real_duck`, which is what exempts it from the conftest's
 #: throwaway cache; without the marker this would look in an empty directory and always skip.
 def _cached_microduck() -> Any:
-    from quackd.sim3d.assets import AssetError, ensure_microduck
+    from quackd_microduck.sim3d.assets import AssetError, ensure_microduck
 
     try:
         return ensure_microduck(offline=True)
@@ -620,7 +620,7 @@ def _cached_microduck() -> Any:
 @pytest.mark.real_duck
 def test_the_real_duck_walks_turns_and_stays_upright() -> None:
     assets = _cached_microduck()
-    from quackd.sim3d.microduck import MicroduckBody
+    from quackd_microduck.sim3d.microduck import MicroduckBody
 
     w = MujocoWorld(seed=6, body=MicroduckBody(assets))
     assert w.posture == "standing"
@@ -656,7 +656,7 @@ def test_a_duck_that_fell_on_its_face_stands_up_facing_the_way_it_was_going() ->
     how a biped most often lands: measured on the real model, a duck facing +x that goes onto
     its nose reads as yaw 3.14, so `stand_up` used to put it back on its feet facing
     backwards, one step into whatever it had been walking towards."""
-    from quackd.sim3d.microduck import MicroduckBody
+    from quackd_microduck.sim3d.microduck import MicroduckBody
 
     w = MujocoWorld(seed=0, body=MicroduckBody(_cached_microduck()))
     b = w.body
@@ -675,8 +675,8 @@ def test_a_duck_that_fell_on_its_face_stands_up_facing_the_way_it_was_going() ->
 
 @pytest.mark.real_duck
 def test_the_real_duck_refuses_to_sit_and_stands_itself_up() -> None:
-    from quackd.sim3d.microduck import MicroduckBody
-    from quackd.sim3d.world import NotSupported
+    from quackd_microduck.sim3d.microduck import MicroduckBody
+    from quackd_microduck.sim3d.world import NotSupported
 
     w = MujocoWorld(seed=0, body=MicroduckBody(_cached_microduck()))
     with pytest.raises(NotSupported, match="sit"):

@@ -20,14 +20,14 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-from quackd.adapters.microduck import MicroduckAdapter
 from quackd.agent.loop import RunConfig, run_duck
 from quackd.agent.providers.fake import FakeProvider
 from quackd.duckfile.parser import load_duck
 from quackd.perception.color_blob import ColorBlobDetector
 from quackd.sim2d.recorder import FrameRecorder
-from quackd.sim3d.world import MujocoWorld
-from quackd.transport.mujoco import MujocoTransport
+from quackd_microduck import MicroduckAdapter
+from quackd_microduck.sim3d.world import MujocoWorld
+from quackd_microduck.transports.mujoco import MujocoTransport
 from tests.gl import require_render
 
 SEEDS = range(10)
@@ -127,7 +127,7 @@ def _opengl_or_skip() -> None:
 
 
 def _cached_microduck() -> object:
-    from quackd.sim3d.assets import AssetError, ensure_microduck
+    from quackd_microduck.sim3d.assets import AssetError, ensure_microduck
 
     try:
         return ensure_microduck(offline=True)

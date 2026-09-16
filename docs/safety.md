@@ -314,7 +314,7 @@ it, and `--no-memory` runs as if it were never there.
 There is a second thing that is not about the body. `--robot microduck:mujoco` downloads an
 MJCF, 38 meshes and two ONNX policies from GitHub and the Hugging Face Hub the first time it
 runs, into `~/.quackd/cache`, and then runs those policies in quackd's own process. What guards
-that: the commit and the revision are pinned in `quackd/sim3d/upstream_api.py`, every file is
+that: the commit and the revision are pinned in `adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py`, every file is
 checked against a sha256 recorded when it was read and a mismatch is a refusal, and the tarball
 is unpacked by name against a fixed list rather than by whatever it contains. What does not:
 `QUACKD_MICRODUCK_ASSETS` points quackd at a checkout of your own, and there a file that differs

@@ -18,16 +18,16 @@ from collections.abc import Callable
 
 import pytest
 
-from quackd.adapters.xlerobot import XLerobotAdapter
-from quackd.adapters.xlerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN
-from quackd.adapters.xlerobot.zmq_host import (
+from quackd.transport.base import HeartbeatError, Intent, TransportError
+from quackd_xlerobot import XLerobotAdapter
+from quackd_xlerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN
+from quackd_xlerobot.zmq_host import (
     CMD_PORT,
     OBS_PORT,
     XLerobotZmq,
     pick_camera,
     split_address,
 )
-from quackd.transport.base import HeartbeatError, Intent, TransportError
 from tests.fake_xlerobot_host import FakeXLerobotHost
 
 pytest.importorskip("zmq", reason="the xlerobot zmq backend needs quackd[xlerobot]")

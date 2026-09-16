@@ -22,12 +22,12 @@ from types import ModuleType
 
 import pytest
 
-from quackd.adapters.open_duck import OpenDuckAdapter
-from quackd.adapters.open_duck.bridge import PROTOCOL, PROTOCOL_VERSION, OpenDuckBridge
 from quackd.duckfile.parser import parse_duck_text
 from quackd.perception.color_blob import ColorBlobDetector
 from quackd.safety import Executor, allow_all
 from quackd.verbs.registry import registry_from_manifest
+from quackd_open_duck import OpenDuckAdapter
+from quackd_open_duck.bridge import PROTOCOL, PROTOCOL_VERSION, OpenDuckBridge
 
 REPO = Path(__file__).resolve().parents[1]
 DAEMON = REPO / "bridge" / "open_duck" / "quackd_duck_bridge.py"

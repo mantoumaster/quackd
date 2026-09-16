@@ -12,7 +12,9 @@ chatting with in Claude Code or Claude Desktop is the one flying the robot, and 
 the robot, the verbs and the executor rather than a choice of brain. Everything about `--model`,
 `quackd list-models` and the catalogue belongs to `quackd run`.
 
-Works with the built-in simulator out of the box — no hardware, no extra install.
+Works against a simulated duck with no hardware at all. The simulator is the Microduck's own,
+so `quackd[microduck]` is the whole install, and a bare `uvx quackd` has no robot in it to
+serve.
 
 For a duck that really walks, add the physics extra and name the physics backend:
 
@@ -125,7 +127,7 @@ Verified against the current docs (`code.claude.com/docs/en/mcp`, 2026-08). Two 
 **1. One command** (local scope by default; `--scope project` shares it via `.mcp.json`):
 
 ```bash
-claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d
+claude mcp add quackd -- uvx --from "quackd[microduck]" quackd serve-mcp --robot microduck:sim2d
 ```
 
 **2. Project file** — commit a `.mcp.json` at the repo root:
@@ -135,7 +137,7 @@ claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d
   "mcpServers": {
     "quackd": {
       "command": "uvx",
-      "args": ["quackd", "serve-mcp", "--robot", "microduck:sim2d"]
+      "args": ["--from", "quackd[microduck]", "quackd", "serve-mcp", "--robot", "microduck:sim2d"]
     }
   }
 }
@@ -144,13 +146,21 @@ claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d
 
 (No `"type"` key: Claude Code reads an entry with `command` as a stdio server.)
 
+`--from "quackd[microduck]"` is what puts a duck in the environment `uvx` builds. The `quackd`
+on PyPI is the loop and no robot, so a bare `uvx quackd serve-mcp --robot microduck:sim2d`
+never reaches the tool list: it stops at `adapter 'microduck' needs an extra`. Swap the extra
+for the body you own, `quackd[lerobot]` or `quackd[rosbridge]` or any of the seven, and name
+that robot after `--robot`.
+
 Then in Claude Code: *"List the duck's verbs, then find the ball and kick it."*
 
 > **If you are working on quackd itself**, this repo ships its own `.mcp.json`, and it says
 > `uv run --no-sync` rather than `uvx` on purpose: it serves the code in your working tree
 > instead of the last release, and `--no-sync` keeps the launch from re-syncing the
 > environment while the previous server still holds `Scripts/quackd.exe` open on Windows.
-> Run `uv sync --extra dev` once first. A server that is already running keeps the tools it
+> Run `uv sync --extra dev` once first, which installs the core and all seven adapters as
+> editable workspace members. That is also why the repo's file carries no `--from`: every
+> robot is already in that environment. A server that is already running keeps the tools it
 > started with, so after changing a verb or upgrading quackd, restart it (`/mcp` in Claude
 > Code, or a new session) or you will be calling the old build.
 
@@ -166,7 +176,7 @@ Edit `claude_desktop_config.json` — Settings → Developer → *Edit Config*:
   "mcpServers": {
     "quackd": {
       "command": "uvx",
-      "args": ["quackd", "serve-mcp", "--robot", "microduck:sim2d"],
+      "args": ["--from", "quackd[microduck]", "quackd", "serve-mcp", "--robot", "microduck:sim2d"],
       "env": {"QUACKD_TRACE": "1"}
     }
   }
@@ -229,7 +239,7 @@ exposing them (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 your-pi`), the
   "mcpServers": {
     "duck": {
       "command": "uvx",
-      "args": ["quackd", "serve-mcp",
+      "args": ["--from", "quackd[open_duck]", "quackd", "serve-mcp",
                "--robot", "open_duck:bridge",
                "--address", "tcp://127.0.0.1:9871",
                "--camera-url", "http://127.0.0.1:9872/snapshot.jpg"],
@@ -246,7 +256,7 @@ against a real duck: [adapters/open_duck.md](adapters/open_duck.md) and its
 
 ## The two-minute script
 
-1. `claude mcp add quackd -- uvx quackd serve-mcp --robot microduck:sim2d` (≈20 s, first run downloads quackd)
+1. `claude mcp add quackd -- uvx --from "quackd[microduck]" quackd serve-mcp --robot microduck:sim2d` (≈20 s, first run downloads quackd and the duck)
 2. Open Claude Code in any folder and ask: **"Use the quackd tools. List the verbs, grab a frame, then find the ball and kick it. Quack when you're done."**
 3. Watch it call `robot_list` → `robot_list_verbs` → `robot_observe` → `robot_assess_task` → `robot_run_verb("search_scan")` → `robot_run_verb("go_to")` → `robot_run_verb("kick")` → `robot_say`.
 4. Ask: **"Load ducks/patrol-and-quack.duck and follow it."** — now the allowlist and budgets apply, and the model has the task body as instructions.

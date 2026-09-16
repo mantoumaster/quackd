@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from quackd.adapters.manifest import RobotManifest, VerbSpec
-from quackd.adapters.microduck import microduck_manifest
 from quackd.duckfile.parser import load_duck, parse_duck_text
 from quackd.duckfile.validate import validate_duck
+from quackd_microduck import microduck_manifest
 
 # A fixed camera with a voice, no legs: a hypothetical bolted-down body, used only to
 # exercise validate_duck against a robot that cannot move or kick.

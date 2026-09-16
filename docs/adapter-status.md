@@ -11,28 +11,52 @@ One row below has met hardware: `lerobot:real`, on 2026-09-15, on a LeRobot SO-1
 the seven bodies here have still never been driven by quackd, and the row that has was driven
 on one bench for one afternoon. What that afternoon did and did not settle is under the table.
 
+> [!IMPORTANT]
+> `uv pip install quackd` installs the core and no robot at all. Every body below is its own
+> distribution, and the extra that names it is what installs it.
+
+| Adapter | Extra | Distribution |
+|---|---|---|
+| Microduck | `quackd[microduck]` | `quackd-microduck` |
+| LeRobot | `quackd[lerobot]` | `quackd-lerobot` |
+| rosbridge | `quackd[rosbridge]` | `quackd-rosbridge` |
+| Open Duck Mini v2 | `quackd[open_duck]` | `quackd-open-duck` |
+| XLeRobot | `quackd[xlerobot]` | `quackd-xlerobot` |
+| AlohaMini | `quackd[alohamini]` | `quackd-alohamini` |
+| ToddlerBot | `quackd[toddlerbot]` | `quackd-toddlerbot` |
+
+So `uv pip install "quackd[open_duck]"` buys the Open Duck Mini and nothing else, and
+`quackd[robots]` buys all seven, each with the SDK its real backend needs. Two extras buy the
+duck and one heavy thing it can do: `quackd[mujoco]` is `quackd-microduck[mujoco]`, the duck
+with its physics simulator, and `quackd[microduck-camera]` is the duck with its WebRTC camera.
+
+An adapter that is not installed keeps its row in `quackd list-adapters` and in
+`quackd doctor`, marked not installed. Naming one anyway refuses with the extra to type:
+`adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot]'`. With nothing installed
+at all, every command that needs a body refuses and names all seven.
+
 | Adapter | `--robot` | Status | Upstream file | Page |
 |---|---|---|---|---|
 | Microduck | `microduck:sim2d` | ✅ default | | this page |
-| | `microduck:mujoco` | ✅ physics simulator (MuJoCo, `quackd[mujoco]`): `find-and-kick` 10 of 10 seeds on the stand-in, and 9 or 10 of 10 on the trained gait depending on the machine and the run, seed 4 being the marginal one | [`quackd/sim3d/upstream_api.py`](../quackd/sim3d/upstream_api.py) | |
+| | `microduck:mujoco` | ✅ physics simulator (MuJoCo, `quackd[mujoco]`): `find-and-kick` 10 of 10 seeds on the stand-in, and 9 or 10 of 10 on the trained gait depending on the machine and the run, seed 4 being the marginal one | [`adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py`](../adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py) | |
 | | `microduck:mock` | ✅ | | |
-| | `microduck:jsonrpc` | 🧪 experimental: every method VERIFIED, never run on a duck | [`quackd/transport/upstream_api.py`](../quackd/transport/upstream_api.py) | |
+| | `microduck:jsonrpc` | 🧪 experimental: every method VERIFIED, never run on a duck | [`adapters/microduck/src/quackd_microduck/upstream_api.py`](../adapters/microduck/src/quackd_microduck/upstream_api.py) | |
 | | `microduck:websocket` | ⏳ stub: raises with a link until upstream ships it | | |
 | LeRobot | `lerobot:mock` | ✅ | | [adapters/lerobot.md](adapters/lerobot.md) |
-| | `lerobot:real` | ✅ **run on a real arm on 2026-09-15**, the only row here that has been: an SO-101 follower calibrated as `arm-01` and reached as `--robot lerobot:real --address COM5` with no registered name, on Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0, piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, once with `--provider fake` as well. Free-form `--goal` runs waved the wrist roll about plus or minus 27 degrees, reached wider with `shoulder_lift` -39 and `elbow_flex` 24 to 30, opened and closed the gripper (commanded 100, reported 98 open and 3 closed with the jaws nearly touching), and one of them mimed a duck quacking with the gripper. A USB webcam answered at `opencv://1`, and at `opencv://2` after a replug, 640x480, with no `?backend=` key needed. **The arm fell at the end of every run**, which is the fault the rest pose was written to fix and has not yet been tried on that arm. Every LeRobot name is still VERIFIED at a pinned commit, and still exercised with a fake arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`quackd/adapters/lerobot/upstream_api.py`](../quackd/adapters/lerobot/upstream_api.py) | |
+| | `lerobot:real` | ✅ **run on a real arm on 2026-09-15**, the only row here that has been: an SO-101 follower calibrated as `arm-01` and reached as `--robot lerobot:real --address COM5` with no registered name, on Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0, piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, once with `--provider fake` as well. Free-form `--goal` runs waved the wrist roll about plus or minus 27 degrees, reached wider with `shoulder_lift` -39 and `elbow_flex` 24 to 30, opened and closed the gripper (commanded 100, reported 98 open and 3 closed with the jaws nearly touching), and one of them mimed a duck quacking with the gripper. A USB webcam answered at `opencv://1`, and at `opencv://2` after a replug, 640x480, with no `?backend=` key needed. **The arm fell at the end of every run**, which is the fault the rest pose was written to fix and has not yet been tried on that arm. Every LeRobot name is still VERIFIED at a pinned commit, and still exercised with a fake arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`adapters/lerobot/src/quackd_lerobot/upstream_api.py`](../adapters/lerobot/src/quackd_lerobot/upstream_api.py) | |
 | rosbridge | `rosbridge:mock` | ✅ | | [adapters/rosbridge.md](adapters/rosbridge.md) |
-| | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics and fake services, including reading the robot's own description off the bridge, never run against a bridge | [`quackd/adapters/rosbridge/upstream_api.py`](../quackd/adapters/rosbridge/upstream_api.py) | |
+| | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics and fake services, including reading the robot's own description off the bridge, never run against a bridge | [`adapters/rosbridge/src/quackd_rosbridge/upstream_api.py`](../adapters/rosbridge/src/quackd_rosbridge/upstream_api.py) | |
 | Open Duck Mini v2 | `open_duck:sim2d` | ✅ `open-duck-scout` 10 of 10 seeds | | [adapters/open_duck.md](adapters/open_duck.md) |
 | | `open_duck:mock` | ✅ | | |
-| | `open_duck:bridge` | 🧪 every runtime name VERIFIED at a pinned commit, the protocol exercised against the real daemon over loopback, never run on a duck | [`quackd/adapters/open_duck/upstream_api.py`](../quackd/adapters/open_duck/upstream_api.py) | |
+| | `open_duck:bridge` | 🧪 every runtime name VERIFIED at a pinned commit, the protocol exercised against the real daemon over loopback, never run on a duck | [`adapters/open_duck/src/quackd_open_duck/upstream_api.py`](../adapters/open_duck/src/quackd_open_duck/upstream_api.py) | |
 | XLeRobot | `xlerobot:mock` | ✅ | | [adapters/xlerobot.md](adapters/xlerobot.md) |
-| | `xlerobot:zmq` | 🧪 the whole wire format VERIFIED at a pinned commit, the client exercised against a fake host quackd wrote from that source over loopback, never run on a cart | [`quackd/adapters/xlerobot/upstream_api.py`](../quackd/adapters/xlerobot/upstream_api.py) | |
+| | `xlerobot:zmq` | 🧪 the whole wire format VERIFIED at a pinned commit, the client exercised against a fake host quackd wrote from that source over loopback, never run on a cart | [`adapters/xlerobot/src/quackd_xlerobot/upstream_api.py`](../adapters/xlerobot/src/quackd_xlerobot/upstream_api.py) | |
 | AlohaMini | `alohamini:mock` | ✅ | | [adapters/alohamini.md](adapters/alohamini.md) |
 | | `alohamini:sim2d` | ✅ `alohamini-lookout` 10 of 10 seeds | | |
-| | `alohamini:zmq` | 🧪 the whole wire format VERIFIED at a pinned commit, the client exercised against a fake host quackd wrote from that source over loopback, never run on a robot. The arm verbs additionally need quackd's own host wrapper, which nobody has run either | [`quackd/adapters/alohamini/upstream_api.py`](../quackd/adapters/alohamini/upstream_api.py) | |
+| | `alohamini:zmq` | 🧪 the whole wire format VERIFIED at a pinned commit, the client exercised against a fake host quackd wrote from that source over loopback, never run on a robot. The arm verbs additionally need quackd's own host wrapper, which nobody has run either | [`adapters/alohamini/src/quackd_alohamini/upstream_api.py`](../adapters/alohamini/src/quackd_alohamini/upstream_api.py) | |
 | ToddlerBot | `toddlerbot:mock` | ✅ | | [adapters/toddlerbot.md](adapters/toddlerbot.md) |
 | | `toddlerbot:sim2d` | ✅ `toddlerbot-lookout` 10 of 10 seeds | | |
-| | `toddlerbot:bridge` | 🧪 every upstream name VERIFIED at the commit the v2.0.0 tag points at, the protocol and the daemon's own safety machinery exercised against a fake body over loopback, never run on a robot | [`quackd/adapters/toddlerbot/upstream_api.py`](../quackd/adapters/toddlerbot/upstream_api.py) | |
+| | `toddlerbot:bridge` | 🧪 every upstream name VERIFIED at the commit the v2.0.0 tag points at, the protocol and the daemon's own safety machinery exercised against a fake body over loopback, never run on a robot | [`adapters/toddlerbot/src/quackd_toddlerbot/upstream_api.py`](../adapters/toddlerbot/src/quackd_toddlerbot/upstream_api.py) | |
 
 **The first real run, and what it does not prove.** One SO-101, one bench, one afternoon.
 The arm fell at the end of every run, because LeRobot's `disconnect()` disables torque by its
@@ -177,7 +201,7 @@ is the order to try it in, and there is an issue template waiting for the result
 both pinned, both fetched at run time into `~/.quackd/cache` and checked against a recorded
 sha256, and neither shipped: the 3D model files are CC BY-NC-SA
 ([licenses.md](licenses.md)). Every name quackd relies on lives in
-[`quackd/sim3d/upstream_api.py`](../quackd/sim3d/upstream_api.py), and
+[`adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py`](../adapters/microduck/src/quackd_microduck/sim3d/upstream_api.py), and
 [ADR-0030](adr/0030-mujoco-physics-backend.md) is the reasoning.
 
 **What that ✅ rests on.** Two `find-and-kick` sweeps over the same ten seeds: one on the
