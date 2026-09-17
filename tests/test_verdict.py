@@ -113,7 +113,9 @@ def test_every_shipped_verb_was_classified_on_purpose() -> None:
 # ── the gate ────────────────────────────────────────────────────────────────────────────
 
 
-def _executor(**over: object) -> tuple[Executor, MockTransport, list[dict[str, object]]]:
+def _executor(
+    registry: object | None = None, **over: object
+) -> tuple[Executor, MockTransport, list[dict[str, object]]]:
     transport = MockTransport()
     events: list[dict[str, object]] = []
 
@@ -122,7 +124,7 @@ def _executor(**over: object) -> tuple[Executor, MockTransport, list[dict[str, o
             events.append({"kind": kind, **data})
 
     executor = Executor(
-        registry=default_registry(),
+        registry=registry if registry is not None else default_registry(),  # type: ignore[arg-type]
         transport=transport,
         manifest=microduck_manifest("mock"),
         trace=_Tracer(),  # type: ignore[arg-type]
@@ -146,6 +148,40 @@ async def test_nothing_moves_until_a_verdict_clears_it() -> None:
     executor.verdict = Verdict(verdict="feasible", reason="light enough")
     assert (await executor.run_verb("walk", {"vx": 0.1, "duration_s": 0.1})).ok
     assert transport.intents_of("move")
+
+
+async def test_a_bodys_own_read_only_verb_looks_before_the_verdict() -> None:
+    """`BEFORE_VERDICT` knows the verbs quackd ships. A body quackd never shipped brings its
+    own sensing verb, and the pilot needs it for the very judgement the gate is waiting for:
+    a `locate` that says where the thing is cannot be refused as "moves the body"."""
+    from quackd.verbs.registry import NoParams, Verb, VerbResult
+
+    async def looks(_ctx: object, _p: object) -> VerbResult:
+        return VerbResult.success("the ball is 0.3 m ahead")
+
+    async def moves(_ctx: object, _p: object) -> VerbResult:
+        return VerbResult.success("reached")
+
+    registry = default_registry()
+    registry.register(Verb("locate", "where a thing is", looks, NoParams, read_only=True))
+    registry.register(Verb("reach", "move a hand to it", moves, NoParams))
+    executor, _transport, events = _executor(require_verdict=True, registry=registry)
+
+    assert (await executor.run_verb("locate")).ok
+    assert not [e for e in events if e["kind"] == "gate" and e["gate"] == "verdict"]
+    with pytest.raises(VerdictRequired, match="reach moves the body"):
+        await executor.run_verb("reach")
+
+    # a learned verb never carries the flag: unproven, it waits like everything else
+    from quackd.verbs.learned import LearnedVerbSpec, register_learned_verb
+
+    register_learned_verb(
+        registry,
+        LearnedVerbSpec(name="wave", description="a policy", policy_path="wave.onnx"),
+    )
+    assert not registry.get("wave").read_only
+    with pytest.raises(VerdictRequired, match="wave moves the body"):
+        await executor.run_verb("wave")
 
 
 async def test_an_unanswered_doubt_does_not_clear_the_gate() -> None:
