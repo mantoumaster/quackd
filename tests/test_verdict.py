@@ -11,7 +11,7 @@ from quackd.agent.prompts import ASSESS_TASK, DECLARE_NAMES, META_TOOL_NAMES
 from quackd.safety import Executor, VerdictRequired
 from quackd.transport.mock import MockTransport
 from quackd.verbs.aliases import ALIASES, canonical
-from quackd.verbs.registry import default_registry
+from quackd.verbs.registry import Verb, default_registry
 from quackd.verdict import (
     BEFORE_VERDICT,
     MOVES_THE_BODY,
@@ -108,6 +108,37 @@ def test_every_shipped_verb_was_classified_on_purpose() -> None:
     stale = (BEFORE_VERDICT | MOVES_THE_BODY) - shipped
     assert not stale, f"no shipped robot has these any more: {sorted(stale)}"
     assert "stop" in BEFORE_VERDICT, "the brake can never wait for a verdict"
+
+
+def _shipped_verbs() -> list[Verb]:
+    """Every `Verb` a shipped body can register: the default vocabulary, plus each official
+    adapter's own implementations. `registry_from_manifest` copies `read_only` off these
+    templates untouched, so what they say here is what the gate sees at run time."""
+    from quackd.adapters.factory import _module
+
+    verbs = list(default_registry().verbs())
+    for adapter in ADAPTER_NAMES:
+        verbs += list(_module(adapter).implementations().values())
+    return verbs
+
+
+def test_a_shipped_verb_that_only_reads_is_already_one_that_runs_first() -> None:
+    """The gate reads `Verb.read_only` beside `BEFORE_VERDICT` (#26), and for a body quackd
+    never shipped that is the whole point: it is the only way a stranger's `locate` can look
+    before the pilot judges. For a body quackd does ship, the flag must restate the set and
+    never widen it. The test above reads the two sets and cannot see the flag, so a shipped
+    verb flagged read-only and filed under `MOVES_THE_BODY` would run before any verdict and
+    nothing would say so."""
+    flagged = {canonical(v.name) for v in _shipped_verbs() if v.read_only}
+    assert {"observe", "report_state", "introspect"} <= flagged, (
+        "the verbs that only read stopped saying so: the flag itself went missing"
+    )
+    widened = flagged - BEFORE_VERDICT
+    assert not widened, (
+        "these ship as read-only, so the gate lets them run before the verdict, and the set "
+        f"that is supposed to be the record of that does not name them: {sorted(widened)}"
+    )
+    assert not flagged & MOVES_THE_BODY, "a verb cannot both move the body and only read"
 
 
 # ── the gate ────────────────────────────────────────────────────────────────────────────

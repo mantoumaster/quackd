@@ -113,6 +113,22 @@ async def test_dry_run_sends_nothing(registry: VerbRegistry, mock_transport: Moc
     assert frame.ok and "frame captured" in frame.summary
 
 
+async def test_a_read_only_verb_sends_nothing(
+    registry: VerbRegistry, mock_transport: MockTransport
+) -> None:
+    """What the flag claims, as a test. Two gates believe it: `--dry-run` runs a read-only
+    verb against real hardware, and since #26 the verdict gate lets one run before the pilot
+    has judged the task. Both readings rest on the same fact, that the verb sends nothing, and
+    nothing checked it."""
+    ex = Executor(registry, mock_transport)
+    for verb in registry.verbs():
+        if verb.read_only:
+            assert (await ex.run_verb(verb.name)).ok, verb.name
+    assert mock_transport.intents == [], (
+        f"a read-only verb sent an intent: {[i.kind for i in mock_transport.intents]}"
+    )
+
+
 async def test_invalid_params_are_feedback_not_crash(
     registry: VerbRegistry, mock_transport: MockTransport
 ) -> None:
