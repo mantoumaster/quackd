@@ -78,7 +78,7 @@ from quackd.verbs.registry import (
     default_registry,
     registry_from_manifest,
 )
-from quackd.verdict import Verdict, missing_needs
+from quackd.verdict import BEFORE_VERDICT, Verdict, missing_needs, own_sheet_objection
 
 log = logging.getLogger("quackd.mcp")
 
@@ -408,6 +408,18 @@ class RobotSession:
                 f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()
             )
             return {"ok": False, "robot": self.name, "summary": f"invalid verdict: {msgs}"}
+        if verdict.verdict == "feasible":
+            # the loop's check, on this surface too. `robot_assess_task` matched `needs`
+            # against every OTHER robot in the fleet to fill in `could`, and recorded a
+            # feasible against this robot's own sheet without ever looking at it.
+            objection = own_sheet_objection(
+                verdict.needs, self.effective_manifest(), tool="robot_assess_task"
+            )
+            if objection is not None:
+                # the gate shuts, as it does in the loop: an earlier `feasible` left standing
+                # would refuse the words and not the motion
+                self.executor.verdict = None
+                return {"ok": False, "robot": self.name, "summary": objection}
         self.executor.verdict = verdict
         payload: dict[str, Any] = {
             "ok": True,
@@ -487,6 +499,7 @@ class RobotSession:
                     "canonical": v.name,
                     "aliases": [a for a, c in aliases.items() if c == v.name],
                     "core": v.core,
+                    "before_verdict": v.name in BEFORE_VERDICT or v.read_only,
                     "kind": v.kind,
                     "safety_class": v.safety_class,
                     "allowed": self.executor.is_allowed(v.name),
@@ -881,13 +894,21 @@ def build_fleet_server(
     @mcp.tool(
         description=(
             "Your verdict on whether one robot can do the task, judged against the datasheet "
-            "in its robot_list row. Required before the first verb that moves that body: "
-            "until you answer, only stop, observe, report_state, say and the head verbs run. "
+            "in its robot_list row: the task's needs against that body's limits, not whether "
+            "you have found the target yet. Required before the first verb that moves it: "
+            "until you answer, robot_run_verb refuses anything that moves it and says so, and "
+            "only the verbs robot_list_verbs marks before_verdict run. "
             "feasible: go. infeasible: nothing on that robot will move, so name the limit and "
             "what you estimated, and read `could` for a robot here that meets what the task "
-            "needs. uncertain: ask the person you are chatting with, then answer again. Fill "
+            "needs. uncertain: only when the verdict itself turns on a figure you cannot judge "
+            "from here, the mass or size of a thing that decides a limit and that you have not "
+            "seen, or a limit listed as not published. Not having found the target yet is not "
+            "by itself one of those. Ask the person you are chatting with, then answer again. "
+            "Fill "
             "in `needs` (payload_kg, reach_m, manipulator, mobility, ...) even when feasible, "
-            "because that is what names the robots that could."
+            "because that is what names the robots that could. A feasible whose needs that "
+            "robot's own datasheet does not meet is refused before it is recorded, and names "
+            "the need."
         )
     )
     async def robot_assess_task(

@@ -22,7 +22,7 @@ the trace and the transcript print, so a refusal tells you which row you are on.
 | `abort` | the run has been aborted. `stop` is exempt, so the brake still works | nothing: the run is over |
 | `allowlist` | the verb is in `verbs.allow`. `stop` is always allowed | the `.duck`'s `verbs.allow` |
 | `unknown` | quackd has never heard of this verb | the spelling, or the robot (`quackd list-verbs`) |
-| `verdict` | the pilot has judged the task feasible against the datasheet. `stop`, `observe`, `report_state`, `say`, `quack`, `express`, `gaze`, `look` and `introspect` run before it, because a pilot has to look at a thing before judging whether it can lift it | nothing: the model calls `assess_task` |
+| `verdict` | the pilot has judged the task feasible against the datasheet. `stop`, `observe`, `report_state`, `say`, `quack`, `express`, `gaze`, `look` and `introspect` run before it, and so does any verb its adapter declared `read_only`, because a pilot has to look at a thing before judging whether it can lift it | nothing: the model calls `assess_task` |
 | `params` | the arguments fit the verb's schema | the call. This is feedback to the model, not a crash |
 | `confirm` | `verbs.confirm`, or a `safety_class` of `confirm` or `dangerous`. y/N in the terminal; over MCP it refuses unless `--yes` | answer y, or pass `--yes` |
 | `budget` | `max_steps` and `max_minutes`. These cap an MCP session too, which has no loop of its own; `max_llm_calls` is the loop's | the `.duck`'s `budgets`, or `--max-steps` |
@@ -57,9 +57,15 @@ below because it is not a tidy exit.
 
 ## When the pilot is unsure
 
-`assess_task` has a third answer. `uncertain` means the pilot cannot tell from where it is
-whether the body can do the task, and at a terminal that is a y/N question with no as the
-default. A no ends the run `aborted` and exits 1, not `infeasible` and 3, because a person
+`assess_task` has a third answer. `uncertain` means the verdict itself turns on a figure the
+pilot cannot judge from where it is: the mass or size of a thing that decides a limit, or a
+limit the maker never published. Not having found the target is not by itself one of those,
+because finding the thing is the task. It becomes one when a limit turns on that unseen
+thing's mass or size, which is why the verbs that look run before the verdict: the pilot can
+take a frame from where it stands. What it cannot do is go to the thing first. `search_scan`,
+`go_to` and `move` all wait for the verdict, so when the deciding figure is on something out
+of frame, `uncertain` is the honest answer and the person is the way past it. At a terminal
+that is a y/N question with no as the default. A no ends the run `aborted` and exits 1, not `infeasible` and 3, because a person
 stopping a robot is the kill switch's kind of act rather than a statement about the body.
 
 **`--yes` answers that question with go**, the same way it answers a confirm gate, and
@@ -67,6 +73,37 @@ stopping a robot is the kill switch's kind of act rather than a statement about 
 confirmations: it also clears the pilot's own doubt about whether the task suits the body.
 Over MCP there is no terminal and nothing clears it, so the verdict stays pending and the
 model is told to ask the person it is chatting with ([mcp.md](mcp.md)).
+
+## When a feasible verdict contradicts itself
+
+A verdict says two things: whether the body can do the task, and, in `needs`, what the task
+would require of a body. They can disagree. A pilot on a Microduck answered `feasible` to a 45
+minute patrol and wrote `endurance_min: 45` in the same record, on a body whose endurance
+nobody has ever published, and the duck walked until its step budget ran out.
+
+So a `feasible` is now held to the body's own datasheet before it is recorded, by the same
+function that holds another robot's bid at the coordinator. A need the sheet does not meet, or
+does not publish, is refused and named, with two exceptions that would otherwise refuse an
+honest answer: a minimum of zero asks for nothing, and an unpublished terrain meets
+`indoor_flat`, which is what the prompt tells such a body to assume about itself. and the pilot is told the three ways on: `infeasible`
+if that need decides the task, `uncertain` if a person could know the figure, or a corrected
+need if it asked for more than the task turns on. An `uncertain` and an `infeasible` are left
+alone, because one asks a person and the other ends the run anyway.
+
+On the one model measured so far it turns a silent `feasible` into an `uncertain`, which is
+then the question above, so under `--yes` the check costs one LLM call and leaves the
+contradiction in the transcript rather than stopping the run.
+
+Two things it cannot do. **It cannot catch silence**, because it reads what the pilot
+declared: a pilot that never mentions the figure its plan hinges on passes exactly as it did
+before. And **it asks more of a pilot that answers fully**, which is the same fact from the
+other side. A duck asked to nudge a 60 g ball has no published payload to compare against, so
+a pilot that honestly writes `payload_kg: 0.06` is refused where one that writes nothing is
+not. That is refuse by default doing what [ADR-0032](adr/0032-datasheets-and-the-verdict.md)
+says it should, and the way to answer it once rather than every run is a `duck: 2`
+`datasheet:` block in the task file: a figure given there replaces the adapter's and is
+rendered as coming from you, so the pilot is comparing against a number somebody stands
+behind.
 
 ## Dry run
 
@@ -78,9 +115,10 @@ parameters it chose:
 ```
 
 A parameter the model left unset shows as `null` rather than being dropped, because on a dry
-run the omission is the thing you are checking. Read-only verbs (`observe`, alias
-`get_frame`, and `report_state`) still run. Use it the first time you point a new `.duck` at
-hardware.
+run the omission is the thing you are checking. The verbs whose adapter declared them
+`read_only` still run: `observe` (alias `get_frame`), `report_state`, the rosbridge base's
+`introspect`, and whatever a body quackd never shipped flags for itself. Use it the first
+time you point a new `.duck` at hardware.
 
 It does not get you past the verdict, because that gate runs before this one. A task the
 pilot judges infeasible ends with nothing logged rather than with the list of verbs it would

@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
+from quackd.adapters.factory import ADAPTER_NAMES, make_adapter
 from quackd.duckfile.parser import parse_duck_text
 from quackd.duckfile.schema import Budgets, DuckFile
 from quackd.safety import (
@@ -26,7 +27,14 @@ from quackd.safety import (
 from quackd.trace import Tracer
 from quackd.transport.base import DEFAULT_CAMERA_NAME, CameraFrame, DuckState, Intent
 from quackd.transport.mock import MockTransport
-from quackd.verbs.registry import NoParams, Verb, VerbContext, VerbRegistry, VerbResult
+from quackd.verbs.registry import (
+    NoParams,
+    Verb,
+    VerbContext,
+    VerbRegistry,
+    VerbResult,
+    registry_from_manifest,
+)
 
 
 def duck(allow: str, confirm: str = "", abort: str = "") -> DuckFile:
@@ -111,6 +119,41 @@ async def test_dry_run_sends_nothing(registry: VerbRegistry, mock_transport: Moc
     assert mock_transport.intents == []
     frame = await ex.run_verb("get_frame")  # read-only verbs still run
     assert frame.ok and "frame captured" in frame.summary
+
+
+@pytest.mark.parametrize("adapter", ADAPTER_NAMES)
+async def test_a_read_only_verb_sends_nothing(adapter: str) -> None:
+    """What the flag claims, on every body that ships. Two gates believe a read-only verb
+    sends nothing: `--dry-run` runs one against real hardware, and since #26 the verdict gate
+    lets one run before the pilot has judged the task. Both rest on the same fact and nothing
+    checked it.
+
+    Every adapter rather than `default_registry()` alone, because only two of the four shipped
+    read-only verbs are in the default vocabulary. The arm's own `report_state` and the
+    rosbridge base's `introspect` live in their own adapters, and `introspect` is the one that
+    most deserves the check, being the only shipped read-only verb that talks to the robot at
+    all: it asks the bridge what the body is.
+    """
+    transport = make_adapter(f"{adapter}:mock")
+    sent: list[str] = []
+    inner = transport.send_intent
+
+    async def spy(intent: Intent) -> Any:
+        sent.append(intent.kind)
+        return await inner(intent)
+
+    transport.send_intent = spy  # type: ignore[method-assign]
+    manifest = await transport.connect()
+    registry = registry_from_manifest(manifest, transport)
+    read_only = [v.name for v in registry.verbs() if v.read_only]
+    assert read_only, f"{adapter} ships no read-only verb: the flag went missing"
+    try:
+        ex = Executor(registry, transport, manifest=manifest)
+        for name in read_only:
+            assert (await ex.run_verb(name)).ok, f"{adapter}.{name}"
+    finally:
+        await transport.close()
+    assert sent == [], f"a read-only verb on {adapter} sent {sent}"
 
 
 async def test_invalid_params_are_feedback_not_crash(

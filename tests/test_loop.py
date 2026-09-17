@@ -28,6 +28,7 @@ from quackd.transport.base import CameraFrame
 from quackd.transport.mock import MockTransport
 from quackd_lerobot import LeRobotAdapter
 from quackd_lerobot.mock import LeRobotMock
+from quackd_microduck import MicroduckAdapter
 
 # the verdict comes first on every run now: the scripted pilot answers it as a rule, and the
 # duck's own three verbs follow exactly as they did
@@ -1029,6 +1030,191 @@ async def test_a_later_verdict_can_still_end_the_run(hello_duck: DuckFile, tmp_p
     assert "full crate" in result.reason
 
 
+async def test_a_feasible_verdict_is_held_to_its_own_datasheet(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """A pilot may not move its body on a need its own sheet does not meet.
+
+    `missing_needs` already held another robot's bid to its datasheet at the coordinator,
+    and nothing held a pilot's verdict about its own body to its own sheet, so a `needs`
+    naming a figure nobody published passed straight through. The Microduck's endurance is
+    not published, and a run that says the task needs 45 minutes of it is saying, in its own
+    two fields, both that it depends on that number and that the body is fine. The pilot is
+    told which need is unmet and can assess again, the same way a verdict carrying `human`
+    is refused rather than quietly stripped.
+    """
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "it can patrol", needs={"endurance_min": 45}),
+                    _verdict_call("infeasible", "endurance is not published"),
+                ]
+            ),
+            transport=MicroduckAdapter(MockTransport()),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "infeasible", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = [e for e in events if e["kind"] == "assess"]
+    assert assessed[0]["ok"] is False
+    assert "endurance_min >= 45 (not published)" in assessed[0]["summary"]
+    # the second one ends the run, which assess records the way infeasible always does
+    assert assessed[1]["verdict"] == "infeasible"
+    assert "endurance is not published" in assessed[1]["summary"]
+
+
+async def test_a_need_this_body_meets_still_passes(hello_duck: DuckFile, tmp_path: Path) -> None:
+    """The check refuses what the sheet does not cover, and nothing else.
+
+    Without this, a check that refused every `needs` would pass the test above and break
+    every run that fills the field in honestly. The Microduck is legged and rated for a flat
+    indoor floor, so a verdict asking for exactly that is the sheet agreeing with itself.
+    """
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call(
+                        "feasible",
+                        "it can walk there",
+                        needs={"mobility": "legged", "terrain": "indoor_flat"},
+                    ),
+                    ToolCall(name="declare_success", arguments={"reason": "done"}),
+                ]
+            ),
+            transport=MicroduckAdapter(MockTransport()),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = [e for e in events if e["kind"] == "assess"]
+    assert assessed[0]["ok"] is True
+
+
+async def test_a_refused_verdict_shuts_the_gate_an_earlier_one_opened(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """A refusal that left an earlier `feasible` standing refused the words and not the motion.
+
+    The check runs before the verdict is recorded, the way the `human` and validation refusals
+    do, so a pilot already cleared for one reading of the task could name a need this body
+    cannot meet and go on moving on the older verdict, with the newer and better informed one
+    thrown away. That is the exact failure #24 exists to stop, one re-assessment later. So the
+    refusal withdraws what was standing: nothing moves until the pilot answers again.
+    """
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "it walks", needs={"mobility": "legged"}),
+                    ToolCall(name="quack", arguments={"text": "off we go"}),
+                    _verdict_call("feasible", "a 45 minute patrol", needs={"endurance_min": 45}),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 0.1}),
+                    ToolCall(name="declare_failure", arguments={"reason": "cannot judge it"}),
+                ]
+            ),
+            transport=MicroduckAdapter(MockTransport()),
+            runs_dir=tmp_path,
+        )
+    )
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = [e for e in events if e["kind"] == "assess"]
+    assert assessed[0]["ok"] is True, "the first verdict cleared the gate"
+    assert assessed[1]["ok"] is False and "endurance_min >= 45" in assessed[1]["summary"]
+    # and the row describes the call that was refused, not the verdict that was standing:
+    # before, a refused re-assessment was written down with the earlier verdict's own word,
+    # reason and needs, and read as though that one had been refused
+    assert assessed[1]["verdict"] is None
+    assert assessed[1]["reason"] == "a 45 minute patrol"
+    assert assessed[0]["reason"] == "it walks"
+    refused = [
+        e
+        for e in events
+        if e["kind"] == "gate" and e.get("gate") == "verdict" and e.get("name") == "walk"
+    ]
+    assert refused, "the walk after the refusal was allowed by the withdrawn verdict"
+    assert "no feasibility verdict has been recorded" in str(refused[0]["reason"])
+
+
+async def test_a_refused_assessment_is_recorded_as_itself_not_as_the_standing_verdict(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Every refusal in `_assess` returns before recording, and the transcript row was built
+    from whatever verdict happened to be standing, so a refused re-assessment was written down
+    with the earlier verdict's own word, reason and needs. Read back, the row said that the
+    earlier verdict had been refused, which is a different and false story. The row describes
+    the call now.
+    """
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "it walks"),
+                    ToolCall(name="assess_task", arguments={"verdict": "maybe", "reason": "hm"}),
+                    ToolCall(name="declare_success", arguments={"reason": "done"}),
+                ]
+            ),
+            transport=MicroduckAdapter(MockTransport()),
+            runs_dir=tmp_path,
+        )
+    )
+    assessed = [
+        e for e in Transcript.read(result.run_dir / "transcript.jsonl") if e["kind"] == "assess"
+    ]
+    assert assessed[0]["ok"] is True and assessed[0]["verdict"] == "feasible"
+    assert assessed[1]["ok"] is False and "invalid assess_task" in assessed[1]["summary"]
+    assert assessed[1]["verdict"] is None, "the row claimed the standing verdict was refused"
+    assert assessed[1]["reason"] == "hm", "and it carried the standing verdict's reason"
+    # the standing verdict is untouched by an invalid re-assessment: the run went on
+    assert result.outcome == "success", result.reason
+
+
+async def test_yes_clears_the_doubt_a_refused_feasible_became(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """What the check costs and does not cost under `--yes`, because docs/safety.md says so.
+
+    A refused `feasible` leaves the pilot three answers, and `uncertain` is one of them. At a
+    terminal `--yes` answers that with go, on purpose and documented, so the same unmet need
+    reaches the body one word later. This is not a hole the check should close: `--yes` is a
+    person saying they have read the contract, and ADR-0032 puts a reachable human above a
+    flag. What the check buys here is the record. The refusal and the doubt it became are both
+    in the transcript, where a silent `feasible` left nothing at all.
+    """
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "it can patrol", needs={"endurance_min": 45}),
+                    _verdict_call(
+                        "uncertain", "endurance is not published", needs={"endurance_min": 45}
+                    ),
+                    ToolCall(name="quack", arguments={"text": "hi"}),
+                    ToolCall(name="declare_success", arguments={"reason": "done"}),
+                ]
+            ),
+            transport=MicroduckAdapter(MockTransport()),
+            runs_dir=tmp_path,
+            decide=lambda _why: True,  # what `--yes` passes (cli.py `_yes_to_go`)
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assessed = [
+        e for e in Transcript.read(result.run_dir / "transcript.jsonl") if e["kind"] == "assess"
+    ]
+    assert assessed[0]["ok"] is False and "endurance_min >= 45" in assessed[0]["summary"]
+    assert assessed[1]["ok"] is True and assessed[1]["human"] == "go"
+    assert "uncertain" in assessed[1]["summary"]
+
+
 async def test_an_invalid_verdict_is_refused_and_the_run_goes_on(
     hello_duck: DuckFile, tmp_path: Path
 ) -> None:
@@ -1071,6 +1257,51 @@ async def test_the_prompt_offers_the_tool_and_states_the_rule(
     assert "Before the first verb that moves the body, call " in system
     assert "assess_task" in system
     assert "the run ends, nothing moves" in system
+    # read off this duck's own allowlist, not a fixed list: hello-world allows quack, walk
+    # and stop, so `observe` and the head verbs have no business in its rule line
+    assert "Until then only `quack` and `stop` run." in system
+    assert "`observe`" not in system.split("Until then")[1].split("Assess again")[0]
+
+
+def test_the_rule_line_names_a_bodys_own_read_only_verb() -> None:
+    """The gate honours `Verb.read_only` since #26, so the sentence that tells a pilot what
+    runs before the verdict has to be read off the body. A third-party `locate` that only
+    looks belongs in it, the `reach` beside it does not, and `stop` is there whether or not
+    the contract listed it."""
+    from quackd.agent.prompts import before_verdict_clause, build_system_prompt
+    from quackd.duckfile.parser import parse_duck_text
+    from quackd.verbs.registry import NoParams, Verb, VerbResult
+
+    async def noop(_ctx: object, _p: object) -> VerbResult:
+        return VerbResult.success("ok")
+
+    verbs = [
+        Verb("locate", "where a thing is", noop, NoParams, read_only=True),
+        Verb("reach", "move a hand to it", noop, NoParams),
+    ]
+    assert before_verdict_clause(verbs) == "only `locate` and `stop` run"
+    assert before_verdict_clause([]) == "only `stop` runs", "the brake is never gated"
+
+    duck = parse_duck_text(
+        """---
+duck: 0
+name: t
+description: d
+verbs:
+  allow: [locate, reach]
+success: [x]
+---
+# Task
+x
+"""
+    )
+    rule = next(
+        line
+        for line in build_system_prompt(duck, verbs, "mock").splitlines()
+        if "Until then" in line
+    )
+    assert "Until then only `locate` and `stop` run." in rule
+    assert "`reach`" not in rule.split("Until then")[1]
 
 
 # ── the rest pose: the arm is put down however the run ended ────────────────────────────

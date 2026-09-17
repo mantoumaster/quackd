@@ -11,6 +11,49 @@ carries `body_summary` for each of its peers, which is the same paragraph this A
 the pilot's own body. A pilot flock uses no `flock.roles`, so role `needs` is still exercised
 only at the coordinator and in unit tests.
 
+**Amended 2026-09-17 by [#26](https://github.com/rokbenko/quackd/pull/26):** the gate reads one
+thing beside `BEFORE_VERDICT`, the verb's own `read_only` flag, which an adapter already sets so
+that a sensing verb runs under `--dry-run`. The set below names the verbs quackd ships, and the
+test that holds every shipped verb to it also rejects a name no shipped adapter offers, so the
+set is closed to a body quackd never shipped: such a body's own sensing verb was refused as
+"moves the body", and its pilot was denied the one verb that answers the question the gate is
+waiting for. Measured on a humanoid sim offering `locate` and `reach`, a local 14B model judged
+the task infeasible twice without a single look. A verb that sends no intent cannot move the
+body, so the flag is a sound thing to open the gate on, and it was already trusted with more:
+`--dry-run` runs a read-only verb against real hardware. What still holds: the shipped set is
+closed and every shipped read-only verb is in it, which a second test now pins in both
+directions; a stranger's verb that speaks or turns a head is motion and still waits; and a
+learned verb never carries the flag, so it is refused until somebody classifies it on purpose.
+The sentence below that anything not in the set waits is true of everything quackd ships and of
+every verb that is not read-only.
+
+**Amended 2026-09-17 by [#24](https://github.com/rokbenko/quackd/pull/24):** a `feasible`
+verdict is no longer recorded unconditionally. `needs` was defined here as what the task
+requires in the datasheet's own field names, and it was read by the matcher, by a role and by
+the coordinator judging a bid, but never against the sheet of the body the pilot was about to
+drive. So a verdict could say, in its own two fields, both that the task needs 45 minutes of
+running time and that this body is fine, on a body whose endurance nobody published, and the
+gate opened. Measured on Qwen3-32B-AWQ: `feasible` six times out of six on that task, and the
+duck walked until its step budget ran out. Both surfaces now run `missing_needs` against the
+pilot's own manifest before recording, refuse such a verdict the way one carrying `human` is
+refused, name the unmet need, and withdraw any verdict that was standing, so the gate shuts
+rather than leaving an older `feasible` to carry the motion. `uncertain` and `infeasible` are
+untouched: one asks a person, and the other ends the run.
+
+The refuse-by-default rule above is what makes this bite, and it keeps two exceptions so that
+an honest answer is not refused: a minimum of zero asks for nothing, and a body that published
+no terrain meets `indoor_flat`, which is what the prompt already tells such a body to assume
+about itself. Both live in `missing_needs_in`, so the coordinator judges a bid by the same
+reading.
+
+What it does not do, which is the same shape as this ADR's own "what this does not protect
+against": the check reads what the pilot declared about the task, so a pilot that never names
+the figure its plan hinges on passes exactly as before. It rewards honesty and cannot catch
+silence, and a pilot that names a figure this body's maker never published is asked to answer
+again rather than allowed to proceed. The route out of that for a person who knows the figure
+is the `duck: 2` `datasheet:` block above, which is the only thing that makes a sheet say
+something new.
+
 ## Context
 
 A pilot was told one line about the body it was driving, `manifest.blurb`, and a list of

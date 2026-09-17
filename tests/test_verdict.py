@@ -11,7 +11,7 @@ from quackd.agent.prompts import ASSESS_TASK, DECLARE_NAMES, META_TOOL_NAMES
 from quackd.safety import Executor, VerdictRequired
 from quackd.transport.mock import MockTransport
 from quackd.verbs.aliases import ALIASES, canonical
-from quackd.verbs.registry import default_registry
+from quackd.verbs.registry import Verb, default_registry
 from quackd.verdict import (
     BEFORE_VERDICT,
     MOVES_THE_BODY,
@@ -22,6 +22,7 @@ from quackd.verdict import (
     datasheet_value,
     missing_needs,
     missing_needs_in,
+    own_sheet_objection,
     solo_hint,
 )
 from quackd_microduck import microduck_manifest
@@ -53,11 +54,62 @@ def test_the_tool_and_the_model_describe_the_same_verdict() -> None:
     assert set(schema["properties"]["needs"]["properties"]) == {*NEEDS_NUMBERS, *NEEDS_WORDS}
 
 
+def test_the_two_vocabularies_of_one_tool_agree_on_a_duration() -> None:
+    """`needs` speaks `endurance_min` and `estimates` could not say a duration at all, so a
+    pilot could demand endurance and not estimate it. The model measured in #24 tried
+    `quantity: "endurance_min"`, got a validation refusal, and spent an LLM call on it twice
+    out of six. The enum is written by hand in two files, which is how they drifted, so this
+    holds them to each other."""
+    from typing import get_args
+
+    from quackd.verdict import Estimate
+
+    items = ASSESS_TASK["input_schema"]["properties"]["estimates"]["items"]  # type: ignore[index]
+    quantities = items["properties"]["quantity"]["enum"]
+    assert quantities == list(get_args(Estimate.model_fields["quantity"].annotation))
+    assert "duration_min" in quantities
+    assert any(key.endswith("_min") for key in NEEDS_NUMBERS), "the need that asked for one"
+
+
 def test_the_needs_vocabulary_is_the_datasheets_own() -> None:
     fields = set(Datasheet.model_fields)
     for key in NEEDS_NUMBERS:
         assert key in fields or key == "work_height_m", key
     assert set(NEEDS_WORDS) <= fields | {"mobility"}
+
+
+def test_the_prompt_says_the_same_thing_about_an_unseen_target_everywhere() -> None:
+    """#25 corrected what `uncertain` is for, and the correction has to hold wherever the
+    pilot reads it or it is pulled two ways. An audit of the first attempt found exactly
+    that: the Rules line, labelled enforced and not optional, said flatly that an unfound
+    target is no reason for `uncertain`, while the tool description beside it kept
+    `uncertain` for a limit that turns on an unseen thing's mass. For "pick up the box",
+    with the box out of frame, the two gave opposite answers and the more authoritative one
+    was wrong.
+
+    Each surface carries both halves now: not by itself a reason, and a reason when a limit
+    turns on the thing nobody has seen. The MCP twin is held to the same words in
+    `tests/test_mcp_server.py`, where there is a client to ask."""
+    from pathlib import Path as _Path
+
+    from quackd.agent.prompts import build_system_prompt
+    from quackd.duckfile.parser import load_duck
+    from quackd.verbs.registry import default_registry
+
+    registry = default_registry()
+    duck = load_duck("ducks/find-and-kick.duck")
+    allow = [n for n in duck.frontmatter.verbs.allow if n in registry]
+    prompt = build_system_prompt(duck, [registry.view(n) for n in allow], "sim2d")
+    rule = next(line for line in prompt.splitlines() if "Until then" in line)
+    repo = _Path(__file__).resolve().parents[1]
+    surfaces = {
+        "assess_task": str(ASSESS_TASK["description"]),
+        "the rule line": rule,
+        "docs/safety.md": (repo / "docs" / "safety.md").read_text(encoding="utf-8"),
+    }
+    for where, text in surfaces.items():
+        assert "not by itself" in text, f"{where} states the rule absolutely"
+        assert "mass or size" in text, f"{where} drops the figure that does decide a limit"
 
 
 def test_a_need_outside_the_vocabulary_is_refused() -> None:
@@ -110,10 +162,43 @@ def test_every_shipped_verb_was_classified_on_purpose() -> None:
     assert "stop" in BEFORE_VERDICT, "the brake can never wait for a verdict"
 
 
+def _shipped_verbs() -> list[Verb]:
+    """Every `Verb` a shipped body can register: the default vocabulary, plus each official
+    adapter's own implementations. `registry_from_manifest` copies `read_only` off these
+    templates untouched, so what they say here is what the gate sees at run time."""
+    from quackd.adapters.factory import _module
+
+    verbs = list(default_registry().verbs())
+    for adapter in ADAPTER_NAMES:
+        verbs += list(_module(adapter).implementations().values())
+    return verbs
+
+
+def test_a_shipped_verb_that_only_reads_is_already_one_that_runs_first() -> None:
+    """The gate reads `Verb.read_only` beside `BEFORE_VERDICT` (#26), and for a body quackd
+    never shipped that is the whole point: it is the only way a stranger's `locate` can look
+    before the pilot judges. For a body quackd does ship, the flag must restate the set and
+    never widen it. The test above reads the two sets and cannot see the flag, so a shipped
+    verb flagged read-only and filed under `MOVES_THE_BODY` would run before any verdict and
+    nothing would say so."""
+    flagged = {canonical(v.name) for v in _shipped_verbs() if v.read_only}
+    assert {"observe", "report_state", "introspect"} <= flagged, (
+        "the verbs that only read stopped saying so: the flag itself went missing"
+    )
+    widened = flagged - BEFORE_VERDICT
+    assert not widened, (
+        "these ship as read-only, so the gate lets them run before the verdict, and the set "
+        f"that is supposed to be the record of that does not name them: {sorted(widened)}"
+    )
+    assert not flagged & MOVES_THE_BODY, "a verb cannot both move the body and only read"
+
+
 # ── the gate ────────────────────────────────────────────────────────────────────────────
 
 
-def _executor(**over: object) -> tuple[Executor, MockTransport, list[dict[str, object]]]:
+def _executor(
+    registry: object | None = None, **over: object
+) -> tuple[Executor, MockTransport, list[dict[str, object]]]:
     transport = MockTransport()
     events: list[dict[str, object]] = []
 
@@ -122,7 +207,7 @@ def _executor(**over: object) -> tuple[Executor, MockTransport, list[dict[str, o
             events.append({"kind": kind, **data})
 
     executor = Executor(
-        registry=default_registry(),
+        registry=registry if registry is not None else default_registry(),  # type: ignore[arg-type]
         transport=transport,
         manifest=microduck_manifest("mock"),
         trace=_Tracer(),  # type: ignore[arg-type]
@@ -146,6 +231,89 @@ async def test_nothing_moves_until_a_verdict_clears_it() -> None:
     executor.verdict = Verdict(verdict="feasible", reason="light enough")
     assert (await executor.run_verb("walk", {"vx": 0.1, "duration_s": 0.1})).ok
     assert transport.intents_of("move")
+
+
+async def test_a_bodys_own_read_only_verb_looks_before_the_verdict() -> None:
+    """`BEFORE_VERDICT` knows the verbs quackd ships. A body quackd never shipped brings its
+    own sensing verb, and the pilot needs it for the very judgement the gate is waiting for:
+    a `locate` that says where the thing is cannot be refused as "moves the body"."""
+    from quackd.verbs.registry import NoParams, Verb, VerbResult
+
+    async def looks(_ctx: object, _p: object) -> VerbResult:
+        return VerbResult.success("the ball is 0.3 m ahead")
+
+    async def moves(_ctx: object, _p: object) -> VerbResult:
+        return VerbResult.success("reached")
+
+    registry = default_registry()
+    registry.register(Verb("locate", "where a thing is", looks, NoParams, read_only=True))
+    registry.register(Verb("reach", "move a hand to it", moves, NoParams))
+    executor, _transport, events = _executor(require_verdict=True, registry=registry)
+
+    assert (await executor.run_verb("locate")).ok
+    assert not [e for e in events if e["kind"] == "gate" and e["gate"] == "verdict"]
+    with pytest.raises(VerdictRequired, match="reach moves the body"):
+        await executor.run_verb("reach")
+
+    # a learned verb never carries the flag: unproven, it waits like everything else
+    from quackd.verbs.learned import LearnedVerbSpec, register_learned_verb
+
+    register_learned_verb(
+        registry,
+        LearnedVerbSpec(name="wave", description="a policy", policy_path="wave.onnx"),
+    )
+    assert not registry.get("wave").read_only
+    with pytest.raises(VerdictRequired, match="wave moves the body"):
+        await executor.run_verb("wave")
+
+
+async def test_a_learned_verb_cannot_take_a_name_that_runs_first() -> None:
+    """`BEFORE_VERDICT` is matched by name, so a policy named `observe` would have run before
+    any verdict. A learned verb is an unproven policy by definition, which is why
+    `register_learned_verb` marks it `confirm`, and the docstring on that set promises it waits
+    until somebody classifies it on purpose. Only the confirm gate was keeping that promise,
+    and `--yes` answers the confirm gate.
+
+    The name is free to take because a body with no camera has no `observe` of its own, so the
+    registry accepts it: the arm is such a body."""
+    from quackd.verbs.learned import LearnedVerbSpec, register_learned_verb
+
+    registry = default_registry()
+    registry._verbs.pop("observe")  # a body with no camera verb, as an arm is
+    learned = register_learned_verb(
+        registry, LearnedVerbSpec(name="observe", description="a policy", policy_path="p.onnx")
+    )
+    assert learned.kind == "learned" and not learned.read_only
+    executor, _transport, _events = _executor(require_verdict=True, registry=registry)
+    with pytest.raises(VerdictRequired, match="observe moves the body"):
+        await executor.run_verb("observe")
+
+    # and the prompt does not offer it either, by the same rule
+    from quackd.agent.prompts import before_verdict_clause
+
+    assert before_verdict_clause([learned]) == "only `stop` runs"
+
+
+async def test_quackds_own_record_beats_a_strangers_read_only_flag() -> None:
+    """#26 lets a verb's own `read_only` open the gate, which is the only way a body quackd
+    never shipped can look before it judges. It must not override the other half of quackd's
+    own record: a verb arriving under a name this repository has classified as motion, and
+    carrying `read_only`, is saying two contradictory things about itself, and the one to
+    believe is the name."""
+    from quackd.verbs.registry import NoParams, Verb, VerbResult
+
+    async def looks(_ctx: object, _p: object) -> VerbResult:
+        return VerbResult.success("sent nothing, honestly")
+
+    registry = default_registry()
+    registry.register(
+        Verb("kick", "a kick that claims to only look", looks, NoParams, read_only=True),
+        replace=True,
+    )
+    assert "kick" in MOVES_THE_BODY
+    executor, _transport, _events = _executor(require_verdict=True, registry=registry)
+    with pytest.raises(VerdictRequired, match="kick moves the body"):
+        await executor.run_verb("kick")
 
 
 async def test_an_unanswered_doubt_does_not_clear_the_gate() -> None:
@@ -219,6 +387,82 @@ def test_terrain_is_met_by_a_body_rated_for_more() -> None:
     ]
     silent = _body(datasheet=Datasheet(manipulator="none"))
     assert missing_needs({"terrain": "indoor"}, silent) == ["terrain = indoor (not published)"]
+    assert missing_needs({"terrain": "outdoor"}, silent) == ["terrain = outdoor (not published)"]
+    # the one exception, and it is the prompt's doing: a body whose terrain nobody published is
+    # told "assume a flat indoor floor and decline anything else", so a pilot asking for
+    # exactly that has done as it was told. Refusing it would refuse the honest answer, and
+    # since #24 this reader can refuse a verdict rather than only rank a body.
+    assert missing_needs({"terrain": "indoor_flat"}, silent) == []
+
+
+def test_a_minimum_of_zero_asks_for_nothing() -> None:
+    """`needs` is filled in even when the verdict is feasible, because a matcher reads it, so
+    `payload_kg: 0` is the natural way to say the task carries nothing. Against a body that
+    published no payload that read as "0 kg needed, and nobody said this body has any", which
+    refused a pilot for answering fully. A working height is not a minimum in the same way:
+    `work_height_m: 0` names the ground, which a body either reaches or does not."""
+    duck = describe(RobotSpec("microduck", "sim2d"))
+    assert missing_needs({"payload_kg": 0, "reach_m": 0, "endurance_min": 0}, duck) == []
+    assert missing_needs({"payload_kg": 0.1}, duck) == ["payload_kg >= 0.1 (not published)"]
+    assert missing_needs({"work_height_m": 0}, duck) == ["work_height_m = 0 (not published)"]
+    assert own_sheet_objection({"payload_kg": 0}, duck) is None
+
+
+def test_the_objection_names_the_need_and_the_three_ways_out() -> None:
+    """One sentence for the loop and for the MCP session, so a pilot hears the same words
+    wherever it is driving from. It offers `uncertain` beside `infeasible` because the pilot
+    measured on Qwen3-32B answered `uncertain` to a refusal that named only `infeasible`, and
+    for a figure nobody published that is the right destination: it asks a person."""
+    duck = describe(RobotSpec("microduck", "sim2d"))
+    said = own_sheet_objection({"endurance_min": 45}, duck)
+    assert said is not None
+    assert said.startswith("this body does not meet what you said the task needs")
+    assert "endurance_min >= 45 (not published)" in said
+    for way in (
+        "infeasible if that need decides the task",
+        "feasible with the need corrected",
+        "uncertain to put it to a person",
+        "task file's own datasheet block",
+        "nothing moves until you answer again",
+    ):
+        assert way in said, way
+    assert "robot_assess_task" in (
+        own_sheet_objection({"payload_kg": 3.0}, duck, tool="robot_assess_task") or ""
+    )
+
+    # the sheet agreeing with itself: legged, and rated for the floor it is asked to walk on
+    assert own_sheet_objection({"mobility": "legged", "terrain": "indoor_flat"}, duck) is None
+    assert own_sheet_objection({}, duck) is None, "a verdict that named no need has nothing to fail"
+    assert own_sheet_objection({"payload_kg": 3.0}, None) is None, "no sheet, no objection"
+
+
+def test_a_need_that_is_not_a_number_falls_through_to_the_refusal() -> None:
+    """This reader is handed a raw dict off the wire before anything validates it:
+    `robot_assess_task` computes `could` from the tool's own argument, and catches `ValueError`
+    only. The zero guard called `float()` on whatever arrived, so a JSON null raised
+    `TypeError` out of the MCP tool where before it read as a need nobody published."""
+    duck = describe(RobotSpec("microduck", "sim2d"))
+    assert missing_needs({"payload_kg": None}, duck) == ["payload_kg >= None (not published)"]
+    assert missing_needs({"payload_kg": "heavy"}, duck) == ["payload_kg >= heavy (not published)"]
+    assert missing_needs({"payload_kg": True}, duck) == ["payload_kg >= True (not published)"]
+    assert missing_needs({"payload_kg": 0}, duck) == [], "a real zero still asks for nothing"
+
+
+def test_an_unpublished_terrain_is_only_the_floor_where_the_prompt_says_so() -> None:
+    """The exception exists because the prompt tells a body whose terrain nobody published to
+    assume a flat indoor floor, so the two readers must agree. That sentence is only rendered
+    for a body that moves and that has a datasheet at all: `body_lines` tells a body with no
+    sheet to treat every limit as not published, and `_power_and_ground` says "it does not
+    move" instead for a body with no mobility. So the exception stops where the promise does,
+    which also keeps a bid that carried no datasheet from winning a role on it."""
+    silent = _body(datasheet=Datasheet(manipulator="none"))
+    assert missing_needs({"terrain": "indoor_flat"}, silent) == []
+    assert missing_needs_in({"terrain": "indoor_flat"}, {}, "wheeled") == [
+        "terrain = indoor_flat (not published)"
+    ], "a bid with no datasheet said nothing, and nothing is not a flat indoor floor"
+    assert missing_needs_in({"terrain": "indoor_flat"}, {"terrain": None}, "none") == [
+        "terrain = indoor_flat (not published)"
+    ], "a body that does not move is never told to assume a floor"
 
 
 def test_a_bid_carries_its_facts_so_a_stranger_can_judge_them() -> None:

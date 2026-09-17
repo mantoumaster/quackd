@@ -80,7 +80,7 @@ from quackd.verbs.registry import (
     default_registry,
     registry_from_manifest,
 )
-from quackd.verdict import Verdict, solo_hint
+from quackd.verdict import Verdict, own_sheet_objection, solo_hint
 
 Outcome = Literal["success", "failure", "infeasible", "budget", "aborted", "error"]
 
@@ -381,6 +381,22 @@ class AgentLoop:
                 # confirm gate reads it
                 answer = False
             verdict.human = "go" if answer else "no_go"
+        if verdict.verdict == "feasible":
+            # The coordinator already holds another robot's bid to its datasheet, and nothing
+            # held a pilot's verdict about its OWN body to its own sheet, so a `needs` naming
+            # an unpublished figure passed straight through and the body moved. Measured on
+            # Qwen3-32B: a 45 minute patrol came back feasible six times out of six, twice
+            # with `needs: {"endurance_min": 45}` recorded beside it, on a body whose
+            # endurance nobody published. Refused rather than warned, the same way a verdict
+            # carrying `human` is refused: a warning in the trace stops nothing.
+            objection = own_sheet_objection(verdict.needs, self.executor.manifest)
+            if objection is not None:
+                # and the gate shuts. A refusal that left an earlier `feasible` standing
+                # refused the words and not the motion: a pilot cleared for one task, then
+                # naming a need this body cannot meet, went on moving on the older verdict
+                # while the newer and better informed one was thrown away.
+                self.executor.verdict = None
+                return VerbResult.fail(objection), None
         self.executor.verdict = verdict
         if verdict.verdict == "infeasible":
             hint = solo_hint(verdict.needs, self.executor.manifest)
@@ -733,8 +749,16 @@ class AgentLoop:
                     # the pilot's judgement of the task against the body: no motion, no step,
                     # one LLM call, exactly like `remember`
                     last_verb = ASSESS_TASK_NAME
+                    standing = self.executor.verdict
                     last_result, ends_with = self._assess(call.arguments)
                     recorded = self.executor.verdict
+                    if recorded is standing:
+                        # this call recorded nothing, so the row describes the call that was
+                        # refused rather than whatever verdict happened to be standing. Before
+                        # this, a refused re-assessment was written into the transcript with
+                        # the *earlier* verdict's word, reason and needs, and read as though
+                        # that one had been refused.
+                        recorded = None
                     self._emit(
                         "assess",
                         step=self.budget.steps,

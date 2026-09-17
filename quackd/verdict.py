@@ -10,6 +10,7 @@ refusal.
 matcher that says which other body could, and a flock role that asks for a body that can
 carry. A number is a minimum, a word must match, and a figure the maker never published is
 not met: a robot that cannot say what it carries is not offered a task that carries something.
+`missing_needs_in` carries the two exceptions to that last rule and says why it has them.
 """
 
 from __future__ import annotations
@@ -33,8 +34,16 @@ BEFORE_VERDICT = frozenset(
 """What runs before a verdict: the verbs that speak, look, or read, and the brake.
 
 A pilot has to be able to look at the thing before judging whether it can lift it. Everything
-else waits, including a verb quackd has never heard of: the gate reads this set and nothing
-else, so a learned verb is refused until somebody classifies it on purpose."""
+else waits, including a verb quackd has never heard of: the gate reads this set and one
+other thing, the verb's own `read_only` flag, so a body quackd has never shipped can still
+say "this one only looks" about its own sensing verbs. A learned verb never carries that
+flag (`learned.py` registers it as `confirm`, unproven), and the gate excludes a learned verb
+from this set by name as well, so an unproven policy called `observe` waits like everything
+else until somebody classifies it on purpose.
+
+This half is matched by name, which makes the nine a vocabulary rather than a list: a body
+that ships a verb called `gaze` which walks has said the wrong word about itself, the way a
+verb that carries `read_only` and sends an intent has."""
 
 MOVES_THE_BODY = frozenset(
     {
@@ -141,10 +150,26 @@ def missing_needs_in(
 
     `facts` is a datasheet dumped to a dict, which is what a flock bid carries, so a
     coordinator can judge a bid from a robot it does not run. A figure nobody published is
-    unmet, never assumed."""
+    unmet rather than assumed, with two exceptions that would otherwise refuse an honest
+    answer: a minimum of zero asks for nothing, and an unpublished terrain meets
+    `indoor_flat`, because that is what the prompt tells such a body to assume about itself.
+    The reader and the prompt have to agree or a pilot is refused for doing as it was told."""
     out: list[str] = []
     for key in sorted(needs):
         want = needs[key]
+        if (
+            key in NEEDS_NUMBERS
+            and key != "work_height_m"
+            # a raw dict off the wire reaches this before anything validates it, so a null or a
+            # word is not a zero and must fall through to the refusal rather than raise here
+            and isinstance(want, int | float)
+            and not isinstance(want, bool)
+            and float(want) == 0
+        ):
+            # "this task needs no payload" is a real thing to say, and the tool asks the pilot
+            # to fill `needs` in even when the verdict is feasible. A floor of zero is not the
+            # same: `work_height_m: 0` means the ground, which a body either reaches or does not
+            continue
         if key == "mobility":
             has = mobility or "unknown"
             if not (want == "any" and has not in ("none", "unknown")) and has != want:
@@ -158,7 +183,16 @@ def missing_needs_in(
         if key == "terrain":
             rated = facts.get("terrain")
             if rated is None:
-                out.append(f"terrain = {want} (not published)")
+                # the prompt renders an unpublished terrain as "assume a flat indoor floor and
+                # decline anything else" (`prompts._power_and_ground`), so a pilot that asks
+                # for exactly that has done as it was told and must not be refused for it.
+                # Only where the prompt says it, though: a body with no datasheet at all is
+                # told the opposite ("treat every physical limit as not published"), and one
+                # that does not move is never shown the sentence. Anything above a flat indoor
+                # floor is unmet either way.
+                told_to_assume = bool(facts) and mobility not in (None, "none")
+                if not (told_to_assume and want == "indoor_flat"):
+                    out.append(f"terrain = {want} (not published)")
             elif TERRAIN_ORDER.index(str(rated)) < TERRAIN_ORDER.index(str(want)):  # type: ignore[arg-type]
                 out.append(f"terrain = {want} (rated {rated})")
             continue
@@ -195,6 +229,44 @@ def missing_needs(needs: Mapping[str, Any], manifest: RobotManifest) -> list[str
     )
 
 
+def own_sheet_objection(
+    needs: Mapping[str, Any], here: RobotManifest | None, *, tool: str = "assess_task"
+) -> str | None:
+    """Why a `feasible` verdict cannot stand on this body's own datasheet, or None when it can.
+
+    `missing_needs` held another robot's bid to its sheet at the coordinator, and nothing held
+    a pilot's verdict about its own body to its own sheet, so a `feasible` whose `needs` named
+    a figure nobody published went straight through and the body moved. The agent loop and the
+    MCP session both refuse with this one sentence, so a pilot hears the same words wherever
+    it is driving from.
+
+    It offers three ways out rather than one. The pilot measured on Qwen3-32B answered
+    `uncertain` to a refusal that named only `infeasible`, and `uncertain` is a fine answer
+    here: it asks a person, and a person who knows the figure can put it in the task file's
+    `datasheet:` block, which is the only thing that makes a sheet say something new. The
+    other is the honest case where the pilot asked for more than the task needs.
+
+    Both callers withdraw the standing verdict when this fires, so the gate shuts rather than
+    leaving an older `feasible` to carry the motion.
+
+    A body with no manifest has no sheet to object with, and a verdict that named no need has
+    nothing to be held to."""
+    if here is None or not needs:
+        return None
+    lacking = missing_needs(needs, here)
+    if not lacking:
+        return None
+    return (
+        "this body does not meet what you said the task needs: "
+        + "; ".join(lacking)
+        + ". A feasible verdict cannot rest on a need its own datasheet does not meet, and "
+        f"nothing moves until you answer again. Call {tool}: infeasible if that need decides "
+        "the task, feasible with the need corrected if you asked for more than the task turns "
+        "on, or uncertain to put it to a person, who can answer it or publish the figure in "
+        "the task file's own datasheet block"
+    )
+
+
 def datasheet_value(manifest: RobotManifest, field: str) -> float | str | None:
     """What this body reports for one need's field, or None when nobody published it."""
     if field == "mobility":
@@ -219,7 +291,9 @@ class Estimate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     object: str
-    quantity: Literal["mass_kg", "size_m", "distance_m", "height_m", "count", "other"]
+    quantity: Literal[
+        "mass_kg", "size_m", "distance_m", "height_m", "duration_min", "count", "other"
+    ]
     value: float
     basis: Literal["image", "detections", "task_text", "prior_knowledge"]
     confidence: Literal["low", "medium", "high"]

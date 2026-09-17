@@ -271,6 +271,32 @@ reports that it did.
   `NNNN-top.png` beside `NNNN-side.png` for a body with several, with the camera named in each
   `frame` record. Anything reading a single image off an observation reads the list now.
 
+- **A target the pilot has not found yet is the task, not a reason to be unsure about the
+  body.** `assess_task` told the model its verdict was judged against the datasheet and then
+  listed "the object is out of view" as a reason to answer `uncertain`, which are two different
+  questions: where the ball is decides nothing about whether a duck can kick a ball on the
+  floor it is rated for. It cost the duck's own starter task. `quackd run --goal "Find the
+  ball and kick it."`, which is the goal the README's opening paragraph names and the first one
+  it shows for a duck, stopped at the gate 5 times in 6 on Qwen3-32B-AWQ, `uncertain` and the
+  run aborted, where `ducks/find-and-kick.duck` passed 6 of 6 on the same body, seed and model,
+  and the pilot's own reason was "Since the camera currently detects nothing, I cannot
+  determine feasibility yet". The description now says the verdict is the task's needs against
+  the body's limits and not whether you can see the target, and keeps `uncertain` for what it
+  is for: a figure that decides a limit, on a thing you have not seen, or a limit nobody
+  published. The rule line, the MCP description and `docs/safety.md` carry both halves of that
+  in the same words, and a test holds them to each other, because the first attempt stated the
+  rule absolutely in the Rules line and kept the exception in the tool description beside it,
+  which for "pick up the box" with the box out of frame gave opposite answers with the more
+  authoritative one wrong.
+  `Estimate.quantity` gains `duration_min`, because `needs` could already ask for
+  `endurance_min` and the same pilot could not estimate one, so it spent LLM calls on a
+  validation refusal. Thanks to [@Vallhalen](https://github.com/Vallhalen) (#25), who measured
+  which of the four differences between a goal and a file does it: the allowlist, not the
+  words. **The allowlist is not narrowed** (quackd cannot know what a sentence needs, and the
+  README's own goal needs `kick`), so the fix is the words, which is their untested candidate
+  and still untested: nobody here runs that model, and the six cells want running again on a
+  build that carries this.
+
 ### Fixed
 
 - **The duck could not walk to anything straight ahead, and the nightly job had been saying so
@@ -357,6 +383,86 @@ reports that it did.
   rest pose above is the fix at both ends. A run returns the arm to a posture it can be let go
   from before disconnecting, and where it did not get there, quackd turns the flag off, leaves the
   arm holding itself up and prints the one line rather than dropping it and reporting success.
+
+- The feasibility verdict gate now lets a verb declared `read_only` by its adapter run before
+  the verdict, the way `observe` and `report_state` do. Before, a third-party body's own
+  sensing verb (a `locate` that reads where things are) was refused as "moves the body", and
+  the pilot had to judge feasibility without the one tool that answers the question; a local
+  14B model given a humanoid with two objects in reach declared the task infeasible twice
+  without a single look. Learned verbs are unchanged: they never carry the flag. Thanks to
+  [@Bayway](https://github.com/Bayway) (#26), who wired a humanoid quackd has never shipped to
+  0.9.0 and measured what the gate cost it.
+
+  Four things landed on top of it. A test pins every shipped read-only verb inside
+  `BEFORE_VERDICT` and out of `MOVES_THE_BODY`, because the flag is now a second way into the
+  gate and the test that closed that set could not see it; a second one runs every read-only
+  verb on the mock and reads the wire, since two gates believe the flag and neither had ever
+  checked. The prompt's rule line is read off the body's own allowlist rather than reciting a
+  fixed list, so a pilot with its own `locate` is told it may look, hello-world's pilot is no
+  longer told that `observe` runs when its contract allows no such verb, and an arm is no
+  longer told about head verbs no arm has; over MCP, where there is no system prompt,
+  `robot_list_verbs` marks each verb `before_verdict` and both tool descriptions point at what
+  is true of every body instead of listing verbs, and a learned verb can no longer take one of
+  those nine names and run on it, which an audit of this branch found the docstring promising
+  and only the confirm gate keeping. And the three documents that said the gate reads
+  `BEFORE_VERDICT` and nothing else now say what it reads, ADR-0032 by dated amendment rather
+  than a quiet edit, including the adapter guide, which had been telling the author of a body
+  quackd does not ship to classify their verb in a file they do not own, in a set whose own
+  test rejects it. Two more documents were corrected while reading them: the safety page and
+  the duck spec each hand list the read-only verbs that survive `--dry-run`, and both had
+  omitted `introspect` since the rosbridge adapter shipped.
+
+- **A pilot is held to its own datasheet, the way a bid already is.** `missing_needs`
+  compared a `needs` against a sheet at the coordinator, where it judges another robot's
+  bid, and nothing called it when a pilot judged its own body, so a `feasible` whose
+  `needs` named a figure nobody published passed through and the body moved. `_assess` now
+  runs the same function against the pilot's own manifest and refuses such a verdict the
+  way it refuses one carrying `human`, naming the unmet need so the pilot can assess again.
+  `uncertain` is left alone, because it asks a person and a reachable person knows things a
+  sheet does not, and `infeasible` ends the run anyway. Measured on Qwen3-32B-AWQ over 54
+  runs: a 45 minute patrol on a body whose endurance is not published came back `feasible`
+  six times out of six and walked until the step budget, twice with
+  `needs: {"endurance_min": 45}` recorded in the same row. On the patched build the check
+  fired three times, all on that task, none on the other eight, and the body moved once
+  instead of six times. What it does not do: the pilot came back `uncertain` rather than
+  `infeasible` each time, and one run declared no endurance at all and so had nothing to be
+  checked against. The check reads what a pilot declares, so it rewards honesty and cannot
+  catch silence. Thanks to [@Vallhalen](https://github.com/Vallhalen) (#24), who measured it.
+
+  They measured it across 108 runs and reported the noise floor with the result.
+
+  What landed on top of it. **The MCP session is held to the same sheet**, because #24's own
+  "your rule, applied on both sides" was true of one: `robot_assess_task` already matched
+  `needs` against every *other* robot in the fleet to fill in `could`, and the one sheet it
+  never compared against was that of the robot it was about to drive. Both surfaces refuse in
+  one sentence now, from `own_sheet_objection`, which names three ways out rather than one:
+  the measured pilot answered `uncertain` to a message offering only `infeasible`, and for a
+  figure nobody published that is the right answer, because it asks a person and a person who
+  knows the figure can publish it in the task file's own `datasheet:` block.
+
+  **A refusal shuts the gate.** The check runs before the verdict is recorded, the way the
+  `human` and validation refusals do, so a pilot already cleared for one reading of the task
+  could name a need this body cannot meet, be refused, and go on moving on the older verdict
+  while the newer and better informed one was thrown away. Both surfaces withdraw what was
+  standing now, and an adversarial audit of this branch is what found it: the check refused
+  the words and not the motion, which is the failure it exists to stop, one re-assessment
+  later.
+
+  **Two readings that would have refused an honest pilot** are fixed in the matcher itself,
+  where the flock coordinator shares them: a minimum of zero asks for nothing, and a body that
+  published no terrain meets `indoor_flat`, which is what the prompt already tells such a body
+  to assume about itself, where the prompt says it. The same audit narrowed that second one:
+  the sentence is only rendered for a body that moves and has a datasheet at all, so a bid
+  that carried no datasheet no longer wins a role on it. A need that is not a number no longer
+  raises out of the MCP tool either, which the zero check had started doing.
+
+  And the places a pilot reads about `needs` say the check exists, because a refusal nobody
+  was warned about reads as a bug. So does `docs/safety.md`, which says out loud the thing
+  that is easy to resent: the check asks more of a pilot that answers fully, because a duck
+  asked to nudge a 60 g ball has no published payload to compare against, and a `duck: 2`
+  datasheet block is the answer that outlives one run. ADR-0032 carries a dated amendment for
+  this as well as for #26, since it is the record for the gate and this changes what its
+  Decision section describes.
 
 ## [0.9.0] — 2026-09-15
 

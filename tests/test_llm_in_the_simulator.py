@@ -222,3 +222,58 @@ async def test_a_real_model_refuses_what_this_body_cannot_carry(tmp_path: Path) 
         "A run that ends any other way means the prompt did not make assess_task the first "
         "thing to reach for."
     )
+
+
+@pytest.mark.live_llm
+async def test_a_real_model_gets_past_the_gate_on_the_readmes_own_goal(tmp_path: Path) -> None:
+    """`quackd run --goal "find the ball and kick it"` is the goal the README's opening
+    paragraph names and the first one it shows for a duck, and #25 measured a local model
+    answering `uncertain` to it five times in six while the shipped `find-and-kick` file
+    passed six in six. Same body, same words, same
+    seed: fifteen verbs in the allowlist rather than six, and an `assess_task` description
+    that named "the object is out of view" as a reason to be unsure. The verdict is about the
+    body against its datasheet, and a ball on a flat indoor floor is inside a duck's rating
+    wherever the ball happens to be, so the description says that now.
+
+    Pinned at the shape of the answer rather than at the first verdict: nobody is at this
+    terminal, so an `uncertain` is answered with "nobody is here to ask" and the pilot may
+    decide again on its own responsibility, which is the behaviour it should have. What this
+    catches is a run that never gets past the gate at all.
+
+    One paid run of one cloud model. It cannot stand in for the six cell measurement in #25,
+    which only that contributor's rig can repeat.
+    """
+    _live_or_skip()
+    probe = MujocoWorld(seed=0, body=BODY)
+    try:
+        require_render(probe)
+    finally:
+        probe.close()
+    goal = "find the ball and kick it"
+    # exactly as `quackd run --goal` builds it (cli.py): every safe verb this body has
+    safe = [v.name for v in registry_for(SPEC).verbs() if v.safety_class == "safe"]
+    duck = duck_from_goal(goal, safe)
+    duck = duck.model_copy(
+        update={
+            "frontmatter": duck.frontmatter.model_copy(
+                update={"budgets": Budgets(max_steps=3, max_minutes=3, max_llm_calls=5)}
+            )
+        }
+    )
+    result = await run_duck(
+        RunConfig(
+            duck=duck,
+            provider=_provider(goal=goal),
+            transport=MicroduckAdapter(MujocoTransport(seed=0, body=BODY)),
+            detector=ColorBlobDetector(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome not in ("infeasible", "aborted"), (
+        f"the run ended {result.outcome} at the feasibility gate: {result.reason}. A duck "
+        "kicking a ball on a flat indoor floor is inside its own datasheet, so a verdict that "
+        "stops this run is the prompt's fault rather than the body's."
+    )
+    assert result.steps >= 1, (
+        f"the pilot never moved: {result.outcome} after {result.steps} steps ({result.reason})"
+    )

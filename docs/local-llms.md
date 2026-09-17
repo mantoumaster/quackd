@@ -295,6 +295,49 @@ What the page has and has not been run against is in [web/README.md](../web/READ
   model this size on a machine that is not a GB10, or about whether the quiet run's missed
   `quack` is a pattern or one run's slip. If you run one, please share the transcript in a
   Discussion or a PR into that folder: it is the cheapest way to make this section shorter.
+
+- **What the same model did at the feasibility gate, over 108 runs.** From the same
+  contributor as that pair, on the same GB10, and the largest measurement anybody has made of
+  this gate: nine tasks in five classes, three repeats each with thinking on and off, before
+  and after the patch in [#24](https://github.com/rokbenko/quackd/pull/24), memory off so that
+  each verdict came from the datasheet rather than from yesterday's answer. The transcripts are
+  not published, so read the numbers as their report rather than as files you can check: a
+  noise floor of about 2 per six run cell, measured from the 48 runs the patch never fired on.
+
+  Before the patch, 54 runs answered 14 `infeasible`, 26 `uncertain` and 14 `feasible`. A
+  categorical `cannot` is what the gate does best: climbing a 10 cm step and going up the
+  stairs were refused six times out of six each. **The hole was the unpublished figure.** A 45
+  minute patrol on a body whose endurance nobody has published came back `feasible` six times
+  out of six and the duck walked until its step budget ran out, twice with
+  `needs: {"endurance_min": 45}` written in the same record. After the patch that check fired
+  three times, on that task and on none of the other eight, and the body moved once in six
+  where it had moved six in six. In all three the model answered `uncertain` rather than
+  `infeasible`, which is a question for a person rather than a refusal, and one run named no
+  endurance at all and so had nothing to be checked against.
+
+  It fails the other way too, and that half is prompt shaped and still unfixed: asked to carry
+  the ball across the room, a body whose sheet says it cannot carry answered `uncertain` four
+  times out of six, and in three of those four its own `reason` states the disqualifying fact
+  before the verdict contradicts it.
+
+- **`--goal` and the same task as a file are not the same question.** Also theirs, filed as
+  [#25](https://github.com/rokbenko/quackd/issues/25). `quackd run find-and-kick` was
+  `feasible` 6 of 6 and succeeded 6 of 6. The same words as
+  `--goal "Find the ball and kick it."`, same body, same seed, same model, were `uncertain` 5
+  of 6 and aborted 5 of 6. They rebuilt the goal contract as a `.duck` whose system prompt
+  diffs to zero against a real `--goal` run, reproduced the 5 and 1 split, and changed one
+  thing at a time: the persona does nothing, a concrete success criterion does nothing, the
+  five step strategy reaches 3 of 6, and narrowing the allowlist from fifteen verbs to six
+  reaches 5 of 6 under the duck's verb names and 6 of 6 under the goal's own, which rules out
+  the renaming that the first of those two had confounded into it. The pilot's reasons say the rest. On fifteen verbs it answers about
+  the world, *"Since the camera currently detects nothing, I cannot determine feasibility
+  yet"*. On six it answers about the body, *"No payload, reach, or height requirements exceed
+  the robot's limits"*.
+
+  What changed here is the words rather than the allowlist: `assess_task` named "the object is
+  out of view" as a reason to be unsure, and the verdict is about the body against its
+  datasheet. **Whether that moves those numbers is unmeasured.** Nobody here runs that model,
+  and the six cells want running again on a build that has this in it.
 - The cloud providers keep their stricter settings (`tool_choice="required"`,
   `parallel_tool_calls=False`). Only the local presets use the relaxed ones.
 - Ollama, vLLM, llama.cpp and LM Studio evolve quickly. If a flag above is stale, open an

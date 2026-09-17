@@ -93,6 +93,12 @@ async def test_tools_and_basic_calls() -> None:
         aliases = {v["name"]: v["aliases"] for v in verbs["verbs"]}
         assert aliases["move"] == ["walk"] and aliases["go_to"] == ["walk_to"]
         assert verbs["contract"] is None
+        # which verbs a pilot may run before it has judged the task, by the same rule the
+        # gate applies: the tool description points a model here rather than reciting a list
+        # that a third-party body's own sensing verb could never be in (#26)
+        marked = {v["canonical"]: v["before_verdict"] for v in verbs["verbs"]}
+        assert marked["observe"] and marked["report_state"] and marked["quack"] and marked["stop"]
+        assert not marked["move"] and not marked["kick"] and not marked["go_to"]
 
         quack = _data(
             await client.call_tool(
@@ -508,6 +514,22 @@ async def test_an_uncertain_verdict_waits_for_the_person_in_the_chat() -> None:
         assert session.executor.verdict is not None
 
 
+async def test_the_mcp_verdict_tool_says_what_the_prompt_says() -> None:
+    """There is no system prompt here, so this description is the whole of what an MCP pilot
+    is told about the gate. #25's correction and #24's check both have to be in it, or the two
+    surfaces teach different rules, and this is the surface where `uncertain` is the only route
+    to the person who could know an unpublished figure. An audit of the first attempt found the
+    carve-out replaced by its negation on exactly this one."""
+    async with connected() as (client, _session, _transport):
+        tool = next(t for t in (await client.list_tools()).tools if t.name == "robot_assess_task")
+        said = tool.description or ""
+        assert "not by itself" in said, "it states #25's rule absolutely"
+        assert "mass or size" in said, "it drops the figure that does decide a limit"
+        assert "not published" in said
+        assert "own datasheet does not meet is refused" in said, "#24's check, where it is read"
+        assert "before_verdict" in said, "which verbs run first is a field, not a fixed list"
+
+
 async def test_a_model_cannot_answer_for_the_human() -> None:
     """The tool has no `human` field to fill in, so the pilot cannot clear its own doubt."""
     async with connected() as (client, session, _transport):
@@ -523,6 +545,73 @@ async def test_a_model_cannot_answer_for_the_human() -> None:
         assert session.executor.verdict is not None
         assert session.executor.verdict.human is None
         assert not session.executor.cleared
+
+
+async def test_a_feasible_verdict_is_held_to_the_sessions_own_datasheet() -> None:
+    """The loop's check, on the other surface. `robot_assess_task` matched `needs` against
+    every OTHER robot in the fleet to fill in `could`, and recorded a `feasible` against this
+    robot's own sheet without ever looking at it, so over MCP a body still moved on a need
+    nobody published. The default body here is a bare simulator with no manifest, which is
+    structurally why nothing at this level had ever had a datasheet in hand."""
+    from quackd.adapters.factory import make_adapter
+
+    async with connected(make_adapter("microduck:sim2d", seed=1)) as (client, session, adapter):
+        refused = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {
+                    "verdict": "feasible",
+                    "reason": "it can carry the basket over",
+                    "needs": {"payload_kg": 3.0},
+                },
+            )
+        )
+        assert refused["ok"] is False
+        assert "payload_kg >= 3 (not published)" in refused["summary"]
+        assert "Call robot_assess_task" in refused["summary"], "named for this surface"
+        assert "uncertain to put it to a person" in refused["summary"], "the way out that asks"
+        assert session.executor.verdict is None, "a refused verdict is never recorded"
+
+        moved = _data(
+            await client.call_tool("robot_run_verb", {"verb": "move", "params": {"vx": 0.1}})
+        )
+        assert moved["ok"] is False and "robot_assess_task" in moved["summary"]
+        assert adapter.transport.world.steps == 0, "nothing was sent"
+
+        # and a need this body's own sheet does meet still clears the gate
+        accepted = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {
+                    "verdict": "feasible",
+                    "reason": "it walks, on the floor it is rated for",
+                    "needs": {"mobility": "legged", "terrain": "indoor_flat"},
+                },
+            )
+        )
+        assert accepted["ok"] is True and accepted["verdict"] == "feasible"
+        assert session.executor.cleared
+
+        # and a refusal shuts a gate an earlier verdict opened, or it would refuse the words
+        # and not the motion: this pilot is cleared right now, and says the task needs 45
+        # minutes of a running time nobody published
+        again = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {
+                    "verdict": "feasible",
+                    "reason": "and it can patrol for 45 minutes",
+                    "needs": {"endurance_min": 45},
+                },
+            )
+        )
+        assert again["ok"] is False and "endurance_min >= 45" in again["summary"]
+        assert not session.executor.cleared, "the older feasible was left carrying the motion"
+        assert session.executor.verdict is None
+        stopped = _data(
+            await client.call_tool("robot_run_verb", {"verb": "move", "params": {"vx": 0.1}})
+        )
+        assert stopped["ok"] is False and "robot_assess_task" in stopped["summary"]
 
 
 async def test_the_robot_list_row_carries_the_body_as_data_and_as_a_sentence() -> None:

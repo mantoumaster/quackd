@@ -28,7 +28,7 @@ from quackd.perception.base import Detector
 from quackd.trace import TracedTransport, Tracer, counting
 from quackd.transport.base import CameraFrame, DuckState, DuckTransport
 from quackd.verbs.registry import Verb, VerbContext, VerbNotFound, VerbRegistry, VerbResult
-from quackd.verdict import BEFORE_VERDICT, Verdict
+from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY, Verdict
 
 if TYPE_CHECKING:
     from quackd.adapters.manifest import RobotManifest
@@ -352,7 +352,20 @@ class Executor:
             )
             raise VerbNotAllowed(f"unknown verb {name!r}") from None
 
-        if self.require_verdict and canonical not in BEFORE_VERDICT and not self.cleared:
+        # A verb declared `read_only` by whoever wrote it is a sensor, whatever body it came
+        # with: a third-party `locate` that reads where things are must run before the
+        # verdict for the same reason `observe` does, or the pilot judges feasibility blind.
+        # `BEFORE_VERDICT` is matched by name, and a learned verb is excluded from that half
+        # on purpose: it is an unproven policy, so a `.duck` that named one `observe` on a
+        # body with no camera verb would otherwise have it run before any verdict. The
+        # confirm gate below would still stop it, and `--yes` answers the confirm gate.
+        # `MOVES_THE_BODY` wins over the flag: where quackd has said a name is motion, a verb
+        # arriving under that name and carrying `read_only` is saying two contradictory things
+        # about itself, and the gate believes quackd's own record rather than the newcomer.
+        looks = (canonical in BEFORE_VERDICT and verb.kind != "learned") or (
+            verb.read_only and canonical not in MOVES_THE_BODY
+        )
+        if self.require_verdict and not looks and not self.cleared:
             why = (
                 self.verdict.blocking_reason()
                 if self.verdict is not None
