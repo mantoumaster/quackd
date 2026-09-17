@@ -57,9 +57,11 @@ below because it is not a tidy exit.
 
 ## When the pilot is unsure
 
-`assess_task` has a third answer. `uncertain` means the pilot cannot tell from where it is
-whether the body can do the task, and at a terminal that is a y/N question with no as the
-default. A no ends the run `aborted` and exits 1, not `infeasible` and 3, because a person
+`assess_task` has a third answer. `uncertain` means the verdict itself turns on a figure the
+pilot cannot judge from where it is: the mass or size of a thing it has not seen, or a limit
+the maker never published. A target it has not found yet is not one of those. Finding the
+thing is the task, and the looking verbs run before the verdict precisely so the pilot can go
+and look. At a terminal an `uncertain` is a y/N question with no as the default. A no ends the run `aborted` and exits 1, not `infeasible` and 3, because a person
 stopping a robot is the kill switch's kind of act rather than a statement about the body.
 
 **`--yes` answers that question with go**, the same way it answers a confirm gate, and

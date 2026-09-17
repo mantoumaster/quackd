@@ -27,15 +27,18 @@ ASSESS_TASK = {
     "name": "assess_task",
     "description": (
         "Your verdict on whether THIS body can do THIS task, judged against the datasheet in "
-        "your prompt. Required before the first verb that moves the body: until you have "
+        "your prompt: the task's needs against the body's limits, not whether you can see the "
+        "target yet. Required before the first verb that moves the body: until you have "
         "answered, a verb that moves the body is refused and told so, and only what looks, "
         "speaks or brakes runs. The Rules in your prompt name which of your verbs those are. "
-        "Answer `feasible` when every need fits inside a limit you can point to. Answer "
+        "Answer `feasible` when every need fits inside a limit you can point to; a target you "
+        "have not found yet is what the run is for, not a doubt about the body. Answer "
         "`infeasible` when one need clearly exceeds a limit (a 3 kg basket on a 0.3 kg "
         "payload): the run ends at once and nothing moves, so name the limit and what you "
-        "estimated. Answer `uncertain` when the verdict turns on something you cannot judge "
-        "from here: you were given detections rather than an image, the object is out of "
-        "view, or the limit that matters is listed as not published. A human is then asked, "
+        "estimated. Answer `uncertain` only when the verdict itself turns on a figure you "
+        "cannot judge from here: the mass or size of a thing that decides a limit and that you "
+        "have not seen (out of view, or detections rather than an image), or a limit that "
+        "matters listed as not published. A human is then asked, "
         "or you are told nobody is there to ask. Do not guess a mass or a size from the words "
         "of the task alone: look first, or say uncertain. You may call this again later, once "
         "you have seen the thing. It moves nothing and does not count as a step."
@@ -528,7 +531,7 @@ you choose ONE verb per turn; {pilot_line}. Do not micro-manage.
 - Only these verbs are allowed: {", ".join(fm.verbs.allow)}. Anything else is refused.
 - Budgets: {fm.budgets.max_steps} steps, {fm.budgets.max_minutes:g} minutes, {fm.budgets.max_llm_calls} LLM calls. The run stops when any is hit.
 - Verbs marked confirm ({", ".join(fm.verbs.confirm) or "none"}) ask a human before running.
-- Before the first verb that moves the body, call `assess_task` with your verdict on whether this body can do this task at all, judged against its datasheet below: `feasible`, `infeasible` (the run ends, nothing moves) or `uncertain` (a human is asked). Until then {before_verdict}. Assess again later if what you see changes your mind.
+- Before the first verb that moves the body, call `assess_task` with your verdict on whether this body can do this task at all, judged against its datasheet below: `feasible`, `infeasible` (the run ends, nothing moves) or `uncertain` (a human is asked). The verdict is about the body, not the view: a target you have not found yet is the task, not a reason for `uncertain`. Until then {before_verdict}. Assess again later if what you see changes your mind.
 - When a success criterion is met, call `declare_success`. If the task turns out impossible while doing it, call `declare_failure`.
 
 ## Success criteria

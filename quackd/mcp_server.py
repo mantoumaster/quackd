@@ -891,12 +891,15 @@ def build_fleet_server(
     @mcp.tool(
         description=(
             "Your verdict on whether one robot can do the task, judged against the datasheet "
-            "in its robot_list row. Required before the first verb that moves that body: "
+            "in its robot_list row: the task's needs against that body's limits, not whether "
+            "you have found the target yet. Required before the first verb that moves it: "
             "until you answer, robot_run_verb refuses anything that moves it and says so, and "
             "only the verbs robot_list_verbs marks before_verdict run. "
             "feasible: go. infeasible: nothing on that robot will move, so name the limit and "
             "what you estimated, and read `could` for a robot here that meets what the task "
-            "needs. uncertain: ask the person you are chatting with, then answer again. Fill "
+            "needs. uncertain: only when the verdict itself turns on a figure you cannot judge "
+            "from here, so a target you have not found yet is not one; ask the person you are "
+            "chatting with, then answer again. Fill "
             "in `needs` (payload_kg, reach_m, manipulator, mobility, ...) even when feasible, "
             "because that is what names the robots that could. A feasible whose needs that "
             "robot's own datasheet does not meet is refused before it is recorded, and names "
