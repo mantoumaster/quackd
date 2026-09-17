@@ -144,10 +144,18 @@ def missing_needs_in(
 
     `facts` is a datasheet dumped to a dict, which is what a flock bid carries, so a
     coordinator can judge a bid from a robot it does not run. A figure nobody published is
-    unmet, never assumed."""
+    unmet rather than assumed, with two exceptions that would otherwise refuse an honest
+    answer: a minimum of zero asks for nothing, and an unpublished terrain meets
+    `indoor_flat`, because that is what the prompt tells such a body to assume about itself.
+    The reader and the prompt have to agree or a pilot is refused for doing as it was told."""
     out: list[str] = []
     for key in sorted(needs):
         want = needs[key]
+        if key in NEEDS_NUMBERS and key != "work_height_m" and float(want) == 0:
+            # "this task needs no payload" is a real thing to say, and the tool asks the pilot
+            # to fill `needs` in even when the verdict is feasible. A floor of zero is not the
+            # same: `work_height_m: 0` means the ground, which a body either reaches or does not
+            continue
         if key == "mobility":
             has = mobility or "unknown"
             if not (want == "any" and has not in ("none", "unknown")) and has != want:
@@ -161,7 +169,12 @@ def missing_needs_in(
         if key == "terrain":
             rated = facts.get("terrain")
             if rated is None:
-                out.append(f"terrain = {want} (not published)")
+                # the prompt renders an unpublished terrain as "assume a flat indoor floor and
+                # decline anything else" (`prompts._power_and_ground`), so a pilot that asks
+                # for exactly that has done as it was told and must not be refused for it.
+                # Anything more than a flat indoor floor is still unmet.
+                if want != "indoor_flat":
+                    out.append(f"terrain = {want} (not published)")
             elif TERRAIN_ORDER.index(str(rated)) < TERRAIN_ORDER.index(str(want)):  # type: ignore[arg-type]
                 out.append(f"terrain = {want} (rated {rated})")
             continue

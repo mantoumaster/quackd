@@ -287,6 +287,25 @@ def test_terrain_is_met_by_a_body_rated_for_more() -> None:
     ]
     silent = _body(datasheet=Datasheet(manipulator="none"))
     assert missing_needs({"terrain": "indoor"}, silent) == ["terrain = indoor (not published)"]
+    assert missing_needs({"terrain": "outdoor"}, silent) == ["terrain = outdoor (not published)"]
+    # the one exception, and it is the prompt's doing: a body whose terrain nobody published is
+    # told "assume a flat indoor floor and decline anything else", so a pilot asking for
+    # exactly that has done as it was told. Refusing it would refuse the honest answer, and
+    # since #24 this reader can refuse a verdict rather than only rank a body.
+    assert missing_needs({"terrain": "indoor_flat"}, silent) == []
+
+
+def test_a_minimum_of_zero_asks_for_nothing() -> None:
+    """`needs` is filled in even when the verdict is feasible, because a matcher reads it, so
+    `payload_kg: 0` is the natural way to say the task carries nothing. Against a body that
+    published no payload that read as "0 kg needed, and nobody said this body has any", which
+    refused a pilot for answering fully. A working height is not a minimum in the same way:
+    `work_height_m: 0` names the ground, which a body either reaches or does not."""
+    duck = describe(RobotSpec("microduck", "sim2d"))
+    assert missing_needs({"payload_kg": 0, "reach_m": 0, "endurance_min": 0}, duck) == []
+    assert missing_needs({"payload_kg": 0.1}, duck) == ["payload_kg >= 0.1 (not published)"]
+    assert missing_needs({"work_height_m": 0}, duck) == ["work_height_m = 0 (not published)"]
+    assert own_sheet_objection({"payload_kg": 0}, duck) is None
 
 
 def test_the_objection_names_the_need_and_the_three_ways_out() -> None:
