@@ -115,8 +115,9 @@ ASSESS_TASK = {
                     "which other body could do the task, so fill it in even when the verdict "
                     "is feasible. It is also read back against this body's own datasheet: a "
                     "feasible verdict naming a need the sheet does not meet, or does not "
-                    "publish, is refused and told which need. So name what the task turns on "
-                    "and nothing it does not."
+                    "publish, is refused and told which need, so name what the task turns on "
+                    "and nothing it does not. A minimum of 0 asks for nothing and is always "
+                    "met."
                 ),
                 "properties": needs_properties(),
                 "additionalProperties": False,

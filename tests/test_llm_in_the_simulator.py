@@ -226,9 +226,10 @@ async def test_a_real_model_refuses_what_this_body_cannot_carry(tmp_path: Path) 
 
 @pytest.mark.live_llm
 async def test_a_real_model_gets_past_the_gate_on_the_readmes_own_goal(tmp_path: Path) -> None:
-    """`quackd run --goal "find the ball and kick it"` is the README's first command with a
-    model behind it, and #25 measured a local model answering `uncertain` to it five times in
-    six while the shipped `find-and-kick` file passed six in six. Same body, same words, same
+    """`quackd run --goal "find the ball and kick it"` is the goal the README's opening
+    paragraph names and the first one it shows for a duck, and #25 measured a local model
+    answering `uncertain` to it five times in six while the shipped `find-and-kick` file
+    passed six in six. Same body, same words, same
     seed: fifteen verbs in the allowlist rather than six, and an `assess_task` description
     that named "the object is out of view" as a reason to be unsure. The verdict is about the
     body against its datasheet, and a ball on a flat indoor floor is inside a duck's rating

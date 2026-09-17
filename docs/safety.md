@@ -83,7 +83,9 @@ nobody has ever published, and the duck walked until its step budget ran out.
 
 So a `feasible` is now held to the body's own datasheet before it is recorded, by the same
 function that holds another robot's bid at the coordinator. A need the sheet does not meet, or
-does not publish, is refused and named, and the pilot is told the three ways on: `infeasible`
+does not publish, is refused and named, with two exceptions that would otherwise refuse an
+honest answer: a minimum of zero asks for nothing, and an unpublished terrain meets
+`indoor_flat`, which is what the prompt tells such a body to assume about itself. and the pilot is told the three ways on: `infeasible`
 if that need decides the task, `uncertain` if a person could know the figure, or a corrected
 need if it asked for more than the task turns on. An `uncertain` and an `infeasible` are left
 alone, because one asks a person and the other ends the run anyway.

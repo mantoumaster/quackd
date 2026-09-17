@@ -57,12 +57,15 @@ flip that backend's row, and not before.
 
 - ⬜ **One local model has refused tasks on feasibility grounds; no frontier model has, and
   nobody has watched an `uncertain` over MCP.** Qwen3-32B-AWQ on vLLM, driving
-  `microduck:sim2d`, answered this gate 54 times before and 54 times after the check in #24:
-  14 `infeasible`, 26 `uncertain`, 8 `feasible`, with a noise floor around 2 per six run cell
+  `microduck:sim2d`, answered this gate 54 times before the check in #24 and 54 times after.
+  Before: 14 `infeasible`, 26 `uncertain`, 14 `feasible`, with a noise floor around 2 per six
+  run cell
   ([@Vallhalen](https://github.com/Vallhalen), #24, written up in
   [docs/local-llms.md](docs/local-llms.md#honest-notes)). It refuses a categorical `cannot`
   reliably, it hedged on one, and the figure nobody published was the hole the check now
-  covers. That is one model, one quantisation, one simulated body and three repeats a cell.
+  covers: on the eight tasks the check never fired on the verdicts moved by 1 to 2 either way,
+  which is that floor rather than a result. That is one model, one quantisation, one simulated
+  body and three repeats a cell.
   Still open: whether a frontier model uses `uncertain` when it should or reaches for
   `infeasible` too readily, which the `live_llm` tests measure and which needs a key; a pilot
   that never names the figure its plan hinges on, which the check reads nothing about and

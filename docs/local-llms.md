@@ -304,7 +304,7 @@ What the page has and has not been run against is in [web/README.md](../web/READ
   not published, so read the numbers as their report rather than as files you can check: a
   noise floor of about 2 per six run cell, measured from the 48 runs the patch never fired on.
 
-  Before the patch, 54 runs answered 14 `infeasible`, 26 `uncertain` and 8 `feasible`. A
+  Before the patch, 54 runs answered 14 `infeasible`, 26 `uncertain` and 14 `feasible`. A
   categorical `cannot` is what the gate does best: climbing a 10 cm step and going up the
   stairs were refused six times out of six each. **The hole was the unpublished figure.** A 45
   minute patrol on a body whose endurance nobody has published came back `feasible` six times
@@ -328,8 +328,8 @@ What the page has and has not been run against is in [web/README.md](../web/READ
   diffs to zero against a real `--goal` run, reproduced the 5 and 1 split, and changed one
   thing at a time: the persona does nothing, a concrete success criterion does nothing, the
   five step strategy reaches 3 of 6, and narrowing the allowlist from fifteen verbs to six
-  reaches 6 of 6 under the duck's verb names and 6 of 6 again under the goal's own, which
-  rules out the renaming. The pilot's reasons say the rest. On fifteen verbs it answers about
+  reaches 5 of 6 under the duck's verb names and 6 of 6 under the goal's own, which rules out
+  the renaming that the first of those two had confounded into it. The pilot's reasons say the rest. On fifteen verbs it answers about
   the world, *"Since the camera currently detects nothing, I cannot determine feasibility
   yet"*. On six it answers about the body, *"No payload, reach, or height requirements exceed
   the robot's limits"*.

@@ -275,8 +275,9 @@ reports that it did.
   body.** `assess_task` told the model its verdict was judged against the datasheet and then
   listed "the object is out of view" as a reason to answer `uncertain`, which are two different
   questions: where the ball is decides nothing about whether a duck can kick a ball on the
-  floor it is rated for. It cost the README's own first command. `quackd run --goal "Find the
-  ball and kick it."` stopped at the gate 5 times in 6 on Qwen3-32B-AWQ, `uncertain` and the
+  floor it is rated for. It cost the duck's own starter task. `quackd run --goal "Find the
+  ball and kick it."`, which is the goal the README's opening paragraph names and the first one
+  it shows for a duck, stopped at the gate 5 times in 6 on Qwen3-32B-AWQ, `uncertain` and the
   run aborted, where `ducks/find-and-kick.duck` passed 6 of 6 on the same body, seed and model,
   and the pilot's own reason was "Since the camera currently detects nothing, I cannot
   determine feasibility yet". The description now says the verdict is the task's needs against
@@ -397,10 +398,13 @@ reports that it did.
   longer told that `observe` runs when its contract allows no such verb, and an arm is no
   longer told about head verbs no arm has; over MCP, where there is no system prompt,
   `robot_list_verbs` marks each verb `before_verdict` and both tool descriptions point at what
-  is true of every body instead of listing verbs. And five documents that said the gate reads
+  is true of every body instead of listing verbs. And the three documents that said the gate reads
   `BEFORE_VERDICT` and nothing else now say what it reads, ADR-0032 by dated amendment rather
-  than a quiet edit, including the adapter guide, which had been telling third-party authors to
-  classify their verb in a file they do not own and a set whose own test rejects it.
+  than a quiet edit, including the adapter guide, which had been telling the author of a body
+  quackd does not ship to classify their verb in a file they do not own, in a set whose own
+  test rejects it. Two more documents were corrected while reading them: the safety page and
+  the duck spec each hand list the read-only verbs that survive `--dry-run`, and both had
+  omitted `introspect` since the rosbridge adapter shipped.
 
 - **A pilot is held to its own datasheet, the way a bid already is.** `missing_needs`
   compared a `needs` against a sheet at the coordinator, where it judges another robot's
@@ -417,11 +421,11 @@ reports that it did.
   instead of six times. What it does not do: the pilot came back `uncertain` rather than
   `infeasible` each time, and one run declared no endurance at all and so had nothing to be
   checked against. The check reads what a pilot declares, so it rewards honesty and cannot
-  catch silence. Thanks to [@Vallhalen](https://github.com/Vallhalen) (#24), who measured it
-  across 108 runs and reported the noise floor with the result.
+  catch silence. Thanks to [@Vallhalen](https://github.com/Vallhalen) (#24), who measured it.
 
-  Four things landed on top of it. The MCP session is held to the same sheet, because the
-  title's "both sides" was true of one: `robot_assess_task` already matched `needs` against
+  They measured it across 108 runs, and reported the noise floor with the result. Four things
+  landed on top of it. The MCP session is held to the same sheet, because #24's own
+  "your rule, applied on both sides" was true of one: `robot_assess_task` already matched `needs` against
   every *other* robot in the fleet to fill in `could`, and the one sheet it never compared
   against was that of the robot it was about to drive. Both surfaces now refuse in one
   sentence, from `own_sheet_objection`, which names three ways out rather than one, because the
