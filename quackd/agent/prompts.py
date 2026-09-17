@@ -14,8 +14,9 @@ from typing import TYPE_CHECKING, Any
 from quackd.duckfile.schema import DuckFile
 from quackd.perception.base import Detection, summarize_detections
 from quackd.transport.base import DuckState
+from quackd.verbs.aliases import canonical
 from quackd.verbs.registry import Verb, VerbResult
-from quackd.verdict import needs_properties
+from quackd.verdict import BEFORE_VERDICT, needs_properties
 
 if TYPE_CHECKING:
     from quackd.adapters.manifest import Datasheet, RobotManifest
@@ -27,7 +28,8 @@ ASSESS_TASK = {
     "description": (
         "Your verdict on whether THIS body can do THIS task, judged against the datasheet in "
         "your prompt. Required before the first verb that moves the body: until you have "
-        "answered, only stop, observe, report_state, say/quack, gaze/look and express run. "
+        "answered, a verb that moves the body is refused and told so, and only what looks, "
+        "speaks or brakes runs. The Rules in your prompt name which of your verbs those are. "
         "Answer `feasible` when every need fits inside a limit you can point to. Answer "
         "`infeasible` when one need clearly exceeds a limit (a 3 kg basket on a 0.3 kg "
         "payload): the run ends at once and nothing moves, so name the limit and what you "
@@ -246,6 +248,31 @@ def goal_strategy(allow: Sequence[str]) -> str:
     )
 
 
+def before_verdict_clause(verbs: Sequence[Verb]) -> str:
+    """`only `quack` and `stop` run`: which of THIS run's verbs run before the verdict.
+
+    Read by the same rule the gate applies in `Executor._run_verb`, so the sentence cannot
+    drift from the refusal: the canonical name is in `BEFORE_VERDICT`, or the verb's own
+    adapter declared it `read_only`. It used to be one fixed list naming `observe`,
+    `report_state`, `say` and the head verbs whatever the body was, which was wrong three ways
+    at once. hello-world's pilot was told `observe` runs when its contract allows no such verb.
+    An arm was told about head verbs no arm has. And since #26 a body quackd never shipped can
+    bring its own sensing verb, which the gate lets through and this sentence could not name.
+
+    Spelled as the allowlist spells it, so a duck that allows `get_frame` reads `get_frame`.
+    `stop` is last and unconditional: the executor lets the brake through whether or not a
+    contract listed it."""
+    named = [
+        verb.name
+        for verb in verbs
+        if (canonical(verb.name) in BEFORE_VERDICT or verb.read_only) and verb.name != "stop"
+    ]
+    spelled = [f"`{name}`" for name in dict.fromkeys(named)] + ["`stop`"]
+    if len(spelled) == 1:
+        return f"only {spelled[0]} runs"
+    return f"only {', '.join(spelled[:-1])} and {spelled[-1]} run"
+
+
 BODY_HEADING = "## Your body: what it can and cannot do"
 
 _CONFIDENCE_KEY = (
@@ -416,6 +443,7 @@ def build_system_prompt(
             f", and composite\nverbs like `{composite}` close their own loops on the camera"
         )
     verb_lines = "\n".join(f"- `{v.name}`: {v.description}" for v in verbs)
+    before_verdict = before_verdict_clause(verbs)
     success = "\n".join(f"- {s}" for s in fm.success)
     advisory = fm.advisory_abort_conditions
     abort_lines = (
@@ -497,7 +525,7 @@ you choose ONE verb per turn; {pilot_line}. Do not micro-manage.
 - Only these verbs are allowed: {", ".join(fm.verbs.allow)}. Anything else is refused.
 - Budgets: {fm.budgets.max_steps} steps, {fm.budgets.max_minutes:g} minutes, {fm.budgets.max_llm_calls} LLM calls. The run stops when any is hit.
 - Verbs marked confirm ({", ".join(fm.verbs.confirm) or "none"}) ask a human before running.
-- Before the first verb that moves the body, call `assess_task` with your verdict on whether this body can do this task at all, judged against its datasheet below: `feasible`, `infeasible` (the run ends, nothing moves) or `uncertain` (a human is asked). Until then only `observe`, `report_state`, `say`, the head verbs and `stop` run. Assess again later if what you see changes your mind.
+- Before the first verb that moves the body, call `assess_task` with your verdict on whether this body can do this task at all, judged against its datasheet below: `feasible`, `infeasible` (the run ends, nothing moves) or `uncertain` (a human is asked). Until then {before_verdict}. Assess again later if what you see changes your mind.
 - When a success criterion is met, call `declare_success`. If the task turns out impossible while doing it, call `declare_failure`.
 
 ## Success criteria

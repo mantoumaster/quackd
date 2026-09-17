@@ -78,7 +78,7 @@ from quackd.verbs.registry import (
     default_registry,
     registry_from_manifest,
 )
-from quackd.verdict import Verdict, missing_needs
+from quackd.verdict import BEFORE_VERDICT, Verdict, missing_needs
 
 log = logging.getLogger("quackd.mcp")
 
@@ -487,6 +487,7 @@ class RobotSession:
                     "canonical": v.name,
                     "aliases": [a for a, c in aliases.items() if c == v.name],
                     "core": v.core,
+                    "before_verdict": v.name in BEFORE_VERDICT or v.read_only,
                     "kind": v.kind,
                     "safety_class": v.safety_class,
                     "allowed": self.executor.is_allowed(v.name),
@@ -882,7 +883,8 @@ def build_fleet_server(
         description=(
             "Your verdict on whether one robot can do the task, judged against the datasheet "
             "in its robot_list row. Required before the first verb that moves that body: "
-            "until you answer, only stop, observe, report_state, say and the head verbs run. "
+            "until you answer, robot_run_verb refuses anything that moves it and says so, and "
+            "only the verbs robot_list_verbs marks before_verdict run. "
             "feasible: go. infeasible: nothing on that robot will move, so name the limit and "
             "what you estimated, and read `could` for a robot here that meets what the task "
             "needs. uncertain: ask the person you are chatting with, then answer again. Fill "

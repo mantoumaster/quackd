@@ -1138,6 +1138,51 @@ async def test_the_prompt_offers_the_tool_and_states_the_rule(
     assert "Before the first verb that moves the body, call " in system
     assert "assess_task" in system
     assert "the run ends, nothing moves" in system
+    # read off this duck's own allowlist, not a fixed list: hello-world allows quack, walk
+    # and stop, so `observe` and the head verbs have no business in its rule line
+    assert "Until then only `quack` and `stop` run." in system
+    assert "`observe`" not in system.split("Until then")[1].split("Assess again")[0]
+
+
+def test_the_rule_line_names_a_bodys_own_read_only_verb() -> None:
+    """The gate honours `Verb.read_only` since #26, so the sentence that tells a pilot what
+    runs before the verdict has to be read off the body. A third-party `locate` that only
+    looks belongs in it, the `reach` beside it does not, and `stop` is there whether or not
+    the contract listed it."""
+    from quackd.agent.prompts import before_verdict_clause, build_system_prompt
+    from quackd.duckfile.parser import parse_duck_text
+    from quackd.verbs.registry import NoParams, Verb, VerbResult
+
+    async def noop(_ctx: object, _p: object) -> VerbResult:
+        return VerbResult.success("ok")
+
+    verbs = [
+        Verb("locate", "where a thing is", noop, NoParams, read_only=True),
+        Verb("reach", "move a hand to it", noop, NoParams),
+    ]
+    assert before_verdict_clause(verbs) == "only `locate` and `stop` run"
+    assert before_verdict_clause([]) == "only `stop` runs", "the brake is never gated"
+
+    duck = parse_duck_text(
+        """---
+duck: 0
+name: t
+description: d
+verbs:
+  allow: [locate, reach]
+success: [x]
+---
+# Task
+x
+"""
+    )
+    rule = next(
+        line
+        for line in build_system_prompt(duck, verbs, "mock").splitlines()
+        if "Until then" in line
+    )
+    assert "Until then only `locate` and `stop` run." in rule
+    assert "`reach`" not in rule.split("Until then")[1]
 
 
 # ── the rest pose: the arm is put down however the run ended ────────────────────────────

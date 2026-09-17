@@ -93,6 +93,12 @@ async def test_tools_and_basic_calls() -> None:
         aliases = {v["name"]: v["aliases"] for v in verbs["verbs"]}
         assert aliases["move"] == ["walk"] and aliases["go_to"] == ["walk_to"]
         assert verbs["contract"] is None
+        # which verbs a pilot may run before it has judged the task, by the same rule the
+        # gate applies: the tool description points a model here rather than reciting a list
+        # that a third-party body's own sensing verb could never be in (#26)
+        marked = {v["canonical"]: v["before_verdict"] for v in verbs["verbs"]}
+        assert marked["observe"] and marked["report_state"] and marked["quack"] and marked["stop"]
+        assert not marked["move"] and not marked["kick"] and not marked["go_to"]
 
         quack = _data(
             await client.call_tool(
