@@ -55,11 +55,24 @@ flip that backend's row, and not before.
 
 ## Open here
 
-- ⬜ **No real model has ever refused a task on feasibility grounds here.** The gate, the
-  outcome, the hint and the flock handoff are exercised with scripted verdicts and an in-process
-  MCP client. There is one `live_llm` test beside the others waiting for a key, and until
-  somebody runs it nothing is known about whether a real model uses `uncertain` when it should
-  or reaches for `infeasible` too readily.
+- ⬜ **One local model has refused tasks on feasibility grounds; no frontier model has, and
+  nobody has watched an `uncertain` over MCP.** Qwen3-32B-AWQ on vLLM, driving
+  `microduck:sim2d`, answered this gate 54 times before and 54 times after the check in #24:
+  14 `infeasible`, 26 `uncertain`, 8 `feasible`, with a noise floor around 2 per six run cell
+  ([@Vallhalen](https://github.com/Vallhalen), #24, written up in
+  [docs/local-llms.md](docs/local-llms.md#honest-notes)). It refuses a categorical `cannot`
+  reliably, it hedged on one, and the figure nobody published was the hole the check now
+  covers. That is one model, one quantisation, one simulated body and three repeats a cell.
+  Still open: whether a frontier model uses `uncertain` when it should or reaches for
+  `infeasible` too readily, which the `live_llm` tests measure and which needs a key; a pilot
+  that never names the figure its plan hinges on, which the check reads nothing about and
+  cannot catch; and `uncertain` over MCP, where the verdict stays pending and the model is
+  told to ask the person it is chatting with, which no real session has been watched doing.
+- ⬜ **Whether the words of `assess_task` fixed #25.** `--goal "Find the ball and kick it."`
+  stopped at this gate 5 times in 6 on that same model where the shipped `find-and-kick` file
+  passed 6 of 6, and the allowlist width is the measured cause. The description it read has
+  been corrected rather than the allowlist narrowed, and nobody here runs that model, so the
+  six cells want running again on a build that carries the change (#25).
 - ⏸ **A flock role can ask for a body, and no coordinator flock can have two different ones.**
   `flock.roles.<role>.needs` validates, and the coordinator matches it against the datasheet a
   bid carries, tested at that level. But `flock/runner.py` still knows only the Microduck, so
