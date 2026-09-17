@@ -213,6 +213,39 @@ COMPOSITE_VERBS = ("walk_to", "go_to", "search_scan", "approach_and")
 """The verbs that close their own loop on the camera, in the order the prompt prefers to name
 one. A body that provides none of them is told about none of them."""
 
+
+def goal_strategy(allow: Sequence[str]) -> str:
+    """The `## Strategy` paragraph of a `--goal` task, in the verbs this body was granted.
+
+    It used to name `observe`, `search_scan` and `go_to` whatever the body was. On 2026-09-15
+    an SO-101 arm read all three in a prompt whose allowlist two lines above listed none of
+    them, and whose executor would have refused each one: the arm has no camera verb it is
+    granted, no scan and no composite. The model worked it out and looked with `report_state`
+    instead, which is not a thing to rely on.
+
+    Every verb named here is in `allow`. A body with neither looking verb is told to look with
+    `report_state`, and one with no composite is told to prefer the verb that does the whole
+    thing rather than being pointed at a verb that does not exist. A Microduck reads exactly
+    what it read before."""
+    names = set(allow)
+    looking: list[str] = [verb for verb in ("observe", "search_scan") if verb in names]
+    if not looking and "report_state" in names:
+        looking = ["report_state"]
+    look = " or ".join(f"`{verb}`" for verb in looking) if looking else "however this body can"
+    composite = next((verb for verb in COMPOSITE_VERBS if verb in names), None)
+    prefer = (
+        f"prefer composite verbs like `{composite}`"
+        if composite is not None
+        else "prefer the verb that does the whole thing over micro-managing"
+    )
+    # a body with no camera verb has no frame to verify against, only its own joints
+    fresh = "frame" if "observe" in names else "reading"
+    return (
+        f"Use the available verbs. Look before you act ({look}), {prefer}, verify with a "
+        f"fresh {fresh}, then `remember` one fact and declare success."
+    )
+
+
 BODY_HEADING = "## Your body: what it can and cannot do"
 
 _CONFIDENCE_KEY = (

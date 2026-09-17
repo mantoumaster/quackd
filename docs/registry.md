@@ -230,7 +230,7 @@ torque left on: not at its rest pose`. `quackd doctor` is the other way round an
 it probed ([safety.md](safety.md)).
 
 No registered robot has been probed on hardware. The one real robot quackd has driven, the
-SO-101 arm of 2026-09-15, was reached as `--robot lerobot:real --address COM5` on the command
+SO-101 arm of 2026-09-15, was reached as `--robot lerobot:real --address COM3` on the command
 line, before it had a name here at all ([lerobot-first-run.md](lerobot-first-run.md)). A name,
 a probe and a stored camera are still mock-only.
 

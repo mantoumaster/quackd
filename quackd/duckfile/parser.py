@@ -126,11 +126,13 @@ def duck_from_goal(goal: str, allow: list[str]) -> DuckFile:
         abort_when=["Battery below 15%", "Same verb fails 3 times in a row"],
         persona="Practical and honest: say so when you cannot do something.",
     )
+    # the words the model reads live in one module, and this paragraph names verbs, so it is
+    # written from the allowlist granted above rather than from the duck this used to assume
+    from quackd.agent.prompts import goal_strategy
+
     body = (
         f"# Task\n{goal}\n\n## Strategy\n"
-        "Use the available verbs. Look before you act (`observe` or `search_scan`), prefer "
-        "composite verbs like `go_to`, verify with a fresh frame, then `remember` one fact and "
-        "declare success.\n\n"
+        f"{goal_strategy(allow)}\n\n"
         "## Memory\n"
         "Before you declare success or failure, call `remember` once with one short fact a "
         "future run can use (where something was, what worked, what to avoid), unless the "

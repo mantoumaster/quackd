@@ -106,7 +106,7 @@ def test_no_image_under_docs_assets_ships_in_the_sdist() -> None:
         relative = image.relative_to(REPO).as_posix()
         assert any(fnmatch.fnmatch(relative, pattern) for pattern in patterns), (
             f"{relative} would ship in the sdist. The README serves images from "
-            f"raw.githubusercontent and the hero renders a CC BY-NC-SA model "
+            f"raw.githubusercontent and the simulator figure renders a CC BY-NC-SA model "
             f"(docs/licenses.md), so add its suffix to the sdist exclude in pyproject.toml."
         )
 
@@ -143,9 +143,12 @@ def test_the_card_and_the_readme_open_with_the_same_mark() -> None:
 
 
 def test_the_hero_script_uses_the_cap_the_pre_commit_hook_is_configured_with() -> None:
-    """`check-added-large-files` only inspects files being *added*, so regenerating the hero
-    in place past the cap is invisible to it. The script's own check is the one that fires,
-    and it was set 97 KB tighter than the hook it claimed to mirror."""
+    """`check-added-large-files` only inspects files being *added*, so regenerating the
+    simulator figure in place past the cap is invisible to it. The script's own check is the
+    one that fires, and it was set 97 KB tighter than the hook it claimed to mirror.
+
+    `hero3d.py` keeps the general cap. The one file over it is the README hero, which is a
+    photograph rather than a render and is held to its own number by the test below."""
     import ast
 
     hook = (REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
@@ -159,15 +162,70 @@ def test_the_hero_script_uses_the_cap_the_pre_commit_hook_is_configured_with() -
         and any(getattr(t, "id", None) == "MAX_BYTES" for t in node.targets)
     ]
     assert found == [maxkb * 1024], (
-        f"docs/assets/hero3d.py caps the hero at {found}, and the pre-commit hook refuses "
+        f"docs/assets/hero3d.py caps its output at {found}, and the pre-commit hook refuses "
         f"anything over {maxkb} KB ({maxkb * 1024} bytes). Move one of the two."
     )
 
 
-def test_every_recorded_asset_is_under_that_cap_today() -> None:
+def _hook_cap() -> tuple[int, str]:
+    """The general cap in KB, and the one path the hook excludes from it."""
     hook = (REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
     maxkb = int(re.search(r"--maxkb=(\d+)", hook).group(1))  # type: ignore[union-attr]
+    excluded = re.search(r"exclude: \^(\S+?)\$", hook)
+    return maxkb, (excluded.group(1).replace("\\", "") if excluded else "")
+
+
+def _script_constant(script: str, name: str) -> list[int]:
+    """Every module-level assignment of `name` in `docs/assets/<script>`, evaluated."""
+    import ast
+
+    tree = ast.parse((REPO / "docs" / "assets" / script).read_text(encoding="utf-8"))
+    return [
+        ast.literal_eval(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == name for t in node.targets)
+    ]
+
+
+def test_the_one_asset_over_the_general_cap_is_the_hero_and_its_own_cap_is_written_down() -> None:
+    """The README hero is a phone recording of a real arm, and a photograph does not compress
+    the way a render does: the same seconds of bench cost megabytes at any width worth leading
+    a page with. So it is excluded from the hook's cap and carries one of its own.
+
+    The exception has to be exactly one file and its own number has to be somewhere a person
+    can read it, or "excluded from the cap" quietly becomes "no cap". Both are checked here,
+    and the general cap still applies to everything else (the test below)."""
+    maxkb, excluded = _hook_cap()
+    assert excluded == "docs/assets/lerobot.gif", (
+        f"the large-file hook excludes {excluded!r}. The hero is the only file meant to be "
+        "over the cap, and a second exception needs its own reason and its own number."
+    )
+    hero = REPO / excluded
+    assert hero.exists(), f"{excluded} is excluded from the cap and is not there"
+    assert hero.stat().st_size // 1024 > maxkb, (
+        f"{excluded} is under the {maxkb} KB cap now, so it needs no exception: drop the "
+        "exclude from .pre-commit-config.yaml and let the hook hold it like the rest."
+    )
+    found = _script_constant("lerobot_hero.py", "HERO_MAX_BYTES")
+    assert len(found) == 1, f"docs/assets/lerobot_hero.py names HERO_MAX_BYTES {len(found)} times"
+    # and its other cap, the one for the frames sheet, still claims to mirror the hook
+    general = _script_constant("lerobot_hero.py", "MAX_BYTES")
+    assert general == [maxkb * 1024], (
+        f"docs/assets/lerobot_hero.py caps everything but the hero at {general}, and the hook "
+        f"refuses anything over {maxkb} KB ({maxkb * 1024} bytes). Move one of the two."
+    )
+    assert hero.stat().st_size <= found[0], (
+        f"{excluded} is {hero.stat().st_size} bytes against its own cap of {found[0]}. "
+        "Lower --width, then --fps, then --colours."
+    )
+
+
+def test_every_recorded_asset_is_under_that_cap_today() -> None:
+    maxkb, excluded = _hook_cap()
     for asset in (REPO / "docs" / "assets").iterdir():
         if asset.is_file() and asset.suffix.lower() != ".py":
+            if asset.relative_to(REPO).as_posix() == excluded:
+                continue  # the hero, held to its own cap by the test above
             kb = asset.stat().st_size // 1024
             assert kb <= maxkb, f"docs/assets/{asset.name} is {kb} KB; the cap is {maxkb} KB"

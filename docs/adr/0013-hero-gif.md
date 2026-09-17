@@ -1,6 +1,6 @@
 # ADR-0013: The README hero GIF is a labelled sim recording
 
-**Status:** accepted · **Date:** 2026-08-28
+**Status:** superseded by [ADR-0038](0038-the-readme-hero-is-a-real-run.md) · **Date:** 2026-08-28
 
 ## Context
 

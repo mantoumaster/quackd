@@ -312,3 +312,54 @@ def test_invalid_v2_role_needs_fail_fast(mutation, needle: str) -> None:
     with pytest.raises(DuckParseError) as exc:
         parse_duck_text(mutation(V2_FLOCK), path="x.duck")
     assert needle.lower() in str(exc.value).lower()
+
+
+# ── the strategy paragraph a `--goal` run writes ────────────────────────────────────────
+
+
+def _goal_allowlist(spec: str) -> list[str]:
+    """As `quackd run --goal` builds it: the safe verbs of the STATIC manifest, plus `stop`.
+
+    Static because a description is all the CLI has before it connects: the arm claims no
+    camera until `connect()` finds one, which is why `observe` is absent from its goal
+    allowlist and why the paragraph under test used to promise it anyway."""
+    from quackd.adapters.factory import RobotSpec, registry_for
+
+    adapter, backend = spec.split(":")
+    registry = registry_for(RobotSpec(adapter, backend))
+    return sorted(verb.name for verb in registry.verbs() if verb.safety_class == "safe")
+
+
+@pytest.mark.parametrize("spec", ["lerobot:real", "lerobot:mock", "microduck:sim2d"])
+def test_a_goal_duck_names_no_verb_the_body_was_not_granted(spec: str) -> None:
+    """The strategy paragraph `--goal` writes used to name `observe`, `search_scan` and
+    `go_to` whatever the body was. On 2026-09-15 an SO-101 arm read all three in a prompt
+    whose allowlist listed none of them, and looked with `report_state` on its own initiative.
+
+    Every backticked verb in the body has to be one the contract allows. `remember` is the
+    exception: it is a meta tool the loop offers beside the verbs rather than a verb."""
+    import re
+
+    from quackd.duckfile.parser import duck_from_goal
+
+    duck = duck_from_goal("wave to me", _goal_allowlist(spec))
+    named = set(re.findall(r"`([a-z_]+)`", duck.body))
+    assert named, "the body names its verbs in backticks"
+    allowed = set(duck.frontmatter.verbs.allow) | {"remember"}
+    assert named <= allowed, f"{spec} is promised {sorted(named - allowed)}"
+
+
+def test_an_arm_is_told_to_look_with_report_state_and_a_duck_keeps_its_composites() -> None:
+    """The other half: narrowing the advice must not empty it. An arm is pointed at the verb
+    it does have, and a Microduck reads the sentence it has always read, byte for byte."""
+    from quackd.duckfile.parser import duck_from_goal
+
+    arm = duck_from_goal("wave to me", _goal_allowlist("lerobot:real")).body
+    assert "Look before you act (`report_state`)" in arm
+    assert "verify with a fresh reading" in arm, "an arm with no camera verb has no frame"
+    assert "composite" not in arm and "go_to" not in arm
+
+    duck = duck_from_goal("find the ball", _goal_allowlist("microduck:sim2d")).body
+    assert "Look before you act (`observe` or `search_scan`)" in duck
+    assert "prefer composite verbs like `go_to`" in duck
+    assert "verify with a fresh frame" in duck

@@ -44,28 +44,30 @@
 </details>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/rokbenko/quackd/main/docs/assets/quackd-on-off.gif" alt="Two Microduck robots side by side in a MuJoCo physics simulator, running the same world. On the left, with quackd, the duck walks a square and a top-down inset traces its path. On the right, without quackd, the duck stands still and its inset shows a single unmoving dot." width="760">
+  <img src="https://raw.githubusercontent.com/rokbenko/quackd/main/docs/assets/lerobot.gif" alt="A phone recording of a real SO-101 robot arm. It opens on a laptop screen with the quackd command being typed into a terminal, watches the run scroll past, then pans to the bench, where the arm starts folded, raises its shoulder and elbow into an extended pose, rolls its wrist back and forth four times as a wave, returns to centre and stops. A webcam on a stand watches it from table height across a calibration mat." width="640">
   <br>
-  <sub><strong>The same sentence, the same duck, with and without quackd.</strong> <b>Left:</b> you type <em>walk in a square</em> and a pilot picks the robot's own verbs one at a time, correcting as it reads the pose it actually reached. Nobody wrote a square. <b>Right:</b> the identical world, robot and walking policy, minus quackd. A Microduck takes a twist, which is three numbers, so an English sentence has nowhere to go and it stands there. The pilot here is <em>scripted</em>, so this needs no API key. <a href="docs/assets/README.md">How it was made</a>.</sub>
+  <sub><strong>A real arm, a real model, one sentence.</strong> An SO-101 follower arm on 2026-09-15, piloted by OpenAI's <code>gpt-6-astra</code> through <code>quackd run --goal "Wave to the camera with an extended arm"</code>. The model was handed the arm's five verbs and its datasheet and chose one call at a time: raise the shoulder and elbow, roll the wrist four times, return, stop. Nobody wrote a wave. The whole run at ten times speed, filmed on a phone: it opens on the command going into a terminal, watches the run scroll, then pans to the bench, and the wave itself is the part where the wrist rocks. What the model was told, all ten of its calls and what went wrong are in <a href="#what-happened-in-that-run">What happened in that run</a>, and how every recording here was made is in <a href="docs/assets/README.md">docs/assets</a>.</sub>
 </p>
 
 **quackd** is a command line for the robots you own. Each one joins through an adapter that declares, as a manifest, what the body is and what it can do, and you register it once by name with how to reach it. Give a robot a goal like *"find the ball and kick it"* and a large language model picks one skill at a time from the list that manifest declares, quackd runs it, looks at the camera, and asks again until the job is done or clearly impossible. Give the same goal to a flock and every robot in it gets a model of its own, and they divide the work by telling each other what they are going to do. A goal can arrive from a chat, a command line or a `.duck` task file, and whichever way it comes, quackd enforces a contract the model cannot talk its way out of: which skills are allowed, how many steps, when a human must say yes, when to abort. Claude, OpenAI, Gemini, Grok, Mistral, DeepSeek, Cohere, Qwen, Kimi, GLM and Meta work over their APIs. Open source models work on your own machine through Ollama, vLLM, llama.cpp or LM Studio, with no key.
 
 The first robot is the [Microduck](https://pollen-robotics.com/microduck/) from Pollen Robotics: a 25 cm, 800 g biped with fifteen small servos, a camera in its head, a depth sensor, a speaker and an onboard computer, open source and about $399, which already knows how to walk, turn, kick, scoop something off the floor, look around and quack at 50 Hz on its own hardware. It is the robot quackd started on, independently and unofficially. Six more bodies follow it through adapters that declare what each can do: an [Open Duck Mini v2](https://github.com/apirrone/Open_Duck_Mini) you can print and build yourself, an SO-101 class arm through LeRobot, any wheeled base over rosbridge, an XLeRobot dual-arm cart, an AlohaMini with two arms on a lift, and a ToddlerBot humanoid.
 
-You do not need a robot to try it. Two simulators, and they come from different places. The **cartoon** is the core's own arena, which is why the three other bodies that have a simulator use it too, along with every seeded sweep in CI: it starts in a second and downloads nothing, and `quackd[microduck]` is what gives it a duck to put in it. The **physics** one is `quackd[mujoco]`, which puts the real Microduck in [MuJoCo](https://github.com/google-deepmind/mujoco) and runs the walking policy Pollen trained for it, so the duck walks instead of sliding and a command below its gait floor produces nothing at all. These goals succeed on 10 of 10 seeds with the scripted pilot and a ground truth check:
+**One of the seven bodies runs on real hardware, and the recording above is it.** On 2026-09-15 an SO-101 follower arm ran quackd over `lerobot:real` through twelve `--goal` runs in one afternoon, piloted by OpenAI's `gpt-6-astra` from a Windows laptop with a USB webcam: it waved with its wrist, reached out with its shoulder and elbow, opened and closed its gripper, and once mimed a duck quacking with it. The GIF is the last of the twelve, and [What happened in that run](#what-happened-in-that-run) reads its transcript call by call. The honest half is there too. The arm fell at the end of every one of those runs, because LeRobot drops torque when it disconnects, which is what [the rest pose](#your-robots-by-name) was written afterwards to stop, and the camera framed the gripper and cropped the raised arm, so the model checked its own waves against joint readings rather than against the picture. The other six bodies have not met hardware. Their real backends speak names read from upstream source at a pinned commit and have only ever talked to fakes, and for the Open Duck Mini and the ToddlerBot those fakes are the daemons quackd itself ships for the robot, exercised over loopback, so there only the body is untested. No flock has yet crossed from one machine to a second. Goals like *"find my keys"*, handed to a flock that sorts out who does what, are where this is going, not what it does yet. The honest label for today is *LLM driven, goal directed control of one real arm and six simulated or mocked bodies, alone or in flocks*, and [Which robots work](#which-robots-work) says exactly how far each one has got.
+
+**No robot yet? You do not need one to try it.** Two simulators, and they come from different places. The **cartoon** is the core's own arena, which is why the three other bodies that have a simulator use it too, along with every seeded sweep in CI: it starts in a second and downloads nothing, and `quackd[microduck]` is what gives it a duck to put in it. The **physics** one is `quackd[mujoco]`, which puts the real Microduck in [MuJoCo](https://github.com/google-deepmind/mujoco) and runs the walking policy Pollen trained for it, so the duck walks instead of sliding and a command below its gait floor produces nothing at all. These goals succeed on 10 of 10 seeds with the scripted pilot and a ground truth check:
 
 > **"Find the ball and kick it."** · **"Find the ball, walk up to it and say where it is."** *(an Open Duck Mini v2, which cannot kick)* · **"Split the search, the closest duck kicks."** *(a flock)*
 
 The first of those has passed 10 of 10 on the physics simulator too, with the duck on its own gait rather than a sprite on rails, though not on every run: that is `test_find_and_kick_on_the_real_duck`, which needs upstream's model in the cache, so a nightly job fetches it the way your first run would and CI's own gating job runs the stand-in. The Status section below says what that sweep actually returns. The rest are cartoon only, because the other six bodies have no physics model here.
 
-**One of the seven bodies has run on real hardware. The other six have not, and no flock has yet crossed from one machine to a second.** On 2026-09-15 an SO-101 follower arm ran quackd over `lerobot:real`, piloted by OpenAI's `gpt-6-astra`: it waved with its wrist, reached out with its shoulder and elbow, opened and closed its gripper, and once mimed a duck quacking with it, on a Windows laptop with a USB webcam. The arm also fell at the end of every one of those runs, because LeRobot drops torque when it disconnects, which is what [the rest pose](#your-robots-by-name) was written to stop. The other six hardware backends speak names read from upstream source at a pinned commit and have only ever talked to fakes. For the Open Duck Mini and the ToddlerBot those fakes are the daemons quackd itself ships for the robot, exercised over loopback, so there only the body is untested. Goals like *"find my keys"*, handed to a flock that sorts out who does what, are where this is going, not what it does yet. The honest label for today is *LLM driven, goal directed control of one real arm and six simulated or mocked bodies, alone or in flocks*, and [Which robots work](#which-robots-work) says exactly how far each one has got.
-
 <br>
 
 ## Table of Contents
 
-- [Try it in 60 seconds](#try-it-in-60-seconds)
+- [Quickstart: a LeRobot SO-101 arm](#quickstart-a-lerobot-so-101-arm)
+  * [What happened in that run](#what-happened-in-that-run)
+- [No robot yet? Try it in 60 seconds](#no-robot-yet-try-it-in-60-seconds)
 - [Why?](#why)
 - [How it works (the simple version)](#how-it-works-the-simple-version)
 - [Example](#example)
@@ -93,10 +95,180 @@ The first of those has passed 10 of 10 on the physics simulator too, with the du
 
 <br>
 
-## Try it in 60 seconds
+## Quickstart: a LeRobot SO-101 arm
+
+The path the recording at the top of this page took, in ten steps, with the arm calibrated, named and parked before anything you type can move it. You need the arm and its serial port, a USB webcam, a key for one cloud vendor, and Python 3.12 or newer, because LeRobot itself needs it.
+
+1. **Install the arm and a pilot into one environment.** Below Python 3.12 the `lerobot` extra resolves to nothing while the install still reports success, so pin the interpreter.
+
+    ```bash
+    uv venv --python 3.12
+    uv pip install "quackd[lerobot,openai]"     # or anthropic, gemini, grok, and so on
+    ```
+
+2. **Put the key where quackd reads it.** One line in a `.env` file, in the folder you run from or in the venv root: `OPENAI_API_KEY=sk-...`. `quackd doctor` prints the key it found for each provider, masked to its ends, which is the quickest way to see that the file was read at all.
+
+3. **Find the port, then calibrate under the name you will register.** Calibration is LeRobot's own tool and it asks you to move each joint through its range by hand. quackd reads every joint limit out of the file it writes, and refuses an arm that has none.
+
+    ```bash
+    lerobot-find-port
+    lerobot-calibrate --robot.type=so101_follower --robot.port=COM3 --robot.id=arm-01
+    ```
+
+4. **First contact, which moves nothing.** Connect, read the joints, temperatures and torque back, disconnect. Support the arm while it starts, because connecting releases torque for a moment.
+
+    ```bash
+    quackd doctor --robot lerobot:real --address COM3
+    ```
+
+5. **Name it.** The registry keeps the port, the camera and the pilot under one name, so every command after this is `--robot arm-01`. Register it under the id you calibrated as.
+
+    ```bash
+    quackd robot add arm-01 lerobot:real --address COM3 --provider openai --model gpt-6-astra
+    ```
+
+6. **Fold the arm by hand, then record where it rests.** An SO-101 has no brake and LeRobot releases torque when it disconnects, so without this the arm drops from wherever the run left it. With it, every run starts at this pose and returns to it before quackd lets go.
+
+    ```bash
+    quackd robot rest-pose arm-01
+    ```
+
+7. **The first task moves nothing either.** `lerobot-lookout` allows `report_state` and `stop` and nothing else: it reads the arm and says what it found. There is nothing to improvise, so the scripted pilot is enough and this costs no tokens.
+
+    ```bash
+    quackd run lerobot-lookout --robot arm-01 --provider fake
+    ```
+
+8. **Add the webcam.** `lerobot-find-cameras opencv` prints the indices and saves a frame from each, so you can see which is which. Point it at the space the arm moves through rather than at the gripper, which is the mistake the run above made.
+
+    ```bash
+    quackd robot edit arm-01 --camera-url "opencv://2"
+    ```
+
+9. **Rehearse it.** With `--dry-run` the arm is connected and read, and not one command reaches it, so you see which verbs the model reaches for and with what numbers before a joint moves.
+
+    ```bash
+    quackd run --goal "Wave to the camera with an extended arm" --robot arm-01 --max-steps 10 --dry-run
+    ```
+
+10. **Then let it move.** A hand near the power switch, the arm's whole sweep clear, and the same sentence without the flag.
+
+    ```bash
+    quackd run --goal "Wave to the camera with an extended arm" --robot arm-01 --max-steps 10
+    ```
+
+**Two of those steps were not taken in the recording.** The run in the GIF was reached as `--robot lerobot:real --address COM3`, with no registered name and no rest pose. Step 5 existed that day and simply was not used, so the registry has still never been pointed at hardware. Step 6 did not exist at all: the rest pose was written after that afternoon, in answer to it, and has been exercised against `lerobot:mock` and in the test suite and not yet on a real arm. The arm in the recording is held up by torque alone, which is why it fell when the run ended. Walk all ten and you are the second person down this path and the first down the whole of it, so what differs on your bench is the part worth writing down.
+
+[docs/lerobot-first-run.md](docs/lerobot-first-run.md) is the long way round the same path: every refusal you can hit and what it means, the safety checks worth running before a wave, what the camera can and cannot see with each kind of pilot, and [what to report](docs/lerobot-first-run.md#14-what-to-report) afterwards. Nothing moves until step 10 of [the hardware checklist](docs/lerobot-hardware-checklist.md).
+
+### What happened in that run
+
+The command, as it was typed on the laptop in the recording:
 
 ```bash
-uvx --from "quackd[mujoco]" quackd run --goal "walk in a square" --robot microduck:mujoco --provider fake   # the duck above: real physics, its own trained gait (first run fetches about 10 MB)
+quackd run --goal "Wave to the camera with an extended arm" --robot lerobot:real --address COM3 --camera-url "opencv://2" --provider openai --model gpt-6-astra --max-steps 10
+```
+
+No task file, no registered name, no rest pose. `--goal` writes a contract on the spot: the arm's own five verbs allowed, `gripper`, `move_joints`, `place`, `report_state` and `stop`, plus the four the loop always offers, `assess_task`, `declare_success`, `declare_failure` and `remember`. Exactly one of them per turn, and anything else refused. It was the last of twelve runs that afternoon, so the memory quackd keeps per robot handed it five notes and how the last five of the eleven before it had ended, which is the whole of what it carries.
+
+**What the model was told.** About a third of the system prompt, cut where marked, with the two lines that were wrong left in:
+
+```text
+You are the brain of a six-joint desktop robot arm with a parallel gripper (an SO-101 class
+arm driven by LeRobot), bolted to a table. You are a high-level pilot: you choose ONE verb per
+turn; the robot's own controllers handle the motion. Do not micro-manage.
+
+## Rules (enforced by the executor — not optional)
+- Call exactly one tool per turn. Never zero, never two.
+- Only these verbs are allowed: gripper, move_joints, place, report_state, stop. Anything else is refused.
+- Budgets: 40 steps, 5 minutes, 40 LLM calls. The run stops when any is hit.
+- Before the first verb that moves the body, call `assess_task` with your verdict on whether
+  this body can do this task at all, judged against its datasheet below: `feasible`,
+  `infeasible` (the run ends, nothing moves) or `uncertain` (a human is asked). [...]
+
+## Your body: what it can and cannot do
+- Height: 0.53 m (estimate: one vendor's listing; reaching straight up)
+- Actuated joints: 6 (official: the LeRobot SO-101 docs; five joints and a gripper)
+- Payload: 0.5 kg (estimate: one vendor's listing)
+- Not published: mass, reach. Decline any task that hinges on any of them.
+- Each joint's travel in degrees, read from its own calibration, and the only goals quackd
+  will send: shoulder_pan -120 to 120, shoulder_lift -84.2 to 84.2, elbow_flex -96.5 to 96.5,
+  wrist_flex -103.2 to 103.2, wrist_roll -180 to 180, gripper 0 to 100.
+Whatever the task says, this body cannot:
+- go anywhere: it is bolted to a table and has no base
+- feel what it holds: nothing reports grip force, so holding is inferred from the gripper
+  stopping short of shut, which an empty hand that binds also does
+[...]
+
+## What you remember from earlier runs on this robot
+- [2026-09-15] An extended-pose gesture reached shoulder_lift −40°, elbow_flex 24°, and
+  wrist_flex 1° before wrist-roll waving; the available camera view did not show the whole
+  arm to verify extension visually.
+- [2026-09-15] A wrist-roll wave commanded alternately at +30° and −30° reached reported
+  angles of +26–27° and −26–27°.
+[... three more notes, and how the last five runs ended ...]
+
+## Task file: goal — Wave to the camera with an extended arm
+
+# Task
+Wave to the camera with an extended arm
+
+## Strategy
+Use the available verbs. Look before you act (`observe` or `search_scan`), prefer composite
+verbs like `go_to`, verify with a fresh frame, then `remember` one fact and declare success.
+```
+
+**The ten calls.** Model seconds is how long the model took to answer. Arm seconds is how long the verb then took on the arm.
+
+| Call | Tool | What it asked for | What the arm reached | Model s | Arm s |
+|---|---|---|---|---|---|
+| 1 | `report_state` | a reading before anything moves | folded: `shoulder_lift` -38.2°, `elbow_flex` 85.1°, torque on, hottest servo 37 °C | 8.2 | 0.0 |
+| 2 | `assess_task` | `feasible`, for the reason below | nothing moves on this call | 7.0 | |
+| 3 | `move_joints` | `shoulder_lift` -40°, `elbow_flex` 25°, `wrist_flex` 0° | -38.6°, 30.0°, 0.4°, in 32 commands over 4.1 s | 8.0 | 4.1 |
+| 4 | `move_joints` | `wrist_roll` +30° | 28.0° | 6.9 | 1.2 |
+| 5 | `move_joints` | `wrist_roll` -30° | -25.4° | 5.7 | 2.1 |
+| 6 | `move_joints` | `wrist_roll` +30° | 25.4° | 5.1 | 2.0 |
+| 7 | `move_joints` | `wrist_roll` -30° | -25.3° | 3.3 | 1.9 |
+| 8 | `move_joints` | `wrist_roll` 0° | -4.2° | 5.1 | 0.9 |
+| 9 | `stop` | hold it where it is | held | 5.8 | 0.0 |
+| 10 | `declare_success` | the reason below | | 7.0 | |
+
+**The numbers.**
+
+- 78.8 seconds of run, after 10.3 seconds to open the serial port.
+- Ten model calls, 3.3 to 8.2 seconds each, 62.1 seconds in all, which is 79% of the run. The arm moved for 12.2 seconds, which is 15%.
+- 49,096 tokens in, 491 out, 22 of them reasoning, and not one word of prose: the model's only sentences in the whole run are the two below.
+- Eight verbs, 97 commands to the arm, every one accepted. No gate fired, nothing was clipped to a joint limit, and no servo read above 37 °C.
+- No `remember`, and rightly. Two of the five notes already in its prompt described this manoeuvre from earlier runs that afternoon, one giving the extended pose and one the wrist angles it would reach, and its last sentence says so.
+
+**In its own words.** Both reasons, verbatim from the transcript:
+
+```text
+assess_task, feasible: An unloaded extended-arm gesture and wrist wave need no target reach
+or lifting. The visible arm is empty, and the planned shoulder_lift -40°, elbow_flex 25°,
+wrist_flex 0° and wrist_roll ±30° are inside the calibrated travel limits.
+
+declare_success: Completed the extended-pose wrist wave: shoulder_lift reached -39°,
+elbow_flex 30°, wrist_flex 0°, and wrist_roll alternated +28°, -25°, +25°, -25°. Returned
+wrist_roll to -4° and stopped. The fresh camera shows the raised arm, but crops its upper end,
+so full extension is supported by joint state rather than fully verified visually. This
+strategy is already recorded in memory.
+```
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/rokbenko/quackd/main/docs/assets/lerobot-what-it-saw.png" alt="Three webcam frames from the run, side by side. Left: the arm folded on the bench with a person behind it holding a camera. Middle: the arm raised, its wrist and gripper cut off by the top edge of the frame. Right: after the stop, a hand entering from the right, palm open, waving back at the arm." width="760">
+  <br>
+  <sub><strong>What the pilot saw.</strong> Three of the ten frames the model was sent, 640x480 from one USB webcam at table height behind a calibration mat. From the third frame on, the arm it had just raised runs off the top of the picture, which is exactly what it reported. The hand in the last frame reached the model as pixels and never as a word: the detector that turns a frame into text called a blue figurine on a shelf a person on eight of the ten steps, and never saw anybody actually in the room.</sub>
+</p>
+
+**The honest half.** Each frame was between 5.6 and 12.5 seconds old at the moment the model was handed it, about eight on average, and older still by the time the move it prompted had finished, so the model was always looking at where the arm had been. The colour detector that turns a frame into a line of text reported a ball that was not there on every step, called a small blue figurine on a shelf a person about 8.5 metres away on eight of the ten, and never once saw the actual people in the room. The model ignored all of it, and used the picture for exactly one thing: noticing that the raised arm ran off the top of the frame, and saying so rather than claiming a wave it could not see. It asked for `elbow_flex` 25° and the arm settled at 30°, and it reported the 30. The arm fell when the run ended, because this was before the rest pose existed. And reading this transcript to write this section turned up two bugs, both fixed alongside it: the prompt said `Budgets: 40 steps` while the command and every observation said ten, because it was built from the task file's own contract rather than from the one the run was enforcing, and the strategy paragraph told this arm to look with `observe` or `search_scan` and to prefer `go_to`, three verbs it does not have and the allowlist at the top of the same prompt did not list. The model worked around the second one by looking with `report_state`, which is not a thing to rely on.
+
+<br>
+
+## No robot yet? Try it in 60 seconds
+
+```bash
+uvx --from "quackd[mujoco]" quackd run --goal "walk in a square" --robot microduck:mujoco --provider fake   # the duck below: real physics, its own trained gait (first run fetches about 10 MB)
 uvx --from "quackd[microduck]" quackd run find-and-kick --provider fake             # the cartoon: no download, done in a second
 claude mcp add quackd -- uvx --from "quackd[microduck]" quackd serve-mcp --robot microduck:sim2d   # or just chat with it: "find the ball and kick it"
 uvx --from "quackd[open_duck]" quackd run open-duck-scout --provider fake           # a duck you can build: it finds the ball and walks up, no kick
@@ -106,6 +278,12 @@ open runs/*/run.gif                                                             
 ```
 
 Every quackd line there names a body with `--from`, because quackd itself ships none: the core is the loop, the executor and the contract, and each robot is a package the extra of the same name pulls in ([Installation](#installation)).
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/rokbenko/quackd/main/docs/assets/quackd-on-off.gif" alt="Two Microduck robots side by side in a MuJoCo physics simulator, running the same world. On the left, with quackd, the duck walks a square and a top-down inset traces its path. On the right, without quackd, the duck stands still and its inset shows a single unmoving dot." width="600">
+  <br>
+  <sub><strong>The first line above, with and without quackd.</strong> <b>Left:</b> you type <em>walk in a square</em> and a pilot picks the robot's own verbs one at a time, correcting as it reads the pose it actually reached. Nobody wrote a square. <b>Right:</b> the identical world, robot and walking policy, minus quackd. A Microduck takes a twist, which is three numbers, so an English sentence has nowhere to go and it stands there. The pilot here is <em>scripted</em>, so this needs no API key, and the duck is a render of Pollen's model under its CC BY-NC-SA terms. <a href="docs/assets/README.md">How it was made</a>.</sub>
+</p>
 
 **Or open the browser demo and install no quackd at all.** It is live at
 <https://www.quackd.org/simulator>, with the same physics, the same two upstream policies, seven
@@ -206,7 +384,7 @@ And the same shape with two robots instead of one, from the `flock.jsonl` of a `
 
 ## Status
 
-Version 0.9, simulator and mocks. What has been built, and how far each piece has actually been exercised:
+Version 0.9, one real arm, two simulators and mocks for the rest. What has been built, and how far each piece has actually been exercised:
 
 | Piece | Status |
 |---|---|
@@ -215,10 +393,10 @@ Version 0.9, simulator and mocks. What has been built, and how far each piece ha
 | Browser demo ([`web/`](web/)) | 🧪 the same physics, the same two upstream policies, seven of the same verbs and the same allowlist-and-budget machinery in a static page, with the sentence box and the keyboard live on one duck at the same time. Bring your own key, or point it at Ollama. CI checks everything that can be checked without a browser, which `tests/test_web.py` lists. The page has been booted in a browser twice and a held `W` walks the duck, but a full model-driven run, a barge-in out of one and the recording have never been watched. Live at <https://www.quackd.org/simulator> |
 | Manifests and core verbs (`quackd list-adapters`, `quackd list-verbs --robot`) | ✅ seven adapters, eight core verbs that appear only where the manifest meets their requirements, speed limits from the manifest, `manifest.schema.json` generated and drift tested |
 | MCP server (`quackd serve-mcp`) | ✅ Claude Code and Claude Desktop, one robot or a flock with `--robots` or `--flock NAME` (nine `robot_*` tools, tested in process against the simulator and the mocks), no Claude Desktop session on record |
-| Memory between runs (`quackd memory`, `remember`) | ✅ one JSONL file per `adapter:backend`, or per registered robot name, notes and run outcomes into the next prompt, tested end to end offline, 🧪 the `remember` tool itself exercised by two local models on two machines and by no cloud model, with one published pair showing a note written by one run and read by the next ([docs/memory.md](docs/memory.md)) |
-| Providers: eleven cloud vendors, fake | ✅ implemented, tested offline against stubbed SDK clients, with one hand curated catalogue of 115 model ids that `--model` is checked against before any call (`quackd list-models`), 🧪 one cloud model has driven a real robot, OpenAI's `gpt-6-astra` on the SO-101 arm on 2026-09-15, and no real model hero recording has been made in either simulator |
+| Memory between runs (`quackd memory`, `remember`) | ✅ one JSONL file per `adapter:backend`, or per registered robot name, notes and run outcomes into the next prompt, tested end to end offline, 🧪 the `remember` tool itself exercised by two local models on two machines, and by one cloud model on a real robot, `gpt-6-astra` calling it in seven of its twelve runs on the arm on 2026-09-15 for the five distinct notes that survive deduplication, with one published pair showing a note written by one run and read by the next ([docs/memory.md](docs/memory.md)) |
+| Providers: eleven cloud vendors, fake | ✅ implemented, tested offline against stubbed SDK clients, with one hand curated catalogue of 115 model ids that `--model` is checked against before any call (`quackd list-models`), 🧪 one cloud model has driven a real robot, OpenAI's `gpt-6-astra` on the SO-101 arm on 2026-09-15, which is the recording at the top of this page, and no real model recording has yet been made in either simulator |
 | Local models (Ollama, vLLM, llama.cpp, LM Studio, any OpenAI compatible server) | ✅ implemented and tested against the OpenAI wire format, 🧪 four live runs by contributors (Qwen 2.5 Coder 14B on LM Studio, seeds 5 and 6, and Qwen3-32B-AWQ on vLLM on an `aarch64` NVIDIA GB10, seed 1, with and without thinking), never on this machine, transcripts in [`docs/assets/transcripts/`](docs/assets/transcripts/), more welcome |
-| Registered robots and flocks (`quackd robot`, `quackd flock`) | ✅ both command groups over `~/.quackd/robots.json` and `~/.quackd/flocks.json`, so `--robot NAME` means the same thing in every command that takes a robot and `--flock NAME` in `run` and `serve-mcp`, tested offline, `robot list --probe` answered by the mocks, 🧪 never pointed at hardware ([docs/registry.md](docs/registry.md)) |
+| Registered robots and flocks (`quackd robot`, `quackd flock`) | ✅ both command groups over `~/.quackd/robots.json` and `~/.quackd/flocks.json`, so `--robot NAME` means the same thing in every command that takes a robot and `--flock NAME` in `run` and `serve-mcp`, tested offline, `robot list --probe` answered by the mocks, 🧪 not yet pointed at hardware: the arm's runs on 2026-09-15 named no robot and came before the rest pose ([docs/registry.md](docs/registry.md)) |
 | Pilot flocks, several robots on one task (`--flock NAME`) | ✅ one whole pilot per body, any backend, same or different bodies, 2 to 8, each with its own executor, allowlist, budget, heartbeat, memory and verdict, dividing the work with `tell` over the bus, 🧪 experimental, exercised on mock and sim2d bodies with the scripted pilot, by no real model and on no hardware |
 | Coordinator flock, one referee instead (`--flock N`) | ✅ deterministic auction and bus, one planner LLM call at most, ground truth checked in tests, 🧪 experimental and sim2d Microducks only. Its capability aware role auction (spotter/kicker) is unit tested but has no bundled two-robot demo today |
 | LAN discovery (`quackd discover`, `quackd announce`, `quackd[lan]`) | ✅ record format and both commands on fakes in the suite, 🧪 real zeroconf exercised once on one machine, never between two ([docs/lan.md](docs/lan.md)) |
@@ -254,7 +432,7 @@ Each of the seven is its own package, pulled in by the extra that carries its na
 | **[Open Duck Mini v2](docs/adapters/open_duck.md)** | `open_duck:sim2d`, `mock` | a 42 cm 3D printed biped you can build yourself | ✅ simulator, ✅ mock |
 | | `open_duck:bridge` | the real one, through a daemon quackd ships for its Raspberry Pi | 🧪 daemon. **The nearest of the six untouched bodies to a first run of its own**, because the hardware is buildable today ([checklist](docs/open-duck-hardware-checklist.md)) |
 | **[LeRobot arm](docs/adapters/lerobot.md)** | `lerobot:mock` | an SO-101 class desktop arm | ✅ mock |
-| | `lerobot:real` | the real one, through LeRobot | 🤖 hardware, on 2026-09-15: an SO-101 follower arm on Windows 11, Python 3.12.12, lerobot 0.6.1 and quackd 0.9.0, reached as `--robot lerobot:real --address COM5` with no registered name, and piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, and free-form `--goal` runs waved the wrist about ±27°, held extended poses at `shoulder_lift` -39 and `elbow_flex` 24 to 30, and opened and closed the gripper, once miming a duck quacking with it. The camera was a USB webcam at `opencv://1`, 640x480. The honest half: the arm fell at the end of every run, which is what the rest pose was written to stop and has not yet been tried on that arm, one dry run aborted on a single heartbeat `TimeoutError` that never came back, another aborted because the pilot answered `uncertain` and the human said no, and the camera framed the gripper and cropped the raised arm, so the model checked its own waves against joint readings rather than against the picture. Nobody has yet measured whether the band that infers `holding` from a gripper stopping short is right, what a joint reads after ten minutes of work, whether a stall is caught on purpose, or whether 5° an action felt right in the room. Behind `quackd[lerobot]`, Python 3.12 or newer ([first run](docs/lerobot-first-run.md), [checklist](docs/lerobot-hardware-checklist.md)) |
+| | `lerobot:real` | the real one, through LeRobot | 🤖 hardware, on 2026-09-15: an SO-101 follower arm on Windows 11, Python 3.12.12, lerobot 0.6.1 and quackd 0.9.0, reached as `--robot lerobot:real --address COM3` with no registered name, and piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, and twelve free-form `--goal` runs waved the wrist about ±27°, held extended poses at `shoulder_lift` -39 and `elbow_flex` 24 to 30, and opened and closed the gripper, once miming a duck quacking with it. The last of the twelve is the recording at the top of this page, and [What happened in that run](#what-happened-in-that-run) reads its transcript: ten model calls, eight verbs, 97 commands to the arm, every one accepted. The camera was a USB webcam at `opencv://2`, 640x480. The honest half: the arm fell at the end of every run, which is what the rest pose was written to stop and has not yet been tried on that arm, one dry run aborted on a single heartbeat `TimeoutError` that never came back, another aborted because the pilot answered `uncertain` and the human said no, and the camera framed the gripper and cropped the raised arm, so the model checked its own waves against joint readings rather than against the picture. Nobody has yet measured whether the band that infers `holding` from a gripper stopping short is right, what a joint reads after ten minutes of work, whether a stall is caught on purpose, or whether 5° an action felt right in the room. Behind `quackd[lerobot]`, Python 3.12 or newer ([Quickstart](#quickstart-a-lerobot-so-101-arm), [first run](docs/lerobot-first-run.md), [checklist](docs/lerobot-hardware-checklist.md)) |
 | **[Any ROS base](docs/adapters/rosbridge.md)** | `rosbridge:mock` | any wheeled base that takes a Twist | ✅ mock |
 | | `rosbridge:ws` | the real one, over `rosbridge_server` | 🧪 names, behind `quackd[rosbridge]` |
 | **[XLeRobot](docs/adapters/xlerobot.md)** | `xlerobot:mock` | a dual-arm mobile manipulator on an IKEA cart, about $660 to build | ✅ mock |
@@ -272,7 +450,7 @@ Each of the seven is its own package, pulled in by the extra that carries its na
 
 **If you own one of these, the Open Duck Mini is where help is worth the most.** It is a body a stranger can build from scratch, the daemon and the protocol are already exercised against each other, and the only untested part left is the duck. [docs/open-duck-hardware-checklist.md](docs/open-duck-hardware-checklist.md) is the order to try it in, feet off the ground until step 10.
 
-**If you own an SO-101, the path is short**, because LeRobot is a `pip install` and quackd ships no daemon for the arm: the setup is `uv pip install "quackd[lerobot]"` and a calibration you have already done. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) is written for someone who already drives this arm and wants to know what quackd adds to it, what it deliberately does not touch, and what to do when it refuses. Nothing moves until step 10 of [its checklist](docs/lerobot-hardware-checklist.md). If you have never run either, [docs/lerobot-first-run.md](docs/lerobot-first-run.md) is the long way round, from an empty laptop to the arm noticing you on a webcam and waving, with whichever model you bring. It is the one path here somebody has walked to the end: the run in the table above followed it, on the machine that wrote it.
+**If you own an SO-101, the [Quickstart](#quickstart-a-lerobot-so-101-arm) at the top of this page is the path**, ten steps from an empty laptop to the arm waving, because LeRobot is a `pip install` and quackd ships no daemon for the arm. [docs/adapters/lerobot.md](docs/adapters/lerobot.md) is written for someone who already drives this arm and wants to know what quackd adds to it, what it deliberately does not touch, and what to do when it refuses. [docs/lerobot-first-run.md](docs/lerobot-first-run.md) is the long way round the same ten steps, with every refusal you can hit and what to report afterwards. Nothing moves until step 10 of [its checklist](docs/lerobot-hardware-checklist.md). It is the one path here somebody has walked to the end: the run in the table above followed it, on the machine that wrote it, before the registered name and the rest pose existed.
 
 <br>
 
@@ -292,7 +470,7 @@ flowchart LR
         VERBS["verb registry<br/>built from the robot's manifest: core · the robot's own · aliases · learned (v2)"]
         PERC["perception<br/>frame → detections → “ball at bearing 18° left, ~0.6 m”"]
     end
-    ADAPTER["robot adapter, a package of its own<br/>microduck · lerobot · rosbridge · open_duck · xlerobot · alohamini · toddlerbot<br/>installed beside the core and found through the quackd.adapters entry point, which is how an adapter nobody here wrote is found too<br/>returns a manifest (embodiment, intents, sensors, verbs, limits, safety authority)<br/>sends intents, never motor writes<br/>backends: sim2d ✅ · mujoco ✅ · mock ✅ · real 🤖 one arm, once · jsonrpc, ws, zmq, bridge 🧪 never run on a robot · websocket ⏳"]
+    ADAPTER["robot adapter, a package of its own<br/>microduck · lerobot · rosbridge · open_duck · xlerobot · alohamini · toddlerbot<br/>installed beside the core and found through the quackd.adapters entry point, which is how an adapter nobody here wrote is found too<br/>returns a manifest (embodiment, intents, sensors, verbs, limits, safety authority)<br/>sends intents, never motor writes<br/>backends: sim2d ✅ · mujoco ✅ · mock ✅ · real 🤖 one arm, one afternoon · jsonrpc, ws, zmq, bridge 🧪 never run on a robot · websocket ⏳"]
     ROBOT["Robot<br/>its own controllers: robotd at 50 Hz on a Microduck, the position controller and pick policy on an arm, the driver on a base"]
     SIM["simulators and mocks<br/>the cartoon arena and the mock transport are the core's, because every adapter draws its mock with them. The MuJoCo world is the duck's own package<br/>duck cam and head cam, offline doubles for every adapter"]
     HUMAN --> LLM
@@ -458,7 +636,7 @@ Those joint numbers are the mock arm's, from `lerobot:mock`, and a real SO-101 r
 
 **This changes what a probe and a dry run leave behind.** On an arm that is away from its recorded rest pose, torque is now left ON where it used to be dropped: the arm holds itself up instead of sagging, and it stays that way until you hold it and cut its power.
 
-All of that has been exercised against `lerobot:mock` and in the test suite, and on no real arm yet. The run on 2026-09-15 came first, which is why that arm fell.
+All of that has been exercised against `lerobot:mock` and in the test suite, and not yet on a real arm. The runs on 2026-09-15, the one at the top of this page among them, came first, which is why that arm fell.
 
 Only the LeRobot arm is parked today. Every other body refuses a rest pose rather than accepting one and quietly ignoring it:
 
@@ -521,7 +699,7 @@ requires: [search_scan, walk_to, kick]  # the honest minimum a body must provide
 | `xlerobot-lookout` | stand still and report what is in front of you | an **XLeRobot**, and the task to point at a real cart first: nothing in its allowlist moves a wheel or an arm. This robot has no head control and no voice, so a human aims it and it reports in text |
 | `alohamini-lookout` | stand still and report what is in front of you | an **AlohaMini**, and the task to point at a real robot first: nothing in its allowlist moves a wheel, an arm or the lift. Like the XLeRobot it has no head and no voice, so a human aims it and it reports in text |
 | `toddlerbot-lookout` | stand still, look around with the head, and report what you can see | a **ToddlerBot**, and the task to point at a real humanoid first: nothing in its allowlist moves a leg, an arm or the waist. Put it on its safety stand before you try it |
-| `lerobot-lookout` | move nothing, read the arm back, and report what it says about itself | a **LeRobot SO-101 arm**, and the task to point at a real arm first: nothing in its allowlist moves a joint, and it asks for `report_state` rather than `observe` because a camera on this arm is one you chose to plug in. It is the one starter here that has been run on real hardware, on 2026-09-15 |
+| `lerobot-lookout` | move nothing, read the arm back, and report what it says about itself | a **LeRobot SO-101 arm**, and the task to point at a real arm first: nothing in its allowlist moves a joint, and it asks for `report_state` rather than `observe` because a camera on this arm is one you chose to plug in. It is the one starter here that has been run on real hardware, on 2026-09-15, and it is step 7 of the [Quickstart](#quickstart-a-lerobot-so-101-arm) |
 
 Full spec: [docs/duck-spec.md](docs/duck-spec.md). Add yours to [`ducks/`](ducks/).
 
@@ -682,7 +860,7 @@ With several, every url has to carry `?name=`, the names have to be unique and a
 
 On the simulator with the scripted pilot, `find-and-kick` takes 3 to 8 verb steps, one model call each plus one to declare success, and under a second of loop wall clock per run on a laptop. Interpreter start and GIF rendering add a few seconds to the whole command, and simulated time runs as fast as the CPU allows. With a real model each decision is one API call: the system prompt and the tool schemas are about 7 k characters (roughly 2 k tokens) with memory on, each observation a few hundred characters plus a 256 px PNG for vision models, and the transcript records each provider's own usage per turn. Model latency never affects control, because the steering loop runs at 10 Hz and the robot's own controllers run regardless of how long the model thinks. That holds for local models too. The core install is about 250 MB, needs no GPU, and the simulator renders at 256 px (`--gif-size` for prettier GIFs).
 
-The physics simulator costs what physics costs. Measured here on one Windows laptop with an integrated GPU, `walk in a circle` on `microduck:mujoco` took about 8 seconds of wall clock without a GIF and 15 with one, against under a second of loop time in the cartoon, and the first run downloads about 10 MB of model and policy into `~/.quackd/cache` and leaves 23 MB on disk. Rendering is the cost rather than physics, which steps at roughly 24 times real time, so shadows are off unless `QUACKD_MUJOCO_SHADOWS=1` asks for them and the recorder samples half as often as the cartoon's. The arena is upstream's own scene: the blue checker floor, the gradient sky and the lighting come from the `scene*.xml` wrappers in `microduck_rl`, so a duck here stands where a duck there stands. The head camera is the exception, and [ADR-0030](docs/adr/0030-mujoco-physics-backend.md) says why.
+The physics simulator costs what physics costs. Measured here on one Windows laptop with an integrated GPU, `walk in a circle` on `microduck:mujoco` took about 8 seconds of wall clock without a GIF and 15 with one, against under a second of loop time in the cartoon, and the first run downloads about 10 MB of model and policy into `~/.quackd/cache` and leaves 23 MB on disk. Rendering is the cost rather than physics, which steps at roughly 24 times real time, so shadows are off unless `QUACKD_MUJOCO_SHADOWS=1` asks for them and the recorder samples half as often as the cartoon's. The arena is upstream's own scene: the blue checker floor, the gradient sky and the lighting come from the `scene*.xml` wrappers in `microduck_rl`, so a duck here stands where a duck there stands. The head camera is the exception, and [ADR-0030](docs/adr/0030-mujoco-physics-backend.md) says why. On real hardware the model is the slow part and the arm is not: the run at the top of this page spent 62 of its 79 seconds waiting on `gpt-6-astra` and 12 moving, over ten calls that cost 49,096 input tokens and 491 output.
 
 <br>
 
@@ -693,9 +871,9 @@ The physics simulator costs what physics costs. Measured here on one Windows lap
 - One body has run on a real robot, the LeRobot arm on 2026-09-15, and the other six have not. The arm fell at the end of every one of those runs, which is what the rest pose was written to stop, and nobody has measured on hardware yet whether the band that infers `holding` is right, what a joint reads after ten minutes of work, whether a stall is caught on purpose, or whether 5° an action felt right in the room. What each body cannot report or detect on hardware (posture inferred from a policy name on the Microduck, `holding` inferred from the gripper stopping short on the arm, no verified deadman on a rosbridge base, no fall detection and no battery on an Open Duck) is spelled out in [docs/adapter-status.md](docs/adapter-status.md) and the adapter pages.
 - The datasheets were read from the makers' pages, repositories and one paper on 2026-09-13. Nothing was measured here, which is what the confidence label on every number is for, and a body whose maker never published a figure says so rather than having one invented for it.
 - Whether a task fits a body is the model's own judgement, recorded before anything moves and weighed against numbers that carry their own confidence. Every gate below it still applies: the allowlist, the budgets, the confirm gates and the robot's own safety authority.
-- The hero GIF is the scripted pilot, not an LLM, because every recording in this repository was made without an API key. The real model code paths are tested against stubbed SDK clients, and one of them has now also driven a real arm.
+- The hero GIF is a phone recording of one real run, and the pilot in it is a real model, OpenAI's `gpt-6-astra`. It is the only recording in this repository with a model in the loop: every simulator recording here is the scripted pilot, made without an API key, and the rest of the real model code paths are tested against stubbed SDK clients.
 - Success is the model's own claim (`declare_success`) on a solo run. In the simulator, tests also check ground truth, and a coordinator flock's success needs a member's kick report (or the spotter's verdict) and sim ground truth to agree. A pilot flock has no shared world to ask, so its success is every member's own claim and nothing vetoes it. On hardware, the `.duck` bodies insist on verifying with a fresh frame.
-- Memory between runs is a file, not a memory system: no embedding, no search, no sharing between bodies, and nothing the executor ever trusts. The scripted pilot never writes a note, so with `--provider fake` only run outcomes accumulate. Notes have been exercised by two local models on two machines, and by no cloud model at all. One published pair carries the whole loop, a note one run saved sitting in the next run's prompt ([docs/memory.md](docs/memory.md)).
+- Memory between runs is a file, not a memory system: no embedding, no search, no sharing between bodies, and nothing the executor ever trusts. The scripted pilot never writes a note, so with `--provider fake` only run outcomes accumulate. Notes have been exercised by two local models on two machines, and by one cloud model on a real robot, which called it in seven of the twelve runs on the arm on 2026-09-15. One published pair carries the whole loop, a note one run saved sitting in the next run's prompt ([docs/memory.md](docs/memory.md)).
 - No robot here has text to speech. The Microduck has seven duck sounds, so `quack("hello")` and `say` pick a tone. The arm, the base, the XLeRobot, the AlohaMini and the ToddlerBot do not get `say` at all.
 - `grab` is open loop upstream and unreliable here on purpose. `fetch` says so in its file.
 - A manifest can be smaller than the robot. The LeRobot arm's `real` backend claims no camera and no `pick` until it connects, and even then `pick` appears only when a policy object was injected in code. A rosbridge base over `ws` has no camera verbs unless the address names an image topic, and a ToddlerBot has no `move` unless a walk checkpoint is staged.
@@ -706,7 +884,7 @@ The physics simulator costs what physics costs. Measured here on one Windows lap
 
 Why a task can refuse a body, whether two robots can share a task, and more: [docs/faq.md](docs/faq.md).
 
-**Non goals for now, on purpose:** no RL training or reward generation (that is v2, and only the registry hook exists), no features that require hardware, and no vendoring of Pollen Robotics assets. No logo, mesh, policy or sound of theirs is committed here. The physics simulator and the browser demo fetch the model and the policies from upstream at run time, and the one exception in this repository is the hero recording, which renders that model and carries its CC BY-NC-SA terms ([docs/licenses.md](docs/licenses.md)).
+**Non goals for now, on purpose:** no RL training or reward generation (that is v2, and only the registry hook exists), no features that require hardware, and no vendoring of Pollen Robotics assets. No logo, mesh, policy or sound of theirs is committed here. The physics simulator and the browser demo fetch the model and the policies from upstream at run time, and the one exception in this repository is `docs/assets/quackd-on-off.gif`, the simulator recording under [No robot yet?](#no-robot-yet-try-it-in-60-seconds), which renders that model and carries its CC BY-NC-SA terms ([docs/licenses.md](docs/licenses.md)).
 
 <br>
 
@@ -716,10 +894,10 @@ Why a task can refuse a body, whether two robots can share a task, and more: [do
 - **Flocks next:** a pilot flock against a real model rather than the scripted one, then a pilot flock across two machines over the MQTT bus ([docs/lan.md](docs/lan.md)), which needs a `--bus` flag and a run that proves it rather than a clock, and then hardware flocks. For the coordinator: more choreographies from the verbs the robots already have (a patrol that splits the area, a follow chain), a clock that crosses machines so that bus can carry one across a room instead of a process, and a second body so Open Ducks can join one.
 - **More bodies:** whichever robots people own. An adapter is a manifest and a mock, about a day, and it can be your own package on PyPI rather than a pull request here ([docs/adapters.md](docs/adapters.md)).
 - **Talk to it from anywhere:** the MCP server speaks `stdio` today, so it is a local subprocess of Claude Code or Claude Desktop. An HTTP or SSE transport would make it a remote connector, which is what a phone talks to. That needs a long lived process, a reachable address and auth the server does not have yet ([docs/mcp.md](docs/mcp.md#why-not-from-my-phone-yet)).
-- **v1:** a starter task on a real duck, on video. An Open Duck Mini can get there first, and a Microduck once it ships.
+- **v1:** a starter task on a real duck, on video, the way the arm has one at the top of this page. An Open Duck Mini can get there first, and a Microduck once it ships.
 - **v2, learned verbs.** LLM written rewards ([Eureka](https://eureka-research.github.io/) and [DrEureka](https://eureka-research.github.io/dr-eureka/) style) train new policies in `microduck_rl` that register as one more verb. The registry hook exists today. The training loop does not.
 
-**Help wanted:** a recorded browser session with [`web/`](web/), because the page boots and a held `W` walks the duck but nobody has watched a model drive a whole run, a key barge in out of one, or the Record button work, on any machine but the one that wrote it, a real model recording in either simulator (see [docs/assets](docs/assets/README.md)), a transcript from a local model run on any server, a run against any of the six bodies hardware has not touched yet (an Open Duck Mini is the most reachable, see its [checklist](docs/open-duck-hardware-checklist.md)), a pilot flock driven by a real model rather than the scripted one, with its transcripts, and new `.duck` files.
+**Help wanted:** a recorded browser session with [`web/`](web/), because the page boots and a held `W` walks the duck but nobody has watched a model drive a whole run, a key barge in out of one, or the Record button work, on any machine but the one that wrote it, a real model recording in either simulator, because the one recording here with a model in it is of the arm (see [docs/assets](docs/assets/README.md)), a transcript from a local model run on any server, a run against any of the six bodies hardware has not touched yet (an Open Duck Mini is the most reachable, see its [checklist](docs/open-duck-hardware-checklist.md)), a pilot flock driven by a real model rather than the scripted one, with its transcripts, and new `.duck` files.
 
 <br>
 
@@ -747,7 +925,7 @@ On a Microduck the gamepad preempts remote control and `robotd` is the safety au
 
 They built the duck, and quackd began as its brain. Thanks to Pollen Robotics for [microduck](https://github.com/pollen-robotics/microduck) (the onboard daemon stack and its JSON RPC contract) and [microduck_rl](https://github.com/pollen-robotics/microduck_rl) (the training stack behind the policies the robot runs), to the [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk), and to the authors of [DrEureka](https://eureka-research.github.io/dr-eureka/) for the idea behind learned verbs. Thanks to Antoine Pirrone and the [Open Duck Mini](https://github.com/apirrone/Open_Duck_Mini) project for designing a biped anyone can print and build, and for publishing the runtime that makes it walk. Community: the Pollen Robotics Discord linked from the [upstream README](https://github.com/pollen-robotics/microduck#readme).
 
-quackd is an independent community project, not affiliated with or endorsed by Pollen Robotics, Hugging Face or the Open Duck Mini project. "Microduck" is used nominatively to describe compatibility. No Pollen Robotics or Open Duck Mini logo, mesh, ONNX policy or sound is distributed here. The physics simulator fetches the Microduck's model and its policies from upstream at run time and checks every file against a recorded hash. The browser demo fetches the same files at the same pin straight into the visitor's browser and hashes nothing. The README hero renders that model, so it carries the model's own CC BY-NC-SA terms ([docs/licenses.md](docs/licenses.md)).
+quackd is an independent community project, not affiliated with or endorsed by Pollen Robotics, Hugging Face or the Open Duck Mini project. "Microduck" is used nominatively to describe compatibility. No Pollen Robotics or Open Duck Mini logo, mesh, ONNX policy or sound is distributed here. The physics simulator fetches the Microduck's model and its policies from upstream at run time and checks every file against a recorded hash. The browser demo fetches the same files at the same pin straight into the visitor's browser and hashes nothing. The simulator recording under [No robot yet?](#no-robot-yet-try-it-in-60-seconds) renders that model, so it carries the model's own CC BY-NC-SA terms ([docs/licenses.md](docs/licenses.md)). The recording at the top of the page is a phone video of a real arm and is quackd's own.
 
 <br>
 

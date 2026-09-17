@@ -207,7 +207,7 @@ every record intact.
 - **A pilot flock costs N budgets and N times the tokens.** That is what the coordinator was
   built to avoid ([ADR-0015](adr/0015-flock-deterministic-coordinator.md)), and it is why the
   kick demo still runs the coordinator.
-- **Nothing here has run on hardware.** The mixed-body case is exercised on `mock` backends,
+- **No flock has run on hardware.** The mixed-body case is exercised on `mock` backends,
   and `tell` has been exercised by the scripted pilot and by no real model.
 - **A seed does not make it reproducible**, because there is no shared clock to fix.
 - **There is no `--bus` flag**, so nothing has carried a pilot flock between two machines.

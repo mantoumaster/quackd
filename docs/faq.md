@@ -283,7 +283,7 @@ local operator, not a hardened multi-user product. There's almost no authenticat
 `.duck` files with a `flock:` block are refused over MCP for exactly that reason: the session
 is one model, a coordinator flock needs a referee this process does not run, and a pilot flock
 needs one model per robot rather than one for all of them. Nothing arbitrates two sessions
-driving the same robot at once. Every real-hardware transport is experimental and unverified end to end
+driving the same robot at once. Every real-hardware transport but one is experimental and unverified end to end, and the one that has run, `lerobot:real`, ran for one afternoon on one arm
 ([adapter-status.md](adapter-status.md)); the CLI and MCP server are both thin callers of
 the same executor and verb registry, so a real client like a phone app would mean adding a
 network-reachable server and auth on top, not rewriting the core.
