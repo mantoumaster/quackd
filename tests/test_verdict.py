@@ -22,6 +22,7 @@ from quackd.verdict import (
     datasheet_value,
     missing_needs,
     missing_needs_in,
+    own_sheet_objection,
     solo_hint,
 )
 from quackd_microduck import microduck_manifest
@@ -286,6 +287,32 @@ def test_terrain_is_met_by_a_body_rated_for_more() -> None:
     ]
     silent = _body(datasheet=Datasheet(manipulator="none"))
     assert missing_needs({"terrain": "indoor"}, silent) == ["terrain = indoor (not published)"]
+
+
+def test_the_objection_names_the_need_and_the_three_ways_out() -> None:
+    """One sentence for the loop and for the MCP session, so a pilot hears the same words
+    wherever it is driving from. It offers `uncertain` beside `infeasible` because the pilot
+    measured on Qwen3-32B answered `uncertain` to a refusal that named only `infeasible`, and
+    for a figure nobody published that is the right destination: it asks a person."""
+    duck = describe(RobotSpec("microduck", "sim2d"))
+    said = own_sheet_objection({"endurance_min": 45}, duck)
+    assert said is not None
+    assert said.startswith("this body does not meet what you said the task needs")
+    assert "endurance_min >= 45 (not published)" in said
+    for way in (
+        "infeasible if that need decides the task",
+        "uncertain if a person could",
+        "feasible with the need corrected",
+    ):
+        assert way in said, way
+    assert "robot_assess_task" in (
+        own_sheet_objection({"payload_kg": 3.0}, duck, tool="robot_assess_task") or ""
+    )
+
+    # the sheet agreeing with itself: legged, and rated for the floor it is asked to walk on
+    assert own_sheet_objection({"mobility": "legged", "terrain": "indoor_flat"}, duck) is None
+    assert own_sheet_objection({}, duck) is None, "a verdict that named no need has nothing to fail"
+    assert own_sheet_objection({"payload_kg": 3.0}, None) is None, "no sheet, no objection"
 
 
 def test_a_bid_carries_its_facts_so_a_stranger_can_judge_them() -> None:

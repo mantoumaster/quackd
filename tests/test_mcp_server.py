@@ -531,6 +531,52 @@ async def test_a_model_cannot_answer_for_the_human() -> None:
         assert not session.executor.cleared
 
 
+async def test_a_feasible_verdict_is_held_to_the_sessions_own_datasheet() -> None:
+    """The loop's check, on the other surface. `robot_assess_task` matched `needs` against
+    every OTHER robot in the fleet to fill in `could`, and recorded a `feasible` against this
+    robot's own sheet without ever looking at it, so over MCP a body still moved on a need
+    nobody published. The default body here is a bare simulator with no manifest, which is
+    structurally why nothing at this level had ever had a datasheet in hand."""
+    from quackd.adapters.factory import make_adapter
+
+    async with connected(make_adapter("microduck:sim2d", seed=1)) as (client, session, adapter):
+        refused = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {
+                    "verdict": "feasible",
+                    "reason": "it can carry the basket over",
+                    "needs": {"payload_kg": 3.0},
+                },
+            )
+        )
+        assert refused["ok"] is False
+        assert "payload_kg >= 3 (not published)" in refused["summary"]
+        assert "robot_assess_task again" in refused["summary"]
+        assert "uncertain if a person could" in refused["summary"], "the way out that asks"
+        assert session.executor.verdict is None, "a refused verdict is never recorded"
+
+        moved = _data(
+            await client.call_tool("robot_run_verb", {"verb": "move", "params": {"vx": 0.1}})
+        )
+        assert moved["ok"] is False and "robot_assess_task" in moved["summary"]
+        assert adapter.transport.world.steps == 0, "nothing was sent"
+
+        # and a need this body's own sheet does meet still clears the gate
+        accepted = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {
+                    "verdict": "feasible",
+                    "reason": "it walks, on the floor it is rated for",
+                    "needs": {"mobility": "legged", "terrain": "indoor_flat"},
+                },
+            )
+        )
+        assert accepted["ok"] is True and accepted["verdict"] == "feasible"
+        assert session.executor.cleared
+
+
 async def test_the_robot_list_row_carries_the_body_as_data_and_as_a_sentence() -> None:
     from quackd.adapters.factory import make_adapter
 

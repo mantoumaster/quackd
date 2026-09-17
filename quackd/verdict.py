@@ -198,6 +198,39 @@ def missing_needs(needs: Mapping[str, Any], manifest: RobotManifest) -> list[str
     )
 
 
+def own_sheet_objection(
+    needs: Mapping[str, Any], here: RobotManifest | None, *, tool: str = "assess_task"
+) -> str | None:
+    """Why a `feasible` verdict cannot stand on this body's own datasheet, or None when it can.
+
+    `missing_needs` held another robot's bid to its sheet at the coordinator, and nothing held
+    a pilot's verdict about its own body to its own sheet, so a `feasible` whose `needs` named
+    a figure nobody published went straight through and the body moved. The agent loop and the
+    MCP session both refuse with this one sentence, so a pilot hears the same words wherever
+    it is driving from.
+
+    It offers three ways out rather than one. The pilot measured on Qwen3-32B answered
+    `uncertain` to a refusal that named only `infeasible`, and `uncertain` is a fine answer
+    here: it asks a person, and a person may know a figure the maker never published. The
+    third is the honest case where the pilot simply asked for more than the task needs.
+
+    A body with no manifest has no sheet to object with, and a verdict that named no need has
+    nothing to be held to."""
+    if here is None or not needs:
+        return None
+    lacking = missing_needs(needs, here)
+    if not lacking:
+        return None
+    return (
+        "this body does not meet what you said the task needs: "
+        + "; ".join(lacking)
+        + f". A feasible verdict cannot rest on a need its own datasheet does not meet. Call "
+        f"{tool} again: infeasible if that need decides the task, uncertain if a person could "
+        "know the figure, or feasible with the need corrected if you asked for more than the "
+        "task turns on"
+    )
+
+
 def datasheet_value(manifest: RobotManifest, field: str) -> float | str | None:
     """What this body reports for one need's field, or None when nobody published it."""
     if field == "mobility":

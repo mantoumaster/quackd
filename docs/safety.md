@@ -68,6 +68,26 @@ confirmations: it also clears the pilot's own doubt about whether the task suits
 Over MCP there is no terminal and nothing clears it, so the verdict stays pending and the
 model is told to ask the person it is chatting with ([mcp.md](mcp.md)).
 
+## When a feasible verdict contradicts itself
+
+A verdict says two things: whether the body can do the task, and, in `needs`, what the task
+would require of a body. They can disagree. A pilot on a Microduck answered `feasible` to a 45
+minute patrol and wrote `endurance_min: 45` in the same record, on a body whose endurance
+nobody has ever published, and the duck walked until its step budget ran out.
+
+So a `feasible` is now held to the body's own datasheet before it is recorded, by the same
+function that holds another robot's bid at the coordinator. A need the sheet does not meet, or
+does not publish, is refused and named, and the pilot is told the three ways on: `infeasible`
+if that need decides the task, `uncertain` if a person could know the figure, or a corrected
+need if it asked for more than the task turns on. An `uncertain` and an `infeasible` are left
+alone, because one asks a person and the other ends the run anyway.
+
+On the one model measured so far it turns a silent `feasible` into an `uncertain`, which is
+then the question above, so under `--yes` the check costs one LLM call and leaves the
+contradiction in the transcript rather than stopping the run. What it cannot do is catch
+silence: it reads what the pilot declared, so a pilot that never mentions the figure its plan
+hinges on passes exactly as it did before.
+
 ## Dry run
 
 `--dry-run` sends nothing, and the trace names every verb a model *would* have run, with the

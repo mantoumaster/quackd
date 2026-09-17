@@ -78,7 +78,7 @@ from quackd.verbs.registry import (
     default_registry,
     registry_from_manifest,
 )
-from quackd.verdict import BEFORE_VERDICT, Verdict, missing_needs
+from quackd.verdict import BEFORE_VERDICT, Verdict, missing_needs, own_sheet_objection
 
 log = logging.getLogger("quackd.mcp")
 
@@ -408,6 +408,15 @@ class RobotSession:
                 f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()
             )
             return {"ok": False, "robot": self.name, "summary": f"invalid verdict: {msgs}"}
+        if verdict.verdict == "feasible":
+            # the loop's check, on this surface too. `robot_assess_task` matched `needs`
+            # against every OTHER robot in the fleet to fill in `could`, and recorded a
+            # feasible against this robot's own sheet without ever looking at it.
+            objection = own_sheet_objection(
+                verdict.needs, self.effective_manifest(), tool="robot_assess_task"
+            )
+            if objection is not None:
+                return {"ok": False, "robot": self.name, "summary": objection}
         self.executor.verdict = verdict
         payload: dict[str, Any] = {
             "ok": True,
@@ -889,7 +898,9 @@ def build_fleet_server(
             "what you estimated, and read `could` for a robot here that meets what the task "
             "needs. uncertain: ask the person you are chatting with, then answer again. Fill "
             "in `needs` (payload_kg, reach_m, manipulator, mobility, ...) even when feasible, "
-            "because that is what names the robots that could."
+            "because that is what names the robots that could. A feasible whose needs that "
+            "robot's own datasheet does not meet is refused before it is recorded, and names "
+            "the need."
         )
     )
     async def robot_assess_task(

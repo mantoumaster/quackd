@@ -108,7 +108,10 @@ ASSESS_TASK = {
                     "What the task requires, in the datasheet's own field names. Numbers are "
                     "minimums (payload_kg: 3 means at least 3 kg). A matcher reads this to say "
                     "which other body could do the task, so fill it in even when the verdict "
-                    "is feasible."
+                    "is feasible. It is also read back against this body's own datasheet: a "
+                    "feasible verdict naming a need the sheet does not meet, or does not "
+                    "publish, is refused and told which need. So name what the task turns on "
+                    "and nothing it does not."
                 ),
                 "properties": needs_properties(),
                 "additionalProperties": False,
