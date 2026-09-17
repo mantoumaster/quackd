@@ -1096,6 +1096,45 @@ async def test_a_need_this_body_meets_still_passes(hello_duck: DuckFile, tmp_pat
     assert assessed[0]["ok"] is True
 
 
+async def test_yes_clears_the_doubt_a_refused_feasible_became(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """What the check costs and does not cost under `--yes`, because docs/safety.md says so.
+
+    A refused `feasible` leaves the pilot three answers, and `uncertain` is one of them. At a
+    terminal `--yes` answers that with go, on purpose and documented, so the same unmet need
+    reaches the body one word later. This is not a hole the check should close: `--yes` is a
+    person saying they have read the contract, and ADR-0032 puts a reachable human above a
+    flag. What the check buys here is the record. The refusal and the doubt it became are both
+    in the transcript, where a silent `feasible` left nothing at all.
+    """
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "it can patrol", needs={"endurance_min": 45}),
+                    _verdict_call(
+                        "uncertain", "endurance is not published", needs={"endurance_min": 45}
+                    ),
+                    ToolCall(name="quack", arguments={"text": "hi"}),
+                    ToolCall(name="declare_success", arguments={"reason": "done"}),
+                ]
+            ),
+            transport=MicroduckAdapter(MockTransport()),
+            runs_dir=tmp_path,
+            decide=lambda _why: True,  # what `--yes` passes (cli.py `_yes_to_go`)
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assessed = [
+        e for e in Transcript.read(result.run_dir / "transcript.jsonl") if e["kind"] == "assess"
+    ]
+    assert assessed[0]["ok"] is False and "endurance_min >= 45" in assessed[0]["summary"]
+    assert assessed[1]["ok"] is True and assessed[1]["human"] == "go"
+    assert "uncertain" in assessed[1]["summary"]
+
+
 async def test_an_invalid_verdict_is_refused_and_the_run_goes_on(
     hello_duck: DuckFile, tmp_path: Path
 ) -> None:
