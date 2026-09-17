@@ -1127,6 +1127,12 @@ async def test_a_refused_verdict_shuts_the_gate_an_earlier_one_opened(
     assessed = [e for e in events if e["kind"] == "assess"]
     assert assessed[0]["ok"] is True, "the first verdict cleared the gate"
     assert assessed[1]["ok"] is False and "endurance_min >= 45" in assessed[1]["summary"]
+    # and the row describes the call that was refused, not the verdict that was standing:
+    # before, a refused re-assessment was written down with the earlier verdict's own word,
+    # reason and needs, and read as though that one had been refused
+    assert assessed[1]["verdict"] is None
+    assert assessed[1]["reason"] == "a 45 minute patrol"
+    assert assessed[0]["reason"] == "it walks"
     refused = [
         e
         for e in events
@@ -1134,6 +1140,40 @@ async def test_a_refused_verdict_shuts_the_gate_an_earlier_one_opened(
     ]
     assert refused, "the walk after the refusal was allowed by the withdrawn verdict"
     assert "no feasibility verdict has been recorded" in str(refused[0]["reason"])
+
+
+async def test_a_refused_assessment_is_recorded_as_itself_not_as_the_standing_verdict(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Every refusal in `_assess` returns before recording, and the transcript row was built
+    from whatever verdict happened to be standing, so a refused re-assessment was written down
+    with the earlier verdict's own word, reason and needs. Read back, the row said that the
+    earlier verdict had been refused, which is a different and false story. The row describes
+    the call now.
+    """
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "it walks"),
+                    ToolCall(name="assess_task", arguments={"verdict": "maybe", "reason": "hm"}),
+                    ToolCall(name="declare_success", arguments={"reason": "done"}),
+                ]
+            ),
+            transport=MicroduckAdapter(MockTransport()),
+            runs_dir=tmp_path,
+        )
+    )
+    assessed = [
+        e for e in Transcript.read(result.run_dir / "transcript.jsonl") if e["kind"] == "assess"
+    ]
+    assert assessed[0]["ok"] is True and assessed[0]["verdict"] == "feasible"
+    assert assessed[1]["ok"] is False and "invalid assess_task" in assessed[1]["summary"]
+    assert assessed[1]["verdict"] is None, "the row claimed the standing verdict was refused"
+    assert assessed[1]["reason"] == "hm", "and it carried the standing verdict's reason"
+    # the standing verdict is untouched by an invalid re-assessment: the run went on
+    assert result.outcome == "success", result.reason
 
 
 async def test_yes_clears_the_doubt_a_refused_feasible_became(

@@ -27,6 +27,33 @@ learned verb never carries the flag, so it is refused until somebody classifies 
 The sentence below that anything not in the set waits is true of everything quackd ships and of
 every verb that is not read-only.
 
+**Amended 2026-09-17 by [#24](https://github.com/rokbenko/quackd/pull/24):** a `feasible`
+verdict is no longer recorded unconditionally. `needs` was defined here as what the task
+requires in the datasheet's own field names, and it was read by the matcher, by a role and by
+the coordinator judging a bid, but never against the sheet of the body the pilot was about to
+drive. So a verdict could say, in its own two fields, both that the task needs 45 minutes of
+running time and that this body is fine, on a body whose endurance nobody published, and the
+gate opened. Measured on Qwen3-32B-AWQ: `feasible` six times out of six on that task, and the
+duck walked until its step budget ran out. Both surfaces now run `missing_needs` against the
+pilot's own manifest before recording, refuse such a verdict the way one carrying `human` is
+refused, name the unmet need, and withdraw any verdict that was standing, so the gate shuts
+rather than leaving an older `feasible` to carry the motion. `uncertain` and `infeasible` are
+untouched: one asks a person, and the other ends the run.
+
+The refuse-by-default rule above is what makes this bite, and it keeps two exceptions so that
+an honest answer is not refused: a minimum of zero asks for nothing, and a body that published
+no terrain meets `indoor_flat`, which is what the prompt already tells such a body to assume
+about itself. Both live in `missing_needs_in`, so the coordinator judges a bid by the same
+reading.
+
+What it does not do, which is the same shape as this ADR's own "what this does not protect
+against": the check reads what the pilot declared about the task, so a pilot that never names
+the figure its plan hinges on passes exactly as before. It rewards honesty and cannot catch
+silence, and a pilot that names a figure this body's maker never published is asked to answer
+again rather than allowed to proceed. The route out of that for a person who knows the figure
+is the `duck: 2` `datasheet:` block above, which is the only thing that makes a sheet say
+something new.
+
 ## Context
 
 A pilot was told one line about the body it was driving, `manifest.blurb`, and a list of

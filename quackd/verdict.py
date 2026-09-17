@@ -10,6 +10,7 @@ refusal.
 matcher that says which other body could, and a flock role that asks for a body that can
 carry. A number is a minimum, a word must match, and a figure the maker never published is
 not met: a robot that cannot say what it carries is not offered a task that carries something.
+`missing_needs_in` carries the two exceptions to that last rule and says why it has them.
 """
 
 from __future__ import annotations

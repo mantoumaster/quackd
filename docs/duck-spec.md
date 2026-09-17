@@ -99,14 +99,16 @@ worded alike ([manifest-spec.md](manifest-spec.md#the-datasheet)).
 
 | Key | How it is checked |
 |---|---|
-| `payload_kg`, `reach_m`, `arms` | minimums. The body must publish at least this much. |
+| `payload_kg`, `reach_m`, `arms` | minimums. The body must publish at least this much. A minimum of `0` asks for nothing and is always met. |
 | `endurance_min` | a minimum, except on a mains-powered body (`tethered: true`), which has nothing to run down and passes. |
 | `work_height_m` | **not** a minimum: a height the hands must be able to reach, so it must fall inside the body's `workspace_height_m` band. Asking for 0.4 m fails a body that reaches 0.5 to 1.25 m, because that is below it. |
 | `manipulator`, `mobility` | must match the body's own word, or be `any`, which accepts anything except `none`. |
-| `terrain` | a floor, not a match: `indoor_flat` < `indoor` < `outdoor`, and a body rated for more than the task asks passes. |
+| `terrain` | a floor, not a match: `indoor_flat` < `indoor` < `outdoor`, and a body rated for more than the task asks passes. A body that publishes no terrain meets `indoor_flat` and nothing above it, because that is what the prompt tells such a body to assume about itself, and only where the prompt says so: a body with no datasheet at all, or one that does not move, meets none of them. |
 
 **A figure the maker never published counts as not met**, because a robot that cannot say
-what it carries is not the one to ask to carry something. The words are
+what it carries is not the one to ask to carry something. The two exceptions are in the table
+above, and both exist so that an honest answer is not refused: a minimum of zero, and the
+floor a body with no published terrain is already told to assume. The words are
 `manipulator: beak · gripper · arms · any`, `mobility: legged · wheeled · any` and
 `terrain: indoor_flat · indoor · outdoor`. Of those, `terrain` is the one to be careful
 with: five shipped bodies are rated `indoor_flat` and two publish nothing, so a role asking

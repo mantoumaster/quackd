@@ -92,9 +92,18 @@ alone, because one asks a person and the other ends the run anyway.
 
 On the one model measured so far it turns a silent `feasible` into an `uncertain`, which is
 then the question above, so under `--yes` the check costs one LLM call and leaves the
-contradiction in the transcript rather than stopping the run. What it cannot do is catch
-silence: it reads what the pilot declared, so a pilot that never mentions the figure its plan
-hinges on passes exactly as it did before.
+contradiction in the transcript rather than stopping the run.
+
+Two things it cannot do. **It cannot catch silence**, because it reads what the pilot
+declared: a pilot that never mentions the figure its plan hinges on passes exactly as it did
+before. And **it asks more of a pilot that answers fully**, which is the same fact from the
+other side. A duck asked to nudge a 60 g ball has no published payload to compare against, so
+a pilot that honestly writes `payload_kg: 0.06` is refused where one that writes nothing is
+not. That is refuse by default doing what [ADR-0032](adr/0032-datasheets-and-the-verdict.md)
+says it should, and the way to answer it once rather than every run is a `duck: 2`
+`datasheet:` block in the task file: a figure given there replaces the adapter's and is
+rendered as coming from you, so the pilot is comparing against a number somebody stands
+behind.
 
 ## Dry run
 

@@ -749,8 +749,16 @@ class AgentLoop:
                     # the pilot's judgement of the task against the body: no motion, no step,
                     # one LLM call, exactly like `remember`
                     last_verb = ASSESS_TASK_NAME
+                    standing = self.executor.verdict
                     last_result, ends_with = self._assess(call.arguments)
                     recorded = self.executor.verdict
+                    if recorded is standing:
+                        # this call recorded nothing, so the row describes the call that was
+                        # refused rather than whatever verdict happened to be standing. Before
+                        # this, a refused re-assessment was written into the transcript with
+                        # the *earlier* verdict's word, reason and needs, and read as though
+                        # that one had been refused.
+                        recorded = None
                     self._emit(
                         "assess",
                         step=self.budget.steps,
