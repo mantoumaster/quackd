@@ -84,8 +84,14 @@ class Verb:
     kind: VerbKind = "builtin"
     preconditions: list[Precondition] = field(default_factory=list)
     read_only: bool = False
-    """A verb that only reads (get_frame, report_state, a body's own `locate`): it still runs
-    under --dry-run and before the feasibility verdict, like `observe` does."""
+    """The verb sends no intent: it reads state or a camera and nothing else.
+
+    Two gates believe that, so it has to be true. `--dry-run` runs a read-only verb against
+    real hardware, and the verdict gate lets one run before the pilot has judged the task,
+    because a verb that sends nothing cannot move the body. Every verb quackd ships with this
+    flag is in `BEFORE_VERDICT` as well, and a test says it must stay there; the flag is how a
+    body quackd never shipped says the same of its own sensing verbs (a `locate` that reads
+    where things are)."""
     done_condition: str = ""
     """Human-readable: what 'done' means. Shown to the LLM after the description."""
     core: bool = False

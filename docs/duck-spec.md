@@ -157,8 +157,9 @@ is refused at runtime and the LLM is told so.
   or transport that failed, or a bug). The robot is stopped in every case and its adapter
   closed.
 - `--max-steps` on the CLI overrides `budgets.max_steps` for one run.
-- `--dry-run` executes read-only verbs (`observe`, alias `get_frame`, and `report_state`) and logs everything else without
-  sending an intent.
+- `--dry-run` executes the verbs their adapter declared `read_only` (`observe`, alias
+  `get_frame`, `report_state`, the rosbridge base's `introspect`) and logs everything else
+  without sending an intent.
 
 ## Validation
 

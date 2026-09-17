@@ -11,6 +11,22 @@ carries `body_summary` for each of its peers, which is the same paragraph this A
 the pilot's own body. A pilot flock uses no `flock.roles`, so role `needs` is still exercised
 only at the coordinator and in unit tests.
 
+**Amended 2026-09-17 by [#26](https://github.com/rokbenko/quackd/pull/26):** the gate reads one
+thing beside `BEFORE_VERDICT`, the verb's own `read_only` flag, which an adapter already sets so
+that a sensing verb runs under `--dry-run`. The set below names the verbs quackd ships, and the
+test that holds every shipped verb to it also rejects a name no shipped adapter offers, so the
+set is closed to a body quackd never shipped: such a body's own sensing verb was refused as
+"moves the body", and its pilot was denied the one verb that answers the question the gate is
+waiting for. Measured on a humanoid sim offering `locate` and `reach`, a local 14B model judged
+the task infeasible twice without a single look. A verb that sends no intent cannot move the
+body, so the flag is a sound thing to open the gate on, and it was already trusted with more:
+`--dry-run` runs a read-only verb against real hardware. What still holds: the shipped set is
+closed and every shipped read-only verb is in it, which a second test now pins in both
+directions; a stranger's verb that speaks or turns a head is motion and still waits; and a
+learned verb never carries the flag, so it is refused until somebody classifies it on purpose.
+The sentence below that anything not in the set waits is true of everything quackd ships and of
+every verb that is not read-only.
+
 ## Context
 
 A pilot was told one line about the body it was driving, `manifest.blurb`, and a list of

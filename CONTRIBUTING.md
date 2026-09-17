@@ -175,10 +175,12 @@ nothing in your `allow` list. Skip it for a smoke test, the way `hello-world` do
    what makes the verb exist: a verb not in the manifest is not in the registry, the MCP
    tool list, `.duck` validation or the prompt). Preconditions are named in the manifest
    and supplied by the adapter's `conditions()`. Then classify it in `quackd/verdict.py`:
-   `BEFORE_VERDICT` if it looks, speaks or brakes, `MOVES_THE_BODY` otherwise. The gate
-   reads the first set and nothing else, so a verb in neither waits for a verdict like
-   anything that moves the body, which is wrong for a verb the pilot needs in order to reach
-   one, and `tests/test_verdict.py` fails until you have chosen.
+   `BEFORE_VERDICT` if it looks, speaks or brakes, `MOVES_THE_BODY` otherwise. The gate reads
+   that first set and one flag beside it, the verb's own `read_only`, so a shipped verb in
+   neither set waits for a verdict like anything that moves the body, which is wrong for a
+   verb the pilot needs in order to reach one, and `tests/test_verdict.py` fails until you
+   have chosen. A verb you flag `read_only` has to be in `BEFORE_VERDICT` as well: the flag
+   is for a body quackd does not ship, and a second test there says so.
 4. Add a test: on `MockTransport` for intent sequences, on `Sim2DTransport` for behaviour, and on `MujocoTransport(body="puppet")` if the verb makes a claim about the body, because the cartoon cannot tell you whether one is true.
 5. If the verb needs an upstream method we have not verified, add it to the adapter's
    `upstream_api.py` as `UNVERIFIED` with a note and a row in that adapter's page under

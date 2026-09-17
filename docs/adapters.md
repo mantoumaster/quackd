@@ -197,12 +197,16 @@ lives. The rules, enforced by the model itself ([manifest-spec.md](manifest-spec
 - **Extension verbs are the robot's own** (`kick`, `express`, `move_joints`). Declare
   them with `verb_spec(verb, core=False)` and supply the implementation from
   `implementations()`. Reusing a name another robot uses (`move_joints` on the LeRobot arm
-  and on the XLeRobot) is how `requires: [move_joints]` is satisfied by both. Every one of
-  them also needs classifying in `quackd/verdict.py`, as a verb that may run before the
-  pilot has judged the task (looking, speaking, the brake) or as one that moves the body and
-  waits for a feasible verdict. Leave one out and it waits, which is wrong for a verb the
-  pilot needs in order to reach a verdict at all, so a test refuses to pass until you have
-  chosen.
+  and on the XLeRobot) is how `requires: [move_joints]` is satisfied by both. The feasibility
+  gate then has to know which of them may run before the pilot has judged the task. A verb
+  shipped in this repository is classified in `quackd/verdict.py`, as one that looks, speaks
+  or brakes (`BEFORE_VERDICT`) or as one that moves the body and waits for a feasible verdict
+  (`MOVES_THE_BODY`), and a test refuses to pass until every shipped verb is in one or the
+  other. **A verb quackd never ships cannot be put in either set** (that test rejects a name
+  no shipped adapter offers), so it waits for the verdict unless its `Verb` carries
+  `read_only=True`. That flag is you saying the verb sends no intent, and the gate lets it
+  through for the same reason it lets `observe` through: a pilot has to be able to `locate`
+  the thing before it can judge whether this body could reach it.
 - **`stop` is universal**: present on every manifest, always allowed, never gated.
 - **Aliases are not yours to declare.** `get_frame`, `walk_to` and `walk` live in
   `quackd/verbs/aliases.py`; a manifest names the canonical verb.
@@ -222,6 +226,12 @@ lives. The rules, enforced by the model itself ([manifest-spec.md](manifest-spec
   the body on every backend, which is part of why `digest()` matches across them.
 - **`digest()`** is the capability fingerprint discovery advertises; it ignores `id` and
   `backend`, so the same robot over `sim2d` and `mock` hashes the same.
+
+> [!WARNING]
+> `read_only` is taken on trust, twice. A verb carrying it runs before the pilot has judged
+> the task, and runs under `--dry-run` against real hardware, so the flag on a verb that
+> actually sends an intent defeats both gates at once. Nothing can check it for you: put it on
+> a sensor and on nothing else.
 
 ## The adapter class
 

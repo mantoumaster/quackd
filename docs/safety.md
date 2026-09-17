@@ -78,9 +78,10 @@ parameters it chose:
 ```
 
 A parameter the model left unset shows as `null` rather than being dropped, because on a dry
-run the omission is the thing you are checking. Read-only verbs (`observe`, alias
-`get_frame`, and `report_state`) still run. Use it the first time you point a new `.duck` at
-hardware.
+run the omission is the thing you are checking. The verbs whose adapter declared them
+`read_only` still run: `observe` (alias `get_frame`), `report_state`, the rosbridge base's
+`introspect`, and whatever a body quackd never shipped flags for itself. Use it the first
+time you point a new `.duck` at hardware.
 
 It does not get you past the verdict, because that gate runs before this one. A task the
 pilot judges infeasible ends with nothing logged rather than with the list of verbs it would
