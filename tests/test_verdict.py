@@ -78,6 +78,40 @@ def test_the_needs_vocabulary_is_the_datasheets_own() -> None:
     assert set(NEEDS_WORDS) <= fields | {"mobility"}
 
 
+def test_the_prompt_says_the_same_thing_about_an_unseen_target_everywhere() -> None:
+    """#25 corrected what `uncertain` is for, and the correction has to hold wherever the
+    pilot reads it or it is pulled two ways. An audit of the first attempt found exactly
+    that: the Rules line, labelled enforced and not optional, said flatly that an unfound
+    target is no reason for `uncertain`, while the tool description beside it kept
+    `uncertain` for a limit that turns on an unseen thing's mass. For "pick up the box",
+    with the box out of frame, the two gave opposite answers and the more authoritative one
+    was wrong.
+
+    Each surface carries both halves now: not by itself a reason, and a reason when a limit
+    turns on the thing nobody has seen. The MCP twin is held to the same words in
+    `tests/test_mcp_server.py`, where there is a client to ask."""
+    from pathlib import Path as _Path
+
+    from quackd.agent.prompts import build_system_prompt
+    from quackd.duckfile.parser import load_duck
+    from quackd.verbs.registry import default_registry
+
+    registry = default_registry()
+    duck = load_duck("ducks/find-and-kick.duck")
+    allow = [n for n in duck.frontmatter.verbs.allow if n in registry]
+    prompt = build_system_prompt(duck, [registry.view(n) for n in allow], "sim2d")
+    rule = next(line for line in prompt.splitlines() if "Until then" in line)
+    repo = _Path(__file__).resolve().parents[1]
+    surfaces = {
+        "assess_task": str(ASSESS_TASK["description"]),
+        "the rule line": rule,
+        "docs/safety.md": (repo / "docs" / "safety.md").read_text(encoding="utf-8"),
+    }
+    for where, text in surfaces.items():
+        assert "not by itself" in text, f"{where} states the rule absolutely"
+        assert "mass or size" in text, f"{where} drops the figure that does decide a limit"
+
+
 def test_a_need_outside_the_vocabulary_is_refused() -> None:
     assert check_needs({"payload_kg": 3}) == {"payload_kg": 3.0}
     assert check_needs({"manipulator": "gripper"}) == {"manipulator": "gripper"}

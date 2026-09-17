@@ -31,8 +31,9 @@ ASSESS_TASK = {
         "target yet. Required before the first verb that moves the body: until you have "
         "answered, a verb that moves the body is refused and told so, and only what looks, "
         "speaks or brakes runs. The Rules in your prompt name which of your verbs those are. "
-        "Answer `feasible` when every need fits inside a limit you can point to; a target you "
-        "have not found yet is what the run is for, not a doubt about the body. Answer "
+        "Answer `feasible` when every need fits inside a limit you can point to; not having "
+        "found the target yet is not by itself a doubt about the body, it is what the run is "
+        "for. Answer "
         "`infeasible` when one need clearly exceeds a limit (a 3 kg basket on a 0.3 kg "
         "payload): the run ends at once and nothing moves, so name the limit and what you "
         "estimated. Answer `uncertain` only when the verdict itself turns on a figure you "
@@ -533,7 +534,7 @@ you choose ONE verb per turn; {pilot_line}. Do not micro-manage.
 - Only these verbs are allowed: {", ".join(fm.verbs.allow)}. Anything else is refused.
 - Budgets: {fm.budgets.max_steps} steps, {fm.budgets.max_minutes:g} minutes, {fm.budgets.max_llm_calls} LLM calls. The run stops when any is hit.
 - Verbs marked confirm ({", ".join(fm.verbs.confirm) or "none"}) ask a human before running.
-- Before the first verb that moves the body, call `assess_task` with your verdict on whether this body can do this task at all, judged against its datasheet below: `feasible`, `infeasible` (the run ends, nothing moves) or `uncertain` (a human is asked). The verdict is about the body, not the view: a target you have not found yet is the task, not a reason for `uncertain`. Until then {before_verdict}. Assess again later if what you see changes your mind.
+- Before the first verb that moves the body, call `assess_task` with your verdict on whether this body can do this task at all, judged against its datasheet below: `feasible`, `infeasible` (the run ends, nothing moves) or `uncertain` (a human is asked). The verdict is about the body, not the view: not having found the target yet is not by itself a reason for `uncertain`. It is one when a limit turns on that unseen thing's mass or size, or on a figure the datasheet does not publish. Until then {before_verdict}. Assess again later if what you see changes your mind.
 - When a success criterion is met, call `declare_success`. If the task turns out impossible while doing it, call `declare_failure`.
 
 ## Success criteria

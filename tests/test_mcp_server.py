@@ -514,6 +514,22 @@ async def test_an_uncertain_verdict_waits_for_the_person_in_the_chat() -> None:
         assert session.executor.verdict is not None
 
 
+async def test_the_mcp_verdict_tool_says_what_the_prompt_says() -> None:
+    """There is no system prompt here, so this description is the whole of what an MCP pilot
+    is told about the gate. #25's correction and #24's check both have to be in it, or the two
+    surfaces teach different rules, and this is the surface where `uncertain` is the only route
+    to the person who could know an unpublished figure. An audit of the first attempt found the
+    carve-out replaced by its negation on exactly this one."""
+    async with connected() as (client, _session, _transport):
+        tool = next(t for t in (await client.list_tools()).tools if t.name == "robot_assess_task")
+        said = tool.description or ""
+        assert "not by itself" in said, "it states #25's rule absolutely"
+        assert "mass or size" in said, "it drops the figure that does decide a limit"
+        assert "not published" in said
+        assert "own datasheet does not meet is refused" in said, "#24's check, where it is read"
+        assert "before_verdict" in said, "which verbs run first is a field, not a fixed list"
+
+
 async def test_a_model_cannot_answer_for_the_human() -> None:
     """The tool has no `human` field to fill in, so the pilot cannot clear its own doubt."""
     async with connected() as (client, session, _transport):
