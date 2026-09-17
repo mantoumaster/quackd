@@ -462,8 +462,19 @@ class Daemon:
         cmd = self.command
         current = self.safe.pose
         if cmd.mode in (Command.STAND, Command.DEADMAN):
+            # The trajectory advances from the last thing commanded, not from the last thing
+            # measured. These motors are position controlled, so the torque they make is
+            # proportional to target minus measured: slewing from the measurement pinned that
+            # difference at one step, 0.006 rad at fifty hertz, which is almost no torque at
+            # all. The arms were asked for ninety degrees and asymptoted at twenty-six, the
+            # command creeping along behind them, and `stand` never finished because finishing
+            # meant the *body* arriving. Seeding still starts from where the robot is, which is
+            # what `tick` does on the first reading and what upstream's own policies do, and
+            # `rate_limit` below still bounds every tick to MAX_STEP_RAD. `waist_first` keeps
+            # reading the measured pose, because whether the waist is twisted is a question
+            # about the body rather than about the plan.
             goal = waist_first(cmd.goal, current, self.waist)
-            nxt = slew(current, goal, dt)
+            nxt = slew(self.target, goal, dt)
             if float(np.max(np.abs(goal - nxt))) < 1e-3 and cmd.mode == Command.STAND:
                 cmd.hold(goal)
             return nxt

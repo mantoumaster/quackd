@@ -297,14 +297,33 @@ reports that it did.
   has used `heading()` since it was written. The test now asserts the degeneracy itself, which
   is true wherever it runs.
 
-- **`stand` never finished on upstream's simulated ToddlerBot, and the contract job had never
-  once passed.** quackd refuses an all-zeros reading with all-zeros velocity, because that is
-  byte for byte what a Dynamixel bulk read hands back when it fails, and driving a position
-  controller to it commands a full-scale move to zero. Upstream's MuJoCo body rests with every
-  motor and every velocity at exactly zero. So every reading was refused, the planner was never
-  reached, and `stand` reported itself moving for as long as anybody waited without turning a
-  joint. The refusal is about a serial bus and a simulator has none, so it applies to hardware
-  now and the daemon is told which it is driving. The guard is unchanged where it matters.
+- **`stand` barely moved the ToddlerBot, and said it was still moving for ever.** Two faults,
+  one on top of the other, and the contract job had never once passed because of them.
+
+  The first hid the second. quackd refuses a reading of all-zero positions with all-zero
+  velocities, because that is byte for byte what a Dynamixel bulk read hands back when it
+  fails, and driving a position controller to it commands a full-scale move to zero. Upstream's
+  MuJoCo body rests with every motor and every velocity at exactly zero, so every reading was
+  refused and the planner was never reached at all. That refusal is about a serial bus and a
+  simulator has none, so it applies to hardware now and the daemon is told which it is driving.
+
+  Underneath it, the slew was starving itself of torque. These motors are position controlled,
+  so the torque one makes is proportional to the distance between where it is told to be and
+  where it is. The trajectory advanced from the *measured* pose each tick, which pinned that
+  distance at a single step, 0.006 rad at fifty hertz, and a servo asked to move six
+  thousandths of a radian pushes almost not at all. The arms were commanded through ninety
+  degrees and asymptoted at twenty-six, the command creeping along behind them, and `stand`
+  never finished because finishing meant the body arriving. It advances from the last commanded
+  target now, which is what a trajectory is, and the same stand completes in the 5.2 seconds
+  its own arithmetic predicts with a tracking error of one degree rather than sixty-two. The
+  first reading still seeds the target from where the robot actually is, as upstream's own
+  policies do, and every tick is still bounded by `MAX_STEP_RAD` and the joint limits.
+
+  This is a real change to what a real ToddlerBot would do, on a body no ToddlerBot has ever
+  run, and it is the difference between `stand` standing the robot up and `stand` leaning on
+  it. It is exercised against upstream's own physics and against the fake body, and on no
+  hardware, which is what [docs/adapter-status.md](docs/adapter-status.md) has always said
+  about this row.
 
 - **The contract job's deadman test asked a socket it had just closed on purpose.** It kills the
   client to prove the daemon survives a client vanishing, then asked that same dead link for the
