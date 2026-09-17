@@ -272,7 +272,8 @@ def before_verdict_clause(verbs: Sequence[Verb]) -> str:
     named = [
         verb.name
         for verb in verbs
-        if (canonical(verb.name) in BEFORE_VERDICT or verb.read_only) and verb.name != "stop"
+        if (verb.read_only or (canonical(verb.name) in BEFORE_VERDICT and verb.kind != "learned"))
+        and verb.name != "stop"
     ]
     spelled = [f"`{name}`" for name in dict.fromkeys(named)] + ["`stop`"]
     if len(spelled) == 1:

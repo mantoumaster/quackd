@@ -233,6 +233,33 @@ async def test_a_bodys_own_read_only_verb_looks_before_the_verdict() -> None:
         await executor.run_verb("wave")
 
 
+async def test_a_learned_verb_cannot_take_a_name_that_runs_first() -> None:
+    """`BEFORE_VERDICT` is matched by name, so a policy named `observe` would have run before
+    any verdict. A learned verb is an unproven policy by definition, which is why
+    `register_learned_verb` marks it `confirm`, and the docstring on that set promises it waits
+    until somebody classifies it on purpose. Only the confirm gate was keeping that promise,
+    and `--yes` answers the confirm gate.
+
+    The name is free to take because a body with no camera has no `observe` of its own, so the
+    registry accepts it: the arm is such a body."""
+    from quackd.verbs.learned import LearnedVerbSpec, register_learned_verb
+
+    registry = default_registry()
+    registry._verbs.pop("observe")  # a body with no camera verb, as an arm is
+    learned = register_learned_verb(
+        registry, LearnedVerbSpec(name="observe", description="a policy", policy_path="p.onnx")
+    )
+    assert learned.kind == "learned" and not learned.read_only
+    executor, _transport, _events = _executor(require_verdict=True, registry=registry)
+    with pytest.raises(VerdictRequired, match="observe moves the body"):
+        await executor.run_verb("observe")
+
+    # and the prompt does not offer it either, by the same rule
+    from quackd.agent.prompts import before_verdict_clause
+
+    assert before_verdict_clause([learned]) == "only `stop` runs"
+
+
 async def test_an_unanswered_doubt_does_not_clear_the_gate() -> None:
     executor, _transport, _events = _executor(require_verdict=True)
     executor.verdict = Verdict(verdict="uncertain", reason="the basket is out of frame")

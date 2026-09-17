@@ -36,8 +36,13 @@ A pilot has to be able to look at the thing before judging whether it can lift i
 else waits, including a verb quackd has never heard of: the gate reads this set and one
 other thing, the verb's own `read_only` flag, so a body quackd has never shipped can still
 say "this one only looks" about its own sensing verbs. A learned verb never carries that
-flag (`learned.py` registers it as `confirm`, unproven), so it is refused until somebody
-classifies it on purpose."""
+flag (`learned.py` registers it as `confirm`, unproven), and the gate excludes a learned verb
+from this set by name as well, so an unproven policy called `observe` waits like everything
+else until somebody classifies it on purpose.
+
+This half is matched by name, which makes the nine a vocabulary rather than a list: a body
+that ships a verb called `gaze` which walks has said the wrong word about itself, the way a
+verb that carries `read_only` and sends an intent has."""
 
 MOVES_THE_BODY = frozenset(
     {

@@ -355,7 +355,11 @@ class Executor:
         # A verb declared `read_only` by whoever wrote it is a sensor, whatever body it came
         # with: a third-party `locate` that reads where things are must run before the
         # verdict for the same reason `observe` does, or the pilot judges feasibility blind.
-        looks = canonical in BEFORE_VERDICT or verb.read_only
+        # `BEFORE_VERDICT` is matched by name, and a learned verb is excluded from that half
+        # on purpose: it is an unproven policy, so a `.duck` that named one `observe` on a
+        # body with no camera verb would otherwise have it run before any verdict. The
+        # confirm gate below would still stop it, and `--yes` answers the confirm gate.
+        looks = verb.read_only or (canonical in BEFORE_VERDICT and verb.kind != "learned")
         if self.require_verdict and not looks and not self.cleared:
             why = (
                 self.verdict.blocking_reason()
