@@ -862,7 +862,7 @@ async def test_an_infeasible_verdict_ends_the_run_before_anything_moves(
     assert result.steps == 0 and result.llm_calls == 1
     assert not result.ok
     assert "3 kg of clothes" in result.reason
-    assert "No shipped body meets needs" in result.reason, "the hint names what could"
+    assert "No robot installed here meets needs" in result.reason, "the hint names what could"
     assert [i.kind for i in transport.intents if i.kind != "stop"] == []
 
     events = Transcript.read(result.run_dir / "transcript.jsonl")

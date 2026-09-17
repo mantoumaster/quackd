@@ -1010,7 +1010,7 @@ def test_an_infeasible_run_exits_3_and_says_what_could(
     out = " ".join(result.output.split())
     assert "INFEASIBLE" in out
     assert "far past a beak" in out
-    assert "No shipped body meets needs" in out
+    assert "No robot installed here meets needs" in out
     assert "toddlerbot at 1.484 kg" in out
 
 

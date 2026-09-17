@@ -143,3 +143,28 @@ def test_the_only_adapter_installed_is_the_one_a_command_means() -> None:
     finally:
         factory._installed = real
         factory._installed.cache_clear()
+
+
+def test_a_verdict_speaks_only_for_the_robots_this_machine_has() -> None:
+    """An `infeasible` verdict ends a run by naming which other body could have done the task,
+    and it builds each answer from that adapter's own manifest. Once the adapters became
+    separate packages that became a question quackd cannot always answer: describing a robot
+    whose package is absent raises, and it would raise here, inside the one outcome the whole
+    verdict gate exists to produce. So the hint speaks for what is installed and nothing else,
+    and a machine with one robot can only speak for that one."""
+    import quackd.adapters.factory as factory
+    from quackd.verdict import solo_hint
+
+    factory._installed.cache_clear()
+    real = factory._installed
+    try:
+        factory._installed = lambda: {"lerobot": "quackd_lerobot"}  # type: ignore[assignment]
+        assert [name for name, _ in factory.installed_manifests()] == ["lerobot"]
+        # the run-ending path itself: this used to raise AdapterNotInstalled for the six
+        # bodies that are not here, turning a verdict into a crash
+        hint = solo_hint({"payload_kg": 3}, None)
+        assert "lerobot" in hint, hint
+        assert not any(other in hint for other in ("microduck", "toddlerbot", "xlerobot")), hint
+    finally:
+        factory._installed = real
+        factory._installed.cache_clear()

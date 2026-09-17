@@ -276,10 +276,13 @@ class Verdict(BaseModel):
 
 
 def solo_hint(needs: Mapping[str, Any], here: RobotManifest | None) -> str:
-    """Which shipped bodies could, by their own datasheets. Empty when the task named no need.
+    """Which bodies here could, by their own datasheets. Empty when the task named no need.
 
-    Read from the static descriptions, so it costs no connection and names only what quackd
-    ships. A body whose maker never published the figure is not named: unknown is not a yes."""
+    Read from the static descriptions, so it costs no connection. It names only robots whose
+    adapter is installed, because a manifest is built by the adapter and quackd cannot
+    describe a body whose package is absent. So the answer is about this machine rather than
+    about the seven quackd publishes, and a machine with one robot can only speak for that
+    one. A body whose maker never published the figure is not named: unknown is not a yes."""
     if not needs:
         return ""
     from quackd.adapters.factory import bodies_that_could
@@ -291,7 +294,7 @@ def solo_hint(needs: Mapping[str, Any], here: RobotManifest | None) -> str:
         joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
         sentence = f"By their datasheets, {joined} could (needs {listed})."
     else:
-        sentence = f"No shipped body meets needs {listed}."
+        sentence = f"No robot installed here meets needs {listed}."
         if best := _best_numeric(needs):
             sentence = sentence[:-1] + f": {best}."
     if here is not None and not missing_needs(needs, here):
@@ -304,14 +307,14 @@ def solo_hint(needs: Mapping[str, Any], here: RobotManifest | None) -> str:
 
 def _best_numeric(needs: Mapping[str, Any]) -> str:
     """`the most is toddlerbot at 1.48 kg`, for the first numeric need nobody meets."""
-    from quackd.adapters.factory import shipped_manifests
+    from quackd.adapters.factory import installed_manifests
 
     for key in NEEDS_NUMBERS:
         if key not in needs:
             continue
         ranked = [
             (value, name)
-            for name, manifest in shipped_manifests()
+            for name, manifest in installed_manifests()
             if isinstance(value := datasheet_value(manifest, key), float)
         ]
         if not ranked:

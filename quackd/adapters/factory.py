@@ -301,12 +301,24 @@ def installed_vocabulary() -> VerbRegistry:
     return registry
 
 
-def shipped_manifests() -> list[tuple[str, RobotManifest]]:
-    """(adapter name, its static manifest) for every body quackd ships, in table order.
+def installed_manifests() -> list[tuple[str, RobotManifest]]:
+    """(adapter name, its static manifest) for every body installed here, in table order.
 
     The first backend of each, because a body is the same body on all of them. Static, so
-    this costs no SDK import and no connection."""
-    return [(name, describe(RobotSpec(name, BACKENDS[name][0]))) for name in ADAPTER_NAMES]
+    this costs no SDK import and no connection.
+
+    Installed rather than published, and that is the whole of the difference since the
+    adapters became their own packages. A manifest is built by the adapter, so quackd cannot
+    describe a robot whose package is absent: asking it to would raise `AdapterNotInstalled`
+    from inside a verdict, which is a normal outcome of a run rather than a place to fail.
+    A machine that has one robot can only speak for that one."""
+    rows = []
+    for name in adapter_names():
+        if not is_installed(name):
+            continue
+        with contextlib.suppress(AdapterError, ImportError):
+            rows.append((name, describe(RobotSpec(name, info(name).backends[0]))))
+    return rows
 
 
 def bodies_that_could(needs: Mapping[str, Any]) -> list[tuple[str, RobotManifest, list[str]]]:
@@ -317,5 +329,5 @@ def bodies_that_could(needs: Mapping[str, Any]) -> list[tuple[str, RobotManifest
     come back in the same shape for a caller that wants to say why not."""
     from quackd.verdict import missing_needs
 
-    rows = [(name, m, missing_needs(needs, m)) for name, m in shipped_manifests()]
+    rows = [(name, m, missing_needs(needs, m)) for name, m in installed_manifests()]
     return [row for row in rows if not row[2]]
