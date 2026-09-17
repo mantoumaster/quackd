@@ -191,6 +191,35 @@ async def test_budget_ends_the_run(hello_duck: DuckFile, tmp_path: Path) -> None
     assert result.steps == 2
 
 
+async def test_a_max_steps_override_reaches_the_prompt_as_well_as_the_observation_header(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`--max-steps` changed the budget and not the sentence about it.
+
+    On 2026-09-15 a `--max-steps 10` run on the SO-101 arm was handed a system prompt saying
+    `Budgets: 40 steps` above observations that said `step 0/10`, because the override was
+    copied into the contract the executor enforces and the prompt was built from the task
+    file's own. A pilot told it has four times the budget it has plans differently, and it
+    cannot tell which number is real. All three readings of it have to agree."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,  # its own file says five
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+            max_steps=7,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    start = events[0]
+    assert start["contract"]["budgets"]["max_steps"] == 7, "the contract kept the override"
+    assert "Budgets: 7 steps" in start["system_prompt"], "the prompt did not"
+    assert "Budgets: 5 steps" not in start["system_prompt"], "it still says the file's own"
+    header = next(e for e in events if e["kind"] == "observation")["text"]
+    assert header.startswith("[step 0/7 "), header
+
+
 async def test_disallowed_verb_is_feedback(hello_duck: DuckFile, tmp_path: Path) -> None:
     naughty = FakeProvider(
         script=[

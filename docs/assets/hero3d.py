@@ -1,4 +1,11 @@
-"""Record the README hero: the same sentence, the same duck, with and without quackd.
+"""Record the README's simulator figure: the same sentence, the same duck, with and
+without quackd.
+
+This was the README hero until 2026-09-15, when a real SO-101 arm ran quackd and the
+recording of that became the picture at the top of the page
+([ADR-0038](../adr/0038-the-readme-hero-is-a-real-run.md)). It is still what argues for
+the simulator, under *No robot yet? Try it in 60 seconds*, and it is still the one file
+here that renders upstream's model and carries its CC BY-NC-SA terms.
 
 Two runs of one arena, side by side.
 

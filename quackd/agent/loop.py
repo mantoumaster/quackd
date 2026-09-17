@@ -179,6 +179,13 @@ class AgentLoop:
             self.fm = self.fm.model_copy(
                 update={"budgets": self.fm.budgets.model_copy(update={"max_steps": cfg.max_steps})}
             )
+            # and the duck with it, because the system prompt is built from `self.duck` while
+            # the executor and the observation header read `self.fm`. On 2026-09-15 a
+            # `--max-steps 10` run on the arm told the model `Budgets: 40 steps` above an
+            # observation header that said `step 0/10`: it planned against four times the
+            # budget the run actually stopped at, and every `--max-steps` run before this one
+            # did the same.
+            self.duck = cfg.duck.model_copy(update={"frontmatter": self.fm})
         self.run_dir = cfg.run_dir or new_run_dir(cfg.runs_dir, self.fm.name)
         self.transcript = Transcript(self.run_dir)
         # the transcript is the record, so its failure is the run's; a console is an observer

@@ -152,7 +152,7 @@ an adapter may leave both out: a body with no upstream to cite and nothing local
 simply contributes no rows.
 
 **`UPSTREAMS`** is what this adapter reads from somebody else's project: a tuple of
-`(name, its upstream_api module, the doc that explains it, what nobody has run it against)`.
+`(name, its upstream_api module, the doc that explains it, what it has or has not been run against)`.
 Doctor walks every installed adapter, collects the rows, and prints each upstream's pin, the
 date it was read, how many refs are VERIFIED and how many are not, and the never-run label
 verbatim. It lives in the adapter rather than in a table in the core because the list belongs

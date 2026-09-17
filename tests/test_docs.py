@@ -520,11 +520,15 @@ def test_the_retired_tagline_is_gone_and_the_new_one_is_everywhere_it_lived() ->
 _RETIRED_HARDWARE_CLAIMS = (
     "no robot of any kind has run quackd",
     "has never run on any of them",
-    "Nothing in quackd has ever run on a real SO-101",
+    "nothing in quackd has ever run on a real so-101",
     "never run on an arm",
-    "Nobody has pointed any pilot at a real webcam",
-    "Nothing has run on a real robot of any kind",
+    "nobody has pointed any pilot at a real webcam",
+    "nothing has run on a real robot of any kind",
     "never run against an arm",
+    # three more spellings, retired when the README started leading with the arm
+    "nothing here has run on hardware",
+    "nobody has run it on real hardware",
+    "nobody has run `lerobot:real`",
 )
 
 
@@ -540,17 +544,63 @@ def test_no_living_document_still_says_no_robot_has_ever_run_quackd() -> None:
         REPO / "pyproject.toml",
         *(REPO / "quackd").rglob("*.py"),
         *(REPO / "adapters").rglob("*.py"),
+        # the issue templates are read by the one person best placed to correct us, and the
+        # arm's said "nobody has run this" for two days after somebody had
+        *sorted((REPO / ".github" / "ISSUE_TEMPLATE").glob("*.yml")),
     ]
     for path in _living_docs() + sources:
-        text = path.read_text(encoding="utf-8")
+        # compared in lower case: the same claim was capitalised differently per page, which
+        # is how "Nothing here has run on hardware" outlived its lower case twin
+        text = path.read_text(encoding="utf-8").lower()
         for retired in _RETIRED_HARDWARE_CLAIMS:
-            assert retired not in text, (
+            assert retired.lower() not in text, (
                 f"{path.relative_to(REPO)} still says {retired!r}; an SO-101 ran quackd on "
                 "2026-09-15 (docs/adapter-status.md)"
             )
     # and the other half: the six that have not run must not be quietly promoted with it
     status = (REPO / "docs" / "adapter-status.md").read_text(encoding="utf-8")
     assert "2026-09-15" in status, "adapter-status.md does not date the one real run"
+
+
+def test_the_readme_hero_is_the_real_arm_and_its_caption_says_when_and_who() -> None:
+    """The front door's most checkable claim, and the one a well meaning edit would soften.
+
+    Until 2026-09-15 the hero was a render of a duck walked by the scripted pilot, and every
+    honest caption said so. It is a phone recording of a real arm under a real model now. The
+    needles rather than the wording, so the prose stays free: which file, and that the caption
+    dates it, names the model and names the body. And that it does not call itself scripted,
+    which is the one word that would make it the old claim again."""
+    gifs = re.findall(
+        r'src="https://raw\.githubusercontent\.com/rokbenko/quackd/main/(docs/assets/[^"?]+\.gif)',
+        README,
+    )
+    assert gifs, "the README shows no GIF at all"
+    assert gifs[0] == "docs/assets/lerobot.gif", (
+        f"the README's first GIF is {gifs[0]}. The hero is the recording of the real arm."
+    )
+    # anchored to the hero's own <p>: an unanchored search walks past a missing caption and
+    # binds these needles to the next figure's, so deleting the caption would pass
+    block = re.search(r"<p align=\"center\">(?:(?!</p>).)*?lerobot\.gif.*?</p>", README, flags=re.S)
+    assert block is not None, 'the hero is not in a <p align="center"> block'
+    caption = re.search(r"<sub>(.*?)</sub>", block.group(0), flags=re.S)
+    assert caption is not None, "the hero has no caption"
+    for needle in ("2026-09-15", "gpt-6-astra", "SO-101"):
+        assert needle in caption.group(1), f"the hero caption does not say {needle}"
+    assert "scripted" not in caption.group(1).lower(), "the hero is not the scripted pilot"
+
+
+def test_every_file_in_docs_assets_has_a_row_in_its_catalogue() -> None:
+    """`docs/assets/README.md` is where a reader finds out how a picture was made and whether
+    a model or a script drove it. An asset with no row is a picture with no provenance, which
+    for a recording of a real robot is the difference between evidence and decoration."""
+    catalogue = (REPO / "docs" / "assets" / "README.md").read_text(encoding="utf-8")
+    for asset in sorted((REPO / "docs" / "assets").iterdir()):
+        if not asset.is_file() or asset.suffix == ".py" or asset.name == "README.md":
+            continue
+        assert f"| `{asset.name}` |" in catalogue, (
+            f"docs/assets/{asset.name} has no row in docs/assets/README.md: say what it is "
+            "and how it was made, and whether the pilot in it was a model or the script."
+        )
 
 
 def test_no_living_document_or_user_facing_string_still_says_fleet() -> None:

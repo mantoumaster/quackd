@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 A robot ran quackd. On 2026-09-15 a LeRobot SO-101 follower arm, calibrated as `arm-01` and
-reached as `--robot lerobot:real --address COM5` with no registered name, did the thing every
+reached as `--robot lerobot:real --address COM3` with no registered name, did the thing every
 release before this one had to say nothing had ever done: it
 connected, and a real model drove it. Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0,
 piloted by OpenAI's `gpt-6-astra`. `ducks/lerobot-lookout.duck` ran and succeeded, and ran once
@@ -136,6 +136,48 @@ reports that it did.
 
 ### Changed
 
+- **The README leads with a real arm, and the hero is a recording of one.** Since 0.8 the picture
+  at the top of the page was two rendered Microducks in MuJoCo, one with quackd and one without,
+  walked by the scripted pilot with no key in the machine. It is `docs/assets/lerobot.gif` now: a
+  phone pointed at a bench on 2026-09-15, run `20260915-145349-goal`, an SO-101 follower on
+  `lerobot:real` told *wave to the camera with an extended arm*, and OpenAI's `gpt-6-astra`
+  choosing one of the arm's own verbs at a time, `move_joints` once to extend, four times to
+  roll the wrist and once more to return it to centre, then `stop`. The whole run at ten times speed. It is the only recording in this
+  repository with a model in the loop, and the only one made on hardware. It is also the one file
+  under `docs/assets` allowed over the 2048 KB cap, with an exclude in the hook, a cap of its own
+  in `docs/assets/lerobot_hero.py` and a test holding the two together: a render spends bytes on
+  what moved, a photograph of a lab spends them on every pixel of every frame, and the same nine
+  seconds fits under the general cap only at 320 pixels, which is no hero
+  ([ADR-0038](docs/adr/0038-the-readme-hero-is-a-real-run.md)).
+
+  Beside it, `docs/assets/lerobot-what-it-saw.png` is three of the ten frames the model itself was
+  sent: the arm folded before the first call, extended after the second with the webcam cropping
+  its raised end, and a hand waving back after the stop. A reader sees what the pilot had to go on
+  and not only what the phone saw. Both are cut by `docs/assets/lerobot_hero.py` from a video and a
+  run directory that are not in this repository and never will be, so that row of
+  `docs/assets/README.md` says where they are and that it is reproducible on one machine.
+
+  The page gained two sections. *Quickstart: a LeRobot SO-101 arm* is ten steps from an empty
+  laptop to the arm waving, condensed from `docs/lerobot-first-run.md`, and it says plainly that
+  two of its steps, the registered name and the rest pose, were written after that afternoon and
+  have not run on an arm. *What happened in that run* reads the transcript beside the pictures: the
+  command as typed, a third of the system prompt with the two wrong lines left in, all ten calls
+  with what each asked for and what the arm reached, the cost, both of the model's own sentences
+  verbatim, and an honest half about frames that were seconds stale, a detector that called a
+  shelf figurine a person on eight of ten steps, and a model that used the picture for exactly one
+  thing. The rendered pair moves down under *No robot yet? Try it in 60 seconds*, where it now
+  argues for the simulator rather than for the project, and carries its CC BY-NC-SA label there.
+
+  Every limitation stays where it was. Six of the seven bodies have not run on hardware, `pick` was
+  never loaded, the rest pose has been driven on no arm, the arm that ran was reached by
+  `--address` and not by a registered name, no flock has touched hardware, and the browser demo is
+  still unrecorded. `LAUNCH.md`, the LeRobot hardware issue template, `docs/faq.md`,
+  `docs/flock.md`, `docs/adapters.md`, `docs/memory.md`, `docs/licenses.md`,
+  `docs/adapters/lerobot.md`, `docs/registry.md` and `PLAN.md` are corrected to match, the guard
+  that scans living documents for the retired claim learns three more spellings and now reads the
+  issue templates too, and the port in every dated account of that afternoon is `COM3`, which is
+  what was actually typed.
+
 - **Breaking. `uv pip install quackd` now installs no robot at all.** Every adapter is its own
   distribution, built out of this repository as a uv workspace: `quackd-microduck`,
   `quackd-lerobot`, `quackd-rosbridge`, `quackd-open-duck`, `quackd-xlerobot`, `quackd-alohamini`
@@ -230,6 +272,23 @@ reports that it did.
   `frame` record. Anything reading a single image off an observation reads the list now.
 
 ### Fixed
+
+- **`--max-steps` changed the budget and not the sentence about it.** The `--goal` run of
+  2026-09-15 with `--max-steps 10` was handed a system prompt saying `Budgets: 40 steps` while
+  every observation header it then read said `step 0/10` and the transcript's own contract said
+  ten. The loop copied the override into the contract it enforces and built the prompt from the
+  task file's original, so the model planned against four times the budget the run would stop at,
+  and every `--max-steps` run before this one did the same. The prompt is built from the contract
+  the executor and the header read now, so the number the model is told is the number it gets.
+
+- **A `--goal` run told an arm to look with `observe` and to prefer `go_to`, and the arm had
+  neither.** The strategy paragraph `--goal` writes into the task body named the duck's verbs
+  whatever the body was, so the SO-101 on 2026-09-15 read `observe`, `search_scan` and `go_to` in
+  the same prompt whose allowlist at the top listed none of them and whose executor would
+  have refused all three. It worked around it by looking with `report_state`, which is not a thing
+  to rely on. The paragraph is written from the allowlist the body was actually granted now: the
+  looking verb it has, a composite only where it provides one, and a fresh reading rather than a
+  fresh frame where there is no camera verb. A Microduck's reads exactly as it did.
 
 - **The arm fell at the end of every run.** LeRobot's `disconnect()` disables torque by its own
   default, quackd took that default on purpose and wrote it down in `upstream_api.py` and on the

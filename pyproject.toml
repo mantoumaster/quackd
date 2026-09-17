@@ -172,7 +172,8 @@ include = [
   "README.md", "LICENSE", "NOTICE", "CHANGELOG.md", "hatch_build.py",
 ]
 # The README's images are served from raw.githubusercontent, so no published artefact ever
-# needed them. Keeping them out matters for one of them: the hero renders upstream's model
+# needed them. Keeping them out matters for one of them: `quackd-on-off.gif` renders
+# upstream's model
 # and carries its CC BY-SA-NC terms, and a published package must stay wholly Apache-2.0.
 exclude = ["docs/assets/*.gif", "docs/assets/*.png", "docs/assets/*.svg"]
 
@@ -180,7 +181,7 @@ exclude = ["docs/assets/*.gif", "docs/assets/*.png", "docs/assets/*.svg"]
 line-length = 100
 target-version = "py311"
 # `docs/assets` held two scripts that nothing linted, formatted or type-checked, one of which
-# builds the README's hero. Only the binaries are excluded now.
+# builds the README's simulator figure. Only the binaries are excluded now.
 extend-exclude = ["runs"]
 
 # The adapter packages are quackd's own code in their own distributions, so they sort with

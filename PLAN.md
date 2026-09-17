@@ -7,9 +7,11 @@ Legend: 🔨 in progress · ⬜ todo · ⏸ blocked (with reason)
 
 ## Only a human can
 
-Six bring-ups, one per body. Each needs hardware quackd has never touched, and each ends the
-same way: flip that backend's row in [`docs/adapter-status.md`](docs/adapter-status.md), and
-not before.
+Six bring-ups still need hardware quackd has never touched, one per body that has not met
+any: the other six of the seven. The seventh happened, an SO-101 arm running
+`lerobot:real` on 2026-09-15, which flipped its row in
+[`docs/adapter-status.md`](docs/adapter-status.md). Each of the six ends the same way:
+flip that backend's row, and not before.
 
 - ⏸ **An Open Duck Mini v2**, the most reachable of the six because you can build it. Run
   `open_duck:bridge` against a duck you built, work through
@@ -40,11 +42,13 @@ not before.
   host and point `alohamini-lookout` at it. What most needs a real robot: whether `+x` is
   physically forward, the camera colour order, how fast the lift travels in mm/s, and whether
   the wrapper really does leave the arms holding.
-- ⏸ **An SO-101 arm.** Calibrate it with upstream's own tool and point `lerobot-lookout` at
-  it through [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md), nothing
-  moving until step 10, and a USB webcam through `--camera-url opencv://N` at step 8 if the lab
-  arm has none of its own. What most needs a real arm is that checklist's *What to report*, six
-  things chosen against Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
+- ✅ **An SO-101 arm**, on 2026-09-15: calibrated with upstream's own tool, then
+  `lerobot-lookout` and twelve free-form goals, on a USB webcam at `opencv://2`, piloted by
+  `gpt-6-astra`. What that afternoon left open, each a bring-up of its own: the rest pose,
+  written after that day and driven on no arm; `pick` and `load_policy()`, because no policy
+  was loaded; the registry path, because the arm was reached by `--address` and never by a
+  registered name; and that checklist's *What to report*, six things still chosen against
+  Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
 - ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
   with neither a lookout task nor a checklist. A coordinator flock across two machines needs a
   distributed clock first; a pilot flock needs none and has simply never been tried across two.
@@ -131,8 +135,10 @@ not before.
   Both jobs say in their own headers that a red run means go and look rather than stop the
   release, which is why 0.7.0, 0.8.0 and 0.9.0 all shipped over them. Nobody has gone and looked.
 
-- ⏸ **Exercise `remember` against a cloud model.** The scripted pilot has no script for it, so
-  `--provider fake` writes episodes and never a note.
+- ✅ **Exercise `remember` against a cloud model.** `gpt-6-astra` called it in seven of its
+  twelve runs on the arm on 2026-09-15, for five distinct notes, and the last run of that
+  afternoon read all five back out of its own prompt. Still open in a simulator, where the scripted pilot has no
+  script for it, so `--provider fake` writes episodes and never a note.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
   for it, so it is the one asset a commit here cannot ship, and it is now a version behind: the
   card was rebuilt around the duck head the README and quackd.org both use, so the one GitHub

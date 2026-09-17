@@ -6,8 +6,13 @@ repos:
       - id: trailing-whitespace
       - id: check-yaml
       - id: check-toml
+      # The README hero is the one exception, and it has a cap of its own in
+      # `docs/assets/lerobot_hero.py`. A render spends bytes on what moved; a photograph of a
+      # lab spends them on every pixel of every frame, so the recording of the real arm does
+      # not fit here at a width worth putting at the top of a page. Everything else does.
       - id: check-added-large-files
         args: ["--maxkb=2048"]
+        exclude: ^docs/assets/lerobot\.gif$
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.6.9
     hooks:

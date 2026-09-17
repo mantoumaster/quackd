@@ -24,7 +24,7 @@ Three documents cover this arm and they do different jobs:
 > now exists to fix.
 >
 > Two things that account does not cover. It was reached as `--robot lerobot:real --address
-> COM5`, with no registered name, so the registry steps below have not been run on hardware
+> COM3`, with no registered name, so the registry steps below have not been run on hardware
 > either; `arm-01` is both the id that run calibrated under and the id a bare
 > `--robot lerobot:real` uses when you have not named the robot, which is why the two look
 > alike. And the rest pose in section 07 was written after that day and has not been tried on
