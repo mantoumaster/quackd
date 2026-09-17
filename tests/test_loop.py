@@ -11,7 +11,6 @@ import pytest
 from PIL import Image
 
 from quackd.adapters.base import AdapterError
-from quackd.adapters.microduck import MicroduckAdapter
 from quackd.agent.loop import AgentLoop, RunConfig, run_duck
 from quackd.agent.providers.base import (
     Exchange,
@@ -29,6 +28,7 @@ from quackd.transport.base import CameraFrame
 from quackd.transport.mock import MockTransport
 from quackd_lerobot import LeRobotAdapter
 from quackd_lerobot.mock import LeRobotMock
+from quackd_microduck import MicroduckAdapter
 
 # the verdict comes first on every run now: the scripted pilot answers it as a rule, and the
 # duck's own three verbs follow exactly as they did
