@@ -268,7 +268,9 @@ class Estimate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     object: str
-    quantity: Literal["mass_kg", "size_m", "distance_m", "height_m", "count", "other"]
+    quantity: Literal[
+        "mass_kg", "size_m", "distance_m", "height_m", "duration_min", "count", "other"
+    ]
     value: float
     basis: Literal["image", "detections", "task_text", "prior_knowledge"]
     confidence: Literal["low", "medium", "high"]

@@ -86,6 +86,7 @@ ASSESS_TASK = {
                                 "size_m",
                                 "distance_m",
                                 "height_m",
+                                "duration_min",
                                 "count",
                                 "other",
                             ],

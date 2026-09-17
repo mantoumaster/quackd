@@ -54,6 +54,23 @@ def test_the_tool_and_the_model_describe_the_same_verdict() -> None:
     assert set(schema["properties"]["needs"]["properties"]) == {*NEEDS_NUMBERS, *NEEDS_WORDS}
 
 
+def test_the_two_vocabularies_of_one_tool_agree_on_a_duration() -> None:
+    """`needs` speaks `endurance_min` and `estimates` could not say a duration at all, so a
+    pilot could demand endurance and not estimate it. The model measured in #24 tried
+    `quantity: "endurance_min"`, got a validation refusal, and spent an LLM call on it twice
+    out of six. The enum is written by hand in two files, which is how they drifted, so this
+    holds them to each other."""
+    from typing import get_args
+
+    from quackd.verdict import Estimate
+
+    items = ASSESS_TASK["input_schema"]["properties"]["estimates"]["items"]  # type: ignore[index]
+    quantities = items["properties"]["quantity"]["enum"]
+    assert quantities == list(get_args(Estimate.model_fields["quantity"].annotation))
+    assert "duration_min" in quantities
+    assert any(key.endswith("_min") for key in NEEDS_NUMBERS), "the need that asked for one"
+
+
 def test_the_needs_vocabulary_is_the_datasheets_own() -> None:
     fields = set(Datasheet.model_fields)
     for key in NEEDS_NUMBERS:
