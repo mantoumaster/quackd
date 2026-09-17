@@ -237,7 +237,7 @@ def own_sheet_objection(
     return (
         "this body does not meet what you said the task needs: "
         + "; ".join(lacking)
-        + f". A feasible verdict cannot rest on a need its own datasheet does not meet. Call "
+        + ". A feasible verdict cannot rest on a need its own datasheet does not meet. Call "
         f"{tool} again: infeasible if that need decides the task, uncertain if a person could "
         "know the figure, or feasible with the need corrected if you asked for more than the "
         "task turns on"
