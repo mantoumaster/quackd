@@ -273,6 +273,46 @@ reports that it did.
 
 ### Fixed
 
+- **The duck could not walk to anything straight ahead, and the nightly job had been saying so
+  since 2026-09-09.** The physics backend raises a small twist to the gait floor, because below
+  it upstream's walking policy stands and shifts its weight rather than stepping, and `go_to`
+  asks for 0.2 m/s and was raised to exactly that floor. The floor was measured at 0.22 on
+  MuJoCo 3.12. The lock resolves MuJoCo 3.13 now, where 0.22 is no longer enough: the duck
+  covers thirteen millimetres in ten seconds and 0.23 walks 0.81 to 0.89 m. So a ball dead
+  ahead was unreachable, `go_to` timed out three times, and the duck's own abort rule ended the
+  run. It only ever looked fine because turning toward a ball off to one side brought it inside
+  the stop distance without a step being taken. The floor is 0.23 now, re-measured across all
+  ten sweep seeds, the achieved fraction with it at 0.38 where it was 0.42, and both numbers
+  are corrected in the seven places that quote them, the browser demo's own copy included.
+  `upstream_api.GAIT_THRESHOLD` carries both measurements and the MuJoCo version each was taken
+  on, because a floor that moves with the physics build is the sort of thing the next person
+  should be told rather than left to find.
+
+- **A duck lying on its face read as facing backwards on one operating system and forwards on
+  another.** Prone is exactly the gimbal singularity, so both arguments to the yaw's `atan2`
+  are mathematically zero and the answer is decided by the last bit of a subtraction that
+  should be exact. It rounds negative on Windows and positive on Linux, so the same duck in the
+  same pose read pi here and 0 in CI, and the test that documented why `stand_up` reads the
+  trunk's own axis instead was asserting a coin flip. Nothing behaved differently: `stand_up`
+  has used `heading()` since it was written. The test now asserts the degeneracy itself, which
+  is true wherever it runs.
+
+- **`stand` never finished on upstream's simulated ToddlerBot, and the contract job had never
+  once passed.** quackd refuses an all-zeros reading with all-zeros velocity, because that is
+  byte for byte what a Dynamixel bulk read hands back when it fails, and driving a position
+  controller to it commands a full-scale move to zero. Upstream's MuJoCo body rests with every
+  motor and every velocity at exactly zero. So every reading was refused, the planner was never
+  reached, and `stand` reported itself moving for as long as anybody waited without turning a
+  joint. The refusal is about a serial bus and a simulator has none, so it applies to hardware
+  now and the daemon is told which it is driving. The guard is unchanged where it matters.
+
+- **The contract job's deadman test asked a socket it had just closed on purpose.** It kills the
+  client to prove the daemon survives a client vanishing, then asked that same dead link for the
+  daemon's health, which raises from the writer's own drain. It asks over a live connection now,
+  which is what the assertion was ever about, and the killed link is left alone rather than
+  raced. The stand test's wait was a flat 25 seconds against a slew the daemon gives itself up
+  to 120 for, so it now reads that ceiling out of the daemon rather than guessing at it.
+
 - **`--max-steps` changed the budget and not the sentence about it.** The `--goal` run of
   2026-09-15 with `--max-steps 10` was handed a system prompt saying `Budgets: 40 steps` while
   every observation header it then read said `step 0/10` and the transcript's own contract said

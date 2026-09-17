@@ -294,13 +294,16 @@ HEAD_RANGE = UpstreamRef(
 # ── what quackd measured, and assumes ───────────────────────────────────────────────────
 
 GAIT_THRESHOLD = UpstreamRef(
-    "no gait below vx 0.22 m/s or wz 1.0 rad/s; above it about 0.42x the commanded speed",
+    "no gait below vx 0.23 m/s or wz 1.0 rad/s; above it about 0.38x the commanded speed",
     "UNVERIFIED",
     src(_INFER),
-    "measured 2026-09-07 with the XML's PD actuators on MuJoCo 3.12: vx 0.20 walks 1 cm in "
-    "10 s, 0.22 walks 0.90 m; wz 0.8 turns 0.14 rad, 1.0 turns 3.83 rad. Upstream trains and "
-    "deploys with the BAM actuator model, so the real robot may track commands directly. "
-    "quackd scales a non-zero twist up so the gait starts, and says so in the state",
+    "re-measured 2026-09-17 with the XML's PD actuators on MuJoCo 3.13: vx 0.225 walks 1.3 cm "
+    "in 10 s and 0.23 walks 0.81 to 0.89 m on all ten sweep seeds; wz 1.0 turns 2.2 rad in "
+    "5 s. On MuJoCo 3.12 on 2026-09-07 the same measurement put the floor at 0.22 and the "
+    "turn at 3.83 rad in 5 s, so this threshold is a property of the physics build and not "
+    "only of the policy, and it is why the nightly asset job re-runs the sweep. Upstream "
+    "trains and deploys with the BAM actuator model, so the real robot may track commands "
+    "directly. quackd scales a non-zero twist up so the gait starts, and says so in the state",
 )
 HEAD_PITCH_SIGN = UpstreamRef(
     "a positive head_pitch in the command vector tilts the camera down",

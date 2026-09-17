@@ -20,6 +20,7 @@ It still proves nothing about 3 kg of servos, and `docs/adapter-status.md` says 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import socket
 import subprocess
@@ -35,6 +36,33 @@ from tests.conftest import REPO
 
 DAEMON = REPO / "bridge" / "toddlerbot" / "quackd_toddlerbot_bridge.py"
 ROBOT = "toddlerbot_2xc"
+
+
+def _daemon_constant(name: str) -> float:
+    """One module-level float out of the daemon, read rather than imported.
+
+    Importing it here would pull in upstream at test-collection time, and this module is
+    collected on every machine, including the ones that skip. Reading the source keeps the
+    number in one place without that: a deadline hard-coded here drifts away from the
+    daemon's own arithmetic, which is exactly what made `stand` look stuck."""
+    import ast
+
+    tree = ast.parse(DAEMON.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) == name for t in node.targets
+        ):
+            return float(ast.literal_eval(node.value))
+    raise AssertionError(f"{DAEMON.name} no longer defines {name}")
+
+
+#: The longest the daemon lets a slew run before calling the body stuck. A `stand` is done
+#: when it arrives and not on a clock, so this is the only thing bounding the wait, and the
+#: test used to bound it at 25 s instead. A slew is handed out one 50 Hz tick at a time and
+#: each tick costs a bus round trip, which the daemon's own SETTLE_OVERHEAD puts at over six
+#: times its arithmetic on a loaded runner: anything past about 1.25 rad of travel then takes
+#: longer than 25 s, and the nightly job read that as a body that never finished standing.
+SETTLE_CEILING_S = _daemon_constant("SETTLE_MAX_S")
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("QUACKD_TODDLERBOT_CONTRACT") != "1",
@@ -168,7 +196,7 @@ async def test_stand_settles_on_a_body_that_pushes_back() -> None:
         moved = False
         settled = False
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + 25.0
+        deadline = loop.time() + SETTLE_CEILING_S
         while loop.time() < deadline:
             extras = (await link.get_state()).extras
             moved = moved or bool(extras["moving"])
@@ -226,17 +254,28 @@ async def test_a_client_that_goes_quiet_trips_the_deadman_on_real_physics() -> N
         await asyncio.sleep(2.0)  # four times the daemon's 500 ms deadman
 
         # and the daemon is still alive, still looping, and holding rather than limp
+        # Asked over a second connection, because the first one is the thing under test: its
+        # socket was closed on purpose two statements ago, and `request` on it raises
+        # `ConnectionResetError` from the writer's own drain. The point being made is about
+        # the daemon rather than the link, so a live connection is the honest way to ask.
         watcher = ToddlerBotBridge(address=daemon.address)
         await watcher.connect()
         state = await watcher.get_state()
         assert state.extras["deadman_tripped"] is True, daemon.say_why()
         assert state.extras["loop_hz"] > 40.0, daemon.say_why()
-        await watcher.close()
-        health = await link.request("bot.health")
+        health = await watcher.request("bot.health")
         assert isinstance(health, dict)
         assert health.get("loop_hz", 0) > 40.0, "it is still running the loop, not stopped"
         assert daemon.alive(), "and the daemon is still alive rather than having exited"
-        await link.close()
+        await watcher.close()
+
+        # The killed link is left alone. Asking it anything is a race with its own socket:
+        # `request` drains before it waits, so a writer the OS has already torn down raises
+        # `ConnectionResetError` and one it has not yet noticed buffers the write and times
+        # out three seconds later as a `TransportError`. Which of the two happens says
+        # nothing about the daemon, and the daemon is the subject here.
+        with contextlib.suppress(Exception):
+            await link.close()
 
 
 async def test_the_motions_the_workflow_fetched_actually_loaded() -> None:

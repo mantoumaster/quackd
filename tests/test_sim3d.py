@@ -668,8 +668,20 @@ def test_a_duck_that_fell_on_its_face_stands_up_facing_the_way_it_was_going() ->
         0.0,
     )
     mujoco.mj_forward(b._model, b._data)
-    assert abs(b.pose()[2]) == pytest.approx(math.pi, abs=0.01), "the quaternion says backwards"
-    assert b.heading() == pytest.approx(0.0, abs=0.01), "and the trunk's own axis says forwards"
+
+    # Prone is exactly the singularity, so both arguments to the yaw's `atan2` collapse to
+    # zero and what comes back is decided by the last bit of `1 - 2 * (qy² + qz²)`, which is
+    # mathematically zero. It rounds negative on Windows and positive on Linux, so the same
+    # duck in the same pose reads pi here and 0 in CI, and asserting either one is asserting a
+    # coin flip. What is true everywhere is that the reading carries no information at all.
+    qw, qx, qy, qz = b._data.qpos[b.free_q + 3 : b.free_q + 7]
+    assert abs(2 * (qw * qz + qx * qy)) < 1e-9, "the quaternion yaw's numerator has not collapsed"
+    assert abs(1 - 2 * (qy * qy + qz * qz)) < 1e-9, "nor its denominator, so this is not prone"
+    assert abs(math.sin(b.pose()[2])) < 0.01, "and so it reads as 0 or pi, never anything between"
+
+    # the assertion with something behind it: the trunk's own axis still knows which way the
+    # duck was walking, which is what `stand_up` reads and why it exists
+    assert b.heading() == pytest.approx(0.0, abs=0.01), "the trunk's own axis says forwards"
     w.close()
 
 

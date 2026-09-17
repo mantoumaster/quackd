@@ -128,6 +128,38 @@ def test_an_all_zeros_reading_is_refused_rather_than_believed() -> None:
     assert not D.looks_like_a_dropped_read(np.array([0.0, 0.1, 0.0, 0.0]), np.zeros(4))
 
 
+def test_a_simulated_body_at_its_home_pose_is_believed_rather_than_refused() -> None:
+    """The guard above is about a serial bus, and a simulator has none.
+
+    Upstream's MuJoCo body starts with every motor at zero and every velocity at zero, which
+    is exactly the buffer a failed bulk read hands back. Applying the guard there refused the
+    first reading, and then every reading, because nothing moved to make one look different:
+    `observe` returned None on every tick, `plan` was never reached, and `stand` reported
+    itself moving for as long as anybody waited without turning a joint. The nightly contract
+    job had never once passed because of it.
+
+    So the caller says whether these numbers came off a bus. Hardware does, and keeps the
+    refusal. A simulator does not, and is believed."""
+    on_a_bus = _daemon()
+    on_a_bus.command.hold(np.ones(on_a_bus.robot.nu, np.float32) * 0.5)  # type: ignore[attr-defined]
+    _ticks(on_a_bus, 200)
+    settled = on_a_bus.safe.pose.copy()  # type: ignore[attr-defined]
+    before = on_a_bus.safe.rejected  # type: ignore[attr-defined]
+    on_a_bus.sim.drop_next = True  # type: ignore[attr-defined]
+    on_a_bus.tick()  # type: ignore[attr-defined]
+    assert on_a_bus.safe.rejected == before + 1, "hardware still refuses the zeroed buffer"  # type: ignore[attr-defined]
+    assert np.allclose(on_a_bus.safe.pose, settled)  # type: ignore[attr-defined]
+
+    no_bus = _daemon(bus=False)
+    no_bus.command.hold(np.ones(no_bus.robot.nu, np.float32) * 0.5)  # type: ignore[attr-defined]
+    _ticks(no_bus, 200)
+    assert float(np.max(no_bus.safe.pose)) > 0.1, "the fake body moved"  # type: ignore[attr-defined]
+    no_bus.sim.drop_next = True  # type: ignore[attr-defined]
+    no_bus.tick()  # type: ignore[attr-defined]
+    assert no_bus.safe.rejected == 0, "a simulator has no dropped read to guard against"  # type: ignore[attr-defined]
+    assert np.allclose(no_bus.safe.pose, 0.0), "and an all-zeros pose is just a pose"  # type: ignore[attr-defined]
+
+
 def test_the_last_good_pose_survives_a_dropped_read() -> None:
     d = _daemon()
     d.command.hold(np.ones(d.robot.nu, np.float32) * 0.5)

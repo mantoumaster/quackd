@@ -48,10 +48,10 @@ const OBS = 61, NJ = 14, CMD = 13;
 const STAND_SWITCH = 0.05;        // upstream's --switch-threshold
 
 // ── measured here, not read from upstream (quackd/sim3d/upstream_api.py GAIT_THRESHOLD) ──
-export const GAIT_FLOOR = { vx: 0.22, vy: 0.30, wz: 1.0 };
+export const GAIT_FLOOR = { vx: 0.23, vy: 0.30, wz: 1.0 };
 // What fraction of a commanded twist the body actually delivers. Python holds the same
 // number in quackd/sim3d/gait.py; the prompt quotes it rather than rounding it to "half".
-export const ACHIEVED_FRACTION = 0.42;
+export const ACHIEVED_FRACTION = 0.38;
 // What the world accepts before the gait floor sees it, from quackd/sim3d/world.py. The verb
 // schemas advertise the same numbers; this is the floor under a model that ignores them.
 export const MAX_VX = 0.3, MAX_VY = 0.2, MAX_WZ = 1.5;

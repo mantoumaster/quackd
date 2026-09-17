@@ -199,7 +199,12 @@ def looks_like_a_dropped_read(pos: Any, vel: Any) -> bool:
 
     With zero retries a comm failure hands back the pre-zeroed buffer, which is
     indistinguishable from every joint genuinely at zero. Feeding that to a position
-    controller commands a full-scale move to zero, so it is refused instead."""
+    controller commands a full-scale move to zero, so it is refused instead.
+
+    It is indistinguishable only because a real bus can fail that way. A simulator cannot:
+    there is no bulk read to drop, and all-zeros with zero velocity is simply a body standing
+    at its home pose, which is exactly where upstream's MuJoCo model starts. So the caller
+    decides whether the guard applies, and `Daemon.bus` is how it knows."""
     if pos is None or len(pos) == 0:
         return True
     return bool(np.all(pos == 0.0) and np.all(vel == 0.0))
@@ -240,8 +245,9 @@ class SafeState:
         self.stamp = 0.0
         self.rejected = 0
 
-    def offer(self, pos: Any, vel: Any, now: float) -> bool:
-        if looks_like_a_dropped_read(pos, vel):
+    def offer(self, pos: Any, vel: Any, now: float, *, checked: bool = True) -> bool:
+        """`checked` is whether these numbers came off a bus that can drop a read."""
+        if checked and looks_like_a_dropped_read(pos, vel):
             self.rejected += 1
             return False
         self.pose = np.array(pos, dtype=np.float32)
@@ -332,10 +338,16 @@ def settle_budget(travel: float) -> float:
 class Daemon:
     """Owns the robot, the loop and the safe pose. Everything else asks it politely."""
 
-    def __init__(self, robot: Any, sim: Any, *, fake: bool = False) -> None:
+    def __init__(self, robot: Any, sim: Any, *, fake: bool = False, bus: bool = True) -> None:
         self.robot = robot
         self.sim = sim
         self.fake = fake
+        #: Whether readings arrive over a serial bus that can hand back a zeroed buffer. On
+        #: hardware they do, and an all-zeros read is refused rather than driven to. On a
+        #: simulator they do not, and refusing it means refusing the home pose upstream's
+        #: MuJoCo body starts in: every read rejected, `plan` never reached, and a `stand`
+        #: that reports itself moving for as long as anybody waits without a joint turning.
+        self.bus = bus
         self.lock = threading.Lock()
         self.running = False
         self.loop_hz = 0.0
@@ -434,7 +446,7 @@ class Daemon:
         if len(pos) != len(self.order):
             log.error("partial motor read: %d of %d; holding", len(pos), len(self.order))
             return None
-        if not self.safe.offer(pos, vel, time.monotonic()):
+        if not self.safe.offer(pos, vel, time.monotonic(), checked=self.bus):
             return None
         if getattr(obs, "rot", None) is not None:
             try:
@@ -1295,7 +1307,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
-    daemon = Daemon(robot, sim, fake=args.fake)
+    # a simulated body has no bulk read to drop, and upstream's MuJoCo model starts at
+    # exactly the all-zeros pose the guard is built to refuse
+    daemon = Daemon(robot, sim, fake=args.fake, bus=args.sim == "real" and not args.fake)
 
     # From here the motors are live and torqued: upstream's RealWorld constructor energises
     # them the moment it returns. Everything that follows can fail, and anything that leaves

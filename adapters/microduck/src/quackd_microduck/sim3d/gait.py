@@ -17,7 +17,15 @@ import math
 
 #: The command envelope the walking policy actually uses. Below the floor it does not step at
 #: all: it stands and shifts its weight. The ceilings are the ranges upstream trains on.
-GAIT_FLOOR_VX = 0.22
+#:
+#: The forward floor is a property of the physics as much as of the policy, so it moves when
+#: MuJoCo does. It was 0.22 on 3.12 and is 0.23 on 3.13: at 0.225 the duck now stands and
+#: shifts its weight for ten seconds and covers thirteen millimetres, and at 0.230 it walks
+#: 0.81 to 0.89 m in the same ten on every one of the ten sweep seeds. That difference is the
+#: whole of `go_to` on this body, which asks for 0.2 and is raised to exactly the floor: a
+#: floor one hundredth too low is a duck that reports walking to a ball dead ahead and never
+#: arrives. `upstream_api.GAIT_THRESHOLD` records both measurements and the versions.
+GAIT_FLOOR_VX = 0.23
 GAIT_FLOOR_VY = 0.30
 GAIT_FLOOR_WZ = 1.00
 CMD_MAX_VX = 0.40
@@ -29,7 +37,9 @@ CMD_MAX_WZ = 1.50
 DEAD_FRACTION = 1 / 3
 
 #: Roughly what fraction of a command the body achieves, for the honest line in the state.
-ACHIEVED_FRACTION = 0.42
+#: Re-measured with the floor on 2026-09-17: 0.88 m in ten seconds at a commanded 0.23 is
+#: 0.38, where MuJoCo 3.12 gave 0.42.
+ACHIEVED_FRACTION = 0.38
 
 FLOORS = (GAIT_FLOOR_VX, GAIT_FLOOR_VY, GAIT_FLOOR_WZ)
 CEILINGS = (CMD_MAX_VX, CMD_MAX_VY, CMD_MAX_WZ)

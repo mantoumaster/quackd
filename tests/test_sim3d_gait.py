@@ -21,10 +21,14 @@ def test_the_gait_floor_scales_a_twist_instead_of_dropping_or_lurching() -> None
     # too small to step at all: standing still beats a lurch nobody asked for
     assert usable_twist((0.02, 0.0, 0.0)) == (0.0, 0.0, 0.0)
     assert usable_twist((0.0, 0.0, 0.1)) == (0.0, 0.0, 0.0)
-    # below the floor: raised, keeping the ratio, so an arc stays an arc
-    vx, _vy, wz = usable_twist((0.11, 0.0, 0.5))
-    assert vx == pytest.approx(GAIT_FLOOR_VX)
-    assert wz == pytest.approx(0.5 * GAIT_FLOOR_VX / 0.11)
+    # Below the floor: raised, keeping the ratio, so an arc stays an arc. Written as fractions
+    # of the floors rather than as two decimals, because the forward floor is a measurement
+    # and it moved once already when MuJoCo went from 3.12 to 3.13. The old pair happened to
+    # put both axes at their floor together, so a floor that moved a hundredth made the turn
+    # the limiting axis and this read as a broken scale rather than a stale example.
+    vx, _vy, wz = usable_twist((GAIT_FLOOR_VX / 2, 0.0, GAIT_FLOOR_WZ / 4))
+    assert vx == pytest.approx(GAIT_FLOOR_VX), "the limiting axis is raised to its floor"
+    assert wz == pytest.approx(GAIT_FLOOR_WZ / 2), "and the other keeps its share of the arc"
     # already walking: passed through untouched, however small the turn
     assert usable_twist((0.25, 0.0, 0.3)) == pytest.approx((0.25, 0.0, 0.3))
     # a turn on its own is raised to the turning floor

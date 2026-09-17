@@ -69,7 +69,7 @@ Apple Silicon, and no GPU. There is no Intel Mac wheel.
   CI exercises every intent, the recorder and a seeded acceptance sweep offline, and the
   tests that need the real duck skip when the cache is empty.
 - **The gait floor is handled in the open.** Under the model's own PD actuators the walking
-  policy does not step below about 0.22 m/s or 1.0 rad/s, and it achieves about 0.42 of
+  policy does not step below about 0.23 m/s or 1.0 rad/s, and it achieves about 0.38 of
   what it is asked. `move` defaults to 0.15 m/s, so passing a command through unchanged
   would give a duck that reports walking and stands still, which is the worst failure a
   simulator can have. A non-zero twist is scaled bodily up to the floor, keeping the ratio
