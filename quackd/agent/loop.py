@@ -391,6 +391,11 @@ class AgentLoop:
             # carrying `human` is refused: a warning in the trace stops nothing.
             objection = own_sheet_objection(verdict.needs, self.executor.manifest)
             if objection is not None:
+                # and the gate shuts. A refusal that left an earlier `feasible` standing
+                # refused the words and not the motion: a pilot cleared for one task, then
+                # naming a need this body cannot meet, went on moving on the older verdict
+                # while the newer and better informed one was thrown away.
+                self.executor.verdict = None
                 return VerbResult.fail(objection), None
         self.executor.verdict = verdict
         if verdict.verdict == "infeasible":

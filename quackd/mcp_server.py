@@ -416,6 +416,9 @@ class RobotSession:
                 verdict.needs, self.effective_manifest(), tool="robot_assess_task"
             )
             if objection is not None:
+                # the gate shuts, as it does in the loop: an earlier `feasible` left standing
+                # would refuse the words and not the motion
+                self.executor.verdict = None
                 return {"ok": False, "robot": self.name, "summary": objection}
         self.executor.verdict = verdict
         payload: dict[str, Any] = {

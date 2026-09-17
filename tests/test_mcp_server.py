@@ -568,8 +568,8 @@ async def test_a_feasible_verdict_is_held_to_the_sessions_own_datasheet() -> Non
         )
         assert refused["ok"] is False
         assert "payload_kg >= 3 (not published)" in refused["summary"]
-        assert "robot_assess_task again" in refused["summary"]
-        assert "uncertain if a person could" in refused["summary"], "the way out that asks"
+        assert "Call robot_assess_task" in refused["summary"], "named for this surface"
+        assert "uncertain to put it to a person" in refused["summary"], "the way out that asks"
         assert session.executor.verdict is None, "a refused verdict is never recorded"
 
         moved = _data(
@@ -591,6 +591,27 @@ async def test_a_feasible_verdict_is_held_to_the_sessions_own_datasheet() -> Non
         )
         assert accepted["ok"] is True and accepted["verdict"] == "feasible"
         assert session.executor.cleared
+
+        # and a refusal shuts a gate an earlier verdict opened, or it would refuse the words
+        # and not the motion: this pilot is cleared right now, and says the task needs 45
+        # minutes of a running time nobody published
+        again = _data(
+            await client.call_tool(
+                "robot_assess_task",
+                {
+                    "verdict": "feasible",
+                    "reason": "and it can patrol for 45 minutes",
+                    "needs": {"endurance_min": 45},
+                },
+            )
+        )
+        assert again["ok"] is False and "endurance_min >= 45" in again["summary"]
+        assert not session.executor.cleared, "the older feasible was left carrying the motion"
+        assert session.executor.verdict is None
+        stopped = _data(
+            await client.call_tool("robot_run_verb", {"verb": "move", "params": {"vx": 0.1}})
+        )
+        assert stopped["ok"] is False and "robot_assess_task" in stopped["summary"]
 
 
 async def test_the_robot_list_row_carries_the_body_as_data_and_as_a_sentence() -> None:

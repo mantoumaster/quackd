@@ -28,7 +28,7 @@ from quackd.perception.base import Detector
 from quackd.trace import TracedTransport, Tracer, counting
 from quackd.transport.base import CameraFrame, DuckState, DuckTransport
 from quackd.verbs.registry import Verb, VerbContext, VerbNotFound, VerbRegistry, VerbResult
-from quackd.verdict import BEFORE_VERDICT, Verdict
+from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY, Verdict
 
 if TYPE_CHECKING:
     from quackd.adapters.manifest import RobotManifest
@@ -359,7 +359,12 @@ class Executor:
         # on purpose: it is an unproven policy, so a `.duck` that named one `observe` on a
         # body with no camera verb would otherwise have it run before any verdict. The
         # confirm gate below would still stop it, and `--yes` answers the confirm gate.
-        looks = verb.read_only or (canonical in BEFORE_VERDICT and verb.kind != "learned")
+        # `MOVES_THE_BODY` wins over the flag: where quackd has said a name is motion, a verb
+        # arriving under that name and carrying `read_only` is saying two contradictory things
+        # about itself, and the gate believes quackd's own record rather than the newcomer.
+        looks = (canonical in BEFORE_VERDICT and verb.kind != "learned") or (
+            verb.read_only and canonical not in MOVES_THE_BODY
+        )
         if self.require_verdict and not looks and not self.cleared:
             why = (
                 self.verdict.blocking_reason()

@@ -156,7 +156,15 @@ def missing_needs_in(
     out: list[str] = []
     for key in sorted(needs):
         want = needs[key]
-        if key in NEEDS_NUMBERS and key != "work_height_m" and float(want) == 0:
+        if (
+            key in NEEDS_NUMBERS
+            and key != "work_height_m"
+            # a raw dict off the wire reaches this before anything validates it, so a null or a
+            # word is not a zero and must fall through to the refusal rather than raise here
+            and isinstance(want, int | float)
+            and not isinstance(want, bool)
+            and float(want) == 0
+        ):
             # "this task needs no payload" is a real thing to say, and the tool asks the pilot
             # to fill `needs` in even when the verdict is feasible. A floor of zero is not the
             # same: `work_height_m: 0` means the ground, which a body either reaches or does not
@@ -177,8 +185,12 @@ def missing_needs_in(
                 # the prompt renders an unpublished terrain as "assume a flat indoor floor and
                 # decline anything else" (`prompts._power_and_ground`), so a pilot that asks
                 # for exactly that has done as it was told and must not be refused for it.
-                # Anything more than a flat indoor floor is still unmet.
-                if want != "indoor_flat":
+                # Only where the prompt says it, though: a body with no datasheet at all is
+                # told the opposite ("treat every physical limit as not published"), and one
+                # that does not move is never shown the sentence. Anything above a flat indoor
+                # floor is unmet either way.
+                told_to_assume = bool(facts) and mobility not in (None, "none")
+                if not (told_to_assume and want == "indoor_flat"):
                     out.append(f"terrain = {want} (not published)")
             elif TERRAIN_ORDER.index(str(rated)) < TERRAIN_ORDER.index(str(want)):  # type: ignore[arg-type]
                 out.append(f"terrain = {want} (rated {rated})")
@@ -229,8 +241,12 @@ def own_sheet_objection(
 
     It offers three ways out rather than one. The pilot measured on Qwen3-32B answered
     `uncertain` to a refusal that named only `infeasible`, and `uncertain` is a fine answer
-    here: it asks a person, and a person may know a figure the maker never published. The
-    third is the honest case where the pilot simply asked for more than the task needs.
+    here: it asks a person, and a person who knows the figure can put it in the task file's
+    `datasheet:` block, which is the only thing that makes a sheet say something new. The
+    other is the honest case where the pilot asked for more than the task needs.
+
+    Both callers withdraw the standing verdict when this fires, so the gate shuts rather than
+    leaving an older `feasible` to carry the motion.
 
     A body with no manifest has no sheet to object with, and a verdict that named no need has
     nothing to be held to."""
@@ -242,10 +258,11 @@ def own_sheet_objection(
     return (
         "this body does not meet what you said the task needs: "
         + "; ".join(lacking)
-        + ". A feasible verdict cannot rest on a need its own datasheet does not meet. Call "
-        f"{tool} again: infeasible if that need decides the task, uncertain if a person could "
-        "know the figure, or feasible with the need corrected if you asked for more than the "
-        "task turns on"
+        + ". A feasible verdict cannot rest on a need its own datasheet does not meet, and "
+        f"nothing moves until you answer again. Call {tool}: infeasible if that need decides "
+        "the task, feasible with the need corrected if you asked for more than the task turns "
+        "on, or uncertain to put it to a person, who can answer it or publish the figure in "
+        "the task file's own datasheet block"
     )
 
 

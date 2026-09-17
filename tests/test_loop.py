@@ -1096,6 +1096,46 @@ async def test_a_need_this_body_meets_still_passes(hello_duck: DuckFile, tmp_pat
     assert assessed[0]["ok"] is True
 
 
+async def test_a_refused_verdict_shuts_the_gate_an_earlier_one_opened(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """A refusal that left an earlier `feasible` standing refused the words and not the motion.
+
+    The check runs before the verdict is recorded, the way the `human` and validation refusals
+    do, so a pilot already cleared for one reading of the task could name a need this body
+    cannot meet and go on moving on the older verdict, with the newer and better informed one
+    thrown away. That is the exact failure #24 exists to stop, one re-assessment later. So the
+    refusal withdraws what was standing: nothing moves until the pilot answers again.
+    """
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "it walks", needs={"mobility": "legged"}),
+                    ToolCall(name="quack", arguments={"text": "off we go"}),
+                    _verdict_call("feasible", "a 45 minute patrol", needs={"endurance_min": 45}),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 0.1}),
+                    ToolCall(name="declare_failure", arguments={"reason": "cannot judge it"}),
+                ]
+            ),
+            transport=MicroduckAdapter(MockTransport()),
+            runs_dir=tmp_path,
+        )
+    )
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = [e for e in events if e["kind"] == "assess"]
+    assert assessed[0]["ok"] is True, "the first verdict cleared the gate"
+    assert assessed[1]["ok"] is False and "endurance_min >= 45" in assessed[1]["summary"]
+    refused = [
+        e
+        for e in events
+        if e["kind"] == "gate" and e.get("gate") == "verdict" and e.get("name") == "walk"
+    ]
+    assert refused, "the walk after the refusal was allowed by the withdrawn verdict"
+    assert "no feasibility verdict has been recorded" in str(refused[0]["reason"])
+
+
 async def test_yes_clears_the_doubt_a_refused_feasible_became(
     hello_duck: DuckFile, tmp_path: Path
 ) -> None:

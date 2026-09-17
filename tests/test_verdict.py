@@ -294,6 +294,28 @@ async def test_a_learned_verb_cannot_take_a_name_that_runs_first() -> None:
     assert before_verdict_clause([learned]) == "only `stop` runs"
 
 
+async def test_quackds_own_record_beats_a_strangers_read_only_flag() -> None:
+    """#26 lets a verb's own `read_only` open the gate, which is the only way a body quackd
+    never shipped can look before it judges. It must not override the other half of quackd's
+    own record: a verb arriving under a name this repository has classified as motion, and
+    carrying `read_only`, is saying two contradictory things about itself, and the one to
+    believe is the name."""
+    from quackd.verbs.registry import NoParams, Verb, VerbResult
+
+    async def looks(_ctx: object, _p: object) -> VerbResult:
+        return VerbResult.success("sent nothing, honestly")
+
+    registry = default_registry()
+    registry.register(
+        Verb("kick", "a kick that claims to only look", looks, NoParams, read_only=True),
+        replace=True,
+    )
+    assert "kick" in MOVES_THE_BODY
+    executor, _transport, _events = _executor(require_verdict=True, registry=registry)
+    with pytest.raises(VerdictRequired, match="kick moves the body"):
+        await executor.run_verb("kick")
+
+
 async def test_an_unanswered_doubt_does_not_clear_the_gate() -> None:
     executor, _transport, _events = _executor(require_verdict=True)
     executor.verdict = Verdict(verdict="uncertain", reason="the basket is out of frame")
@@ -398,8 +420,10 @@ def test_the_objection_names_the_need_and_the_three_ways_out() -> None:
     assert "endurance_min >= 45 (not published)" in said
     for way in (
         "infeasible if that need decides the task",
-        "uncertain if a person could",
         "feasible with the need corrected",
+        "uncertain to put it to a person",
+        "task file's own datasheet block",
+        "nothing moves until you answer again",
     ):
         assert way in said, way
     assert "robot_assess_task" in (
@@ -410,6 +434,35 @@ def test_the_objection_names_the_need_and_the_three_ways_out() -> None:
     assert own_sheet_objection({"mobility": "legged", "terrain": "indoor_flat"}, duck) is None
     assert own_sheet_objection({}, duck) is None, "a verdict that named no need has nothing to fail"
     assert own_sheet_objection({"payload_kg": 3.0}, None) is None, "no sheet, no objection"
+
+
+def test_a_need_that_is_not_a_number_falls_through_to_the_refusal() -> None:
+    """This reader is handed a raw dict off the wire before anything validates it:
+    `robot_assess_task` computes `could` from the tool's own argument, and catches `ValueError`
+    only. The zero guard called `float()` on whatever arrived, so a JSON null raised
+    `TypeError` out of the MCP tool where before it read as a need nobody published."""
+    duck = describe(RobotSpec("microduck", "sim2d"))
+    assert missing_needs({"payload_kg": None}, duck) == ["payload_kg >= None (not published)"]
+    assert missing_needs({"payload_kg": "heavy"}, duck) == ["payload_kg >= heavy (not published)"]
+    assert missing_needs({"payload_kg": True}, duck) == ["payload_kg >= True (not published)"]
+    assert missing_needs({"payload_kg": 0}, duck) == [], "a real zero still asks for nothing"
+
+
+def test_an_unpublished_terrain_is_only_the_floor_where_the_prompt_says_so() -> None:
+    """The exception exists because the prompt tells a body whose terrain nobody published to
+    assume a flat indoor floor, so the two readers must agree. That sentence is only rendered
+    for a body that moves and that has a datasheet at all: `body_lines` tells a body with no
+    sheet to treat every limit as not published, and `_power_and_ground` says "it does not
+    move" instead for a body with no mobility. So the exception stops where the promise does,
+    which also keeps a bid that carried no datasheet from winning a role on it."""
+    silent = _body(datasheet=Datasheet(manipulator="none"))
+    assert missing_needs({"terrain": "indoor_flat"}, silent) == []
+    assert missing_needs_in({"terrain": "indoor_flat"}, {}, "wheeled") == [
+        "terrain = indoor_flat (not published)"
+    ], "a bid with no datasheet said nothing, and nothing is not a flat indoor floor"
+    assert missing_needs_in({"terrain": "indoor_flat"}, {"terrain": None}, "none") == [
+        "terrain = indoor_flat (not published)"
+    ], "a body that does not move is never told to assume a floor"
 
 
 def test_a_bid_carries_its_facts_so_a_stranger_can_judge_them() -> None:
