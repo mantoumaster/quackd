@@ -283,7 +283,11 @@ reports that it did.
   determine feasibility yet". The description now says the verdict is the task's needs against
   the body's limits and not whether you can see the target, and keeps `uncertain` for what it
   is for: a figure that decides a limit, on a thing you have not seen, or a limit nobody
-  published. The rule line, the MCP description and `docs/safety.md` say the same.
+  published. The rule line, the MCP description and `docs/safety.md` carry both halves of that
+  in the same words, and a test holds them to each other, because the first attempt stated the
+  rule absolutely in the Rules line and kept the exception in the tool description beside it,
+  which for "pick up the box" with the box out of frame gave opposite answers with the more
+  authoritative one wrong.
   `Estimate.quantity` gains `duration_min`, because `needs` could already ask for
   `endurance_min` and the same pilot could not estimate one, so it spent LLM calls on a
   validation refusal. Thanks to [@Vallhalen](https://github.com/Vallhalen) (#25), who measured
@@ -398,7 +402,9 @@ reports that it did.
   longer told that `observe` runs when its contract allows no such verb, and an arm is no
   longer told about head verbs no arm has; over MCP, where there is no system prompt,
   `robot_list_verbs` marks each verb `before_verdict` and both tool descriptions point at what
-  is true of every body instead of listing verbs. And the three documents that said the gate reads
+  is true of every body instead of listing verbs, and a learned verb can no longer take one of
+  those nine names and run on it, which an audit of this branch found the docstring promising
+  and only the confirm gate keeping. And the three documents that said the gate reads
   `BEFORE_VERDICT` and nothing else now say what it reads, ADR-0032 by dated amendment rather
   than a quiet edit, including the adapter guide, which had been telling the author of a body
   quackd does not ship to classify their verb in a file they do not own, in a set whose own
@@ -423,19 +429,40 @@ reports that it did.
   checked against. The check reads what a pilot declares, so it rewards honesty and cannot
   catch silence. Thanks to [@Vallhalen](https://github.com/Vallhalen) (#24), who measured it.
 
-  They measured it across 108 runs, and reported the noise floor with the result. Four things
-  landed on top of it. The MCP session is held to the same sheet, because #24's own
-  "your rule, applied on both sides" was true of one: `robot_assess_task` already matched `needs` against
-  every *other* robot in the fleet to fill in `could`, and the one sheet it never compared
-  against was that of the robot it was about to drive. Both surfaces now refuse in one
-  sentence, from `own_sheet_objection`, which names three ways out rather than one, because the
-  measured pilot answered `uncertain` to a message that offered only `infeasible` and
-  `uncertain` is the right answer for a figure a person may know. Two readings that would have
-  refused an honest pilot are fixed in the matcher itself, where the coordinator shares them: a
-  minimum of zero asks for nothing, and an unpublished terrain meets `indoor_flat`, which is
-  what the prompt already tells such a body to assume about itself. And the places a pilot
-  reads about `needs` say the check exists, because a refusal nobody was warned about reads as
-  a bug.
+  They measured it across 108 runs and reported the noise floor with the result.
+
+  What landed on top of it. **The MCP session is held to the same sheet**, because #24's own
+  "your rule, applied on both sides" was true of one: `robot_assess_task` already matched
+  `needs` against every *other* robot in the fleet to fill in `could`, and the one sheet it
+  never compared against was that of the robot it was about to drive. Both surfaces refuse in
+  one sentence now, from `own_sheet_objection`, which names three ways out rather than one:
+  the measured pilot answered `uncertain` to a message offering only `infeasible`, and for a
+  figure nobody published that is the right answer, because it asks a person and a person who
+  knows the figure can publish it in the task file's own `datasheet:` block.
+
+  **A refusal shuts the gate.** The check runs before the verdict is recorded, the way the
+  `human` and validation refusals do, so a pilot already cleared for one reading of the task
+  could name a need this body cannot meet, be refused, and go on moving on the older verdict
+  while the newer and better informed one was thrown away. Both surfaces withdraw what was
+  standing now, and an adversarial audit of this branch is what found it: the check refused
+  the words and not the motion, which is the failure it exists to stop, one re-assessment
+  later.
+
+  **Two readings that would have refused an honest pilot** are fixed in the matcher itself,
+  where the flock coordinator shares them: a minimum of zero asks for nothing, and a body that
+  published no terrain meets `indoor_flat`, which is what the prompt already tells such a body
+  to assume about itself, where the prompt says it. The same audit narrowed that second one:
+  the sentence is only rendered for a body that moves and has a datasheet at all, so a bid
+  that carried no datasheet no longer wins a role on it. A need that is not a number no longer
+  raises out of the MCP tool either, which the zero check had started doing.
+
+  And the places a pilot reads about `needs` say the check exists, because a refusal nobody
+  was warned about reads as a bug. So does `docs/safety.md`, which says out loud the thing
+  that is easy to resent: the check asks more of a pilot that answers fully, because a duck
+  asked to nudge a 60 g ball has no published payload to compare against, and a `duck: 2`
+  datasheet block is the answer that outlives one run. ADR-0032 carries a dated amendment for
+  this as well as for #26, since it is the record for the gate and this changes what its
+  Decision section describes.
 
 ## [0.9.0] — 2026-09-15
 
