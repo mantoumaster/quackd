@@ -924,6 +924,9 @@ def test_the_help_groups_the_flags_and_keeps_the_brackets_of_an_extra() -> None:
     for group in ("Inspect", "Run a duck", "Serve", "LAN", "Memory"):
         assert group in root, group
     assert "quackd run find-and-kick --provider fake" in root, "the epilog offers a first command"
+    # the same markup trap, one level up: the core installs no robot, so the first command the
+    # epilog offers has to carry the extra that makes it work, and Rich would eat the brackets
+    assert "quackd[microduck]" in root, "the epilog's install line lost its extra to markup"
 
 
 def test_dash_h_is_the_same_as_help() -> None:
@@ -1049,3 +1052,29 @@ def test_env_is_also_read_from_the_cwd(tmp_path: Path, monkeypatch: pytest.Monke
     again = runner.invoke(app, ["robot", "list"])
     assert again.exit_code == 0, again.output
     assert "exported-duck" in again.output and "dotenv-duck" not in again.output
+
+
+def test_the_env_beside_the_command_is_read_before_the_one_beside_the_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The order, pinned directly, because it is what the docs promise and what decides a
+    disagreement: dotenv never overwrites a name it has already set, so whichever file is read
+    first wins. The test above proves the working directory is read at all; this proves it is
+    read before the walk up from quackd's own directory.
+
+    Asked of the calls rather than of two files on disk, because the second lookup's root is
+    wherever quackd happens to be installed and a test cannot put a file there. It also stays
+    honest under coverage: `find_dotenv` returns the working directory when a trace function is
+    set, so a run with `--cov` would read the right file even if the first call were deleted."""
+    import quackd.cli as cli_module
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        cli_module, "load_dotenv", lambda path=None, **kw: seen.append(str(path) if path else "")
+    )
+    # any command with a body: `--version` is eager and exits before the callback runs
+    listed = runner.invoke(app, ["list-adapters"])
+    assert listed.exit_code == 0, listed.output
+    assert len(seen) == 2, seen
+    assert seen[0] == str(Path.cwd() / ".env"), "the working directory is not read first"
+    assert seen[1] == "", "the walk up from quackd's own directory is not read second"

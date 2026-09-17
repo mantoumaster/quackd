@@ -144,6 +144,60 @@ def test_vision_off_by_default_on_for_flag(monkeypatch: pytest.MonkeyPatch) -> N
     assert LocalProvider("m", preset="ollama", client=FakeClient()).supports_vision is True
 
 
+async def test_every_camera_reaches_a_local_server_in_one_message() -> None:
+    """A local server speaks the OpenAI wire format, so it inherits multi-camera rendering
+    without a line of its own here. That inheritance is the thing worth pinning: the one
+    provider quackd cannot test against a real endpoint is the one most likely to be handed
+    two pictures by somebody with a webcam on each side of an arm.
+
+    It is also where the cost lands. Two cameras is two image parts in a single message, and
+    `docs/local-llms.md` warns that a server or a model may accept only one. This says what
+    quackd sends; whether a given server takes it is that server's business."""
+    client = FakeClient(reply(text="{}"))
+    p = LocalProvider("m", preset="ollama", client=client, vision=True)
+    two = [
+        Exchange(
+            observation=Observation(
+                text="obs",
+                images=[NamedPng(name="top", png=b"a"), NamedPng(name="side", png=b"b")],
+            )
+        )
+    ]
+    await p.step("system", two, [])
+    parts = client.kwargs["messages"][1]["content"]  # type: ignore[attr-defined]
+    assert [part["type"] for part in parts] == ["text", "text", "image_url", "text", "image_url"]
+    assert parts[1]["text"] == "camera top:" and parts[3]["text"] == "camera side:"
+
+    # and one camera is the single part it has always been, with no label in front of it
+    client_one = FakeClient(reply(text="{}"))
+    await LocalProvider("m", preset="ollama", client=client_one, vision=True).step(
+        "system", history(), []
+    )
+    one = client_one.kwargs["messages"][1]["content"]  # type: ignore[attr-defined]
+    assert [part["type"] for part in one] == ["text", "image_url"], one
+
+    # the case the two above cannot tell apart, and the only one that needed a change: ONE
+    # picture from a body that has TWO cameras. Counting the images that arrived makes this
+    # look exactly like the single-camera message above, and sends the side view out bare
+    # under a detections line measured off the lens that died.
+    client_lost = FakeClient(reply(text="{}"))
+    lost = [
+        Exchange(
+            observation=Observation(
+                text="obs",
+                images=[NamedPng(name="side", png=b"b")],
+                cameras=["top", "side"],
+            )
+        )
+    ]
+    await LocalProvider("m", preset="ollama", client=client_lost, vision=True).step(
+        "system", lost, []
+    )
+    survivor = client_lost.kwargs["messages"][1]["content"]  # type: ignore[attr-defined]
+    assert [part["type"] for part in survivor] == ["text", "text", "image_url"], survivor
+    assert survivor[1]["text"] == "camera side:", "the one lens left went out unnamed"
+
+
 # ── model discovery ─────────────────────────────────────────────────────────────────────
 
 

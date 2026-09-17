@@ -593,6 +593,55 @@ async def test_a_probe_hands_the_rest_pose_over_and_drives_the_arm_nowhere(
     assert arm.torque is True, "torque is what the note is about"
 
 
+async def test_a_probe_that_fails_still_says_the_arm_was_left_holding_itself_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The paths that matter most, and the ones the note used to miss. A probe that timed out
+    or died is exactly when an arm is most likely to be sitting there energised, and the note
+    is written by the close, which used to happen in a `finally` that had no way to reach the
+    line the reader sees.
+
+    And the direction has to survive: there are two notes, one saying the arm is being held
+    and one saying quackd could not hold it and let go. Printing the first for the second
+    tells somebody an arm is safe at the moment it is not."""
+    from quackd_lerobot.mock import LeRobotMock
+
+    arm = LeRobotMock(rest_pose=_FOLDED)
+
+    def build(spec: Any, **kwargs: Any) -> Any:
+        """The probe's own seam, with a health call that never answers."""
+        from quackd_lerobot import LeRobotAdapter
+
+        class Wedged(LeRobotAdapter):
+            async def health(self) -> Any:
+                raise TimeoutError("the arm stopped answering")
+
+        return Wedged(arm)
+
+    monkeypatch.setattr("quackd.adapters.factory.make_adapter", build)
+    result = await probe_entry(_entry("arm", "lerobot:real", rest_pose=_FOLDED))
+
+    assert result.reachable is False
+    assert "torque left on" in result.detail, result.detail
+    assert arm.torque is True, "the arm was let go on the failure path"
+
+    # the other note, which says the opposite thing, must not print as the first one
+    arm2 = LeRobotMock(rest_pose=_FOLDED)
+    seen2: dict[str, Any] = {}
+    _hand_back(monkeypatch, arm2, seen2)
+    released = "quackd could not keep torque on, so the arm was released where it stood"
+
+    async def close_and_say() -> None:
+        arm2.close_note = released
+
+    monkeypatch.setattr(arm2, "close", close_and_say)
+    row = await probe_entry(_entry("arm", "lerobot:real", rest_pose=_FOLDED))
+    assert "could NOT be kept" in row.detail, row.detail
+    assert "torque left on: not at its rest pose" not in row.detail, (
+        "the row said the arm was being held when it had been released"
+    )
+
+
 async def test_a_probe_on_an_arm_already_at_its_pose_says_nothing_about_torque(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -47,7 +47,7 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
         name="microduck",
         backends=("sim2d", "mujoco", "mock", "jsonrpc", "websocket"),
         status=(
-            "✅ built-in: sim2d (default), mock · ✅ mujoco (physics, needs quackd[mujoco]) · "
+            "✅ in the package: sim2d, mock · ✅ mujoco (physics, needs quackd[mujoco]) · "
             "🧪 jsonrpc · ⏳ websocket"
         ),
         summary="a 25 cm biped duck from Pollen Robotics",
@@ -57,8 +57,8 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
         name="lerobot",
         backends=("mock", "real"),
         status=(
-            "✅ built-in: mock · ✅ real (one SO-101 driven on 2026-09-15: the lookout, waves, "
-            "the gripper and a webcam; Python 3.12+)"
+            "✅ in the package: mock · ✅ real (one SO-101 driven on 2026-09-15: the lookout, "
+            "waves, the gripper and a webcam; Python 3.12+)"
         ),
         summary="an SO-101 class desktop arm driven by LeRobot",
         extra="quackd[lerobot]",
@@ -68,7 +68,8 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
         name="rosbridge",
         backends=("mock", "ws"),
         status=(
-            "✅ built-in: mock · 🧪 ws via roslibpy (verified names, never run against a bridge)"
+            "✅ in the package: mock · 🧪 ws via roslibpy (verified names, never run against "
+            "a bridge)"
         ),
         summary="any wheeled base that speaks rosbridge",
         extra="quackd[rosbridge]",
@@ -81,7 +82,7 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
         name="open_duck",
         backends=("sim2d", "mock", "bridge"),
         status=(
-            "✅ built-in: sim2d, mock · 🧪 bridge (quackd's own daemon on the duck's Pi, "
+            "✅ in the package: sim2d, mock · 🧪 bridge (quackd's own daemon on the duck's Pi, "
             "never run on a robot)"
         ),
         summary="an Open Duck Mini v2, the one you can build yourself",
@@ -93,7 +94,7 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
         name="xlerobot",
         backends=("mock", "zmq"),
         status=(
-            "✅ built-in: mock · 🧪 zmq (wire format VERIFIED at a pinned commit, exercised "
+            "✅ in the package: mock · 🧪 zmq (wire format VERIFIED at a pinned commit, exercised "
             "against a fake host over loopback, never run on a cart)"
         ),
         summary="a dual-arm wheeled cart",
@@ -106,7 +107,7 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
         name="alohamini",
         backends=("mock", "sim2d", "zmq"),
         status=(
-            "✅ built-in: mock, sim2d · 🧪 zmq (wire format VERIFIED at a pinned commit, "
+            "✅ in the package: mock, sim2d · 🧪 zmq (wire format VERIFIED at a pinned commit, "
             "exercised against a fake host over loopback, never run on a robot)"
         ),
         summary="two arms on a lift, on a wheeled base",
@@ -119,7 +120,7 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
         name="toddlerbot",
         backends=("mock", "sim2d", "bridge"),
         status=(
-            "✅ built-in: mock, sim2d · 🧪 bridge (quackd's own daemon on the robot, "
+            "✅ in the package: mock, sim2d · 🧪 bridge (quackd's own daemon on the robot, "
             "never run on a robot)"
         ),
         summary="a small open-source humanoid",

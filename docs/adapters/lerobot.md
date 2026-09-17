@@ -372,6 +372,13 @@ What happens when one of them dies mid-run depends on which one:
 | a secondary | every other view, and the `camera:` detections line unchanged. The failure is named in `report_state` and in `doctor`'s `camera <name>` row |
 | the primary | the other views still arrive as pictures, and the detections line reports nothing seen. A bearing read off a different lens would point somewhere else, so quackd reports nothing rather than something from the wrong camera |
 
+Either way the pictures that did arrive keep their names, on the wire and in
+`frames/NNNN-<name>.png`. Whether a picture is named is decided by how many cameras the arm
+has and never by how many answered this step, which matters most in exactly the case above: a
+lone unnamed picture sitting under a detections line measured off the lens that died is the
+one thing the naming exists to prevent, and it is also the case a count of the frames that
+arrived cannot tell apart from a one-camera arm.
+
 A second camera that will not open is a refusal **before the arm is energised**, and it lets
 go of the first on the way out. Half a set of eyes nobody asked for is worse than the
 refusal, because the frames would still arrive and look right.

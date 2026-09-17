@@ -184,7 +184,11 @@ Edit `claude_desktop_config.json` — Settings → Developer → *Edit Config*:
 ```
 
 (`QUACKD_TRACE` is `1` by default and is shown here because `env` is where you would set it
-to `0`: a desktop-spawned server has no shell and no working directory to read a `.env` from.)
+to `0`. quackd reads a `.env` from the folder it is run in and from beside its own install,
+and a desktop-spawned server has no shell and is started in whichever directory the client
+chose, which is usually not yours. So `env` here is the reliable way to set anything for this
+server, and a `.env` may or may not be found depending on the client. It has not been checked
+against any particular one.)
 
 Restart Claude Desktop completely. The duck appears under *Connectors → Manage connectors*.
 

@@ -1232,6 +1232,62 @@ async def test_an_arm_that_cannot_reach_its_rest_pose_keeps_its_torque_and_says_
     assert "shoulder_lift" in note, note
 
 
+async def test_a_pose_that_names_no_joint_this_arm_drives_is_refused_rather_than_ignored() -> None:
+    """`quackd robot rest-pose` reads the pose off the arm and cannot write one of these. A
+    hand-edited `robots.json` can, by typing `elbow` where the arm says `elbow_flex`, and the
+    registry does not know this arm's motors and should not.
+
+    Left alone it is the worst possible outcome: the pose is stored, `robot show` prints it,
+    nothing is driven anywhere, and torque drops where the arm happens to stand. So the arm
+    refuses it by name, the run aborts before the pilot is asked anything, and an arm that
+    somehow reached a close anyway keeps holding itself up."""
+    with pytest.raises(AdapterError, match="names no joint this arm drives"):
+        make("real", address="COM5", rest_pose={"elbow": 0.0, "gripper": 50.0})
+
+    # and the transport underneath refuses too, since the adapter is not the only way in
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm, rest_pose={"elbow": 0.0})
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    result = await adapter.go_to_rest()
+    assert result.how == "refused", result
+    assert result.recorded and not result.reached, "a run over this must abort, not proceed"
+    assert arm.actions == []
+    await adapter.close()
+    assert arm.config.disable_torque_on_disconnect is False, "the arm was let go anyway"
+    assert arm.torque is True
+    assert "torque was left on" in (adapter.close_note or ""), adapter.close_note
+
+
+async def test_an_arm_quackd_cannot_keep_powered_is_told_so_instead_of_the_opposite() -> None:
+    """The one seam that holds torque is a flag written on LeRobot's config just before the
+    disconnect that reads it. If that write does not take, the disconnect releases torque
+    anyway, and the usual note would tell somebody the arm is being held while it goes limp.
+
+    A config object that refuses writes is not a case anybody has seen; it is a case where
+    being wrong sends a person away from a falling arm, which is the whole subject."""
+
+    class NoWrites:
+        """A config that will not take the flag, however it is asked."""
+
+        disable_torque_on_disconnect = True
+
+        def __setattr__(self, name: str, value: object) -> None:
+            raise AttributeError(name)
+
+    arm = FakeArm(step=40.0, stuck=("shoulder_lift",))
+    arm.config = NoWrites()  # type: ignore[assignment]
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    await adapter.go_to_rest()
+    await adapter.close()
+    note = adapter.close_note or ""
+    assert "could not keep torque on" in note, note
+    assert "released where it stood" in note, note
+    assert "it will not fall" not in note, "the note promised the arm was being held"
+
+
 async def test_an_arm_with_no_rest_pose_recorded_moves_nothing_and_goes_limp() -> None:
     """The whole thing is opt-in. Without a recorded pose there is nothing to check the
     joints against, so the rest move is a no-op and LeRobot's own default stands."""

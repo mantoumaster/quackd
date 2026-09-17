@@ -573,9 +573,11 @@ def probe(
             + (", ".join(blind) if blind else "nothing that needs a camera")
             + " cannot see anything on this run"
         )
-    if note and not rest_ok:
-        # the arm did not get to its rest pose, so it is still holding itself up, and the one
-        # place that says so is the note the disconnect left behind
+    if note:
+        # the arm is still holding itself up, and the one place that says so is the note the
+        # disconnect left behind. Not gated on the rest row: the move can report that it
+        # arrived and the disconnect's own re-read still find the arm away, which is a green
+        # verdict walking somebody away from an energised arm.
         report.advisories.append(note)
     for key in ("auth_warning", "runtime_warning"):
         if warning := told.get(key):
@@ -586,7 +588,11 @@ def probe(
             "verb refuses because it is down. You are the fall detector: keep it on a stand "
             "and watch it."
         )
-    report.ok = bool(health.ok) and camera_ok and rest_ok
+    # `note` and not just `rest_ok`: the rest move can report that it arrived and the
+    # disconnect's own re-read still find the arm away, or fail to read it at all. That is the
+    # case where the arm is left energised after a command somebody ran to be reassured, so it
+    # cannot also be the case where the panel is green and the exit code is 0.
+    report.ok = bool(health.ok) and camera_ok and rest_ok and not note
     return report
 
 
@@ -603,7 +609,7 @@ def _microduck_api_version() -> str:
 
 
 def _upstreams() -> list[tuple[str, Any, str, str]]:
-    """(name, module, doc, what nobody has run it against), for every adapter installed here.
+    """(name, module, doc, what it has or has not been run against), per installed adapter.
 
     Each adapter declares its own row as `UPSTREAMS`, because the list of what an adapter
     reads from upstream belongs to that adapter rather than to a table in the core that has
@@ -908,7 +914,7 @@ def _read_more(report: DoctorReport) -> Any:
 
 
 def _pins_table(report: DoctorReport) -> Any:
-    table = ui.table("where each upstream was read, and what nobody has run it against")
+    table = ui.table("where each upstream was read, and what it has and has not been run against")
     table.add_column("upstream", style=ui.STYLES["key"], no_wrap=True)
     table.add_column("pinned at", no_wrap=True)
     table.add_column("read on", no_wrap=True)
@@ -956,7 +962,20 @@ def verdict(report: DoctorReport) -> Any:
     """The line this command exists to produce and never printed: the exit code was the only
     summary it had, and nobody reads an exit code off a screen."""
     if report.ok:
-        reason = "the simulator and the scripted pilot run here"
+        # "the simulator" only where there is one. Since every adapter became its own package
+        # a green machine can have no robot at all, and this line is what `README.md` sends a
+        # new reader to read: saying the simulator runs on a machine where `quackd run`
+        # refuses for want of one is the opposite of what this command is for.
+        installed = [row["name"] for row in report.adapters if row.get("adapter_installed")]
+        if not installed:
+            reason = (
+                "quackd itself runs here, and no robot adapter is installed: "
+                'uv pip install "quackd[microduck]" for the simulator'
+            )
+        elif "microduck" in installed:
+            reason = "the simulator and the scripted pilot run here"
+        else:
+            reason = f"the scripted pilot runs here, on {', '.join(installed)}"
     elif report.missing_core:
         reason = f"a core package is missing: {', '.join(report.missing_core)}"
     elif report.robot and report.robot.error:
@@ -972,7 +991,11 @@ def verdict(report: DoctorReport) -> Any:
         reason = "the robot did not report healthy"
     counters = [
         f"{sum(1 for e in report.extras if e.ok)}/{len(report.extras)} extras",
-        f"{len(report.adapters)} adapters",
+        # a fraction, not a total: since every adapter became its own package the number that
+        # matters is how many are here, and "7 adapters" beside a table of seven `not
+        # installed` rows reads as seven you have
+        f"{sum(1 for a in report.adapters if a.get('adapter_installed'))}/"
+        f"{len(report.adapters)} adapters installed",
         f"{report.bundled_ducks} bundled ducks",
         f"{len(report.assumptions)} unverified assumptions",
     ]

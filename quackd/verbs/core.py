@@ -22,7 +22,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from quackd.perception.base import Detection, summarize_detections
-from quackd.transport.base import Intent, frames_of, primary_of
+from quackd.transport.base import Intent, camera_names_of, frames_of, primary_of
 from quackd.verbs.registry import NoParams, Verb, VerbContext, VerbResult
 
 if TYPE_CHECKING:
@@ -212,7 +212,10 @@ async def observe(ctx: VerbContext, _: NoParams) -> VerbResult:
     detections = ctx.detector.detect(primary) if (ctx.detector and primary is not None) else []
     dumped = [d.model_dump() for d in detections]
     seen = summarize_detections(detections)
-    if len(frames) == 1:
+    # the body's cameras, not this step's frames: a two-camera arm down to one lens still has
+    # two views to tell apart, and the picture that did arrive is the one that most needs
+    # saying which lens it came off
+    if len(frames) == 1 and len(camera_names_of(ctx.transport)) < 2:
         return VerbResult.success(f"frame captured; {seen}", detections=dumped)
     # the camera names only where there are views to tell apart, so a one-camera body reads
     # back exactly the line and the payload it did before there were several

@@ -63,6 +63,7 @@ from quackd_lerobot.verbs import (
     STALL_DEG,
     STALL_TICKS,
     TICK_S,
+    TORQUE_COULD_NOT_BE_KEPT,
     TORQUE_LEFT_ON,
     at_rest,
     rest_budget_s,
@@ -634,6 +635,7 @@ class LeRobotReal:
         why = await self._not_resting() if self.rest_pose is not None else None
         if why is not None:
             self.close_note = TORQUE_LEFT_ON.format(why=why)
+        wrote = False
         with contextlib.suppress(Exception):
             # up.SO_DISCONNECT_READS_ITS_CONFIG_LATE: the flag is read off the config instance
             # inside disconnect() rather than copied at construction, so this is the seam.
@@ -644,6 +646,11 @@ class LeRobotReal:
             # reached it the next time would have kept the arm energised on the strength of
             # the earlier session, with nothing said about it.
             self._robot.config.disable_torque_on_disconnect = why is None
+            wrote = True
+        if why is not None and not wrote:
+            # the seam did not take, so the disconnect below releases torque after all. Saying
+            # the arm is being held when it is about to be let go is worse than saying nothing.
+            self.close_note = TORQUE_COULD_NOT_BE_KEPT.format(why=why)
         with contextlib.suppress(Exception):
             await self._call(self._robot.disconnect, deadline_s=5.0)  # up.SO_DISCONNECT_TORQUE
 
@@ -651,7 +658,9 @@ class LeRobotReal:
         """Why this arm must keep its torque, or None if it may let go. Reads, never moves."""
         goal = rest_goal(self.rest_pose or {})
         if not goal:
-            return None
+            # a pose was recorded and none of it can be driven: the arm is somewhere nobody
+            # chose, so it keeps holding rather than being let go there
+            return "the recorded pose names no joint this arm drives"
         try:
             await self._probe()
         except Exception as e:
@@ -1034,7 +1043,10 @@ class LeRobotReal:
             return RestResult("refused", "the arm's transport is closed")
         goal = rest_goal(self.rest_pose)
         if not goal:
-            return RestResult.none("the recorded pose names no body joint")
+            # "refused", never "none": `none` means there is nothing to go to, and the run
+            # would start anyway and the arm be released at the end. There is a pose here,
+            # it names nothing this arm drives, and that is a reason to keep holding.
+            return RestResult("refused", "the recorded pose names no joint this arm drives")
         try:
             await self._cancel_policy()
             await self._probe()

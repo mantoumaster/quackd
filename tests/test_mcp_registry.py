@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from quackd.adapters.base import AdapterError
 from quackd.mcp_server import fleet_from_flags
 from quackd.registry import Registry, RobotEntry, StoredFlock
 from tests.test_mcp_fleet import _data, connected
@@ -105,6 +106,46 @@ def test_a_dangling_flock_is_refused_in_one_line(tmp_path: Path) -> None:
 def test_a_flock_duck_is_still_refused_over_mcp(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="quackd run"):
         fleet_from_flags(duckfile="flock-hello", registry_dir=str(tmp_path))
+
+
+def test_two_cameras_on_a_one_camera_body_are_refused_before_the_server_starts(
+    tmp_path: Path,
+) -> None:
+    """An MCP client hands its flags to the same factory the CLI does, so a body that reads
+    one camera refuses a second here too, by name, before a session ever connects."""
+    with pytest.raises(AdapterError, match="only lerobot:real takes several"):
+        fleet_from_flags(
+            robot="microduck:sim2d",
+            registry_dir=str(tmp_path),
+            camera_url=["opencv://1?name=top", "opencv://2?name=side"],
+        )
+
+
+def test_a_flock_still_takes_its_cameras_from_the_registry(tmp_path: Path) -> None:
+    """The refusal above is about one body. A flock member's cameras are written down, so a
+    camera on the command line is refused for a different reason, and still refused."""
+    _seed(tmp_path, {"scout": {"spec": "microduck:mock"}}, ["scout"])
+    with pytest.raises(SystemExit, match="from the registry"):
+        fleet_from_flags(flock="kitchen", registry_dir=str(tmp_path), camera_url=["a://1", "b://2"])
+
+
+def test_a_served_arm_is_built_with_the_rest_pose_it_was_registered_with(tmp_path: Path) -> None:
+    """Every guard that stops an arm falling over MCP reads `transport.rest_pose`, and this is
+    the one place that sets it. Built without it they are all dead code, and dead in a way
+    nothing shows: the session connects, the rest gate's `is not None` is False so nothing is
+    driven and nothing refuses, and `close()` releases torque wherever the client left the arm.
+
+    Asserted on the transport rather than through a run, because a run exercises the gates and
+    this is about the wiring underneath them."""
+    pose = {"shoulder_pan": 0.0, "shoulder_lift": -90.0, "elbow_flex": 90.0}
+    _seed(tmp_path, {"arm-01": {"spec": "lerobot:mock", "rest_pose": pose}}, [])
+    plan = fleet_from_flags(robot="arm-01", registry_dir=str(tmp_path))
+    assert plan.adapters["arm-01"].rest_pose == pose, "the registry's pose never reached the arm"
+
+    # a stored flock is the other door in, and a member's pose travels the same way
+    _seed(tmp_path, {"arm-02": {"spec": "lerobot:mock", "rest_pose": pose}}, ["arm-02"])
+    flock = fleet_from_flags(flock="kitchen", registry_dir=str(tmp_path))
+    assert flock.adapters["arm-02"].rest_pose == pose
 
 
 # ── serving it ──────────────────────────────────────────────────────────────────────────

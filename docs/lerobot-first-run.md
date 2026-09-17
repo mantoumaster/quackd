@@ -166,10 +166,10 @@ quackd run lerobot-lookout --robot lerobot:real --address COM5 --provider openai
 
 ### Where the key goes
 
-This cost time at the lab, so it gets its own subsection. quackd reads a `.env` from two
-places: the folder you are standing in when you type the command, and the venv root above its
-own install, which is the one a `uv venv` user is most likely to have. This is the layout that
-worked, verified on the machine that drove the arm:
+This cost time at the lab, so it gets its own subsection. quackd reads a `.env` from the folder
+you are standing in when you type the command, and then from beside its own install, walking up
+the folders above it, which is how it finds the one a `uv venv` user put in their venv root.
+This is the layout that worked, verified on the machine that drove the arm:
 
 ```
 D:\Development\lerobot-test\
@@ -177,14 +177,21 @@ D:\Development\lerobot-test\
 │   ├── Lib\
 │   ├── Scripts\
 │   ├── share\
-│   ├── .env            <- the file you create
-│   ├── .gitignore      (uv writes these three)
+│   ├── .env            <- the only entry here you create yourself
+│   ├── .gitignore
 │   ├── .lock
 │   ├── CACHEDIR.TAG
 │   └── pyvenv.cfg
 ├── outputs\
 └── runs\
 ```
+
+> [!NOTE]
+> uv and the packages you install write everything else there, and a venv straight out of
+> `uv venv --python 3.12` is shorter than the tree above: `Lib\`, `Scripts\`, `.gitignore`,
+> `CACHEDIR.TAG` and `pyvenv.cfg`, and nothing more. `.lock` appears with the first install,
+> and `share\` comes from a package that ships files of its own, which lerobot does. So a
+> folder with fewer entries than this is the right folder, not a broken one.
 
 and the file itself is one line:
 
@@ -198,8 +205,9 @@ and last two characters, which is the quickest way to see whether your file was 
 > [!NOTE]
 > Either place works, so put the file wherever you will remember it: next to the command you
 > type, or in the venv root as above. Neither file overrides a variable that is already in
-> your shell, so a key exported by hand wins over both, and if both files name the same
-> variable the first one read wins, which is the one beside the command you typed.
+> your shell, so a key exported by hand wins over both. Keep one file rather than two: the
+> folder you are standing in is read first and nothing read afterwards replaces a name it
+> already set, so two files that disagree resolve in an order you have to remember.
 
 > [!WARNING]
 > The variable name is case sensitive everywhere except Windows. The file at the lab read

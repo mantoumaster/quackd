@@ -622,6 +622,35 @@ async def test_robot_observe_returns_every_camera_as_its_own_named_image() -> No
         assert session.frames == 2
 
 
+class PrimaryDiedMock(MockTransport):
+    """A two-camera body whose primary lens has stopped answering. `camera_keys` still names
+    both, because a stalled camera is still a camera the arm was opened with, and only the
+    secondary returns a frame."""
+
+    camera_keys = ("top", "side")
+
+    async def get_frames(self) -> list[CameraFrame]:
+        return [CameraFrame("side", Image.new("RGB", (32, 32), (40, 80, 200)))]
+
+
+async def test_the_dead_primary_is_not_renamed_to_whichever_lens_survived() -> None:
+    """The worst version of this bug, which is not the unlabelled picture but the mislabelled
+    one. With one frame back from a two-camera body the picture has to be named, and naming
+    the first picture as the primary is only true when the primary is the lens that answered.
+
+    Here it is not: `top` died, so the detector never ran and there are no detections at all.
+    Calling `side` the primary and handing it those empty detections tells the pilot the side
+    view was looked at and found nothing, which is a worse lie than saying nothing."""
+    async with connected(PrimaryDiedMock()) as (client, session, _transport):
+        frame = await client.call_tool("robot_observe", {})
+        texts = [c.text for c in frame.content if c.type == "text"]
+        assert "side is the primary" not in texts[0], texts[0]
+        assert "top is the primary and gave nothing this step" in texts[0], texts[0]
+        assert "no detections" in texts[0], texts[0]
+        assert texts[1] == "camera side:", "the surviving lens still has to be named"
+        assert [f.name for f in session.last_frames] == ["side"]
+
+
 async def test_a_one_camera_observe_reads_back_exactly_as_it_did_before() -> None:
     """Camera names are for the bodies that have more than one. A single camera's name is
     quackd's own default rather than anything its owner chose, so saying it would put a word

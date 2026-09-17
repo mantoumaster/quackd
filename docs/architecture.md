@@ -62,10 +62,10 @@ sequenceDiagram
     participant V as verb
     participant T as adapter
     participant P as perception
-    A->>T: get_state / get_frame
+    A->>T: get_state / get_frames
     T-->>P: frame
     P-->>A: detections ("ball at bearing 12° left, ~0.8 m")
-    A->>L: observation (text + image) + tool list
+    A->>L: observation (text + one image per camera) + tool list
     L-->>A: exactly one tool call (e.g. go_to)
     A->>E: run_verb("go_to", params)
     E->>E: allowlist · verdict · confirm · budget · abort_when · preconditions · dry-run
@@ -166,7 +166,7 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 |---|---|
 | `run_start` | contract, system prompt, tool names, robot manifest, any `extra_body` sent with every request, how long connecting took |
 | `observation` | what the model was shown this turn, and how long gathering it took |
-| `llm_request` | how many messages went out, how many still carry an image, whether this is the re-prompt |
+| `llm_request` | how many messages went out, how many still carry an image (`with_image`), how many pictures that is in total (`images`, which differs only on a body with several cameras), whether this is the re-prompt |
 | `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total), stop_reason, latency, or `error` when the call failed |
 | `enforce` | zero tool calls (re-prompt) or several (first only) |
 | `verb_start` | name as called, canonical name, params, source (`agent` · `mcp` · `cli`), whether it is nested inside a composite |

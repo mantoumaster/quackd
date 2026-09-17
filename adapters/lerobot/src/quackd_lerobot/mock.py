@@ -241,7 +241,9 @@ class LeRobotMock(MockTransport):
             return RestResult.none("no rest pose is recorded for this arm")
         goal = rest_goal(self.rest_pose)
         if not goal:
-            return RestResult.none("the recorded pose names no body joint")
+            # the real arm's answer, for the same reason: a pose that drives nothing is a
+            # reason to keep holding, not a reason to behave as though none was recorded
+            return RestResult("refused", "the recorded pose names no joint this arm drives")
         if self.rest_fails is not None:
             return RestResult("stalled", self.rest_fails)
         if at_rest(goal, self.joints):
@@ -254,7 +256,11 @@ class LeRobotMock(MockTransport):
         self.sequence.append("close")
         self.close_note = None
         goal = rest_goal(self.rest_pose or {})
-        if goal and not at_rest(goal, self.joints):
+        if self.rest_pose and not goal:
+            self.close_note = TORQUE_LEFT_ON.format(
+                why="the recorded pose names no joint this arm drives"
+            )
+        elif goal and not at_rest(goal, self.joints):
             self.close_note = TORQUE_LEFT_ON.format(why=shortfall(goal, self.joints))
         else:
             self.torque = False

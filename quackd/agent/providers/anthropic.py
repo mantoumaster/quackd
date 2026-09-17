@@ -27,6 +27,7 @@ from quackd.agent.providers.base import (
     ToolCall,
     Usage,
     labelled,
+    name_cameras,
 )
 from quackd.agent.providers.catalogue import default_model_for
 
@@ -49,7 +50,12 @@ def render_messages(history: list[Exchange]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     for ex in history:
         obs = ex.observation
-        pictures = labelled(obs.images, _image_block, lambda text: {"type": "text", "text": text})
+        pictures = labelled(
+            obs.images,
+            _image_block,
+            lambda text: {"type": "text", "text": text},
+            name_them=name_cameras(obs),
+        )
         if obs.tool_call_id:
             inner: list[dict[str, Any]] = [{"type": "text", "text": obs.text}, *pictures]
             content: list[dict[str, Any]] = [

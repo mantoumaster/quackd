@@ -512,6 +512,47 @@ def test_the_retired_tagline_is_gone_and_the_new_one_is_everywhere_it_lived() ->
         assert "One CLI for all your robots" in text, f"{name} does not carry the one-liner"
 
 
+#: Sentences that were true until 2026-09-15 and are not any more. An SO-101 arm ran quackd
+#: that day, so a living document that still says nothing ever has is not merely stale, it is
+#: telling a reader the opposite of what happened. The history files keep them on purpose:
+#: CHANGELOG, PLAN and everything under docs/adr and docs/design record what was true when
+#: they were written, which is what `_living_docs()` already excludes.
+_RETIRED_HARDWARE_CLAIMS = (
+    "no robot of any kind has run quackd",
+    "has never run on any of them",
+    "Nothing in quackd has ever run on a real SO-101",
+    "never run on an arm",
+    "Nobody has pointed any pilot at a real webcam",
+    "Nothing has run on a real robot of any kind",
+    "never run against an arm",
+)
+
+
+def test_no_living_document_still_says_no_robot_has_ever_run_quackd() -> None:
+    """One body has run on hardware and six have not, and both halves have to survive edits.
+
+    The hard part of this change was not flipping the status, it was that the old claim was
+    spelled seven different ways across a dozen pages, and a revert in any one of them reads
+    as authoritative. The user-facing strings are checked too, because `quackd doctor` and
+    `list-adapters` print a status line per adapter and those are read more often than a page.
+    """
+    sources = [
+        REPO / "pyproject.toml",
+        *(REPO / "quackd").rglob("*.py"),
+        *(REPO / "adapters").rglob("*.py"),
+    ]
+    for path in _living_docs() + sources:
+        text = path.read_text(encoding="utf-8")
+        for retired in _RETIRED_HARDWARE_CLAIMS:
+            assert retired not in text, (
+                f"{path.relative_to(REPO)} still says {retired!r}; an SO-101 ran quackd on "
+                "2026-09-15 (docs/adapter-status.md)"
+            )
+    # and the other half: the six that have not run must not be quietly promoted with it
+    status = (REPO / "docs" / "adapter-status.md").read_text(encoding="utf-8")
+    assert "2026-09-15" in status, "adapter-status.md does not date the one real run"
+
+
 def test_no_living_document_or_user_facing_string_still_says_fleet() -> None:
     """One word for a group of robots, because two words for one idea is two ideas to a reader.
 
@@ -723,8 +764,14 @@ def test_the_registry_is_documented_where_it_is_configured() -> None:
     those facts has a place it has to be findable from, or somebody loses a robot or a secret.
     """
     for path, needles in (
-        ("README.md", ("quackd robot", "quackd flock", "QUACKD_REGISTRY_DIR", "--registry-dir")),
-        ("docs/registry.md", ("robots.json", "flocks.json", "--probe", "plain text")),
+        (
+            "README.md",
+            ("quackd robot", "quackd flock", "QUACKD_REGISTRY_DIR", "--registry-dir", "rest-pose"),
+        ),
+        (
+            "docs/registry.md",
+            ("robots.json", "flocks.json", "--probe", "plain text", "rest-pose", "rest_pose"),
+        ),
         (".env.example", ("QUACKD_REGISTRY_DIR",)),
         ("docs/mcp.md", ("--flock",)),
         ("docs/memory.md", ("registered",)),

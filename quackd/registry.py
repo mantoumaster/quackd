@@ -28,7 +28,7 @@ import json
 import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -738,24 +738,42 @@ async def probe_entry(entry: RobotEntry, *, timeout_s: float = PROBE_TIMEOUT_S) 
         detail = health.reason or "ok"
         if health.battery_percent is not None:
             detail = f"{detail}, battery {health.battery_percent:.0f}%"
-        # closed here rather than only in the finally, so a robot that kept its torque says so
-        # on the same line that says it answered. A probe reads and lets go: it never drives
-        # the arm to its rest pose, so an arm away from that pose keeps torque and is named.
+        # closed here rather than after, so a robot that kept its torque says so on the same
+        # line that says it answered. A probe reads and lets go: it never drives the arm to
+        # its rest pose, so an arm away from that pose keeps torque and is named.
         with contextlib.suppress(Exception):
             await asyncio.wait_for(adapter.close(), timeout=timeout_s)
         closed = True
-        if getattr(adapter, "close_note", None):
-            detail = f"{detail}, torque left on: not at its rest pose"
-        return ProbeResult(bool(health.ok), detail, elapsed())
+        result = ProbeResult(bool(health.ok), detail, elapsed())
     except TimeoutError:
-        return ProbeResult(False, f"timed out after {timeout_s:g} s", elapsed())
+        result = ProbeResult(False, f"timed out after {timeout_s:g} s", elapsed())
     except Exception as e:  # an unreachable robot must not end the command
         first = str(e).splitlines()[0] if str(e) else type(e).__name__
-        return ProbeResult(False, first, elapsed())
-    finally:
-        if adapter is not None and not closed:
-            with contextlib.suppress(Exception):
-                await adapter.close()
+        result = ProbeResult(False, first, elapsed())
+    # after the try rather than in a `finally`, because a probe that timed out or failed is
+    # exactly when an arm is most likely to be left holding itself up, and a `finally` that
+    # only closed had no way to put that on the line the reader sees
+    if adapter is not None and not closed:
+        with contextlib.suppress(Exception):
+            await adapter.close()
+    if (note := getattr(adapter, "close_note", None)) and "torque" not in result.detail:
+        # the note's own words, shortened, rather than a fixed sentence. There is more than
+        # one of them: one says the arm is being held up and will not fall, and one says
+        # quackd could not keep it powered and it was released where it stood. Printing the
+        # first for the second tells somebody an arm is safe at the moment it is not.
+        return replace(result, detail=f"{result.detail}, {_torque_phrase(str(note))}")
+    return result
+
+
+def _torque_phrase(note: str) -> str:
+    """One column's worth of a close note, keeping which way round it is.
+
+    `robot list --probe` has a line per robot, not a paragraph, so the note is shortened here
+    rather than printed whole. What may not be lost in the shortening is the direction: held
+    up, or let go."""
+    if "could not keep torque on" in note:
+        return "torque could NOT be kept: the arm was released where it stood"
+    return "torque left on: not at its rest pose"
 
 
 def probe_all(

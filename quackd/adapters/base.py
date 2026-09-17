@@ -26,7 +26,12 @@ class AdapterError(TransportError):
 
 
 class AdapterNotInstalled(AdapterError):
-    """The adapter's SDK is an extra that is not installed here."""
+    """The adapter package, or the SDK one of its backends needs, is absent here.
+
+    Both causes read the same on purpose, because the fix is the same command: the extra
+    buys the adapter distribution and the SDK its real backend wants. The one case where
+    that command can succeed and leave the SDK missing anyway is a python_version marker,
+    which is why both hardware pages answer it in their troubleshooting tables."""
 
     def __init__(self, adapter: str, extra: str) -> None:
         super().__init__(f"adapter {adapter!r} needs an extra: uv pip install '{extra}'")

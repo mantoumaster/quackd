@@ -461,10 +461,7 @@ def _adapters_table(rows: Sequence[Mapping[str, Any]], g: Glyphs, title: str | N
     for row in rows:
         extra = Text(str(row["extra"]))
         if row["extra"] != "built-in":
-            extra.append(
-                " installed" if row["installed"] else " not installed",
-                style=STYLES["ok"] if row["installed"] else STYLES["muted"],
-            )
+            extra.append(*_install_state(row))
         out.add_row(
             Text(str(row["name"])),
             Text(f" {g.dot} ".join(row["backends"])),
@@ -472,6 +469,20 @@ def _adapters_table(rows: Sequence[Mapping[str, Any]], g: Glyphs, title: str | N
             extra,
         )
     return out
+
+
+def _install_state(row: Mapping[str, Any]) -> tuple[str, str]:
+    """Three states, not two, since every adapter became its own package.
+
+    An adapter can be absent, or present with the library its hardware backend needs still
+    missing, and those are different things to do about it. Collapsing the second into
+    `not installed` told somebody whose `lerobot:mock` was running fine that their adapter
+    was gone, and sent them to reinstall a package they already had."""
+    if not row.get("adapter_installed", row["installed"]):
+        return " not installed", STYLES["muted"]
+    if row.get("sdk") is False:
+        return " installed, no SDK", STYLES["warn"]
+    return " installed", STYLES["ok"]
 
 
 # ── waiting ─────────────────────────────────────────────────────────────────────────────

@@ -82,14 +82,20 @@ class Transcript:
         self.frame_count += 1
         return path
 
-    def save_frames(self, frames: Sequence[CameraFrame], caption: str = "") -> list[Path]:
+    def save_frames(
+        self, frames: Sequence[CameraFrame], caption: str = "", *, several: bool = False
+    ) -> list[Path]:
         """Every camera's picture for one step, under one number.
 
         A body with one camera writes `0000.png` and a record with no camera in it, which is
         what every run before there could be two wrote. A body with several writes
         `0000-top.png` beside `0000-side.png` and names the camera in each record, so the
-        file name says which view it is and the number still says which step."""
-        if len(frames) == 1:
+        file name says which view it is and the number still says which step.
+
+        `several` is the body's camera count and not `len(frames)`, because a two-camera arm
+        whose top lens stalls hands back one picture, and writing that as a bare `0000.png`
+        leaves a file in the middle of a run with nothing anywhere saying which lens took it."""
+        if len(frames) == 1 and not several:
             return [self.save_frame(frames[0].image, caption)]
         self.frames_dir.mkdir(exist_ok=True)
         paths: list[Path] = []

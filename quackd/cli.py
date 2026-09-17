@@ -50,11 +50,17 @@ app = typer.Typer(
     # blank lines rather than spaces: Typer renders the epilog as paragraphs and would
     # otherwise run three examples together into one
     epilog=(
+        # `doctor` first: it is the one command that works before a robot is installed, and it
+        # says which are. The install is on the line that follows it and covers both run
+        # examples below, because the core on its own carries no robot and a first example
+        # that refuses is a bad one.
         "[bold]Try[/bold]" + "\n\n"
-        "quackd run find-and-kick --provider fake" + "\n\n"
+        "quackd doctor  |  quackd list-adapters  |  quackd trace" + "\n\n"
+        # the backslash is Rich's escape: an unescaped [microduck] is a style tag, and Typer
+        # renders this epilog as markup, so it would print the install line without the extra
+        # that makes it work
+        r"uv pip install 'quackd\[microduck]' && quackd run find-and-kick --provider fake" + "\n\n"
         "quackd run --goal 'walk in a square' --provider anthropic --robot microduck:mujoco"
-        + "\n\n"
-        "quackd doctor  |  quackd list-verbs  |  quackd trace"
     ),
 )
 
@@ -642,6 +648,7 @@ def _run_impl(
     trace: bool | None = None,
     trace_prompt: bool | None = None,
 ) -> None:
+    from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
     from quackd.agent.loop import RunConfig, run_duck
     from quackd.agent.providers.base import ProviderError
@@ -737,13 +744,25 @@ def _run_impl(
             if roster is None and section is not None:
                 # `flock.members` plus `robots:` or `--robots` names the bodies without a
                 # registry; a stored flock names them with one
-                roster = roster_from_specs(
-                    member_specs(
-                        section.member_names,
-                        {s.name: s.key for s in specs if s.name} or None,
-                        duck.frontmatter.robots,
+                try:
+                    roster = roster_from_specs(
+                        member_specs(
+                            section.member_names,
+                            {s.name: s.key for s in specs if s.name} or None,
+                            duck.frontmatter.robots,
+                            # a pilot flock is N bodies of any kind, so an unnamed member gets
+                            # this machine's default rather than the simulated duck a
+                            # coordinator flock is made of
+                            fallback=None,
+                        )
                     )
-                )
+                except _AdapterError as e:
+                    # a member nothing named, on a machine that will not guess: the refusal
+                    # names what to install or what to type. It is caught here because this
+                    # call sits past the validation block's own handler, and an uncaught
+                    # NoRobotNamed reaches the user as a traceback rather than one line.
+                    _fail(str(e), hint="name every member's body in the task file's robots:")
+                    return
             if roster is None:
                 _fail(
                     "allocation.method: pilots needs members: name them in flock.members, "
@@ -1546,9 +1565,11 @@ _ROBOT = typer.Option(
     None,
     "--robot",
     "-r",
-    help="<adapter>:<backend>, e.g. microduck:sim2d (default) · microduck:mock · "
-    "microduck:jsonrpc, or a name from `quackd robot add`, which brings its own address, "
-    "token and camera. See `quackd list-adapters` and `quackd robot list`.",
+    help="<adapter>:<backend>, e.g. microduck:sim2d · lerobot:real · microduck:mock, or a "
+    "name from `quackd robot add`, which brings its own address, token and camera. The core "
+    "installs no robot, so the default is whatever is here: the only adapter installed, or "
+    "microduck:sim2d where the duck is one of several. With several and no duck, name a "
+    "body. See `quackd list-adapters` and `quackd robot list`.",
     rich_help_panel="Robot",
 )
 _ROBOTS = typer.Option(

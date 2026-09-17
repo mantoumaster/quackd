@@ -390,15 +390,21 @@ def build_system_prompt(
     )
     body = body_section(manifest) if manifest is not None else ""
     cameras = list(manifest.extras.get("cameras") or []) if manifest is not None else []
-    if cameras:
-        # only written when the body reported more than one camera, so a pilot with one is
-        # never told the name of the only view it has
+    if len(cameras) > 1:
+        # more than one, not merely present. `extras["cameras"]` is the adapter's own list and
+        # an adapter may publish it for a single camera, which the LeRobot arm does not and
+        # another body may; a pilot with one view told "this body has 1 cameras: forward,
+        # every frame is labelled" is promised something the wire never does, because
+        # `name_cameras` reads the same count and sends that one picture bare.
         listed = ", ".join(cameras)
         body += (
             f"\nThis body has {len(cameras)} cameras: {listed}. Every frame reaches you each "
             f"step, labelled with the name of the camera that took it. {cameras[0]} is the "
             "primary: the `camera:` line in your observation describes that view and no "
-            "other, and the verbs that steer by sight read it alone.\n"
+            "other, and the verbs that steer by sight read it alone. A camera that gave "
+            "nothing this step is absent rather than blank, so read the labels to see which "
+            "views you actually have, and do not assume a missing one is showing you an "
+            "empty room.\n"
         )
     stand_ins = ""
     if assumptions:

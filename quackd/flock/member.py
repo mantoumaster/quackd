@@ -210,6 +210,12 @@ class FlockMember:
     async def _rest(self) -> RestResult | None:
         """The rest move, narrated. None for a dry run, and for a body with no rest pose.
 
+        Defensive rather than exercised. A coordinator flock is N views of one simulated
+        Microduck world by construction (`flock/runner.py` builds the members), and a
+        Microduck carries no rest pose at all, so this returns None on every flock that can
+        be built today. It is here because a member is handed a transport and should behave
+        like the solo loop if it is ever handed an arm, not because anything drives it.
+
         Called directly on the transport rather than through the executor: this runs at the
         end of every run including the one the flock stopped, and by then the executor's
         abort is set and would cancel the move that puts the arm down."""

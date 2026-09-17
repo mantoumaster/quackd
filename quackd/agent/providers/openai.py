@@ -39,6 +39,7 @@ from quackd.agent.providers.base import (
     ToolCall,
     Usage,
     labelled,
+    name_cameras,
 )
 from quackd.agent.providers.catalogue import default_model_for, find_model
 
@@ -58,7 +59,12 @@ def render_messages(system: str, history: list[Exchange]) -> list[dict[str, Any]
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for ex in history:
         obs = ex.observation
-        pictures = labelled(obs.images, _image_part, lambda text: {"type": "text", "text": text})
+        pictures = labelled(
+            obs.images,
+            _image_part,
+            lambda text: {"type": "text", "text": text},
+            name_them=name_cameras(obs),
+        )
         if obs.tool_call_id:
             messages.append({"role": "tool", "tool_call_id": obs.tool_call_id, "content": obs.text})
             if pictures:
@@ -167,6 +173,7 @@ def render_input(history: list[Exchange]) -> list[dict[str, Any]]:
             obs.images,
             _image_part_responses,
             lambda text: {"type": "input_text", "text": text},
+            name_them=name_cameras(obs),
         )
         if obs.tool_call_id:
             items.append(

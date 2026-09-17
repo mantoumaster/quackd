@@ -225,6 +225,18 @@ async def frames_of(transport: Any) -> list[CameraFrame]:
     return [] if image is None else [CameraFrame(DEFAULT_CAMERA_NAME, image, primary=True)]
 
 
+def camera_names_of(transport: Any) -> list[str]:
+    """Every camera this body has, in order, whether or not it answered this step.
+
+    The question every caller that renders a frame has to ask, and the one it is easy to ask
+    wrong. How many pictures arrived is not how many cameras there are: a two-camera arm whose
+    top lens stalls hands back one frame, and deciding from that count alone is how the
+    survivor loses the label that says which lens it came from. The body's own list does not
+    move when a camera does."""
+    keys = getattr(transport, "camera_keys", None)
+    return [str(key) for key in keys] if keys else []
+
+
 def primary_of(frames: Sequence[CameraFrame]) -> Image.Image | None:
     """The view the detections describe, or None when that camera gave nothing this time.
 

@@ -58,7 +58,11 @@ reports that it did.
   there before the first LLM call, and a run that cannot get there aborts before the pilot is asked
   anything; every run drives it back between the stop and the disconnect, on every exit path there
   is, which is success, failure, an `infeasible` verdict, a spent budget, an abort, an error and
-  Ctrl-C. Torque is released only where the arm is known to have arrived. Where it did not, quackd
+  Ctrl-C, and also the window between the connect and the first step, where a task that needs a
+  verb this build does not have is refused with the arm already connected and holding. A pose that
+  survived the registry and names no joint the arm drives, which a hand-edited `robots.json` can
+  write and `quackd robot rest-pose` cannot, is refused by name rather than accepted and driven
+  nowhere. Torque is released only where the arm is known to have arrived. Where it did not, quackd
   turns LeRobot's own disconnect flag off, leaves the arm holding itself up and says once: *the arm
   is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut
   its power, or run again*. A `--dry-run` moves the arm at neither end. Only the five body joints
@@ -93,7 +97,17 @@ reports that it did.
   that stalls later costs its own picture and nothing else, and `report_state` and `quackd doctor`
   name which one, a `camera <name>` row each. If the primary is the one that died, the other frames
   still reach the model and the detections line reports nothing seen, because a bearing measured
-  off a different lens would point somewhere else. A second camera that will not open refuses at
+  off a different lens would point somewhere else. Whether a picture is named is decided by how
+  many cameras the arm has and never by how many answered this step, which is the difference
+  between a useful second camera and a dangerous one: an arm with two lenses that is down to one
+  sends a single picture, and that picture is the one that most needs saying which lens it is,
+  because it arrives directly under a detections line measured off the lens that died. It is
+  named, it is written to `frames/NNNN-<name>.png`, and it is named over MCP too, and it is
+  not renamed: the picture is only called the primary where the primary is the lens that
+  answered. Where the primary is the one that died, `robot_observe` says so and says there are
+  no detections, because the detector reads that lens alone and never ran. Calling the
+  survivor the primary and handing it the dead lens's empty detections would be a worse
+  answer than the unnamed picture this replaced. A second camera that will not open refuses at
   connect, before the arm is energised, and lets go of the first. What it costs, which is the
   reason to decide rather than to switch it on: the last two exchanges keep their images, so two
   cameras is four pictures in every request where one camera is two, on every vendor that bills per
@@ -103,6 +117,12 @@ reports that it did.
   body that reads one camera refuses a second by name rather than taking it and using the first:
   `microduck:mock takes one camera url; only lerobot:real takes several`
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
+
+- **An arm served over MCP now gets the rest pose it was registered with.** `quackd serve-mcp
+  --robot arm-01` built the arm without it, so every guard that stops the arm falling read
+  `None` and did nothing: the session connected without parking, refused nothing, and released
+  torque wherever the client left the arm. The gate, the refusal and the torque hold all
+  worked; nothing reached them.
 
 - **`.env` is read from the folder you run in, too.** quackd read a `.env` by walking up from its
   own installed directory, which is what finds the file a `uv venv` user put in their venv root,
@@ -148,7 +168,9 @@ reports that it did.
   on whichever body is there. With several installed and the Microduck among them,
   `microduck:sim2d` is still the default, because the six `duck: 0` starters carry no
   `robots:` line and have always meant the cartoon. With several and no Microduck, quackd lists
-  what is installed and asks you to name one. An adapter named but not installed says what to
+  what is installed and asks you to name one. A pilot flock whose members name no body asks the
+  same question rather than reaching for the duck, because a pilot flock is N bodies of any kind;
+  a coordinator flock still means N simulated Microducks, which is what it is made of. An adapter named but not installed says what to
   buy: `adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot]'`. `quackd record`
   still pins `microduck:sim2d` and a `--flock N` auction is still sim2d Microducks only, because
   that is what each of them is, and both now stop with the duck's extra named rather than
@@ -181,7 +203,14 @@ reports that it did.
   used to drop it.** `quackd doctor --robot <arm>`, `quackd robot list --probe` and a `--dry-run`
   all connect and disconnect, and disconnecting is what let the arm go. An arm at its recorded rest
   pose is released as it always was; an arm that is not is left energised, holding its own weight,
-  with the one line saying so and what to do about it. That is a real cost and it is the deliberate
+  with the one line saying so and what to do about it. That line is printed on every path a probe
+  can end by, including the timeout and the failure, which is where an arm is most likely to have
+  been left holding itself up, and `quackd doctor` prints it whenever the disconnect left it,
+  rather than only when the rest move had already reported a miss. A run that leaves the arm
+  powered also fails `doctor`'s verdict rather than printing the warning above a green tick:
+  the rest move and the disconnect take separate readings, and when they disagree the second
+  one is the arm's actual state. The probe line keeps the note's direction too, since there
+  are two of them and one says the arm was released rather than held. That is a real cost and it is the deliberate
   one: the servos stay powered and warming after a command you thought was read-only, until you
   return the arm to its pose or cut the power. An arm with no recorded rest pose is untouched by
   all of this and behaves exactly as it did, which is that torque drops where it stands, and

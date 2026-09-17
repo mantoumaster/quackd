@@ -70,6 +70,7 @@ from quackd.transport.base import (
     CameraFrame,
     DuckState,
     DuckTransport,
+    camera_names_of,
     frames_of,
     primary_of,
 )
@@ -234,10 +235,42 @@ class AgentLoop:
         rather than a contact sheet, so they keep being handed the view that steers."""
         if not frames:
             return
-        self.transcript.save_frames(list(frames), caption)
+        # the body's camera list rather than this step's frames: a two-camera arm that hands
+        # back one picture still writes it as `0000-side.png`, because a bare `0000.png` in
+        # the middle of a run is a file nothing says the lens of
+        self.transcript.save_frames(
+            list(frames), caption, several=len(camera_names_of(self.cfg.transport)) > 1
+        )
+        # `several` is the body's list and not len(frames): save_frames already takes the
+        # named branch for two pictures, so this only adds the case where one arrived
         if self.cfg.on_frame is not None:
             primary = primary_of(frames)
             self.cfg.on_frame(primary if primary is not None else frames[0].image, caption)
+
+    async def _park_before_the_run_began(self) -> None:
+        """Put the body down and let go, for a failure between the connect and the first step.
+
+        The run's own `finally` is what does this every other way a run can end, and it is not
+        in scope yet here. Nothing in this teardown may raise, because whatever brought us here
+        is the error the caller is owed: an `AdapterError` for a task this build cannot run, an
+        `Aborted` for a warning nobody confirmed, a state read that timed out.
+
+        The order is the finally's order for the same reasons: stop holds the body where it is,
+        the rest move is the only window in which putting it down changes whether it falls, and
+        the close is what releases torque. The transcript is closed too, since the run that
+        would have closed it never started."""
+        cfg = self.cfg
+        with contextlib.suppress(Exception):
+            await cfg.transport.stop()
+        with contextlib.suppress(Exception):
+            await self._rest()
+        with contextlib.suppress(Exception):
+            await cfg.transport.close()
+        if note := getattr(cfg.transport, "close_note", None):
+            with contextlib.suppress(Exception):
+                self._note(str(note))
+        with contextlib.suppress(Exception):
+            self.transcript.close()
 
     async def _rest(self) -> RestResult | None:
         """The rest move, narrated. None for a dry run, and for a body with no rest pose.
@@ -263,6 +296,9 @@ class AgentLoop:
     ) -> tuple[Observation, Image.Image | None]:
         state = await self.cfg.transport.get_state()
         frames = await frames_of(self.cfg.transport)
+        # the body's own list first, because it does not shrink when a lens stalls, and the
+        # names of the frames that arrived only when a transport does not publish one
+        cameras = camera_names_of(self.cfg.transport) or [f.name for f in frames]
         img = primary_of(frames)
         detections: list[Detection] = []
         if img is not None and self.cfg.detector is not None:
@@ -287,7 +323,7 @@ class AgentLoop:
             budget_status=self.budget.status(),
             inbox=inbox,
             inbox_for=link.name if link is not None else None,
-            cameras=[f.name for f in frames] if len(frames) > 1 else None,
+            cameras=cameras if len(cameras) > 1 else None,
         )
         features = observation_features(
             state=state,
@@ -303,7 +339,7 @@ class AgentLoop:
             if self.cfg.provider.supports_vision
             else []
         )
-        return Observation(text=text, images=images, features=features), img
+        return Observation(text=text, images=images, cameras=cameras, features=features), img
 
     NOBODY_TO_ASK = (
         "nobody is here to answer for the human: decide yourself and call assess_task again "
@@ -443,107 +479,122 @@ class AgentLoop:
         # prompt, allowlist universe) is built from that, not hardcoded (ADR-0017)
         connect_started = time.perf_counter()
         connected = await cfg.transport.connect()
-        connect_s = round(time.perf_counter() - connect_started, 3)
-        manifest = connected if isinstance(connected, RobotManifest) else None
-        if manifest is not None:
-            # a v2 task file corrects the body's own sheet for the build in front of it, and it
-            # does so here, before anything reads a manifest: the executor, the detector, the
-            # prompt and the transcript all see the one the model was told about
-            manifest = apply_datasheet_override(manifest, self.fm.datasheet)
-        if manifest is not None:
-            if cfg.registry is None:
-                self.registry = registry_from_manifest(manifest, cfg.transport)
-                self.executor.registry = self.registry
-            self.executor.manifest = manifest
-            # the CLI guessed from the description; this is what the robot actually has
-            cfg.detector = detector_for(
-                manifest.sensors,
-                cfg.detector,
-                fov_deg=cfg.fov_deg or manifest.limits.get("camera_fov_deg"),
-                backend=backend_name(cfg.transport),
+        # Everything from here to the first step can raise: a task that needs a verb this
+        # build does not have, a person who would not confirm they were watching, a state
+        # read that timed out. The arm is connected and holding by then, and the run's own
+        # `finally` does not exist yet, so a failure in this window used to exit with the
+        # arm energised, away from any pose anybody chose, and nothing said about it.
+        try:
+            connect_s = round(time.perf_counter() - connect_started, 3)
+            manifest = connected if isinstance(connected, RobotManifest) else None
+            if manifest is not None:
+                # a v2 task file corrects the body's own sheet for the build in front of it, and it
+                # does so here, before anything reads a manifest: the executor, the detector, the
+                # prompt and the transcript all see the one the model was told about
+                manifest = apply_datasheet_override(manifest, self.fm.datasheet)
+            if manifest is not None:
+                if cfg.registry is None:
+                    self.registry = registry_from_manifest(manifest, cfg.transport)
+                    self.executor.registry = self.registry
+                self.executor.manifest = manifest
+                # the CLI guessed from the description; this is what the robot actually has
+                cfg.detector = detector_for(
+                    manifest.sensors,
+                    cfg.detector,
+                    fov_deg=cfg.fov_deg or manifest.limits.get("camera_fov_deg"),
+                    backend=backend_name(cfg.transport),
+                )
+                self.executor.detector = cfg.detector
+            registry = self.registry
+            allow = self.fm.verbs.allow
+            # `validate` and the CLI check the STATIC manifest, which describes a fully built
+            # robot. One that reports fewer capabilities at connect (no camera, no speaker, no
+            # head) narrows its own vocabulary, and building the tool schemas would then raise a
+            # bare VerbNotFound with the robot already connected.
+            #
+            # What a task *requires* it must have, so a missing one refuses in the validator's
+            # words. What it merely *allows* is opportunistic, and a v1 task may allow more than
+            # it needs, so those are dropped with a line in the log and the run goes on.
+            missing = registry.unknown(self.fm.effective_requires)
+            if missing:
+                who = f"{manifest.id} ({manifest.model})" if manifest else "this robot"
+                raise AdapterError(
+                    f"{self.duck.name} requires {', '.join(missing)}, but {who} does not provide "
+                    f"{'them' if len(missing) > 1 else 'it'}. The robot reported what it was "
+                    "actually built with when it connected, which is narrower than its "
+                    "description. Run `quackd list-verbs` against it to see what it has."
+                )
+            dropped = [n for n in allow if n not in registry]
+            if dropped:
+                allow = [n for n in allow if n in registry]
+                self._note(f"this robot does not have {', '.join(dropped)}; running without")
+            # One reading, before the budget starts, for two things the model has to be told at the
+            # top: whether anything on this robot can see a fall, and what quackd is standing in
+            # for on this backend. Both are the robot's own words about itself.
+            first_state = await cfg.transport.get_state()
+            if (warning := self._fall_blind_warning(registry, allow, first_state)) is not None:
+                self._note(warning)
+                if cfg.acknowledge is not None and not cfg.acknowledge(warning):
+                    raise Aborted(
+                        "nobody confirmed they were watching a robot that cannot see a fall"
+                    )
+            tools = registry.tool_schemas(allow) + META_TOOLS
+            if cfg.link is not None:
+                tools = [*tools, TELL]
+            memory_text: str | None = None
+            if cfg.memory is not None:
+                tools = [*tools, REMEMBER]
+                memory_text = cfg.memory.recall()
+            system = build_system_prompt(
+                self.duck,
+                [registry.view(n) for n in allow],
+                backend_name(cfg.transport),
+                manifest=manifest,
+                memory_text=memory_text,
+                assumptions=first_state.extras.get("assumptions") or None,
+                flock_text=cfg.link.prompt_section() if cfg.link is not None else None,
             )
-            self.executor.detector = cfg.detector
-        registry = self.registry
-        allow = self.fm.verbs.allow
-        # `validate` and the CLI check the STATIC manifest, which describes a fully built
-        # robot. One that reports fewer capabilities at connect (no camera, no speaker, no
-        # head) narrows its own vocabulary, and building the tool schemas would then raise a
-        # bare VerbNotFound with the robot already connected.
-        #
-        # What a task *requires* it must have, so a missing one refuses in the validator's
-        # words. What it merely *allows* is opportunistic, and a v1 task may allow more than
-        # it needs, so those are dropped with a line in the log and the run goes on.
-        missing = registry.unknown(self.fm.effective_requires)
-        if missing:
-            who = f"{manifest.id} ({manifest.model})" if manifest else "this robot"
-            raise AdapterError(
-                f"{self.duck.name} requires {', '.join(missing)}, but {who} does not provide "
-                f"{'them' if len(missing) > 1 else 'it'}. The robot reported what it was "
-                "actually built with when it connected, which is narrower than its "
-                "description. Run `quackd list-verbs` against it to see what it has."
+            system += getattr(cfg.provider, "prompt_hint", "") or ""  # e.g. the local JSON fallback
+            self._emit(
+                "run_start",
+                duck=self.fm.name,
+                duck_path=self.duck.path,
+                provider=cfg.provider.name,
+                model=cfg.provider.model,
+                # Fields a passthrough added to every request (#12). A run whose model was told not
+                # to think reads very differently from one that was, and the transcript is the only
+                # place a reader can tell which they are holding.
+                extra_body=getattr(cfg.provider, "extra_body", None),
+                transport=backend_name(cfg.transport),
+                adapter=adapter_name(cfg.transport),
+                robot=manifest.model_dump(mode="json") if manifest is not None else None,
+                dry_run=cfg.dry_run,
+                contract=self.fm.model_dump(),
+                system_prompt=system,
+                tools=[t["name"] for t in tools],
+                memory=cfg.memory.summary() if cfg.memory is not None else None,
+                flock=cfg.link.describe() if cfg.link is not None else None,
+                connect_s=connect_s,
             )
-        dropped = [n for n in allow if n not in registry]
-        if dropped:
-            allow = [n for n in allow if n in registry]
-            self._note(f"this robot does not have {', '.join(dropped)}; running without")
-        # One reading, before the budget starts, for two things the model has to be told at the
-        # top: whether anything on this robot can see a fall, and what quackd is standing in
-        # for on this backend. Both are the robot's own words about itself.
-        first_state = await cfg.transport.get_state()
-        if (warning := self._fall_blind_warning(registry, allow, first_state)) is not None:
-            self._note(warning)
-            if cfg.acknowledge is not None and not cfg.acknowledge(warning):
-                raise Aborted("nobody confirmed they were watching a robot that cannot see a fall")
-        tools = registry.tool_schemas(allow) + META_TOOLS
-        if cfg.link is not None:
-            tools = [*tools, TELL]
-        memory_text: str | None = None
-        if cfg.memory is not None:
-            tools = [*tools, REMEMBER]
-            memory_text = cfg.memory.recall()
-        system = build_system_prompt(
-            self.duck,
-            [registry.view(n) for n in allow],
-            backend_name(cfg.transport),
-            manifest=manifest,
-            memory_text=memory_text,
-            assumptions=first_state.extras.get("assumptions") or None,
-            flock_text=cfg.link.prompt_section() if cfg.link is not None else None,
-        )
-        system += getattr(cfg.provider, "prompt_hint", "") or ""  # e.g. the local JSON fallback
-        self._emit(
-            "run_start",
-            duck=self.fm.name,
-            duck_path=self.duck.path,
-            provider=cfg.provider.name,
-            model=cfg.provider.model,
-            # Fields a passthrough added to every request (#12). A run whose model was told not
-            # to think reads very differently from one that was, and the transcript is the only
-            # place a reader can tell which they are holding.
-            extra_body=getattr(cfg.provider, "extra_body", None),
-            transport=backend_name(cfg.transport),
-            adapter=adapter_name(cfg.transport),
-            robot=manifest.model_dump(mode="json") if manifest is not None else None,
-            dry_run=cfg.dry_run,
-            contract=self.fm.model_dump(),
-            system_prompt=system,
-            tools=[t["name"] for t in tools],
-            memory=cfg.memory.summary() if cfg.memory is not None else None,
-            flock=cfg.link.describe() if cfg.link is not None else None,
-            connect_s=connect_s,
-        )
-        outcome: Outcome = "error"
-        reason = "loop exited unexpectedly"
-        last_verb: str | None = None
-        last_result: VerbResult | None = None
-        retry_prompted = False
+            outcome: Outcome = "error"
+            reason = "loop exited unexpectedly"
+            last_verb: str | None = None
+            last_result: VerbResult | None = None
+            retry_prompted = False
 
-        self.budget.start()
-        self.heartbeat.start()
+            self.budget.start()
+            self.heartbeat.start()
+        except BaseException:
+            await self._park_before_the_run_began()
+            raise
         try:
             # a run starts from the pose it will end at, so what the pilot improvises from is
             # the same arm every time rather than wherever the last run put it down
-            if (parked := await self._rest()) is not None and not parked.reached:
+            # `recorded` as well as `reached`, matching the flock member: a body that answers
+            # `none` has no pose to be away from, and ending a run over that would punish a
+            # transport for not being one quackd parks rather than for failing to park.
+            parked = await self._rest()
+            if parked is not None and parked.recorded and not parked.reached:
                 raise Aborted(f"the arm did not reach its rest pose: {parked.reason}")
             while True:
                 await asyncio.sleep(0)  # let the heartbeat and kill switch run

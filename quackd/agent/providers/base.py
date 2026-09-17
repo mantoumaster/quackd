@@ -67,24 +67,44 @@ class Observation(BaseModel):
     images: list[NamedPng] = Field(default_factory=list)
     """One per camera that gave a frame this step, the primary first. Empty when the body has
     no camera, when the camera gave nothing, or when the model cannot see."""
+    cameras: list[str] = Field(default_factory=list)
+    """Every camera the body has, answering or not, which is not the same list as `images`.
+
+    Whether a picture is named on the wire is decided from this rather than from how many
+    arrived: a two-camera arm whose top lens stalls sends one frame, and sending it bare
+    would put the side view under the primary's detections with nothing saying so. Empty for
+    a body with one camera or none, which is every request quackd made before an arm could
+    have two, so those go out unchanged."""
     features: dict[str, Any] = Field(default_factory=dict)
     tool_call_id: str | None = Field(
         default=None, description="Set when this is the result of a tool call."
     )
 
 
+def name_cameras(obs: Observation) -> bool:
+    """Whether this body's pictures are named on the wire. One camera needs no label."""
+    return len(obs.cameras) > 1
+
+
 def labelled(
     images: Sequence[NamedPng],
     image_part: Callable[[bytes], Any],
     text_part: Callable[[str], Any],
+    *,
+    name_them: bool = False,
 ) -> list[Any]:
-    """A turn's pictures as wire parts, in order, labelled only when there are several.
+    """A turn's pictures as wire parts, in order, each named when the body has several cameras.
 
-    With one image this is the single part every provider sent back when a body could only
-    have one camera, so a one-camera request goes out unchanged. With several, each picture
-    is preceded by a text part naming its camera: two unlabelled images in one message are
-    two views of a room with nothing to say which is which."""
-    if len(images) == 1:
+    With a one-camera body this is the single part every provider sent back when a body could
+    only have one camera, so a one-camera request goes out unchanged. With several, each
+    picture is preceded by a text part naming its camera: two unlabelled images in one message
+    are two views of a room with nothing to say which is which.
+
+    `name_them` comes from the body's camera list and not from `len(images)`, because the
+    dangerous case is the one where they disagree. A two-camera arm whose primary stalls sends
+    exactly one picture, and that picture is the one that most needs saying which lens it is:
+    it lands under a detections line measured off the lens that died."""
+    if len(images) == 1 and not name_them:
         return [image_part(images[0].png)]
     parts: list[Any] = []
     for image in images:

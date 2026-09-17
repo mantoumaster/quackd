@@ -65,7 +65,12 @@ from quackd.trace import (
     trace_enabled_default,
     unless_capturing,
 )
-from quackd.transport.base import CameraFrame, DuckTransport, TransportError
+from quackd.transport.base import (
+    CameraFrame,
+    DuckTransport,
+    TransportError,
+    camera_names_of,
+)
 from quackd.verbs.registry import (
     Verb,
     VerbRegistry,
@@ -294,8 +299,16 @@ class RobotSession:
             if not parked.reached:
                 with contextlib.suppress(Exception):
                     await self.transport.close()
+                # the close is what decides whether torque dropped, and it leaves its reason
+                # behind. Carried into the refusal rather than logged: this is the one moment
+                # the server refuses to start, nobody is watching the arm, and the client is
+                # about to be told only that the pose was not reached.
+                note = getattr(self.transport, "close_note", None)
+                if note:
+                    log.warning("%s: %s", self.name, note)
                 raise TransportError(
                     f"{self.name}: the arm did not reach its rest pose: {parked.reason}"
+                    + (f". {note}" if note else "")
                 )
         self.heartbeat.start()
 
@@ -493,7 +506,10 @@ class RobotSession:
         if not result["ok"] or not self.last_frames:
             # refused, no camera, or a dry run (nothing was captured): words only
             content = [f"{self.name}: {result['summary']}"]
-        elif len(self.last_frames) == 1:
+        elif len(self.last_frames) == 1 and len(camera_names_of(self.transport)) < 2:
+            # the body's cameras rather than this step's frames: a two-camera arm down to one
+            # lens takes the named branch below, because an unnamed picture from a body with
+            # two views is the one thing the naming exists to prevent
             self.frames += 1
             summary = str(result["summary"]).removeprefix("frame captured; ")
             content = [
@@ -504,12 +520,23 @@ class RobotSession:
             # several cameras: each picture is named, and the summary is the primary's,
             # because the detector reads one view and a bearing from another means nothing
             self.frames += len(self.last_frames)
-            names = [f.name for f in self.last_frames]
+            # the body's camera list, not the frames that arrived. Naming the first picture
+            # as the primary is only true when the primary is the one that answered: if it is
+            # the lens that died, calling the survivor primary and handing it the detections
+            # turns an unnamed picture into a mislabelled one, which is worse than what this
+            # branch was written to fix. The detections belong to the primary either way, and
+            # when it gave nothing there are none.
+            here = camera_names_of(self.transport) or [f.name for f in self.last_frames]
+            arrived = [f.name for f in self.last_frames]
+            primary = next((f.name for f in self.last_frames if f.primary), None)
             summary = re.sub(r"^frames? captured[^;]*; ", "", str(result["summary"]))
-            content = [
-                f"{self.name} cameras {', '.join(names)} "
-                f"({names[0]} is the primary, the detections are its): {summary}"
-            ]
+            whose = (
+                f"{primary} is the primary, the detections are its"
+                if primary is not None
+                else f"{here[0]} is the primary and gave nothing this step, "
+                "so there are no detections"
+            )
+            content = [f"{self.name} cameras {', '.join(arrived)} ({whose}): {summary}"]
             for frame in self.last_frames:
                 content.append(f"camera {frame.name}:")
                 content.append(Image(data=png_bytes(frame.image), format="png"))
@@ -1079,6 +1106,11 @@ def fleet_from_flags(
             address=where["address"],
             camera_url=where["camera_url"],
             token=where["token"],
+            # the recorded pose, without which `RobotSession.connect`'s rest gate and the
+            # torque hold in `close` are both dead code: the transport's `rest_pose` would be
+            # None, every guard reading it would be False, and an arm served over MCP would be
+            # released wherever the session left it, which is the fall this all exists to stop
+            rest_pose=where["rest_pose"],
         )
     memory_keys = {
         name: one.memory_key

@@ -71,9 +71,20 @@ class FlockResult:
 
 
 def member_specs(
-    members: list[str], robots: dict[str, str] | None, duck_default: str | dict[str, str] | None
+    members: list[str],
+    robots: dict[str, str] | None,
+    duck_default: str | dict[str, str] | None,
+    *,
+    fallback: str | None = DEFAULT_MEMBER,
 ) -> dict[str, RobotSpec]:
-    """Each member's robot: `--robots`, else the duck's `robots:`, else a simulated duck."""
+    """Each member's robot: `--robots`, else the duck's `robots:`, else `fallback`.
+
+    A coordinator flock passes `DEFAULT_MEMBER`, because a coordinator flock is N views of one
+    simulated Microduck world and there is nothing else it could be. A pilot flock passes
+    None, because it is N separate bodies of whatever kind, and the machine's own answer to
+    "which robot, then" is `default_spec()`: the one adapter installed if there is one, the
+    Microduck if the Microduck is among several, and a refusal naming what to install if there
+    is none. Hardcoding the duck here was a second default that outlived the first."""
     given: dict[str, str] = {}
     if robots:
         given = dict(robots)
@@ -82,8 +93,17 @@ def member_specs(
     elif isinstance(duck_default, str):
         given = dict.fromkeys(members, duck_default)
     specs: dict[str, RobotSpec] = {}
+    chosen: RobotSpec | None = None
     for name in members:
-        parsed = parse_robot_spec(given.get(name, DEFAULT_MEMBER))
+        if (named := given.get(name)) is not None:
+            parsed = parse_robot_spec(named)
+        elif fallback is not None:
+            parsed = parse_robot_spec(fallback)
+        else:
+            from quackd.adapters.factory import default_spec
+
+            chosen = chosen or default_spec()  # asked once: the answer cannot differ per member
+            parsed = chosen
         specs[name] = RobotSpec(parsed.adapter, parsed.backend, name)
     return specs
 

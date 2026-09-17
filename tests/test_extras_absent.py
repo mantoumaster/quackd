@@ -111,6 +111,32 @@ def test_a_machine_with_no_adapter_installed_still_works_and_says_what_to_instal
 
         with pytest.raises(NoRobotNamed, match="no robot adapter is installed"):
             factory.resolve_robot(None)
+
+        # `doctor` is where `README.md` sends a new reader to find out what this machine has,
+        # and it still exits 0, because an uninstalled adapter is a choice rather than a
+        # fault. What it may not do is say the simulator runs here. It does not: `quackd run`
+        # on this machine refuses for want of a robot, and a green verdict claiming otherwise
+        # is this command saying the opposite of the one thing it exists to say.
+        import io as _io
+
+        from rich.console import Console
+
+        from quackd import doctor
+
+        report = doctor.collect()
+        assert report.ok, "a machine with no robot is still a working quackd"
+        buf = _io.StringIO()
+        Console(file=buf, width=200).print(doctor.verdict(report))
+        said = buf.getvalue()
+        assert "no robot adapter is installed" in said, said
+        assert "the simulator and the scripted pilot run here" not in said, said
+        assert "0/7 adapters installed" in " ".join(said.split()), said
+
+        # a pilot flock does not reach past the refusal for a hardcoded duck either
+        from quackd.flock.runner import member_specs
+
+        with pytest.raises(NoRobotNamed, match="no robot adapter is installed"):
+            member_specs(["a", "b"], None, None, fallback=None)
     finally:
         factory._installed = real
         factory._installed.cache_clear()

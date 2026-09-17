@@ -165,7 +165,7 @@ def test_render_loses_nothing_on_a_codepage_that_cannot_carry_it(
     console.file.flush()
     out = raw.getvalue().decode("cp1252")
     assert out.isascii()
-    assert "[ok] built-in" in out, "the registry's tick becomes something readable"
+    assert "[ok] in the package" in out, "the registry's tick becomes something readable"
     assert "duck-ipc-proto API" in out
 
 
@@ -266,6 +266,31 @@ def test_a_robot_with_no_rest_pose_recorded_says_how_to_record_one_and_still_pas
     assert report.ok is True
     assert arm.torque is False, "with no pose to hold, the arm is released as it always was"
     assert arm.close_note is None
+
+
+def test_an_arm_that_arrived_and_was_still_held_at_the_close_fails_the_verdict_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gap between the two reports. The rest move says it arrived, and the disconnect's
+    own re-read is a separate reading that can disagree with it: the arm drifted, or it
+    stopped answering. When it does, torque is kept and a note is written, and reading only
+    the rest move would print that note under a green tick and exit 0.
+
+    A person runs `doctor` to be told whether they can walk away. Saying yes over a note that
+    says the arm is still powered is the one answer this command must never give."""
+    arm = LeRobotMock(rest_pose=dict(REST))
+
+    async def arrive_then_drift() -> None:
+        arm.sequence.append("close")
+        arm.close_note = "the arm is not at its rest pose (it stopped answering), so torque was left on and it will not fall: hold the arm and cut its power, or run again"  # noqa: E501
+
+    monkeypatch.setattr(arm, "close", arrive_then_drift)
+    report = _probed(monkeypatch, arm, rest_pose=dict(REST))
+
+    assert _row(report, "rest pose").state == "ok", "the move itself did report arriving"
+    advisories = _probe_of(report).advisories
+    assert any("torque was left on" in a for a in advisories), advisories
+    assert report.ok is False, "a green verdict over a torque note walks somebody away"
 
 
 def test_an_arm_that_cannot_reach_its_rest_pose_fails_the_verdict_and_says_torque_is_on(

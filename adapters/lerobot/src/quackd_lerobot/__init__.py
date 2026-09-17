@@ -15,7 +15,13 @@ from typing import Any
 
 from PIL import Image
 
-from quackd.adapters.base import RestResult, camera_urls, go_to_rest_if_any, one_camera_url
+from quackd.adapters.base import (
+    AdapterError,
+    RestResult,
+    camera_urls,
+    go_to_rest_if_any,
+    one_camera_url,
+)
 from quackd.adapters.manifest import (
     Datasheet,
     Figure,
@@ -231,6 +237,14 @@ class LeRobotAdapter:
         """Every camera this arm has, primary first. A mock has one and says so."""
         return await frames_of(self.transport)
 
+    @property
+    def camera_keys(self) -> tuple[str, ...]:
+        """The cameras this arm was opened with, whether or not one is answering now.
+
+        Forwarded for the same reason `camera_error` is, and read for a sharper one: it is how
+        a caller knows a lone picture came off a two-camera arm and still needs its name."""
+        return tuple(getattr(self.transport, "camera_keys", ()))
+
     async def go_to_rest(self) -> RestResult:
         return await go_to_rest_if_any(self.transport)
 
@@ -343,6 +357,23 @@ def conditions() -> dict[str, Precondition]:
     return lerobot_conditions()
 
 
+def _check_rest_pose(rest_pose: dict[str, float] | None) -> None:
+    """Refuse a pose that names nothing this arm would drive, rather than ignoring it.
+
+    `quackd robot rest-pose` reads the pose off the arm and cannot produce one of these; a
+    hand-edited `robots.json` can, and did in review. Without this the pose is accepted,
+    printed by `robot show`, driven nowhere, and the arm is released where it stands: the one
+    failure this whole feature exists to prevent, arrived at by a typed joint name."""
+    from quackd_lerobot.verbs import NO_DRIVABLE_JOINT, drivable_rest_joints, rest_goal
+
+    if rest_pose and not rest_goal(rest_pose):
+        raise AdapterError(
+            NO_DRIVABLE_JOINT.format(
+                named=", ".join(sorted(rest_pose)), drivable=", ".join(drivable_rest_joints())
+            )
+        )
+
+
 def make(
     backend: str,
     *,
@@ -354,6 +385,7 @@ def make(
     token: str | None = None,
     rest_pose: dict[str, float] | None = None,
 ) -> LeRobotAdapter:
+    _check_rest_pose(rest_pose)
     if backend == "mock":
         from quackd_lerobot.mock import LeRobotMock
 
@@ -397,7 +429,16 @@ __all__ = [
 def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
     from quackd_lerobot import upstream_api
 
-    return (("lerobot", upstream_api, "docs/adapters/lerobot.md", "an arm (the real backend)"),)
+    # The one row in this table that is not a list of what nobody has tried. An SO-101 ran the
+    # real backend on 2026-09-15, so the column says what that run did and did not cover.
+    return (
+        (
+            "lerobot",
+            upstream_api,
+            "docs/adapters/lerobot.md",
+            "run on an SO-101 on 2026-09-15; the pick policy was not exercised",
+        ),
+    )
 
 
 UPSTREAMS = _upstream_rows()

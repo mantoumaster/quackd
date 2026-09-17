@@ -52,10 +52,13 @@ def _live_or_skip() -> None:
     if os.environ.get("QUACKD_LIVE_LLM") != "1":
         pytest.skip("live LLM tests are opt-in: set QUACKD_LIVE_LLM=1")
     # The CLI loads `.env` at startup (cli.py) and a developer's key usually lives there
-    # rather than in the shell, so look there too before deciding there is no key.
+    # rather than in the shell, so look there too before deciding there is no key. Both
+    # places the CLI looks, in the CLI's own order: the folder the command was typed in
+    # first, then the walk up from quackd's own directory.
     try:
         from dotenv import load_dotenv
 
+        load_dotenv(Path.cwd() / ".env")
         load_dotenv()
     except ImportError:  # pragma: no cover - dotenv ships with the CLI
         pass

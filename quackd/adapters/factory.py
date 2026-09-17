@@ -162,12 +162,15 @@ class NoRobotNamed(AdapterError):
 def default_spec() -> RobotSpec:
     """The body a command means when nothing named one, or a refusal saying why there is none.
 
-    Three answers, and which one you get depends only on what is installed here. With nothing
+    Four answers, and which one you get depends only on what is installed here. With nothing
     installed there is no robot to default to and the message says what to install. With
     exactly one adapter installed that one is the default, because a machine with one robot
     has no ambiguity to resolve and making its owner type the name would be ceremony. With
-    several, quackd refuses to guess: picking the duck because it used to be the default is
-    how somebody ends up running a task against a simulator they forgot they had."""
+    several including the Microduck, `microduck:sim2d` is still the default, because the
+    starter task files that name no robot have always meant the cartoon and a machine that
+    installed the duck on purpose is not surprised by it. With several and no Microduck among
+    them, quackd refuses to guess and lists what is here, rather than reaching for whichever
+    body happens to sort first."""
     usable = [name for name in adapter_names() if is_installed(name)]
     if not usable:
         publishes = ", ".join(n for n in BY_NAME if n != "microduck")

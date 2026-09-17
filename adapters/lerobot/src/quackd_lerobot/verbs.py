@@ -232,6 +232,36 @@ def rest_goal(rest_pose: dict[str, float]) -> dict[str, float]:
     return {j: float(v) for j, v in rest_pose.items() if j in JOINTS and j != "gripper"}
 
 
+TORQUE_COULD_NOT_BE_KEPT = (
+    "the arm is not at its rest pose ({why}), and quackd could not keep torque on, so the "
+    "arm was released where it stood: check whether it is still where you left it"
+)
+"""When the one seam that holds torque did not take.
+
+`close()` keeps an arm up by writing a flag on LeRobot's config object just before the
+disconnect that reads it. If that write raises, the disconnect releases torque anyway, and
+the note promising the opposite would be the worst line quackd could print: somebody reads
+that the arm is being held and walks away from an arm that is not."""
+
+NO_DRIVABLE_JOINT = (
+    "the recorded rest pose names no joint this arm drives ({named}). A pose is only kept "
+    "for the five body joints ({drivable}), because the gripper is never re-sent: "
+    "quackd robot rest-pose NAME re-reads it off the arm, or --clear forgets it"
+)
+"""Why a pose that survived the registry is still refused here.
+
+The registry checks that a pose names a joint and that its angles are numbers; it does not
+know this arm's motors, and nothing should teach it. So a hand-edited `robots.json` can name
+`elbow` where the arm says `elbow_flex`, and that pose drives nothing. Refusing it is the
+registry's own rule about a file that says something untrue: the alternative is an arm that
+reports a rest pose, ignores it, and lets go where it stands."""
+
+
+def drivable_rest_joints() -> tuple[str, ...]:
+    """The joints a rest pose may name, for the refusal that lists them."""
+    return tuple(j for j in JOINTS if j != "gripper")
+
+
 def at_rest(goal: dict[str, float], joints: dict[str, float]) -> bool:
     """Every joint of the goal is reported, and every one of them is close enough."""
     if not goal or any(j not in joints for j in goal):

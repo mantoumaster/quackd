@@ -10,9 +10,18 @@ from typing import Any
 import pytest
 from PIL import Image
 
+from quackd.adapters.base import AdapterError
 from quackd.agent.loop import AgentLoop, RunConfig, run_duck
-from quackd.agent.providers.base import Exchange, ProviderError, ProviderTurn, ToolCall, Usage
+from quackd.agent.providers.base import (
+    Exchange,
+    Observation,
+    ProviderError,
+    ProviderTurn,
+    ToolCall,
+    Usage,
+)
 from quackd.agent.providers.fake import FakeProvider
+from quackd.agent.providers.openai import render_messages
 from quackd.agent.transcript import Transcript
 from quackd.duckfile.schema import Budgets, DuckFile
 from quackd.transport.base import CameraFrame
@@ -1056,6 +1065,44 @@ def _arm_duck() -> DuckFile:
     return parse_duck_text(ARM_DUCK.format(version=1, block=""))
 
 
+async def test_a_task_the_arm_cannot_run_still_puts_the_arm_down_before_letting_go(
+    tmp_path: Path,
+) -> None:
+    """The window between the connect and the first step, which the run's own `finally` does
+    not cover because it does not exist yet.
+
+    A task that needs a verb this build does not have is refused after the arm is connected
+    and holding. Before this the process exited there with the arm energised, wherever it
+    happened to be standing, and nothing said so: the exact failure the rest pose exists to
+    prevent, reached by a task file rather than by a run that ended.
+
+    Nothing is asked of the pilot: this is refused before the first call, so a run that could
+    never have worked also costs nothing."""
+    duck = _arm_duck()
+    duck.frontmatter.duck = 1
+    duck.frontmatter.requires = ["fly"]
+    mock = LeRobotMock(rest_pose=ARM_REST)
+    mock.joints["shoulder_pan"] = ARM_REST["shoulder_pan"] + 70.0  # nowhere anybody chose
+    provider = FakeProvider.for_duck("hello-world")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    with pytest.raises(AdapterError, match="fly"):
+        await run_duck(
+            RunConfig(
+                duck=duck,
+                provider=provider,
+                transport=LeRobotAdapter(mock),
+                run_dir=run_dir,
+                runs_dir=tmp_path,
+            )
+        )
+
+    assert mock.sequence == ["stop", "rest", "close"], mock.sequence
+    assert mock.torque is False, "the arm reached its pose, so torque could be released"
+    assert mock.joints["shoulder_pan"] == ARM_REST["shoulder_pan"]
+
+
 def _says_no(_why: str) -> bool:
     """The person in the room, refusing. `decide` is asked when the pilot says it is unsure."""
     return False
@@ -1320,6 +1367,77 @@ class TwoCameraDuck(MockTransport):
         ]
 
 
+def test_a_body_with_one_camera_is_never_told_its_view_has_a_name() -> None:
+    """The prompt's camera paragraph promises the pilot that every frame is labelled with the
+    camera that took it. That promise is kept by `name_cameras`, which reads the same count,
+    so the paragraph may only appear where the count is above one.
+
+    Written against the prompt rather than against an adapter because the list is the
+    adapter's: the LeRobot arm withholds it for a single camera, and another body's adapter
+    may not. A pilot told `This body has 1 cameras: forward` and that its frames are labelled
+    would be reading a sentence the wire never honours, and would have no way to know."""
+    from quackd.agent.prompts import build_system_prompt
+    from quackd_lerobot import lerobot_manifest
+
+    duck, one = _arm_duck(), lerobot_manifest("mock", camera_names=("forward",))
+    one.extras["cameras"] = ["forward"]  # an adapter that publishes it for its only camera
+    said = build_system_prompt(duck, [], "mock", manifest=one)
+    assert "1 cameras" not in said, said[said.find("camera") - 80 :][:240]
+    assert "labelled with the name of the camera" not in said
+
+    two = lerobot_manifest("mock", camera_names=("top", "side"))
+    both = build_system_prompt(duck, [], "mock", manifest=two)
+    assert "This body has 2 cameras: top, side" in both
+    assert "top is the primary" in both
+
+
+class OneCameraLeft(MockTransport):
+    """A two-camera body whose primary lens has stalled: `camera_keys` still names both, and
+    only `side` answers. This is what `LeRobotReal.get_frames` produces when a webcam stops
+    giving frames, and it is the state where getting the naming wrong is worst."""
+
+    camera_keys = ("top", "side")
+
+    async def get_frames(self) -> list[CameraFrame]:
+        return [CameraFrame("side", Image.new("RGB", (16, 16), (40, 40, 200)))]
+
+
+async def test_the_one_lens_left_on_a_two_camera_body_still_says_which_one_it_is(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """The dangerous case, and the one that is easy to write wrong: count the pictures that
+    arrived and a two-camera arm down to one lens looks exactly like a one-camera arm, so the
+    survivor goes out bare. It must not. The `camera:` detections line is measured off the
+    primary, which is the lens that died, so an unnamed picture from the side camera lands
+    directly under a description of a view it is not.
+
+    The body's own camera list is what decides, and that list does not shrink when a lens
+    stalls."""
+    provider = SeeingProvider(ToolCall(name="declare_success", arguments={"reason": "seen"}))
+    result = await run_duck(
+        RunConfig(duck=hello_duck, provider=provider, transport=OneCameraLeft(), runs_dir=tmp_path)
+    )
+    assert result.outcome == "success", result.reason
+
+    # the observation the loop actually built, rendered by a real provider: one picture, and
+    # a label in front of it saying which lens it is
+    seen = provider.observations[0]
+    assert [img.name for img in seen.images] == ["side"], "only the working lens answered"
+    assert seen.cameras == ["top", "side"], "the body still has two cameras"
+    parts = render_messages("system", [Exchange(observation=seen)])[1]["content"]
+    assert [p["type"] for p in parts] == ["text", "text", "image_url"], parts
+    assert parts[1]["text"] == "camera side:", "the surviving lens went out unnamed"
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    record = next(e for e in events if e["kind"] == "frame")
+    assert record["camera"] == "side" and record["path"].endswith("0000-side.png"), record
+
+    observation = next(e for e in events if e["kind"] == "observation")
+    assert "cameras: top (detections above), side" in observation["text"], (
+        "the body still has two cameras, and the pilot is told so"
+    )
+
+
 class SeeingProvider:
     """A pilot that can see, and writes down which camera every picture in the request came
     from, exchange by exchange."""
@@ -1331,12 +1449,14 @@ class SeeingProvider:
     def __init__(self, *script: ToolCall) -> None:
         self.script = list(script)
         self.requests: list[list[list[str]]] = []
+        self.observations: list[Observation] = []
         self.calls = 0
 
     async def step(
         self, system: str, history: list[Exchange], tools: list[dict[str, Any]]
     ) -> ProviderTurn:
         self.requests.append([[img.name for img in ex.observation.images] for ex in history])
+        self.observations.extend(ex.observation for ex in history)
         call = self.script[min(self.calls, len(self.script) - 1)]
         self.calls += 1
         return ProviderTurn(tool_calls=[call])
