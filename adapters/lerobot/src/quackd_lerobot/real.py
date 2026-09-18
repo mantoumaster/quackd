@@ -1134,6 +1134,13 @@ class LeRobotReal:
             body = {j: v for j, v in placed.items() if j in JOINTS}
             if not body:
                 return HandResult("refused", "the arm reported no joint to hold")
+            # The gripper IS in that goal, which is the opposite of what `_hold()` and the rest
+            # move do, for the reason they leave it out. They omit it because the squeeze the
+            # gripper is holding is a goal somebody meant, and re-sending its measured position
+            # would relax it. Here there is no such goal: the jaws are wherever a person's
+            # fingers left them with no torque behind them, and the last goal this arm was
+            # written may be from another session. Writing where they are is what pins the
+            # pencil; omitting it hands the servo whatever stale goal it still had.
             # unclipped, for `_drive_to_rest`'s reason: this is where the arm physically is,
             # and a hand-placed arm can easily sit outside the travel its calibration recorded
             await self._send(body, clip=False)
