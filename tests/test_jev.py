@@ -11,6 +11,9 @@ silently, and this is the test that makes somebody say which.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
 import pytest
 
 from quackd.adapters.factory import ADAPTER_NAMES, _module
@@ -287,3 +290,365 @@ def test_the_brake_answers_to_the_lowest_floor_and_a_gated_verb_to_the_highest()
     assert FLOORS[verb_class(_verbs("core")["stop"])] == min(FLOORS.values())
     assert verb_class(_verbs("alohamini")["home_arms"], "home_arms") == "confirm"
     assert FLOORS["confirm"] > FLOORS["motion"] > FLOORS["read"] > FLOORS["brake"]
+
+
+# ── the stepper ─────────────────────────────────────────────────────────────────────────
+
+
+async def _arm(mode: str = "on", allow: Sequence[str] | None = None) -> tuple[Any, Any, Any]:
+    """A stepper on the mock arm, with the adapter it was built from."""
+    from quackd.agent.jev import Stepper
+    from quackd.verbs.registry import registry_from_manifest
+    from quackd_lerobot import LeRobotAdapter
+    from quackd_lerobot.mock import LeRobotMock
+
+    adapter = LeRobotAdapter(LeRobotMock())
+    manifest = await adapter.connect()
+    registry = registry_from_manifest(manifest, adapter)
+    names = list(allow or ["report_state", "stop", "gripper", "place", "move_joints"])
+    stepper = Stepper.build(
+        mode=mode,
+        registry=registry,
+        allow=names,
+        goal="Say whether you are holding anything, then let it go",
+        success=["you have said whether anything is held"],
+        body=manifest.summary(),
+    )
+    return stepper, adapter, manifest
+
+
+async def _observation(adapter: Any, last: dict[str, Any] | None = None) -> Any:
+    from quackd.agent.providers.base import Observation
+
+    return Observation(
+        text="x",
+        features={
+            "state": (await adapter.get_state()).model_dump(),
+            "detections": [],
+            "last_result": last,
+            "allowed": [],
+        },
+    )
+
+
+BUDGET = "step 0/12, llm calls 0/12, 0.0/3 min"
+
+
+async def _advise(fake: Any, monkeypatch: pytest.MonkeyPatch, **over: Any) -> Any:
+    """Build a stepper on the mock arm, install `fake`, and take one turn."""
+    from tests import fake_typesafe
+
+    fake_typesafe.install(monkeypatch, fake)
+    stepper, adapter, _manifest = await _arm(
+        mode=over.pop("mode", "on"), allow=over.pop("allow", None)
+    )
+    if "goal" in over:
+        stepper.goal = over.pop("goal")
+    obs = await _observation(adapter, over.pop("last", None))
+    advice = await stepper.advise(obs, budget=BUDGET, **over)
+    await adapter.disconnect()
+    return advice, stepper, fake
+
+
+async def test_the_arm_never_offers_the_stepper_a_pose() -> None:
+    """The headline claim, on the body that has run on real hardware."""
+    stepper, adapter, _m = await _arm()
+    offered = [call.label for call in stepper.labels_for(cleared=True)]
+    assert offered == [
+        "report_state",
+        "stop",
+        "gripper(open=true)",
+        "gripper(open=false)",
+        "place",
+    ]
+    assert not any("move_joints" in label for label in offered)
+    await adapter.disconnect()
+
+
+async def test_before_a_verdict_the_stepper_is_offered_only_what_the_gate_would_pass() -> None:
+    """So `VerdictRequired` is unreachable from a stepper-authored call rather than caught.
+
+    This is what the hero run did unprompted: its first call was `report_state` and its second
+    was the verdict."""
+    stepper, adapter, _m = await _arm()
+    assert [c.label for c in stepper.labels_for(cleared=False)] == ["report_state", "stop"]
+    assert len(stepper.labels_for(cleared=True)) == 5
+    await adapter.disconnect()
+
+
+async def test_a_confident_choice_is_taken_and_becomes_a_real_tool_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests import fake_typesafe
+
+    advice, stepper, _fake = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.91)),
+        monkeypatch,
+        cleared=False,
+    )
+    assert advice.gate == "taken"
+    assert advice.call is not None
+    assert (advice.call.name, advice.call.arguments) == ("report_state", {})
+    assert advice.record["class"] == "read" and advice.record["floor"] == FLOORS["read"]
+    assert stepper.taken == 1 and stepper.asked == 1
+
+
+async def test_a_choice_below_its_floor_goes_to_the_model_and_says_which_floor_it_missed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Motion answers to a higher floor than a read, so the same 0.70 is taken for one and
+    refused for the other. The record has to say which floor applied, or a calibration pass
+    afterwards cannot tell a near miss from a wild guess."""
+    from tests import fake_typesafe
+
+    advice, _s, _f = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("gripper(open=false)", 0.70)),
+        monkeypatch,
+        cleared=True,
+    )
+    assert advice.gate == "below_floor" and advice.call is None
+    assert advice.record["floor"] == FLOORS["motion"] == 0.85
+    assert advice.record["confidence"] == 0.70
+
+
+async def test_the_same_confidence_clears_a_read_and_misses_a_move(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests import fake_typesafe
+
+    read, _s, _f = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.70)),
+        monkeypatch,
+        cleared=True,
+    )
+    move, _s2, _f2 = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("place", 0.70)),
+        monkeypatch,
+        cleared=True,
+    )
+    assert read.gate == "taken" and move.gate == "below_floor"
+
+
+async def test_the_way_out_hands_the_turn_back_however_confident_it_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests import fake_typesafe
+
+    advice, _s, _f = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn(ESCALATE, 1.0)),
+        monkeypatch,
+        cleared=True,
+    )
+    assert advice.gate == "escalate" and advice.call is None
+
+
+async def test_a_stepper_that_thinks_the_job_is_done_moves_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Nouls are read before the Choice, so a finished task never gets one more move.
+
+    A Noul carries no confidence, so 0.5 here is a raw probability and means "more likely
+    than not"."""
+    from tests import fake_typesafe
+
+    advice, _s, _f = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("place", 0.99, done=0.62)),
+        monkeypatch,
+        cleared=True,
+    )
+    assert advice.gate == "done" and advice.call is None
+
+
+async def test_a_stepper_that_wants_a_person_hands_the_turn_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests import fake_typesafe
+
+    advice, _s, _f = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("place", 0.99, need_human=0.8)),
+        monkeypatch,
+        cleared=True,
+    )
+    assert advice.gate == "need_human" and advice.call is None
+
+
+async def test_a_typesafe_error_costs_the_turn_and_not_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An arm is energised while this runs. A vendor outage escalates the turn and is written
+    down; it never reaches the loop as an exception."""
+    from tests import fake_typesafe
+
+    advice, stepper, _f = await _advise(
+        fake_typesafe.FakeJev(raises=fake_typesafe.APITimeoutError("took too long")),
+        monkeypatch,
+        cleared=True,
+    )
+    assert advice.gate == "error" and advice.call is None
+    assert "APITimeoutError" in advice.record["error"]
+    assert stepper.errors == 1 and stepper.asked == 1
+
+
+async def test_a_body_with_nothing_discrete_never_reaches_the_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A duck whose whole allowlist is a number is not a duck the stepper can help with, and
+    finding that out must not cost a request."""
+    from tests import fake_typesafe
+
+    fake = fake_typesafe.FakeJev(answers=fake_typesafe.turn("move_joints", 0.99))
+    advice, _s, used = await _advise(fake, monkeypatch, cleared=True, allow=["move_joints"])
+    assert advice.gate == "not_offered" and advice.call is None
+    assert used.calls == [], "a question was asked when there was nothing to ask about"
+
+
+# ── the state ───────────────────────────────────────────────────────────────────────────
+
+
+async def test_the_state_is_named_english_fields_and_carries_no_picture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Jev is documented as text only, so a frame must never reach it, and the instructions
+    belong in the questions rather than in the state."""
+    from tests import fake_typesafe
+
+    _a, _s, fake = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.91)),
+        monkeypatch,
+        cleared=False,
+    )
+    state, questions = fake.calls[0]
+    assert set(questions) == {"next_verb", "done", "need_human", "feasible"}
+    assert "goal" in state and "now" in state and "body" in state
+    assert all(isinstance(v, str) for v in state.values()), "every field is a sentence"
+    blob = " ".join(state.values()).lower()
+    for forbidden in ("png", "base64", "data:image", "jpeg"):
+        assert forbidden not in blob, f"{forbidden} reached a text-only model"
+    assert chr(10) not in blob, "a field carried layout rather than a sentence"
+
+
+async def test_the_goal_survives_a_state_that_has_to_be_trimmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Notes go first and the goal never goes, and the record says what went, because a
+    stepper answering badly on a long run is a different problem from one answering badly on
+    a short one and afterwards the trim is the only way to tell."""
+    from tests import fake_typesafe
+
+    _a, _s, fake = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.91)),
+        monkeypatch,
+        cleared=False,
+        goal="Tidy the bench. " * 700,
+        notes="a remembered fact worth keeping",
+    )
+    state, _questions = fake.calls[0]
+    assert "goal" in state and "success_when" in state and "now" in state
+    assert "notes" not in state and "camera" not in state, "the trim ran in its stated order"
+
+
+async def test_a_state_nobody_could_answer_against_is_not_sent_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the fields that can never be dropped are themselves over the hard cap, the turn goes
+    to the model without a request being made."""
+    from tests import fake_typesafe
+
+    fake = fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.99))
+    fake_typesafe.install(monkeypatch, fake)
+    stepper, adapter, _m = await _arm()
+    stepper.goal = "x" * 40_000
+    advice = await stepper.advise(await _observation(adapter), cleared=False, budget=BUDGET)
+    await adapter.disconnect()
+    assert advice.gate == "state_too_large" and advice.call is None
+    assert fake.calls == []
+
+
+# ── mode, availability, shadow ──────────────────────────────────────────────────────────
+
+
+def test_the_stepper_is_off_unless_somebody_asks_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A key in a `.env` file is somebody's other project. quackd never switches a paid
+    dependency on because it found one lying about."""
+    from quackd.agent.jev import resolve_jev_mode
+
+    monkeypatch.delenv("QUACKD_JEV", raising=False)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "sk-live-nobody-asked")
+    assert resolve_jev_mode(None) == "off"
+    monkeypatch.setenv("QUACKD_JEV", "shadow")
+    assert resolve_jev_mode(None) == "shadow"
+    assert resolve_jev_mode("on") == "on", "the flag beats the environment"
+    assert resolve_jev_mode("OFF") == "off"
+
+
+def test_an_unknown_mode_is_refused_by_name() -> None:
+    from quackd.agent.jev import resolve_jev_mode
+
+    with pytest.raises(ValueError, match="unknown --jev mode 'maybe'"):
+        resolve_jev_mode("maybe")
+
+
+def test_without_the_extra_the_stepper_says_which_install_it_wants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phrased like `ProviderNotInstalled` next door, because a reader who has met that one
+    should recognise this."""
+    import sys
+
+    from quackd.agent.jev import jev_is_available
+
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", None)
+    ok, why = jev_is_available()
+    assert not ok and "quackd[jev]" in why
+
+
+def test_with_the_extra_and_no_key_the_stepper_says_which_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from quackd.agent.jev import jev_is_available
+    from tests import fake_typesafe
+
+    fake_typesafe.install(monkeypatch, fake_typesafe.FakeJev())
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    ok, why = jev_is_available()
+    assert not ok and "TYPESAFE_API_KEY" in why
+    monkeypatch.setenv("TYPESAFE_API_KEY", "sk-test")
+    assert jev_is_available() == (True, "")
+
+
+async def test_shadow_records_what_the_stepper_would_have_done_beside_what_the_model_did(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The record that turns the arithmetic in docs/jev.md into a measurement."""
+    from quackd.agent.providers.base import ToolCall
+    from tests import fake_typesafe
+
+    advice, stepper, _f = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.91)),
+        monkeypatch,
+        mode="shadow",
+        cleared=False,
+    )
+    agreed = stepper.shadow_event(
+        advice, ToolCall(name="report_state"), {"latency_s": 8.2, "usage": {"input_tokens": 4465}}
+    )
+    assert agreed["agree"] is True and agreed["would_have_acted"] is True
+    assert agreed["llm_latency_s"] == 8.2 and agreed["jev_choice"] == "report_state"
+
+    differed = stepper.shadow_event(advice, ToolCall(name="move_joints"), None)
+    assert differed["agree"] is False and differed["model_verb"] == "move_joints"
+
+
+async def test_the_summary_block_counts_the_turns_it_answered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests import fake_typesafe
+
+    _a, stepper, _f = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.91)),
+        monkeypatch,
+        cleared=False,
+    )
+    block = stepper.summary()
+    assert block["asked"] == 1 and block["taken"] == 1 and block["errors"] == 0
+    assert block["mode"] == "on" and block["model"].startswith("jev-")
