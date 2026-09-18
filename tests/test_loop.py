@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 from PIL import Image
 
 from quackd.adapters.base import AdapterError
+from quackd.agent.images import load_task_images
 from quackd.agent.loop import AgentLoop, RunConfig, run_duck
 from quackd.agent.providers.base import (
     Exchange,
@@ -27,7 +29,8 @@ from quackd.duckfile.schema import Budgets, DuckFile
 from quackd.transport.base import CameraFrame
 from quackd.transport.mock import MockTransport
 from quackd_lerobot import LeRobotAdapter
-from quackd_lerobot.mock import LeRobotMock
+from quackd_lerobot.mock import REST, LeRobotMock
+from quackd_lerobot.verbs import GRIPPER_OPEN, TOL_DEG, rest_goal
 from quackd_microduck import MicroduckAdapter
 
 # the verdict comes first on every run now: the scripted pilot answers it as a rule, and the
@@ -1700,22 +1703,38 @@ async def test_the_one_lens_left_on_a_two_camera_body_still_says_which_one_it_is
 
 class SeeingProvider:
     """A pilot that can see, and writes down which camera every picture in the request came
-    from, exchange by exchange."""
+    from, exchange by exchange.
+
+    `attachments` is the same reading taken of the pictures that came with the task, which is
+    a different list for a different reason: a camera frame is what the body sees now and is
+    trimmed away as it ages, and a `--image` is what the task is about and never is. Reading
+    both off the same request is the only way to tell the two apart at the point where the
+    trim could confuse them.
+
+    `vision` is an INSTANCE attribute, exactly as `FakeProvider(vision=...)` sets one, because
+    that is what a pilot that cannot take an image looks like to the loop."""
 
     name = "seeing"
     model = "test"
     supports_vision = True
 
-    def __init__(self, *script: ToolCall) -> None:
+    def __init__(self, *script: ToolCall, vision: bool = True) -> None:
         self.script = list(script)
         self.requests: list[list[list[str]]] = []
+        self.attachments: list[list[list[str]]] = []
+        self.systems: list[str] = []
         self.observations: list[Observation] = []
         self.calls = 0
+        self.supports_vision = vision
 
     async def step(
         self, system: str, history: list[Exchange], tools: list[dict[str, Any]]
     ) -> ProviderTurn:
         self.requests.append([[img.name for img in ex.observation.images] for ex in history])
+        self.attachments.append(
+            [[img.name for img in ex.observation.attachments] for ex in history]
+        )
+        self.systems.append(system)
         self.observations.extend(ex.observation for ex in history)
         call = self.script[min(self.calls, len(self.script) - 1)]
         self.calls += 1
@@ -1797,3 +1816,609 @@ async def test_only_the_last_n_exchanges_keep_their_images(
     events = Transcript.read(result.run_dir / "transcript.jsonl")
     requests = [e for e in events if e["kind"] == "llm_request"]
     assert requests[-1]["with_image"] == keep and requests[-1]["images"] == 2 * keep
+
+
+# ── the pictures that came with the task ────────────────────────────────────────────────
+#
+# `quackd run --image sketch.png` hands a file to the *task* rather than to the robot, and
+# everything below turns on that difference. A camera frame is perception: it arrives every
+# step, it ages, and the trim above drops it. One of these is none of those things. It is
+# fixed for the whole run, it is what the task is about, and no lens on the body can answer
+# "draw what is in the picture". So it rides the first observation and no other, nothing
+# trims it, and the bytes the model was sent are written beside the transcript rather than
+# the file they were made from.
+
+
+def _picture_file(tmp_path: Path, name: str, colour: tuple[int, int, int]) -> str:
+    """One file for `--image` to name, on disk, the way a person's sketch is.
+
+    Every test here goes through `load_task_images` rather than building a `NamedPng` by
+    hand, because the re-encode to PNG is what decides both what the run sends and what lands
+    in `images/`, and a test that skipped it would be asserting about bytes no run has."""
+    path = tmp_path / name
+    Image.new("RGB", (32, 24), colour).save(path)
+    return str(path)
+
+
+async def test_the_task_pictures_ride_the_first_turn_and_no_later_one(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Sent once, because they never change. Repeating them every step would pay for the same
+    picture on every request of a forty turn run, and the first turn is the one that most
+    needs them: it is the turn the verdict gate is answered from, and a pilot deciding whether
+    this body can do the task has to see what it is being asked about.
+
+    The check that matters is the second half: every later request still carries the exchange
+    that holds them, and that exchange must not have grown a copy."""
+    pictures = load_task_images(
+        [
+            _picture_file(tmp_path, "sketch.png", (220, 40, 40)),
+            _picture_file(tmp_path, "plan.png", (40, 220, 40)),
+        ]
+    )
+    provider = SeeingProvider(
+        _verdict_call("feasible", "a duck can quack about a picture"),
+        ToolCall(name="quack", arguments={"text": "a circle"}),
+        ToolCall(name="declare_success", arguments={"reason": "said what is in it"}),
+    )
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=provider,
+            transport=MockTransport(),
+            runs_dir=tmp_path / "runs",
+            task_images=pictures,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assert provider.attachments[0] == [["sketch.png", "plan.png"]], "on the first turn"
+    assert provider.attachments[-1] == [["sketch.png", "plan.png"], [], []], (
+        "and on that same first exchange three turns later, and on no other"
+    )
+    assert all(request[0] == ["sketch.png", "plan.png"] for request in provider.attachments)
+    assert all(names == [] for request in provider.attachments for names in request[1:])
+
+
+async def test_the_trim_that_drops_old_frames_never_drops_a_task_picture(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """The trim is what bounds a run's picture cost, and it counts exchanges: keep the last N
+    and strip the rest. A task picture lives on the oldest exchange there is, so a trim that
+    did not know the difference would throw away the one picture the task is about on turn
+    three and leave the pilot drawing from memory for the other thirty-seven.
+
+    Both lists are read off the same five requests, because the point is that they diverge:
+    the camera frames thin out as they age and the sketch does not move."""
+    hello_duck.frontmatter.budgets = Budgets()
+    pictures = load_task_images([_picture_file(tmp_path, "sketch.png", (220, 40, 40))])
+    keep = 2
+    provider = SeeingProvider(
+        _verdict_call("feasible", "a duck can quack about a picture"),
+        *[ToolCall(name="quack", arguments={"text": "still here"})] * 3,
+        ToolCall(name="declare_success", arguments={"reason": "said what is in it"}),
+    )
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=provider,
+            transport=TwoCameraDuck(),
+            runs_dir=tmp_path / "runs",
+            keep_images_for_last_n=keep,
+            task_images=pictures,
+        )
+    )
+    assert result.outcome == "success", result.reason
+
+    last = provider.requests[-1]
+    assert len(last) == 5, "five exchanges, the last of them the one being answered"
+    assert last == [[], [], [], ["top", "side"], ["top", "side"]], "the old frames went"
+    assert provider.attachments[-1] == [["sketch.png"], [], [], [], []], "the sketch stayed"
+    assert all(request[0] == ["sketch.png"] for request in provider.attachments), (
+        "every request of the run, not just the ones inside the window"
+    )
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    requests = [e for e in events if e["kind"] == "llm_request"]
+    assert [r["task_pictures"] for r in requests] == [1] * 5, "and the record counts it too"
+    assert requests[-1]["with_image"] == keep
+
+
+async def test_a_task_picture_is_written_beside_the_transcript_as_the_model_got_it(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """They go in their own directory rather than among the frames: `frames/` is numbered by
+    step and is what the robot saw, and one of these belongs to no step at all. The bytes on
+    disk are the re-encoded ones the provider was handed, so somebody arguing about a run
+    afterwards is looking at the picture the pilot looked at rather than at the source file it
+    was made from, which may since have been edited or deleted.
+
+    The record is written before `run_start`, so a reader of the transcript meets the pictures
+    the task is about before the run that was given them."""
+    pictures = load_task_images(
+        [
+            _picture_file(tmp_path, "sketch.png", (220, 40, 40)),
+            _picture_file(tmp_path, "plan.png", (40, 220, 40)),
+        ]
+    )
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world", vision=True),
+            transport=MockTransport(),
+            runs_dir=tmp_path / "runs",
+            task_images=pictures,
+        )
+    )
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    saved = [e for e in events if e["kind"] == "task_image"]
+    assert events[0]["kind"] == "task_image", "before the run that was given them"
+    assert [e["name"] for e in saved] == ["sketch.png", "plan.png"]
+    # `Path` rather than the string: the record stores a relative path, and this suite runs on
+    # a machine whose separator is a backslash
+    assert [Path(e["path"]).as_posix() for e in saved] == [
+        "images/00-sketch.png",
+        "images/01-plan.png",
+    ]
+    for record, picture in zip(saved, pictures, strict=True):
+        written = result.run_dir / Path(record["path"])
+        assert written.read_bytes() == picture.png, "the bytes that went on the wire"
+        assert record["bytes"] == len(picture.png)
+
+
+async def test_the_record_says_which_pictures_the_run_was_given_and_how_often(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Two numbers, in the two places a reader looks. `run_start` names what the command line
+    handed this run, once, at the top where the model and the robot are named. Every
+    `llm_request` says how many rode that particular request, beside the count of camera
+    frames, because that is the line somebody reads when a bill is larger than they expected
+    and the two kinds of picture cost the same."""
+    pictures = load_task_images(
+        [
+            _picture_file(tmp_path, "sketch.png", (220, 40, 40)),
+            _picture_file(tmp_path, "plan.png", (40, 220, 40)),
+        ]
+    )
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world", vision=True),
+            transport=MockTransport(),
+            runs_dir=tmp_path / "runs",
+            task_images=pictures,
+        )
+    )
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    start = next(e for e in events if e["kind"] == "run_start")
+    assert start["images"] == ["sketch.png", "plan.png"]
+    requests = [e for e in events if e["kind"] == "llm_request"]
+    assert requests, "a run that asked nothing would prove nothing here"
+    assert all(r["task_pictures"] == 2 for r in requests), [r["task_pictures"] for r in requests]
+
+
+async def test_the_prompt_names_every_picture_that_came_with_the_task(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """A picture arrives in the same message as a photograph of the room, so the pilot is told
+    in words which is which and what each one is called. The names are the ones the person
+    typed, because the task refers to a picture by what it shows and the model has to be able
+    to match the sentence to the file.
+
+    A run with no `--image` must read exactly as it did before there was a flag for it, which
+    is every golden in this suite, so the second half of this asserts the section is absent."""
+    pictures = load_task_images(
+        [
+            _picture_file(tmp_path, "sketch.png", (220, 40, 40)),
+            _picture_file(tmp_path, "plan.png", (40, 220, 40)),
+        ]
+    )
+    provider = SeeingProvider(ToolCall(name="declare_success", arguments={"reason": "seen"}))
+    await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=provider,
+            transport=MockTransport(),
+            runs_dir=tmp_path / "runs",
+            task_images=pictures,
+        )
+    )
+    system = provider.systems[0]
+    assert "## The pictures that came with this task" in system
+    assert (
+        "2 pictures were handed to this task on the command line: `sketch.png`, `plan.png`"
+        in system
+    )
+    assert "task picture NAME:" in system, "the label it will actually see in front of each"
+
+    bare = SeeingProvider(ToolCall(name="declare_success", arguments={"reason": "seen"}))
+    await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=bare,
+            transport=MockTransport(),
+            runs_dir=tmp_path / "bare",
+        )
+    )
+    assert "came with this task" not in bare.systems[0], "and a run with none says nothing"
+
+
+async def test_a_pilot_that_cannot_see_is_sent_no_picture_and_the_run_says_so(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """The CLI refuses `--image` for a pilot with no vision before a run directory exists, so
+    this is the loop being asked directly: MCP, a flock, a test, anything that builds a
+    `RunConfig` itself. Dropping the pictures silently would leave a run whose transcript says
+    it was given a sketch and whose requests never carried one, and the argument afterwards
+    would be unresolvable.
+
+    Said once and not per turn, because it is a fact about the run rather than about the step,
+    and a forty turn run would otherwise repeat it forty times."""
+    lines: list[str] = []
+    pictures = load_task_images([_picture_file(tmp_path, "sketch.png", (220, 40, 40))])
+    provider = SeeingProvider(
+        _verdict_call("feasible", "a duck can quack"),
+        ToolCall(name="declare_success", arguments={"reason": "worked from the words"}),
+        vision=False,
+    )
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=provider,
+            transport=MockTransport(),
+            runs_dir=tmp_path / "runs",
+            task_images=pictures,
+            log=lines.append,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    assert provider.attachments == [[[]], [[], []]], "nothing was attached to anything"
+
+    blamed = [line for line in lines if "cannot see" in line]
+    assert blamed == [
+        "1 picture(s) came with this task and seeing test cannot see: they were not sent, "
+        "and the task has to stand on its words alone"
+    ], lines
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert blamed[0] in [e["text"] for e in events if e["kind"] == "note"], "and in the record"
+    start = next(e for e in events if e["kind"] == "run_start")
+    assert start["images"] == ["sketch.png"], "the run was still given it"
+    requests = [e for e in events if e["kind"] == "llm_request"]
+    assert all(r["task_pictures"] == 0 for r in requests), "and never sent it"
+
+
+# ── the arm a person places by hand ─────────────────────────────────────────────────────
+#
+# `quackd run --by-hand` is the rest pose above, inverted for one run: instead of starting
+# from the fold, the arm is released AT the fold, a person lifts it, puts whatever the task
+# needs in the gripper and presses Enter, and quackd holds whatever pose they left. Every
+# test below is about a seam in that hand-off, because each of them ends with a person's
+# fingers on an arm: torque going off somewhere it should not, torque coming back on while a
+# hand is still there, a run that walks away from an arm nobody caught, and the hand-back at
+# the end where the gripper opens before the arm folds up.
+#
+# The arm is `LeRobotMock(rest_pose=REST)`, which starts exactly at `REST`, so `let_go` is
+# allowed from the first move. The person is `ScriptedPerson`, which is the CLI's terminal
+# with the terminal taken out: nothing here calls `input()`, and nothing waits on one.
+
+PLACED = {"shoulder_lift": -20.0, "elbow_flex": 40.0, "wrist_flex": 15.0, "gripper": 35.0}
+"""Where the person leaves the arm: lifted off the fold, wrist cocked, gripper half shut on
+whatever they put in it. Nothing the arm would ever reach on its own, so the first
+observation's joints could only have come from a hand."""
+
+
+class ScriptedPerson:
+    """Somebody standing at the arm, as the loop's `HandOff` protocol sees them.
+
+    The real one is the CLI's `_TerminalHandOff`, which prints and then waits on the key
+    thread for Enter. This one answers from a script and, when it answers yes to the first
+    ask, moves the mock's joints the way a hand would. `answers` is read in order and the last
+    entry repeats, so `[True, False]` is a person who places the arm and then walks off before
+    the run is over.
+
+    `takes_s` is their own time, spent on the robot's clock rather than the wall's, which is
+    what makes the budget restart testable at all. `on_wait` is the hook for the two endings
+    that are not an answer: a Ctrl-C landing in the middle of the wait, and a cancellation
+    landing in the hand-back."""
+
+    def __init__(
+        self,
+        mock: LeRobotMock,
+        *,
+        places: dict[str, float] | None = None,
+        answers: Sequence[bool] = (True, True),
+        takes_s: float = 0.0,
+        on_wait: Any = None,
+    ) -> None:
+        self.mock = mock
+        self.places = dict(places or {})
+        self.answers = list(answers)
+        self.takes_s = takes_s
+        self.on_wait = on_wait
+        self.said: list[str] = []
+        self.asked: list[tuple[str, float | None, bool]] = []
+        self.waits = 0
+
+    def say(self, text: str) -> None:
+        self.said.append(text)
+
+    async def wait(
+        self, text: str, *, timeout_s: float | None = None, until_abort: bool = True
+    ) -> bool:
+        self.asked.append((text, timeout_s, until_abort))
+        self.waits += 1
+        answer = self.answers[min(self.waits - 1, len(self.answers) - 1)]
+        if self.takes_s:
+            # the robot's own clock, which is the one the budget reads
+            await self.mock.sleep(self.takes_s)
+        if self.on_wait is not None:
+            self.on_wait(self)
+        if answer and self.waits == 1:
+            self.mock.joints.update(self.places)
+        return answer
+
+
+def _by_hand(mock: LeRobotMock, person: ScriptedPerson, runs: Path, **extra: Any) -> RunConfig:
+    """A by-hand run of the arm task, with a pilot that declares success and counts its
+    calls: several of these tests are about a run that must never reach the model at all."""
+    declare = ToolCall(name="declare_success", arguments={"reason": "up"})
+    return RunConfig(
+        duck=_arm_duck(),
+        provider=FakeProvider(script=[declare]),
+        transport=LeRobotAdapter(mock),
+        hand_off=person,
+        runs_dir=runs,
+        **extra,
+    )
+
+
+def _stages(events: list[dict[str, Any]]) -> list[str]:
+    return [e["stage"] for e in events if e["kind"] == "hand_off"]
+
+
+async def test_the_run_starts_from_the_pose_a_person_put_the_arm_in(tmp_path: Path) -> None:
+    """The whole hand-off, in the order it has to happen in. The rest move first, because
+    `let_go` is only allowed at the recorded pose: an arm held up by torque alone falls the
+    moment torque goes, so the one place it is known to be safe to release is the fold. Then
+    the release, then the person, then `take_hold` on whatever they left, and only then the
+    first request.
+
+    At the end it runs backwards: the stop holds the arm where the pilot left it, the person
+    is asked to take whatever is in the gripper, the gripper opens, and the arm folds up. The
+    gripper opens BEFORE the fold, because an arm folding with a pencil in the jaws drives
+    that pencil into the bench."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED)
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "success", result.reason
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    observation = next(e for e in events if e["kind"] == "observation")
+    joints = observation["features"]["state"]["extras"]["joints"]
+    assert {j: joints[j] for j in PLACED} == PLACED, "the pilot improvises from their pose"
+    start = next(e for e in events if e["kind"] == "run_start")
+    assert "## Where this run starts" in start["system_prompt"], "and is told so in words"
+
+    assert person.asked[0][0] == AgentLoop.PLACE_IT
+    assert person.said == [
+        "holding the pose you set, you can let go. It is at elbow_flex 40, gripper 35, "
+        "shoulder_lift -20, shoulder_pan 0, wrist_flex 15, wrist_roll 0"
+    ], person.said
+    assert person.asked[1] == (AgentLoop.HAND_IT_BACK, AgentLoop.HAND_BACK_S, False), (
+        "the end ask is bounded and does not listen for the kill switch: the run is over"
+    )
+
+    opened = [e for e in events if e["kind"] == "intent" and e["intent"] == "gripper"]
+    assert [e["params"] for e in opened] == [{"open": True}], "opened once, at the hand-back"
+    assert _stages(events) == ["released", "held", "unloaded"]
+    assert mock.joints["gripper"] == GRIPPER_OPEN, "and the thing they put in it is theirs"
+    assert mock.torque is False and mock.close_note is None, "the arm is down and let go of"
+
+
+async def test_the_time_a_person_takes_is_not_the_pilots_budget(tmp_path: Path) -> None:
+    """`max_minutes` starts before the rest move, and an arm can then sit released while
+    somebody goes to find the pencil the task is about. That waiting used to be spent out of
+    the budget the model gets for the task, so a five minute task with a ten minute person in
+    front of it ended on `max_minutes` without the pilot having been asked anything at all.
+
+    The clock is restarted after `take_hold`, which is the moment the run actually begins. The
+    person here takes twice the task's whole budget, on the robot's own clock, and the run
+    still gets its full five minutes afterwards."""
+    mock = LeRobotMock(rest_pose=REST)
+    takes_s = 600.0  # ten minutes, against a task that allows five
+    person = ScriptedPerson(mock, places=PLACED, takes_s=takes_s)
+    loop = AgentLoop(_by_hand(mock, person, tmp_path))
+    result = await loop.run()
+    assert result.outcome == "success", result.reason
+    assert loop.budget.limits.max_minutes * 60 < takes_s, "or this proves nothing"
+    assert loop.budget.started_at == pytest.approx(takes_s), (
+        "the clock was restarted at the hold, not at the rest move ten minutes earlier"
+    )
+
+
+async def test_nobody_places_the_arm_so_nothing_is_ever_asked_of_the_model(
+    tmp_path: Path,
+) -> None:
+    """An arm released for a person who is not there is limp at its rest pose with nobody
+    coming. There is no run from here: the pilot would improvise from a pose nobody chose, so
+    the abort happens before the first request and the run costs nothing.
+
+    The teardown still has to pick the arm back up. `stop` takes hold first when the arm is in
+    somebody's hands, because a goal sent to a limp servo stops nothing, so the arm ends
+    parked at the fold with torque off like every other run in this file."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, answers=[False])
+    cfg = _by_hand(mock, person, tmp_path)
+    result = await run_duck(cfg)
+    assert result.outcome == "aborted"
+    assert result.reason == AgentLoop.NOBODY_PLACED_IT
+    assert cfg.provider.calls == 0, "the model was never asked anything"  # type: ignore[attr-defined]
+    assert result.llm_calls == 0
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert not [e for e in events if e["kind"] == "llm_request"]
+    assert _stages(events) == ["released"], "released, and never held"
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"], (
+        "the take_hold is the stop picking a limp arm back up, not a pose anybody set"
+    )
+    assert mock.joints == dict(REST), "nobody moved it"
+    assert mock.torque is False and mock.close_note is None, "parked, and let go of"
+
+
+async def test_a_ctrl_c_during_the_wait_ends_the_run_as_the_kill_switch(tmp_path: Path) -> None:
+    """A person who presses Ctrl-C instead of Enter has not failed to place the arm: they have
+    stopped the run. Both come back from the wait as False, so the flag is what tells them
+    apart, and the record has to say the one that is true.
+
+    `_hand_over` asks the loop for its own reason rather than guessing at one, which is the
+    same reason the main loop does: a heartbeat that died and a flock member that broke both
+    set this flag too, and neither is a kill switch nobody pressed."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, answers=[False])
+    loop = AgentLoop(_by_hand(mock, person, tmp_path))
+    person.on_wait = lambda _p: loop.executor.abort.set()
+    result = await loop.run()
+    assert result.outcome == "aborted"
+    assert result.reason == "kill switch"
+    assert "nobody placed" not in result.reason, "they were there; they stopped it"
+    assert loop.budget.llm_calls == 0
+    assert mock.torque is False and mock.close_note is None, "and the arm is still parked"
+
+
+async def test_an_arm_with_no_recorded_rest_pose_is_never_handed_over(tmp_path: Path) -> None:
+    """There is nowhere it is known to be safe to let go of it. The recorded pose is the one
+    place the arm holds itself up without torque, and releasing it anywhere else drops it, so
+    an arm that has never had its pose recorded is refused the hand-off rather than released
+    somewhere hopeful.
+
+    The CLI refuses this before connecting, with `quackd robot rest-pose NAME` as the fix.
+    This is the same refusal reached through the loop, which is where an MCP session or a test
+    arrives, and the run ends before the model is asked anything."""
+    mock = LeRobotMock()  # no rest pose recorded for this arm
+    person = ScriptedPerson(mock, places=PLACED)
+    cfg = _by_hand(mock, person, tmp_path)
+    result = await run_duck(cfg)
+    assert result.outcome == "aborted"
+    assert "the arm was not handed over" in result.reason
+    assert "no rest pose is recorded for this arm" in result.reason
+    assert "quackd robot rest-pose" in result.reason, "and the words say how to fix it"
+    assert cfg.provider.calls == 0  # type: ignore[attr-defined]
+    assert person.asked == [], "nobody was asked to place an arm that was never released"
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [e["how"] for e in events if e["kind"] == "hand_off"] == ["refused"]
+    assert mock.sequence == ["let_go", "stop", "close"], "no rest move: there is no pose"
+
+
+async def test_an_arm_that_slipped_as_torque_came_on_is_not_run_from(tmp_path: Path) -> None:
+    """`take_hold` writes the present position as the goal, enables torque, writes it again
+    and re-reads: a joint that moved more than the tolerance while that happened is an arm
+    holding a pose nobody chose, and a few degrees at the shoulder is a hand's width at the
+    gripper. So it refuses, and the run ends rather than improvising from it.
+
+    The close note is the thing to watch here. `_in_hand` is cleared as soon as torque is
+    confirmed on, BEFORE the pose is judged, so this refusal must not end with the arm being
+    described as limp in somebody's hands: torque did come on, the arm is holding itself, and
+    it folds up under its own power like any other."""
+    mock = LeRobotMock(rest_pose=REST)
+    mock.hold_slips = {"elbow_flex": TOL_DEG * 2}
+    person = ScriptedPerson(mock, places=PLACED)
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "aborted"
+    assert "the arm is not holding the pose you set" in result.reason
+    assert "moved as torque came on" in result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert any(note.startswith("the arm did not take hold:") for note in notes), notes
+    assert _stages(events) == ["released", "held"], "asked for, and refused"
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+    assert {j: mock.joints[j] for j in rest_goal(REST)} == rest_goal(REST), "folded up"
+    assert mock.torque is False, "and only an arm that is down has its torque released"
+    assert mock.close_note is None
+    assert not any("limp" in note for note in notes), "torque came on; nothing is limp"
+
+
+async def test_nobody_answers_the_hand_back_so_the_gripper_stays_shut(tmp_path: Path) -> None:
+    """The run is over, the arm is holding where the pilot left it, and the person who put
+    something in the gripper is not in the room. The ask is bounded for exactly this: a run
+    must still end when nobody comes back, and an arm cannot hold its pose for ever.
+
+    So the gripper stays where their fingers left it and the arm folds up with whatever is in
+    it. That is the cautious half of the choice: opening the jaws over an empty bench drops
+    the thing, and folding with it held does not."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED, answers=[True, False])
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert not [e for e in events if e["kind"] == "intent" and e["intent"] == "gripper"]
+    assert _stages(events) == ["released", "held", "skipped"]
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert "nobody unloaded the gripper, so it stays shut and the arm folds up" in notes
+    assert mock.joints["gripper"] == PLACED["gripper"], "still where their fingers left it"
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+    assert {j: mock.joints[j] for j in rest_goal(REST)} == rest_goal(REST), "and folded up"
+    assert mock.torque is False and mock.close_note is None
+
+
+async def test_a_cancellation_in_the_hand_back_still_finishes_the_teardown(
+    tmp_path: Path,
+) -> None:
+    """A second Ctrl-C in this window used to raise straight through the teardown, which cost
+    the arm its fold and the run its `run_end` and its summary: the process exited with the
+    arm energised wherever the pilot left it, and the record stopped mid-sentence.
+
+    Here it means "skip this and finish". The gripper stays as it is, and everything after it
+    still runs: the fold, the close, the last event of the record."""
+    mock = LeRobotMock(rest_pose=REST)
+
+    def interrupt(person: ScriptedPerson) -> None:
+        if person.waits == 2:  # the hand-back ask, not the one that placed the arm
+            raise asyncio.CancelledError
+
+    person = ScriptedPerson(mock, places=PLACED, on_wait=interrupt)
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert events[-1]["kind"] == "run_end", "the record still ends"
+    assert not [e for e in events if e["kind"] == "intent" and e["intent"] == "gripper"]
+    assert _stages(events) == ["released", "held", "skipped"]
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert "the gripper was left as it is, and the arm still folds up" in notes
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+    assert {j: mock.joints[j] for j in rest_goal(REST)} == rest_goal(REST), "the fold ran"
+    assert mock.torque is False and mock.close_note is None
+    assert (result.run_dir / "summary.json").exists()
+
+
+async def test_a_dry_run_never_takes_torque_off_an_arm(tmp_path: Path) -> None:
+    """The CLI refuses the two flags together, because they ask for opposite things: one
+    takes torque off the arm and the other moves nothing. This is the loop holding the same
+    line for every other caller, and it is the safety-critical half of the pair: a rehearsal
+    that released a real arm into an empty room would put it on the floor.
+
+    Nothing is asked of anybody either. A dry run that printed "the arm is yours" and waited
+    for Enter would be asking a person to act on a robot that is not going to move."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED)
+    result = await run_duck(_by_hand(mock, person, tmp_path, dry_run=True))
+    assert result.outcome == "success", result.reason
+    assert "let_go" not in mock.sequence and "take_hold" not in mock.sequence, mock.sequence
+    assert "rest" not in mock.sequence, "the rest move is a real motion too"
+    assert mock.actions == [], "no goal was sent to a joint"
+    assert person.asked == [] and person.said == [], "and nobody was asked to do anything"
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert not [e for e in events if e["kind"] == "hand_off"]
+    start = next(e for e in events if e["kind"] == "run_start")
+    assert "## Where this run starts" not in start["system_prompt"], (
+        "and the pilot is not told a person placed a body nobody touched"
+    )

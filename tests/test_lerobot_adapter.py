@@ -222,6 +222,34 @@ class FakeBus:
             return {joint: int(self.arm.temperature.get(joint, 30)) for joint in JOINTS}
         raise KeyError(data_name)
 
+    def enable_torque(self) -> None:
+        """`up.BUS_ENABLE_TORQUE`, which is how `take_hold` picks the arm back up.
+
+        A joint named in `slips` sags as torque arrives and stays sagged: the goal goes out
+        again immediately afterwards, and a servo that could not hold the pose the first time
+        does not reach it on the second ask either."""
+        if self.arm.bus_error:
+            raise RuntimeError("Incorrect status packet!")
+        self.arm.timeline.append("enable_torque")
+        if self.arm.torque_refuses:
+            return
+        self.arm.torque = True
+        for joint, gap in self.arm.slips.items():
+            self.arm.positions[joint] += gap
+            self.arm.stuck.add(joint)
+
+    def disable_torque(self) -> None:
+        """`up.BUS_DISABLE_TORQUE`: the one call in quackd that de-energises a robot.
+
+        It goes through the bus and never through the `Robot`, which is why this fake has no
+        `disable_torque` of its own for a test to be accidentally green against."""
+        if self.arm.bus_error:
+            raise RuntimeError("Incorrect status packet!")
+        self.arm.timeline.append("disable_torque")
+        self.arm.torque = False
+        if self.arm.bus_error_after_release:
+            self.arm.bus_error = True
+
 
 class FakeArm:
     """The slice of a LeRobot `Robot` the real backend touches, verified names only.
@@ -248,13 +276,29 @@ class FakeArm:
         self.send_fails = False
         self.bus_error = False
         self.torque = True
+        self.torque_refuses = False
+        """The servo takes `enable_torque` and stays limp anyway, which is the one failure
+        `take_hold` cannot tell from a success without reading the register back."""
+        self.slips: dict[str, float] = {}
+        """Degrees each joint sags by as torque comes on, which is what an arm a person is
+        still holding does when it is handed back to the servos."""
+        self.bus_error_after_release = False
+        """The status packets start coming back corrupt the moment torque drops, so the read
+        that would confirm the release is the one that fails."""
         self.temperature: dict[str, float] = dict.fromkeys(JOINTS, 30.0)
         self.calls: list[tuple[Any, ...]] = []
         self.actions: list[dict[str, float]] = []
+        self.timeline: list[str] = []
+        """`send`, `enable_torque` and `disable_torque` in the order they happened. The whole
+        of `take_hold` is the order it does those in, and this is what a test reads to check
+        it: `actions` alone cannot say which side of the torque call a goal went out on."""
         self.reads: list[tuple[str, bool, int]] = []
         self.positions = dict.fromkeys(JOINTS, 0.0)
         self.positions["gripper"] = 100.0
         self.torque_disabled = 0
+        """How many times `disconnect()` dropped torque by LeRobot's own default. A release
+        asked for by `let_go` goes through the bus and is not counted here, which is how a
+        test tells an arm that was let go of from one that was merely disconnected."""
         self.calibration = {joint: FakeCalibration(200.0) for joint in JOINTS}
         self.calibration_fpath = "/tmp/lerobot/calibration/robots/so_follower/arm-01.json"
         self.bus = FakeBus(self)
@@ -301,21 +345,22 @@ class FakeArm:
         if self.send_fails:
             raise ConnectionError("Failed to sync write 'Goal_Position'")
         self.actions.append(dict(action))
+        self.timeline.append("send")
         sent = {}
         for key, value in action.items():
             joint = key.removesuffix(".pos")
             present = self.positions[joint]
             capped = present + max(-self.step, min(self.step, float(value) - present))
             sent[key] = capped
-            if joint in self.stuck:
+            # a limp servo takes the goal into its register and does not move to it. That is
+            # why `take_hold` writes the pose again once torque is back, and why a stop over
+            # an arm somebody is holding has to pick it up before it sends anything.
+            if joint in self.stuck or not self.torque:
                 continue
             if joint == "gripper" and self.object_in_jaws:
                 capped = max(capped, GRIP_ON_OBJECT)
             self.positions[joint] = capped
         return sent
-
-    def disable_torque(self) -> None:
-        self.torque_disabled += 1
 
 
 class FakePolicy:
@@ -1581,3 +1626,295 @@ async def test_one_camera_keeps_its_default_name_and_the_health_shape_it_always_
     health = transport.camera_health()
     assert set(health) == {"configured", "url", "ok", "age_s", "size", "error"}
     assert health["configured"] and health["ok"] and health["size"] == "64x48"
+
+
+# ── handing the arm to a person: let go, placed by hand, taken hold of again ────────────
+
+HAND_PLACED = {
+    "shoulder_pan": 0.0,
+    "shoulder_lift": -113.5,
+    "elbow_flex": 40.0,
+    "wrist_flex": 15.0,
+    "wrist_roll": 0.0,
+    "gripper": 35.0,
+}
+"""Where a person left the arm, with the gripper closed on something.
+
+`shoulder_lift` is outside the travel the calibration recorded on purpose. A hand-placed arm
+easily is, the bench arm's own folded pose read -113.5 against a range of plus or minus 84.2,
+and a goal walked back inside that range is a goal somewhere the arm is not: writing it would
+drag the arm out of the pose the person spent the wait setting."""
+
+BY_HAND_POSE = {"shoulder_lift": -20.0, "elbow_flex": 40.0, "wrist_flex": 15.0, "gripper": 35.0}
+"""The pose the operator set in the captured `--by-hand` run, for the mock's narrower ranges."""
+
+
+def _handover_arm() -> tuple[FakeArm, LeRobotReal]:
+    """A fake arm sitting in the pose it was recorded resting in.
+
+    That is the only place `let_go` releases it, and the condition is the same one `close()`
+    uses: a pose the arm demonstrably holds with no torque on it. Anywhere else, dropping
+    torque drops the arm, and the person who asked for this has their hands nowhere near it."""
+    arm = FakeArm()
+    where_it_sits = {joint: arm.positions[joint] for joint in JOINTS if joint != "gripper"}
+    return arm, LeRobotReal("COM5", robot=arm, rest_pose=where_it_sits)
+
+
+async def test_let_go_without_a_rest_pose_recorded_says_where_to_record_one() -> None:
+    """Without a recorded pose there is nowhere this arm is known to be safe to release, so
+    the refusal is the whole of the answer and it names the command that fixes it. The run
+    refuses the flag long before this, and this is the backstop under that refusal."""
+    arm = FakeArm()
+    transport = LeRobotReal("COM5", robot=arm)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    refused = await adapter.let_go()
+    assert refused.how == "refused" and not refused.ok
+    assert refused.joints == {}, "a refusal that read nothing should report nothing"
+    assert "no rest pose is recorded for this arm" in refused.reason
+    assert "quackd robot rest-pose NAME" in refused.reason, refused.reason
+    assert arm.timeline == [], "torque was touched on an arm with nowhere safe to put it down"
+    assert arm.torque is True and transport._in_hand is False
+
+
+async def test_let_go_away_from_the_rest_pose_names_the_shortfall_and_keeps_torque() -> None:
+    """An arm standing up is held up by torque and by nothing else, so releasing it there is
+    the fall the rest pose exists to prevent. The refusal names the joint furthest from where
+    it should be, because "not at its rest pose" on its own does not tell anybody what to do."""
+    arm = FakeArm(step=40.0)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    refused = await adapter.let_go()
+    assert refused.how == "refused" and not refused.ok
+    assert "the arm is not at its rest pose" in refused.reason
+    assert "shoulder_lift is at 0 with a goal of -90" in refused.reason, refused.reason
+    assert "falls when torque goes" in refused.reason
+    assert arm.timeline == [] and arm.torque is True
+    assert transport._in_hand is False
+
+
+async def test_let_go_at_the_rest_pose_releases_the_arm_into_somebodys_hands() -> None:
+    arm, transport = _handover_arm()
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    released = await adapter.let_go()
+    assert released.how == "released" and released.ok
+    assert released.reason == "torque is off at the rest pose"
+    assert arm.timeline == ["disable_torque"], arm.timeline
+    assert arm.torque is False
+    assert arm.torque_disabled == 0, "the arm was disconnected rather than released"
+    assert arm.actions == [], "a goal was written to an arm on its way to being let go of"
+    assert released.joints["shoulder_pan"] == 0.0 and released.joints["gripper"] == 100.0
+    assert transport._in_hand is True, "the arm is limp, so it is in somebody's hands"
+
+
+async def test_a_register_read_that_failed_after_the_release_is_a_release_that_took() -> None:
+    """Deliberate, and the reason is which of the two wrong answers gets an arm dropped.
+
+    Torque was taken off and the read that would confirm it came back corrupt, so the last
+    reading stands and it still says torque is on. Believing it ends with `close()` telling
+    the person holding a limp arm that it is holding itself up, and they let go of it."""
+    arm, transport = _handover_arm()
+    arm.bus_error_after_release = True
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    released = await adapter.let_go()
+    assert released.how == "released", released.reason
+    assert transport._register_error is not None, "the read after the release was meant to fail"
+    assert transport._torque is True, "the stale register still claims torque, which is the case"
+    assert arm.torque is False and transport._in_hand is True
+    await adapter.close()
+    assert "limp and in your hands" in (adapter.close_note or ""), adapter.close_note
+
+
+async def test_take_hold_writes_the_pose_before_torque_comes_on_and_again_after() -> None:
+    """The order is the whole method. Nothing upstream documents what a servo does with the
+    goal it was last told when it is re-energised (`up.TORQUE_ENABLE_HOLDS_PRESENT`), and the
+    goal this one was last told is a rest pose it has since been lifted out of by hand:
+    enabling torque first could snap the arm back to the fold with a hand still in it.
+
+    It goes out again afterwards and is read back, so the answer says whether the arm stayed
+    where it was put rather than assuming it did."""
+    arm, transport = _handover_arm()
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    arm.positions.update(HAND_PLACED)  # a person lifts it and puts it where the run starts
+
+    held = await adapter.take_hold()
+    assert held.how == "held" and held.ok
+    assert held.reason == "holding the pose you set"
+    assert arm.timeline == ["disable_torque", "send", "enable_torque", "send"], arm.timeline
+    goal = {f"{joint}.pos": value for joint, value in HAND_PLACED.items()}
+    assert arm.actions == [goal, goal], arm.actions
+    assert arm.actions[0]["shoulder_lift.pos"] == -113.5, "the goal was clipped to the range"
+    assert transport._range_clips == 0, "a hand-placed pose was walked back inside the travel"
+    assert held.joints == HAND_PLACED and arm.positions == HAND_PLACED
+    assert arm.torque is True and transport._in_hand is False
+
+
+async def test_take_hold_refuses_when_torque_never_comes_on_and_the_arm_is_still_in_hand() -> None:
+    """The arm took the call and stayed limp, so nothing is holding it and a hand still is.
+    This is the one refusal that leaves the arm where `let_go` left it, and `close()` has to
+    go on saying so."""
+    arm, transport = _handover_arm()
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    arm.positions.update(HAND_PLACED)
+    arm.torque_refuses = True
+
+    refused = await adapter.take_hold()
+    assert refused.how == "refused" and not refused.ok
+    assert refused.reason == "the arm still reports torque off, so nothing holds it"
+    assert arm.torque is False
+    assert transport._in_hand is True, "nothing holds the arm up, so somebody's hand does"
+    await adapter.close()
+    note = adapter.close_note or ""
+    assert "the arm is limp and in your hands" in note and "nothing is holding it up" in note
+    assert "torque was left on" not in note, note
+
+
+async def test_a_joint_that_slipped_as_torque_arrived_is_refused_but_not_called_limp() -> None:
+    """The bug this found, and the distinction the whole refusal turns on.
+
+    Torque coming on is what takes the arm out of somebody's hands; the pose it settled in is
+    a separate question. An arm reported limp in a hand while it is energised sends the person
+    to cut the power on a robot that is holding perfectly well, so `_in_hand` is cleared the
+    moment torque is confirmed and the refusal below is about the pose alone."""
+    arm, transport = _handover_arm()
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    arm.positions.update(HAND_PLACED)
+    arm.slips = {"elbow_flex": -12.0}  # it sags as the servos take the weight back
+
+    refused = await adapter.take_hold()
+    assert refused.how == "refused" and not refused.ok
+    assert "the arm moved as torque came on (elbow_flex by 12 degrees)" in refused.reason
+    assert "it is holding where it is now" in refused.reason, refused.reason
+    assert refused.joints["elbow_flex"] == 28.0, "the refusal says where the arm ended up"
+    assert arm.torque is True
+    assert transport._in_hand is False, "torque is on, so the arm is not hanging off a hand"
+    await adapter.close()
+    note = adapter.close_note or ""
+    assert "torque was left on" in note and "it will not fall" in note
+    assert "limp and in your hands" not in note, note
+
+
+async def test_a_stop_while_the_arm_is_in_a_hand_picks_it_up_before_it_sends_anything() -> None:
+    """Every teardown begins with a stop, so this is what a Ctrl-C during the wait reaches. A
+    stop is "stay where you are", and a goal written to a limp servo stops nothing: the arm is
+    energised where the hand has it, and the rest move that follows can then put it down."""
+    arm, transport = _handover_arm()
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    arm.positions.update(HAND_PLACED)
+
+    await transport.stop()
+    assert arm.timeline == ["disable_torque", "send", "enable_torque", "send", "send"]
+    assert arm.torque is True and transport._in_hand is False
+    body = {f"{joint}.pos" for joint in JOINTS if joint != "gripper"}
+    assert set(arm.actions[-1]) == body, "the hold re-sent the gripper and dropped the object"
+    assert arm.actions[-1]["shoulder_lift.pos"] == -113.5
+    assert arm.positions == HAND_PLACED, "the stop moved the arm out of the pose it was given"
+    assert transport.stop_error is None
+
+
+async def test_a_close_with_the_arm_still_in_a_hand_says_it_is_limp_not_the_opposite() -> None:
+    """`--by-hand` takes hold again before the first turn, so the only way to reach a close in
+    this state is a run that ended in the gap between: a Ctrl-C during the wait, a heartbeat
+    that died, a `take_hold` the arm refused. Whoever is holding the arm is the one reading
+    the note, and the torque note would tell them it is holding itself up."""
+    arm, transport = _handover_arm()
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+
+    await adapter.close()
+    note = adapter.close_note
+    assert note is not None
+    assert "the arm is limp and in your hands" in note
+    assert "put it down before you let go of it" in note
+    assert "never taken hold of again" in note, note
+    assert "torque was left on" not in note and "could not keep torque on" not in note
+    assert ("disconnect",) in arm.calls, "the arm was never let go of"
+
+
+async def test_the_mock_refuses_the_hand_off_wherever_the_real_backend_refuses_it() -> None:
+    """Offline is where a person rehearses this, so the mock has to refuse for the same
+    reasons and in the same words: a rehearsal that releases an arm the real one would not is
+    a rehearsal that teaches the wrong thing."""
+    bare = LeRobotMock()
+    nowhere = await bare.let_go()
+    assert nowhere.how == "refused" and not nowhere.ok
+    assert "no rest pose is recorded for this arm" in nowhere.reason
+    assert "quackd robot rest-pose NAME" in nowhere.reason, nowhere.reason
+    assert bare.torque is True and bare.in_hand is False
+    assert bare.sequence == ["let_go"], "a refusal is still an attempt, and it is recorded"
+
+    mock = LeRobotMock(rest_pose=dict(REST))
+    adapter = LeRobotAdapter(mock)
+    await adapter.connect()
+    assert (await adapter.send_intent(Intent.joint({"shoulder_pan": 30.0}, 1.0))).accepted
+    away = await adapter.let_go()
+    assert away.how == "refused" and "the arm is not at its rest pose" in away.reason
+    assert "shoulder_pan is at 30 with a goal of 0" in away.reason, away.reason
+    assert mock.torque is True and mock.in_hand is False
+
+
+async def test_a_mock_stop_over_an_arm_in_a_hand_takes_hold_before_it_stops() -> None:
+    """The real `_hold()`'s order, in the sequence a test can read: a stop that sent a goal to
+    a limp servo would stop nothing and the arm would still be limp afterwards."""
+    mock = LeRobotMock(rest_pose=dict(REST))
+    adapter = LeRobotAdapter(mock)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    assert mock.torque is False and mock.in_hand is True
+
+    await mock.stop()
+    assert mock.sequence == ["let_go", "take_hold", "stop"], mock.sequence
+    assert mock.torque is True and mock.in_hand is False
+
+
+async def test_a_mock_arm_that_slipped_as_torque_came_on_refuses_and_is_not_in_a_hand() -> None:
+    mock = LeRobotMock(rest_pose=dict(REST))
+    adapter = LeRobotAdapter(mock)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    mock.joints.update(BY_HAND_POSE)
+    mock.hold_slips = {"elbow_flex": -9.0}
+
+    refused = await adapter.take_hold()
+    assert refused.how == "refused" and not refused.ok
+    assert "the arm moved as torque came on (elbow_flex by 9 degrees)" in refused.reason
+    assert mock.joints["elbow_flex"] == 31.0
+    assert mock.torque is True and mock.in_hand is False
+    await adapter.close()
+    note = mock.close_note or ""
+    assert "torque was left on" in note and "limp and in your hands" not in note, note
+
+
+async def test_a_mock_run_handed_over_and_taken_back_closes_with_nothing_to_say() -> None:
+    """The whole `--by-hand` teardown offline: released at the rest pose, placed, taken hold
+    of, stopped, folded up, closed. Nothing about this run is unusual by the end of it, and a
+    close that still had something to say would be saying it about a run that went right."""
+    mock = LeRobotMock(rest_pose=dict(REST))
+    adapter = LeRobotAdapter(mock)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    mock.joints.update(BY_HAND_POSE)  # the person places it and presses Enter
+
+    held = await adapter.take_hold()
+    assert held.how == "held" and held.ok and held.reason == "holding the pose you set"
+    assert mock.actions[-1] == held.joints, "the pose it was left in is the goal that pins it"
+    assert held.joints["elbow_flex"] == 40.0 and held.joints["gripper"] == 35.0
+    await mock.stop()
+    assert (await adapter.go_to_rest()).how == "arrived"
+    await adapter.close()
+    assert mock.sequence == ["let_go", "take_hold", "stop", "rest", "close"], mock.sequence
+    assert mock.close_note is None and adapter.close_note is None
+    assert mock.torque is False, "an arm back at its rest pose may be let go of"
+    assert mock.in_hand is False
