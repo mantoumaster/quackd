@@ -1037,3 +1037,47 @@ def test_a_jev_mode_nobody_defined_stops_the_run(tmp_path: Any) -> None:
     assert result.exit_code != 0
     assert "unknown --jev mode 'maybe'" in result.output
     assert "off, shadow, on" in result.output
+
+
+def test_switching_the_stepper_on_says_it_has_never_been_measured(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan for this feature gated `--jev on` behind a measurement that does not exist.
+
+    Refusing the flag would be the wrong shape of gate, because the executor binds a
+    stepper-authored call exactly as it binds the model's, so `on` is not less safe than `off`,
+    only less proven. What it is not is measured, and the person switching it on is the one who
+    should be told. `shadow` says nothing, because shadow is how the measurement gets made."""
+    from tests import fake_typesafe
+
+    fake_typesafe.install(monkeypatch, fake_typesafe.FakeJev(answers=fake_typesafe.turn("stop")))
+    monkeypatch.setenv("TYPESAFE_API_KEY", "sk-test")
+    from typer.testing import CliRunner
+
+    from quackd.cli import app
+
+    def run(mode: str) -> str:
+        return (
+            CliRunner()
+            .invoke(
+                app,
+                [
+                    "run",
+                    "lerobot-lookout",
+                    "--robot",
+                    "lerobot:mock",
+                    "--provider",
+                    "fake",
+                    "--jev",
+                    mode,
+                    "--no-trace",
+                    "--runs-dir",
+                    str(tmp_path / mode),
+                ],
+            )
+            .output
+        )
+
+    assert "has not been measured" in run("on")
+    assert "docs/jev.md" in run("on"), "the notice does not say where the estimates are"
+    assert "has not been measured" not in run("shadow"), "shadow is how it gets measured"

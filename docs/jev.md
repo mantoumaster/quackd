@@ -105,7 +105,7 @@ Three modes:
 |---|---|
 | `off` | the default, and quackd exactly as it has always been. No stepper is built and `typesafe_sdk` is never imported |
 | `shadow` | it is asked on every turn and its answer is recorded beside the model's. **The run is unchanged**: the model still decides everything. This is the mode to start in, and the one that measures |
-| `on` | it takes the turns it is confident about, and hands back the rest |
+| `on` | it takes the turns it is confident about, and hands back the rest. Switching it on prints one line saying it has never been measured against a robot, because that is still true |
 
 `QUACKD_JEV` does the same when the flag is absent; the flag wins.
 

@@ -1019,6 +1019,20 @@ def _run_impl(
                 _warn_line(f"--jev {jev_mode} asked for, running without it: {why}"), soft_wrap=True
             )
             jev_mode = "off"
+    if jev_mode == "on":
+        # Nobody has run the stepper against a robot, so every speed and cost figure in
+        # `docs/jev.md` is arithmetic from TypeSafe's published numbers rather than a result.
+        # Refusing the flag over that would be the wrong shape of gate, because the executor
+        # binds a stepper-authored call exactly as it binds the model's. Saying it once, where
+        # the person switching it on is looking, is the right size of one.
+        ui.console.print(
+            _warn_line(
+                "--jev on has not been measured against a real robot: no latency, no agreement "
+                "rate, and the speed and cost figures in docs/jev.md are estimates. --jev "
+                "shadow records both and changes nothing about the run."
+            ),
+            soft_wrap=True,
+        )
     if task_images and not llm.supports_vision:
         # Refused rather than dropped. A pilot that cannot see would be handed "draw what is
         # in the picture" with no picture, improvise something, and the only sign of why would
