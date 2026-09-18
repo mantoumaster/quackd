@@ -142,6 +142,8 @@ know.
 
 **Nothing here has run against a real robot.** It is exercised against the mock arm, the
 simulators and the suite, with a stub standing in for TypeSafe, which is the same standing the
-rest pose and `--by-hand` have. TypeSafe publish no latency figure, so this repository claims
-none: on the wave run the stepper is a net loss unless its mean answer takes under 1.24 seconds,
-and that arithmetic is in `docs/jev.md` beside a recipe for replacing it with a measurement.
+rest pose and `--by-hand` have. The speed and cost figures in `docs/jev.md` are an estimate,
+built from TypeSafe's published 0.114 s and $0.042 per million input tokens and from quackd's
+own measured timings, and they are labelled as one. The run-level saving is governed by how
+many of a task's turns are a choice rather than by the per-decision ratio, which is why that
+page gives a table over that fraction rather than a single multiplier.

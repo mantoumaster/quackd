@@ -76,11 +76,15 @@ reports that it did.
   chose. Two trace kinds, `jev` and `jev_shadow`, and `summary.json` grows a `jev` block when
   there was a stepper and nothing when there was not.
 
-  **None of it has run against a real robot, and TypeSafe publish no latency figure**, so this
-  release claims no speed result. On the wave run only two of the ten calls are the kind the
-  stepper can answer, which makes that run the honest worst case: it is a net loss there unless
-  Jev answers in under 1.24 seconds. That arithmetic, and a recipe for replacing it with a
-  measurement from your own bench, are in [docs/jev.md](docs/jev.md)
+  **How much it saves depends on how many of a task's turns are a choice**, which is a property
+  of the task and the body rather than of Jev, so there is no single multiplier to quote. Taking
+  TypeSafe's published 0.114 s and $0.042 per million input tokens together with quackd's own
+  measured 6.21 s mean model call on that arm, one decision is about 54 times faster and about a
+  two-thousandth of the cost, and a whole run is roughly 1.2 times faster on the wave, where one
+  turn in five is a choice, and roughly 2.9 times on `arm-grip-check`, where a measured run put
+  four of six turns on the stepper.
+  **Those are estimates and are labelled as such: none of this has run against a real robot.**
+  The workings, the inputs and what would make them wrong are in [docs/jev.md](docs/jev.md)
   ([ADR-0040](docs/adr/0040-a-discrete-stepper-in-front-of-the-model.md)). Behind
   `quackd[jev]`, which is not part of `quackd[all]`, and `TYPESAFE_API_KEY`. It is not a
   provider: `--provider` does not take it, and `quackd doctor` gives it a section of its own.

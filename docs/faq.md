@@ -83,8 +83,9 @@ comes from it. The one exception is opt-in: `--jev` puts an optional non-generat
 front of the model for the turns whose answer is a choice among calls the body already has, a
 read, the brake, a gripper, a gaze. It is off by default, it needs its own extra and its own
 key, it authors no number and no sentence, and it cannot end a run or record a feasibility
-verdict. It is also not a provider and `--provider` does not take it. [jev.md](jev.md) says
-what it does and what it deliberately cannot.
+verdict. It is also not a provider and `--provider` does not take it.
+
+**And it is not a second LLM.** That distinction is the whole reason it is allowed near a robot. A language model generates tokens, so asking it for a verb means asking it to write one, and it could just as easily write a joint angle. Jev generates nothing: it scores the options you hand it against a state and returns which one, with a probability for each. There is no text in the answer, so there is nowhere for an invented verb or an improvised angle to come from. TypeSafe put it as *"LLMs produce words for people. Jev produces typed decisions"*. [jev.md](jev.md) says what it does, what it deliberately cannot, and roughly what it saves.
 
 **Does `uvx quackd run … --provider anthropic` work with no extras?** No, and it now takes
 two of them rather than one: the default install is light on purpose, so a bare `uvx quackd`

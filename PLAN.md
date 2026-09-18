@@ -56,8 +56,8 @@ flip that backend's row, and not before.
 ## Open here
 
 - ⬜ **Nobody has run the discrete stepper against TypeSafe's own API.** `--jev` ships off by
-  default and exercised against a stub, so there is no latency figure, no agreement rate and no
-  calibration curve, and TypeSafe publish none either. `--jev shadow` is built to produce all
+  default and exercised against a stub, so there is no agreement rate and no calibration curve,
+  and the only latency figure anywhere is TypeSafe's own, on TypeSafe's own task. `--jev shadow` is built to produce all
   three without changing a run, on `lerobot:mock` or on a real arm. Until somebody runs it, the
   break-even in [docs/jev.md](docs/jev.md) is arithmetic rather than a result: on the wave run
   the stepper is a net loss unless Jev answers in under 1.24 seconds. The floors are TypeSafe's

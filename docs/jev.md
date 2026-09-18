@@ -9,8 +9,30 @@ Some of those turns are not writing. They are choosing.
 
 [TypeSafe's **Jev**](https://docs.typesafe.ai/introduction) is a *System One* model: you send it
 a named state and typed questions, and it answers with a value and a probability distribution.
-No text generation, no parsing, nothing to coerce into JSON. It is not a smaller chatbot and it
-cannot be used as one — it writes nothing at all.
+No text generation, no parsing, nothing to coerce into JSON.
+
+**It is not another LLM, and it is not a smaller one.** That is the whole point of it, so it is
+worth being precise about the difference before any of the rest makes sense. A language model
+generates tokens: you ask it for a verb and it writes one, and everything quackd does around
+that — the tool schemas, the one-call-per-turn rule, the re-prompt when it answers with prose —
+exists to squeeze a text generator into a shape software can branch on. Jev generates nothing.
+It scores a fixed set of options against a state and hands back which one, with a calibrated
+probability for each. In TypeSafe's own words, *"LLMs produce words for people. Jev produces
+typed decisions"*, and it is *"more like code: reliable, fast, self-consistent, and type-safe"*.
+
+| | A language model | Jev |
+|---|---|---|
+| Output | tokens, which you parse | a typed value, already a value |
+| Can it invent an option? | yes, and does | no. It can only score the ones you gave it |
+| Can it write a joint angle? | yes | **no**, and not by rule: there is nowhere in the answer for a number to come from |
+| Can it be used as a chatbot? | it is one | no, at all |
+| What uncertainty looks like | a hedge in prose, or none | a number, per option, which your code reads |
+| Where it sits in quackd | the pilot | in front of the pilot, for the turns that are a choice |
+
+The practical consequence is the one this page is about. A frontier model takes about six
+seconds to say `report_state` on this arm, because it takes about six seconds to say anything.
+A classifier answers a six-way choice in a fraction of one, and charges for the question rather
+than for the essay.
 
 `--jev` is **off by default**, and stays off unless you ask for it. quackd installs no TypeSafe
 code, needs no TypeSafe key, and never switches this on because it found one in your `.env`.
@@ -29,6 +51,7 @@ code, needs no TypeSafe key, and never switches this on because it found one in 
   * [2. The hero run, call by call](#2-the-hero-run-call-by-call)
   * [3. Where the arm does hand over: the grip check](#3-where-the-arm-does-hand-over-the-grip-check)
   * [4. The other six bodies](#4-the-other-six-bodies)
+- [How much faster, and how much cheaper](#how-much-faster-and-how-much-cheaper)
 - [How a turn is decided](#how-a-turn-is-decided)
 - [What it is never allowed to do](#what-it-is-never-allowed-to-do)
 - [What the record says](#what-the-record-says)
@@ -136,19 +159,10 @@ The wave at the top of the README, exactly as it happened on 2026-09-15:
 and two more are prose. That is the honest arithmetic on the one run this project has on real
 hardware, and it is worth stating plainly rather than choosing a friendlier example.
 
-It is also worth stating what it would cost. The stepper is asked on every turn, so a run like
-this pays for ten questions to save two model calls. With *M* the model's mean answer time
-(6.2 s on that run) and *L* the stepper's:
-
-> On the wave, the stepper is a net loss unless **L < 1.24 s**.
-
-That is why the per-call timeout is one second, and why `--jev shadow` exists and ships ahead of
-`--jev on`: you measure before you switch it on.
-
-> [!NOTE]
-> TypeSafe publish no latency figure anywhere, and no one has run Jev against this arm. So this
-> page states the arithmetic and not a result. [Measuring it yourself](#measuring-it-yourself)
-> is how the blank gets filled, and a number from your bench is worth more than one from ours.
+The stepper is asked on every turn, so this run pays for ten questions to save two model calls.
+That still comes out ahead, and by a good margin, but it is the least favourable task in the
+repository and that is the reason to lead with it. What it works out to is in
+[How much faster, and how much cheaper](#how-much-faster-and-how-much-cheaper).
 
 ### 3. Where the arm does hand over: the grip check
 
@@ -208,6 +222,119 @@ on an Open Duck Mini.
 A body whose verbs are all numbers — a cart driving to a pose, an arm moving joints — escalates
 every turn and the stepper costs it one question a step and nothing else. That is expected, not
 broken, and the trace says `not_offered` for it without a request being made at all.
+
+## How much faster, and how much cheaper
+
+> [!IMPORTANT]
+> **Everything in this section is an estimate, and nobody has run Jev against a quackd robot.**
+> It combines two measured things with one published one: quackd's own timings from the SO-101
+> run on 2026-09-15, the size of the request quackd actually builds (measured against the mock
+> arm), and TypeSafe's published per-call latency and price. Every input is named below so you
+> can disagree with any of them. `--jev shadow` replaces the whole section with measurements
+> from your own bench, and a number from there is worth more than this arithmetic.
+
+### What the vendor claims, and what to do with it
+
+TypeSafe's front page says **193.6× faster and 444.6× cheaper** than an LLM on System One tasks,
+alongside a worked example of 0.114 s against 8.566 s and $0.000081 against $0.013880. Those two
+things do not agree with each other: the example divides out to 75× and 171×, not 194× and 445×.
+So the headline is a range over tasks rather than a constant, and it is theirs rather than
+quackd's. Nothing in this repository repeats it as a quackd measurement.
+
+What is usable is the underlying pair, which is consistent across their pages:
+
+| Figure | Source |
+|---|---|
+| **0.114 s** per call | [typesafe.ai](https://typesafe.ai/), their worked example |
+| **$0.042 per million input tokens**, output not charged | [their models page](https://docs.typesafe.ai/models) |
+| **238× lower input price** than a frontier model | [typesafe.ai](https://typesafe.ai/), against Claude Fable 5.1 |
+
+And what quackd brings to it, all measured:
+
+| Figure | Source |
+|---|---|
+| **6.21 s** mean model call | the wave run: 62.1 s over 10 calls ([README](../README.md#what-happened-in-that-run)) |
+| **49,096** input tokens over those 10 calls | the same run |
+| **527 tokens** per Jev request on this arm | measured: 388 characters of state plus 1,721 of questions, on `lerobot:mock` |
+
+### One decision
+
+On the turns it can answer, quackd's own baseline gives **6.21 s against 0.114 s, about 54×**.
+That is lower than TypeSafe's headline because quackd's baseline is a slower model on a bigger
+prompt, and it is the number that matters here.
+
+On price, Jev's whole request is 527 tokens against a model call that averaged 4,910 input
+tokens on that run, at a 238th of the price per token. That works out at **about a
+two-thousandth of the cost of the call it replaces**, which is a wider gap than TypeSafe's own
+445× rather than a narrower one, and for a reason worth knowing: quackd hands its model a large
+prompt, nearly five thousand tokens a call once the contract, the datasheet, the memory and the
+observations are in it, while the question it hands Jev is a twentieth of that. The stepper is
+cheaper per token *and* asked a much smaller question.
+
+That ratio assumes the model's input is priced like Claude Fable 5.1, which is the comparison
+TypeSafe's own 238× is drawn against. `gpt-6-astra` drove the wave run and this repository does
+not know what it costs, so substitute your own vendor's rate: the token counts on both sides are
+measured, and only the prices are borrowed.
+
+### One run: it depends entirely on how many turns are a choice
+
+This is the part a headline multiplier cannot tell you, and it is the honest centre of the
+question. Jev is asked on every turn and only answers some of them, so the saving over a whole
+run is capped by that share. With *f* the fraction of turns it answers, *M* the model's mean
+call and *L* the stepper's, the think time goes from `N·M` to `N·L + (1−f)·N·M`, so:
+
+**speedup ≈ 1 / (1 − f + L/M)**, and with quackd's numbers *L/M* is 0.018.
+
+| Turns the stepper answers | Think time | Model spend |
+|---|---|---|
+| 20% | **1.2×** faster | about 20% less |
+| 30% | **1.4×** faster | about 30% less |
+| 50% | **1.9×** faster | about 50% less |
+| 67% | **2.9×** faster | about 67% less |
+| 80% | **4.6×** faster | about 80% less |
+
+Two real runs, to put a number on *f* rather than guess at one. Driven on `lerobot:mock` with
+the scripted pilot and a stub in Jev's place, `arm-grip-check` answered **4 of its 6 turns**
+with the stepper and `lerobot-lookout` **3 of 6**, which is 67% and 50%. Neither reaches higher,
+and on a short task neither can: the feasibility verdict and the closing `declare_success` are
+sentences, so they are always the model's, and on a six-turn run that is a third of it before
+anything else is counted. The share climbs with the length of the task, which is the opposite
+of the usual intuition about where an optimisation pays.
+
+The `L/M` term is what the stepper costs on the turns it *cannot* answer, and at 0.018 it is
+almost nothing: even if Jev answered no turn at all, a run would only be about 2% slower. That
+is the asymmetry the whole design rests on. Being wrong about a turn is cheap, and being right
+is worth six seconds.
+
+### The wave, end to end
+
+The least favourable task here, worked through:
+
+| | Measured, no stepper | Estimated, `--jev on` |
+|---|---|---|
+| Model calls | 10 | 8 |
+| Stepper calls | 0 | 10 |
+| Time spent thinking | 62.1 s | **≈ 49.2 s** |
+| Whole run | 78.8 s | **≈ 65.9 s**, about 16% shorter |
+| Model input tokens | 49,096 | roughly a fifth fewer |
+| Stepper input tokens | 0 | ≈ 5,270, costing about 0.05% of what the model does |
+
+The two calls that change hands are call 1 (`report_state`, which took 8.2 s) and call 9
+(`stop`, 5.8 s). Ten stepper questions at 0.114 s add 1.14 s, so the net is about 12.9 seconds
+off a 78.8 second run. On `arm-grip-check`, where two turns in three were a choice in the run
+above, the same arithmetic gives close to three times less waiting.
+
+### What would make this wrong
+
+- **Jev's real latency against a robot's state.** 0.114 s is TypeSafe's figure on TypeSafe's
+  task. quackd sends a different shape of request from a different network. The per-call timeout
+  is one second, so the worst case is bounded, but the worst case is also where the saving goes.
+- **How often it is confident enough.** Every turn below its floor escalates and costs the extra
+  question with no saving. The tables above assume the turns it answers are the turns it can
+  answer, which `--jev shadow` is how you find out.
+- **Your verb mix.** `f` is the whole story and it is a property of the task and the body, not
+  of Jev. An arm doing poses is a different number from an arm checking a grip.
+- **Prices move.** Both sides of the ratio are somebody's rate card on a particular day.
 
 ## How a turn is decided
 
@@ -334,7 +461,7 @@ Then, per run directory:
 
 | What | Read | From |
 |---|---|---|
-| **Jev's latency**, the figure nobody publishes | mean and max of `latency_s` | every `{"kind":"jev"}` |
+| **Jev's latency** against a robot's state, rather than TypeSafe's own 0.114 s on TypeSafe's own task | mean and max of `latency_s` | every `{"kind":"jev"}` |
 | **State size** | `state_chars`, `state_tokens_est`, `trimmed` | every `{"kind":"jev"}` |
 | **Coverage** | how many `gate` values are `taken`, out of all of them | every `{"kind":"jev"}` |
 | **Agreement** | how often `agree` is true, and separately among rows where `would_have_acted` is true | every `{"kind":"jev_shadow"}` |
@@ -376,9 +503,10 @@ of.
   stops a body ([safety.md](safety.md)).
 - **Confidence is calibrated over groups, not promised per answer.** A 0.93 is not a promise
   about that one answer; it is a statement about how a population of 0.93s behaves.
-- **Unmeasured here.** No latency figure, no agreement rate, no hardware run. Everything on this
-  page that is a number is either from TypeSafe's own documentation or from the arithmetic of a
-  run that happened before any of this existed.
+- **Unmeasured here.** No agreement rate, no calibration curve, no hardware run. The speed and
+  cost section is an estimate built from TypeSafe's published figures and quackd's own measured
+  ones, and it is labelled as one. Nothing on this page is a measurement of Jev driving a robot,
+  because nobody has done that yet.
 
 ## Further reading
 

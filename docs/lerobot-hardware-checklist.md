@@ -516,8 +516,8 @@ doctor` output. A report that says it did not work is worth as much as one that 
 checklist: a first run is about proving the arm, and one more moving part between you and it is
 the opposite of what that wants. Afterwards, `--jev shadow` changes nothing about a run and
 records what a classifier would have chosen on each turn beside what the model actually chose.
-Two numbers come out of it that exist nowhere yet, because TypeSafe publish no latency figure:
-how long Jev takes to answer, and how often it agrees with the model on a real arm. The task
+Two numbers come out of it that exist nowhere yet: how long Jev takes to answer a real arm's
+state, and how often it agrees with the model on one. The task
 built for it is `arm-grip-check`, which also happens to be the one that asks the holding-band
 question above ([jev.md](jev.md)).
 
