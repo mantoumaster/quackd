@@ -123,6 +123,14 @@ servers reject image parts. The text observation already carries what the camera
 > LeRobot arm reads more than one camera at all, and none of this reaches a local server
 > unless `--vision` is on.
 
+**A picture that comes with the task needs the same switch.** `--image sketch.png` hands the
+pilot a file rather than the robot a camera, and it is on the first request as an image part
+like any frame, so a run is refused before it starts if the pilot takes no images at all. A
+local preset starts with vision off whatever the model behind it can do, which means `--image`
+wants `--vision` or `QUACKD_VISION=1` beside it here exactly as a camera does, and the refusal
+says so rather than leaving you to guess. The flag tells quackd your server accepts image
+parts, and a text only model is still a text only model with it on.
+
 ## Knobs
 
 | Setting | Values | Default for local |

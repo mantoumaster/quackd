@@ -52,3 +52,30 @@ This does not change the decision, and the three things it rests on are untouche
 The cost it does add is pictures per request. The last two exchanges keep their images and that
 limit counts exchanges rather than images, so two cameras is four pictures in a request rather
 than two.
+
+## Note (2026-09-18): a picture that comes with the task is not perception
+
+`quackd run --image sketch.png` hands a run a picture of something that is not in front of the
+robot: a drawing to copy, a photograph of the shelf as it should end up, a diagram of the knot.
+The flag repeats, and the pictures ride on the first observation and are never trimmed out of
+the history, so a task about a picture still is one twenty turns later.
+
+None of that is perception, and the word is worth keeping clean. These pictures never reach the
+`Detector`. They produce no `Detection`, no bearing, no distance and no summary line. They are
+not what the robot can see, they are what the person asking already had, and the prompt says so
+in a section of its own (`## The picture(s) that came with this task`) rather than mixing them
+into the camera's. In the request they are labelled `task picture <name>:` and sent first, and
+the camera frames that follow are named whenever a task picture is present, because the one
+failure worth designing against is a model that answers about the drawing when it was asked
+about the desk.
+
+So the three things above are untouched. The pilot still reads features, and the summary line is
+still the designed path. The `Detector` still runs on one camera, the first url, the one
+`--fov-deg` describes. The steering verbs still read that one camera at ~10 Hz and spend the
+deadman window on nothing else.
+
+The cost is the same kind as the note above, and smaller. A task picture is one more picture per
+request for the whole run rather than one more per step: the count is fixed when the run starts,
+it does not grow, and it does not ride on the two-exchange image window, because it is attached
+once and then simply never trimmed. A pilot whose model takes no images is refused the flag
+before the run starts rather than handed a task about a picture it will never see.

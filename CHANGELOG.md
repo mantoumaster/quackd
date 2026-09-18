@@ -134,6 +134,52 @@ reports that it did.
   on Windows and would have worked nowhere else
   ([docs/lerobot-first-run.md](docs/lerobot-first-run.md)).
 
+- **A picture can come with the task: `quackd run --goal "draw what is in the picture" --image
+  sketch.png`.** The only images a model could see were camera frames, fetched fresh each step and
+  dropped from all but the last two exchanges, which is right for perception and wrong for a task
+  that is *about* a picture. "Draw what is in this one" is not a sentence a robot's own camera can
+  answer. The flag repeats, each file is re-encoded to PNG and sized down to fit, and every
+  picture arrives on the pilot's first turn, labelled `task picture sketch.png:` in front of it,
+  and stays there for the whole run rather than being trimmed with the frames. That first turn is
+  where the verdict gate judges whether this body can do the task at all, which is the turn most
+  in need of seeing what it is being asked about. Where the body also has a camera, both go out in
+  one message and both are named, so a picture of the thing and a picture of the room are never
+  two unlabelled images in a row. The prompt names each file and says plainly that these are not
+  what the camera sees. The copies land in `runs/<id>/images/`, byte for byte what was sent, and
+  the request line in the trace counts them: `1 messages (1 with image, 1 task picture)`. A pilot
+  that cannot take an image refuses the flag before the run starts rather than dropping the
+  pictures and improvising; `quackd list-models` marks those, `--vision` overrides it where the
+  vendor does take them, and a local model needs `--vision` either way. Refused, too, on a flock:
+  one task, one body, one set of pictures
+  ([ADR-0008](docs/adr/0008-perception-features-not-frames.md)).
+
+- **You can place the arm yourself before the model gets it: `quackd run --by-hand`.** The rest
+  pose fixed an arm that fell and an arm that started somewhere different every time, and it left
+  one thing you could not do: start a run from a pose you chose. Handing a pencil to a robot that
+  begins every run folded on the bench means teaching it to pick a pencil up first, which is a
+  harder task than the drawing. So with this flag the run goes to the rest pose as usual, quackd
+  takes torque off *there* and tells you the arm is yours, and you lift it, load the gripper, hold
+  it where the work should begin and press Enter. quackd writes those joint angles back as the
+  goal, switches torque on, writes them again, reads the arm to check it stayed, and tells you it
+  is holding the pose you set and you can let go. The pilot starts from there, and is told in its
+  prompt that a person placed this body and that the gripper is where their fingers closed it,
+  which is a position and not a grip. At the end the arm holds where it finished and you are asked
+  once more before the gripper opens, because an arm folding to its rest pose with a pencil in the
+  jaws drives that pencil into the bench, and the person who put it there is the one to take it
+  out. Leave it and the arm folds up anyway, after two minutes.
+
+  This is the only place quackd has ever taken torque off a robot, and it is fenced accordingly.
+  It refuses anywhere but the recorded rest pose, which is the same condition `close()` already
+  uses to decide that letting go will not drop the arm; it refuses a body that is not the arm, an
+  arm with no pose recorded, a flock, a dry run and a terminal that is not there; no verb reaches
+  it and no model can ask for it. A Ctrl-C while you are holding the arm re-energises it where
+  your hand is and then folds it, which is the same motion the checklist already tells you to
+  expect. One thing upstream does not document is what a servo does with its goal when torque
+  comes back on, so quackd never relies on it: the present position is written before the switch
+  and again after, and the arm is read back to see whether it actually stayed
+  ([ADR-0039](docs/adr/0039-an-arm-placed-by-hand.md),
+  [docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
+
 ### Changed
 
 - **The README leads with a real arm, and the hero is a recording of one.** Since 0.8 the picture

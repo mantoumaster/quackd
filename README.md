@@ -127,7 +127,7 @@ The path the recording at the top of this page took, in ten steps, with the arm 
     quackd robot add arm-01 lerobot:real --address COM3 --provider openai --model gpt-6-astra
     ```
 
-6. **Fold the arm by hand, then record where it rests.** An SO-101 has no brake and LeRobot releases torque when it disconnects, so without this the arm drops from wherever the run left it. With it, every run starts at this pose and returns to it before quackd lets go.
+6. **Fold the arm by hand, then record where it rests.** An SO-101 has no brake and LeRobot releases torque when it disconnects, so without this the arm drops from wherever the run left it. With it, every run starts at this pose and returns to it before quackd lets go. This pose is where every run starts and ends unless the run itself says otherwise, and there are two ways to say otherwise, both of them just below step 10.
 
     ```bash
     quackd robot rest-pose arm-01
@@ -151,13 +151,31 @@ The path the recording at the top of this page took, in ten steps, with the arm 
     quackd run --goal "Wave to the camera with an extended arm" --robot arm-01 --max-steps 10 --dry-run
     ```
 
-10. **Then let it move.** A hand near the power switch, the arm's whole sweep clear, and the same sentence without the flag.
+10. **Then let it move.** A hand near the power switch, the arm's whole sweep clear, and the same sentence without the flag. This run starts at the rest pose you recorded in step 6 and folds back to it when it is over, which is the default and the first of the two choices below rather than the only way a run can begin.
 
     ```bash
     quackd run --goal "Wave to the camera with an extended arm" --robot arm-01 --max-steps 10
     ```
 
-**Two of those steps were not taken in the recording.** The run in the GIF was reached as `--robot lerobot:real --address COM3`, with no registered name and no rest pose. Step 5 existed that day and simply was not used, so the registry has still never been pointed at hardware. Step 6 did not exist at all: the rest pose was written after that afternoon, in answer to it, and has been exercised against `lerobot:mock` and in the test suite and not yet on a real arm. The arm in the recording is held up by torque alone, which is why it fell when the run ended. Walk all ten and you are the second person down this path and the first down the whole of it, so what differs on your bench is the part worth writing down.
+**Or start from a pose you set by hand.** `--by-hand` gives you the arm before the pilot gets it. The arm is driven to the rest pose from step 6 first, torque comes off there, and quackd waits: lift the arm, put whatever the task needs into the gripper, close the gripper on it, hold the arm where the run should begin, and press Enter. quackd writes the pose you left as the goal, puts torque back on, reads the joints again to check nothing sagged, and prints the angles it is now holding so you know you can let go. The pilot works from there. At the other end the arm is still holding whatever it ended on, so it is handed back to you before anything opens: take hold of what is in the gripper and press Enter, the gripper opens, and only then does the arm fold back to the rest pose. Leave it alone and it folds up with the gripper still shut. This needs the rest pose from step 6, because the rest pose is the one place quackd will drop torque and an arm released anywhere else falls, and it needs a terminal, because somebody has to press Enter.
+
+```bash
+quackd run --goal "draw a circle on the paper in front of you" --robot arm-01 --by-hand
+```
+
+**Give it a picture.** `--image` hands a file to the task itself, which is not the same thing as what the robot can see. The pilot gets each picture on its first turn, labelled with the file's own name, and keeps it in front of it for the whole run. That is what makes it different from a camera frame: a frame is perception, it arrives again every step and it shows the room as it is now, while a task picture never changes and is what the task is about. The flag repeats, so a run can carry several. It needs a pilot that takes images, `quackd list-models` marks the models that take no frames, and a local model needs `--vision`.
+
+```bash
+quackd run --goal "draw what is in the picture" --robot arm-01 --image sketch.png
+```
+
+Put the two together and you have the drawing case: you set the arm down holding a pen where the paper is, and the model is looking at the sketch it has to copy.
+
+```bash
+quackd run --goal "draw what is in the picture" --robot arm-01 --image sketch.png --by-hand
+```
+
+**Two of those steps were not taken in the recording.** The run in the GIF was reached as `--robot lerobot:real --address COM3`, with no registered name and no rest pose. Step 5 existed that day and simply was not used, so the registry has still never been pointed at hardware. Step 6 did not exist at all: the rest pose was written after that afternoon, in answer to it, and has been exercised against `lerobot:mock` and in the test suite and not yet on a real arm. The arm in the recording is held up by torque alone, which is why it fell when the run ended. The two options after step 10 postdate that afternoon as well, and `--by-hand` and `--image` have both been exercised against `lerobot:mock` and in the test suite, and not yet on a real arm. Walk all ten and you are the second person down this path and the first down the whole of it, so what differs on your bench is the part worth writing down.
 
 [docs/lerobot-first-run.md](docs/lerobot-first-run.md) is the long way round the same path: every refusal you can hit and what it means, the safety checks worth running before a wave, what the camera can and cannot see with each kind of pilot, and [what to report](docs/lerobot-first-run.md#14-what-to-report) afterwards. Nothing moves until step 10 of [the hardware checklist](docs/lerobot-hardware-checklist.md).
 
@@ -560,7 +578,7 @@ A cloud model that takes an image sees the camera frame. Where a vendor does not
 
 | Command | What it does |
 |---|---|
-| `quackd run <duck>` or `quackd run --goal "..."` | Run a task. `--provider` picks the model, `--robot` the body (a spec or a registered name), `--flock` runs several at once, `--dry-run` sends nothing, `--live` opens a window, `--no-trace` stops it narrating. `quackd run --help` has the rest, grouped. It exits 1 when a run does not succeed, and 3 when the pilot judged the task beyond this body and nothing moved |
+| `quackd run <duck>` or `quackd run --goal "..."` | Run a task. `--provider` picks the model, `--robot` the body (a spec or a registered name), `--flock` runs several at once, `--dry-run` sends nothing, `--image` hands the task a picture and repeats, `--by-hand` lets you place the arm where the run starts, `--live` opens a window, `--no-trace` stops it narrating. `quackd run --help` has the rest, grouped. It exits 1 when a run does not succeed, and 3 when the pilot judged the task beyond this body and nothing moved |
 | `quackd validate ducks/*.duck` | Check task files against the spec and a robot's manifest (`--robot`, a registered name or a spec, repeatable, `--robots` for a flock, or the file's own `robots:` if it has one). Exits 1 with field level errors such as `requires kick, but arm-01 (lerobot-so101) does not provide it`. `--json` prints one object per file and keeps the same exit code |
 | `quackd serve-mcp` | Expose a robot (`--robot <adapter>:<backend>` or a registered name), or a flock of them with `--robots name=<adapter>:<backend>,...` or `--flock NAME` for a stored one, as MCP tools over stdio. `--duckfile` starts with a contract loaded on the default robot, `--yes` allows confirm gated verbs, `--seed`, `--address`, `--dry-run`, `--no-memory`, `--memory-dir` and `--no-trace` |
 | `quackd doctor` | Keys, extras, adapters, local LLM servers, and every upstream assumption on this machine, ending in one line saying whether anything can run here (`--robot` for one robot's manifest, `--address` to ask a real robot what it is running, `--json` for a script). It exits 1 when nothing here can run, so a setup script can branch on it |
@@ -629,10 +647,13 @@ Those joint numbers are the mock arm's, from `lerobot:mock`, and a real SO-101 r
 | Letting go | Torque is released only where the arm is known to be at that pose. Where it is not, quackd turns LeRobot's own flag off, leaves the arm holding itself up, and prints one line: `the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut its power, or run again` |
 | The gripper | Recorded, never commanded, for the same reason `stop` leaves it alone: re-sending it would open a hand that is holding something. Only the five body joints are ever driven |
 | Out of range | The pose is sent unclipped, because a folded arm often sits outside the travel its calibration recorded (the bench arm folded to `shoulder_lift` -113.5 against a calibrated ±84.2) and the usual out of range refusal would refuse to put the arm down |
+| `--by-hand` | The arm is still driven to the pose, and torque comes off there instead of at the end, so you can lift the arm and set the start yourself. What the run returns to is unchanged |
 | `--dry-run` | Nothing moves, at either end |
 | `quackd doctor` | Returns a probed arm to its rest pose as well, and says so in a `rest pose` row. A doctor probe drops torque too, which is one of the ways the arm fell |
 | `quackd robot list --probe` | Does not move the arm at all. It says `torque left on: not at its rest pose` when it had to keep it |
 | An MCP session | The same at both ends, and it refuses to start if it cannot get there |
+
+**A run can begin in either of two places, and the pose above is what both of them are measured from.** By default the arm is driven to the recorded rest pose before the pilot is given control, so what a model improvises from is the same arm every time and two runs of one task are comparable. With `--by-hand` the arm is driven to that same pose, quackd takes torque off it there, and then it waits for you: you lift the arm, load the gripper, hold it where the work should start and press Enter, and quackd holds the pose you left before handing the arm to the pilot. The rest pose is what makes the second one possible rather than what it replaces, because it is the one place quackd will release an arm, and it is still where the arm folds back to at the end either way. The default start is the repeatable one. The hand placed start is how you put a pen in the gripper, or set the arm on the piece it has to work on, without teaching the model to find either first.
 
 **This changes what a probe and a dry run leave behind.** On an arm that is away from its recorded rest pose, torque is now left ON where it used to be dropped: the arm holds itself up instead of sagging, and it stays that way until you hold it and cut its power.
 

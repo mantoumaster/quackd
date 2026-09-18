@@ -99,7 +99,7 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 | `quackd/transport/` | The backend layer every body is built on: the `DuckTransport` protocol (frames in, state in, intents out, plus a heartbeat, a stop and time), the `sim2d` transport and the `mock`. Those two stayed in the core when the duck's transports left, because they were never the duck's: four other bodies subclass them, and every adapter's mock draws itself with the 2D renderer. |
 | `quackd/sim2d/` | The cartoon world, two renders (top-down, duck-cam), the GIF recorder, the optional live window. |
 | `quackd/perception/` | `Detection` + `Detector`; the HSV colour-blob default; the lazy YOLO extra. |
-| `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
+| `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `images.py` is what `--image` goes through: it opens whatever a person passed, shrinks anything over 1568 px on a side or 1.5 MB, re-encodes every one of them to PNG, and hands back names the model can refer to, so a provider only ever meets PNG bytes and a caption. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
 | `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
 | `quackd/memory.py` | What a robot keeps between runs: one JSONL file per `adapter:backend`, or per registered robot name, with the notes the pilot saved (`remember`) and an episode per run; rendered into the prompt next time ([memory.md](memory.md), ADR-0025, ADR-0034). |
 | `quackd/registry.py` | The robots you have named and the flocks you made of them: `robots.json` and `flocks.json` under `~/.quackd`, strict reads, atomic writes, and `--robot NAME` resolution ([registry.md](registry.md), ADR-0034). |
@@ -122,15 +122,21 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
    camera's name. All of them are saved to `runs/<ts>/frames/`: `0000.png` for a body with one
    camera, and `0000-top.png` beside `0000-side.png` for a body with several, so the number
    still says which step and the name says which view. Only the LeRobot arm reads more than one
-   camera today.
+   camera today. A picture handed to the task with `--image` came from no camera and belongs to
+   no step, so it is written to `runs/<ts>/images/` instead, numbered in the order the flags
+   were given: `00-sketch.png`. Those are the re-encoded PNG bytes the model was actually sent
+   rather than the file on disk, so an argument about a run afterwards is held over the picture
+   the pilot saw.
 2. **Think.** The provider gets: the system prompt (contract in prose + the `.duck` body),
    the vendor-neutral history (`Exchange` = observation + decision), and the tool list
    (allowed verbs' JSON schemas + `assess_task` / `declare_success` / `declare_failure`, plus
    `tell` in a pilot flock, plus `remember` when
    memory is on). With memory on the prompt also carries what this robot remembers from
    earlier runs. Only the last two observations keep their images, which is two pictures per
-   request on a body with one camera and four on a body with two. The provider must return
-   one tool call.
+   request on a body with one camera and four on a body with two. A task picture is not one of
+   those: it rides on the first observation and only that one, and the trim never takes it, so
+   the thing the task is about is still in front of the model at the last step. The provider
+   must return one tool call.
 3. **Enforce.** Zero tool calls → one re-prompt, then failure. Several → the first. Then
    `Executor.run_verb`: abort flag → allowlist → verdict → params → confirm → budget → machine-enforced
    `abort_when` → preconditions → dry-run → execute, racing the timeout against the abort.
@@ -138,7 +144,8 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 4. **Act.** The verb runs; composites loop on the camera at 10 Hz; `move` re-sends its
    velocity every 100 ms to feed the robot's deadman.
 5. **Record.** Every step above is a `TraceEvent`, and `transcript.jsonl` is the sink that
-   never turns off (every kind it writes is in the table below); `summary.json` at the end; `run.gif` from the recorder in either simulator. With
+   never turns off (every kind it writes is in the table below); `frames/` as the run goes and
+   `images/` once at the top of it; `summary.json` at the end; `run.gif` from the recorder in either simulator. With
    memory on, the run ends by appending one episode line to the robot's memory file
    ([memory.md](memory.md)). The terminal and the MCP tool results are views of the same
    stream (see [Trace](#trace)).
@@ -164,9 +171,10 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 
 | Kind | What it records |
 |---|---|
-| `run_start` | contract, system prompt, tool names, robot manifest, any `extra_body` sent with every request, how long connecting took |
+| `task_image` | one per picture `--image` brought to the task, written before `run_start` so a reader of the record meets the pictures the task is about before the run that was given them: where it landed under `images/`, the name the model sees it by, and how many bytes of PNG that is |
+| `run_start` | contract, system prompt, tool names, robot manifest, the names of the pictures the task came with (`images`, empty on a run given none), any `extra_body` sent with every request, how long connecting took |
 | `observation` | what the model was shown this turn, and how long gathering it took |
-| `llm_request` | how many messages went out, how many still carry an image (`with_image`), how many pictures that is in total (`images`, which differs only on a body with several cameras), whether this is the re-prompt |
+| `llm_request` | how many messages went out, how many still carry an image (`with_image`), how many pictures that is in total (`images`, which differs only on a body with several cameras), how many of them came with the task rather than from a camera (`task_pictures`, and it is the same number every step of a run that was given any), whether this is the re-prompt |
 | `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total), stop_reason, latency, or `error` when the call failed |
 | `enforce` | zero tool calls (re-prompt) or several (first only) |
 | `verb_start` | name as called, canonical name, params, source (`agent` · `mcp` · `cli`), whether it is nested inside a composite |
@@ -176,6 +184,7 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | `verb` | the loop's own record of the call it made (name, params, ok, summary, data) |
 | `assess` | the pilot's feasibility verdict on this task against this body: the word, the reason, the datasheet fields it read, what it estimated about the world and how, what the task would need, whether a person cleared it, and whether the run ends there |
 | `talk` | one pilot to another in a flock: who said it, to whom (a member name or `all`), the words, and whether the message was accepted. Sent through the `tell` tool, so it moves nothing and counts as no step ([flock.md](flock.md)) |
+| `hand_off` | only on a `--by-hand` run: the moments where the arm belongs to a person rather than to the pilot. `stage` says which moment it is: `released` (torque is off at the recorded rest pose and the arm is yours), `held` (the pose you left it in was written as the goal and read back, with the `joints` it read), `skipped` (the end-of-run wait ran out with nobody there, or a second Ctrl-C landed on it, so the gripper was not opened) and `unloaded` (somebody took what was in the gripper, so the gripper opens before the arm folds). `how` is the arm's own word for what happened, `released` · `held` · `refused`, so a stage the arm refused is on the record as loudly as one it took |
 | `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame (one record per camera, each naming its own, on a body with several), the summary (with `trace_dropped`: events a view raised on and never showed) |
 
 Example: [`assets/transcript-example.jsonl`](assets/transcript-example.jsonl), recorded
