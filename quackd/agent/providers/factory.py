@@ -169,7 +169,9 @@ def make_provider(
         from quackd.agent.providers.fake import FakeProvider
 
         # The scripted pilot has no model to pick, so `--model` is not refused here, it is ignored.
-        return FakeProvider.for_duck(duck_name or "", goal=goal)
+        # `--vision` it does take: it looks at nothing either way, and it is the only pilot
+        # that can carry a picture through the whole loop with no key and no vendor.
+        return FakeProvider.for_duck(duck_name or "", goal=goal, vision=vision)
     # Named before it is resolved, so the error can say where a wrong id came from: a flag the
     # reader has just typed and a line in a `.env` they have forgotten want different answers.
     source = "--model" if model else "QUACKD_MODEL"

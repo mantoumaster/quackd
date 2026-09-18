@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from PIL import Image
 
+from quackd.agent.providers.base import NamedPng
 from quackd.transport.base import CameraFrame
 
 if TYPE_CHECKING:
@@ -46,6 +47,7 @@ class Transcript:
         self.run_dir = run_dir
         self.path = run_dir / "transcript.jsonl"
         self.frames_dir = run_dir / "frames"
+        self.images_dir = run_dir / "images"
         self._fh = self.path.open("a", encoding="utf-8")
         self._t0 = time.monotonic()
         self.events = 0
@@ -111,6 +113,29 @@ class Transcript:
             paths.append(path)
         # one step, one number, however many cameras were pointed at it
         self.frame_count += 1
+        return paths
+
+    def save_task_images(self, images: Sequence[NamedPng]) -> list[Path]:
+        """The pictures that came with the task, written once at the top of the run.
+
+        They go in their own directory rather than among the frames: `frames/` is numbered by
+        step and is what the robot saw, and one of these belongs to no step at all. The bytes
+        are the ones the model is sent, so a reader arguing about a run afterwards is looking
+        at the picture the pilot looked at rather than at the file it was made from."""
+        if not images:
+            return []
+        self.images_dir.mkdir(exist_ok=True)
+        paths: list[Path] = []
+        for i, image in enumerate(images):
+            path = self.images_dir / f"{i:02d}-{image.name}"
+            path.write_bytes(image.png)
+            self.write(
+                "task_image",
+                path=str(path.relative_to(self.run_dir)),
+                name=image.name,
+                bytes=len(image.png),
+            )
+            paths.append(path)
         return paths
 
     def write_summary(self, summary: dict[str, Any]) -> Path:
