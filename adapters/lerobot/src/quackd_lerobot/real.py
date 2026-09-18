@@ -322,6 +322,22 @@ def joint_ranges(calibration: dict[str, Any]) -> dict[str, tuple[float, float]]:
     return ranges
 
 
+@dataclass
+class _Errors:
+    """Why each of the two status registers did not answer, if it did not.
+
+    One field each, because the two are read in their own transaction and a failure on one
+    says nothing about the other. `summary()` is what the observation and `doctor` show, which
+    has always been "something went wrong reading the registers" and stays that."""
+
+    torque: str | None = None
+    temperature: str | None = None
+
+    def summary(self) -> str | None:
+        both = [e for e in (self.torque, self.temperature) if e]
+        return "; ".join(dict.fromkeys(both)) or None
+
+
 class PolicyLike(Protocol):
     """What `pick` needs from a policy: one observation in, one joint goal out (or None
     when it considers the task done). The `real` backend never builds one on its own."""
@@ -383,6 +399,11 @@ class LeRobotReal:
         self._torque = True
         self._temperature_c: dict[str, float] = {}
         self._register_error: str | None = None
+        self._torque_error: str | None = None
+        """Why the torque register itself could not be read, or None when it answered.
+
+        Kept apart from `_register_error`, which is either register, because `take_hold()` has
+        to know whether *torque* is unknown rather than whether anything is."""
         self._gripper_goal: float | None = None
         self._gripper_trace: deque[tuple[float, float]] = deque(maxlen=16)
         self._policy_lock = asyncio.Lock()
@@ -649,10 +670,17 @@ class LeRobotReal:
         why = await self._not_resting() if self.rest_pose is not None else None
         if self._in_hand:
             # Whoever is reading this has the arm in their hand. The torque note below would
-            # tell them it is holding itself up, which is the one thing it is not.
+            # tell them it is holding itself up, which is the one thing it may not be.
             self.close_note = LIMP_IN_HAND.format(
                 why=why or "it was let go of for you to place and never taken hold of again"
             )
+            with contextlib.suppress(Exception):
+                # Keep torque, and keep it without knowing whether there is any to keep. This
+                # branch is reached in two states: an arm that is genuinely limp, where the
+                # flag changes nothing at all, and an arm whose `take_hold` could not read the
+                # torque register back, where it may well be energised and away from its fold.
+                # Dropping it there would drop the arm, and the no-op costs nothing.
+                self._robot.config.disable_torque_on_disconnect = False
             with contextlib.suppress(Exception):
                 await self._call(self._robot.disconnect, deadline_s=5.0)
             return
@@ -698,31 +726,43 @@ class LeRobotReal:
 
     # ── reading ─────────────────────────────────────────────────────────────────────
 
-    def _read_all(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str | None]:
+    def _read_all(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], _Errors]:
         """Three bus transactions in one worker thread, so nothing interleaves on the wire.
 
         The positions are the liveness check and are allowed to raise. The two registers are
         not: a corrupt status packet should cost a reading, not the run, so a failure there
-        comes back as a note and the last known values stand."""
+        comes back as a note and the last known values stand.
+
+        The two registers are read in their own `try` each, and that matters rather than being
+        tidiness. They used to share one, so a corrupt temperature packet reported a failure
+        over a torque reading that had arrived perfectly well, and `take_hold()` read that
+        report as "torque is unknowable", stopped checking, and told a person holding a limp
+        arm that it was holding itself. One bad register must not be able to speak for the
+        other."""
         obs: dict[str, Any] = self._robot.get_observation()
         torque: dict[str, Any] = {}
         temperature: dict[str, Any] = {}
-        error: str | None = None
+        errors = _Errors()
         try:
-            bus = self._robot.bus
-            torque = bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
-            temperature = bus.sync_read("Present_Temperature", normalize=False, num_retry=2)
+            torque = self._robot.bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
         except Exception as e:
-            error = f"{type(e).__name__}: {e}"
-        return obs, torque, temperature, error
+            errors.torque = f"{type(e).__name__}: {e}"
+        try:
+            temperature = self._robot.bus.sync_read(
+                "Present_Temperature", normalize=False, num_retry=2
+            )
+        except Exception as e:
+            errors.temperature = f"{type(e).__name__}: {e}"
+        return obs, torque, temperature, errors
 
     async def _probe(self) -> dict[str, Any]:
-        obs, torque, temperature, error = await self._call(self._read_all)
+        obs, torque, temperature, errors = await self._call(self._read_all)
         self._joints = self._joints_of(obs)
         gripper = self._joints.get("gripper")
         if gripper is not None:
             self._gripper_trace.append((self.now(), gripper))
-        self._register_error = error
+        self._register_error = errors.summary()
+        self._torque_error = errors.torque
         if torque:
             self._torque = all(int(v) == 1 for v in torque.values())
         if temperature:
@@ -1107,7 +1147,7 @@ class LeRobotReal:
             await self._probe()
         except Exception as e:
             return HandResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
-        if self._torque and self._register_error is None:
+        if self._torque and self._torque_error is None:
             return HandResult("refused", "the arm still reports torque on, so it was not released")
         self._in_hand = True
         return HandResult("released", "torque is off at the rest pose", joints=dict(self._joints))
@@ -1150,13 +1190,24 @@ class LeRobotReal:
             await self._probe()
         except Exception as e:
             return HandResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
-        if not self._torque and self._register_error is None:
+        # Nothing but a torque register that came back and said "on" gets past here. This is
+        # the one place in the adapter where an unread register must refuse rather than be
+        # assumed past: `let_go()` takes the opposite reading of the same silence on purpose,
+        # because there a release that did not happen costs a refusal and here a hold that did
+        # not happen costs the arm, told to a person who is about to take their hands off it.
+        if self._torque_error is not None:
+            return HandResult(
+                "refused",
+                f"the arm did not say whether torque came back on ({self._torque_error}), and "
+                "a hold nothing confirmed is not a hold: keep hold of the arm",
+            )
+        if not self._torque:
             # still limp, so still in somebody's hands, and `close()` should still say so
             return HandResult("refused", "the arm still reports torque off, so nothing holds it")
-        # Torque is on, so the arm is holding itself up whatever else went wrong, and it is no
-        # longer hanging off a hand. The refusal below is about the *pose* and not about that:
-        # an arm reported limp in somebody's hands while it is energised sends them to cut the
-        # power on a robot that is holding perfectly well.
+        # Torque is on, and read back rather than assumed, so the arm is holding itself up and
+        # is no longer hanging off a hand. The refusal below is about the *pose* and not about
+        # that: an arm reported limp in somebody's hands while it is energised sends them to
+        # cut the power on a robot that is holding perfectly well.
         self._in_hand = False
         held = dict(self._joints)
         moved = {j: abs(held[j] - v) for j, v in placed.items() if j in held}

@@ -41,6 +41,10 @@ MIN_SIDE_PX = 64
 """Stop shrinking here and refuse instead: a picture this small says nothing, and a loop that
 kept halving would turn one bad file into a silent blank."""
 
+WIDE_MODES = ("I", "I;16", "I;16B", "I;16L", "I;16N", "F")
+"""Modes whose samples do not fit in a byte. A depth map, a scientific scan and a 16-bit
+photograph all land here, and converting one straight to RGB clips rather than scales."""
+
 FORMATS = ("PNG", "JPEG", "WEBP", "GIF", "BMP", "TIFF")
 """What PIL is allowed to have decoded. Named so the refusal can list them, and so a PDF or a
 video handed to `--image` is one line rather than a traceback from inside a decoder."""
@@ -71,11 +75,34 @@ def _flatten(img: Image.Image) -> Image.Image:
     pixels, so every viewer shows it upright and a re-encode that drops the tag shows it on
     its side. `exif_transpose` moves the rotation into the pixels before the tag is lost."""
     img = ImageOps.exif_transpose(img) or img
+    if img.mode in WIDE_MODES:
+        # `convert("RGB")` on these does not rescale, it clips every sample into 0..255, so a
+        # 16-bit depth map or scan came out with everything above 255 flattened to white. Only
+        # the darkest 0.4% of a 16-bit range survived, which is a picture of nothing.
+        # `autocontrast` cannot take these modes either, so the stretch is done by hand.
+        img = _to_byte(img)
     if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
         img = img.convert("RGBA")
         ground = Image.new("RGBA", img.size, (*GROUND, 255))
         img = Image.alpha_composite(ground, img)
     return img.convert("RGB")
+
+
+def _to_byte(img: Image.Image) -> Image.Image:
+    """A wide-sample picture as 8-bit grey, stretched rather than clipped.
+
+    PIL's own `convert("L")` from `I` truncates the same way `convert("RGB")` does, so the
+    range is found and applied here. A flat picture (every sample the same) has no range to
+    stretch, and becomes the mid grey it actually is rather than a division by zero."""
+    lo, hi = img.getextrema()
+    if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+        return img  # a multi-band wide image: leave it to the convert below
+    if hi <= lo:
+        return Image.new("L", img.size, min(255, max(0, int(lo))) if hi <= 255 else 128)
+    # a plain linear expression, because `point` on a wide mode probes the callable with a
+    # transform object to build a scale and an offset: anything else in it raises
+    scale = 255.0 / (hi - lo)
+    return img.point(lambda v: (v - lo) * scale).convert("L")
 
 
 def _fit(img: Image.Image, path: str) -> bytes:
@@ -110,7 +137,22 @@ def _names(paths: Sequence[str]) -> list[str]:
     otherwise both arrive as `sketch.png`, and a task naming one of them would be ambiguous in
     exactly the way a label exists to prevent."""
     bases = [Path(p).name for p in paths]
-    return [f"{i + 1}-{base}" if bases.count(base) > 1 else base for i, base in enumerate(bases)]
+    taken = set(bases)
+    out: list[str] = []
+    for i, base in enumerate(bases):
+        if bases.count(base) == 1:
+            out.append(base)
+            continue
+        # the index first, then on until the invented name is one nothing else has: a person
+        # who really does have a `sketch.png` and a `2-sketch.png` would otherwise end up with
+        # two pictures under one name, which is the thing this exists to prevent
+        n = i + 1
+        candidate = f"{n}-{base}"
+        while candidate in taken or candidate in out:
+            n += 1
+            candidate = f"{n}-{base}"
+        out.append(candidate)
+    return out
 
 
 def load_task_images(paths: Sequence[str]) -> list[NamedPng]:
@@ -142,6 +184,13 @@ def load_task_images(paths: Sequence[str]) -> list[NamedPng]:
         except UnidentifiedImageError as e:
             raise TaskImageError(
                 f"--image {path}: this is not a picture quackd can read ({', '.join(FORMATS)})"
+            ) from e
+        except Image.DecompressionBombError as e:
+            # Not an OSError, and raised inside `Image.open` before any check of quackd's own,
+            # so it used to come out of `quackd run` as a traceback rather than as one line.
+            raise TaskImageError(
+                f"--image {path}: this picture claims to be far larger than anything quackd "
+                f"will decode ({e})"
             ) from e
         except OSError as e:
             raise TaskImageError(f"--image {path}: could not be read: {e}") from e

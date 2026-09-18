@@ -33,6 +33,7 @@ from quackd_lerobot.real import (
     step_from_env,
 )
 from quackd_lerobot.verbs import (
+    LIMP_IN_HAND,
     REST_MAX_S,
     REST_MIN_S,
     TOL_DEG,
@@ -1918,3 +1919,97 @@ async def test_a_mock_run_handed_over_and_taken_back_closes_with_nothing_to_say(
     assert mock.close_note is None and adapter.close_note is None
     assert mock.torque is False, "an arm back at its rest pose may be let go of"
     assert mock.in_hand is False
+
+
+# ── what an adversarial pass found in the hand-off, once each ───────────────────────────
+
+
+class OneRegisterDown(FakeBus):
+    """A bus where one named register is corrupt and the rest answer honestly.
+
+    The whole shape of the blocker below: the two status registers used to be read inside one
+    `try`, so a bad packet on either was reported as a failure of both."""
+
+    def __init__(self, arm: FakeArm, dead: tuple[str, ...]) -> None:
+        super().__init__(arm)
+        self.dead = dead
+
+    def sync_read(
+        self, data_name: str, motors: Any = None, *, normalize: bool = True, num_retry: int = 0
+    ) -> dict[str, int]:
+        if data_name in self.dead:
+            self.arm.reads.append((data_name, normalize, num_retry))
+            raise RuntimeError("Incorrect status packet!")
+        return super().sync_read(data_name, motors, normalize=normalize, num_retry=num_retry)
+
+
+async def test_a_corrupt_temperature_packet_cannot_answer_for_the_torque_register() -> None:
+    """The blocker this was all written to prevent.
+
+    A servo that takes `enable_torque()` and stays limp is the case `take_hold` reads the
+    register back for. The two registers used to share one `try`, so a corrupt temperature
+    packet set the same error flag as a corrupt torque one, and the guard was written to skip
+    the torque check whenever that flag was set. quackd therefore had an honest reading saying
+    the arm was limp, discarded it, answered `held`, and the run told the person holding an
+    unpowered arm 70 degrees out of the fold that they could let go."""
+    arm = FakeArm()
+    arm.positions.update(FOLDED)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    arm.bus = OneRegisterDown(arm, dead=("Present_Temperature",))
+    arm.torque_refuses = True  # the servo ignores enable_torque, as one in lockout does
+    await transport.connect()
+
+    assert (await transport.let_go()).how == "released"
+    arm.positions["shoulder_lift"] = -20.0  # the person lifts it out of the fold
+    held = await transport.take_hold()
+
+    assert held.how == "refused", "an arm that is still limp is not an arm that is holding"
+    assert "torque off" in held.reason
+    assert transport._in_hand is True, "so it is still in somebody's hands"
+    assert arm.torque is False, "and it really is limp, which is what was read and believed"
+
+
+async def test_a_torque_register_that_says_nothing_is_not_a_hold() -> None:
+    """The other half: the bus goes silent at the moment torque is asked for, which is what a
+    marginal connector or a browning-out rail looks like.
+
+    `let_go` reads the same silence the other way round on purpose, because there a release
+    that did not happen costs a refusal and here a hold that did not happen costs the arm."""
+    arm = FakeArm()
+    arm.positions.update(FOLDED)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    await transport.connect()
+    assert (await transport.let_go()).how == "released"
+
+    arm.bus = OneRegisterDown(arm, dead=("Torque_Enable", "Present_Temperature"))
+    arm.torque_refuses = True
+    held = await transport.take_hold()
+
+    assert held.how == "refused"
+    assert "did not say whether torque came back on" in held.reason
+    assert "keep hold of the arm" in held.reason
+    assert transport._in_hand is True
+
+
+async def test_an_arm_closed_on_while_still_in_a_hand_keeps_whatever_torque_it_has() -> None:
+    """`close()` on an arm in somebody's hand used to return before the seam that keeps
+    torque, so it always disconnected on LeRobot's drop-torque default.
+
+    That is a no-op on an arm that is genuinely limp, which is the state the branch was
+    written for. It is not a no-op on the state the blocker above now produces: an arm whose
+    torque could not be read back, which may be energised and is certainly not at its fold.
+    Dropping it there drops the arm, and keeping it costs nothing either way."""
+    arm = FakeArm()
+    arm.positions.update(FOLDED)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    await transport.connect()
+    await transport.let_go()
+    arm.positions["shoulder_lift"] = -20.0
+    arm.bus = OneRegisterDown(arm, dead=("Torque_Enable",))
+    arm.torque_refuses = True
+    assert (await transport.take_hold()).how == "refused"
+
+    await transport.close()
+    assert arm.config.disable_torque_on_disconnect is False, "quackd kept what torque there is"
+    assert arm.torque_disabled == 0, "and the disconnect dropped none"
+    assert LIMP_IN_HAND.split("(")[0] in (transport.close_note or ""), transport.close_note

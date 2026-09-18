@@ -2422,3 +2422,44 @@ async def test_a_dry_run_never_takes_torque_off_an_arm(tmp_path: Path) -> None:
     assert "## Where this run starts" not in start["system_prompt"], (
         "and the pilot is not told a person placed a body nobody touched"
     )
+
+
+# ── what an adversarial pass found in the hand-off, once each ───────────────────────────
+
+
+async def test_a_run_already_ending_never_releases_the_arm_to_nobody(tmp_path: Path) -> None:
+    """Ctrl-C between the connect and the first turn, which is a window wide enough to hit on
+    purpose: the opening rest move is inside it.
+
+    The abort flag was not read until after the release, so quackd took torque off the arm,
+    printed "the arm is yours: torque is off at its rest pose ... hold it where you want the
+    run to start", and then ended the run in the same breath. Whoever read that line was being
+    invited to place an arm for a run that was already over."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED)
+    loop = AgentLoop(_by_hand(mock, person, tmp_path))
+    loop.executor.abort.set()  # the person pressed Ctrl-C while the arm was folding
+
+    result = await loop.run()
+    assert result.outcome == "aborted"
+    assert "let_go" not in mock.sequence, "the arm was never de-energised"
+    assert mock.torque is True or mock.joints == dict(REST), "and never left limp away from rest"
+    assert not person.said, "and nobody was told to pick up an arm nobody was going to drive"
+
+
+async def test_a_gripper_that_will_not_open_is_said_out_loud(tmp_path: Path) -> None:
+    """The arm's backend answers a refusal rather than raising it, so the `suppress(Exception)`
+    around the hand-back's gripper call was dead for exactly the failure that matters. The run
+    ended `success`, the record said the gripper had been opened, and the arm folded up with
+    the pencil still clamped in it while somebody stood there with their hand out."""
+    mock = LeRobotMock(rest_pose=REST, refuse_kinds={"gripper"})
+    person = ScriptedPerson(mock, places=PLACED)
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert _stages(events) == ["released", "held", "stuck"], "not `unloaded`, which it was not"
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert any(n.startswith("the gripper did not open:") for n in notes), notes
+    assert any("take what is in it by hand" in n for n in notes)
+    assert mock.joints["gripper"] == PLACED["gripper"], "and the jaws really are still shut"

@@ -299,3 +299,71 @@ def test_a_picture_with_no_orientation_tag_is_left_exactly_as_it_is(tmp_path: Pa
     fired on them anyway would turn every ordinary picture on its side."""
     path = drawing(tmp_path / "plain.jpg", size=(400, 200), fmt="JPEG")
     assert decoded(load_task_images([str(path)])[0].png)[1] == (400, 200)
+
+
+# ── what an adversarial pass found, once each ───────────────────────────────────────────
+
+
+def test_a_picture_claiming_to_be_enormous_is_one_line_and_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PIL raises `DecompressionBombError` from inside `Image.open`, before any check of
+    quackd's own runs. It is not an `OSError`, so every clause here used to miss it and a
+    `quackd run --image` ended in a traceback rather than in the one line every other bad
+    file gets.
+
+    The cap is lowered rather than a real bomb being written, because the point is the class
+    of the exception and not how many pixels it takes to provoke it."""
+    path = drawing(tmp_path / "big.png")
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    with pytest.raises(TaskImageError) as caught:
+        load_task_images([str(path)])
+    assert str(path) in str(caught.value)
+    assert "larger than anything quackd will decode" in str(caught.value)
+
+
+def test_a_sixteen_bit_picture_is_scaled_into_a_byte_rather_than_clipped(
+    tmp_path: Path,
+) -> None:
+    """A depth map, a scan and a 16-bit photograph all decode to a mode whose samples do not
+    fit in a byte, and `convert("RGB")` on one of those clips rather than scales. Only the
+    darkest 0.4% of a 16-bit range survived; everything above 255 came out white, so the
+    picture the model was handed was a white rectangle with a dark corner.
+
+    Asserted on the ordering and the ends rather than on exact values, because the stretch is
+    what matters and the rounding is not."""
+    path = tmp_path / "depth.png"
+    values = np.array([[0, 100, 255, 256, 300, 1000, 65535]], dtype=np.uint16)
+    Image.fromarray(values).save(path)
+
+    out = np.asarray(Image.open(io.BytesIO(load_task_images([str(path)])[0].png)))[0, :, 0]
+    assert out[0] == 0 and out[-1] == 255, "the ends of the range are the ends of the byte"
+    assert list(out) == sorted(out), "and nothing crosses over on the way"
+    assert len(set(out.tolist())) > 2, "clipping would have flattened almost all of it to 255"
+
+
+def test_a_flat_sixteen_bit_picture_does_not_divide_by_its_own_zero_range(
+    tmp_path: Path,
+) -> None:
+    """The degenerate input for the test above: every sample identical, so there is no range
+    to stretch it across."""
+    path = tmp_path / "flat.png"
+    Image.fromarray(np.full((8, 8), 4000, dtype=np.uint16)).save(path)
+    out = np.asarray(Image.open(io.BytesIO(load_task_images([str(path)])[0].png)))
+    assert len(np.unique(out)) == 1, "one value in, one value out, and no exception"
+
+
+def test_an_invented_name_never_lands_on_one_a_file_already_has(tmp_path: Path) -> None:
+    """The numbering that disambiguates two files called `sketch.png` used to invent a name
+    without checking whether anything already had it. Somebody who really does have a
+    `2-sketch.png` next to two `sketch.png`s ended up with two pictures under one name, which
+    is precisely what the numbering exists to prevent: the task says "the one called
+    2-sketch.png" and two different pictures answer to it."""
+    paths = [
+        str(drawing(tmp_path / "a" / "sketch.png")),
+        str(drawing(tmp_path / "b" / "sketch.png")),
+        str(drawing(tmp_path / "2-sketch.png")),
+    ]
+    names = [picture.name for picture in load_task_images(paths)]
+    assert len(set(names)) == 3, names
+    assert "2-sketch.png" in names, "the file that really is called that keeps its name"

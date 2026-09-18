@@ -70,6 +70,7 @@ from quackd.safety import (
 )
 from quackd.trace import Sink, Tracer
 from quackd.transport.base import (
+    Ack,
     CameraFrame,
     DuckState,
     DuckTransport,
@@ -385,6 +386,11 @@ class AgentLoop:
         hand = self.cfg.hand_off
         if hand is None or self.cfg.dry_run:
             return False
+        if self.executor.abort.is_set():
+            # Ctrl-C between the connect and here, which is a window wide enough to hit: the
+            # rest move is in it. Releasing now would de-energise the arm, tell somebody it was
+            # theirs to place, and abort the run in the same breath.
+            raise Aborted(self._abort_reason())
         released = await let_go_if_any(self.cfg.transport)
         self._emit("hand_off", stage="released", how=released.how, reason=released.reason)
         if not released.ok:
@@ -439,12 +445,23 @@ class AgentLoop:
             self._emit("hand_off", stage="skipped", reason="nobody answered")
             self._note("nobody unloaded the gripper, so it stays shut and the arm folds up")
             return
+        # through the traced transport, so the record has the intent like every other one.
+        # Not through the executor: its abort is set on every run a person ended, and this runs
+        # on exactly those.
+        ack: Any = None
+        try:
+            ack = await self.executor.traced_transport().send_intent(Intent.gripper(open=True))
+        except Exception as e:
+            ack = Ack(accepted=False, reason=f"{type(e).__name__}: {e}")
+        # The arm's backend answers a refusal rather than raising it, so a suppressed exception
+        # was never going to catch the failure that matters. Somebody is standing there with
+        # their hand out: a gripper that did not open has to be said out loud, not left to be
+        # discovered when the arm folds up with the pencil still in it.
+        if ack is not None and not getattr(ack, "accepted", True):
+            self._emit("hand_off", stage="stuck", reason=str(ack.reason or "the gripper refused"))
+            self._note(f"the gripper did not open: {ack.reason}; take what is in it by hand")
+            return
         self._emit("hand_off", stage="unloaded", reason="opening the gripper")
-        with contextlib.suppress(Exception):
-            # through the traced transport, so the record has the intent like every other one.
-            # Not through the executor: its abort is set on every run a person ended, and this
-            # runs on exactly those.
-            await self.executor.traced_transport().send_intent(Intent.gripper(open=True))
 
     async def _observe(
         self, last_verb: str | None, last_result: VerbResult | None

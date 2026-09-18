@@ -126,8 +126,18 @@ letting go is a service rather than a drop.
   [ADR-0036](0036-what-the-arm-does-not-say.md) left its own numbers on: the hardware
   checklist's *What to report*, answered by somebody with the arm rather than by anybody with a
   command.
-- A register read that fails straight after the release is treated as a release that took. The
-  other reading ends with `close()` telling a person holding a limp arm that it is holding
-  itself up, and of the two wrong answers this is the one that does not get an arm dropped. It
-  does mean a corrupt packet at that instant can report an arm released that is still
-  energised, which is a deliberate trade and not an oversight.
+- **The two ends read the same silence in opposite directions, on purpose.** A torque register
+  that does not answer straight after the release is treated as a release that took: the other
+  reading ends with `close()` telling a person holding a limp arm that it is holding itself up.
+  A torque register that does not answer after `enable_torque()` is treated as no hold at all
+  and refuses, because the other reading ends with quackd telling that same person they can let
+  go. In both the rule is the same one: pick the answer that does not get the arm dropped, and
+  never the one that sounds more decisive. Each costs something. A corrupt packet at the
+  release can report an arm released that is still energised; a corrupt packet at the hold ends
+  a run that might have been fine. Both are deliberate.
+- **One bad register cannot speak for the other.** The status registers are read in a `try`
+  each. They shared one until an adversarial pass found what that cost: `take_hold()`'s torque
+  check was written to stand down whenever a register read had failed, so a corrupt
+  *temperature* packet switched off the check on *torque*, and an arm that ignored
+  `enable_torque()` was reported as holding the pose a person had just set. The line they were
+  about to read said they could let go.
