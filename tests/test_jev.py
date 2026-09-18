@@ -652,3 +652,266 @@ async def test_the_summary_block_counts_the_turns_it_answered(
     block = stepper.summary()
     assert block["asked"] == 1 and block["taken"] == 1 and block["errors"] == 0
     assert block["mode"] == "on" and block["model"].startswith("jev-")
+
+
+# ── end to end, through the loop ────────────────────────────────────────────────────────
+
+
+def _lookout() -> Any:
+    from quackd.duckfile.parser import load_duck
+    from tests.conftest import DUCKS
+
+    return load_duck(str(DUCKS / "lerobot-lookout.duck"))
+
+
+async def _lookout_run(tmp_path: Any, **over: Any) -> Any:
+    """`lerobot-lookout` on the mock arm with the scripted pilot, with or without a stepper."""
+    from quackd.agent.loop import RunConfig, run_duck
+    from quackd.agent.providers.fake import FakeProvider
+    from quackd_lerobot import LeRobotAdapter
+    from quackd_lerobot.mock import LeRobotMock
+
+    duck = _lookout()
+    return await run_duck(
+        RunConfig(
+            duck=duck,
+            provider=FakeProvider.for_duck(duck.name),
+            transport=LeRobotAdapter(LeRobotMock()),
+            runs_dir=tmp_path,
+            **over,
+        )
+    )
+
+
+def _records(result: Any, kind: str) -> list[dict[str, Any]]:
+    from quackd.agent.transcript import Transcript
+
+    return [r for r in Transcript.read(result.run_dir / "transcript.jsonl") if r["kind"] == kind]
+
+
+def _calls(result: Any) -> list[tuple[str, Any]]:
+    return [(r["name"], r.get("params")) for r in _records(result, "verb")]
+
+
+async def test_a_run_with_the_stepper_off_is_the_run_quackd_has_always_made(
+    tmp_path: Any,
+) -> None:
+    """The off path is not a mode, it is the absence of one: no stepper is built, no record is
+    written, and the verbs and the model calls are what they were."""
+    plain = await _lookout_run(tmp_path / "plain")
+    off = await _lookout_run(tmp_path / "off", jev="off")
+    assert _calls(plain) == _calls(off)
+    assert len(_records(plain, "llm")) == len(_records(off, "llm"))
+    assert _records(off, "jev") == [] and _records(off, "jev_shadow") == []
+
+
+async def test_shadow_mode_leaves_the_tool_call_stream_byte_identical(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of shadow: it measures and changes nothing. Same verbs, same model calls,
+    plus a record of what the stepper would have done instead."""
+    from tests import fake_typesafe
+
+    off = await _lookout_run(tmp_path / "off", jev="off")
+    fake_typesafe.install(
+        monkeypatch, fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.99))
+    )
+    shadow = await _lookout_run(tmp_path / "shadow", jev="shadow")
+    assert _calls(shadow) == _calls(off)
+    assert len(_records(shadow, "llm")) == len(_records(off, "llm"))
+    assert _records(shadow, "jev"), "shadow recorded nothing"
+    assert _records(shadow, "jev_shadow"), "nothing was compared against the model"
+    assert all(r["source"] == "agent" for r in _records(shadow, "verb_start"))
+
+
+class _Recorder:
+    """A provider that remembers every history it was handed, and defers to the real one."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.seen: list[list[Any]] = []
+
+    name = property(lambda self: self.inner.name)
+    model = property(lambda self: self.inner.model)
+    supports_vision = property(lambda self: self.inner.supports_vision)
+
+    async def step(self, system: str, history: list[Any], tools: list[Any]) -> Any:
+        self.seen.append(list(history))
+        return await self.inner.step(system, history, tools)
+
+
+async def _on_run(tmp_path: Any, monkeypatch: pytest.MonkeyPatch, fake: Any, **over: Any) -> Any:
+    from quackd.agent.loop import RunConfig, run_duck
+    from quackd.agent.providers.fake import FakeProvider
+    from quackd_lerobot import LeRobotAdapter
+    from quackd_lerobot.mock import LeRobotMock
+    from tests import fake_typesafe
+
+    fake_typesafe.install(monkeypatch, fake)
+    duck = over.pop("duck", None) or _lookout()
+    recorder = _Recorder(FakeProvider.for_duck(duck.name))
+    result = await run_duck(
+        RunConfig(
+            duck=duck,
+            provider=recorder,  # type: ignore[arg-type]
+            transport=LeRobotAdapter(LeRobotMock()),
+            runs_dir=tmp_path,
+            jev="on",
+            **over,
+        )
+    )
+    return result, recorder
+
+
+async def test_nothing_the_stepper_chose_is_ever_replayed_to_the_model_as_its_own_words(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The central guarantee.
+
+    A stepper turn appends nothing to the model's history. Writing a `Decision` for it would
+    hand the model back a tool call it never made, and on Gemini specifically an unsigned
+    `function_call`, which that model refuses the next turn over."""
+    from tests import fake_typesafe
+
+    result, recorder = await _on_run(
+        tmp_path,
+        monkeypatch,
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.99)),
+    )
+    assert result.outcome in ("success", "budget", "failure")
+    stepper_verbs = [r for r in _records(result, "verb_start") if r["source"] == "jev"]
+    assert stepper_verbs, "the stepper never got a turn, so this proves nothing"
+    for history in recorder.seen:
+        for exchange in history:
+            decision = exchange.decision
+            if decision is not None:
+                assert decision.tool_call.id.startswith(("fake", "")), decision.tool_call.id
+                assert not decision.tool_call.id.startswith("jev-"), (
+                    "a stepper call was replayed to the model as something it said"
+                )
+
+
+async def test_the_model_is_told_what_the_stepper_did_while_it_was_away(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It is not in its history, so the observation has to say so, and say who chose them."""
+    from tests import fake_typesafe
+
+    _result, recorder = await _on_run(
+        tmp_path,
+        monkeypatch,
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.99)),
+    )
+    told = [
+        text
+        for history in recorder.seen
+        for exchange in history
+        if "stepper chose these" in (text := exchange.observation.text)
+    ]
+    assert told, "the model was never told what happened while it was not asked"
+    assert "report_state" in told[-1]
+
+
+async def test_a_stepper_turn_charges_no_model_call(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`max_llm_calls` keeps meaning calls to the model. The verb still charges its step, so
+    `max_steps` bounds the run exactly as it always did."""
+    from tests import fake_typesafe
+
+    result, _rec = await _on_run(
+        tmp_path / "on",
+        monkeypatch,
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.99)),
+    )
+    taken = [r for r in _records(result, "jev") if r["gate"] == "taken"]
+    assert taken, "no turn was taken, so there is nothing to count"
+    # every turn is either the stepper's or the model's, and there is one model call per
+    # model turn. A `step` is not a turn: a meta tool costs a call and no step, so several
+    # turns share a number and the counts are what can be compared.
+    asked = _records(result, "jev")
+    assert len(_records(result, "llm")) == len(asked) - len(taken), (
+        "a turn the stepper answered also cost a model call"
+    )
+    assert any(r["source"] == "jev" for r in _records(result, "verb_start")), (
+        "the record does not say who chose the verb"
+    )
+
+
+async def test_the_stepper_does_not_answer_twice_running_with_the_same_call(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reflex that fires twice identically is looping, not deciding.
+
+    Without this a `lerobot-lookout` whose stepper answered `report_state` at 0.99 every turn
+    spent all twelve steps on it and ended `budget`, having asked the model nothing and so
+    having recorded no verdict and declared no outcome. Only the model can end a run."""
+    from tests import fake_typesafe
+
+    result, _rec = await _on_run(
+        tmp_path,
+        monkeypatch,
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.99)),
+    )
+    gates = [r["gate"] for r in _records(result, "jev")]
+    assert "repeat" in gates, "the stepper repeated itself and nothing stopped it"
+    assert result.outcome == "success", f"the run ended {result.outcome}, not on its own terms"
+    assert _records(result, "llm"), "the model was never consulted"
+
+
+async def test_a_stepper_that_never_repeats_still_has_to_hand_the_run_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The backstop behind the repeat rule: alternating two calls for ever is also a loop, and
+    only the model can record a verdict or declare an outcome."""
+    from quackd.agent.jev import MAX_IN_A_ROW
+    from tests import fake_typesafe
+
+    fake = fake_typesafe.FakeJev(
+        script=[
+            fake_typesafe.turn("gripper(open=true)" if i % 2 else "gripper(open=false)", 0.99)
+            for i in range(MAX_IN_A_ROW + 3)
+        ]
+    )
+    fake_typesafe.install(monkeypatch, fake)
+    stepper, adapter, _m = await _arm()
+    obs = await _observation(adapter)
+    gates = []
+    for _ in range(MAX_IN_A_ROW + 2):
+        gates.append((await stepper.advise(obs, cleared=True, budget=BUDGET)).gate)
+    await adapter.disconnect()
+    assert gates[:MAX_IN_A_ROW] == ["taken"] * MAX_IN_A_ROW
+    assert gates[MAX_IN_A_ROW] == "handover", "the stepper never gave the model a turn"
+    # and the run of turns starts again from there, so the backstop is a rhythm and not a
+    # one-shot fuse that quietly switches the stepper off for the rest of the run
+    assert gates[MAX_IN_A_ROW + 1] == "taken"
+
+
+async def test_a_wave_like_goal_never_gets_a_pose_out_of_the_stepper(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The LeRobot claim `docs/jev.md` is built on, end to end and on the arm.
+
+    The stub answers every question at 0.99, so anything the stepper is allowed to author it
+    will. `move_joints` is never among the labels, so it can never be chosen, and every pose
+    in the run came from a model call."""
+    from quackd.duckfile.parser import duck_from_goal
+    from tests import fake_typesafe
+
+    duck = duck_from_goal(
+        "Wave to the camera with an extended arm",
+        ["report_state", "stop", "gripper", "place", "move_joints"],
+    )
+    result, _rec = await _on_run(
+        tmp_path,
+        monkeypatch,
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("move_joints", 0.99)),
+        duck=duck,
+    )
+    asked = _records(result, "jev")
+    assert asked, "the stepper was never asked"
+    for record in asked:
+        assert "move_joints" not in record["labels"], "a pose was on offer"
+        assert (record.get("call") or {}).get("name") != "move_joints"
+    poses = [r for r in _records(result, "verb_start") if r["name"] == "move_joints"]
+    assert all(r["source"] == "agent" for r in poses), "a pose was not the model's"

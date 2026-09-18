@@ -265,6 +265,18 @@ directly. The turn escalates and the record says the call timed out."""
 
 MAX_RETRIES = 1
 
+MAX_IN_A_ROW = 8
+"""Turns the stepper may answer before the model is consulted whatever it says.
+
+Only the model can record a verdict, declare an outcome or write a note, so a run that never
+reaches it is a run that can only end on a budget. This is the backstop that stops a confident
+stepper eating a whole run: a `lerobot-lookout` whose stepper answered `report_state` at 0.99
+every turn spent all twelve steps on it and ended `budget`, having asked the model nothing.
+
+A starting value, like the floors, to be moved once `--jev shadow` has said what real runs
+look like. Eight because the longest wholly discrete sequence quackd can presently describe is
+the arm's six-turn grip loop, and this has to clear it with room."""
+
 
 @dataclass(frozen=True)
 class Advice:
@@ -431,6 +443,9 @@ class Stepper:
     early: set[str] = field(default_factory=set)
     """Labels whose verb may run before the pilot has judged the task."""
     tried: Counter[str] = field(default_factory=Counter)
+    last_call: str | None = None
+    """The label it authored on the previous turn, or None when the model took that turn."""
+    in_a_row: int = 0
     asked: int = 0
     taken: int = 0
     errors: int = 0
@@ -640,22 +655,31 @@ class Stepper:
             },
         )
         if done >= DONE_THRESHOLD:
-            return Advice(None, {**record, "gate": "done"})
+            return self._hand_back({**record, "gate": "done"})
         if human >= HUMAN_THRESHOLD:
-            return Advice(None, {**record, "gate": "need_human"})
+            return self._hand_back({**record, "gate": "need_human"})
         # `not in self.calls` is not defensive padding: a Choice answers with one of the
         # labels it was given, and a label that is not one of ours means the SDK and this
         # build disagree about what was asked. That is the model's turn.
         if choice == ESCALATE or choice not in self.calls:
-            return Advice(None, {**record, "gate": "escalate"})
+            return self._hand_back({**record, "gate": "escalate"})
+        # A reflex that fires twice identically is not deciding, it is looping. quackd already
+        # reads repetition as the signature of a stuck pilot (`abort_when: Same verb fails 3
+        # times in a row`), and these calls succeed, so nothing else here would catch it.
+        if choice == self.last_call:
+            return self._hand_back({**record, "gate": "repeat"})
+        if self.in_a_row >= MAX_IN_A_ROW:
+            return self._hand_back({**record, "gate": "handover"})
         kind = self.classes[choice]
         floor = FLOORS[kind]
         record.update({"class": kind, "floor": floor})
         if confidence < floor:
-            return Advice(None, {**record, "gate": "below_floor"})
+            return self._hand_back({**record, "gate": "below_floor"})
         call = self.calls[choice]
         self.taken += 1
         self.tried[call.name] += 1
+        self.last_call = choice
+        self.in_a_row += 1
         return Advice(
             ToolCall(id=f"jev-{self.asked}", name=call.name, arguments=dict(call.arguments)),
             {
@@ -664,6 +688,13 @@ class Stepper:
                 "call": {"name": call.name, "arguments": dict(call.arguments)},
             },
         )
+
+    def _hand_back(self, record: dict[str, Any]) -> Advice:
+        """The model takes this turn, so the run of stepper turns is over and both counters
+        start again from the next one."""
+        self.last_call = None
+        self.in_a_row = 0
+        return Advice(None, record)
 
     def shadow_event(
         self, advice: Advice, call: ToolCall, llm: Mapping[str, Any] | None = None

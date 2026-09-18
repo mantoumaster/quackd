@@ -29,6 +29,7 @@ from quackd.adapters.base import (
     take_hold_if_any,
 )
 from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
+from quackd.agent.jev import Advice, JevMode, Stepper
 from quackd.agent.prompts import (
     ASSESS_TASK_NAME,
     DECLARE_NAMES,
@@ -68,7 +69,7 @@ from quackd.safety import (
     VerdictRequired,
     deny_all,
 )
-from quackd.trace import Sink, Tracer
+from quackd.trace import Sink, Tracer, fmt_params
 from quackd.transport.base import (
     Ack,
     CameraFrame,
@@ -183,6 +184,14 @@ class RunConfig:
     link: FlockLinkLike | None = None
     """This pilot's end of a flock bus. None is a solo run: no `tell` tool, no flock section
     in the prompt, and no inbox in any observation."""
+    jev: JevMode = "off"
+    """Whether TypeSafe's Jev answers the turns that are a choice (`quackd run --jev`).
+
+    `off` is every run made before there was a flag for it and every run that does not ask for
+    one, and on that path no `Stepper` is built and `typesafe_sdk` is never imported. `shadow`
+    asks it every turn, records the answer beside the model's, and changes nothing. `on` lets
+    it take the turns it is confident about; every pose and every sentence is still the
+    model's (`docs/jev.md`)."""
     summary_file: bool = True
     """Whether to write `summary.json` beside the transcript. False for a flock member, whose
     rollup belongs in the flock's own summary and whose directory must not read as a solo run
@@ -265,6 +274,15 @@ class AgentLoop:
         differ and the difference is the jam: an arm that sagged as torque returned refuses the
         hold, ends the run, and still has the pencil in it. The teardown reads this to decide
         whether to ask for it back before the fold."""
+        self.stepped: list[str] = []
+        """Verbs the discrete stepper chose since the model was last asked, in the words the
+        model will be given.
+
+        Cleared the moment the model chooses again, because from then on its own history says
+        what happened. This is the whole of what a stepper turn leaves in the conversation:
+        no `Exchange`, no `Decision`, nothing a provider replays to the model as something it
+        said. Writing one would put an unsigned tool call in an assistant turn, which Gemini
+        refuses outright, and would teach every other model that answering nothing is fine."""
         self.highlights: list[str] = []
         """Verb results worth carrying into the episode memory (the last few that went ok)."""
 
@@ -476,7 +494,10 @@ class AgentLoop:
         self._emit("hand_off", stage="unloaded", reason="opening the gripper")
 
     async def _observe(
-        self, last_verb: str | None, last_result: VerbResult | None
+        self,
+        last_verb: str | None,
+        last_result: VerbResult | None,
+        stepped: Sequence[str] = (),
     ) -> tuple[Observation, Image.Image | None]:
         state = await self.cfg.transport.get_state()
         frames = await frames_of(self.cfg.transport)
@@ -508,6 +529,7 @@ class AgentLoop:
             inbox=inbox,
             inbox_for=link.name if link is not None else None,
             cameras=cameras if len(cameras) > 1 else None,
+            stepped=stepped,
         )
         features = observation_features(
             state=state,
@@ -776,6 +798,24 @@ class AgentLoop:
             if cfg.memory is not None:
                 tools = [*tools, REMEMBER]
                 memory_text = cfg.memory.recall()
+            # The stepper, or None, which is every run that does not ask for one and the only
+            # path below that existed before there was a flag. Built here because its whole
+            # vocabulary is the allowlist's discrete calls, and `allow` is not final until the
+            # verbs this robot turned out not to have have been dropped from it, just above.
+            stepper = (
+                Stepper.build(
+                    mode=cfg.jev,
+                    registry=registry,
+                    allow=allow,
+                    goal=self.duck.body,
+                    success=self.fm.success,
+                    body=manifest.summary()
+                    if manifest is not None
+                    else backend_name(cfg.transport),
+                )
+                if cfg.jev != "off"
+                else None
+            )
             system = build_system_prompt(
                 self.duck,
                 [registry.view(n) for n in allow],
@@ -817,6 +857,8 @@ class AgentLoop:
             reason = "loop exited unexpectedly"
             last_verb: str | None = None
             last_result: VerbResult | None = None
+            last_llm: dict[str, Any] = {}
+            """What the model's last answer cost, for the shadow record beside it."""
             retry_prompted = False
 
             self.budget.start()
@@ -845,12 +887,7 @@ class AgentLoop:
                     # say which one rather than blaming a kill switch nobody pressed
                     raise Aborted(self._abort_reason())
                 observe_started = time.perf_counter()
-                obs, _ = await self._observe(last_verb, last_result)
-                if self.history and self.history[-1].decision is not None:
-                    obs = obs.model_copy(
-                        update={"tool_call_id": self.history[-1].decision.tool_call.id}
-                    )
-                self.history.append(Exchange(observation=obs))
+                obs, _ = await self._observe(last_verb, last_result, self.stepped)
                 self._emit(
                     "observation",
                     step=self.budget.steps,
@@ -860,77 +897,129 @@ class AgentLoop:
                     elapsed_s=round(time.perf_counter() - observe_started, 3),
                 )
 
-                self.budget.note_llm_call()  # may raise BudgetExceeded: then no request is made
-                history = self._history_for_provider()
-                self._emit(
-                    "llm_request",
-                    step=self.budget.steps,
-                    provider=cfg.provider.name,
-                    model=cfg.provider.model,
-                    messages=len(history),
-                    images=sum(len(ex.observation.images) for ex in history),
-                    with_image=sum(1 for ex in history if ex.observation.images),
-                    task_pictures=sum(len(ex.observation.attachments) for ex in history),
-                    reprompt=retry_prompted,
-                )
-                llm_started = time.perf_counter()
-                try:
-                    turn = await cfg.provider.step(system, history, tools)
-                except Exception as e:
-                    # the call that failed is part of the record: what, and after how long
+                # The stepper answers first where it can. It reads the same turn the model
+                # would have been given and nothing else: no picture, no system prompt, no
+                # history. It is only ever offered verbs the executor would run *this* turn,
+                # so a stepper-authored call never meets the verdict gate or the allowlist.
+                advice: Advice | None = None
+                stepper_call: ToolCall | None = None
+                if stepper is not None:
+                    advice = await stepper.advise(
+                        obs,
+                        cleared=self.executor.cleared,
+                        budget=self.budget.status(),
+                        stepped=self.stepped,
+                        notes=memory_text,
+                    )
+                    self._emit("jev", step=self.budget.steps, **advice.event())
+                    if cfg.jev == "on":
+                        stepper_call = advice.call
+
+                call: ToolCall
+                if stepper_call is not None:
+                    # No `Exchange` and no `Decision`: this turn never enters the model's
+                    # history, so nothing the stepper chose can come back to the model as
+                    # something it said. What the model is told is `self.stepped`, on the next
+                    # observation it is actually shown.
+                    call = stepper_call
+                    self.budget.note_stepper_call()
+                else:
+                    if self.history and self.history[-1].decision is not None:
+                        obs = obs.model_copy(
+                            update={"tool_call_id": self.history[-1].decision.tool_call.id}
+                        )
+                    self.history.append(Exchange(observation=obs))
+                    self.budget.note_llm_call()  # may raise BudgetExceeded: then no request is made
+                    history = self._history_for_provider()
+                    self._emit(
+                        "llm_request",
+                        step=self.budget.steps,
+                        provider=cfg.provider.name,
+                        model=cfg.provider.model,
+                        messages=len(history),
+                        images=sum(len(ex.observation.images) for ex in history),
+                        with_image=sum(1 for ex in history if ex.observation.images),
+                        task_pictures=sum(len(ex.observation.attachments) for ex in history),
+                        reprompt=retry_prompted,
+                    )
+                    llm_started = time.perf_counter()
+                    try:
+                        turn = await cfg.provider.step(system, history, tools)
+                    except Exception as e:
+                        # the call that failed is part of the record: what, and after how long
+                        self._emit(
+                            "llm",
+                            step=self.budget.steps,
+                            provider=cfg.provider.name,
+                            model=cfg.provider.model,
+                            error=f"{type(e).__name__}: {e}",
+                            latency_s=round(time.perf_counter() - llm_started, 3),
+                        )
+                        raise
+                    self.usage = self.usage + turn.usage
+                    last_llm = {
+                        "latency_s": round(time.perf_counter() - llm_started, 3),
+                        "usage": turn.usage.model_dump(),
+                    }
                     self._emit(
                         "llm",
                         step=self.budget.steps,
                         provider=cfg.provider.name,
                         model=cfg.provider.model,
-                        error=f"{type(e).__name__}: {e}",
+                        text=turn.text,
+                        tool_calls=[tc.model_dump() for tc in turn.tool_calls],
+                        usage=turn.usage.model_dump(),
+                        stop_reason=turn.stop_reason,
+                        thinking=turn.thinking,
                         latency_s=round(time.perf_counter() - llm_started, 3),
+                        usage_total=self.usage.model_dump(),
+                        llm_calls=self.budget.llm_calls,
                     )
-                    raise
-                self.usage = self.usage + turn.usage
-                self._emit(
-                    "llm",
-                    step=self.budget.steps,
-                    provider=cfg.provider.name,
-                    model=cfg.provider.model,
-                    text=turn.text,
-                    tool_calls=[tc.model_dump() for tc in turn.tool_calls],
-                    usage=turn.usage.model_dump(),
-                    stop_reason=turn.stop_reason,
-                    thinking=turn.thinking,
-                    latency_s=round(time.perf_counter() - llm_started, 3),
-                    usage_total=self.usage.model_dump(),
-                    llm_calls=self.budget.llm_calls,
-                )
-                self.budget.check_time()
+                    self.budget.check_time()
 
-                if not turn.tool_calls:
-                    if not retry_prompted:
-                        retry_prompted = True
-                        self.history[-1].decision = None
-                        self.history.append(
-                            Exchange(observation=Observation(text=REPROMPT, features=obs.features))
+                    if not turn.tool_calls:
+                        if not retry_prompted:
+                            retry_prompted = True
+                            self.history[-1].decision = None
+                            self.history.append(
+                                Exchange(
+                                    observation=Observation(text=REPROMPT, features=obs.features)
+                                )
+                            )
+                            self._emit(
+                                "enforce",
+                                step=self.budget.steps,
+                                issue="no_tool_call",
+                                action="re-prompt",
+                                text=REPROMPT,
+                            )
+                            continue
+                        outcome, reason = (
+                            "failure",
+                            "the model produced no tool call twice in a row",
                         )
+                        break
+                    retry_prompted = False
+                    if len(turn.tool_calls) > 1:
                         self._emit(
                             "enforce",
                             step=self.budget.steps,
-                            issue="no_tool_call",
-                            action="re-prompt",
-                            text=REPROMPT,
+                            issue="multiple_tool_calls",
+                            action="first_only",
                         )
-                        continue
-                    outcome, reason = "failure", "the model produced no tool call twice in a row"
-                    break
-                retry_prompted = False
-                if len(turn.tool_calls) > 1:
-                    self._emit(
-                        "enforce",
-                        step=self.budget.steps,
-                        issue="multiple_tool_calls",
-                        action="first_only",
+                    call = turn.tool_calls[0]
+                    self.history[-1].decision = Decision(
+                        tool_call=call, text=turn.text, raw=turn.raw
                     )
-                call: ToolCall = turn.tool_calls[0]
-                self.history[-1].decision = Decision(tool_call=call, text=turn.text, raw=turn.raw)
+                    if advice is not None and cfg.jev == "shadow":
+                        # Shadow mode's whole point: what the stepper would have done, beside
+                        # what the model did, on the same reading, in one record.
+                        self._emit(
+                            "jev_shadow",
+                            step=self.budget.steps,
+                            **stepper.shadow_event(advice, call, last_llm),  # type: ignore[union-attr]
+                        )
+                    self.stepped.clear()
 
                 if call.name == REMEMBER_NAME:
                     # a note for next time: no robot motion, no step against the budget
@@ -1002,7 +1091,11 @@ class AgentLoop:
                 last_verb = call.name
                 try:
                     last_result = await self.executor.run_verb(
-                        call.name, call.arguments, source="agent"
+                        call.name,
+                        call.arguments,
+                        # who chose it, so the trace says `from jev` and the transcript
+                        # records a verb the model never saw as the stepper's own
+                        source="jev" if stepper_call is not None else "agent",
                     )
                 except VerdictRequired as e:
                     last_result = VerbResult.fail(f"{e}: call `{ASSESS_TASK_NAME}`")
@@ -1023,6 +1116,13 @@ class AgentLoop:
                 if last_result.ok and last_result.summary:
                     self.highlights.append(f"{call.name}: {last_result.summary}")
                     self.highlights = self.highlights[-4:]
+                if stepper_call is not None:
+                    # the model did not choose this and will not see it in its own history,
+                    # so it is told once, in the observation it is next shown
+                    self.stepped.append(
+                        f"{call.name}({fmt_params(call.arguments)}): "
+                        f"{'ok' if last_result.ok else 'FAILED'} - {last_result.summary}"
+                    )
         except BudgetExceeded as e:
             outcome, reason = "budget", str(e)
         except Aborted as e:
