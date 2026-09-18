@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import gc
 import io
+import os
 import sys
+import threading
 import time
 from typing import Any
 
@@ -221,3 +223,52 @@ async def test_a_run_with_no_reader_at_all_does_not_wait_for_one(
         assert await asyncio.wait_for(ks.wait_for_enter(timeout_s=None), timeout=2) is False
     finally:
         ks.uninstall()
+
+
+# ── two readers on one terminal ─────────────────────────────────────────────────────────
+
+
+async def test_a_question_gets_the_answer_the_key_thread_would_have_eaten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key thread reads every character of the terminal, and `typer.confirm` reads the
+    same one. Whichever took a character first kept it, so a confirmation gate asked on a real
+    terminal waited for a newline the key thread had already swallowed, with a robot mid-verb
+    and nobody able to answer. It has been that way since the kill switch had a key thread.
+
+    A pipe that claims to be a terminal, because the fallback in `ask` is for the case where
+    no reader is running and that is not the case under test."""
+    read_fd, write_fd = os.pipe()
+    reader = os.fdopen(read_fd, "r")
+    monkeypatch.setattr(reader, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys, "stdin", reader)
+    ks, _ = switch()
+    ks._thread = threading.Thread(target=ks._watch_keys, daemon=True)
+    ks._thread.start()
+    try:
+        answer: list[str] = []
+        asking = threading.Thread(target=lambda: answer.append(ks.ask("go? ")), daemon=True)
+        asking.start()
+        await asyncio.sleep(0.1)
+        os.write(write_fd, b"y" + os.linesep.encode())
+        asking.join(3)
+        assert answer == ["y"], "the question got its answer rather than waiting for ever"
+
+        # and the switch is a kill switch again the moment the question is over
+        os.write(write_fd, b"q")
+        await asyncio.sleep(0.2)
+        assert ks.presses == 1
+    finally:
+        os.close(write_fd)
+        ks._thread.join(2)
+
+
+async def test_a_question_asked_with_no_reader_running_is_just_a_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every caller with no terminal, and every test: nothing is competing for the keystroke,
+    so `ask` is the prompt it always was."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO("yes" + chr(10)))
+    ks, _ = switch()
+    assert ks._thread is None
+    assert ks.ask("go? ") == "yes"

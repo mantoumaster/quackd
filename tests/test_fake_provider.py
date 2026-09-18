@@ -198,3 +198,14 @@ def test_a_shape_walker_never_asks_for_a_turn_it_cannot_measure() -> None:
                 f"a {duration}s move at {wz} rad/s turns {wz * duration:.1f} rad, and the "
                 f"strategy cannot tell that from {wz * duration - 2 * math.pi:.1f}"
             )
+
+
+def test_the_scripted_pilot_takes_vision_without_teaching_it_to_every_other_one() -> None:
+    """`--vision` on the scripted pilot is set on the instance, not on the class, because the
+    class attribute is the default every other `FakeProvider` in the suite reads. A `vision=`
+    that wrote through to the class would quietly turn pictures on for every test that built
+    one afterwards, including the goldens."""
+    seeing = FakeProvider(vision=True)
+    assert seeing.supports_vision is True
+    assert FakeProvider.supports_vision is False, "the class default is untouched"
+    assert FakeProvider().supports_vision is False, "and so is the next one built"

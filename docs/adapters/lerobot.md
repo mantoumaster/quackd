@@ -524,7 +524,7 @@ and the only trace of why would be a line in a transcript nobody reads twice:
 ```
 ✗ error: fake scripted:goal does not take images, so it cannot be given 1 picture
   quackd list-models marks the models that take no frames; --vision overrides it where
-  the vendor does take them, and a local model needs --vision
+the vendor does take them, and a local model needs --vision
 ```
 
 And `--image` is refused with `--flock` or `--robots`, because one picture handed to several
@@ -843,8 +843,8 @@ Walking away and pressing nothing at all is the same ending by a different route
 >
 > Put it back in the fold before you let go, then run again.
 
-**The five refusals**, all of them before anything is released and the first three before the
-arm is even connected:
+**The five refusals**, all five of them before anything is released, before anything
+connects and before a run directory exists:
 
 | What you see | Why |
 |---|---|

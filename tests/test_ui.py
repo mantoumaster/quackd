@@ -304,3 +304,16 @@ def test_installing_the_log_handler_leaves_records_reaching_a_root_handler() -> 
         for h in list(quackd_log.handlers):
             quackd_log.removeHandler(h)
     assert seen == ["a line an MCP test would assert on"]
+
+
+async def test_a_release_the_arm_refused_does_not_invite_anybody_to_pick_it_up() -> None:
+    """`stage` is the moment that was asked for; `how` is what the arm answered. The status
+    line read the stage, so a release the arm refused still put "waiting for you to place the
+    arm" under the run, and left it there through the stop and the fold, over an arm that had
+    never gone limp and that nobody should be reaching for."""
+    status = ui.RunStatus(Console(file=io.StringIO(), force_terminal=False))
+    status.sink(TraceEvent(t=0.0, kind="hand_off", data={"stage": "released", "how": "refused"}))
+    assert status._text != "waiting for you to place the arm"
+
+    status.sink(TraceEvent(t=0.0, kind="hand_off", data={"stage": "released", "how": "released"}))
+    assert status._text == "waiting for you to place the arm"

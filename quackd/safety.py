@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import queue
 import signal
 import sys
 import threading
@@ -671,6 +672,9 @@ class KillSwitch:
 
     def __init__(self, abort: asyncio.Event, log: Callable[[str], None] = lambda _m: None) -> None:
         self.abort = abort
+        self._line_wanted = threading.Event()
+        self._lines: queue.Queue[str] = queue.Queue()
+        self._asking = threading.Lock()
         self.log = log
         self.presses = 0
         """How many times the switch has fired, for anyone counting rather than waiting."""
@@ -712,12 +716,26 @@ class KillSwitch:
         keystroke that meant anything was the one that ended the run. A run that hands the arm
         to a person waits for Enter after the abort may already be set, and again in its own
         teardown, so the reader has to outlive both."""
+        typed: list[str] = []
         try:
             while True:
                 ch = sys.stdin.read(1)
                 if not ch:
                     self._announce(self.keys_ended)
                     return
+                if self._line_wanted.is_set():
+                    # Somebody is being asked a question, so every key belongs to the answer.
+                    # This reader cannot stand aside while a prompt runs its own `input()`: it
+                    # is already blocked inside `read(1)` and would take the first character of
+                    # the reply, and the prompt would then wait for a newline this thread had
+                    # already swallowed. So it collects the line and hands it over instead.
+                    if ch in ("\r", "\n"):
+                        self._lines.put("".join(typed))
+                        typed.clear()
+                    else:
+                        typed.append(ch)
+                    continue
+                typed.clear()
                 if ch in ("\r", "\n"):
                     if self._loop is not None:
                         self._loop.call_soon_threadsafe(self.entered.set)
@@ -727,6 +745,29 @@ class KillSwitch:
         except Exception:
             self._announce(self.keys_ended)
             return
+
+    def ask(self, prompt: str) -> str:
+        """Put a question to the person at the terminal and return the line they typed.
+
+        Every prompt a run makes goes through here rather than through `input()`, because the
+        key thread is reading the same terminal and whichever of the two took a character
+        first kept it. A confirmation gate asked on a real terminal therefore waited for a
+        newline the key thread had already swallowed, which is a hang with a robot mid-verb.
+
+        Falls back to `input()` wherever no key thread is running, which is every caller with
+        no terminal and every test, so nothing that was not already racing changes."""
+        if self._thread is None or not self._thread.is_alive():
+            return input(prompt)
+        with self._asking:
+            while not self._lines.empty():  # anything typed before the question was asked
+                self._lines.get_nowait()
+            self._line_wanted.set()
+            try:
+                sys.stderr.write(prompt)
+                sys.stderr.flush()
+                return self._lines.get()
+            finally:
+                self._line_wanted.clear()
 
     def _announce(self, event: asyncio.Event) -> None:
         """Set an event from the key thread, which is not the loop's thread."""

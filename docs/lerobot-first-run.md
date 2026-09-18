@@ -573,13 +573,11 @@ not left to infer a strange starting shape from the joint angles alone:
 ## Where this run starts
 A person placed this body by hand before your first turn, and quackd is holding it exactly
 where they left it. This run does **not** start from the recorded rest pose, so do not assume
-a folded arm or a known shape: read `report_state` and work from the joint angles it gives
-you. They are where somebody decided the work should begin.
+a folded arm or a known shape: read `report_state` and work from the joint angles it gives you. They
+are where somebody decided the work should begin.
 
 The gripper is where their fingers closed it, which is a position and not a grip. Nothing is
-reported as held, and nothing should be: closing on an object is what makes this body say it
-is holding something, so if the task needs a firm hold on what is already between the jaws,
-call the gripper verb to close on it before you lean on it.
+reported as held, and nothing should be: closing on an object is what makes this body say it is holding something, so if the task needs a firm hold on what is already between the jaws, call `gripper` to close on it before you lean on it.
 
 When the run ends, the arm is handed back the same way: it holds where you left it, the person
 is asked to take whatever is in the gripper, and only then does quackd fold the arm up.
@@ -840,10 +838,10 @@ round trip failed, and it did not happen again that day or at all since. The oth
 because the pilot answered `assess_task` with `uncertain` and the person at the keyboard
 answered no.
 
-**`--dry-run` and `--by-hand` are refused together**, which is the one pair of flags on this
-command that is. A dry run's promise is that nothing reaches the arm at either end, and taking
-torque off is not a command to the robot but a change to it, so there is no honest way to do
-both:
+**`--dry-run` and `--by-hand` are refused together**, for what they ask of the arm rather than
+for how many robots a run has. A dry run's promise is that nothing reaches the arm at either
+end, and taking torque off is not a command to the robot but a change to it, so there is no
+honest way to do both:
 
 ```
 ✗ error: --by-hand and --dry-run ask for opposite things: one takes torque off the arm,

@@ -393,7 +393,7 @@ recorded
 
 15. **Set the starting pose yourself with `--by-hand`.** Run the lookout for this one. No verb
     in it moves a joint, so the only things that move the arm in the whole step are your own
-    hands and the fold at the end, which is as small as this can be made.
+    hands and the rest move at each end, which is as small as this can be made.
 
     ```bash
     uv run quackd run lerobot-lookout --robot arm-01 --by-hand

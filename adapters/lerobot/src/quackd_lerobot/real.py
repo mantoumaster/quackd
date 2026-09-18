@@ -1144,12 +1144,23 @@ class LeRobotReal:
                     "an arm held up by torque alone falls when torque goes",
                 )
             await self._call(self._robot.bus.disable_torque)  # up.BUS_DISABLE_TORQUE
+            # Believed the moment the call returns, and before anything is read back. The
+            # confirming probe can fail on its own, and treating that as "no release happened"
+            # is the reading that ends with `close()` telling somebody holding a limp arm that
+            # it is holding itself up. Everything after this point may only downgrade the
+            # reason, never the fact.
+            self._in_hand = True
             await self._probe()
         except Exception as e:
-            return HandResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
+            return HandResult(
+                "released",
+                f"torque is off at the rest pose, and the arm then stopped answering "
+                f"({self.stop_error or f'{type(e).__name__}: {e}'})",
+                joints=dict(self._joints),
+            )
         if self._torque and self._torque_error is None:
+            self._in_hand = False  # nothing was released, so nothing is in anybody's hands
             return HandResult("refused", "the arm still reports torque on, so it was not released")
-        self._in_hand = True
         return HandResult("released", "torque is off at the rest pose", joints=dict(self._joints))
 
     async def take_hold(self) -> HandResult:

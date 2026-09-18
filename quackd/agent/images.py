@@ -14,6 +14,7 @@ enough to send.
 from __future__ import annotations
 
 import io
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -164,21 +165,30 @@ def load_task_images(paths: Sequence[str]) -> list[NamedPng]:
     names = _names(paths)
     out: list[NamedPng] = []
     for path, name in zip(paths, names, strict=True):
+        if not path.strip():
+            # `Path("")` is the current directory, so an unset shell variable used to be
+            # refused as "that is a directory, not a picture", naming no file at all
+            raise TaskImageError("--image was given an empty path")
         file = Path(path)
         if not file.exists():
             raise TaskImageError(f"--image {path}: no such file")
         if file.is_dir():
             raise TaskImageError(f"--image {path}: that is a directory, not a picture")
         try:
-            with Image.open(file) as img:
-                if img.format not in FORMATS:
-                    raise TaskImageError(
-                        f"--image {path}: quackd sends {', '.join(FORMATS)} and this is "
-                        f"{img.format or 'not a picture'}"
-                    )
-                # GIF and TIFF can hold several; the first frame is the one a person means
-                img.seek(0)
-                png = _fit(img, path)
+            with warnings.catch_warnings():
+                # PIL warns rather than raises between its own limit and twice it, and that
+                # warning used to land in the terminal as a raw site-packages line in the
+                # middle of quackd's own output. Promoted so it takes the refusal below.
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(file) as img:
+                    if img.format not in FORMATS:
+                        raise TaskImageError(
+                            f"--image {path}: quackd sends {', '.join(FORMATS)} and this is "
+                            f"{img.format or 'not a picture'}"
+                        )
+                    # GIF and TIFF can hold several; the first frame is the one a person means
+                    img.seek(0)
+                    png = _fit(img, path)
         except TaskImageError:
             raise
         except UnidentifiedImageError as e:

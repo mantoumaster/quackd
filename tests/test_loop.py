@@ -2034,6 +2034,26 @@ async def test_the_prompt_names_every_picture_that_came_with_the_task(
     )
     assert "task picture NAME:" in system, "the label it will actually see in front of each"
 
+    # and the singular, which is the ordinary `--image sketch.png` and was never asserted: a
+    # section that said "1 pictures were handed" would have passed every check above
+    one = SeeingProvider(ToolCall(name="declare_success", arguments={"reason": "seen"}))
+    await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=one,
+            transport=MockTransport(),
+            runs_dir=tmp_path / "one",
+            task_images=pictures[:1],
+        )
+    )
+    alone = one.systems[0]
+    assert "## The picture that came with this task" in alone
+    assert "1 picture was handed to this task on the command line: `sketch.png`" in alone
+    assert "It is in your first turn" in alone and "it stays in front of you" in alone
+    assert "pictures" not in alone.split("## The picture that came")[1].split("## ")[0], (
+        "one picture is spoken of in the singular throughout its own section"
+    )
+
     bare = SeeingProvider(ToolCall(name="declare_success", arguments={"reason": "seen"}))
     await run_duck(
         RunConfig(
@@ -2284,8 +2304,10 @@ async def test_a_ctrl_c_during_the_wait_ends_the_run_as_the_kill_switch(tmp_path
     person.on_wait = lambda _p: loop.executor.abort.set()
     result = await loop.run()
     assert result.outcome == "aborted"
+    # the kill switch's own words and not the wait's: somebody was there and stopped the run,
+    # which is a different ending from nobody having come back to place the arm
     assert result.reason == "kill switch"
-    assert "nobody placed" not in result.reason, "they were there; they stopped it"
+    assert result.reason != AgentLoop.NOBODY_PLACED_IT
     assert loop.budget.llm_calls == 0
     assert mock.torque is False and mock.close_note is None, "and the arm is still parked"
 
