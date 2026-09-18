@@ -456,6 +456,10 @@ def render_events(
         seen = f"{with_image} with image"
         if images != with_image:  # more than one camera, so pictures outnumber the exchanges
             seen += f", {images} images"
+        # only when there are any, so every transcript recorded before `--image` existed, and
+        # every run made without it, replays line for line
+        if task := d.get("task_pictures", 0):
+            seen += f", {task} task picture{'s' if task != 1 else ''}"
         text = (
             f"step {d.get('step')}: {d.get('messages')} messages "
             f"({seen}) to {d.get('provider')} {d.get('model')}"
@@ -591,6 +595,15 @@ def render_events(
         return lines
     if k == "memory":
         return [TraceLine("memory", str(d.get("summary")), "cyan", mark="note")]
+    if k == "hand_off":
+        stage = str(d.get("stage", ""))
+        reason = str(d.get("reason", ""))
+        joints = d.get("joints") or {}
+        text = f"{stage}: {reason}" if reason else stage
+        if joints:
+            text += " (" + ", ".join(f"{j} {float(v):.0f}" for j, v in sorted(joints.items())) + ")"
+        colour = "yellow" if stage in ("released", "skipped") else "cyan"
+        return [TraceLine("hand", text, colour, mark="note")]
     if k == "note":
         return [TraceLine("note", str(d.get("text", "")), "dim", multiline=True, mark="note")]
     if (caption := flock_caption(k, d)) is not None:

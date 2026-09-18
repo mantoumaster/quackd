@@ -11,7 +11,7 @@ supplies the verbs only this robot has. `heartbeat()` stays the watchdog contrac
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from PIL import Image
@@ -67,6 +67,56 @@ class RestResult:
     @classmethod
     def none(cls, reason: str = "this body has no rest pose") -> RestResult:
         return cls("none", reason)
+
+
+HandHow = Literal["released", "held", "refused"]
+
+
+@dataclass(frozen=True)
+class HandResult:
+    """What `let_go()` or `take_hold()` did, as a value rather than an exception.
+
+    Both are asked for by a person standing at the robot, and both can fail for reasons that
+    are not bugs: an arm away from the pose it may be released at, a register read that came
+    back corrupt, a joint that moved while the hand was still on it. The caller has to be able
+    to say which of those happened and then put the body down safely either way."""
+
+    how: HandHow
+    reason: str
+    joints: dict[str, float] = field(default_factory=dict)
+    """Where the arm was when this finished. Empty for a refusal that never read it."""
+
+    @property
+    def ok(self) -> bool:
+        return self.how in ("released", "held")
+
+
+async def let_go_if_any(transport: Any) -> HandResult:
+    """Release the body into a person's hands, on anything that can be handed over.
+
+    Duck-typed like `go_to_rest_if_any`, and for the same reason: one body out of seven does
+    this, and the other six should not have to carry a method to say so."""
+    hand = getattr(transport, "let_go", None)
+    if not callable(hand):
+        return HandResult("refused", "this body is not handed to a person")
+    try:
+        return await hand()
+    except Exception as e:
+        return HandResult("refused", f"{type(e).__name__}: {e}")
+
+
+async def take_hold_if_any(transport: Any) -> HandResult:
+    """Hold whatever pose the body is in now, so the person can let go of it.
+
+    Never raises, because the caller of this is either starting a run or tearing one down,
+    and in both cases what it does next depends on the answer rather than on an exception."""
+    hold = getattr(transport, "take_hold", None)
+    if not callable(hold):
+        return HandResult("refused", "this body is not handed to a person")
+    try:
+        return await hold()
+    except Exception as e:
+        return HandResult("refused", f"{type(e).__name__}: {e}")
 
 
 async def go_to_rest_if_any(transport: Any) -> RestResult:
@@ -168,6 +218,12 @@ class RobotAdapter(Protocol):
         Never raises: this runs in teardowns, where the caller still has to disconnect.
         A body quackd does not park answers `RestResult.none()`."""
         ...
+
+    # `let_go` and `take_hold` are deliberately NOT here. This protocol is runtime-checkable
+    # and structural, so a method on it is a method every one of the seven bodies must carry,
+    # and six of them are never handed to a person. A body that can be declares
+    # `supports_hand_off = True`; the callers reach it through `let_go_if_any` and
+    # `take_hold_if_any`, which is the same way a rest move reaches a bare transport.
 
     def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]: ...
 

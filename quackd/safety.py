@@ -661,19 +661,35 @@ class Heartbeat:
 
 
 class KillSwitch:
-    """Ctrl-C or `q` → abort. Works on Windows too (no loop.add_signal_handler there)."""
+    """Ctrl-C or `q` → abort, and Enter → the one thing a run ever waits for a person to do.
+
+    Works on Windows too (no loop.add_signal_handler there). The key thread is the only
+    reader of stdin quackd starts, so Enter is noticed here rather than with an `input()` of
+    its own: two readers on one terminal would race for the same keystroke, and the one that
+    lost would hang on a line the other had already taken.
+    """
 
     def __init__(self, abort: asyncio.Event, log: Callable[[str], None] = lambda _m: None) -> None:
         self.abort = abort
         self.log = log
+        self.presses = 0
+        """How many times the switch has fired, for anyone counting rather than waiting."""
+        self.pressed = asyncio.Event()
+        """The switch fired. Unlike `abort`, which stays set for the rest of the run, this one
+        is cleared by whoever waits on it, so a wait can end on a *fresh* Ctrl-C without being
+        ended immediately by one that already happened."""
+        self.entered = asyncio.Event()
+        """Somebody pressed Enter. Set from the key thread, cleared by whoever waits on it."""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._previous: Any = None
         self._thread: threading.Thread | None = None
 
     def _fire(self, why: str) -> None:
         self.log(f"kill switch: {why} — cancelling the verb and stopping the robot")
+        self.presses += 1
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self.abort.set)
+            self._loop.call_soon_threadsafe(self.pressed.set)
 
     def _on_sigint(self, _signum: int, _frame: Any) -> None:
         # The first Ctrl-C is the orderly one: it aborts, which cancels the running verb and
@@ -684,16 +700,56 @@ class KillSwitch:
         self._fire("Ctrl-C")
 
     def _watch_keys(self) -> None:
+        """Read stdin until it ends, whatever the run is doing.
+
+        It used to stop at the first `q` and at the abort flag, which was enough when the only
+        keystroke that meant anything was the one that ended the run. A run that hands the arm
+        to a person waits for Enter after the abort may already be set, and again in its own
+        teardown, so the reader has to outlive both."""
         try:
-            while not self.abort.is_set():
+            while True:
                 ch = sys.stdin.read(1)
                 if not ch:
                     return
+                if ch in ("\r", "\n"):
+                    if self._loop is not None:
+                        self._loop.call_soon_threadsafe(self.entered.set)
+                    continue
                 if ch.strip().lower() == "q":
                     self._fire("'q' pressed")
-                    return
         except Exception:
             return
+
+    async def wait_for_enter(
+        self, *, timeout_s: float | None = None, until_abort: bool = True
+    ) -> bool:
+        """Wait for Enter. True if it came, False if anything else ended the wait.
+
+        `until_abort` is the difference between the two waits one run can make. Before the
+        first turn the abort flag is clear, so watching it is how Ctrl-C gets out of a wait for
+        somebody who has walked away. In a teardown it is already set on every run a person
+        ended, and watching it there would skip the wait on exactly the runs most likely to
+        have something still in the gripper. That one watches `pressed` instead, which a
+        waiter clears on the way in, so a fresh Ctrl-C ends it and the stale flag does not.
+
+        Nothing here reads stdin: the key thread is the only reader, and this waits on what it
+        sets. A wait on a machine with no key thread (no terminal) ends on its timeout, which
+        is why a caller who needs an answer checks for a terminal before asking for one."""
+        self.entered.clear()
+        self.pressed.clear()
+        watched = [
+            asyncio.ensure_future(self.entered.wait()),
+            asyncio.ensure_future((self.abort if until_abort else self.pressed).wait()),
+        ]
+        try:
+            await asyncio.wait(watched, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
+            return self.entered.is_set()
+        finally:
+            for task in watched:
+                task.cancel()
+                # awaited, so a cancelled task is never left for the loop to complain about
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
 
     def install(self, *, keys: bool = True) -> None:
         self._loop = asyncio.get_running_loop()

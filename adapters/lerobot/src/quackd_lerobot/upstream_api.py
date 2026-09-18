@@ -312,9 +312,20 @@ NO_CLIENT_DEADMAN = UpstreamRef(
 # ── the Feetech bus, below the Robot interface, where the registers are ─────────────────
 
 BUS_DISABLE_TORQUE = UpstreamRef(
-    "MotorsBus.disable_torque()", "VERIFIED", src(_BUS, 118), "NEVER called by quackd (limp)"
+    "MotorsBus.disable_torque()",
+    "VERIFIED",
+    src(_BUS, 118),
+    "NEVER called on quackd's own initiative. The one call is `let_go()`, which a person asks "
+    "for with `quackd run --by-hand` and which refuses anywhere but the arm's recorded rest "
+    "pose, the same condition `close()` uses to decide that letting go will not drop it. No "
+    "verb reaches it and no model can ask for it",
 )
-BUS_ENABLE_TORQUE = UpstreamRef("MotorsBus.enable_torque()", "VERIFIED", src(_BUS, 113))
+BUS_ENABLE_TORQUE = UpstreamRef(
+    "MotorsBus.enable_torque()",
+    "VERIFIED",
+    src(_BUS, 113),
+    "called by `take_hold()`, to pick up an arm a person has just placed",
+)
 BUS_DISCONNECT = UpstreamRef(
     "MotorsBus.disconnect(disable_torque=True)",
     "VERIFIED",
@@ -567,6 +578,19 @@ POLICY_PIPELINE = UpstreamRef(
     "act(observation, task=...) -> action; load_policy() builds one from the verified names "
     "and is untested. A policy's actions go through the same step cap and the same range "
     "refusal as a verb's, which is quackd's rule and not upstream's",
+)
+TORQUE_ENABLE_HOLDS_PRESENT = UpstreamRef(
+    "TORQUE_ENABLE_HOLDS_PRESENT",
+    "UNVERIFIED",
+    src(_BUS, 113),
+    "what a servo does with its goal when torque is switched back on. `enable_torque()` "
+    "writes the Torque_Enable register and nothing else, so whether the motor then holds "
+    "where it is or drives to the goal it was last written is the firmware's business and is "
+    "documented nowhere quackd can read. It matters because the goal last written before a "
+    "hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back "
+    "to it would happen with somebody's fingers in the way. quackd writes the present "
+    "position as the goal BEFORE enabling torque, writes it again after, and reads the arm "
+    "back to check it stayed: the assumption is never relied on in either direction",
 )
 GRIPPER_OPEN_VALUE = UpstreamRef(
     "GRIPPER_OPEN_VALUE",

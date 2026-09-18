@@ -104,8 +104,10 @@ def _torque_on(state: DuckState) -> str | None:
     if state.extras.get("torque", True):
         return None
     return (
-        "the arm's torque is off; enable it from LeRobot first (quackd never toggles torque). "
-        "A servo that has tripped its own overload protection reads this way too"
+        "the arm's torque is off, so a goal would reach a limp servo. A servo that has tripped "
+        "its own overload protection reads this way too, and so does an arm quackd released "
+        "into somebody's hands for `--by-hand`, which it takes hold of again before the first "
+        "turn. No verb can toggle torque either way"
     )
 
 
@@ -242,6 +244,18 @@ TORQUE_COULD_NOT_BE_KEPT = (
 disconnect that reads it. If that write raises, the disconnect releases torque anyway, and
 the note promising the opposite would be the worst line quackd could print: somebody reads
 that the arm is being held and walks away from an arm that is not."""
+
+LIMP_IN_HAND = (
+    "the arm is limp and in your hands ({why}): put it down before you let go of it, because "
+    "nothing is holding it up"
+)
+"""When the run ends with the arm still released into a person's hands.
+
+`--by-hand` takes torque off at the rest pose and takes hold again before the first turn, so
+the only way to reach a close in this state is a run that ended in the gap between: a Ctrl-C
+during the wait, a heartbeat that died, a `take_hold` the arm refused. Whoever is holding the
+arm is the one reading this, and the opposite note, the one about torque being left on, would
+tell them the arm is holding itself up while it hangs off their hand."""
 
 NO_DRIVABLE_JOINT = (
     "the recorded rest pose names no joint this arm drives ({named}). A pose is only kept "
