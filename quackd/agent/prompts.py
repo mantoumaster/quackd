@@ -482,17 +482,26 @@ def build_system_prompt(
         )
     placed = ""
     if by_hand:
-        placed = """
+        reader = "`report_state`" if "report_state" in names else "your state line"
+        # what this task was actually granted, not what the body has: a pilot told to close the
+        # gripper by a prompt whose allowlist has no `gripper` is being sent at a refusal
+        grip = (
+            "closing on an object is what makes this body say it is holding something, so if "
+            "the task needs a firm hold on what is already between the jaws, call `gripper` to "
+            "close on it before you lean on it"
+            if "gripper" in names
+            else "this task cannot work the gripper, so whatever is between the jaws is held at "
+            "the squeeze the person left and you cannot tighten it"
+        )
+        placed = f"""
 ## Where this run starts
 A person placed this body by hand before your first turn, and quackd is holding it exactly
 where they left it. This run does **not** start from the recorded rest pose, so do not assume
-a folded arm or a known shape: read `report_state` and work from the joint angles it gives
-you. They are where somebody decided the work should begin.
+a folded arm or a known shape: read {reader} and work from the joint angles it gives you. They
+are where somebody decided the work should begin.
 
 The gripper is where their fingers closed it, which is a position and not a grip. Nothing is
-reported as held, and nothing should be: closing on an object is what makes this body say it
-is holding something, so if the task needs a firm hold on what is already between the jaws,
-call the gripper verb to close on it before you lean on it.
+reported as held, and nothing should be: {grip}.
 
 When the run ends, the arm is handed back the same way: it holds where you left it, the person
 is asked to take whatever is in the gripper, and only then does quackd fold the arm up.

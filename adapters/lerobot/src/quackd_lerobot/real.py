@@ -1020,10 +1020,9 @@ class LeRobotReal:
         the person's hand has it, and the rest move that follows can then put it down. Sending
         a goal to a limp servo instead would be a stop that stopped nothing."""
         await self._cancel_policy()
+        retaken: HandResult | None = None
         if self._in_hand:
-            # its own answer, discarded: a refusal here means torque did not come back, and
-            # the close below is what tells whoever is holding the arm about that
-            await self.take_hold()
+            retaken = await self.take_hold()
         try:
             await self._probe()
             body = {k: v for k, v in self._joints.items() if k in JOINTS and k != "gripper"}
@@ -1035,6 +1034,12 @@ class LeRobotReal:
             if self.stop_error is None:
                 self.stop_error = f"the hold did not reach the arm: {type(e).__name__}: {e}"
             raise
+        if retaken is not None and not retaken.ok and self._in_hand:
+            # the goal above went to a limp servo and moved nothing, so this is not a stop.
+            # Only where the arm is still in a hand: a `take_hold` that refused because the
+            # arm slipped did energise it, and that arm is holding itself perfectly well.
+            self.stop_error = f"the arm is limp in somebody's hands: {retaken.reason}"
+            return
         self.stop_error = None
 
     async def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:  # type: ignore[override]
