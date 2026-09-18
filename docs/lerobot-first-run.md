@@ -434,6 +434,13 @@ gripper        100.0
   quackd run <duck> --robot arm-01 starts from it and returns to it before letting go
 ```
 
+> [!NOTE]
+> That last line has one exception, and it is a flag rather than a fault. `--by-hand` starts a
+> run from a pose you set with your own hands instead of from the recorded one. The recorded
+> pose is still where the arm goes first, because it is the only place quackd will let go of
+> it, and it is still where the arm folds back to at the end. [Or start from a pose you set by
+> hand](#or-start-from-a-pose-you-set-by-hand), below, is the whole of it.
+
 Without `--yes` the same joint table appears and then the question, and nothing is written
 until you answer it. `--json` prints the whole registry entry instead and needs `--yes` with
 it, because a script cannot answer a prompt: run with no terminal to ask on and the command
@@ -455,6 +462,7 @@ refuses with `no terminal to ask on: pass --yes to record it` rather than guessi
 | `--dry-run` | nothing. A dry run never moves the arm, at either end, so unless the arm happens to be at the pose already it is let go of with torque on |
 | `quackd doctor` | a probe returns the arm to the pose too, and prints a `rest pose` row: `at it already`, `returned to it`, `not reached: ...`, or `none recorded (quackd robot rest-pose <name>)` |
 | `quackd robot list --probe` | does not move the arm. It says `torque left on: not at its rest pose` when it had to keep holding it |
+| `quackd run --by-hand` | the rest move still happens first, and torque comes off there instead of the pilot being given control. You lift the arm and set the starting pose yourself, quackd holds what you left, and the end of the run is the ordinary one |
 
 Said plainly, because it is a change in behaviour rather than an addition: a probe or a dry
 run on an arm that is away from its recorded rest pose now leaves torque **on**, where it used
@@ -497,6 +505,134 @@ quackd robot rest-pose arm-01 --clear
 > accepting one and quietly ignoring it: a body with no joints says so, and a body with joints
 > that quackd does not drive home says that only the LeRobot arm does this today.
 
+### Or start from a pose you set by hand
+
+The rest pose is one shape, and every run so far begins there. That is exactly what you want
+when the question is what a model does with a known arm, and exactly what you do not want when
+the work starts somewhere else: a pencil already between the jaws, the tip already on the
+paper, the arm already over the corner of the desk where the task happens. Asking a model to
+get there costs several moves, lands somewhere slightly different every time, and cannot put
+anything into the gripper at all, because nobody is there to hand it over.
+
+`--by-hand` is the other way in. You put the arm where the run should start, with your own
+hands, and quackd holds it there:
+
+```bash
+quackd run --goal "draw a small circle" --robot arm-01 --provider openai --by-hand
+```
+
+What happens, in order, and the order is the whole of the feature:
+
+1. **The arm drives to its recorded rest pose**, exactly as any other run does.
+2. **quackd takes torque off, there and nowhere else.** This is the only call in quackd that
+   de-energises a robot, and it refuses anywhere but the recorded pose, because an arm held up
+   by torque alone falls the moment torque goes and your hands are not on it yet.
+3. **It tells you the arm is yours, and waits.** There is no clock on this wait. The arm is
+   resting on itself at the pose you watched it hold when you recorded it, so it can sit there
+   while you go and find the pencil.
+4. **You lift it, load the gripper, close the jaws on whatever it is with your fingers, and
+   press Enter.**
+5. **quackd takes hold of what you left.** It writes the position the arm is in as the goal
+   *before* it enables torque, writes it again afterwards, waits a tick, reads back, and tells
+   you that you can let go.
+6. **The pilot runs**, from your pose rather than from the fold. The budget clock restarts
+   here, so the time you spent finding the pencil is not taken out of the model's minutes.
+7. **At the end the arm holds where it ended**, and quackd asks you to take out whatever is in
+   the gripper before it opens the gripper, waiting up to two minutes for an answer.
+8. **Then the ordinary teardown**: the rest move, and torque released there.
+
+Everything quackd says to you, in the order it says it, with the arm placed at `shoulder_lift`
+-20, `elbow_flex` 40, `wrist_flex` 15 and the gripper squeezed to 35:
+
+```
+the arm is yours: torque is off at its rest pose, so lift it, put whatever it needs in
+the gripper, close the gripper on that, hold it where you want the run to start, and
+press Enter
+holding the pose you set, you can let go. It is at elbow_flex 40, gripper 35,
+shoulder_lift -20, shoulder_pan 0, wrist_flex 15, wrist_roll 0
+the run is over and the arm is holding where it ended. Take hold of whatever is in the
+gripper and press Enter, and the gripper opens before the arm folds up. Leave it and
+the arm folds up with the gripper shut
+```
+
+[Section 08](#08-the-first-task) puts a whole run's trace around those three lines.
+
+**Read the middle line rather than skimming it.** Those are the angles the arm reported after
+torque came back on, not the angles you thought you left. quackd compares them against what it
+measured a moment earlier and refuses if any joint has moved more than five degrees, because
+the interesting failure here is silent: a heavy forearm sags a little as it takes its own
+weight back, and a run that started five degrees below the pose you set would look exactly like
+a run that started at it. The refusal names the joint and the gap, the run aborts before the
+pilot's first turn, and torque stays on, because an arm that moved is still an arm that is
+holding itself up.
+
+**What the pilot is told.** A by-hand run adds a section to the system prompt, so the model is
+not left to infer a strange starting shape from the joint angles alone:
+
+```
+## Where this run starts
+A person placed this body by hand before your first turn, and quackd is holding it exactly
+where they left it. This run does **not** start from the recorded rest pose, so do not assume
+a folded arm or a known shape: read `report_state` and work from the joint angles it gives
+you. They are where somebody decided the work should begin.
+
+The gripper is where their fingers closed it, which is a position and not a grip. Nothing is
+reported as held, and nothing should be: closing on an object is what makes this body say it
+is holding something, so if the task needs a firm hold on what is already between the jaws,
+call the gripper verb to close on it before you lean on it.
+
+When the run ends, the arm is handed back the same way: it holds where you left it, the person
+is asked to take whatever is in the gripper, and only then does quackd fold the arm up.
+```
+
+**The gripper is a position, not a grip**, and that middle paragraph is the part worth
+believing. Taking hold writes every joint's measured position back as its own goal, the
+gripper's included, so the jaws are commanded to exactly the width your fingers left them at
+and are never squeezed tighter. quackd then calls nothing held, and it is right not to:
+holding on this arm is inferred from the gripper having been *told* to close and then settling
+short of shut, and a goal of 35 out of 100 is not a close. So `report_state` reads `holding
+nothing` with a pencil plainly in the jaws, and the observation the model reads says the same.
+That is not a bug to work around. If the task needs a real hold rather than a resting width,
+the pilot closes the gripper on what is already between the jaws with the `gripper` verb, and
+from that moment the arm reports it as held.
+
+**Ctrl-C while the arm is in your hands** ends the run the way any other abort does, which
+means the teardown picks the arm back up before it folds it: torque comes on where you are
+holding it, the arm travels to its rest pose, and only there does torque drop. Keep hold of it
+and keep your fingers clear of the jaws until it has stopped. The run is recorded as aborted
+and the pilot never gets a turn. [Section 11](#11-prove-the-safety-net) has this window and the
+other new one in full.
+
+**Five things `--by-hand` refuses**, none of which leave a run directory behind. The first
+three are checked before quackd connects to anything, and the last two before the arm is
+released:
+
+```
+✗ error: --by-hand is one person placing one arm, and this run has several robots
+  drop --flock and --robots
+✗ error: --by-hand and --dry-run ask for opposite things: one takes torque off the arm,
+the other moves nothing
+  rehearse the task with --dry-run, then run it again with --by-hand
+✗ error: --by-hand waits for you to press Enter, and there is no terminal to ask on
+  run it from a terminal, or drop the flag and start from the rest pose
+✗ error: microduck:mock is not a body a person places by hand: only the LeRobot arm is
+  quackd list-adapters
+✗ error: --by-hand releases the arm at its recorded rest pose, and this arm has none
+recorded
+  quackd robot rest-pose arm-bare
+```
+
+The third one is the one that catches people. `--by-hand` is a conversation, so a run started
+from a script, a scheduler or a CI job has nobody to talk to, and quackd says so up front
+rather than releasing an arm into an empty room and waiting for an Enter that is never coming.
+
+> [!WARNING]
+> Everything in this subsection has been exercised against `lerobot:mock` and in the test
+> suite, and not yet on a real arm. The two steps that need real servos are the release, where
+> a pose you recorded but never let go of could turn out not to hold, and the re-energising,
+> where nothing upstream documents what a servo does with the goal it was last told. Have a
+> hand on the arm for both the first time, and see [what to report](#14-what-to-report).
+
 <br>
 
 ## 08. The first task
@@ -527,6 +663,46 @@ again, which was already at its pose both times:
 
 The arm was already folded there, so nothing moved. On a real arm the second line reads `at
 the rest pose` when it had to travel to get there.
+
+**The same command with `--by-hand` is the first hand-placed run worth making**, and for the
+same reason it is the first run of any kind worth making: `lerobot-lookout` moves no joint of
+its own. Whatever pose you put the arm in is the pose it is still in when the pilot has
+finished, so the only thing under test is the hand-off itself, and a mistake costs you a
+re-fold rather than a collision.
+
+```bash
+quackd run lerobot-lookout --robot arm-01 --provider fake --by-hand
+```
+
+The whole of it, on the mock arm, with the arm placed at `shoulder_lift` -20, `elbow_flex` 40,
+`wrist_flex` 15 and the gripper squeezed to 35:
+
+```
+·  note    moving to the rest pose
+·  note    already at the rest pose
+·  hand    released: torque is off at the rest pose
+the arm is yours: torque is off at its rest pose, so lift it, put whatever it needs in
+the gripper, close the gripper on that, hold it where you want the run to start, and
+press Enter
+·  hand    held: holding the pose you set (elbow_flex 40, gripper 35, shoulder_lift -20, shoulder_pan 0, wrist_flex 15, wrist_roll 0)
+holding the pose you set, you can let go. It is at elbow_flex 40, gripper 35,
+shoulder_lift -20, shoulder_pan 0, wrist_flex 15, wrist_roll 0
+▶  verb    report_state()
+✓  result  report_state ok: shoulder_pan 0, shoulder_lift -20, elbow_flex 40, wrist_flex 15, wrist_roll 0, gripper 35; torque on; hottest shoulder_pan 30°C; holding nothing (0.0 s, 0 intents)
+the run is over and the arm is holding where it ended. Take hold of whatever is in the
+gripper and press Enter, and the gripper opens before the arm folds up. Leave it and
+the arm folds up with the gripper shut
+→  send    stop
+·  hand    unloaded: opening the gripper
+→  send    gripper(open=true)
+·  note    moving to the rest pose
+·  note    at the rest pose
+```
+
+Two lines there are worth checking against the arm in front of you. `report_state` reads back
+the pose you set rather than the fold, which is the whole point of the flag, and it says
+`holding nothing` with the gripper at 35, which is the inference described in [section
+07](#or-start-from-a-pose-you-set-by-hand) rather than an empty hand.
 
 Every run writes `runs/<timestamp>-<name>/` with the full transcript, every frame quackd
 captured and a summary. `quackd trace` replays any of it afterwards.
@@ -664,6 +840,21 @@ round trip failed, and it did not happen again that day or at all since. The oth
 because the pilot answered `assess_task` with `uncertain` and the person at the keyboard
 answered no.
 
+**`--dry-run` and `--by-hand` are refused together**, which is the one pair of flags on this
+command that is. A dry run's promise is that nothing reaches the arm at either end, and taking
+torque off is not a command to the robot but a change to it, so there is no honest way to do
+both:
+
+```
+✗ error: --by-hand and --dry-run ask for opposite things: one takes torque off the arm,
+the other moves nothing
+  rehearse the task with --dry-run, then run it again with --by-hand
+```
+
+Do what the hint says, in that order. Rehearse from the rest pose, read the verbs the model
+reached for, and then make the real run the hand-placed one. The refusal lands before quackd
+connects, so typing both out of habit costs you the message and nothing else.
+
 > [!NOTE]
 > `--max-steps` counts verb executions, not model calls. `assess_task` and the declarations
 > cost no step. `max_llm_calls` and `max_minutes` exist too, but only a `.duck` file can set
@@ -741,6 +932,23 @@ under the header offers; if that lands while the arm is on its way to the pose, 
 exits without disconnecting at all and the arm holds where it stopped. That is the safe
 direction and it is still a surprise, so expect it rather than pressing twice out of habit
 ([safety.md](safety.md)).
+
+A [hand-placed run](#or-start-from-a-pose-you-set-by-hand) opens two more Ctrl-C windows, and
+neither behaves like the one above. **During the placement wait**, with the arm limp in your
+hands, Ctrl-C ends the run before the pilot has had a turn, and the teardown begins with a
+`stop`, which on a released arm means taking hold of it again. Torque comes back on where you
+are standing holding it, the arm then travels to its rest pose, and only there does torque
+drop. Keep hold of it until it has stopped, and keep your fingers out of the jaws, because from
+the arm's side that is an ordinary teardown and nothing about it is slower for being one.
+**Inside the end-of-run hand-back**, where quackd is asking you to take whatever is in the
+gripper, a second Ctrl-C means skip the gripper rather than abandon the run. The jaws stay
+where they are, the arm still parks at its rest pose, the transport still closes properly, and
+the trace says `the gripper was left as it is, and the arm still folds up`. That is a
+deliberate exception to the rule in the paragraph above, and it exists because the first
+version was not one: a second Ctrl-C there raised straight through the whole teardown, which
+skipped the rest move, the close, the run's own end record and the summary, and left an
+energised arm holding a pencil with nothing written down about the run that put it there. A
+third press lands somewhere without that guard and still quits at once.
 
 > [!CAUTION]
 > If any of these five surprises you, stop. Cut power and read
@@ -820,6 +1028,70 @@ Python by constructing `YoloDetector()` and passing it in. No CLI flag selects i
 is true of tuning the colour ranges to your own shirt, which [the FAQ](faq.md) covers as a
 Python constructor.
 
+### Give it a picture
+
+The camera answers what the room looks like now. It cannot answer what the task is about, and
+"draw what is in the picture" is not a sentence a robot's own webcam can be asked. `--image`
+hands the task a file instead:
+
+```bash
+quackd run --goal "draw what is in the picture" --robot arm-01 \
+  --provider openai --image sketch.png
+```
+
+The flag repeats, so several pictures can come with one task. **What the pilot receives** is
+the picture attached to its first observation and to no other, labelled `task picture
+sketch.png:` in front of the image itself and ahead of any camera frame in the same message.
+Nothing trims it out of the history afterwards, which is the difference that matters: only the
+last two exchanges keep their camera frame, and a task picture is still in front of the model
+on the last step of a long run. The system prompt gains a section naming which pictures came
+with the task and saying, in as many words, that they are not what the robot can see. The trace
+counts them in the request line, so you can tell at a glance that they are still going:
+
+```
+llm>    step 0: 1 messages (1 with image, 1 task picture) to fake scripted:goal
+```
+
+**Where the copies are kept.** Every picture is re-encoded to PNG on the way in, brought under
+1568 pixels on its longest edge and under one and a half megabytes, and written to
+`runs/<timestamp>-<name>/images/00-sketch.png` beside the transcript, with a `task_image` line
+in `transcript.jsonl` naming the file, the original name and the byte count. The copy is
+therefore what the model was actually sent rather than the file you pointed at, which is what
+makes it worth keeping. Two pictures with the same basename are numbered apart rather than
+overwriting each other.
+
+**A pilot that cannot see refuses the flag rather than dropping the pictures**, before a run
+directory exists:
+
+```
+✗ error: fake scripted:goal does not take images, so it cannot be given 1 picture
+  quackd list-models marks the models that take no frames; --vision overrides it where
+the vendor does take them, and a local model needs --vision
+```
+
+Silently dropping them is the failure this refusal is here to prevent. A model handed "draw
+what is in the picture" with no picture improvises something plausible, and the only trace of
+why would be a drawing that has nothing to do with your sketch. The same rule covers the
+pilots this page has already met. `--provider fake` never takes images, so the scripted pilot
+needs `--vision` before it will accept one, and it still does nothing with it. A local model
+needs `--vision`, or `QUACKD_VISION=1` in the environment, and it needs an actual
+vision-capable model loaded in the server behind that flag. A cloud model marked `no frames`
+in `quackd list-models` needs `--vision` too, and only where the vendor really does take them.
+
+Both starts take a picture, and the second is the one this flag was written for:
+
+```bash
+quackd run --goal "draw what is in the picture on the paper in front of you" \
+  --robot arm-01 --provider openai --image sketch.png --by-hand
+```
+
+Started from the rest pose, the model has the sketch and an empty gripper, and the first
+problem it has to solve is getting hold of a pencil nobody gave it. Started
+[by hand](#or-start-from-a-pose-you-set-by-hand), you put the pencil in the jaws yourself and
+set the tip on the paper, so the model begins with the sketch, a known contact point and
+nothing to improvise except the drawing. Neither of those has been tried on a real arm, and the
+second one is where a pencil either stays put through a move or does not.
+
 ### Making it repeatable
 
 A `.duck` file turns the goal into a contract with an allowlist, a budget and a success test
@@ -884,7 +1156,7 @@ And once it is running:
 | `reads 61°C: let the arm cool` | the heat gate, below the servo's own 70 °C cut-off | let it cool. A joint that trips its own protection goes slack without announcing it |
 | `and it has stopped moving` | a stall: five ticks in which no watched joint moved | something is in the way, or a servo tripped. The arm is held first |
 | `the camera gave no frame` | the webcam stalled or was unplugged | the arm carries on, and `report_state` starts saying `CAMERA DOWN:` |
-| `the arm's torque is off` | torque reads off | quackd never toggles torque. A fresh connect re-enables it, so this points at a tripped servo or the supply |
+| `the arm's torque is off` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so this points at a tripped servo or the supply |
 | the run ends saying the arm did not answer | the heartbeat's round trip failed | the cable, the power, or a tripped servo. The arm holds its last goal under torque. Seen once on 2026-09-15, in a dry run, and not since |
 | the arm sags when the run ends | no rest pose is recorded, so torque drops where the arm stands | `quackd robot rest-pose arm-01`, with the arm folded by hand first |
 | `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose` | hold the arm, cut its power, clear whatever stopped it, and run again. It stays energised until you do |
@@ -924,6 +1196,24 @@ into something true of the SO-101:
   it verified its own waves from joint readings rather than from the picture, because the
   camera was framed on the gripper. Whether a model can actually see you, on a camera aimed
   properly, is still open.
+
+Two more arrived with [`--by-hand`](#or-start-from-a-pose-you-set-by-hand), and both of them
+ask what a servo does rather than what quackd does, so neither the mock arm nor the test suite
+can answer either:
+
+- **Whether the arm stays where you put it when torque comes back on.** quackd writes the
+  position it just measured as the goal before it enables torque, because nothing upstream
+  documents what one of these servos does with the goal it was last told when it is
+  re-energised, and the goal it was last told is the fold. It then writes the goal again,
+  reads the arm back, and refuses if any joint has moved more than five degrees. Nobody knows
+  whether that refusal ever fires on a real arm, or how far a loaded forearm sags in the
+  moment it takes its own weight back. Say which joint moved and by how much.
+- **Whether a hand-closed gripper keeps a pencil through a drawing move.** The jaws are left
+  exactly where your fingers closed them and are never squeezed tighter, so whatever holds the
+  object is the friction at the width you left. Whether that survives the arm actually moving,
+  or whether the pilot has to close the gripper properly on it first with the `gripper` verb,
+  is the difference between `--by-hand` being useful for a task with a tool in it and being a
+  way to set a starting shape and nothing more.
 
 The webcam question is closed enough to stop asking: the plugged-in camera was `opencv://1`
 and later `opencv://2` at 640x480, and it needed no `?backend=` key on Windows. Say so anyway

@@ -18,7 +18,7 @@ import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from dotenv import load_dotenv
@@ -33,6 +33,9 @@ from quackd.agent.providers.catalogue import (
     models_for,
     vendor_of,
 )
+
+if TYPE_CHECKING:  # every heavy module is imported inside the command that needs it
+    from quackd.safety import KillSwitch
 
 app = typer.Typer(
     name="quackd",
@@ -562,6 +565,34 @@ def _yes_to_go(_why: str) -> bool:
     return True
 
 
+class _TerminalHandOff:
+    """The person at the robot, as a terminal.
+
+    Enter is read through the kill switch rather than with an `input()` of its own. The switch
+    already runs the only thread reading stdin, and a second reader would race it for the same
+    keystroke: whichever lost would sit on a line the other had taken."""
+
+    def __init__(self) -> None:
+        self.switch: KillSwitch | None = None
+
+    def bind(self, switch: KillSwitch) -> None:
+        """The switch is built from the loop's own abort event, which does not exist until the
+        loop does, and the loop is built from the config this object is already in."""
+        self.switch = switch
+
+    def say(self, text: str) -> None:
+        with ui.pause_status():
+            ui.err_console.print(Text(text, style=ui.STYLES["warn"]))
+
+    async def wait(
+        self, text: str, *, timeout_s: float | None = None, until_abort: bool = True
+    ) -> bool:
+        if self.switch is None:  # `bind` runs before the loop does, so this is a bug if hit
+            raise RuntimeError("the hand-off has no kill switch to read Enter from")
+        self.say(text)
+        return await self.switch.wait_for_enter(timeout_s=timeout_s, until_abort=until_abort)
+
+
 def _confirm_prompt(name: str, params: dict[str, Any]) -> bool:
     # under a running status line the question is invisible: a live region redirects stdout
     # and a prompt writes without a newline, so it stays buffered until it is too late
@@ -640,6 +671,8 @@ def _run_impl(
     extra_body: str | None = None,
     flock: str | None = None,
     *,
+    images: Sequence[str] = (),
+    by_hand: bool = False,
     robot: str | None = None,
     robots: str | None = None,
     memory: bool = True,
@@ -650,6 +683,7 @@ def _run_impl(
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
+    from quackd.agent.images import TaskImageError, load_task_images
     from quackd.agent.loop import RunConfig, run_duck
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import make_provider
@@ -739,6 +773,50 @@ def _run_impl(
     if flock_n is not None and not 2 <= flock_n <= 4:
         _fail("a flock needs 2 to 4 ducks (drop --flock for a single run)")
         return
+    # Before the dispatch below, because a flock takes neither of the two flags and dropping
+    # one silently is the failure both of them exist to prevent: a task about a picture that
+    # never arrived, and an arm nobody was asked to place.
+    several = (
+        flock_n is not None
+        or roster is not None
+        or duck.frontmatter.flock is not None
+        or len(specs) > 1
+    )
+    task_images: list[Any] = []
+    if images:
+        if several:
+            _fail(
+                "--image is for one robot, and this run has several",
+                hint="drop --flock and --robots, or run the task on one body at a time",
+            )
+            return
+        try:
+            task_images = load_task_images(list(images))
+        except TaskImageError as e:
+            _fail(str(e))
+            return
+    if by_hand:
+        if several:
+            _fail(
+                "--by-hand is one person placing one arm, and this run has several robots",
+                hint="drop --flock and --robots",
+            )
+            return
+        if dry_run:
+            # a dry run moves nothing at either end, and taking torque off an arm is the one
+            # thing here that is not a command to the robot but a change to it
+            _fail(
+                "--by-hand and --dry-run ask for opposite things: one takes torque off the "
+                "arm, the other moves nothing",
+                hint="rehearse the task with --dry-run, then run it again with --by-hand",
+            )
+            return
+        if not _can_prompt():
+            _fail(
+                "--by-hand waits for you to press Enter, and there is no terminal to ask on",
+                hint="run it from a terminal, or drop the flag and start from the rest pose",
+            )
+            return
     if flock_n is not None or roster is not None or duck.frontmatter.flock is not None:
         if method == "pilots":
             if roster is None and section is not None:
@@ -871,6 +949,38 @@ def _run_impl(
     except (ProviderError, TransportError, ImportError) as e:
         _fail(str(e))
         return
+    if by_hand:
+        if not getattr(duck_transport, "supports_hand_off", False):
+            _fail(
+                f"{spec.key} is not a body a person places by hand: only the LeRobot arm is",
+                hint="quackd list-adapters",
+            )
+            return
+        if here.adapter_kwargs()["rest_pose"] is None:
+            # the release refuses anywhere but the recorded pose, so an arm without one could
+            # never be handed over at all: better said here than after it has connected
+            named = here.entry.name if here.entry is not None else None
+            _fail(
+                "--by-hand releases the arm at its recorded rest pose, and this arm has none "
+                "recorded",
+                hint=(
+                    f"quackd robot rest-pose {named}"
+                    if named
+                    else "quackd robot add NAME " + spec.key + ", then quackd robot rest-pose NAME"
+                ),
+            )
+            return
+    if task_images and not llm.supports_vision:
+        # Refused rather than dropped. A pilot that cannot see would be handed "draw what is
+        # in the picture" with no picture, improvise something, and the only sign of why would
+        # be a note in a transcript nobody reads twice.
+        _fail(
+            f"{llm.name} {llm.model} does not take images, so it cannot be given "
+            f"{_plural(len(task_images), 'picture')}",
+            hint="quackd list-models marks the models that take no frames; --vision overrides "
+            "it where the vendor does take them, and a local model needs --vision",
+        )
+        return
 
     recorder = None
     # Any robot with a camera needs something to look at its frames with, not just the
@@ -912,6 +1022,7 @@ def _run_impl(
         if verbose and console_trace is None:
             _verbose_line(msg)
 
+    hand_off = _TerminalHandOff() if by_hand else None
     robot_memory = None
     if memory:
         from quackd.memory import RobotMemory
@@ -935,6 +1046,8 @@ def _run_impl(
         acknowledge=None if yes else _acknowledge_prompt,
         decide=_yes_to_go if yes else _decide_prompt,
         trace=fan_out(console_trace, status.sink),
+        task_images=task_images,
+        hand_off=hand_off,
     )
     ui.console.print(
         ui.run_header(
@@ -956,6 +1069,8 @@ def _run_impl(
 
         loop = AgentLoop(cfg)
         ks = KillSwitch(loop.executor.abort, log=killed)
+        if hand_off is not None:
+            hand_off.bind(ks)
         ks.install()
         try:
             return await loop.run()
@@ -1478,6 +1593,16 @@ _GOAL = typer.Option(
     help='A plain-language goal instead of a .duck file, e.g. --goal "find the ball and kick it".',
     rich_help_panel="Task",
 )
+_IMAGE: list[str] = typer.Option(
+    [],
+    "--image",
+    help='A picture to hand to the task, e.g. --goal "draw what is in the picture" --image '
+    "sketch.png. The pilot gets it on its first turn, labelled with the file's name, and keeps "
+    "it for the whole run, which is what makes it different from a camera frame. Repeatable. "
+    "Needs a pilot that takes images: `quackd list-models` marks the ones that do not, and a "
+    "local model needs --vision.",
+    rich_help_panel="Task",
+)
 _GIFSIZE = typer.Option(
     256,
     "--gif-size",
@@ -1646,6 +1771,15 @@ _CAMERA_URL: list[str] = typer.Option(
     "Only the LeRobot arm reads more than one.",
     rich_help_panel="Robot",
 )
+_BY_HAND = typer.Option(
+    False,
+    "--by-hand",
+    help="Start from a pose you set yourself instead of the recorded rest pose. The arm goes "
+    "to its rest pose, quackd takes torque off there, you lift it, load the gripper and press "
+    "Enter, and it holds what you left while the model works. At the end it asks before the "
+    "gripper opens. Needs a LeRobot arm with a rest pose recorded, and a terminal to ask on.",
+    rich_help_panel="Robot",
+)
 _FOV = typer.Option(
     None,
     "--fov-deg",
@@ -1692,6 +1826,8 @@ _TRACE_PROMPT = typer.Option(
 def run(
     duckfile: str | None = _DUCK_ARG,
     goal: str | None = _GOAL,
+    image: list[str] = _IMAGE,
+    by_hand: bool = _BY_HAND,
     provider: str | None = _PROVIDER,
     robot: str | None = _ROBOT,
     robots: str | None = _ROBOTS,
@@ -1756,6 +1892,8 @@ def run(
         registry_dir=registry_dir,
         trace=trace,
         trace_prompt=trace_prompt,
+        images=image,
+        by_hand=by_hand,
     )
 
 

@@ -9,8 +9,10 @@ on when it could not get there.
 Every LeRobot name comes from `upstream_api.py` (ADR-0022). LeRobot is synchronous, so
 every call runs in a worker thread under one lock with a deadline, and a call that blows its
 deadline wedges the transport rather than letting a second thread onto a half-duplex bus.
-`stop` re-sends the present position as the goal (hold); torque is never disabled by quackd
-(LeRobot's own `disconnect()` does, by its default, and that is documented).
+`stop` re-sends the present position as the goal (hold). quackd disables torque in exactly
+one place, `let_go()`, which a person asks for with `--by-hand` and which refuses anywhere but
+the recorded rest pose; `take_hold()` is how the arm is picked back up. LeRobot's own
+`disconnect()` disables it too, by its default, which quackd keeps and documents.
 
 What this backend refuses to take on faith, because upstream cannot tell it:
 
@@ -46,7 +48,7 @@ from urllib.parse import parse_qs, urlsplit
 import numpy as np
 from PIL import Image
 
-from quackd.adapters.base import AdapterError, AdapterNotInstalled, RestResult
+from quackd.adapters.base import AdapterError, AdapterNotInstalled, HandResult, RestResult
 from quackd.transport.base import (
     Ack,
     CameraFrame,
@@ -60,9 +62,11 @@ from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     JOINTS,
+    LIMP_IN_HAND,
     STALL_DEG,
     STALL_TICKS,
     TICK_S,
+    TOL_DEG,
     TORQUE_COULD_NOT_BE_KEPT,
     TORQUE_LEFT_ON,
     at_rest,
@@ -318,6 +322,22 @@ def joint_ranges(calibration: dict[str, Any]) -> dict[str, tuple[float, float]]:
     return ranges
 
 
+@dataclass
+class _Errors:
+    """Why each of the two status registers did not answer, if it did not.
+
+    One field each, because the two are read in their own transaction and a failure on one
+    says nothing about the other. `summary()` is what the observation and `doctor` show, which
+    has always been "something went wrong reading the registers" and stays that."""
+
+    torque: str | None = None
+    temperature: str | None = None
+
+    def summary(self) -> str | None:
+        both = [e for e in (self.torque, self.temperature) if e]
+        return "; ".join(dict.fromkeys(both)) or None
+
+
 class PolicyLike(Protocol):
     """What `pick` needs from a policy: one observation in, one joint goal out (or None
     when it considers the task done). The `real` backend never builds one on its own."""
@@ -379,6 +399,11 @@ class LeRobotReal:
         self._torque = True
         self._temperature_c: dict[str, float] = {}
         self._register_error: str | None = None
+        self._torque_error: str | None = None
+        """Why the torque register itself could not be read, or None when it answered.
+
+        Kept apart from `_register_error`, which is either register, because `take_hold()` has
+        to know whether *torque* is unknown rather than whether anything is."""
         self._gripper_goal: float | None = None
         self._gripper_trace: deque[tuple[float, float]] = deque(maxlen=16)
         self._policy_lock = asyncio.Lock()
@@ -392,6 +417,12 @@ class LeRobotReal:
         self.lerobot_version: str | None = None
         self.stop_error: str | None = None
         self.post_sleep: Callable[[], None] | None = None
+        self._in_hand = False
+        """This arm is limp in somebody's hands, because `let_go()` put it there.
+
+        Set only by a release that was read back off the arm, cleared only by a `take_hold()`
+        that confirmed torque came on. Every teardown begins with `stop`, which is what picks
+        the arm back up, so the window this is true in is the wait itself."""
 
     def _primary_name(self) -> str:
         """The first `--camera-url`'s camera: the one the detections describe, the one
@@ -623,7 +654,11 @@ class LeRobotReal:
         arm at rest should be limp, because that is what "at rest" means. An arm that is not
         at rest is an arm that would fall, so this reads the joints one last time and, where
         they are not the recorded pose, turns that default off and says so. Without a rest
-        pose recorded there is nothing to check against and nothing changes."""
+        pose recorded there is nothing to check against and nothing changes.
+
+        An arm still limp in somebody's hands is the one case where neither of those notes is
+        true, and it says so in its own words: there is no torque to keep and nothing to keep
+        it from."""
         self._closed = True
         await self._cancel_policy()
         # the cameras on their own deadline and never the serial lock, so however long a
@@ -633,6 +668,22 @@ class LeRobotReal:
             return
         self.close_note = None
         why = await self._not_resting() if self.rest_pose is not None else None
+        if self._in_hand:
+            # Whoever is reading this has the arm in their hand. The torque note below would
+            # tell them it is holding itself up, which is the one thing it may not be.
+            self.close_note = LIMP_IN_HAND.format(
+                why=why or "it was let go of for you to place and never taken hold of again"
+            )
+            with contextlib.suppress(Exception):
+                # Keep torque, and keep it without knowing whether there is any to keep. This
+                # branch is reached in two states: an arm that is genuinely limp, where the
+                # flag changes nothing at all, and an arm whose `take_hold` could not read the
+                # torque register back, where it may well be energised and away from its fold.
+                # Dropping it there would drop the arm, and the no-op costs nothing.
+                self._robot.config.disable_torque_on_disconnect = False
+            with contextlib.suppress(Exception):
+                await self._call(self._robot.disconnect, deadline_s=5.0)
+            return
         if why is not None:
             self.close_note = TORQUE_LEFT_ON.format(why=why)
         wrote = False
@@ -675,31 +726,43 @@ class LeRobotReal:
 
     # ── reading ─────────────────────────────────────────────────────────────────────
 
-    def _read_all(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str | None]:
+    def _read_all(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], _Errors]:
         """Three bus transactions in one worker thread, so nothing interleaves on the wire.
 
         The positions are the liveness check and are allowed to raise. The two registers are
         not: a corrupt status packet should cost a reading, not the run, so a failure there
-        comes back as a note and the last known values stand."""
+        comes back as a note and the last known values stand.
+
+        The two registers are read in their own `try` each, and that matters rather than being
+        tidiness. They used to share one, so a corrupt temperature packet reported a failure
+        over a torque reading that had arrived perfectly well, and `take_hold()` read that
+        report as "torque is unknowable", stopped checking, and told a person holding a limp
+        arm that it was holding itself. One bad register must not be able to speak for the
+        other."""
         obs: dict[str, Any] = self._robot.get_observation()
         torque: dict[str, Any] = {}
         temperature: dict[str, Any] = {}
-        error: str | None = None
+        errors = _Errors()
         try:
-            bus = self._robot.bus
-            torque = bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
-            temperature = bus.sync_read("Present_Temperature", normalize=False, num_retry=2)
+            torque = self._robot.bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
         except Exception as e:
-            error = f"{type(e).__name__}: {e}"
-        return obs, torque, temperature, error
+            errors.torque = f"{type(e).__name__}: {e}"
+        try:
+            temperature = self._robot.bus.sync_read(
+                "Present_Temperature", normalize=False, num_retry=2
+            )
+        except Exception as e:
+            errors.temperature = f"{type(e).__name__}: {e}"
+        return obs, torque, temperature, errors
 
     async def _probe(self) -> dict[str, Any]:
-        obs, torque, temperature, error = await self._call(self._read_all)
+        obs, torque, temperature, errors = await self._call(self._read_all)
         self._joints = self._joints_of(obs)
         gripper = self._joints.get("gripper")
         if gripper is not None:
             self._gripper_trace.append((self.now(), gripper))
-        self._register_error = error
+        self._register_error = errors.summary()
+        self._torque_error = errors.torque
         if torque:
             self._torque = all(int(v) == 1 for v in torque.values())
         if temperature:
@@ -990,8 +1053,16 @@ class LeRobotReal:
         The gripper is left out of that goal on purpose. LeRobot writes only the keys it is
         given, so omitting it keeps whatever squeeze is already commanded: a stop that
         re-sent the gripper's measured position would open a hand that is holding something
-        against its own goal, and every failed verb ends in a stop."""
+        against its own goal, and every failed verb ends in a stop.
+
+        An arm somebody is holding is taken hold of first. Every teardown begins with a stop,
+        so this is what a Ctrl-C during the hand-off wait reaches: the arm is energised where
+        the person's hand has it, and the rest move that follows can then put it down. Sending
+        a goal to a limp servo instead would be a stop that stopped nothing."""
         await self._cancel_policy()
+        retaken: HandResult | None = None
+        if self._in_hand:
+            retaken = await self.take_hold()
         try:
             await self._probe()
             body = {k: v for k, v in self._joints.items() if k in JOINTS and k != "gripper"}
@@ -1003,6 +1074,12 @@ class LeRobotReal:
             if self.stop_error is None:
                 self.stop_error = f"the hold did not reach the arm: {type(e).__name__}: {e}"
             raise
+        if retaken is not None and not retaken.ok and self._in_hand:
+            # the goal above went to a limp servo and moved nothing, so this is not a stop.
+            # Only where the arm is still in a hand: a `take_hold` that refused because the
+            # arm slipped did energise it, and that arm is holding itself perfectly well.
+            self.stop_error = f"the arm is limp in somebody's hands: {retaken.reason}"
+            return
         self.stop_error = None
 
     async def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:  # type: ignore[override]
@@ -1029,6 +1106,121 @@ class LeRobotReal:
     async def stop(self) -> None:
         with contextlib.suppress(Exception):
             await self._hold()
+
+    # ── handing the arm to a person ─────────────────────────────────────────────────
+
+    async def let_go(self) -> HandResult:
+        """Take torque off, so somebody can pick the arm up and place it. Never raises.
+
+        This is the only call in quackd that de-energises a robot, and it is deliberately the
+        narrowest one that could do the job. It refuses anywhere but the recorded rest pose,
+        which is the same condition `close()` uses to decide whether letting go is safe: a
+        pose the arm demonstrably holds with no torque on it. Releasing an arm held up by
+        torque alone would drop it, and the person asking for this has their hands nowhere
+        near it yet.
+
+        A register read that failed after the release is treated as a release that took. The
+        alternative reading, that torque is still on, ends with `close()` printing that the
+        arm is holding itself up over an arm hanging limp in somebody's hand, and of the two
+        wrong answers that is the one that gets an arm dropped."""
+        if self._closed:
+            return HandResult("refused", "the arm's transport is closed")
+        if self.rest_pose is None:
+            return HandResult(
+                "refused",
+                "no rest pose is recorded for this arm, so there is nowhere it is known to be "
+                "safe to let go of it: quackd robot rest-pose NAME",
+            )
+        goal = rest_goal(self.rest_pose)
+        if not goal:
+            return HandResult("refused", "the recorded pose names no joint this arm drives")
+        try:
+            await self._cancel_policy()
+            await self._probe()
+            if not at_rest(goal, self._joints):
+                return HandResult(
+                    "refused",
+                    f"the arm is not at its rest pose ({shortfall(goal, self._joints)}), and "
+                    "an arm held up by torque alone falls when torque goes",
+                )
+            await self._call(self._robot.bus.disable_torque)  # up.BUS_DISABLE_TORQUE
+            await self._probe()
+        except Exception as e:
+            return HandResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
+        if self._torque and self._torque_error is None:
+            return HandResult("refused", "the arm still reports torque on, so it was not released")
+        self._in_hand = True
+        return HandResult("released", "torque is off at the rest pose", joints=dict(self._joints))
+
+    async def take_hold(self) -> HandResult:
+        """Hold the pose the arm is in right now, so the person can let go of it.
+
+        The order matters and is the whole of this method. The present position is written as
+        the goal *before* torque comes on, because nothing upstream documents what a servo
+        does with the goal it was last told when it is re-energised
+        (`up.TORQUE_ENABLE_HOLDS_PRESENT`), and the goal it was last told here is a rest pose
+        the arm has since been lifted out of by hand. Enabling torque first could therefore
+        snap the arm back to the fold with a person's hand in it.
+
+        It is written again afterwards, and read back, so the answer says whether the arm
+        actually stayed where it was put rather than assuming it. A refusal here leaves torque
+        on: the arm is holding *something*, and the caller is told what moved."""
+        if self._closed:
+            return HandResult("refused", "the arm's transport is closed")
+        try:
+            await self._cancel_policy()
+            await self._probe()
+            placed = dict(self._joints)
+            body = {j: v for j, v in placed.items() if j in JOINTS}
+            if not body:
+                return HandResult("refused", "the arm reported no joint to hold")
+            # The gripper IS in that goal, which is the opposite of what `_hold()` and the rest
+            # move do, for the reason they leave it out. They omit it because the squeeze the
+            # gripper is holding is a goal somebody meant, and re-sending its measured position
+            # would relax it. Here there is no such goal: the jaws are wherever a person's
+            # fingers left them with no torque behind them, and the last goal this arm was
+            # written may be from another session. Writing where they are is what pins the
+            # pencil; omitting it hands the servo whatever stale goal it still had.
+            # unclipped, for `_drive_to_rest`'s reason: this is where the arm physically is,
+            # and a hand-placed arm can easily sit outside the travel its calibration recorded
+            await self._send(body, clip=False)
+            await self._call(self._robot.bus.enable_torque)  # up.BUS_ENABLE_TORQUE
+            await self._send(body, clip=False)
+            await asyncio.sleep(TICK_S)
+            await self._probe()
+        except Exception as e:
+            return HandResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
+        # Nothing but a torque register that came back and said "on" gets past here. This is
+        # the one place in the adapter where an unread register must refuse rather than be
+        # assumed past: `let_go()` takes the opposite reading of the same silence on purpose,
+        # because there a release that did not happen costs a refusal and here a hold that did
+        # not happen costs the arm, told to a person who is about to take their hands off it.
+        if self._torque_error is not None:
+            return HandResult(
+                "refused",
+                f"the arm did not say whether torque came back on ({self._torque_error}), and "
+                "a hold nothing confirmed is not a hold: keep hold of the arm",
+            )
+        if not self._torque:
+            # still limp, so still in somebody's hands, and `close()` should still say so
+            return HandResult("refused", "the arm still reports torque off, so nothing holds it")
+        # Torque is on, and read back rather than assumed, so the arm is holding itself up and
+        # is no longer hanging off a hand. The refusal below is about the *pose* and not about
+        # that: an arm reported limp in somebody's hands while it is energised sends them to
+        # cut the power on a robot that is holding perfectly well.
+        self._in_hand = False
+        held = dict(self._joints)
+        moved = {j: abs(held[j] - v) for j, v in placed.items() if j in held}
+        slipped = sorted(j for j, gap in moved.items() if gap > TOL_DEG)
+        if slipped:
+            worst = max(slipped, key=lambda j: moved[j])
+            return HandResult(
+                "refused",
+                f"the arm moved as torque came on ({worst} by {moved[worst]:.0f} degrees), so "
+                "it is not holding the pose you set; it is holding where it is now",
+                joints=held,
+            )
+        return HandResult("held", "holding the pose you set", joints=held)
 
     async def go_to_rest(self) -> RestResult:
         """Drive the arm to the pose it was recorded resting in. Never raises.

@@ -17,10 +17,13 @@ from PIL import Image
 
 from quackd.adapters.base import (
     AdapterError,
+    HandResult,
     RestResult,
     camera_urls,
     go_to_rest_if_any,
+    let_go_if_any,
     one_camera_url,
+    take_hold_if_any,
 )
 from quackd.adapters.manifest import (
     Datasheet,
@@ -188,6 +191,11 @@ class LeRobotAdapter:
     """A `RobotAdapter` over the mock or the real backend."""
 
     name = "lerobot"
+    supports_hand_off = True
+    """A person can be handed this body: quackd takes torque off at its recorded rest pose,
+    waits while they place it, and holds whatever pose they left it in (`quackd run
+    --by-hand`). Declared rather than inferred, because the run refuses the flag outright on a
+    body that does not offer it rather than connecting and finding out."""
     supports_rest_pose = True
     """This body is driven to a recorded pose before torque is released. The registry's
     `rest-pose` command asks for exactly this, because a body with joints that quackd does
@@ -247,6 +255,12 @@ class LeRobotAdapter:
 
     async def go_to_rest(self) -> RestResult:
         return await go_to_rest_if_any(self.transport)
+
+    async def let_go(self) -> HandResult:
+        return await let_go_if_any(self.transport)
+
+    async def take_hold(self) -> HandResult:
+        return await take_hold_if_any(self.transport)
 
     @property
     def rest_pose(self) -> dict[str, float] | None:

@@ -1,6 +1,19 @@
 # ADR-0036: The arm adapter stops taking the arm's word for it
 
-**Status:** accepted · **Date:** 2026-09-13 · Extends [ADR-0022](0022-per-adapter-upstream-refs.md) (every SDK name is a verified ref) and [ADR-0017](0017-robot-adapters-and-manifest.md) (a robot is a manifest) · Implemented in `quackd/adapters/lerobot/` ([page](../adapters/lerobot.md), [checklist](../lerobot-hardware-checklist.md))
+**Status:** accepted, amended · **Date:** 2026-09-13 · Extends [ADR-0022](0022-per-adapter-upstream-refs.md) (every SDK name is a verified ref) and [ADR-0017](0017-robot-adapters-and-manifest.md) (a robot is a manifest) · Implemented in `quackd/adapters/lerobot/` ([page](../adapters/lerobot.md), [checklist](../lerobot-hardware-checklist.md))
+
+**Amended 2026-09-18 by [ADR-0039](0039-an-arm-placed-by-hand.md):** the decision below that
+opens "Nothing here changes what quackd never does" loses one clause of one sentence. quackd now
+disables torque in one place, `let_go()`, which `quackd run --by-hand` calls once and nothing
+else calls at all. It refuses anywhere but the recorded rest pose, which is the same read this
+ADR's `close()` already makes before it lets torque drop on `disconnect()`, and it happens only
+because a person standing at the arm asked for it: there is no verb for it, no MCP tool, and no
+method on the `RobotAdapter` protocol, so a pilot cannot reach it. `take_hold()` is how the arm
+is picked back up, and it writes the present position as the goal before torque returns because
+what a servo does with its last goal on re-enable is a new UNVERIFIED ref. The rest of that
+sentence is untouched and still holds: the adapter never calibrates, still refuses an arm with
+no calibration file because that file is where the joint ranges come from, and still keeps
+LeRobot's default of dropping torque on `disconnect()` rather than overriding it.
 
 ## Context
 

@@ -38,6 +38,10 @@ from quackd.verbs.registry import default_registry
 PNG = b"\x89PNG\r\n\x1a\nfake"
 PNG_TOP = b"\x89PNG\r\n\x1a\ntop"
 PNG_SIDE = b"\x89PNG\r\n\x1a\nside"
+#: Pictures that came with the task (`quackd run --image`) rather than with a step. Distinct
+#: from every camera's bytes so a label in front of the wrong picture fails an assertion.
+PNG_SKETCH = b"\x89PNG\r\n\x1a\nsketch"
+PNG_PLAN = b"\x89PNG\r\n\x1a\nplan"
 TOOLS = [
     {
         "name": "walk",
@@ -85,6 +89,30 @@ def two_camera_history() -> list[Exchange]:
         observation=Observation(text="obs 2 (result)", images=images, tool_call_id="call-1")
     )
     return [first, second]
+
+
+def task_picture_history(*attachments: NamedPng) -> list[Exchange]:
+    """One turn from a one-camera body that was also handed pictures with the task.
+
+    Every PNG in here is different, the camera's included, so an assertion on the bytes catches
+    a renderer that put the right label in front of the wrong picture: the sketch and the frame
+    swapped would leave every part type and every word in place.
+
+    `cameras` is left empty, as it is for a body with one lens, because that is the case the
+    labels have to survive. `picture_parts` names the frame anyway once there are attachments,
+    so that a bare picture never ends up sitting under `task picture sketch.png:`.
+    """
+    given = list(attachments) or [NamedPng(name="sketch.png", png=PNG_SKETCH)]
+    return [
+        Exchange(
+            observation=Observation(
+                text="obs 1", images=[NamedPng(name="front", png=PNG)], attachments=given
+            ),
+            decision=Decision(
+                tool_call=ToolCall(id="call-1", name="walk", arguments={"vx": 0.1}), text="going"
+            ),
+        )
+    ]
 
 
 def b64(png: bytes) -> str:
@@ -1127,3 +1155,166 @@ def test_usage_adds_reasoning_tokens_too() -> None:
         input_tokens=10, output_tokens=20, reasoning_tokens=30
     )
     assert total.model_dump() == {"input_tokens": 11, "output_tokens": 22, "reasoning_tokens": 33}
+
+
+# ── task pictures (`--image`) in front of the frames ────────────────────────────────────
+#
+# A picture that came with the task shares a message with a photograph the robot just took,
+# and the two mean opposite things: one is what the pilot was asked about, the other is what
+# is in front of it now. So the task's go first, each one named, and the frame behind them is
+# named too even on a body with a single camera. The four renderers build that order out of
+# four different part vocabularies, which is why each is checked on its own.
+
+
+def test_anthropic_sends_the_task_picture_first_and_names_the_frame_behind_it() -> None:
+    """The label has to be the block immediately before the picture it introduces, so the
+    order of the blocks is the whole guarantee: a renderer that sent both labels and then both
+    pictures would carry every right word and still hand the model the sketch as its view of
+    the room."""
+    content = a_messages(task_picture_history())[0]["content"]
+    assert [b["type"] for b in content] == ["text", "image", "text", "image", "text"]
+    assert content[0]["text"] == "task picture sketch.png:"
+    assert content[1]["source"]["data"] == b64(PNG_SKETCH)
+    assert content[2]["text"] == "camera front:", "one camera, and named anyway"
+    assert content[3]["source"]["data"] == b64(PNG), "the frame's own bytes, behind the sketch"
+    assert content[4]["text"] == "obs 1", "the observation text still closes a plain turn"
+
+
+def test_openai_sends_the_task_picture_first_and_names_the_frame_behind_it() -> None:
+    """Chat Completions leads a plain turn with the observation text, and the pictures follow
+    it in the same user message."""
+    content = o_messages("SYS", task_picture_history())[1]["content"]
+    assert [p["type"] for p in content] == ["text", "text", "image_url", "text", "image_url"]
+    assert content[0]["text"] == "obs 1", "the observation text still opens a plain turn"
+    assert content[1]["text"] == "task picture sketch.png:"
+    assert content[2]["image_url"]["url"] == data_url(PNG_SKETCH)
+    assert content[3]["text"] == "camera front:", "one camera, and named anyway"
+    assert content[4]["image_url"]["url"] == data_url(PNG), "the frame's bytes, behind the sketch"
+
+
+def test_openai_responses_sends_the_task_picture_first_and_names_the_frame_behind_it() -> None:
+    """Responses has a renderer of its own, so an order fixed in `render_messages` is not
+    fixed here for free, and a run that switched API mid-way would otherwise lose the task's
+    pictures from that turn onwards."""
+    content = o_input(task_picture_history())[0]["content"]
+    kinds = ["input_text", "input_text", "input_image", "input_text", "input_image"]
+    assert [p["type"] for p in content] == kinds
+    assert content[0]["text"] == "obs 1", "the observation text still opens a plain item"
+    assert content[1]["text"] == "task picture sketch.png:"
+    assert content[2]["image_url"] == data_url(PNG_SKETCH)
+    assert content[3]["text"] == "camera front:", "one camera, and named anyway"
+    assert content[4]["image_url"] == data_url(PNG), "the frame's bytes, behind the sketch"
+
+
+def test_gemini_sends_the_task_picture_first_and_names_the_frame_behind_it() -> None:
+    """google-genai reads the parts in order, and its pictures are raw bytes rather than
+    base64 text, so the wrong picture under the right label is a byte comparison here."""
+    parts = render_contents(task_picture_history())[0]["parts"]
+    assert parts[0] == {"text": "obs 1"}
+    assert parts[1] == {"text": "task picture sketch.png:"}
+    assert parts[2]["inline_data"] == {"mime_type": "image/png", "data": PNG_SKETCH}
+    assert parts[3] == {"text": "camera front:"}, "one camera, and named anyway"
+    assert parts[4]["inline_data"] == {"mime_type": "image/png", "data": PNG}
+
+
+def test_two_task_pictures_keep_their_order_and_their_own_names() -> None:
+    """`--image` is repeatable, and the task refers to the pictures by what they show. Two of
+    them reordered, or given each other's names, would be a request about the wrong file."""
+    two = task_picture_history(
+        NamedPng(name="sketch.png", png=PNG_SKETCH), NamedPng(name="plan.png", png=PNG_PLAN)
+    )
+    labels = ["task picture sketch.png:", "task picture plan.png:", "camera front:"]
+    pngs = [PNG_SKETCH, PNG_PLAN, PNG]
+
+    content = a_messages(two)[0]["content"]
+    assert [b["type"] for b in content] == ["text", "image"] * 3 + ["text"]
+    assert [content[i]["text"] for i in (0, 2, 4)] == labels
+    assert [content[i]["source"]["data"] for i in (1, 3, 5)] == [b64(p) for p in pngs]
+
+    msg = o_messages("SYS", two)[1]["content"]
+    assert [p["type"] for p in msg] == ["text"] + ["text", "image_url"] * 3
+    assert [msg[i]["text"] for i in (1, 3, 5)] == labels
+    assert [msg[i]["image_url"]["url"] for i in (2, 4, 6)] == [data_url(p) for p in pngs]
+
+    items = o_input(two)[0]["content"]
+    assert [p["type"] for p in items] == ["input_text"] + ["input_text", "input_image"] * 3
+    assert [items[i]["text"] for i in (1, 3, 5)] == labels
+    assert [items[i]["image_url"] for i in (2, 4, 6)] == [data_url(p) for p in pngs]
+
+    parts = render_contents(two)[0]["parts"]
+    said = ["obs 1", labels[0], None, labels[1], None, labels[2], None]
+    assert [p.get("text") for p in parts] == said
+    assert [parts[i]["inline_data"]["data"] for i in (2, 4, 6)] == pngs
+
+
+def test_one_camera_and_no_task_picture_still_sends_one_bare_frame() -> None:
+    """The regression that matters most: every run that does not pass `--image` has to go out
+    exactly as it did before there was a flag, byte for byte and part for part.
+
+    `picture_parts` decides to name a frame from `cameras` or from the attachments, and both
+    are empty here, so the single picture is the one bare part every provider has always sent.
+    A label added to it would be quackd telling a pilot with one lens that the lens is called
+    `camera`, in a sentence nobody asked for.
+    """
+    assert a_messages(history())[0]["content"] == [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": b64(PNG)},
+        },
+        {"type": "text", "text": "obs 1"},
+    ]
+    assert o_messages("SYS", history())[1]["content"] == [
+        {"type": "text", "text": "obs 1"},
+        {"type": "image_url", "image_url": {"url": data_url(PNG)}},
+    ]
+    assert o_input(history())[0]["content"] == [
+        {"type": "input_text", "text": "obs 1"},
+        {"type": "input_image", "image_url": data_url(PNG)},
+    ]
+    assert render_contents(history())[0]["parts"] == [
+        {"text": "obs 1"},
+        {"inline_data": {"mime_type": "image/png", "data": PNG}},
+    ]
+
+
+def test_the_tool_result_turn_is_also_unchanged_without_a_task_picture() -> None:
+    """The other branch of all four renderers, which nests or trails its pictures differently.
+
+    The loop attaches the task's pictures to the first observation alone, and that one is
+    never a tool result, so this shape is the one an `--image` run keeps sending from step two
+    onwards. It has to be the shape it was.
+    """
+    result = a_messages(history())[2]["content"][0]
+    assert result["type"] == "tool_result" and result["tool_use_id"] == "call-1"
+    assert result["content"] == [
+        {"type": "text", "text": "obs 2 (result)"},
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": b64(PNG)},
+        },
+    ]
+    assert o_messages("SYS", history())[4]["content"] == [
+        {"type": "text", "text": "Current camera frame:"},
+        {"type": "image_url", "image_url": {"url": data_url(PNG)}},
+    ]
+    assert o_input(history())[3]["content"] == [
+        {"type": "input_text", "text": "Current camera frame:"},
+        {"type": "input_image", "image_url": data_url(PNG)},
+    ]
+    assert render_contents(history())[2]["parts"] == [
+        {"function_response": {"name": "walk", "response": {"result": "obs 2 (result)"}}},
+        {"inline_data": {"mime_type": "image/png", "data": PNG}},
+    ]
+
+
+async def test_a_task_picture_reaches_the_wire_through_a_provider_step() -> None:
+    """The renderer tests above call the renderers directly. This one goes the way a run does,
+    through `step`, so a provider that rendered the messages and then sent something else
+    (an older cached body, a second render without the observation's attachments) is caught."""
+    client = FakeAnthropic(anthropic_response(tool_use_block()))
+    await AnthropicProvider(client=client).step("SYS", task_picture_history(), TOOLS)
+    content = client.kwargs["messages"][0]["content"]
+    assert content[0]["text"] == "task picture sketch.png:"
+    assert content[1]["source"]["data"] == b64(PNG_SKETCH)
+    assert content[2]["text"] == "camera front:"
+    assert content[3]["source"]["data"] == b64(PNG)

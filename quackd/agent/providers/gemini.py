@@ -21,8 +21,7 @@ from quackd.agent.providers.base import (
     ProviderTurn,
     ToolCall,
     Usage,
-    labelled,
-    name_cameras,
+    picture_parts,
 )
 from quackd.agent.providers.catalogue import default_model_for
 
@@ -85,11 +84,10 @@ def render_contents(history: list[Exchange]) -> list[dict[str, Any]]:
         else:
             parts.append({"text": obs.text})
         parts.extend(
-            labelled(
-                obs.images,
+            picture_parts(
+                obs,
                 lambda png: {"inline_data": {"mime_type": "image/png", "data": png}},
                 lambda text: {"text": text},
-                name_them=name_cameras(obs),
             )
         )
         contents.append({"role": "user", "parts": parts})

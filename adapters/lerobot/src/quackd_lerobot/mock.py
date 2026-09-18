@@ -18,7 +18,7 @@ import math
 
 from PIL import Image, ImageDraw
 
-from quackd.adapters.base import RestResult
+from quackd.adapters.base import HandResult, RestResult
 from quackd.sim2d.render import BALL, FLOOR, HORIZON, SKY, focal_px
 from quackd.transport.base import Ack, DuckState, Intent
 from quackd.transport.mock import MockTransport
@@ -26,6 +26,8 @@ from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     JOINTS,
+    LIMP_IN_HAND,
+    TOL_DEG,
     TORQUE_LEFT_ON,
     at_rest,
     rest_goal,
@@ -107,6 +109,11 @@ class LeRobotMock(MockTransport):
         """Set to a reason and the rest move stalls without moving, which is the one thing
         an offline arm cannot do to itself and every caller of the rest move has to handle."""
         self.close_note: str | None = None
+        self.in_hand = False
+        """The arm is limp because `let_go()` put it there, as on the real backend."""
+        self.hold_slips: dict[str, float] | None = None
+        """Set to joint offsets and `take_hold` finds the arm somewhere else than where it
+        was read, which is how an offline arm stands in for one that moved as torque came on."""
         self.sequence: list[str] = []
         """`stop`, `rest` and `close` in the order they were called. A run's teardown is an
         order as much as a set, and this is what a test reads to check it."""
@@ -229,6 +236,10 @@ class LeRobotMock(MockTransport):
         return ack
 
     async def stop(self) -> None:
+        if self.in_hand:
+            # the real `_hold()`'s order: an arm somebody is holding is picked up before it is
+            # told to stay where it is, because a goal to a limp servo stops nothing
+            await self.take_hold()
         await super().stop()
         self.sequence.append("stop")
         self.policy = "idle"
@@ -251,12 +262,63 @@ class LeRobotMock(MockTransport):
         self._goto(goal)
         return RestResult("arrived", "moved to the rest pose")
 
+    async def let_go(self) -> HandResult:
+        """Torque off for a person to place the arm, refused wherever the real one refuses."""
+        self.sequence.append("let_go")
+        if self.rest_pose is None:
+            return HandResult(
+                "refused",
+                "no rest pose is recorded for this arm, so there is nowhere it is known to be "
+                "safe to let go of it: quackd robot rest-pose NAME",
+            )
+        goal = rest_goal(self.rest_pose)
+        if not goal:
+            return HandResult("refused", "the recorded pose names no joint this arm drives")
+        if not at_rest(goal, self.joints):
+            return HandResult(
+                "refused",
+                f"the arm is not at its rest pose ({shortfall(goal, self.joints)}), and an "
+                "arm held up by torque alone falls when torque goes",
+            )
+        self.torque = False
+        self.in_hand = True
+        return HandResult("released", "torque is off at the rest pose", joints=dict(self.joints))
+
+    async def take_hold(self) -> HandResult:
+        """Hold wherever a test left the joints, and record the goal that pins them there."""
+        self.sequence.append("take_hold")
+        placed = dict(self.joints)
+        # the real backend writes the present position as the goal before torque comes on and
+        # again after, and an in-memory arm is already exactly where it is told to be
+        self._goto({j: v for j, v in placed.items() if j in JOINTS})
+        self.torque = True
+        # torque is on, so the arm holds itself whatever else went wrong: the real backend
+        # clears this here and for the same reason, before it judges the pose
+        self.in_hand = False
+        if self.hold_slips:
+            for joint, gap in self.hold_slips.items():
+                self.joints[joint] = self.joints.get(joint, 0.0) + gap
+            worst = max(self.hold_slips, key=lambda j: abs(self.hold_slips[j]))  # type: ignore[index]
+            if abs(self.hold_slips[worst]) > TOL_DEG:
+                return HandResult(
+                    "refused",
+                    f"the arm moved as torque came on ({worst} by "
+                    f"{abs(self.hold_slips[worst]):.0f} degrees), so it is not holding the "
+                    "pose you set; it is holding where it is now",
+                    joints=dict(self.joints),
+                )
+        return HandResult("held", "holding the pose you set", joints=dict(self.joints))
+
     async def close(self) -> None:
         """Torque drops only where the arm can be let go of, as it does on a real one."""
         self.sequence.append("close")
         self.close_note = None
         goal = rest_goal(self.rest_pose or {})
-        if self.rest_pose and not goal:
+        if self.in_hand:
+            self.close_note = LIMP_IN_HAND.format(
+                why="it was let go of for you to place and never taken hold of again"
+            )
+        elif self.rest_pose and not goal:
             self.close_note = TORQUE_LEFT_ON.format(
                 why="the recorded pose names no joint this arm drives"
             )

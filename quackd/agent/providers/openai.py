@@ -26,20 +26,18 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Sequence
 from typing import Any
 
 from quackd.agent.providers.base import (
     Exchange,
-    NamedPng,
+    Observation,
     ProviderError,
     ProviderMissingKey,
     ProviderNotInstalled,
     ProviderTurn,
     ToolCall,
     Usage,
-    labelled,
-    name_cameras,
+    picture_parts,
 )
 from quackd.agent.providers.catalogue import default_model_for, find_model
 
@@ -49,22 +47,24 @@ def _image_part(png: bytes) -> dict[str, Any]:
     return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}}
 
 
-def _frame_lead(images: Sequence[NamedPng]) -> str:
+def _frame_lead(obs: Observation) -> str:
     """The sentence in front of the pictures that follow a tool result, which cannot carry
-    an image itself. Plural only when there is more than one camera to be plural about."""
-    return "Current camera frame:" if len(images) == 1 else "Current camera frames:"
+    an image itself. Plural only when there is more than one camera to be plural about.
+
+    A task picture in the same message is not a camera frame, so where one is present the
+    sentence says only that pictures follow and the labels say which each one is. The loop
+    attaches those to the first observation alone, which is never a tool result, so in
+    practice this is the sentence a one or two camera body has always sent."""
+    if obs.attachments:
+        return "The task's pictures, and the current camera frames:"
+    return "Current camera frame:" if len(obs.images) == 1 else "Current camera frames:"
 
 
 def render_messages(system: str, history: list[Exchange]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for ex in history:
         obs = ex.observation
-        pictures = labelled(
-            obs.images,
-            _image_part,
-            lambda text: {"type": "text", "text": text},
-            name_them=name_cameras(obs),
-        )
+        pictures = picture_parts(obs, _image_part, lambda text: {"type": "text", "text": text})
         if obs.tool_call_id:
             messages.append({"role": "tool", "tool_call_id": obs.tool_call_id, "content": obs.text})
             if pictures:
@@ -72,7 +72,7 @@ def render_messages(system: str, history: list[Exchange]) -> list[dict[str, Any]
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": _frame_lead(obs.images)},
+                            {"type": "text", "text": _frame_lead(obs)},
                             *pictures,
                         ],
                     }
@@ -169,11 +169,8 @@ def render_input(history: list[Exchange]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for ex in history:
         obs = ex.observation
-        pictures = labelled(
-            obs.images,
-            _image_part_responses,
-            lambda text: {"type": "input_text", "text": text},
-            name_them=name_cameras(obs),
+        pictures = picture_parts(
+            obs, _image_part_responses, lambda text: {"type": "input_text", "text": text}
         )
         if obs.tool_call_id:
             items.append(
@@ -188,7 +185,7 @@ def render_input(history: list[Exchange]) -> list[dict[str, Any]]:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "input_text", "text": _frame_lead(obs.images)},
+                            {"type": "input_text", "text": _frame_lead(obs)},
                             *pictures,
                         ],
                     }

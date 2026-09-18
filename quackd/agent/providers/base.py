@@ -17,6 +17,11 @@ CAMERA_LABEL = "camera {name}:"
 """How a picture is introduced when a body has several. Short on purpose: it sits in front
 of every frame of every step, and the observation text already says which is the primary."""
 
+TASK_PICTURE_LABEL = "task picture {name}:"
+"""How a picture that came with the task is introduced. Always said, even for a single one,
+because it shares a message with the camera and a pilot has to know which is which: one is
+what it was asked about and the other is what the robot can see right now."""
+
 
 class ToolCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -75,6 +80,13 @@ class Observation(BaseModel):
     would put the side view under the primary's detections with nothing saying so. Empty for
     a body with one camera or none, which is every request quackd made before an arm could
     have two, so those go out unchanged."""
+    attachments: list[NamedPng] = Field(default_factory=list)
+    """Pictures that came with the task rather than with this step (`quackd run --image`).
+
+    The loop puts them on the first observation and nowhere else, and the trim that drops old
+    camera frames never touches them, so they stay at the top of every request for the whole
+    run. A task that says "draw this" has to still mean something on turn twenty, and the
+    verdict gate on turn one has to be able to see what it is being asked about."""
     features: dict[str, Any] = Field(default_factory=dict)
     tool_call_id: str | None = Field(
         default=None, description="Set when this is the result of a tool call."
@@ -111,6 +123,46 @@ def labelled(
         parts.append(text_part(CAMERA_LABEL.format(name=image.name)))
         parts.append(image_part(image.png))
     return parts
+
+
+def attached(
+    images: Sequence[NamedPng],
+    image_part: Callable[[bytes], Any],
+    text_part: Callable[[str], Any],
+) -> list[Any]:
+    """The task's own pictures as wire parts, each named, in the order they were given.
+
+    Unlike a camera frame, one of these is never sent bare. It is the file the person named on
+    the command line, the task refers to it by what it shows, and it arrives in the same
+    message as a photograph of a table. Two unlabelled pictures there are a picture of the
+    thing and a picture of the room with nothing to say which was which."""
+    parts: list[Any] = []
+    for image in images:
+        parts.append(text_part(TASK_PICTURE_LABEL.format(name=image.name)))
+        parts.append(image_part(image.png))
+    return parts
+
+
+def picture_parts(
+    obs: Observation,
+    image_part: Callable[[bytes], Any],
+    text_part: Callable[[str], Any],
+) -> list[Any]:
+    """Every picture in one observation, task pictures first, then this step's camera frames.
+
+    The task's come first because they are the fixed thing the request is about, and because a
+    label reading `task picture sketch.png:` in front of a camera frame would name a lens that
+    does not exist. When there are any, the frames are named too even on a one-camera body:
+    the alternative is a bare picture sitting under someone else's caption."""
+    return [
+        *attached(obs.attachments, image_part, text_part),
+        *labelled(
+            obs.images,
+            image_part,
+            text_part,
+            name_them=name_cameras(obs) or bool(obs.attachments),
+        ),
+    ]
 
 
 class Decision(BaseModel):

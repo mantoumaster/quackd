@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -1078,3 +1079,358 @@ def test_the_env_beside_the_command_is_read_before_the_one_beside_the_install(
     assert len(seen) == 2, seen
     assert seen[0] == str(Path.cwd() / ".env"), "the working directory is not read first"
     assert seen[1] == "", "the walk up from quackd's own directory is not read second"
+
+
+# ── --image: the pictures that come with the task ───────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def sketch(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One real PNG on disk, made once, and deliberately not inside any test's `tmp_path`.
+
+    The refusals below finish by asserting that `tmp_path` is still empty, which is the whole
+    claim: nothing was written because nothing ran. A picture sitting in that same directory
+    would turn that assertion into one about the picture.
+
+    Drawn with an alpha channel on purpose. Everything `--image` sends is re-encoded to RGB
+    PNG, so an RGBA source is one whose bytes on the wire are provably not a copy of the file
+    they came from, and the test below can say which of the two was kept."""
+    from PIL import Image, ImageDraw
+
+    path = tmp_path_factory.mktemp("pictures") / "sketch.png"
+    image = Image.new("RGBA", (48, 32), (240, 200, 40, 255))
+    ImageDraw.Draw(image).ellipse((6, 4, 42, 28), outline=(10, 10, 10, 255))
+    image.save(path)
+    return path
+
+
+@pytest.fixture(scope="module")
+def plan(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A second picture with a name of its own, so the test for two `--image` flags can tell
+    the two apart by what they are called rather than by counting files."""
+    from PIL import Image
+
+    path = tmp_path_factory.mktemp("pictures") / "plan.png"
+    Image.new("RGB", (24, 24), (20, 90, 200)).save(path)
+    return path
+
+
+def _picture_run(tmp_path: Path, *flags: str, robot: str | None = "microduck:mock") -> Any:
+    """`hello-world` on the simulated duck, with the runs directory pointed at `tmp_path`
+    itself so that "nothing was written" is a question about one directory."""
+    argv = [
+        "run",
+        "hello-world",
+        "--provider",
+        "fake",
+        "--runs-dir",
+        str(tmp_path),
+        "--no-gif",
+        "--no-trace",
+        *flags,
+    ]
+    if robot is not None:
+        argv += ["--robot", robot]
+    return runner.invoke(app, argv)
+
+
+def test_a_picture_is_refused_by_a_pilot_that_cannot_see(tmp_path: Path, sketch: Path) -> None:
+    """Refused rather than quietly dropped. A blind pilot handed "draw what is in the picture"
+    with no picture improvises something, and the only record of why would be a line in a
+    transcript nobody reads twice. The refusal names the pilot, because which model is driving
+    is the thing the reader has to change."""
+    result = _picture_run(tmp_path, "--image", str(sketch))
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())  # the console wraps the line at the terminal width
+    assert "fake scripted:hello-world does not take images" in flat, flat
+    assert "cannot be given 1 picture" in flat
+    assert "quackd list-models" in flat, "the refusal must say where to look for a model"
+    assert "Traceback" not in result.output
+    assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
+
+
+def test_vision_carries_the_picture_into_the_run_directory_byte_for_byte(
+    tmp_path: Path, sketch: Path
+) -> None:
+    """`--vision` is what a scripted pilot has instead of a vendor that takes images, and it is
+    the only way to walk a picture through the whole loop with no key. The copy beside the
+    transcript is the bytes the model was sent, not the file they were made from, so a reader
+    arguing about the run afterwards is looking at what the pilot looked at."""
+    from quackd.agent.images import load_task_images
+
+    result = _picture_run(tmp_path, "--vision", "--image", str(sketch))
+    assert result.exit_code == 0, result.output
+    assert "SUCCESS" in result.output
+    (run_dir,) = list(tmp_path.iterdir())
+    written = run_dir / "images" / "00-sketch.png"
+    assert written.exists(), sorted(p.name for p in run_dir.iterdir())
+    assert written.read_bytes() == load_task_images([str(sketch)])[0].png
+    assert written.read_bytes() != sketch.read_bytes(), "the run kept the file, not the PNG sent"
+
+
+def test_two_pictures_both_arrive_in_the_order_they_were_typed(
+    tmp_path: Path, sketch: Path, plan: Path
+) -> None:
+    """`--image` is repeatable, and a repeatable flag that kept only the last one would be a
+    task about two pictures run against one, with nothing on screen to say so."""
+    result = _picture_run(tmp_path, "--vision", "--image", str(sketch), "--image", str(plan))
+    assert result.exit_code == 0, result.output
+    (run_dir,) = list(tmp_path.iterdir())
+    assert sorted(p.name for p in (run_dir / "images").iterdir()) == [
+        "00-sketch.png",
+        "01-plan.png",
+    ]
+    transcript = (run_dir / "transcript.jsonl").read_text(encoding="utf-8")
+    assert '"name": "sketch.png"' in transcript and '"name": "plan.png"' in transcript
+
+
+def test_a_picture_that_is_not_there_is_refused_before_anything_runs(tmp_path: Path) -> None:
+    """The loader runs before the robot is connected, so a mistyped path costs a line rather
+    than a connected arm and a run directory to explain later. The path is quoted back as it
+    was typed, because that is the string with the typo in it."""
+    result = _picture_run(tmp_path, "--vision", "--image", "nope.png")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "--image nope.png: no such file" in flat, flat
+    assert "Traceback" not in result.output
+    assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
+
+
+def test_a_picture_is_refused_for_a_flock(tmp_path: Path, sketch: Path) -> None:
+    """One picture and several bodies is a question the flag cannot answer: whose task is it
+    about? Dropping it silently is the failure the flag exists to prevent."""
+    result = _picture_run(tmp_path, "--vision", "--flock", "2", "--image", str(sketch))
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "--image is for one robot, and this run has several" in flat, flat
+    assert "drop --flock and --robots" in flat
+    assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
+
+
+def test_a_picture_is_refused_when_robots_names_two_bodies(tmp_path: Path, sketch: Path) -> None:
+    """The same refusal by the other door: `--flock N` is not the only way to end up with more
+    than one body on the line, and `--robots` reaches a different branch of the dispatch."""
+    result = _picture_run(
+        tmp_path,
+        "--vision",
+        "--robots",
+        "a=microduck:mock,b=microduck:mock",
+        "--image",
+        str(sketch),
+        robot=None,
+    )
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "--image is for one robot, and this run has several" in flat, flat
+    assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
+
+
+# ── --by-hand: the person sets the pose the run starts from ─────────────────────────────
+
+
+def _arm_registry(tmp_path: Path, *, rest_pose: bool) -> Path:
+    """A registry holding one `lerobot:mock` arm called `arm-01`, built through the CLI rather
+    than by writing the file: the pose stored is then the one `quackd robot rest-pose` records
+    off the arm, which is what `--by-hand` goes looking for."""
+    reg = tmp_path / "registry"
+    added = runner.invoke(
+        app, ["robot", "add", "arm-01", "lerobot:mock", "--registry-dir", str(reg)]
+    )
+    assert added.exit_code == 0, added.output
+    if rest_pose:
+        recorded = runner.invoke(
+            app, ["robot", "rest-pose", "arm-01", "--yes", "--registry-dir", str(reg)]
+        )
+        assert recorded.exit_code == 0, recorded.output
+    return reg
+
+
+def _by_hand_run(tmp_path: Path, *flags: str, duck: str = "hello-world") -> Any:
+    """A `--by-hand` run whose runs directory is `tmp_path` itself, for the refusals that have
+    to leave it empty."""
+    return runner.invoke(
+        app,
+        [
+            "run",
+            duck,
+            "--provider",
+            "fake",
+            "--runs-dir",
+            str(tmp_path),
+            "--no-gif",
+            "--no-trace",
+            "--by-hand",
+            *flags,
+        ],
+    )
+
+
+def test_by_hand_and_dry_run_are_refused_as_opposites(tmp_path: Path) -> None:
+    """A dry run moves nothing at either end. Taking torque off an arm is the one thing here
+    that is not a command to the robot but a change to it, so the two flags cannot both be
+    honoured and the run says which to type instead of guessing."""
+    result = _by_hand_run(tmp_path, "--robot", "microduck:mock", "--dry-run")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "--by-hand and --dry-run ask for opposite things" in flat, flat
+    assert "rehearse the task with --dry-run" in flat
+    assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
+
+
+def test_by_hand_is_refused_for_a_flock(tmp_path: Path) -> None:
+    """One person cannot place four arms at once, and an arm nobody was asked to place would
+    be released limp at its rest pose and left there for the length of the run."""
+    result = _by_hand_run(tmp_path, "--robot", "microduck:mock", "--flock", "2")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "--by-hand is one person placing one arm, and this run has several robots" in flat, flat
+    assert "drop --flock and --robots" in flat
+    assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
+
+
+def test_by_hand_is_refused_on_a_body_that_is_not_the_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Six of the seven bodies here have nothing to hand over: a walking duck with its torque
+    off is a duck on the floor. The refusal names the body, because the flag is right and the
+    `--robot` beside it is the half to change.
+
+    The terminal seam is opened deliberately, so that the message under test is the one about
+    the body and not the one about there being nobody to ask."""
+    monkeypatch.setattr("quackd.cli._can_prompt", lambda: True)
+    result = _by_hand_run(tmp_path, "--robot", "microduck:mock")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "microduck:mock is not a body a person places by hand" in flat, flat
+    assert "only the LeRobot arm is" in flat
+    assert "quackd list-adapters" in flat
+    assert "Traceback" not in result.output
+    assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
+
+
+def test_by_hand_needs_a_rest_pose_to_let_go_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release refuses anywhere but the recorded rest pose, because an arm held up by
+    torque alone falls when the torque goes. An arm with no pose recorded could therefore never
+    be handed over at all, and hearing that here is cheaper than hearing it from the arm."""
+    monkeypatch.setattr("quackd.cli._can_prompt", lambda: True)
+    reg = _arm_registry(tmp_path, rest_pose=False)
+    runs = tmp_path / "runs"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "lerobot-lookout",
+            "--provider",
+            "fake",
+            "--robot",
+            "arm-01",
+            "--registry-dir",
+            str(reg),
+            "--runs-dir",
+            str(runs),
+            "--no-gif",
+            "--no-trace",
+            "--by-hand",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "--by-hand releases the arm at its recorded rest pose" in flat, flat
+    assert "this arm has none recorded" in flat
+    assert "quackd robot rest-pose arm-01" in flat, "the hint must name the arm to record"
+    assert "Traceback" not in result.output
+    assert not runs.exists(), "the refusal came before the run directory"
+
+
+def test_by_hand_with_no_terminal_to_ask_on_is_refused(tmp_path: Path) -> None:
+    """A cron job, a CI step, a run piped into a file: nobody is there to press Enter, and the
+    arm would be released limp at its rest pose and wait for an answer that never comes.
+
+    The arm here is complete — registered, with a rest pose — so the only thing left to refuse
+    it for is the missing terminal. Nothing is monkeypatched: under the runner stdin is not a
+    terminal, which is the very situation this is about, and the test asks what the command
+    did rather than how it found out."""
+    reg = _arm_registry(tmp_path, rest_pose=True)
+    runs = tmp_path / "runs"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "lerobot-lookout",
+            "--provider",
+            "fake",
+            "--robot",
+            "arm-01",
+            "--registry-dir",
+            str(reg),
+            "--runs-dir",
+            str(runs),
+            "--no-gif",
+            "--no-trace",
+            "--by-hand",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "--by-hand waits for you to press Enter, and there is no terminal to ask on" in flat
+    assert "run it from a terminal" in flat
+    assert "Traceback" not in result.output
+    assert not runs.exists(), "the refusal came before the run directory"
+
+
+def test_by_hand_hands_the_arm_over_and_asks_for_it_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole flag, end to end, with the two things a shell cannot provide here faked and
+    nothing else: that a terminal is present, and that somebody pressed Enter.
+
+    `wait_for_enter` is replaced rather than fed keystrokes because the real one waits on the
+    key thread, and the key thread only exists where stdin is a terminal. A test that reached
+    the real wait would sit there until the suite's own watchdog killed it.
+
+    What is asserted is what the person at the bench is told, in order: the arm is theirs, then
+    that they can let go of the pose they set, then that the gripper opens before the arm folds
+    up. Those three lines are the entire user interface of a hand-off."""
+    from quackd.safety import KillSwitch
+
+    async def pressed(self: KillSwitch, *, timeout_s: float | None = None, **_: Any) -> bool:
+        return True
+
+    monkeypatch.setattr("quackd.cli._can_prompt", lambda: True)
+    monkeypatch.setattr(KillSwitch, "wait_for_enter", pressed)
+
+    reg = _arm_registry(tmp_path, rest_pose=True)
+    runs = tmp_path / "runs"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "lerobot-lookout",
+            "--provider",
+            "fake",
+            "--robot",
+            "arm-01",
+            "--registry-dir",
+            str(reg),
+            "--runs-dir",
+            str(runs),
+            "--no-gif",
+            "--no-trace",
+            "--by-hand",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "the arm is yours: torque is off at its rest pose" in flat, flat
+    assert "hold it where you want the run to start, and press Enter" in flat
+    assert "you can let go" in flat, "the person is never told the arm is holding what they set"
+    assert "the run is over and the arm is holding where it ended" in flat
+    assert "SUCCESS" in result.output
+
+    from quackd.agent.transcript import Transcript
+
+    events = Transcript.read(next(runs.rglob("transcript.jsonl")))
+    stages = [e["stage"] for e in events if e["kind"] == "hand_off"]
+    assert stages == ["released", "held", "unloaded"], stages

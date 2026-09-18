@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -20,10 +20,13 @@ from pydantic import ValidationError
 
 from quackd.adapters.base import (
     AdapterError,
+    HandResult,
     RestResult,
     adapter_name,
     backend_name,
     go_to_rest_if_any,
+    let_go_if_any,
+    take_hold_if_any,
 )
 from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
 from quackd.agent.prompts import (
@@ -67,9 +70,11 @@ from quackd.safety import (
 )
 from quackd.trace import Sink, Tracer
 from quackd.transport.base import (
+    Ack,
     CameraFrame,
     DuckState,
     DuckTransport,
+    Intent,
     camera_names_of,
     frames_of,
     primary_of,
@@ -107,6 +112,25 @@ class FlockLinkLike(Protocol):
     def describe(self) -> dict[str, Any]: ...
 
 
+@runtime_checkable
+class HandOff(Protocol):
+    """Whoever is standing at the robot, and how the run talks to them.
+
+    The loop needs exactly two things of a person: to be told something, and to be waited
+    for. Both are the CLI's business, because it owns the terminal; the loop only decides
+    when. An MCP session and a test have nobody there and pass None."""
+
+    def say(self, text: str) -> None:
+        """Print this whatever the trace is doing: somebody has to read it to act on it."""
+        ...
+
+    async def wait(
+        self, text: str, *, timeout_s: float | None = None, until_abort: bool = True
+    ) -> bool:
+        """Say `text`, then wait for Enter. True if it came, False if anything else ended it."""
+        ...
+
+
 @dataclass
 class RunConfig:
     duck: DuckFile
@@ -126,6 +150,19 @@ class RunConfig:
     on_frame: Any = None
     """Optional callback (img, caption) for a recorder (M2). Called on every captured frame."""
     keep_images_for_last_n: int = 2
+    hand_off: HandOff | None = None
+    """Somebody at the robot, ready to place it by hand (`quackd run --by-hand`).
+
+    None is every other run: the arm goes to its recorded rest pose and starts from there,
+    which is the default and stays it. Set, and the run releases the arm at that pose, waits
+    while they put it where they want it, holds whatever pose they left, and hands it back the
+    same way at the end. Only a body whose adapter declares `supports_hand_off` is offered
+    this, and the CLI refuses the flag before connecting where it is not."""
+    task_images: Sequence[NamedPng] = ()
+    """Pictures handed to the task by `quackd run --image`, already PNG and already sized
+    (`quackd.agent.images`). They ride on the first observation and are never trimmed, so a
+    task about a picture still is one twenty turns later. Empty is every run before there was
+    a flag for it, and those go out unchanged."""
     memory: RobotMemory | None = None
     """What this robot remembers between runs. None = off: no `remember` tool, no
     episode written at the end, the prompt says nothing about earlier runs."""
@@ -220,6 +257,14 @@ class AgentLoop:
         self.executor.require_verdict = True
         self.history: list[Exchange] = []
         self.usage = Usage()
+        self._handed_over = False
+        """Somebody answered the invitation to place this arm, so the gripper may be holding
+        whatever they put in it.
+
+        Set when the wait is answered rather than when the hold succeeds, because the two can
+        differ and the difference is the jam: an arm that sagged as torque returned refuses the
+        hold, ends the run, and still has the pencil in it. The teardown reads this to decide
+        whether to ask for it back before the fold."""
         self.highlights: list[str] = []
         """Verb results worth carrying into the episode memory (the last few that went ok)."""
 
@@ -227,6 +272,19 @@ class AgentLoop:
 
     def _emit(self, kind: str, **data: Any) -> None:
         self.tracer.emit(kind, **data)
+
+    def _abort_reason(self) -> str:
+        """Why the abort flag is set, in the words the run should end with.
+
+        A flock stops its members when one of them breaks, and a heartbeat stops a run when
+        the body stops answering; the record has to say which rather than blaming a kill
+        switch nobody pressed."""
+        return (
+            str(self.heartbeat.failure)
+            if self.heartbeat.failure
+            else (self.cfg.link.abort_reason if self.cfg.link is not None else None)
+            or "kill switch"
+        )
 
     def _note(self, text: str) -> None:
         """`log` is a contract (tests and the CLI's --verbose read it); the trace observes it."""
@@ -298,6 +356,125 @@ class AgentLoop:
             self._note(f"the arm did not reach its rest pose: {parked.reason}")
         return parked
 
+    PLACE_IT = (
+        "the arm is yours: torque is off at its rest pose, so lift it, put whatever it needs "
+        "in the gripper, close the gripper on that, hold it where you want the run to start, "
+        "and press Enter"
+    )
+    """What a person is asked to do. Said, not logged: nobody reads a log to know it is their
+    turn, and this run does not go on until they act."""
+
+    NOBODY_PLACED_IT = (
+        "nobody placed the arm: it was released at its rest pose for somebody to put it "
+        "somewhere, and nothing was pressed"
+    )
+
+    HAND_IT_BACK = (
+        "the run is over and the arm is holding where it ended. Take hold of whatever is in "
+        "the gripper and press Enter, and the gripper opens before the arm folds up. Leave it "
+        "and the arm folds up with the gripper shut"
+    )
+    """Asked before the gripper opens, not after. An arm folding to its rest pose with a
+    pencil still in the jaws can drive that pencil into the bench, and the person who put it
+    there is the one who should take it out."""
+
+    HAND_BACK_S = 120.0
+    """How long the arm waits to be unloaded at the end. It is holding its pose meanwhile, so
+    the cost of waiting is an energised arm and the cost of not waiting is a jam. Bounded
+    because a run must still end when the room is empty."""
+
+    async def _hand_over(self) -> bool:
+        """Let go of the arm, wait for somebody to place it, then hold what they left.
+
+        Returns whether the arm is now holding a pose a person chose. False is an abort, and
+        the caller raises: there is no sensible run from here, because the arm is either limp
+        in somebody's hand or holding a pose nobody picked. Every way out of here still goes
+        through the run's own teardown, which stops (picking a released arm back up), folds
+        the arm to its rest pose and lets go there."""
+        hand = self.cfg.hand_off
+        if hand is None or self.cfg.dry_run:
+            return False
+        if self.executor.abort.is_set():
+            # Ctrl-C between the connect and here, which is a window wide enough to hit: the
+            # rest move is in it. Releasing now would de-energise the arm, tell somebody it was
+            # theirs to place, and abort the run in the same breath.
+            raise Aborted(self._abort_reason())
+        released = await let_go_if_any(self.cfg.transport)
+        self._emit("hand_off", stage="released", how=released.how, reason=released.reason)
+        if not released.ok:
+            raise Aborted(f"the arm was not handed over: {released.reason}")
+        if not await hand.wait(self.PLACE_IT):
+            # The invitation said "put whatever it needs in the gripper", so from the moment it
+            # is answered the jaws may be holding something whatever happens next, and the
+            # teardown owes them the chance to take it out before the arm folds on it.
+            # the abort flag is what a Ctrl-C during the wait sets, and the loop's own reason
+            # for one is better than this function's guess at it
+            if self.executor.abort.is_set():
+                raise Aborted(self._abort_reason())
+            raise Aborted(self.NOBODY_PLACED_IT)
+        self._handed_over = True
+        held = await self._take_hold()
+        if not held.ok:
+            raise Aborted(f"the arm is not holding the pose you set: {held.reason}")
+        hand.say(f"{held.reason}, you can let go. {_joints_line(held.joints)}")
+        # The person's time is not the pilot's. `max_minutes` starts before the rest move, and
+        # an arm can sit waiting for somebody to come back from finding a pencil, which used to
+        # be spent out of the budget the model gets for the task.
+        self.budget.start()
+        return True
+
+    async def _take_hold(self) -> HandResult:
+        """Hold whatever pose the arm is in now, narrated."""
+        held = await take_hold_if_any(self.cfg.transport)
+        self._emit("hand_off", stage="held", how=held.how, reason=held.reason, joints=held.joints)
+        if not held.ok:
+            self._note(f"the arm did not take hold: {held.reason}")
+        return held
+
+    async def _hand_back(self) -> None:
+        """Ask before the gripper opens, at the end of a run the arm was handed over for.
+
+        This sits between the run's `stop`, which is holding the arm where it ended, and the
+        rest move, which folds it. Nothing here may raise: it is in the teardown, and a
+        cancellation landing on the wait is a person pressing Ctrl-C again, which means "skip
+        this and finish" rather than "abandon the arm energised with no record written"."""
+        hand = self.cfg.hand_off
+        if hand is None or self.cfg.dry_run:
+            return
+        try:
+            unloaded = await hand.wait(
+                self.HAND_IT_BACK, timeout_s=self.HAND_BACK_S, until_abort=False
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            # A second Ctrl-C in this window used to raise through the whole teardown, which
+            # skipped the rest move, the close, `run_end` and the summary. Here it means the
+            # gripper stays shut, and the rest of the teardown still runs. A third press lands
+            # somewhere without this guard and still quits at once.
+            self._emit("hand_off", stage="skipped", reason="interrupted while waiting")
+            self._note("the gripper was left as it is, and the arm still folds up")
+            return
+        if not unloaded:
+            self._emit("hand_off", stage="skipped", reason="nobody answered")
+            self._note("nobody unloaded the gripper, so it stays shut and the arm folds up")
+            return
+        # through the traced transport, so the record has the intent like every other one.
+        # Not through the executor: its abort is set on every run a person ended, and this runs
+        # on exactly those.
+        ack: Any = None
+        try:
+            ack = await self.executor.traced_transport().send_intent(Intent.gripper(open=True))
+        except Exception as e:
+            ack = Ack(accepted=False, reason=f"{type(e).__name__}: {e}")
+        # The arm's backend answers a refusal rather than raising it, so a suppressed exception
+        # was never going to catch the failure that matters. Somebody is standing there with
+        # their hand out: a gripper that did not open has to be said out loud, not left to be
+        # discovered when the arm folds up with the pencil still in it.
+        if ack is not None and not getattr(ack, "accepted", True):
+            self._emit("hand_off", stage="stuck", reason=str(ack.reason or "the gripper refused"))
+            self._note(f"the gripper did not open: {ack.reason}; take what is in it by hand")
+            return
+        self._emit("hand_off", stage="unloaded", reason="opening the gripper")
+
     async def _observe(
         self, last_verb: str | None, last_result: VerbResult | None
     ) -> tuple[Observation, Image.Image | None]:
@@ -346,7 +523,38 @@ class AgentLoop:
             if self.cfg.provider.supports_vision
             else []
         )
-        return Observation(text=text, images=images, cameras=cameras, features=features), img
+        return (
+            Observation(
+                text=text,
+                images=images,
+                cameras=cameras,
+                features=features,
+                attachments=self._attachments(),
+            ),
+            img,
+        )
+
+    def _attachments(self) -> list[NamedPng]:
+        """The task's own pictures, on the first observation and on no other.
+
+        Sent once because they never change: repeating them every step would pay for the same
+        picture on every request, and the trim that bounds a run's picture cost counts camera
+        frames per exchange and would not bound these at all. The first observation is the one
+        the verdict gate answers from, which is the turn that most needs to see them.
+
+        A pilot that cannot take an image gets a note instead, once. The CLI refuses `--image`
+        for such a pilot before a run starts; this is for every other caller of the loop, and
+        for the truth being in the record rather than in an argument about it."""
+        if not self.cfg.task_images or self.history:
+            return []
+        if not self.cfg.provider.supports_vision:
+            self._note(
+                f"{len(self.cfg.task_images)} picture(s) came with this task and "
+                f"{self.cfg.provider.name} {self.cfg.provider.model} cannot see: they were "
+                "not sent, and the task has to stand on its words alone"
+            )
+            return []
+        return list(self.cfg.task_images)
 
     NOBODY_TO_ASK = (
         "nobody is here to answer for the human: decide yourself and call assess_task again "
@@ -576,8 +784,13 @@ class AgentLoop:
                 memory_text=memory_text,
                 assumptions=first_state.extras.get("assumptions") or None,
                 flock_text=cfg.link.prompt_section() if cfg.link is not None else None,
+                task_images=[p.name for p in cfg.task_images] or None,
+                by_hand=cfg.hand_off is not None and not cfg.dry_run,
             )
             system += getattr(cfg.provider, "prompt_hint", "") or ""  # e.g. the local JSON fallback
+            # before `run_start`, so a reader of the record meets the pictures the task is
+            # about before the run that was given them
+            self.transcript.save_task_images(cfg.task_images)
             self._emit(
                 "run_start",
                 duck=self.fm.name,
@@ -596,6 +809,7 @@ class AgentLoop:
                 system_prompt=system,
                 tools=[t["name"] for t in tools],
                 memory=cfg.memory.summary() if cfg.memory is not None else None,
+                images=[p.name for p in cfg.task_images],
                 flock=cfg.link.describe() if cfg.link is not None else None,
                 connect_s=connect_s,
             )
@@ -619,17 +833,17 @@ class AgentLoop:
             parked = await self._rest()
             if parked is not None and parked.recorded and not parked.reached:
                 raise Aborted(f"the arm did not reach its rest pose: {parked.reason}")
+            # and then, where somebody asked for it, the arm is theirs to place: released at
+            # that pose, held again wherever they leave it, and the pilot improvises from
+            # there instead of from the fold
+            if cfg.hand_off is not None:
+                await self._hand_over()
             while True:
                 await asyncio.sleep(0)  # let the heartbeat and kill switch run
                 if self.executor.abort.is_set():
                     # a flock stops its members when one of them breaks, and the record has to
                     # say which one rather than blaming a kill switch nobody pressed
-                    raise Aborted(
-                        str(self.heartbeat.failure)
-                        if self.heartbeat.failure
-                        else (cfg.link.abort_reason if cfg.link is not None else None)
-                        or "kill switch"
-                    )
+                    raise Aborted(self._abort_reason())
                 observe_started = time.perf_counter()
                 obs, _ = await self._observe(last_verb, last_result)
                 if self.history and self.history[-1].decision is not None:
@@ -656,6 +870,7 @@ class AgentLoop:
                     messages=len(history),
                     images=sum(len(ex.observation.images) for ex in history),
                     with_image=sum(1 for ex in history if ex.observation.images),
+                    task_pictures=sum(len(ex.observation.attachments) for ex in history),
                     reprompt=retry_prompted,
                 )
                 llm_started = time.perf_counter()
@@ -833,6 +1048,12 @@ class AgentLoop:
             with contextlib.suppress(Exception):
                 # the run's last intent, narrated like every other one
                 await self.executor.traced_transport().stop()
+            if self._handed_over:
+                # between the stop, which is holding the arm where the run left it, and the
+                # rest move, which folds it: the one moment where opening the gripper is
+                # neither fighting a verb nor happening after the arm has already folded up
+                with contextlib.suppress(Exception):
+                    await self._hand_back()
             with contextlib.suppress(Exception):
                 # after the stop and before the close: the stop holds the arm where it is,
                 # and the close is what releases torque, so this is the only window in which
@@ -894,6 +1115,13 @@ class AgentLoop:
             final_state=final_state,
             trace_dropped=self.tracer.dropped,
         )
+
+
+def _joints_line(joints: Mapping[str, float]) -> str:
+    """The pose a person set, in one line they can read back off the arm."""
+    if not joints:
+        return "the arm reported no joint"
+    return "It is at " + ", ".join(f"{j} {v:.0f}" for j, v in sorted(joints.items()))
 
 
 async def run_duck(cfg: RunConfig) -> RunResult:

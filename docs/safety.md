@@ -55,6 +55,15 @@ close is skipped, so the process exits without disconnecting and a LeRobot arm i
 rather than sagging. That is the safe direction, and it is written up under "A LeRobot arm"
 below because it is not a tidy exit.
 
+There is one window where that is not what happens. A `--by-hand` run ends by asking whether
+to open the gripper before the arm folds up, and a second press landing on *that* wait is
+caught rather than let through, because it means "skip the question" and not "abandon the arm
+energised with no record written". The gripper is left exactly as the run left it, the arm is
+still folded to its recorded rest pose, the transport is still closed, and the record still
+ends with a `run_end` and a summary. It buys one press and no more: the guard is on that wait
+alone, so a third press lands somewhere without one and quits at once, on the terms of the
+paragraph above.
+
 ## When the pilot is unsure
 
 `assess_task` has a third answer. `uncertain` means the verdict itself turns on a figure the
@@ -147,6 +156,35 @@ If the body is a Microduck, run the contract in the physics simulator first
 refuses and falls over, and nothing there can be hurt. When you do reach the robot, start with
 `--dry-run` every time, then a `.duck` whose `allow` list is the smallest thing that could work,
 then widen it. **You are responsible for your robot.**
+
+**There is now one place where quackd takes torque off a robot, and only a person can ask for
+it.** `quackd run --by-hand` releases a LeRobot arm at the start of a run so you can lift it,
+put whatever the task needs into the gripper, and set the pose the run begins from. Every word
+of that is a limit. Only that arm: the flag is refused on the other six bodies by name. Only at
+the pose recorded with `quackd robot rest-pose`, because an arm held up by torque alone falls
+the instant torque goes, so the arm refuses to be let go of anywhere else and a run on an arm
+with no pose recorded is refused before it starts. Only when a person typed the flag at a
+terminal, which is also checked before anything moves. And never by anything else: releasing is
+not a verb, it is in no `allow` list, and it is deliberately not on the `RobotAdapter` protocol,
+so there is nothing for a model or an MCP client to call. When you press Enter, quackd writes
+the pose you left the arm in as the goal *before* it re-enables torque, writes it again, reads
+it back, and ends the run rather than starting it if a joint moved more than five degrees while
+your hand was still on it.
+
+**If a run ends while the arm is still limp in your hands, quackd picks it up before it folds
+it.** That state takes a Ctrl-C during the wait, a heartbeat that died, or a `take_hold` the arm
+refused, and the way out of it is the `stop` every teardown opens with: on an arm that is in
+somebody's hand that stop takes hold first, at wherever your hand has it, and the rest move then
+puts it down from there. Sending a goal to a limp servo would have been a stop that stopped
+nothing. If even that did not take, the close says so in the one line that is worth reading:
+
+```
+the arm is limp and in your hands (...): put it down before you let go of it, because nothing is holding it up
+```
+
+That line and the "torque was left on" one under "A LeRobot arm" below are opposites on purpose,
+and quackd has to pick the right one. Whoever reads this one is holding the arm, and being told
+instead that it is holding itself up is the sentence that gets an arm dropped.
 
 **An XLeRobot (a 12 kg dual-arm cart):**
 

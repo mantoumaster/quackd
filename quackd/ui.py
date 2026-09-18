@@ -628,6 +628,8 @@ class RunStatus:
             self.update(f"{data.get('name')}({fmt_params(data.get('params'))})")
         elif kind == "verb_end":
             self.update("observing")
+        elif kind == "hand_off" and data.get("stage") == "released":
+            self.update("waiting for you to place the arm")
         elif kind == "note" and str(data.get("text") or "").startswith("kill switch"):
             self.update("stopping the robot")
         elif kind in ("declare", "member_end", "run_end"):

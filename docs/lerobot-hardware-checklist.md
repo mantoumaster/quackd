@@ -375,12 +375,112 @@ as the run's, moved to the moment the daemon comes up.
     because that is the one place letting go is safe. Expect that motion, and keep the hand on
     the switch through it.
 
+## Handing the arm over, and taking it back
+
+`--by-hand` is the one thing in quackd that takes torque off a robot, and it takes it off at
+the one pose the arm is known to hold without any: the fold you recorded in step 6. Everything
+below rests on that pose being right, which is why these two steps come after the ones that
+drove the arm there and back rather than before them. The flag wants the registered name from
+step 6 with a pose against it, and a terminal, because somebody has to press Enter. Without the
+pose it refuses before anything is touched, and there is no rehearsing this one with
+`--dry-run`, because a dry run moves nothing and this takes torque off an arm:
+
+```
+✗ error: --by-hand releases the arm at its recorded rest pose, and this arm has none
+recorded
+  quackd robot rest-pose arm-bare
+```
+
+15. **Set the starting pose yourself with `--by-hand`.** Run the lookout for this one. No verb
+    in it moves a joint, so the only things that move the arm in the whole step are your own
+    hands and the fold at the end, which is as small as this can be made.
+
+    ```bash
+    uv run quackd run lerobot-lookout --robot arm-01 --by-hand
+    ```
+
+    The arm is driven to the rest pose first, exactly as in step 7, and then torque comes off
+    it there. **Watch that moment with a hand under the arm.** The fold is the shape you chose
+    in step 6 because the arm holds it limp, so it should settle and stay where it is. An arm
+    that sags or drops further the instant torque goes is telling you the recorded pose is not
+    one it holds on its own, and the answer is to fold it somewhere it does and record that
+    instead. This is the only moment quackd will ever release it, because the release is
+    refused anywhere but that pose.
+
+    Then it waits for you, and says what it is waiting for:
+
+    ```
+    the arm is yours: torque is off at its rest pose, so lift it, put whatever it needs in
+    the gripper, close the gripper on that, hold it where you want the run to start, and
+    press Enter
+    ```
+
+    Lift the arm, put something in the gripper, squeeze the jaws shut on it with your fingers,
+    hold the arm where the work should start, and press Enter. quackd writes the pose you are
+    holding as the goal **before** it switches torque back on, writes it again afterwards, and
+    reads every joint back, because nothing upstream documents what a servo does with the goal
+    it was last told when it is re-energised, and the goal this one was last told is the fold.
+    What it read back is printed, and that line is your cue:
+
+    ```
+    holding the pose you set, you can let go. It is at elbow_flex 40, gripper 35,
+    shoulder_lift -20, shoulder_pan 0, wrist_flex 15, wrist_roll 0
+    ```
+
+    **Let go, and watch the arm rather than the terminal.** Whether it stays where you put it
+    is the first of the two questions the hand placed start adds at the foot of this page:
+    those angles came off `lerobot:mock`, which holds whatever it is told. A joint that moved
+    more than five degrees between the two reads is refused by name and the run ends before the
+    model gets a turn, so anything quackd accepted moved less than that, and the angles it
+    printed are what to read against where you thought you left the arm.
+
+    The pilot's clock starts when you press Enter rather than at the rest move, so a minute
+    spent finding a pencil is not a minute out of `--max-minutes`.
+
+    At the other end the arm is holding whatever pose the run ended in, and you are asked
+    before anything opens:
+
+    ```
+    the run is over and the arm is holding where it ended. Take hold of whatever is in the
+    gripper and press Enter, and the gripper opens before the arm folds up. Leave it and
+    the arm folds up with the gripper shut
+    ```
+
+    Take hold of what is in the jaws first and then press Enter: the gripper opens while you
+    have it, and only then does the arm fold. That question stands for two minutes and then
+    answers itself by leaving the gripper shut, so an arm nobody came back to folds up holding
+    what it was given rather than dropping it on the bench.
+
+    Once that has worked, do it again with a task that moves: a pencil in the gripper, the arm
+    set down on the paper, and a goal short enough to read in one line. That is the second of
+    the two the hand placed start adds down there, and nobody has an answer to it either.
+
+16. **Ctrl-C while the arm is still in your hands**, which is the one window quackd has where
+    a robot is limp and the software is waiting. Do it on the lookout run again, with the arm
+    lifted and held.
+
+    Every ending begins with a stop, and a stop on an arm somebody is holding takes hold of it
+    first: torque comes back on where your hand has it rather than where it was released,
+    because a goal sent to a limp servo would be a stop that stopped nothing. Then the arm
+    folds to its rest pose and lets go there, which is the same motion step 14 ends with.
+
+    > [!WARNING]
+    > The arm energises under your fingers and then drives itself down. **Keep hold of it
+    > through that fold**, and keep your other hand on the switch. It is the one Ctrl-C on this
+    > page that starts with the arm in somebody's grip.
+
+    Nothing asks you about the gripper on this path, because the run never reached the pilot.
+    The fold drives the five body joints and never the gripper, so whatever you closed the jaws
+    on folds up with the arm: take it out before you press Ctrl-C rather than after. The run is
+    recorded as an abort like any other, with one `hand` line in its trace saying the arm was
+    released and nothing after it saying anybody took it.
+
 ## The gripper, and only then a policy
 
-15. **Close the gripper on something soft and forgiving.** A foam block, not a cup. It should
+17. **Close the gripper on something soft and forgiving.** A foam block, not a cup. It should
     stop short of shut, `report_state` should say it is holding, and `stop` should not drop
     it: a hold deliberately leaves the gripper's goal alone. Then `place` to let go.
-16. **`pick` cannot be reached from the CLI or from MCP today, and this step is here to say
+18. **`pick` cannot be reached from the CLI or from MCP today, and this step is here to say
     so rather than to be done.** The verb exists on `lerobot:real` only when a policy object
     was handed to the transport in Python, and nothing in quackd hands it one: there is no
     flag, `make()` has no policy parameter, and `load_policy()` has no caller outside a test.
@@ -410,6 +510,24 @@ doctor` output. A report that says it did not work is worth as much as one that 
   right standing next to the arm.
 - **Whether a stall is caught.** Hold a joint gently against its goal and see whether the verb
   fails with where it stopped. Nobody has done this on purpose yet.
+
+**And two the hand placed start brought with it**, which nobody has any answer to: `--by-hand`
+postdates that afternoon and has been exercised against `lerobot:mock` and in the test suite,
+and not yet on a real arm.
+
+- **Whether the arm stays where you put it when torque comes back on.** quackd writes the pose
+  you are holding as the goal before it enables torque, writes it again after, reads every
+  joint back and refuses the run if one of them moved more than five degrees, because nothing
+  upstream documents what a servo does with the goal it was last told when it is re-energised.
+  Whether a real SO-101 holds, twitches or sags in that second is the thing only somebody
+  standing over one can say. Name the joint that moved and how far, and say whether a loaded
+  arm behaved differently from an empty one.
+- **Whether a gripper you closed with your fingers keeps a pencil through a drawing move.** The
+  squeeze your hand left is written back as the gripper's goal when torque returns, and a
+  position is not a grip: nothing on this arm reports force, and quackd says it is holding
+  nothing on a hand placed start, because closing on an object is what makes this body say
+  otherwise. Put a pencil in it, run something that draws, and say whether it was still there
+  at the end.
 
 **And two with one answer each, from one arm on one laptop.** A second answer is what turns
 either of them from an anecdote into a fact:

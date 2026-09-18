@@ -599,14 +599,24 @@ class FakeProvider:
         strategy: Strategy | None = None,
         script: list[ToolCall] | None = None,
         model: str = "scripted",
+        *,
+        vision: bool | None = None,
     ) -> None:
         self.model = model
         self._strategy = strategy
         self._script = script
         self.calls = 0
+        if vision is not None:
+            # A scripted pilot reads features and looks at nothing, so this changes no
+            # decision it makes. What it changes is whether the loop builds the pictures at
+            # all, which is the whole of `--image` and every frame path, and `--provider fake`
+            # is the only way to exercise either without a key and a vendor.
+            self.supports_vision = vision
 
     @classmethod
-    def for_duck(cls, duck_name: str, goal: str | None = None) -> FakeProvider:
+    def for_duck(
+        cls, duck_name: str, goal: str | None = None, *, vision: bool | None = None
+    ) -> FakeProvider:
         """Pick a scripted strategy by duck name, or by keywords in a plain-language goal."""
         strategy = STRATEGIES.get(duck_name)
         label = duck_name
@@ -620,7 +630,7 @@ class FakeProvider:
                 strategy, label = square_strategy(), "goal:square"
             elif "circle" in text or "circuit" in text:
                 strategy, label = circle_strategy(), "goal:circle"
-        return cls(strategy=strategy or generic_strategy, model=f"scripted:{label}")
+        return cls(strategy=strategy or generic_strategy, model=f"scripted:{label}", vision=vision)
 
     async def step(
         self, system: str, history: list[Exchange], tools: list[dict[str, Any]]

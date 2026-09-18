@@ -302,6 +302,59 @@ def test_the_trace_is_documented_where_it_is_configured() -> None:
             assert needle in text, f"{path} does not mention {needle!r}"
 
 
+def test_task_pictures_are_documented_where_they_are_configured() -> None:
+    """A flag whose whole point is that the model can see the thing has to be findable by
+    somebody who has the thing and does not know the flag exists. The README quickstart is
+    where an arm owner starts, so it is named there as well as in the reference pages."""
+    for path, needles in (
+        ("README.md", ("--image", "--vision")),
+        ("docs/lerobot-first-run.md", ("--image", "--vision")),
+        ("docs/local-llms.md", ("--image", "--vision")),
+        ("docs/adapters/lerobot.md", ("--image",)),
+        # the pictures land in the run directory, so the page that draws that directory says so
+        ("docs/architecture.md", ("images/",)),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+
+
+def test_the_hand_placed_start_is_documented_where_it_is_configured() -> None:
+    """The one place quackd takes torque off a robot. Somebody about to hold an arm while it is
+    released should be able to find what happens next in the page they are already reading, and
+    the safety page has to carry it whether or not they ever open the arm's own."""
+    for path, needles in (
+        ("README.md", ("--by-hand",)),
+        ("docs/lerobot-first-run.md", ("--by-hand",)),
+        ("docs/adapters/lerobot.md", ("--by-hand",)),
+        ("docs/lerobot-hardware-checklist.md", ("--by-hand",)),
+        ("docs/safety.md", ("--by-hand", "torque")),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+
+
+def test_both_ways_a_run_can_start_are_offered_together() -> None:
+    """Rok asked for this specifically: the default and the hand-placed start are two options a
+    reader chooses between, so the pages that teach the arm present them side by side rather
+    than leaving the second one to a reference page nobody reaches.
+
+    Checked as proximity rather than as wording, because the wording is prose and will be
+    rewritten: what must survive a rewrite is that `--by-hand` is explained on the same page as
+    the rest pose it departs from, and near it."""
+    for path in ("README.md", "docs/lerobot-first-run.md"):
+        lines = (REPO / path).read_text(encoding="utf-8").splitlines()
+        rest = [i for i, line in enumerate(lines) if "rest-pose" in line or "rest pose" in line]
+        hand = [i for i, line in enumerate(lines) if "--by-hand" in line]
+        assert rest and hand, f"{path} must name both the rest pose and --by-hand"
+        gap = min(abs(h - r) for h in hand for r in rest)
+        assert gap < 60, (
+            f"{path} explains --by-hand {gap} lines from the nearest mention of the rest pose; "
+            "the two starts are a choice and belong next to each other"
+        )
+
+
 def test_mcp_doc_lists_every_tool() -> None:
     from quackd.mcp_server import TOOL_NAMES
 
