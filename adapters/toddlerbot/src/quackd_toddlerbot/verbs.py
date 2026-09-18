@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from quackd.transport.base import DuckState, Intent
 from quackd.verbs.core import SearchScanParams, _see, gaze_sweep_yaws, send_or_fail
@@ -80,6 +80,9 @@ class LookParams(BaseModel):
 
 
 class PerformParams(BaseModel):
+    """Every motion upstream ships. Also the type `perform` is written against: a narrowed
+    build returns a model of the same shape, so what the function reads off it is unchanged."""
+
     model_config = ConfigDict(extra="forbid")
 
     motion: Literal["hold", "kneel", "cuddle", "push_up", "crawl"] = Field(
@@ -87,6 +90,27 @@ class PerformParams(BaseModel):
         description=(
             "Which shipped motion to play. These are recorded keyframes, not balanced "
             "policies: the robot needs clear space and a flat surface."
+        ),
+    )
+
+
+def perform_params(motions: tuple[str, ...] = MOTIONS) -> type[BaseModel]:
+    """`perform`'s parameters, narrowed to the motions this build actually loaded.
+
+    The enum used to be the fixed five above while the verb's *description* named only what
+    the daemon reported, so a robot with two keyframes still advertised five in its tool
+    schema. A pilot that reads the schema rather than the prose asks for a motion this robot
+    has not got, pydantic accepts it because the schema said it was legal, and the refusal
+    arrives from the daemon a step later. Now the enum is built from the same tuple the
+    sentence is, so the two cannot disagree."""
+    if tuple(motions) == MOTIONS:
+        return PerformParams
+    return create_model(
+        "PerformParams",
+        __config__=ConfigDict(extra="forbid"),
+        motion=(
+            Literal[motions],  # type: ignore[valid-type]
+            Field(..., description=PerformParams.model_fields["motion"].description),
         ),
     )
 
@@ -323,7 +347,7 @@ def toddlerbot_verbs(
                 + ", ".join(motions)
                 + ". It needs clear space and a flat surface.",
                 perform,
-                PerformParams,
+                perform_params(motions),
                 timeout_s=PERFORM_TIMEOUT_S + 10,
                 safety_class="confirm",
             )
@@ -391,6 +415,7 @@ __all__ = [
     "look_degrees",
     "look_point",
     "neck_limits",
+    "perform_params",
     "toddlerbot_conditions",
     "toddlerbot_verbs",
 ]
