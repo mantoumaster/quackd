@@ -34,7 +34,14 @@ a daemon that walks a ToddlerBot.
 
 Also in scope:
 
-- API keys leaking into transcripts, GIFs, logs, run directories, or a robot's memory file.
+- API keys leaking into transcripts, GIFs, logs, run directories, or a robot's memory file. `TYPESAFE_API_KEY`, which the optional discrete stepper reads, is one of these.
+- **What the discrete stepper is sent** (`quackd run --jev`, off by default,
+  [docs/jev.md](docs/jev.md)). It is a hosted API, so a run that switches it on sends
+  the task's goal, the robot's own description of itself and its last few results to a
+  third party, once a turn. It is never sent a camera frame, a system prompt or an API
+  key, and the state it is sent is recorded in the transcript as `state_chars` and can
+  be read back in full from the `jev` events. What would be a security issue: a picture
+  or a credential reaching it, or a stepper-authored call bypassing the executor.
 - **The memory file** (`~/.quackd/memory/<adapter>-<backend>.jsonl`). It holds
   sentences a model wrote about a place it has been, it persists between runs, and it is
   read back into the next system prompt. It never leaves the machine and the executor never

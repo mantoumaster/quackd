@@ -31,6 +31,14 @@ only. A local preset is never refused for naming something the catalogue has not
 `quackd doctor` probes all four default addresses and prints which servers are up and what
 they serve.
 
+> [!NOTE]
+> TypeSafe's Jev is not on this page and is not a provider. It answers typed questions
+> about a state and generates no text at all, so it cannot pilot a robot, `--provider`
+> does not take it, and it is not an OpenAI-compatible server you point `--base-url` at.
+> It is an optional stepper that sits in front of whichever provider you did pick, for the
+> turns whose answer is a choice rather than a number, and it is off unless you ask for it:
+> [jev.md](jev.md).
+
 ## Server setup
 
 Tool calling has to be switched on in some servers. These are the flags that matter.

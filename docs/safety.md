@@ -11,9 +11,22 @@ A biped falls in 0.3 s; an LLM answers in 3 s. Everything here follows from that
 | Conversation | quackd `Executor` | The LLM and MCP clients can only do what the `.duck` allows, as often as the budget allows, with a human in the loop where the contract says so. |
 | Session | quackd `Heartbeat` + `KillSwitch` | A dead transport or a worried human ends in a `stop` intent. In a flock one kill switch reaches every member's executor, so Ctrl-C stops every body rather than the one in front. |
 
+> [!NOTE]
+> **The optional discrete stepper changes none of this.** With `--jev on`
+> ([jev.md](jev.md)) some turns are answered by a classifier instead of the model, and every
+> one of those calls goes through the same `Executor.run_verb` as every other, so the
+> allowlist, the budgets, the confirm gates, the preconditions and the body's own safety
+> authority bind it exactly as they bind the model. Two things about it are structural rather
+> than enforced, which is stronger: it can never author a number, because a verb with a free
+> number in its schema is never offered to it at all, and it can never author a sentence, so
+> it cannot record a feasibility verdict, cannot declare an outcome, and cannot end a run.
+> The judgement layer above is untouched: nothing that moves the body runs until the *model*
+> has said whether the task fits it.
+
 ## The executor (mirrors upstream's own rules)
 
-Every verb call — from the agent loop or an MCP session — passes `Executor.run_verb`, which
+Every verb call — from the agent loop, an MCP session or the discrete stepper — passes
+`Executor.run_verb`, which
 applies these in order and stops at the first one that refuses. The **gate** column is the word
 the trace and the transcript print, so a refusal tells you which row you are on.
 

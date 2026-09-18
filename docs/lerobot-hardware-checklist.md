@@ -511,6 +511,16 @@ doctor` output. A report that says it did not work is worth as much as one that 
 - **Whether a stall is caught.** Hold a joint gently against its goal and see whether the verb
   fails with where it stopped. Nobody has done this on purpose yet.
 
+**And one the discrete stepper brought with it**, which nobody has any answer to either.
+`--jev` is off by default and postdates that afternoon, so leave it off for every step of this
+checklist: a first run is about proving the arm, and one more moving part between you and it is
+the opposite of what that wants. Afterwards, `--jev shadow` changes nothing about a run and
+records what a classifier would have chosen on each turn beside what the model actually chose.
+Two numbers come out of it that exist nowhere yet, because TypeSafe publish no latency figure:
+how long Jev takes to answer, and how often it agrees with the model on a real arm. The task
+built for it is `arm-grip-check`, which also happens to be the one that asks the holding-band
+question above ([jev.md](jev.md)).
+
 **And two the hand placed start brought with it**, which nobody has any answer to: `--by-hand`
 postdates that afternoon and has been exercised against `lerobot:mock` and in the test suite,
 and not yet on a real arm.

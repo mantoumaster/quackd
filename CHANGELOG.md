@@ -44,6 +44,54 @@ reports that it did.
 
 ### Added
 
+- **An optional discrete stepper in front of the model: `quackd run --jev`, off by default.**
+  quackd asks one question a turn, which single tool call now, and pays a frontier model's full
+  latency for it whether the answer is `report_state` or a six-joint pose. On the SO-101 run at
+  the top of the README that is 62.1 seconds of a 78.8 second run. Some of those turns are not
+  writing, they are choosing, and [TypeSafe's Jev](https://docs.typesafe.ai/introduction) is a
+  model that answers a choice and generates no text at all. `--jev shadow` asks it every turn and
+  records what it would have chosen beside what the model did, changing nothing about the run.
+  `--jev on` lets it take the turns it is confident about. `--jev off` is the default, needs
+  nothing installed, and is the path quackd has always taken.
+
+  Which turns it may answer is computed from each tool's own JSON schema and nothing else, so a
+  body quackd has never shipped is classified by the same rule as the seven that ship. A verb is
+  a choice when every parameter is a closed set, an enum, a constant or a boolean, or is optional
+  and defaults to null. Everything else is a number and the model's. `move_joints` is therefore
+  never the stepper's on any of the three arms that have one, for two reasons that hold
+  independently: its `positions` is a required object, and the joint names are not in the schema
+  at all, because they live in a validator, so there is nothing for a classifier to enumerate
+  even in principle. Every meta tool takes a required sentence, so the stepper cannot record a
+  feasibility verdict, cannot declare an outcome, cannot write to memory and cannot speak to a
+  flock. Every ending goes through the model or through a budget.
+
+  A turn the stepper answers appends nothing to the model's history, because none of it is
+  anything the model said, and writing it down would hand a model back an unsigned tool call it
+  never made. The model is told instead, in one line on the observation it is next shown, naming
+  the verbs and who chose them. The stepper is only ever offered what the executor would run that
+  turn, so before a feasibility verdict it may reach for a read or the brake and nothing else,
+  and `VerdictRequired` is unreachable rather than caught. The confidence floors are TypeSafe's
+  own published numbers by what the verb does, with `stop` at the lowest floor in the system on
+  purpose, because a wrong `stop` costs one step and a wrong anything-else costs a move nobody
+  chose. Two trace kinds, `jev` and `jev_shadow`, and `summary.json` grows a `jev` block when
+  there was a stepper and nothing when there was not.
+
+  **None of it has run against a real robot, and TypeSafe publish no latency figure**, so this
+  release claims no speed result. On the wave run only two of the ten calls are the kind the
+  stepper can answer, which makes that run the honest worst case: it is a net loss there unless
+  Jev answers in under 1.24 seconds. That arithmetic, and a recipe for replacing it with a
+  measurement from your own bench, are in [docs/jev.md](docs/jev.md)
+  ([ADR-0040](docs/adr/0040-a-discrete-stepper-in-front-of-the-model.md)). Behind
+  `quackd[jev]`, which is not part of `quackd[all]`, and `TYPESAFE_API_KEY`. It is not a
+  provider: `--provider` does not take it, and `quackd doctor` gives it a section of its own.
+
+- **A new starter task for the arm: `arm-grip-check`.** Read the state, shut the gripper, read it
+  again, release, stop. Nothing in it authors an angle, because `move_joints` is deliberately
+  left out of its allowlist, which makes it the task where every turn is a choice and the worked
+  example in `docs/jev.md`. It also asks a question the README says nobody has answered: whether
+  the band that infers `holding` from a gripper stopping short of shut is right. Run it with
+  `--by-hand` and something in the gripper.
+
 - **An arm starts from and returns to a rest pose you recorded: `quackd robot rest-pose NAME`.**
   Two things were wrong with a run on a real arm and they are the same thing twice. It ended by
   letting go, and a LeRobot arm goes limp when it is disconnected, so the arm fell. And it began
@@ -344,6 +392,15 @@ reports that it did.
   build that carries this.
 
 ### Fixed
+
+- **A ToddlerBot's `perform` advertised motions that build had never loaded.**
+  `toddlerbot_verbs(motions=...)` takes the list of keyframes the daemon actually managed to
+  load and put it in the verb's description, while the schema kept a fixed five-member enum. So
+  a robot with two motions loaded described two and offered five, pydantic accepted any of the
+  five because the schema said they were legal, and the refusal arrived from the daemon a step
+  later. A pilot that reads schemas rather than prose, which is most of them, was being told
+  something untrue about the body. The enum is now built from the same tuple the sentence is.
+  Found while writing the classifier for `--jev`, which reads schemas and nothing else.
 
 - **The duck could not walk to anything straight ahead, and the nightly job had been saying so
   since 2026-09-09.** The physics backend raises a small twist to the gait floor, because below

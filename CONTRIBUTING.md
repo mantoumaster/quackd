@@ -233,6 +233,14 @@ Four things the tracing depends on, none of them optional:
    that is a string, a tool call with no name: all of it is `ProviderError`, and the test
    for it belongs in `tests/test_providers.py`.
 
+**A stepper is not a provider, and must not be added as one.** `quackd/agent/jev.py` is an
+optional model that answers typed questions about a state and generates no text at all
+([docs/jev.md](docs/jev.md)). It cannot pilot a robot, so it is deliberately absent from
+`CATALOGUE`, from `PROVIDER_NAMES` and from `--provider`, it has its own section in `quackd
+doctor` rather than a row in the providers table, and its extra is not part of `quackd[all]`.
+If you are adding something that answers a question rather than writing an answer, none of the
+six entries above apply to it.
+
 ## Add an adapter
 
 A robot joins quackd as its own distribution, built from `adapters/<name>/` and imported as
