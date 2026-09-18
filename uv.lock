@@ -3588,6 +3588,9 @@ glm = [
 grok = [
     { name = "openai" },
 ]
+jev = [
+    { name = "typesafe-sdk" },
+]
 kimi = [
     { name = "openai" },
 ]
@@ -3706,10 +3709,11 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "typer", specifier = ">=0.12" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
+    { name = "typesafe-sdk", marker = "extra == 'jev'", specifier = ">=0.7,<1" },
     { name = "ultralytics", marker = "extra == 'yolo'", specifier = ">=8.2" },
     { name = "zeroconf", marker = "extra == 'lan'", specifier = ">=0.132" },
 ]
-provides-extras = ["all", "alohamini", "anthropic", "cohere", "deepseek", "dev", "gemini", "glm", "grok", "kimi", "lan", "lerobot", "live", "meta", "microduck", "microduck-camera", "mistral", "mujoco", "open-duck", "openai", "qwen", "robots", "rosbridge", "toddlerbot", "xlerobot", "yolo"]
+provides-extras = ["all", "alohamini", "anthropic", "cohere", "deepseek", "dev", "gemini", "glm", "grok", "jev", "kimi", "lan", "lerobot", "live", "meta", "microduck", "microduck-camera", "mistral", "mujoco", "open-duck", "openai", "qwen", "robots", "rosbridge", "toddlerbot", "xlerobot", "yolo"]
 
 [[package]]
 name = "quackd-alohamini"
@@ -4533,6 +4537,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/90/6e/abec85b9013db5b934b0280a6dd104904d84f7bcbaab2e2f3def87ac7463/types_pyyaml-6.0.12.20260906.tar.gz", hash = "sha256:f59c1cc05010b833d2d72287bbaa72610106b28d42d89a907313117faba85212", size = 18649, upload-time = "2026-09-06T06:35:35.362Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/15/c0/fc0644b7ddcfb969e95845837143cb5173ddd6e06ee4ba5fc493cd9329b7/types_pyyaml-6.0.12.20260906-py3-none-any.whl", hash = "sha256:bca893ff0d51df5c9053137d5d0e6ccd36e939a196356f1d5c16372422f5137b", size = 21282, upload-time = "2026-09-06T06:35:34.372Z" },
+]
+
+[[package]]
+name = "typesafe-sdk"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx2" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "tenacity" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/28/e2/ac317772d4d5cfabf3cecdeacd83cc838523e240bb4e1cf256837e6005bb/typesafe_sdk-0.7.0.tar.gz", hash = "sha256:930d42fd73cfed6f25bccae488ce0f30f6043eaedd8682ef59734e79ab94a876", size = 22235, upload-time = "2026-09-18T09:12:30.846Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/2a/16f4163e6d8827ef80b2ed7a400c80688e1ebf571c10f143f792bdafc654/typesafe_sdk-0.7.0-py3-none-any.whl", hash = "sha256:c6d2257c4b04b8d4d81cff2b55489b4188795fd44fb40b9cef26ff243b2d1080", size = 35352, upload-time = "2026-09-18T09:12:29.625Z" },
 ]
 
 [[package]]

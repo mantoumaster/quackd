@@ -60,7 +60,10 @@ meta = ["openai>=1.50"]
 # docs/jev.md). Not a provider and deliberately not in `all`: it answers typed questions about
 # a state and generates nothing, so it cannot pilot a robot on its own and does not belong in
 # `--provider`. Off by default and never imported unless a run asks for it.
-jev = ["typesafe-sdk>=0.1"]
+# Pinned under 1.0 the way every vendor SDK here is: this one is early access, its answer
+# container is spelled two ways in its own docs, and `quackd/agent/jev.py` reads it
+# tolerantly for that reason. A 0.x minor is allowed to break it.
+jev = ["typesafe-sdk>=0.7,<1"]
 all = ["anthropic>=1.0,<2", "openai>=1.50", "google-genai>=1.0"]
 yolo = ["ultralytics>=8.2"]
 live = ["pygame>=2.5"]
