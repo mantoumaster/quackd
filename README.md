@@ -127,7 +127,7 @@ The path the recording at the top of this page took, in ten steps, with the arm 
     quackd robot add arm-01 lerobot:real --address COM3 --provider openai --model gpt-6-astra
     ```
 
-6. **Fold the arm by hand, then record where it rests.** An SO-101 has no brake and LeRobot releases torque when it disconnects, so without this the arm drops from wherever the run left it. With it, every run starts at this pose and returns to it before quackd lets go. This pose is where every run starts and ends unless the run itself says otherwise, and there are two ways to say otherwise, both of them just below step 10.
+6. **Fold the arm by hand, then record where it rests.** An SO-101 has no brake and LeRobot releases torque when it disconnects, so without this the arm drops from wherever the run left it. With it, every run starts at this pose and returns to it before quackd lets go. This pose is where every run starts and ends unless the run itself says otherwise, and the one flag that says otherwise is just below step 10, where it changes the start and leaves the end alone.
 
     ```bash
     quackd robot rest-pose arm-01
@@ -658,7 +658,7 @@ Those joint numbers are the mock arm's, from `lerobot:mock`, and a real SO-101 r
 | Letting go | Torque is released only where the arm is known to be at that pose. Where it is not, quackd turns LeRobot's own flag off, leaves the arm holding itself up, and prints one line: `the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut its power, or run again` |
 | The gripper | Recorded, never commanded, for the same reason `stop` leaves it alone: re-sending it would open a hand that is holding something. Only the five body joints are ever driven |
 | Out of range | The pose is sent unclipped, because a folded arm often sits outside the travel its calibration recorded (the bench arm folded to `shoulder_lift` -113.5 against a calibrated ±84.2) and the usual out of range refusal would refuse to put the arm down |
-| `--by-hand` | The arm is still driven to the pose, and torque comes off there instead of at the end, so you can lift the arm and set the start yourself. What the run returns to is unchanged |
+| `--by-hand` | The arm is still driven to the pose, and torque comes off there as well as at the end, so you can lift the arm and set the start yourself. Where the run returns to, and how it lets go there, are unchanged |
 | `--dry-run` | Nothing moves, at either end |
 | `quackd doctor` | Returns a probed arm to its rest pose as well, and says so in a `rest pose` row. A doctor probe drops torque too, which is one of the ways the arm fell |
 | `quackd robot list --probe` | Does not move the arm at all. It says `torque left on: not at its rest pose` when it had to keep it |

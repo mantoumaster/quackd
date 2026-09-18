@@ -629,7 +629,11 @@ class RunStatus:
         elif kind == "verb_end":
             self.update("observing")
         elif kind == "hand_off" and data.get("stage") == "released":
-            self.update("waiting for you to place the arm")
+            # `how` and not the stage: a release the arm refused is still filed under the
+            # stage it was asked for, and the line that invites somebody to pick the arm up
+            # must only ever follow a release that actually happened
+            if data.get("how") == "released":
+                self.update("waiting for you to place the arm")
         elif kind == "note" and str(data.get("text") or "").startswith("kill switch"):
             self.update("stopping the robot")
         elif kind in ("declare", "member_end", "run_end"):

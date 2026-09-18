@@ -96,9 +96,10 @@ async def test_q_fires_the_switch_and_an_ordinary_character_does_nothing(
 async def test_enter_during_the_wait_is_what_ends_it() -> None:
     ks, _ = switch()
     asyncio.get_running_loop().call_later(0.01, ks.entered.set)
-    started = time.perf_counter()
+    # True is already the proof that Enter ended it rather than the clock: a wait that sat out
+    # its timeout returns False. A wall-clock upper bound here would only add a way for a
+    # loaded CI runner to fail a test about a keystroke.
     assert await ks.wait_for_enter(timeout_s=0.5) is True
-    assert time.perf_counter() - started < 0.4, "the wait sat out its whole timeout"
 
 
 async def test_a_press_from_before_the_wait_does_not_satisfy_it() -> None:

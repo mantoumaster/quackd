@@ -9,6 +9,7 @@ that a function that returned without raising produced something a provider coul
 from __future__ import annotations
 
 import io
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -367,3 +368,27 @@ def test_an_invented_name_never_lands_on_one_a_file_already_has(tmp_path: Path) 
     names = [picture.name for picture in load_task_images(paths)]
     assert len(set(names)) == 3, names
     assert "2-sketch.png" in names, "the file that really is called that keeps its name"
+
+
+def test_an_empty_path_names_itself_rather_than_the_current_directory(tmp_path: Path) -> None:
+    """`Path("")` is the current directory, which exists and is a directory, so an unset shell
+    variable (`--image "$SKETCH"`) used to be refused as "that is a directory, not a picture",
+    naming no file and giving a reason that was not the reason."""
+    with pytest.raises(TaskImageError) as caught:
+        load_task_images([""])
+    assert "empty path" in str(caught.value)
+
+
+def test_a_picture_over_the_bomb_limit_refuses_instead_of_printing_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PIL raises above twice its limit and merely *warns* between the limit and twice it, and
+    that warning went to the terminal as a raw site-packages line in the middle of quackd's own
+    output, after which the run carried on as though nothing had happened."""
+    path = drawing(tmp_path / "big.png", size=(400, 400))
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning that escaped would raise here instead
+        with pytest.raises(TaskImageError) as caught:
+            load_task_images([str(path)])
+    assert "larger than anything quackd will decode" in str(caught.value)

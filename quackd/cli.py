@@ -600,25 +600,48 @@ class _TerminalHandOff:
         return await self.switch.wait_for_enter(timeout_s=timeout_s, until_abort=until_abort)
 
 
+_SWITCH: KillSwitch | None = None
+"""The kill switch of the run that is going on, or None outside one.
+
+Module level because the prompts below are plain callables handed to `RunConfig` long before
+the loop they will be asked from exists, and the switch is built from that loop's own abort
+event. `_ask` is the only reader."""
+
+
+def _ask(question: str) -> bool:
+    """A yes or no question, read off the terminal without racing the run for the keystroke.
+
+    `typer.confirm` calls `input()`, and the kill switch's key thread is reading the same
+    terminal: whichever of the two took a character first kept it, so a gate asked on a real
+    terminal waited for a newline that had already been swallowed, with a robot mid-verb.
+    Where a switch is running its own reader answers; where none is, this is `typer.confirm`
+    as it always was."""
+    switch = _SWITCH
+    if switch is None:
+        return typer.confirm(question, default=False)
+    answer = switch.ask(f"{question} [y/N]: ")
+    return answer.strip().lower() in ("y", "yes")
+
+
 def _confirm_prompt(name: str, params: dict[str, Any]) -> bool:
     # under a running status line the question is invisible: a live region redirects stdout
     # and a prompt writes without a newline, so it stays buffered until it is too late
     with ui.pause_status():
-        return typer.confirm(f"run {name}({params})?", default=False)
+        return _ask(f"run {name}({params})?")
 
 
 def _decide_prompt(why: str) -> bool:
     """Asked when the pilot says it is not sure this body can do the task at all."""
     with ui.pause_status():
         ui.err_console.print(Text(why, style=ui.STYLES["warn"]))
-        return typer.confirm("Go ahead anyway?", default=False)
+        return _ask("Go ahead anyway?")
 
 
 def _acknowledge_prompt(why: str) -> bool:
     """Asked once, before anything moves, when the human is the only safety left."""
     with ui.pause_status():
         ui.err_console.print(Text(why, style=ui.STYLES["warn"]))
-        return typer.confirm("Are you watching the robot right now?", default=False)
+        return _ask("Are you watching the robot right now?")
 
 
 def _entry_model(resolved: Any, provider: str | None) -> str | None:
@@ -1094,14 +1117,17 @@ def _run_impl(
     async def main() -> Any:
         from quackd.agent.loop import AgentLoop
 
+        global _SWITCH
         loop = AgentLoop(cfg)
         ks = KillSwitch(loop.executor.abort, log=killed)
         if hand_off is not None:
             hand_off.bind(ks)
         ks.install()
+        _SWITCH = ks
         try:
             return await loop.run()
         finally:
+            _SWITCH = None
             ks.uninstall()
 
     _ = run_duck  # imported for symmetry; AgentLoop is used directly so the kill switch can bind
