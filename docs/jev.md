@@ -107,12 +107,24 @@ Three modes:
 | `shadow` | it is asked on every turn and its answer is recorded beside the model's. **The run is unchanged**: the model still decides everything. This is the mode to start in, and the one that measures |
 | `on` | it takes the turns it is confident about, and hands back the rest |
 
-`QUACKD_JEV` does the same when the flag is absent; the flag wins. Asking for a stepper that
-cannot run is refused before the robot is connected, not four seconds into a serial handshake:
+`QUACKD_JEV` does the same when the flag is absent; the flag wins.
+
+**Asking for a stepper that cannot run does not stop the run.** The stepper is an optimisation
+and the model is the pilot either way, so a script that always passes `--jev on` still drives
+the robot on a machine with no key. It says so once, before anything is connected, and carries
+on without it:
 
 ```
-$ quackd run arm-grip-check --robot lerobot:mock --provider fake --jev on
-✗ error: --jev on: the stepper needs the optional extra quackd[jev] — run: uv pip install "quackd[jev]"
+$ quackd run arm-grip-check --robot lerobot:mock --provider fake --jev shadow
+! --jev shadow asked for, running without it: the stepper needs the optional extra quackd[jev] — run: uv pip install "quackd[jev]"
+```
+
+A mode nobody defined is a different matter, because that is a typo rather than a missing
+install, and it stops the run:
+
+```
+$ quackd run arm-grip-check --robot lerobot:mock --provider fake --jev maybe
+✗ error: unknown --jev mode 'maybe'; choose one of off, shadow, on
 ```
 
 ## The SO-101 arm, in four parts

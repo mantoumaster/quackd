@@ -359,6 +359,13 @@ def _ok_line(message: str) -> Any:
     )
 
 
+def _warn_line(message: str) -> Any:
+    """Something the run carried on without. `_fail` is for what it cannot carry on without."""
+    return ui.Deferred(
+        lambda g: Text.assemble((f"{g.warn} ", ui.STYLES["warn"]), (message, ui.STYLES["warn"]))
+    )
+
+
 def _validate_row(row: dict[str, Any]) -> list[Any]:
     """One line of the table, with everything a manifest or a parser wrote kept as text."""
     verbs = "-" if row["verbs"] is None else str(row["verbs"])
@@ -972,9 +979,11 @@ def _run_impl(
                 ),
             )
             return
-    # Before the robot is connected, the way `--by-hand` is refused: a run that will not get
-    # the stepper it was asked for should say so while nothing is energised, not four seconds
-    # into a serial handshake.
+    # A mode nobody defined is a typo and stops the run. A mode that is spelled right and
+    # cannot run is a different thing: the stepper is an optimisation, the model is the pilot
+    # either way, and a script that always passes `--jev on` should still drive the robot on a
+    # machine that has no key. So it says so once, loudly, and carries on without it. Said
+    # before the robot is connected, so nothing is energised while it is read.
     try:
         jev_mode = resolve_jev_mode(jev)
     except ValueError as e:
@@ -983,8 +992,10 @@ def _run_impl(
     if jev_mode != "off":
         available, why = jev_is_available()
         if not available:
-            _fail(f"--jev {jev_mode}: {why}")
-            return
+            ui.console.print(
+                _warn_line(f"--jev {jev_mode} asked for, running without it: {why}"), soft_wrap=True
+            )
+            jev_mode = "off"
     if task_images and not llm.supports_vision:
         # Refused rather than dropped. A pilot that cannot see would be handed "draw what is
         # in the picture" with no picture, improvise something, and the only sign of why would

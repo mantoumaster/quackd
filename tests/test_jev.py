@@ -967,3 +967,73 @@ async def test_the_verdict_gate_never_refuses_a_verb_the_stepper_chose(
     ]
     assert not refused, f"the stepper was offered a verb the verdict gate refuses: {refused}"
     assert any(r["gate"] == "taken" for r in _records(result, "jev"))
+
+
+def test_a_stepper_that_cannot_run_warns_once_and_the_run_carries_on(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stepper is an optimisation and the model is the pilot either way, so a script that
+    always passes `--jev on` still drives the robot on a machine with no key. The run is the
+    run it would have been with `--jev off`, and the terminal says why once."""
+    import sys
+
+    from typer.testing import CliRunner
+
+    from quackd.cli import app
+
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", None)
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "lerobot-lookout",
+            "--robot",
+            "lerobot:mock",
+            "--provider",
+            "fake",
+            "--jev",
+            "on",
+            "--no-trace",
+            "--runs-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "running without it" in result.output
+    assert "quackd[jev]" in result.output, "the warning does not say what to install"
+    run_dir = next(tmp_path.iterdir())
+    records = [
+        r
+        for r in (tmp_path / run_dir.name / "transcript.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if '"kind": "jev"' in r
+    ]
+    assert not records, "a stepper ran after the warning said it would not"
+
+
+def test_a_jev_mode_nobody_defined_stops_the_run(tmp_path: Any) -> None:
+    """A missing install is somebody's machine. A mode that is not one of the three is a typo,
+    and running the robot anyway would hide it."""
+    from typer.testing import CliRunner
+
+    from quackd.cli import app
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "lerobot-lookout",
+            "--robot",
+            "lerobot:mock",
+            "--provider",
+            "fake",
+            "--jev",
+            "maybe",
+            "--runs-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "unknown --jev mode 'maybe'" in result.output
+    assert "off, shadow, on" in result.output
