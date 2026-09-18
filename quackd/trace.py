@@ -513,6 +513,70 @@ def render_events(
             tokens += f" stop={d['stop_reason']}"
         out.append(TraceLine("tokens", tokens, "dim"))
         return out
+    if k == "jev":
+        # The stepper's own turn: what it chose and whether that was enough to act on. Drawn
+        # whether or not it acted, because the turns it declined are the ones a reader most
+        # wants to understand, and in shadow mode they are all of them.
+        took = f"{float(d.get('latency_s') or 0):.2f} s"
+        if d.get("error"):
+            return [
+                TraceLine(
+                    "jev",
+                    f"ERROR {d['error']} after {took}, so the model takes this turn",
+                    "red",
+                    mark="fail",
+                )
+            ]
+        gate = str(d.get("gate", ""))
+        confidence = float(d.get("confidence") or 0.0)
+        floor = float(d.get("floor") or 0.0)
+        if gate == "taken":
+            chosen = TraceLine(
+                "jev", f"{d.get('choice')} {confidence:.2f} >= {floor:.2f} ({took})", "bold"
+            )
+        elif gate == "below_floor":
+            chosen = TraceLine(
+                "jev",
+                f"{d.get('choice')} {confidence:.2f} < {floor:.2f}, to the model ({took})",
+                "yellow",
+                mark="warn",
+            )
+        else:
+            # `escalate`, `done`, `need_human`, `not_offered`, `state_too_large`: nothing
+            # happened and the model takes the turn, so this is dim like the request line
+            # it comes just before
+            chosen = TraceLine("jev", f"{gate}, to the model ({took})", "dim")
+        stepper = [chosen]
+        # The runners-up, because a 0.93 beside a 0.91 is a different decision from a 0.93
+        # beside a 0.02, and the floor on its own cannot say which one you are reading.
+        rest = sorted(
+            (
+                (float(value), str(label))
+                for label, value in (d.get("probabilities") or {}).items()
+                if label != d.get("choice")
+            ),
+            reverse=True,
+        )[:3]
+        if rest:
+            stepper.append(
+                TraceLine("jev?", ", ".join(f"{label} {v:.2f}" for v, label in rest), "dim")
+            )
+        return stepper
+    if k == "jev_shadow":
+        # Shadow mode's whole point in one line: what the stepper would have done beside what
+        # the model did, on the same reading. The run is unchanged, so this is its only trace.
+        agrees = bool(d.get("agree"))
+        return [
+            TraceLine(
+                "jev=",
+                f"{d.get('jev_choice')} {float(d.get('jev_confidence') or 0):.2f} "
+                f"vs model {d.get('model_verb')}: {'agrees' if agrees else 'differs'} "
+                f"({float(d.get('jev_latency_s') or 0):.2f} s against "
+                f"{float(d.get('llm_latency_s') or 0):.1f} s)",
+                "cyan" if agrees else "yellow",
+                mark="note",
+            )
+        ]
     if k == "enforce":
         text = f"{d.get('issue')}: {d.get('action')}"
         if d.get("text"):  # the re-prompt's own words, which the record already carried
