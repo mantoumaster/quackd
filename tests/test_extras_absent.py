@@ -22,6 +22,10 @@ HEAVY = (
     "paho",
     "mujoco",
     "onnxruntime",
+    # The discrete stepper's SDK. It is off by default, so a default install must import the
+    # module that knows about it, build a run config and refuse `--jev on` politely, all
+    # without `typesafe_sdk` being anywhere on the machine.
+    "typesafe_sdk",
 )
 
 SCRIPT = f"""
@@ -36,6 +40,12 @@ import quackd.lan.announce
 import quackd.lan.discover
 import quackd.flock.mqtt_bus
 import quackd.registry
+import quackd.agent.jev
+import quackd.agent.loop
+from quackd.agent.jev import jev_is_available, resolve_jev_mode
+assert resolve_jev_mode(None) == "off"
+ok, why = jev_is_available()
+assert not ok and "quackd[jev]" in why, why
 from quackd.adapters.factory import BACKENDS, RobotSpec, describe, list_adapters, make_adapter
 rows = list_adapters()
 assert [r["name"] for r in rows] == [
@@ -77,7 +87,7 @@ def test_everything_imports_without_any_extra() -> None:
 def test_the_default_path_did_not_import_a_heavy_module() -> None:
     import quackd.flock.mqtt_bus  # noqa: F401
 
-    for name in ("torch", "lerobot", "roslibpy"):
+    for name in ("torch", "lerobot", "roslibpy", "typesafe_sdk"):
         assert name not in sys.modules, f"{name} was imported on the default path"
 
 

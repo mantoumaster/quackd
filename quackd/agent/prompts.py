@@ -618,6 +618,7 @@ def build_observation_text(
     inbox: Sequence[Mapping[str, Any]] | None = None,
     inbox_for: str | None = None,
     cameras: Sequence[str] | None = None,
+    stepped: Sequence[str] | None = None,
 ) -> str:
     lines = [
         f"[step {step}/{max_steps} · {budget_status}]",
@@ -636,6 +637,14 @@ def build_observation_text(
     if inbox:
         lines.append("Messages from your flock (newest last):")
         lines.extend(inbox_lines(inbox, inbox_for))
+    if stepped:
+        # Turns the discrete stepper answered while the model was not asked (`--jev on`).
+        # None of it is in the model's history, because none of it is anything the model
+        # said, so this line is the whole of what it knows about that time. It has to say
+        # who chose them: a pilot that thinks it closed the gripper itself will not think
+        # to check.
+        lines.append("While you were not asked, the stepper chose these (newest last):")
+        lines.extend(f"- {line}" for line in stepped)
     lines.append("Choose exactly one tool.")
     return "\n".join(lines)
 

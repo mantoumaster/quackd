@@ -34,7 +34,10 @@ from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY, Verdict
 if TYPE_CHECKING:
     from quackd.adapters.manifest import RobotManifest
 
-Source = Literal["agent", "mcp", "cli"]
+Source = Literal["agent", "mcp", "cli", "jev"]
+"""Who asked for this verb. `jev` is the discrete stepper answering a turn the model
+never saw, and the trace already prints `from <source>` for anything that is not the
+agent, so the record says who chose a verb without a renderer knowing the word."""
 
 
 class SafetyStop(Exception):
@@ -75,6 +78,13 @@ class Budget:
     now: Callable[[], float] = time.monotonic
     steps: int = 0
     llm_calls: int = 0
+    stepper_calls: int = 0
+    """Turns the discrete stepper answered (`quackd run --jev on`).
+
+    Not a limit and never checked. A stepper turn runs a verb, and the verb charges a step
+    like every other one, so `max_steps` already bounds it and a second number in the `.duck`
+    would bound nothing the first two do not. This exists so `status()` can say where the
+    turns went."""
     started_at: float | None = None
 
     def start(self) -> None:
@@ -103,11 +113,23 @@ class Budget:
         self.check()
         self.llm_calls += 1
 
+    def note_stepper_call(self) -> None:
+        """A turn the stepper answered: no LLM call to charge, and the verb charges the step.
+
+        The clock is the one budget a turn with no model call can still hit, so it is the one
+        that is checked here."""
+        self.check_time()
+        self.stepper_calls += 1
+
     def status(self) -> str:
         return (
             f"step {self.steps}/{self.limits.max_steps}, "
             f"llm calls {self.llm_calls}/{self.limits.max_llm_calls}, "
-            f"{self.elapsed_s / 60:.1f}/{self.limits.max_minutes:g} min"
+            # absent until the stepper has answered once, so every run without one reads
+            # exactly as it always has: this string is in every observation the model is
+            # handed, and `quackd trace` parses it back out
+            + (f"{self.stepper_calls} by the stepper, " if self.stepper_calls else "")
+            + f"{self.elapsed_s / 60:.1f}/{self.limits.max_minutes:g} min"
         )
 
 

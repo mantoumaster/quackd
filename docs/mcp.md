@@ -232,6 +232,12 @@ quackd serve-mcp --no-trace                          # stop every result carryin
 quackd serve-mcp --robot open_duck:sim2d                                     # a buildable duck, no hardware needed
 ```
 
+> [!NOTE]
+> `--jev` is not among these, on purpose. Over MCP the model *is* the client, so quackd has no
+> think path to put a stepper in front of: it hands out tools and enforces the contract, and
+> the deciding happens in Claude. The flag belongs to `quackd run`, where quackd owns the loop
+> ([jev.md](jev.md)).
+
 ## Driving a real Open Duck Mini from Claude
 
 A real Open Duck Mini needs three flags, because its camera is a separate

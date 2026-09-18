@@ -100,6 +100,7 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 | `quackd/sim2d/` | The cartoon world, two renders (top-down, duck-cam), the GIF recorder, the optional live window. |
 | `quackd/perception/` | `Detection` + `Detector`; the HSV colour-blob default; the lazy YOLO extra. |
 | `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `images.py` is what `--image` goes through: it opens whatever a person passed, shrinks anything over 1568 px on a side or 1.5 MB, re-encodes every one of them to PNG, and hands back names the model can refer to, so a provider only ever meets PNG bytes and a caption. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
+| `quackd/agent/jev.py` | The optional discrete stepper (`quackd run --jev`, [jev.md](jev.md), [ADR-0040](adr/0040-a-discrete-stepper-in-front-of-the-model.md)). It decides which of a body's tools are a *choice* rather than a number, from each tool's own JSON schema and nothing else, so `move_joints` is refused on every arm and a body quackd has never shipped is classified by the same rule as the seven that are. Builds the named text state and the four questions, and reads the answer against a confidence floor per verb class. Nothing here imports `typesafe_sdk` at module scope: the loop imports this file on every run and must not pay for a vendor that is not in the run. |
 | `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
 | `quackd/memory.py` | What a robot keeps between runs: one JSONL file per `adapter:backend`, or per registered robot name, with the notes the pilot saved (`remember`) and an episode per run; rendered into the prompt next time ([memory.md](memory.md), ADR-0025, ADR-0034). |
 | `quackd/registry.py` | The robots you have named and the flocks you made of them: `robots.json` and `flocks.json` under `~/.quackd`, strict reads, atomic writes, and `--robot NAME` resolution ([registry.md](registry.md), ADR-0034). |
@@ -137,6 +138,15 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
    those: it rides on the first observation and only that one, and the trim never takes it, so
    the thing the task is about is still in front of the model at the last step. The provider
    must return one tool call.
+
+   With `--jev` the optional discrete stepper is asked first, and only ever offered the calls
+   the executor would run *this* turn: the ones the allowlist permits, whose parameters are a
+   closed set, and which are not waiting on a feasibility verdict. Where it is confident enough
+   the turn ends there and the provider is not called at all. Where it is not, or where the
+   right answer is a number or a sentence, the provider is called exactly as above. A turn the
+   stepper answered appends nothing to the history the provider is handed, because none of it
+   is anything the provider said, and the model is told what happened in one line on the next
+   observation it is actually shown ([jev.md](jev.md)).
 3. **Enforce.** Zero tool calls → one re-prompt, then failure. Several → the first. Then
    `Executor.run_verb`: abort flag → allowlist → verdict → params → confirm → budget → machine-enforced
    `abort_when` → preconditions → dry-run → execute, racing the timeout against the abort.
@@ -177,7 +187,9 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | `llm_request` | how many messages went out, how many still carry an image (`with_image`), how many camera frames that is (`images`, which differs from `with_image` only on a body with several cameras), and separately how many pictures came with the task rather than from a camera (`task_pictures`, counted on its own and never inside `images`, and the same number every step of a run that was given any), whether this is the re-prompt |
 | `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total), stop_reason, latency, or `error` when the call failed |
 | `enforce` | zero tool calls (re-prompt) or several (first only) |
-| `verb_start` | name as called, canonical name, params, source (`agent` · `mcp` · `cli`), whether it is nested inside a composite |
+| `jev` | one per turn the optional discrete stepper was asked, in both of its modes and with the same fields in each, so an `--jev on` row and an `--jev shadow` row can be read against each other: the labels it was offered, the one it chose, the whole probability distribution, its confidence, the floor that applied and which gate fired (`taken` · `below_floor` · `escalate` · `done` · `need_human` · `not_offered` · `state_too_large` · `error`), the two Noul values, how long it took, how large the state was and which fields were trimmed to fit ([jev.md](jev.md)) |
+| `jev_shadow` | only on `--jev shadow`, after that step's `llm` record: what the stepper would have chosen beside what the model actually chose on the same reading, whether they agree, whether the stepper cleared its floor, and what each of them cost. A shadow run changes nothing, so this is the only trace it leaves |
+| `verb_start` | name as called, canonical name, params, source (`agent` · `mcp` · `cli` · `jev`, the last of which is a verb the discrete stepper chose and the model never saw), whether it is nested inside a composite |
 | `gate` | one per executor rule that fired: `abort` · `allowlist` · `unknown` · `verdict` · `params` · `confirm` · `budget` · `abort_when` · `precondition` · `dry_run` · `cancelled`, with the reason and, where it matters, the robot state that caused it |
 | `intent` | every command sent to the robot: kind, params, whether it was accepted, and the robot's own clock when it has one |
 | `verb_end` | outcome (`ok` · `fail` · `refused` · `denied` · `budget` · `aborted` · `preempted` · `error`), summary, wall seconds, the robot's own seconds on a simulator, and how many intents of each kind it sent |

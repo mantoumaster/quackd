@@ -5,7 +5,7 @@ A six-joint desktop arm with a parallel gripper, driven through
 manifest lists none of that: `move`, `go_to`, `search_scan`, `say` and `gaze` do not exist
 on this robot. What it has is joints, a gripper, `place`, and, when a policy is available,
 `pick` as one skill intent that the arm's own learned policy executes. The thesis holds:
-the LLM picks the verb, LeRobot moves the arm, quackd enforces the contract.
+the LLM picks the verb, LeRobot moves the arm, quackd enforces the contract. (With the optional `--jev`, some of the verbs that are a choice rather than a number can be picked by a classifier instead; every angle is still the model's, and the flag is off unless you ask for it: [jev.md](../jev.md).)
 
 Upstream pinned at
 [`fbb811f`](https://github.com/huggingface/lerobot/tree/fbb811fca92504439792b97d216f0d00c2268382)
@@ -566,6 +566,31 @@ arm only through code you write around the adapter, and `quackd run --robot lero
 will not offer `pick` at all. Every other verb is fully reachable from the CLI. If you get a
 policy running this way, the policy's own actions still pass the step cap and the range
 refusal, which is quackd's rule and not LeRobot's.
+
+## Which of this arm's verbs are a choice
+
+Only relevant with the optional `--jev` ([jev.md](../jev.md)), and off unless you ask for it.
+The stepper decides what it may answer from each tool's own JSON schema, and on this arm the
+split falls like this:
+
+| | Tools | The calls it can author |
+|---|---|---|
+| **A choice** | `report_state`, `stop`, `place`, `gripper`, `observe` (when a camera is configured) | `report_state`, `stop`, `place`, `gripper(open=true)`, `gripper(open=false)`, `observe` |
+| **A number** | `move_joints`, `pick` | none, ever |
+| **A sentence** | `assess_task`, `declare_success`, `declare_failure`, `remember` | none, ever |
+
+`gripper` is a choice because its only parameter is a boolean. `move_joints` is not, for two
+reasons that hold independently. Its `positions` is a required object, which is enough on its
+own. And the joint names are nowhere in the schema: they are enforced by a `field_validator`
+against `JOINTS`, so there is nothing for a classifier to enumerate even in principle, and no
+version of this could be talked into offering one.
+
+`pick` is out on both counts, being a free string and confirm gated. The step cap, the range
+refusal and the hot-servo precondition apply to a stepper-authored call exactly as they apply
+to a model's, because both go through the same executor.
+
+[`ducks/arm-grip-check.duck`](../../ducks/arm-grip-check.duck) is the task built out of the
+first row alone, and it is the worked example on that page.
 
 ## Safety
 

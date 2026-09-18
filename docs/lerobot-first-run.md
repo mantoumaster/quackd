@@ -272,6 +272,16 @@ few keywords in a goal.
 > have and gets refused one at a time. Use `fake` to prove the wiring in section 08, and a
 > real model for anything that has to think.
 
+> [!NOTE]
+> There is a third thing you can put in the loop and it is not a pilot. `--jev` adds an optional
+> non-generative stepper in front of whichever model you picked, for the turns whose answer is a
+> choice among calls this arm already has. It is off by default, it needs `quackd[jev]` and a
+> key of its own, and it never authors a joint angle. Leave it off for this whole page: the
+> first run is about proving the arm, the port and the camera, and one more moving part between
+> you and the arm is the opposite of what a first run wants. Once the arm has waved,
+> [jev.md](jev.md) is where it lives, and `--jev shadow` is the way to look at it without
+> changing a run.
+
 <br>
 
 ## 04. At the lab, before power

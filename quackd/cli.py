@@ -359,6 +359,13 @@ def _ok_line(message: str) -> Any:
     )
 
 
+def _warn_line(message: str) -> Any:
+    """Something the run carried on without. `_fail` is for what it cannot carry on without."""
+    return ui.Deferred(
+        lambda g: Text.assemble((f"{g.warn} ", ui.STYLES["warn"]), (message, ui.STYLES["warn"]))
+    )
+
+
 def _validate_row(row: dict[str, Any]) -> list[Any]:
     """One line of the table, with everything a manifest or a parser wrote kept as text."""
     verbs = "-" if row["verbs"] is None else str(row["verbs"])
@@ -694,6 +701,7 @@ def _run_impl(
     extra_body: str | None = None,
     flock: str | None = None,
     *,
+    jev: str | None = None,
     images: Sequence[str] = (),
     by_hand: bool = False,
     robot: str | None = None,
@@ -707,6 +715,7 @@ def _run_impl(
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
     from quackd.agent.images import TaskImageError, load_task_images
+    from quackd.agent.jev import jev_is_available, resolve_jev_mode
     from quackd.agent.loop import RunConfig, run_duck
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import make_provider
@@ -993,6 +1002,23 @@ def _run_impl(
                 ),
             )
             return
+    # A mode nobody defined is a typo and stops the run. A mode that is spelled right and
+    # cannot run is a different thing: the stepper is an optimisation, the model is the pilot
+    # either way, and a script that always passes `--jev on` should still drive the robot on a
+    # machine that has no key. So it says so once, loudly, and carries on without it. Said
+    # before the robot is connected, so nothing is energised while it is read.
+    try:
+        jev_mode = resolve_jev_mode(jev)
+    except ValueError as e:
+        _fail(str(e))
+        return
+    if jev_mode != "off":
+        available, why = jev_is_available()
+        if not available:
+            ui.console.print(
+                _warn_line(f"--jev {jev_mode} asked for, running without it: {why}"), soft_wrap=True
+            )
+            jev_mode = "off"
     if task_images and not llm.supports_vision:
         # Refused rather than dropped. A pilot that cannot see would be handed "draw what is
         # in the picture" with no picture, improvise something, and the only sign of why would
@@ -1071,6 +1097,7 @@ def _run_impl(
         trace=fan_out(console_trace, status.sink),
         task_images=task_images,
         hand_off=hand_off,
+        jev=jev_mode,
     )
     ui.console.print(
         ui.run_header(
@@ -1712,6 +1739,17 @@ _VISION = typer.Option(
     help="Send camera frames to the model (default: on for cloud, off for local).",
     rich_help_panel="Model",
 )
+_JEV = typer.Option(
+    None,
+    "--jev",
+    help="EXPERIMENTAL: put a discrete stepper in front of the model. `off` (the default) is "
+    "quackd as it has always been. `on` lets TypeSafe's Jev answer the turns whose answer is a "
+    "choice among calls this body can make, a read, the brake, a gripper, a gaze, and hands "
+    "everything else to the model, including every pose and every sentence. `shadow` asks it "
+    "every turn, records what it would have chosen beside what the model did, and changes "
+    r"nothing. Needs quackd\[jev] and TYPESAFE_API_KEY. QUACKD_JEV does the same.",
+    rich_help_panel="Model",
+)
 _ROBOT = typer.Option(
     None,
     "--robot",
@@ -1880,6 +1918,7 @@ def run(
     api_key: str | None = _APIKEY,
     vision: bool | None = _VISION,
     extra_body: str | None = _EXTRA_BODY,
+    jev: str | None = _JEV,
     flock: str | None = _FLOCK,
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
@@ -1910,6 +1949,7 @@ def run(
         api_key=api_key,
         vision=vision,
         extra_body=extra_body,
+        jev=jev,
         flock=flock,
         robot=robot,
         robots=robots,
