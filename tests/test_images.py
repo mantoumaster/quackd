@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from quackd.agent import images
 from quackd.agent.images import TaskImageError, load_task_images
@@ -223,3 +223,79 @@ def test_the_pictures_come_back_in_the_order_they_were_given(tmp_path: Path) -> 
 
     assert [p.name for p in loaded] == order
     assert [decoded(p.png)[1] for p in loaded] == [sizes[name] for name in order]
+
+
+# ── two things a plain convert("RGB") gets wrong, both of them silently ─────────────────
+#
+# Found by writing these tests rather than by reading the code, which is the point of them:
+# neither failure raises, neither warns, and both leave a run that succeeds while the model
+# answers about something other than the file it was handed.
+
+
+def test_a_drawing_on_a_transparent_background_arrives_as_a_drawing(tmp_path: Path) -> None:
+    """The likeliest file this flag will ever be given, and the one that used to break.
+
+    A sketch exported the ordinary way is strokes on a transparent background, and a
+    transparent pixel still stores a colour underneath: for a drawing saved out of most tools
+    that colour is black. `convert("RGB")` keeps it and throws the alpha away, so the circle
+    and its paper both became black and the model was handed a solid rectangle as the thing it
+    had been asked to draw. Nothing raised, and the run succeeded.
+
+    The picture has to composite onto white first, because a drawing with no background is a
+    drawing on paper, and paper is what the arm is about to be looking at."""
+    path = tmp_path / "sketch.png"
+    img = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(img).ellipse([40, 40, 160, 160], outline=(0, 0, 0, 255), width=6)
+    img.save(path)
+
+    with Image.open(io.BytesIO(load_task_images([str(path)])[0].png)) as out:
+        assert out.mode == "RGB"
+        colours = out.getcolors(maxcolors=1 << 16) or []
+        assert len(colours) > 1, "one colour means the whole picture went the same way"
+        by_count = sorted(colours, reverse=True)
+        assert by_count[0][1] == images.GROUND, "the paper is white, not the alpha's black"
+        assert any(sum(colour) < 200 for _, colour in colours), "and the strokes survived"
+
+
+def test_a_palette_picture_with_one_transparent_colour_is_flattened_too(tmp_path: Path) -> None:
+    """A GIF, and a PNG saved with a palette, carry transparency as an index rather than as a
+    channel, so the mode is `P` and the alpha test that reads `RGBA` misses it. PIL records
+    which index it was under `info["transparency"]`, which is what this reads instead."""
+    path = tmp_path / "flag.gif"
+    img = Image.new("P", (60, 60), 0)
+    img.putpalette([0, 0, 0] + [200, 30, 30] * 255)
+    ImageDraw.Draw(img).rectangle([10, 10, 50, 50], fill=1)
+    img.save(path, transparency=0)
+
+    with Image.open(io.BytesIO(load_task_images([str(path)])[0].png)) as out:
+        colours = out.getcolors(maxcolors=1 << 16) or []
+        assert images.GROUND in [colour for _, colour in colours], (
+            "the transparent index became white rather than the palette's black"
+        )
+
+
+def test_a_photograph_that_says_it_is_rotated_arrives_the_way_up_it_looks(
+    tmp_path: Path,
+) -> None:
+    """A phone stores its rotation in an EXIF tag rather than in the pixels, so every viewer
+    shows the picture upright and the pixels are on their side. Re-encoding to PNG drops the
+    tag, so the model used to be handed the sideways pixels with nothing left to say so.
+
+    The rotation has to be moved into the pixels before the tag is lost. Asserted on the shape
+    rather than on the tag, because the shape is what the model sees."""
+    path = tmp_path / "bench.jpg"
+    img = Image.new("RGB", (400, 200), (10, 120, 200))
+    exif = img.getexif()
+    exif[274] = 6  # "rotate 90 clockwise on display", the common portrait phone value
+    img.save(path, exif=exif)
+
+    assert decoded(load_task_images([str(path)])[0].png)[1] == (200, 400), (
+        "400x200 tagged as rotated is a portrait picture, and is sent as one"
+    )
+
+
+def test_a_picture_with_no_orientation_tag_is_left_exactly_as_it_is(tmp_path: Path) -> None:
+    """The other half of the one above: most files carry no such tag, and a transform that
+    fired on them anyway would turn every ordinary picture on its side."""
+    path = drawing(tmp_path / "plain.jpg", size=(400, 200), fmt="JPEG")
+    assert decoded(load_task_images([str(path)])[0].png)[1] == (400, 200)

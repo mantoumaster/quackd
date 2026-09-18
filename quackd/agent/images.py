@@ -17,7 +17,7 @@ import io
 from collections.abc import Sequence
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from quackd.agent.providers.base import NamedPng
 
@@ -32,6 +32,10 @@ the whole run, so the cap is on quackd's side of the wire rather than on the ven
 
 SHRINK = 0.8
 """How much smaller to try when the encoded picture is still over the cap."""
+
+GROUND = (255, 255, 255)
+"""What a transparent pixel becomes. White, because a drawing exported with a transparent
+background is a drawing on paper, and paper is what the arm is going to be looking at."""
 
 MIN_SIDE_PX = 64
 """Stop shrinking here and refuse instead: a picture this small says nothing, and a loop that
@@ -52,13 +56,35 @@ def _encode(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+def _flatten(img: Image.Image) -> Image.Image:
+    """The picture as RGB, the right way up, with nothing transparent left in it.
+
+    Two things a plain `convert("RGB")` gets wrong, and both of them silently.
+
+    A transparent pixel keeps whatever colour is stored underneath it, which for a drawing
+    exported the ordinary way is black. So a sketch of a circle on a transparent background
+    became a solid black rectangle: one colour, no circle, nothing raised, and the model was
+    handed that as the thing it had been asked to draw. Compositing onto white first is what
+    makes the exported drawing look like the drawing.
+
+    And a photograph from a phone stores its rotation in an EXIF tag rather than in the
+    pixels, so every viewer shows it upright and a re-encode that drops the tag shows it on
+    its side. `exif_transpose` moves the rotation into the pixels before the tag is lost."""
+    img = ImageOps.exif_transpose(img) or img
+    if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
+        img = img.convert("RGBA")
+        ground = Image.new("RGBA", img.size, (*GROUND, 255))
+        img = Image.alpha_composite(ground, img)
+    return img.convert("RGB")
+
+
 def _fit(img: Image.Image, path: str) -> bytes:
     """One picture as PNG bytes, inside both caps.
 
     The long edge comes down first, which is what actually costs tokens, and only then the
     file size, which is what costs bandwidth. A sketch is mostly flat colour and lands far
     under the byte cap at full size; a photograph of a desk may not, and shrinks again."""
-    img = img.convert("RGB")
+    img = _flatten(img)
     img.thumbnail((MAX_SIDE_PX, MAX_SIDE_PX))
     png = _encode(img)
     while len(png) > MAX_BYTES:
