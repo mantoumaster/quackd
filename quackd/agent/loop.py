@@ -210,6 +210,8 @@ class RunResult:
     gif_path: Path | None = None
     trace_dropped: int = 0
     """Events a view raised on and never showed. The transcript has them all."""
+    jev_calls: int = 0
+    """Turns the discrete stepper answered. 0 on every run that did not ask for one."""
 
     @property
     def ok(self) -> bool:
@@ -1183,6 +1185,10 @@ class AgentLoop:
                 # what a view could not show. The record has every one of them; a console
                 # that swallowed a hundred events used to leave no sign anywhere.
                 "trace_dropped": self.tracer.dropped,
+                # only when there was one, so every summary written before the stepper
+                # existed, and every run that does not ask for one, stays byte for byte
+                # what it was
+                **({"jev": stepper.summary()} if stepper is not None else {}),
             }
             # the only unguarded statements in this teardown used to be these three, so a
             # disk that filled at `run_end` skipped summary.json, leaked the file handle,
@@ -1214,6 +1220,7 @@ class AgentLoop:
             run_dir=self.run_dir,
             final_state=final_state,
             trace_dropped=self.tracer.dropped,
+            jev_calls=self.budget.stepper_calls,
         )
 
 

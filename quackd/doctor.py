@@ -60,6 +60,7 @@ EXTRAS = {
     "anthropic": ("anthropic", "quackd[anthropic]"),
     "openai": ("openai", "quackd[openai] and every OpenAI-compatible vendor"),
     "gemini": ("google.genai", "quackd[gemini]"),
+    "jev (TypeSafe stepper)": ("typesafe_sdk", "quackd[jev]"),
     "yolo": ("ultralytics", "quackd[yolo]"),
     "live": ("pygame", "quackd[live]"),
     "mujoco": ("mujoco", "quackd[mujoco]"),
@@ -321,6 +322,14 @@ class DoctorReport:
     core: list[Check] = field(default_factory=list)
     bundled_ducks: int = 0
     providers: list[ProviderRow] = field(default_factory=list)
+    steppers: list[ProviderRow] = field(default_factory=list)
+    """Not providers, and kept out of that list on purpose.
+
+    A stepper answers typed questions about a state and generates nothing, so it can never
+    pilot a robot and must never appear under `--provider`. The concrete reason for the
+    separate list is `cloud_keys`, which reads `providers` to say "no key for ...": a machine
+    with no TypeSafe key is not a machine with a problem, because the stepper is off unless
+    somebody asks for it."""
     servers: list[ServerRow] = field(default_factory=list)
     adapters: list[dict[str, Any]] = field(default_factory=list)
     transports: list[TransportRow] = field(default_factory=list)
@@ -359,6 +368,7 @@ class DoctorReport:
             "core": [c.to_dict() for c in self.core],
             "bundled_ducks": self.bundled_ducks,
             "providers": [p.to_dict() for p in self.providers],
+            "steppers": [s.to_dict() for s in self.steppers],
             "servers": [s.to_dict() for s in self.servers],
             "adapters": self.adapters,
             "transports": [t.to_dict() for t in self.transports],
@@ -693,6 +703,27 @@ def collect(
             )
         )
 
+    # Asked for whether or not anybody uses it, because "is the stepper on?" is a question
+    # a reader of this screen should be able to answer without running a task, and the answer
+    # is almost always no.
+    from quackd.agent.jev import DEFAULT_MODEL as JEV_MODEL
+    from quackd.agent.jev import EXTRA as JEV_EXTRA
+    from quackd.agent.jev import KEY_ENV as JEV_KEY
+
+    jev_key = os.environ.get(JEV_KEY, "")
+    report.steppers.append(
+        ProviderRow(
+            name="jev",
+            extra=f"quackd[{JEV_EXTRA}]",
+            version=_installed("typesafe_sdk"),
+            key=_mask(jev_key) if jev_key else "",
+            key_env=JEV_KEY,
+            key_optional=False,
+            model=os.environ.get("TYPESAFE_DEFAULT_MODEL") or JEV_MODEL,
+            pinned=bool(os.environ.get("TYPESAFE_DEFAULT_MODEL")),
+        )
+    )
+
     custom = os.environ.get("QUACKD_BASE_URL")
     for preset, url in {**PRESETS, **({"local": custom} if custom else {})}.items():
         if not url:
@@ -831,6 +862,31 @@ def _providers_table(report: DoctorReport) -> Any:
         else:
             model = Text(row.model, style=ui.STYLES["ok"] if row.pinned else "")
         table.add_row(Text(row.name), extra, key, model)
+    return table
+
+
+def _steppers_table(report: DoctorReport) -> Any:
+    """The providers table's shape, so a reader recognises it, and its own section, so nobody
+    reads a stepper as something `--provider` takes."""
+    table = ui.table()
+    table.add_column("stepper", style=ui.STYLES["key"], no_wrap=True)
+    table.add_column("extra")
+    table.add_column("key")
+    table.add_column("model", overflow="fold")
+    for row in report.steppers:
+        extra = (
+            Text(str(row.version), style=ui.STYLES["ok"])
+            if row.version
+            else Text.assemble(("missing ", ui.STYLES["warn"]), (f"({row.extra})", ""))
+        )
+        key: Any = (
+            ui.plain(row.key, style=ui.STYLES["ok"])
+            if row.key
+            else Text(f"{row.key_env} unset", style=ui.STYLES["muted"])
+        )
+        table.add_row(
+            Text(row.name), extra, key, Text(row.model, style=ui.STYLES["ok"] if row.pinned else "")
+        )
     return table
 
 
@@ -1021,6 +1077,16 @@ def render(console: Console, report: DoctorReport) -> None:
 
     _section(console, "providers (every model id: quackd list-models)")
     console.print(_providers_table(report))
+
+    _section(console, "discrete stepper (quackd run --jev; off unless you ask for it)")
+    console.print(_steppers_table(report))
+    console.print(
+        ui.plain(
+            "It answers the turns that are a choice among calls this body can make. Every "
+            "pose, every sentence and every verdict is still the model's (docs/jev.md).",
+            style=ui.STYLES["muted"],
+        )
+    )
 
     _section(console, "local LLM servers (GET /v1/models, 1.5 s timeout)")
     console.print(_servers_table(report))

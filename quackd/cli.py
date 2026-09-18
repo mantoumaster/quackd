@@ -671,6 +671,7 @@ def _run_impl(
     extra_body: str | None = None,
     flock: str | None = None,
     *,
+    jev: str | None = None,
     images: Sequence[str] = (),
     by_hand: bool = False,
     robot: str | None = None,
@@ -684,6 +685,7 @@ def _run_impl(
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
     from quackd.agent.images import TaskImageError, load_task_images
+    from quackd.agent.jev import jev_is_available, resolve_jev_mode
     from quackd.agent.loop import RunConfig, run_duck
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import make_provider
@@ -970,6 +972,19 @@ def _run_impl(
                 ),
             )
             return
+    # Before the robot is connected, the way `--by-hand` is refused: a run that will not get
+    # the stepper it was asked for should say so while nothing is energised, not four seconds
+    # into a serial handshake.
+    try:
+        jev_mode = resolve_jev_mode(jev)
+    except ValueError as e:
+        _fail(str(e))
+        return
+    if jev_mode != "off":
+        available, why = jev_is_available()
+        if not available:
+            _fail(f"--jev {jev_mode}: {why}")
+            return
     if task_images and not llm.supports_vision:
         # Refused rather than dropped. A pilot that cannot see would be handed "draw what is
         # in the picture" with no picture, improvise something, and the only sign of why would
@@ -1048,6 +1063,7 @@ def _run_impl(
         trace=fan_out(console_trace, status.sink),
         task_images=task_images,
         hand_off=hand_off,
+        jev=jev_mode,
     )
     ui.console.print(
         ui.run_header(
@@ -1686,6 +1702,17 @@ _VISION = typer.Option(
     help="Send camera frames to the model (default: on for cloud, off for local).",
     rich_help_panel="Model",
 )
+_JEV = typer.Option(
+    None,
+    "--jev",
+    help="EXPERIMENTAL: put a discrete stepper in front of the model. `off` (the default) is "
+    "quackd as it has always been. `on` lets TypeSafe's Jev answer the turns whose answer is a "
+    "choice among calls this body can make, a read, the brake, a gripper, a gaze, and hands "
+    "everything else to the model, including every pose and every sentence. `shadow` asks it "
+    "every turn, records what it would have chosen beside what the model did, and changes "
+    r"nothing. Needs quackd\[jev] and TYPESAFE_API_KEY. QUACKD_JEV does the same.",
+    rich_help_panel="Model",
+)
 _ROBOT = typer.Option(
     None,
     "--robot",
@@ -1854,6 +1881,7 @@ def run(
     api_key: str | None = _APIKEY,
     vision: bool | None = _VISION,
     extra_body: str | None = _EXTRA_BODY,
+    jev: str | None = _JEV,
     flock: str | None = _FLOCK,
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
@@ -1884,6 +1912,7 @@ def run(
         api_key=api_key,
         vision=vision,
         extra_body=extra_body,
+        jev=jev,
         flock=flock,
         robot=robot,
         robots=robots,
