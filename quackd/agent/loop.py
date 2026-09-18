@@ -257,6 +257,14 @@ class AgentLoop:
         self.executor.require_verdict = True
         self.history: list[Exchange] = []
         self.usage = Usage()
+        self._handed_over = False
+        """Somebody answered the invitation to place this arm, so the gripper may be holding
+        whatever they put in it.
+
+        Set when the wait is answered rather than when the hold succeeds, because the two can
+        differ and the difference is the jam: an arm that sagged as torque returned refuses the
+        hold, ends the run, and still has the pencil in it. The teardown reads this to decide
+        whether to ask for it back before the fold."""
         self.highlights: list[str] = []
         """Verb results worth carrying into the episode memory (the last few that went ok)."""
 
@@ -396,11 +404,15 @@ class AgentLoop:
         if not released.ok:
             raise Aborted(f"the arm was not handed over: {released.reason}")
         if not await hand.wait(self.PLACE_IT):
+            # The invitation said "put whatever it needs in the gripper", so from the moment it
+            # is answered the jaws may be holding something whatever happens next, and the
+            # teardown owes them the chance to take it out before the arm folds on it.
             # the abort flag is what a Ctrl-C during the wait sets, and the loop's own reason
             # for one is better than this function's guess at it
             if self.executor.abort.is_set():
                 raise Aborted(self._abort_reason())
             raise Aborted(self.NOBODY_PLACED_IT)
+        self._handed_over = True
         held = await self._take_hold()
         if not held.ok:
             raise Aborted(f"the arm is not holding the pose you set: {held.reason}")
@@ -806,10 +818,6 @@ class AgentLoop:
             last_verb: str | None = None
             last_result: VerbResult | None = None
             retry_prompted = False
-            # bound here rather than where it is set, because the teardown reads it and the
-            # rest move above it can raise: an `UnboundLocalError` in a `finally` would cost
-            # the arm the fold and the close it is in the middle of
-            handed_over = False
 
             self.budget.start()
             self.heartbeat.start()
@@ -829,7 +837,7 @@ class AgentLoop:
             # that pose, held again wherever they leave it, and the pilot improvises from
             # there instead of from the fold
             if cfg.hand_off is not None:
-                handed_over = await self._hand_over()
+                await self._hand_over()
             while True:
                 await asyncio.sleep(0)  # let the heartbeat and kill switch run
                 if self.executor.abort.is_set():
@@ -1040,7 +1048,7 @@ class AgentLoop:
             with contextlib.suppress(Exception):
                 # the run's last intent, narrated like every other one
                 await self.executor.traced_transport().stop()
-            if handed_over:
+            if self._handed_over:
                 # between the stop, which is holding the arm where the run left it, and the
                 # rest move, which folds it: the one moment where opening the gripper is
                 # neither fighting a verb nor happening after the arm has already folded up

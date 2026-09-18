@@ -791,9 +791,12 @@ goes into is built for exactly that arm. Every teardown starts with a `stop`, an
 an arm somebody is holding takes hold of it first: the arm is re-energised where your hand has
 it, and only then does the rest move fold it. A `stop` that sent a goal to a limp servo would
 stop nothing, and the fold after it would be a fold of an arm that is not listening. A wait
-that ends any other way, with nothing pressed at all, lands in the same teardown and says so
-rather than blaming a key nobody touched (captured on `lerobot:mock`, where nobody had moved
-the arm out of the fold either, so the rest move had nothing to do):
+that ends any other way lands in the same teardown and says so rather than blaming a key
+nobody touched. There is no clock on the first wait, so that ending means the keyboard itself
+went away: the terminal was closed, or the input it was reading finished. quackd notices,
+because a wait for a keystroke that nothing can deliver has to end rather than hold an arm
+limp for ever (captured on `lerobot:mock`, where nobody had moved the arm out of the fold
+either, so the rest move had nothing to do):
 
 ```
 ·  hand    released: torque is off at the rest pose

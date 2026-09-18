@@ -2321,10 +2321,16 @@ async def test_an_arm_that_slipped_as_torque_came_on_is_not_run_from(tmp_path: P
     holding a pose nobody chose, and a few degrees at the shoulder is a hand's width at the
     gripper. So it refuses, and the run ends rather than improvising from it.
 
-    The close note is the thing to watch here. `_in_hand` is cleared as soon as torque is
+    Two things to watch. The close note first: `_in_hand` is cleared as soon as torque is
     confirmed on, BEFORE the pose is judged, so this refusal must not end with the arm being
-    described as limp in somebody's hands: torque did come on, the arm is holding itself, and
-    it folds up under its own power like any other."""
+    described as limp in somebody's hands. Torque did come on, the arm is holding itself, and
+    it folds up under its own power like any other.
+
+    And the gripper. The person was told to load it before they pressed Enter, so the jaws may
+    be holding something whatever the arm then did with the pose, and this ending must still
+    ask for it back before the fold. It used to skip that: the hand-back was guarded on the
+    hold having succeeded rather than on the person having been asked, so exactly the ending
+    most likely to have a payload in the jaws, an arm that sagged under one, folded on it."""
     mock = LeRobotMock(rest_pose=REST)
     mock.hold_slips = {"elbow_flex": TOL_DEG * 2}
     person = ScriptedPerson(mock, places=PLACED)
@@ -2336,7 +2342,11 @@ async def test_an_arm_that_slipped_as_torque_came_on_is_not_run_from(tmp_path: P
     events = Transcript.read(result.run_dir / "transcript.jsonl")
     notes = [e["text"] for e in events if e["kind"] == "note"]
     assert any(note.startswith("the arm did not take hold:") for note in notes), notes
-    assert _stages(events) == ["released", "held"], "asked for, and refused"
+    assert _stages(events) == ["released", "held", "unloaded"], (
+        "asked for, refused, and the gripper still emptied before the arm folded on it"
+    )
+    opened = [e for e in events if e["kind"] == "intent" and e["intent"] == "gripper"]
+    assert [e["params"] for e in opened] == [{"open": True}]
     assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
     assert {j: mock.joints[j] for j in rest_goal(REST)} == rest_goal(REST), "folded up"
     assert mock.torque is False, "and only an arm that is down has its torque released"
@@ -2463,3 +2473,53 @@ async def test_a_gripper_that_will_not_open_is_said_out_loud(tmp_path: Path) -> 
     assert any(n.startswith("the gripper did not open:") for n in notes), notes
     assert any("take what is in it by hand" in n for n in notes)
     assert mock.joints["gripper"] == PLACED["gripper"], "and the jaws really are still shut"
+
+
+async def test_the_gripper_opens_before_the_arm_folds_and_not_after(tmp_path: Path) -> None:
+    """The ordering the whole hand-back exists for, asserted as an ordering.
+
+    Every test around this one checked that the gripper opened and that the arm folded, and
+    none of them checked which happened first, which is the only part that matters: a gripper
+    opened after the fold has already driven whatever was in it into the bench.
+
+    The mock records both in one list, so this reads the sequence rather than two facts."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED)
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    order = [
+        "gripper" if e["kind"] == "intent" and e.get("intent") == "gripper" else "fold"
+        for e in events
+        if (e["kind"] == "intent" and e.get("intent") == "gripper")
+        or (e["kind"] == "note" and e.get("text") == "moving to the rest pose")
+    ]
+    # a run folds twice, once before the pilot and once after it, so what is asserted is that
+    # the gripper falls between them rather than merely somewhere
+    assert order == ["fold", "gripper", "fold"], (
+        f"the gripper must open after the run and before the fold that would jam it: {order}"
+    )
+    assert mock.joints["gripper"] == GRIPPER_OPEN, "and it really did open"
+
+
+async def test_a_terminal_that_goes_away_mid_wait_ends_the_run_instead_of_hanging(
+    tmp_path: Path,
+) -> None:
+    """The ending the docs promised and the code could not reach.
+
+    The placement wait has no clock on it on purpose, so somebody can go and find a pencil. It
+    also has no keyboard once stdin is finished, which a closed terminal or a Ctrl-D produces,
+    and without an answer for that the run waited for ever with the arm limp and nobody coming.
+
+    A `HandOff` that answers no stands in for the real `KillSwitch.wait_for_enter` returning
+    False on `keys_ended`; what is asserted is what the loop does with that answer, which is to
+    end the run in the words for nobody having placed the arm and still put the arm down."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED, answers=[False])
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+
+    assert result.outcome == "aborted"
+    assert "nobody placed the arm" in result.reason
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+    assert mock.torque is False and mock.close_note is None, "and it is down and let go of"

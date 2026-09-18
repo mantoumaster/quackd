@@ -680,6 +680,12 @@ class KillSwitch:
         ended immediately by one that already happened."""
         self.entered = asyncio.Event()
         """Somebody pressed Enter. Set from the key thread, cleared by whoever waits on it."""
+        self.keys_ended = asyncio.Event()
+        """Stdin is finished, so no keystroke is ever coming.
+
+        A wait for a person has to end on this or it never ends at all. The run that needs it
+        is the one that has an arm limp in somebody's hands: without it, a terminal closed or a
+        Ctrl-D typed at the wrong moment leaves quackd waiting for ever, holding nothing."""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._previous: Any = None
         self._thread: threading.Thread | None = None
@@ -710,6 +716,7 @@ class KillSwitch:
             while True:
                 ch = sys.stdin.read(1)
                 if not ch:
+                    self._announce(self.keys_ended)
                     return
                 if ch in ("\r", "\n"):
                     if self._loop is not None:
@@ -718,7 +725,14 @@ class KillSwitch:
                 if ch.strip().lower() == "q":
                     self._fire("'q' pressed")
         except Exception:
+            self._announce(self.keys_ended)
             return
+
+    def _announce(self, event: asyncio.Event) -> None:
+        """Set an event from the key thread, which is not the loop's thread."""
+        if self._loop is not None:
+            with contextlib.suppress(RuntimeError):  # the loop has already closed
+                self._loop.call_soon_threadsafe(event.set)
 
     async def wait_for_enter(
         self, *, timeout_s: float | None = None, until_abort: bool = True
@@ -734,12 +748,16 @@ class KillSwitch:
 
         Nothing here reads stdin: the key thread is the only reader, and this waits on what it
         sets. A wait on a machine with no key thread (no terminal) ends on its timeout, which
-        is why a caller who needs an answer checks for a terminal before asking for one."""
+        is why a caller who needs an answer checks for a terminal before asking for one, and on
+        `keys_ended` where the thread ran and stdin then finished under it."""
         self.entered.clear()
         self.pressed.clear()
         watched = [
             asyncio.ensure_future(self.entered.wait()),
             asyncio.ensure_future((self.abort if until_abort else self.pressed).wait()),
+            # nobody is going to press anything, so the caller is owed that answer rather than
+            # a wait that never returns
+            asyncio.ensure_future(self.keys_ended.wait()),
         ]
         try:
             await asyncio.wait(watched, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
@@ -760,6 +778,13 @@ class KillSwitch:
                 target=self._watch_keys, name="quackd-keys", daemon=True
             )
             self._thread.start()
+        else:
+            # Nobody is reading the keyboard, so no keystroke is ever coming, and a wait for
+            # one has to know that rather than sit there. The caller that waits checks for a
+            # terminal first, but the two checks are made at different moments and by different
+            # code, and the cost of them disagreeing is a run stopped for ever with an arm limp
+            # in somebody's hands.
+            self.keys_ended.set()
 
     def _restore(self) -> None:
         if self._previous is not None:

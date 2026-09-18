@@ -185,3 +185,39 @@ async def test_the_waiter_cancels_its_own_tasks() -> None:
         assert complaints == []
     finally:
         loop.set_exception_handler(None)
+
+
+# ── a wait nothing can ever answer ──────────────────────────────────────────────────────
+
+
+async def test_stdin_running_out_ends_a_wait_that_has_no_clock_on_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The placement wait has no timeout on purpose, so somebody can go and find a pencil.
+
+    That makes the reader the only thing that can ever end it, and a reader that reaches the
+    end of its input is a reader that never will. Without this the run waited for ever with
+    the arm limp: a closed terminal, or a Ctrl-D at the wrong moment, and quackd is holding
+    nothing and asking nobody."""
+    ks, _ = switch()
+    await feed(ks, "", monkeypatch)
+    assert ks.keys_ended.is_set()
+    assert await asyncio.wait_for(ks.wait_for_enter(timeout_s=None), timeout=2) is False
+
+
+async def test_a_run_with_no_reader_at_all_does_not_wait_for_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`install` starts the key thread only where stdin is a terminal, and the caller that
+    waits checks for a terminal of its own before it asks. Those are two checks, made at
+    different moments by different code, and the cost of them disagreeing is the same forever
+    wait. So the switch says outright that nothing is reading."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO("this is not a terminal"))
+    ks = KillSwitch(asyncio.Event())
+    ks.install()
+    try:
+        assert ks._thread is None, "no terminal, so no reader"
+        assert ks.keys_ended.is_set(), "and it says so rather than letting a wait hang"
+        assert await asyncio.wait_for(ks.wait_for_enter(timeout_s=None), timeout=2) is False
+    finally:
+        ks.uninstall()
