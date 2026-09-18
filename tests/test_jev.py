@@ -11,6 +11,7 @@ silently, and this is the test that makes somebody say which.
 
 from __future__ import annotations
 
+import pathlib
 from collections.abc import Sequence
 from typing import Any
 
@@ -915,3 +916,54 @@ async def test_a_wave_like_goal_never_gets_a_pose_out_of_the_stepper(
         assert (record.get("call") or {}).get("name") != "move_joints"
     poses = [r for r in _records(result, "verb_start") if r["name"] == "move_joints"]
     assert all(r["source"] == "agent" for r in poses), "a pose was not the model's"
+
+
+async def test_a_choice_that_was_not_on_offer_this_turn_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Checked against what was offered, not against everything the body can do.
+
+    This is the whole of the verdict gate as the stepper sees it. Before a verdict `gripper`
+    is not on the list, and a stepper that answered it anyway would have the executor refuse
+    the call and waste the turn. It was doing exactly that until a real run showed it: two
+    turns of `gripper REFUSED` and `place REFUSED` before the model was ever asked."""
+    from tests import fake_typesafe
+
+    advice, stepper, _f = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("gripper(open=false)", 0.99)),
+        monkeypatch,
+        cleared=False,
+    )
+    assert advice.gate == "escalate" and advice.call is None
+    assert "gripper(open=false)" in stepper.calls, "the label exists, it was just not offered"
+    assert "gripper(open=false)" not in advice.record["labels"]
+
+
+async def test_the_verdict_gate_never_refuses_a_verb_the_stepper_chose(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end, on the arm: no gate in the whole run refuses a call the stepper authored."""
+    from tests import fake_typesafe
+
+    duck_path = pathlib.Path("ducks/arm-grip-check.duck")
+    from quackd.duckfile.parser import load_duck
+
+    result, _rec = await _on_run(
+        tmp_path,
+        monkeypatch,
+        fake_typesafe.FakeJev(
+            script=[
+                fake_typesafe.turn("report_state", 0.97),
+                fake_typesafe.turn("gripper(open=false)", 0.93),
+                fake_typesafe.turn("report_state", 0.95),
+                fake_typesafe.turn("stop", 0.91),
+            ],
+            answers=fake_typesafe.turn(ESCALATE, 0.99, done=0.9),
+        ),
+        duck=load_duck(str(duck_path)),
+    )
+    refused = [
+        r for r in _records(result, "gate") if r.get("gate") == "verdict" and r["outcome"] != "ok"
+    ]
+    assert not refused, f"the stepper was offered a verb the verdict gate refuses: {refused}"
+    assert any(r["gate"] == "taken" for r in _records(result, "jev"))

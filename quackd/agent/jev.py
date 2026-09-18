@@ -628,9 +628,9 @@ class Stepper:
         self.latency_s += took
         record["latency_s"] = took
         record["questions"] = 4
-        return self._route(result, record)
+        return self._route(result, record, offered)
 
-    def _route(self, result: Any, record: dict[str, Any]) -> Advice:
+    def _route(self, result: Any, record: dict[str, Any], offered: Sequence[Call]) -> Advice:
         """What one fan-out means, in the order the gates have to be read.
 
         The Nouls come first, so a stepper that thinks the job is finished never moves
@@ -658,10 +658,13 @@ class Stepper:
             return self._hand_back({**record, "gate": "done"})
         if human >= HUMAN_THRESHOLD:
             return self._hand_back({**record, "gate": "need_human"})
-        # `not in self.calls` is not defensive padding: a Choice answers with one of the
-        # labels it was given, and a label that is not one of ours means the SDK and this
-        # build disagree about what was asked. That is the model's turn.
-        if choice == ESCALATE or choice not in self.calls:
+        # Against what was offered *this turn*, not against everything this body can do. The
+        # difference is the whole of the verdict gate: before a verdict, `gripper` is not on
+        # the list, and a stepper that answered `gripper` anyway would have the executor
+        # refuse it and waste the turn. Checked here, so that refusal is unreachable rather
+        # than merely unlikely.
+        on_offer = {call.label for call in offered}
+        if choice == ESCALATE or choice not in on_offer:
             return self._hand_back({**record, "gate": "escalate"})
         # A reflex that fires twice identically is not deciding, it is looping. quackd already
         # reads repetition as the signature of a stuck pilot (`abort_when: Same verb fails 3
