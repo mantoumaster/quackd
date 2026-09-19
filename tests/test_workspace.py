@@ -30,6 +30,11 @@ def _toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
+def _dist(requirement: str) -> str:
+    """The distribution a requirement names, without its extras or its version window."""
+    return re.split(r"[\[><=]", requirement, maxsplit=1)[0]
+
+
 def test_every_adapter_directory_is_a_workspace_member() -> None:
     """`uv` resolves a member from the glob in the root, so a package that is not matched by
     it installs from PyPI instead of from the checkout, and a contributor's change to it is
@@ -84,11 +89,33 @@ def test_the_core_publishes_an_extra_for_every_robot_it_names() -> None:
         assert key in extras, f"{row.extra} is not an extra this package has"
         dist = f"quackd-{row.name.replace('_', '-')}"
         assert any(d.startswith(dist) for d in extras[key]), (key, extras[key])
-    assert set(extras["robots"]) >= {
-        f"quackd-{r.name.replace('_', '-')}"
-        for r in OFFICIAL
-        if not any(d.startswith(f"quackd-{r.name.replace('_', '-')}[") for d in extras["robots"])
+    assert {_dist(d) for d in extras["robots"]} == {
+        f"quackd-{r.name.replace('_', '-')}" for r in OFFICIAL
     }
+
+
+def test_every_extra_pins_the_adapter_it_installs_to_this_release() -> None:
+    """An extra that names an adapter and no window lets `quackd[microduck]==0.10.0` resolve an
+    adapter from another release, which for the first release that publishes them means a later
+    one, and the only thing that rejects that is the adapter's own back-pin, which arrives as a
+    resolver error rather than as the right version. Both windows are written by
+    `scripts/set_version.py` in one pass, so they have to agree. `dev` is exempt: it is resolved
+    from the workspace by `[tool.uv.sources]` and is never published to anybody."""
+    extras = _toml(REPO / "pyproject.toml")["project"]["optional-dependencies"]
+    version = tuple(int(n) for n in quackd.__version__.split(".")[:2])
+    for key, requirements in extras.items():
+        if key == "dev":
+            continue
+        for requirement in requirements:
+            if not requirement.startswith("quackd-"):
+                continue
+            window = re.fullmatch(
+                r"quackd-[a-z-]+(?:\[[a-z]+\])?>=(\d+\.\d+),<(\d+\.\d+)", requirement
+            )
+            assert window, f"{key}: {requirement} names an adapter with no version window"
+            low, high = window.group(1), window.group(2)
+            assert tuple(int(n) for n in low.split(".")) <= version, requirement
+            assert version < tuple(int(n) for n in high.split(".")), requirement
 
 
 def test_the_catalogue_and_the_installed_adapter_agree_about_the_robot() -> None:
