@@ -280,7 +280,7 @@ tokens on that run, at a 238th of the price per token. That works out at **about
 two-thousandth of the cost of the call it replaces**, which is a wider gap than TypeSafe's own
 445× rather than a narrower one, and for a reason worth knowing: quackd hands its model a large
 prompt, nearly five thousand tokens a call once the contract, the datasheet, the memory and the
-observations are in it, while the question it hands Jev is a twentieth of that. The stepper is
+observations are in it, while the question it hands Jev is about a tenth of that. The stepper is
 cheaper per token *and* asked a much smaller question.
 
 That ratio assumes the model's input is priced like Claude Fable 5.1, which is the comparison
@@ -366,13 +366,20 @@ confidence floor would be the only thing between "none of these is right" and a 
 The gates are read in this order, and the two Nouls come first so a stepper that thinks the job
 is finished never moves anything else:
 
-1. `done` ≥ 0.5 → the model's turn
-2. `need_human` ≥ 0.5 → the model's turn
-3. the answer is `escalate`, or is not one of the calls offered this turn → the model's turn
-4. the answer repeats the call the stepper made last turn → the model's turn
-5. the stepper has answered 8 turns running → the model's turn
-6. confidence is below the floor for that verb's class → the model's turn
-7. otherwise, it is taken
+1. any of the three probabilities is not a number at all → the model's turn. NaN is not a
+   low confidence, it is no confidence, and it loses every comparison it is put through:
+   `nan < 0.85` is False, so an unguarded one would clear a floor rather than miss it
+2. `done` ≥ 0.5 → the model's turn
+3. `need_human` ≥ 0.5 → the model's turn
+4. the answer is `escalate`, or is not one of the calls offered this turn → the model's turn
+5. the answer repeats the call the stepper made last turn → the model's turn
+6. the stepper has answered 8 turns running → the model's turn
+7. confidence is below the floor for that verb's class → the model's turn
+8. otherwise, it is taken
+
+An answer the router cannot read at all — a confidence that is a word, a `probabilities` that is
+a list — costs that turn and nothing more. Reading the answer is part of the call, so it fails
+the way the call does: the error is recorded and the model takes over.
 
 A Noul carries no confidence, so 0.5 on the two of them is a raw probability meaning "more
 likely than not". Escalating when the job is not in fact done costs one model call; not
@@ -441,7 +448,10 @@ long it took, how large the state was and what was trimmed to fit.
 
 `jev_shadow`, only in shadow mode and only after that step's `llm` record: what the stepper
 would have chosen beside what the model actually chose, whether they agree, whether the stepper
-cleared its floor, and what each of them cost.
+cleared its floor, and what each of them cost. Agreement is about the whole call rather than
+the verb's name, because `gripper(open=true)` and `gripper(open=false)` are opposite
+instructions that share a word, and on `arm-grip-check` that is most of what there is to
+compare. `same_verb` records the coarser reading beside it.
 
 `summary.json` grows a `jev` block when there was a stepper, and nothing when there was not.
 The budget line in every observation grows one clause once the stepper has answered:

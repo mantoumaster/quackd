@@ -500,7 +500,16 @@ class AgentLoop:
         last_verb: str | None,
         last_result: VerbResult | None,
         stepped: Sequence[str] = (),
+        mine: tuple[str | None, VerbResult | None] | None = None,
     ) -> tuple[Observation, Image.Image | None]:
+        """One turn as its two readers need it.
+
+        `last_verb`/`last_result` are the most recent of anybody's and go into the features,
+        which is what the discrete stepper reads: it is deciding what to do next and wants the
+        world as it actually is. `mine` is the last verb the *model* chose, and goes into the
+        text, because the text becomes the tool_result answering the model's own tool call and
+        has to carry that call's outcome. Without a stepper the two are always the same and
+        every observation is byte-identical to what it was."""
         state = await self.cfg.transport.get_state()
         frames = await frames_of(self.cfg.transport)
         # the body's own list first, because it does not shrink when a lens stalls, and the
@@ -525,8 +534,8 @@ class AgentLoop:
             max_steps=self.fm.budgets.max_steps,
             state=state,
             detections=detections,
-            last_verb=last_verb,
-            last_result=last_result,
+            last_verb=mine[0] if mine is not None else last_verb,
+            last_result=mine[1] if mine is not None else last_result,
             budget_status=self.budget.status(),
             inbox=inbox,
             inbox_for=link.name if link is not None else None,
@@ -861,6 +870,16 @@ class AgentLoop:
             last_result: VerbResult | None = None
             last_llm: dict[str, Any] = {}
             """What the model's last answer cost, for the shadow record beside it."""
+            mine_verb: str | None = None
+            mine_result: VerbResult | None = None
+            """The last verb the *model* chose, and what it returned.
+
+            Not the same as `last_verb`/`last_result`, which are the most recent of anybody's.
+            The model's next observation is the tool_result answering the model's own tool
+            call, so it has to carry that call's outcome: with a stepper running, the most
+            recent verb is usually one the model never asked for, and putting its summary
+            under the model's own tool_use id answers a question with somebody else's answer.
+            What the stepper did goes in `self.stepped` instead, which says who chose it."""
             retry_prompted = False
 
             self.budget.start()
@@ -889,7 +908,9 @@ class AgentLoop:
                     # say which one rather than blaming a kill switch nobody pressed
                     raise Aborted(self._abort_reason())
                 observe_started = time.perf_counter()
-                obs, _ = await self._observe(last_verb, last_result, self.stepped)
+                obs, _ = await self._observe(
+                    last_verb, last_result, self.stepped, mine=(mine_verb, mine_result)
+                )
                 self._emit(
                     "observation",
                     step=self.budget.steps,
@@ -1025,8 +1046,8 @@ class AgentLoop:
 
                 if call.name == REMEMBER_NAME:
                     # a note for next time: no robot motion, no step against the budget
-                    last_verb = REMEMBER_NAME
-                    last_result = self._remember(call.arguments)
+                    last_verb = mine_verb = REMEMBER_NAME
+                    last_result = mine_result = self._remember(call.arguments)
                     self._emit(
                         "memory",
                         step=self.budget.steps,
@@ -1038,8 +1059,8 @@ class AgentLoop:
 
                 if call.name == TELL_NAME:
                     # a word to another pilot: no motion, no step, one LLM call, like `remember`
-                    last_verb = TELL_NAME
-                    last_result = self._tell(call.arguments)
+                    last_verb = mine_verb = TELL_NAME
+                    last_result = mine_result = self._tell(call.arguments)
                     self._emit(
                         "talk",
                         step=self.budget.steps,
@@ -1054,9 +1075,10 @@ class AgentLoop:
                 if call.name == ASSESS_TASK_NAME:
                     # the pilot's judgement of the task against the body: no motion, no step,
                     # one LLM call, exactly like `remember`
-                    last_verb = ASSESS_TASK_NAME
+                    last_verb = mine_verb = ASSESS_TASK_NAME
                     standing = self.executor.verdict
                     last_result, ends_with = self._assess(call.arguments)
+                    mine_result = last_result
                     recorded = self.executor.verdict
                     if recorded is standing:
                         # this call recorded nothing, so the row describes the call that was
@@ -1125,6 +1147,11 @@ class AgentLoop:
                         f"{call.name}({fmt_params(call.arguments)}): "
                         f"{'ok' if last_result.ok else 'FAILED'} - {last_result.summary}"
                     )
+                else:
+                    # and this one the model did choose, so its next observation is the
+                    # tool_result answering it and must carry this outcome rather than
+                    # whatever the stepper did in between
+                    mine_verb, mine_result = call.name, last_result
         except BudgetExceeded as e:
             outcome, reason = "budget", str(e)
         except Aborted as e:

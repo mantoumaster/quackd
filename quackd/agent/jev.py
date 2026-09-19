@@ -24,6 +24,7 @@ from __future__ import annotations
 import importlib
 import itertools
 import json
+import math
 import os
 import time
 from collections import Counter
@@ -139,6 +140,29 @@ def _render(value: Any) -> str:
     return json.dumps(value)
 
 
+def _label(name: str, arguments: Mapping[str, Any]) -> str:
+    """How one concrete call is spelled, everywhere it is spelled.
+
+    Jev chooses between these strings and `_route` matches the answer back by equality, so the
+    spelling is load-bearing rather than cosmetic. Sorted by key, so a call built here and a
+    call that came back from a provider render the same whatever order their keys arrived in."""
+    shown = ", ".join(f"{prop}={_render(arguments[prop])}" for prop in sorted(arguments))
+    return f"{name}({shown})" if shown else name
+
+
+def _finite(value: Any) -> tuple[float, bool]:
+    """A probability as a number, and whether it was one.
+
+    NaN and the infinities are not low values, they are absent ones, and they lose every
+    comparison they are put through: `nan < 0.85` is False, which clears a floor rather than
+    missing it. The caller hands the turn back when this says False."""
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0, False
+    return (number, True) if math.isfinite(number) else (0.0, False)
+
+
 def discrete_calls(schema: Mapping[str, Any]) -> list[Call] | None:
     """Every concrete call this tool allows, or None when it is not a choice.
 
@@ -176,10 +200,7 @@ def discrete_calls(schema: Mapping[str, Any]) -> list[Call] | None:
         arguments = {
             prop: value for (prop, _values), value in zip(closed, combination, strict=True)
         }
-        shown = ", ".join(f"{prop}={_render(value)}" for prop, value in arguments.items())
-        calls.append(
-            Call(name=name, arguments=arguments, label=f"{name}({shown})" if shown else name)
-        )
+        calls.append(Call(name=name, arguments=arguments, label=_label(name, arguments)))
     return calls
 
 
@@ -628,7 +649,15 @@ class Stepper:
         self.latency_s += took
         record["latency_s"] = took
         record["questions"] = 4
-        return self._route(result, record, offered)
+        try:
+            return self._route(result, record, offered)
+        except Exception as e:
+            # Reading the answer is part of the call, so it fails the way the call does. An
+            # early-access SDK that returns a confidence of "high" or a list where a mapping
+            # belongs would otherwise raise through the loop and end the run with a traceback
+            # while the arm is energised, which is the one thing this must never do.
+            self.errors += 1
+            return self._hand_back({**record, "gate": "error", "error": f"{type(e).__name__}: {e}"})
 
     def _route(self, result: Any, record: dict[str, Any], offered: Sequence[Call]) -> Advice:
         """What one fan-out means, in the order the gates have to be read.
@@ -638,10 +667,10 @@ class Stepper:
         person, and the stepper is allowed to do neither."""
         verb = _answer(result, "next_verb")
         choice = str(_field(verb, "choice", ESCALATE))
-        confidence = float(_field(verb, "confidence", 0.0) or 0.0)
+        confidence, finite = _finite(_field(verb, "confidence", 0.0))
         spread = {str(k): float(v) for k, v in (_field(verb, "probabilities") or {}).items()}
-        done = float(_field(_answer(result, "done"), "noul", 0.0) or 0.0)
-        human = float(_field(_answer(result, "need_human"), "noul", 0.0) or 0.0)
+        done, done_ok = _finite(_field(_answer(result, "done"), "noul", 0.0))
+        human, human_ok = _finite(_field(_answer(result, "need_human"), "noul", 0.0))
         feasible = _answer(result, "feasible")
         record.update(
             choice=choice,
@@ -654,6 +683,12 @@ class Stepper:
                 "confidence": _field(feasible, "confidence"),
             },
         )
+        # NaN is not a low confidence, it is no confidence, and it loses every comparison it
+        # is put through: `nan < 0.85` is False, so an unguarded NaN would clear the motion
+        # floor, the done gate and the need_human gate at once and move the body. A number
+        # that is not a number is an answer that cannot be read.
+        if not (finite and done_ok and human_ok):
+            return self._hand_back({**record, "gate": "unreadable"})
         if done >= DONE_THRESHOLD:
             return self._hand_back({**record, "gate": "done"})
         if human >= HUMAN_THRESHOLD:
@@ -714,7 +749,12 @@ class Stepper:
             "jev_latency_s": advice.record.get("latency_s"),
             "model_verb": call.name,
             "model_arguments": dict(call.arguments),
-            "agree": bool(chosen) and str(chosen).split("(")[0] == call.name,
+            # The whole call, not the verb's name. Every discrete verb worth comparing is one
+            # whose arguments are the decision: `gripper(open=true)` and `gripper(open=false)`
+            # are opposite instructions that share a word, and scoring them as agreement would
+            # corrupt the one measurement `docs/jev.md` says earns the right to move a floor.
+            "agree": bool(chosen) and chosen == _label(call.name, call.arguments),
+            "same_verb": bool(chosen) and str(chosen).split("(")[0] == call.name,
             "would_have_acted": advice.gate == "taken",
             "llm_latency_s": (llm or {}).get("latency_s"),
             "llm_usage": (llm or {}).get("usage"),

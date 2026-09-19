@@ -849,7 +849,26 @@ def _run_impl(
                 hint="run it from a terminal, or drop the flag and start from the rest pose",
             )
             return
+    # Resolved here rather than beside the solo run below, because both flock branches return
+    # before that point: `--jev maybe` on a flock used to run the robots anyway, and `--jev on`
+    # used to be accepted and silently do nothing.
+    try:
+        jev_mode = resolve_jev_mode(jev)
+    except ValueError as e:
+        _fail(str(e))
+        return
     if flock_n is not None or roster is not None or duck.frontmatter.flock is not None:
+        if jev_mode != "off":
+            # One loop per member, each with its own executor and budget, and the stepper is
+            # built per loop. Wiring it through a flock is a thing to do deliberately with a
+            # measurement in hand, not a thing to leave half done and unsaid.
+            ui.console.print(
+                _warn_line(
+                    f"--jev {jev_mode} does not apply to a flock: every member is piloted by "
+                    "its model, as before"
+                ),
+                soft_wrap=True,
+            )
         if method == "pilots":
             if roster is None and section is not None:
                 # `flock.members` plus `robots:` or `--robots` names the bodies without a
@@ -1007,11 +1026,6 @@ def _run_impl(
     # either way, and a script that always passes `--jev on` should still drive the robot on a
     # machine that has no key. So it says so once, loudly, and carries on without it. Said
     # before the robot is connected, so nothing is energised while it is read.
-    try:
-        jev_mode = resolve_jev_mode(jev)
-    except ValueError as e:
-        _fail(str(e))
-        return
     if jev_mode != "off":
         available, why = jev_is_available()
         if not available:
@@ -2033,6 +2047,10 @@ def record(
         extra_body=extra_body,
         flock=flock,
         robot="microduck:sim2d",
+        # Pinned off, not merely absent. `record` makes the recordings in this repository and
+        # has to be reproducible without a network call, and leaving this to default meant
+        # `QUACKD_JEV` in somebody's environment quietly switched a stepper on for it.
+        jev="off",
         trace=trace,
         trace_prompt=trace_prompt,
     )

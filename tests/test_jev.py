@@ -1081,3 +1081,138 @@ def test_switching_the_stepper_on_says_it_has_never_been_measured(
     assert "has not been measured" in run("on")
     assert "docs/jev.md" in run("on"), "the notice does not say where the estimates are"
     assert "has not been measured" not in run("shadow"), "shadow is how it gets measured"
+
+
+# ── what the adversarial pass found ─────────────────────────────────────────────────────
+
+
+def test_agreement_is_about_the_call_and_not_the_word(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`gripper(open=true)` and `gripper(open=false)` are opposite instructions that share a
+    name, and shadow mode's whole purpose is the agreement rate. Comparing verb names scored
+    them as agreement, which corrupted the one measurement docs/jev.md says earns the right to
+    move a floor, and did it worst on `arm-grip-check`, the benchmark that page names."""
+    from quackd.agent.jev import Advice, Stepper
+    from quackd.agent.providers.base import ToolCall
+
+    stepper = Stepper(mode="shadow", goal="g")
+    advice = Advice(None, {"choice": "gripper(open=true)", "confidence": 0.97, "gate": "taken"})
+
+    opposite = stepper.shadow_event(advice, ToolCall(name="gripper", arguments={"open": False}))
+    assert opposite["agree"] is False, "opposite calls of one verb are not agreement"
+    assert opposite["same_verb"] is True, "the coarser comparison is still recorded"
+
+    same = stepper.shadow_event(advice, ToolCall(name="gripper", arguments={"open": True}))
+    assert same["agree"] is True
+
+    other = stepper.shadow_event(advice, ToolCall(name="move_joints", arguments={"positions": {}}))
+    assert other["agree"] is False and other["same_verb"] is False
+
+
+def test_a_label_reads_the_same_whatever_order_the_arguments_arrive_in() -> None:
+    """The label is matched back by string equality, and a call from a provider carries its
+    arguments in whatever order the wire had them."""
+    from quackd.agent.jev import _label
+
+    assert _label("gripper", {"side": "left", "open": True}) == _label(
+        "gripper", {"open": True, "side": "left"}
+    )
+
+
+async def test_a_number_that_is_not_a_number_hands_the_turn_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NaN is not a low confidence, it is no confidence, and it loses every comparison it is
+    put through: `nan < 0.85` is False. Unguarded it cleared the motion floor, the done gate
+    and the need_human gate at once and moved the body."""
+    from tests import fake_typesafe
+
+    for bad in (float("nan"), float("inf")):
+        answers = fake_typesafe.turn("gripper(open=false)", 0.99)
+        answers["next_verb"] = fake_typesafe.ChoiceAnswer(
+            choice="gripper(open=false)", confidence=bad, probabilities={}
+        )
+        advice, _s, _f = await _advise(
+            fake_typesafe.FakeJev(answers=answers), monkeypatch, cleared=True
+        )
+        assert advice.gate == "unreadable", f"{bad!r} was acted on"
+        assert advice.call is None
+
+    # and a NaN in either Noul is the same answer
+    answers = fake_typesafe.turn("gripper(open=false)", 0.99)
+    answers["done"] = fake_typesafe.NoulAnswer(float("nan"))
+    advice, _s, _f = await _advise(
+        fake_typesafe.FakeJev(answers=answers), monkeypatch, cleared=True
+    )
+    assert advice.gate == "unreadable" and advice.call is None
+
+
+async def test_an_answer_the_router_cannot_read_costs_the_turn_and_not_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading the answer is part of the call, so it has to fail the way the call does. The
+    parse used to sit outside the guard, so an early-access SDK returning a confidence of
+    "high" raised through the loop and ended the run with a traceback, mid-task, with the arm
+    energised."""
+    from tests import fake_typesafe
+
+    cases = [
+        # a confidence that is not a number is caught at the edge by `_finite` and reads as
+        # no confidence, which is the gentler of the two answers and still acts on nothing
+        ({"confidence": "high"}, "unreadable"),
+        # these two blow up inside the parse itself, which is what used to escape `advise`
+        ({"probabilities": ["a"]}, "error"),
+        ({"probabilities": {"a": "high"}}, "error"),
+    ]
+    for kwargs, expected in cases:
+        broken = {
+            "next_verb": fake_typesafe.ChoiceAnswer(choice="stop", **kwargs)  # type: ignore[arg-type]
+        }
+        advice, stepper, _f = await _advise(
+            fake_typesafe.FakeJev(answers=broken), monkeypatch, cleared=True
+        )
+        assert advice.gate == expected, f"{kwargs} gave {advice.gate}"
+        assert advice.call is None, "the body moved on an answer nobody could read"
+        if expected == "error":
+            assert advice.record["error"] and stepper.errors == 1
+
+
+async def test_the_model_is_answered_with_its_own_verbs_result(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool_result answers the tool call it is attached to. That is the protocol, and a
+    stepper running in between must not change it.
+
+    The observation built after a model-chosen verb is discarded when the stepper answers the
+    next turn, so the id linkage was recomputed from the last surviving decision and the
+    model's own result was silently replaced by a later stepper verb's. On `lerobot-lookout`
+    that meant the model declared success on a reading it was never handed."""
+    from tests import fake_typesafe
+
+    result, recorder = await _on_run(
+        tmp_path,
+        monkeypatch,
+        fake_typesafe.FakeJev(
+            script=[fake_typesafe.turn("report_state", 0.99)] * 4
+            + [fake_typesafe.turn("stop", 0.99)] * 8
+        ),
+    )
+    history = recorder.seen[-1]
+    answered = 0
+    for i, exchange in enumerate(history):
+        call_id = exchange.observation.tool_call_id
+        if call_id is None:
+            continue
+        asked = next(
+            (e for e in history[:i] if e.decision and e.decision.tool_call.id == call_id), None
+        )
+        if asked is None:
+            continue
+        lines = exchange.observation.text.splitlines()
+        named = [ln for ln in lines if ln.startswith("last verb")]
+        assert named, "a tool_result carried no result at all"
+        assert f"`{asked.decision.tool_call.name}`" in named[0], (
+            f"the answer to {asked.decision.tool_call.name} reports something else: {named[0]}"
+        )
+        answered += 1
+    assert answered, "no tool_result was checked, so this proves nothing"
+    assert result.outcome == "success"
