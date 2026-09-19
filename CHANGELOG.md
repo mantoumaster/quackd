@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] — 2026-09-19
+
+A robot ran quackd, `uv pip install quackd` stopped installing one, and quackd learned to put the
+arm down before it lets go. Those are the three things in this release. The first happened on 0.9
+and is what the third was written in answer to; the second is the breaking change, a debt ADR-0017
+had been carrying since a package meant a directory, and it is one line on your install command;
+the third is a posture you record once and that quackd drives the arm to at both ends of a run,
+including the ends nobody plans for, and it has stopped no arm falling yet because no arm has run
+it. Behind them is an optional model that answers the turns that are a choice rather than the
+turns that need writing, off by default and never measured on a robot, which is said here as
+plainly as it is said by the flag itself.
 
 A robot ran quackd. On 2026-09-15 a LeRobot SO-101 follower arm, calibrated as `arm-01` and
 reached as `--robot lerobot:real --address COM3` with no registered name, did the thing every
@@ -57,7 +67,8 @@ reports that it did.
   Which turns it may answer is computed from each tool's own JSON schema and nothing else, so a
   body quackd has never shipped is classified by the same rule as the seven that ship. A verb is
   a choice when every parameter is a closed set, an enum, a constant or a boolean, or is optional
-  and defaults to null. Everything else is a number and the model's. `move_joints` is therefore
+  and defaults to null, and the closed sets multiply out to no more than a dozen concrete calls.
+  Everything else is a number and the model's. `move_joints` is therefore
   never the stepper's on any of the three arms that have one, for two reasons that hold
   independently: its `positions` is a required object, and the joint names are not in the schema
   at all, because they live in a validator, so there is nothing for a classifier to enumerate
@@ -67,10 +78,11 @@ reports that it did.
 
   A turn the stepper answers appends nothing to the model's history, because none of it is
   anything the model said, and writing it down would hand a model back an unsigned tool call it
-  never made. The model is told instead, in one line on the observation it is next shown, naming
-  the verbs and who chose them. The stepper is only ever offered what the executor would run that
-  turn, so before a feasibility verdict it may reach for a read or the brake and nothing else,
-  and `VerdictRequired` is unreachable rather than caught. The confidence floors are TypeSafe's
+  never made. The model is told instead, in its own block on the observation it is next shown, one line per
+  turn, naming the verbs and who chose them. The stepper is only ever offered what the executor would run that
+  turn, so before a feasibility verdict it may reach for a read, the brake, or a verb that only
+  looks or sounds, which on a duck is `gaze` and `quack`, and nothing else, and `VerdictRequired`
+  is unreachable rather than caught. The confidence floors are TypeSafe's
   own published numbers by what the verb does, with `stop` at the lowest floor in the system on
   purpose, because a wrong `stop` costs one step and a wrong anything-else costs a move nobody
   chose. Two trace kinds, `jev` and `jev_shadow`, and `summary.json` grows a `jev` block when
@@ -81,17 +93,32 @@ reports that it did.
   TypeSafe's published 0.114 s and $0.042 per million input tokens together with quackd's own
   measured 6.21 s mean model call on that arm, one decision is about 54 times faster and about a
   two-thousandth of the cost, and a whole run is roughly 1.2 times faster on the wave, where one
-  turn in five is a choice, and roughly 2.9 times on `arm-grip-check`, where a measured run put
-  four of six turns on the stepper.
+  turn in five is a choice, and roughly 2.9 times on `arm-grip-check`, where a run on the mock
+  arm, with a stub standing in for Jev, put four of six turns on the stepper. That run measures
+  which turns are a choice and nothing about the model that would answer them.
   **Those are estimates and are labelled as such: none of this has run against a real robot.**
   The workings, the inputs and what would make them wrong are in [docs/jev.md](docs/jev.md)
   ([ADR-0040](docs/adr/0040-a-discrete-stepper-in-front-of-the-model.md)). Behind
-  `quackd[jev]`, which is not part of `quackd[all]`, and `TYPESAFE_API_KEY`. It is not a
-  provider: `--provider` does not take it, and `quackd doctor` gives it a section of its own.
+  `quackd[jev]`, which is not part of `quackd[all]`, and `TYPESAFE_API_KEY`, or `QUACKD_JEV` for
+  the mode where you would rather not pass the flag. It is not a provider: `--provider` does not
+  take it, and `quackd doctor` gives it a section of its own. The flag is marked EXPERIMENTAL in
+  its own help.
+
+  A machine with neither the extra nor a key does not fail: `--jev on` says once, before
+  anything is connected, that it is running without the stepper and why, and the run carries on
+  with the model as pilot, because a stepper is an optimisation and a script that always passes
+  the flag should still drive the robot. A mode nobody defined is a different thing, and
+  `--jev maybe` still stops the run and lists the three that exist. Switching it on also says,
+  once, that it has never been measured against a real robot: no latency, no agreement rate, and
+  the figures above are estimates. `--jev shadow` says nothing, because shadow is how the
+  measurement gets made. It reaches neither a flock, where every member is piloted by its own
+  model and is told so, nor `quackd record`, which pins it off so that a `QUACKD_JEV` left in the
+  environment cannot change what a recording records.
 
 - **A new starter task for the arm: `arm-grip-check`.** Read the state, shut the gripper, read it
   again, release, stop. Nothing in it authors an angle, because `move_joints` is deliberately
-  left out of its allowlist, which makes it the task where every turn is a choice and the worked
+  left out of its allowlist, which makes it the task with the largest share of turns that are a
+  choice, four of its six, and the worked
   example in `docs/jev.md`. It also asks a question the README says nobody has answered: whether
   the band that infers `holding` from a gripper stopping short of shut is right. Run it with
   `--by-hand` and something in the gripper.
@@ -120,15 +147,15 @@ reports that it did.
   its power, or run again*. A `--dry-run` moves the arm at neither end. Only the five body joints
   are ever driven, and the gripper is recorded and never commanded, for the same reason `stop`
   leaves it alone: re-sending it would open a hand that is holding something. The pose is sent
-  unclipped, which is the one place quackd's own out-of-range refusal is off on purpose, because a
+  unclipped, which is the one place a stored pose escapes quackd's own out-of-range refusal, because a
   folded arm usually sits outside the travel its calibration recorded, the bench arm folding to
   `shoulder_lift` -113.5 against a calibrated 84.2 either way, and a range check that will not let
   you put the arm down is worse than no range check there. `quackd doctor` parks a probed arm too
   and says what it did in a `rest pose` row, because a probe connects and disconnects like anything
   else and is one of the ways the arm hit the bench. An MCP session parks at both ends and refuses
   to start if it cannot get there. One body is parked today and the other six refuse a pose rather
-  than accepting one and ignoring it, each in its own words: a Microduck has no joints to record at
-  all, and an XLeRobot has joints quackd does not drive to a pose yet
+  than accepting one and ignoring it, and say which kind of refusal it is: a Microduck has no
+  joints to record at all, and an XLeRobot has joints quackd does not drive to a pose yet
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md), [docs/registry.md](docs/registry.md),
   [docs/safety.md](docs/safety.md)).
 
@@ -145,9 +172,10 @@ reports that it did.
   reports, and the only one the verbs that steer by sight read, because those run at 10 Hz and
   fetching every camera inside that loop would spend the deadman window on pictures. Every camera's
   frame reaches the model on every step, each labelled with its own name, on Claude, on both
-  OpenAI APIs, on Gemini and on any OpenAI-compatible local server with `--vision` on. A camera
-  that stalls later costs its own picture and nothing else, and `report_state` and `quackd doctor`
-  name which one, a `camera <name>` row each. If the primary is the one that died, the other frames
+  OpenAI APIs, on Gemini and on any OpenAI-compatible local server with `--vision` on, wherever
+  the model takes a picture at all: one that does not is sent none. A camera
+  that stalls later costs its own picture and nothing else, and both surfaces name which one:
+  `report_state` in a `CAMERA DOWN: <name>:` clause, `quackd doctor` in a `camera <name>` row. If the primary is the one that died, the other frames
   still reach the model and the detections line reports nothing seen, because a bearing measured
   off a different lens would point somewhere else. Whether a picture is named is decided by how
   many cameras the arm has and never by how many answered this step, which is the difference
@@ -234,14 +262,26 @@ reports that it did.
 
 ### Changed
 
+- **An extra now pins the adapter it installs.** `quackd[microduck]` named `quackd-microduck` with
+  no window, so `uv pip install "quackd[microduck]==0.10.0"` was free to pair this core with an
+  adapter from another release, and since these are the first adapter wheels there has ever been,
+  that means a later one. The only thing standing in the way was the adapter's own back-pin, which
+  arrives as a resolver error rather than as the right version. The window runs in both directions
+  now: every extra that names an adapter carries `>=0.10,<0.11`, written by the same
+  `scripts/set_version.py` pass that writes the other half, and a test fails the build if the two
+  ever disagree. The `dev` extra is deliberately exempt, because `[tool.uv.sources]` resolves it
+  from the checkout and a window there would pin nothing.
+
 - **The README leads with a real arm, and the hero is a recording of one.** Since 0.8 the picture
   at the top of the page was two rendered Microducks in MuJoCo, one with quackd and one without,
   walked by the scripted pilot with no key in the machine. It is `docs/assets/lerobot.gif` now: a
   phone pointed at a bench on 2026-09-15, run `20260915-145349-goal`, an SO-101 follower on
   `lerobot:real` told *wave to the camera with an extended arm*, and OpenAI's `gpt-6-astra`
-  choosing one of the arm's own verbs at a time, `move_joints` once to extend, four times to
-  roll the wrist and once more to return it to centre, then `stop`. The whole run at ten times speed. It is the only recording in this
-  repository with a model in the loop, and the only one made on hardware. It is also the one file
+  choosing one of the arm's own verbs at a time, `report_state` first, then `move_joints` once
+  to extend, four times to
+  roll the wrist and once more to return it to centre, then `stop`. The whole run at ten times speed. It is the first recording in this
+  repository with a model in the loop, and the only one made on hardware: the four transcripts
+  under `docs/assets/transcripts/` are the others, and none of them is a robot. It is also the one file
   under `docs/assets` allowed over the 2048 KB cap, with an exclude in the hook, a cap of its own
   in `docs/assets/lerobot_hero.py` and a test holding the two together: a render spends bytes on
   what moved, a photograph of a lab spends them on every pixel of every frame, and the same nine
@@ -322,8 +362,8 @@ reports that it did.
   `adapters/microduck/src/quackd_microduck/`. What stayed in the core is the 2D cartoon arena
   (`quackd/sim2d/`) and the mock transport (`quackd/transport/mock.py`), because those were never
   the duck's either: four of the seven bodies run in that arena, the duck's mock backend is
-  `MockTransport` itself, and the other six subclass it and draw their frames with the 2D
-  renderer. `UpstreamRef` is `quackd/upstream.py` now, because every adapter cites upstreams and
+  `MockTransport` itself, two of the other six subclass it, and all six draw their frames with
+  the 2D renderer. `UpstreamRef` is `quackd/upstream.py` now, because every adapter cites upstreams and
   none of them should import a duck to do it. An adapter that was `quackd/adapters/<name>/` is
   `adapters/<name>/src/quackd_<name>/`, imported as `quackd_<name>`, which is the part of this
   that breaks a fork or an out-of-tree patch rather than an install. No manifest, verb, datasheet or safety rule changed, and no body gained or
@@ -336,8 +376,10 @@ reports that it did.
   CI gained `uv lock --check`, so a lock that has drifted fails a job rather than reaching a
   release, and a `packaging` job that builds every package, installs the core wheel on its own
   and proves it carries no adapter and says what to install. Contributors run `uv sync --extra
-  dev`, which installs the core and all seven adapters as editable workspace members and not one
-  robot SDK ([ADR-0037](docs/adr/0037-adapters-are-their-own-packages.md)).
+  dev`, which installs the core and all seven adapters as editable workspace members and exactly
+  one robot SDK, `pyzmq`, because running quackd's client against a fake XLeRobot host over
+  loopback is the only way that wire protocol is exercised for real
+  ([ADR-0037](docs/adr/0037-adapters-are-their-own-packages.md)).
 
 - **A `doctor` probe or a dry run on an arm away from its rest pose now leaves torque on where it
   used to drop it.** `quackd doctor --robot <arm>`, `quackd robot list --probe` and a `--dry-run`
@@ -358,8 +400,9 @@ reports that it did.
 
 - **`llm_request` counts the images in a request as well as the exchanges that carry one.** The
   event's `images` field meant exchanges, which was the same number until a body could have two
-  cameras. It now carries `images`, every picture in the request, beside `with_image`, the
-  exchanges that carry any, and a run with one camera reads exactly as it did. A transcript written
+  cameras. It now carries `images`, every camera frame in the request, beside `with_image`, the
+  exchanges that carry any, and `task_pictures` for the pictures the task itself brought, which
+  ride in the same request and are not frames. A run with one camera reads exactly as it did. A transcript written
   before this reads its `images` as `with_image` and replays line for line.
 
 - **An observation carries a list of named images rather than one image.** That is internal, and it
@@ -397,6 +440,130 @@ reports that it did.
 
 ### Fixed
 
+- **A `tool_result` answered the model's own call with a different verb's outcome.** When the
+  stepper answers a turn, the observation built for that turn is discarded, so the id linkage was
+  recomputed from the last surviving decision and the model's own result never reached it. On
+  `lerobot-lookout` that means the model asked for a reading, was handed `stop`'s summary under
+  its own `tool_use` id, and declared success against a criterion about joint angles it had never
+  been shown. The observation has two readers with different needs, and they are separate now:
+  the features carry the most recent verb whoever chose it, because the stepper is deciding what
+  to do next, and the text carries the last verb the *model* chose, because the text is the
+  `tool_result` answering the model's own call. Without a stepper the two are always the same and
+  every observation is byte for byte what it was.
+
+  Five more from the same pass. **Shadow mode's agreement metric compared verb names**, so
+  `gripper(open=true)` and `gripper(open=false)`, which are opposite instructions that share a
+  word, scored as agreement, and it was worst on `arm-grip-check`, the benchmark `docs/jev.md`
+  names, where the gripper is the only verb with arguments. Agreement is about the whole call
+  now, with `same_verb` recording the coarser reading beside it. **A malformed answer ended the
+  run**: the parse sat outside the guard, so a confidence of `"high"` or a list-shaped
+  `probabilities` raised through the loop and ended the run with a traceback, mid task, with the
+  arm energised, which is the one thing a tolerant reader exists to prevent. Reading the answer
+  is part of the call now and fails the way the call does. **A NaN cleared every gate at once**,
+  because `nan < 0.85` is False, so it passed the motion floor, the done gate and the need_human
+  gate together and moved the body, while the record printed the floor it had not enforced; a
+  number that is not a number is an answer that cannot be read, and the turn goes back. And
+  `--jev` on a flock was accepted and silently did nothing, while `QUACKD_JEV` reached
+  `quackd record`, which the docs said it must not.
+
+- **An `infeasible` verdict raised instead of reporting itself, on any machine without all seven
+  adapters.** `shipped_manifests()` built a manifest for every robot quackd publishes, and a
+  manifest is built by its adapter, so once the adapters became separate distributions that call
+  asked for seven adapters on a machine that has one. Everything that calls it sits under the hint that
+  names which other body could have done the task, and the loop reached it unguarded: on an install of
+  `quackd[lerobot]` alone, a run that ended in `infeasible` ended in a traceback instead. That is
+  the outcome the whole gate exists to produce, and it has its own exit code. The hint reads what
+  is installed here and says so, *No robot installed here meets needs ...*, rather than speaking
+  for what quackd publishes. Found by auditing the merged work against the plan rather than by a
+  test, because no test ran the verdict path with an adapter missing. One does now, checked by
+  reverting the fix and watching it fail.
+
+- **A drawing with no background reached the model as a solid black rectangle.** A sketch
+  exported the ordinary way is strokes on transparency, and a transparent pixel still stores a
+  colour underneath: for most tools that colour is black. `convert("RGB")` keeps the colour and
+  throws the alpha away, so paper and strokes both came out black, and a 200x200 circle on
+  transparency arrived with exactly one distinct colour in it. That is the likeliest file
+  `--image` will ever be given. It is composited onto white first now, because a drawing with no
+  background is a drawing on paper. A palette picture with a transparent index, which is what a
+  GIF is, goes the same way. The same function also dropped a photograph's rotation, which a
+  phone stores in an EXIF tag rather than in the pixels, so a re-encode to PNG handed the model
+  the sideways image with nothing left to say so. Nothing raised and nothing warned for either:
+  both were found by a test being written for something else.
+
+- **A by-hand run told every pilot to close the gripper, including the ones whose task does not
+  allow it.** The advice was recited rather than read off the verbs the body was actually
+  granted, and `lerobot-lookout` grants `report_state` and `stop`, so the sentence was an
+  instruction to walk into a refusal. It is read off the allowlist now, the way the verdict
+  clause and the composite-verb sentence already were, and where the gripper is not allowed the
+  pilot is told the truth instead: what is between the jaws is held at the squeeze the person
+  left, and it cannot tighten it.
+
+- **The stepper answered with verbs it had not been offered that turn.** The router checked the
+  model's answer against every discrete call the body has rather than against the ones it had
+  just put on the table, so before a verdict it could reach for `gripper` and `place`, the
+  executor refused both, and two turns went on `REFUSED` before the model was ever asked. The
+  verdict gate was doing its job; the stepper was walking into it. It checks what it offered now,
+  which makes that refusal unreachable rather than unlikely, and a test says so end to end.
+  Running `arm-grip-check` is what found it.
+
+- **A wait for a keystroke that nothing could deliver, with the arm limp.** The `--by-hand`
+  placement wait has no clock on it on purpose, so somebody can go and find a pencil, which makes
+  the key thread the only thing that can end it. Two ways that thread is not there: stdin reaches
+  its end underneath it, which is a closed terminal or a Ctrl-D, and it was never started at all,
+  which happens when the terminal check the kill switch makes disagrees with the one the CLI made
+  a moment earlier. Either way the run waited for ever, asking nobody, with the arm de-energised.
+  The switch says outright when nothing is reading, and a wait ends on that.
+
+- **A confirmation that could never be answered, with a robot mid-verb.** This one predates the
+  work around it. The kill switch's key thread reads every character of stdin and `typer.confirm`
+  calls `input()` on the same terminal, so whichever took a character first kept it and the
+  prompt waited for a newline that had already been swallowed, while somebody typed `y` at a
+  question that would never return. Every prompt goes through the switch now, which collects the
+  line in the thread that is already reading and hands it over; where no key thread runs, which
+  is every caller without a terminal and every test, it is `typer.confirm` exactly as before.
+
+- **One bad register spoke for the other, and a person was told to let go of an unpowered arm.**
+  `take_hold()` refused unless the arm read back with torque on, then switched that check off
+  whenever a register read had failed, on the reasoning that an unknown is not a refusal. But the
+  two status registers were read inside one `try`, so a corrupt *temperature* packet reported a
+  failure over a *torque* reading that had arrived perfectly well. An SO-101 that ignores
+  `enable_torque()`, which is what one in overload lockout does, was then reported as holding the
+  pose a person had just set, and what they read next was *holding the pose you set, you can let
+  go*, with their hands on a limp arm and something in the gripper. Each register has its own
+  `try` and its own error now, and a torque register that says nothing at all is as loud a
+  refusal as one that says off. `let_go()` keeps the opposite reading of the same silence on
+  purpose: a release that did not happen costs a refusal, a hold that did not happen costs the
+  arm. Alongside it, `close()` on an arm still in somebody's hand dropped torque anyway, a
+  Ctrl-C between the connect and the first turn left the abort flag set but unread, a gripper
+  that would not open was silent because the backend answers a refusal rather than raising one,
+  a 16-bit picture was clipped into a byte rather than scaled so a depth map arrived as a white
+  rectangle, and a picture large enough to trip PIL's bomb guard came out as a traceback.
+
+- **A refused re-assessment was written into the transcript as the standing verdict.** The early
+  refusals in `_assess` return before the verdict is recorded, and the row was built from whatever verdict
+  happened to be in the executor, so a refused re-assessment carried the *earlier* verdict's
+  word, reason and needs and read as though that one had been refused. The row describes the
+  call now.
+
+- **`quackd validate` with no robot named checked the task against the duck.** The Microduck's
+  verb list was the only vocabulary the core could produce without connecting to something, so on
+  a machine with only an arm installed it passed a task that allows `kick`, and on a machine with
+  nothing installed it had an opinion at all. It unions what every installed body provides now. A
+  `.duck` is a contract rather than a robot, so a task that allows `kick` is coherent as long as
+  something here can kick, and asking whether one particular body can keep it is what
+  `quackd validate --robot NAME` already does.
+
+- **`quackd[openai]` allowed a version of the SDK that cannot make the call quackd makes.** The
+  extra asked for `openai>=1.50`, and the provider opens on the Responses API for every model the
+  catalogue marks, switching to it elsewhere when a 400 says to. `client.responses` arrived in
+  openai 1.66.0: on 1.65 the client carries no such attribute at all. So a resolver that landed
+  anywhere between 1.50 and 1.65 produced an install that imported cleanly, passed
+  `quackd doctor`, and could only fail at the first call on those models. The floor is 1.66 now,
+  with an upper bound at the next major, which is the treatment `anthropic>=1.0,<2` beside it
+  already had, and `google-genai` gains the same bound. Measured rather than remembered: 1.65.0
+  and 1.66.0 were each installed into a throwaway environment and the client was asked whether it
+  had `responses`.
+
 - **A ToddlerBot's `perform` advertised motions that build had never loaded.**
   `toddlerbot_verbs(motions=...)` takes the list of keyframes the daemon actually managed to
   load and put it in the verb's description, while the schema kept a fixed five-member enum. So
@@ -427,7 +594,7 @@ reports that it did.
   should be exact. It rounds negative on Windows and positive on Linux, so the same duck in the
   same pose read pi here and 0 in CI, and the test that documented why `stand_up` reads the
   trunk's own axis instead was asserting a coin flip. Nothing behaved differently: `stand_up`
-  has used `heading()` since it was written. The test now asserts the degeneracy itself, which
+  has read `heading()` since 0.8, and only the test changed. It now asserts the degeneracy itself, which
   is true wherever it runs.
 
 - **`stand` barely moved the ToddlerBot, and said it was still moving for ever.** Two faults,
@@ -556,7 +723,8 @@ reports that it did.
   later.
 
   **Two readings that would have refused an honest pilot** are fixed in the matcher itself,
-  where the flock coordinator shares them: a minimum of zero asks for nothing, and a body that
+  where the flock coordinator shares them: a minimum of zero asks for nothing, except `work_height_m`, where zero means the ground and a
+  body either reaches it or does not, and a body that
   published no terrain meets `indoor_flat`, which is what the prompt already tells such a body
   to assume about itself, where the prompt says it. The same audit narrowed that second one:
   the sentence is only rendered for a body that moves and has a datasheet at all, so a bid
@@ -570,6 +738,39 @@ reports that it did.
   datasheet block is the answer that outlives one run. ADR-0032 carries a dated amendment for
   this as well as for #26, since it is the record for the gate and this changes what its
   Decision section describes.
+
+### Known limitations
+
+- **Six of the seven bodies have still never run on hardware, and everything this release did
+  about the arm falling has run on no arm.** Exactly one body has been driven for real, the
+  SO-101 on 2026-09-15, and the rest pose, `--by-hand`, the second camera and the MCP parking
+  were all written after that afternoon. They are exercised against a fake arm and the mock,
+  which is the standing every other `lerobot:real` behaviour has, and the day one of them stops
+  an arm hitting a bench is the day somebody reports that it did. The other six bodies speak
+  names read from upstream source at a pinned commit and have only ever talked to fakes, to the
+  2D arena, and, for the Microduck and the ToddlerBot, to upstream's own MuJoCo body in a
+  nightly job.
+
+- **The stepper has never made a real call in this repository.** Every speed and cost figure in
+  [docs/jev.md](docs/jev.md) is arithmetic over measured inputs rather than a measurement of Jev:
+  TypeSafe's published latency and price, quackd's own measured model latency from the arm run,
+  and a request size measured against the mock. The two runs that put a share of turns
+  on it were driven on `lerobot:mock` with a stub in Jev's place, so they measure which turns are
+  a choice and nothing about the model that would answer them. `tests/test_live_jev.py` is the
+  one thing that can produce the real number, and it is opt-in twice over, `QUACKD_LIVE_JEV=1`
+  and a key, so it has never run here or in CI. `--jev on` says as much itself.
+
+- **No pilot flock has been driven by a real model, or by a real robot.** Unchanged since 0.9.
+  `flock-hello` runs a duck and an arm on the scripted rule, which cannot reason about a
+  datasheet, so what a real model does with the `Your flock` section and with `tell` is still
+  unknown. N simulated pilots are also N separate worlds, and no flock has crossed from one
+  machine to a second.
+
+- **What 0.9 listed here and this release takes off the list:** the trained gait walks 10 of 10
+  seeds under `QUACKD_STRICT_SEEDS=1` again. Seed 4 was not marginal for a reason nobody
+  understood; it was the gait floor, measured at 0.22 on MuJoCo 3.12 and no longer enough on the
+  3.13 the lock resolves. Both nightly jobs, neither of which had ever passed a scheduled run,
+  are green.
 
 ## [0.9.0] — 2026-09-15
 
@@ -3008,7 +3209,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/rokbenko/quackd/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rokbenko/quackd/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rokbenko/quackd/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rokbenko/quackd/compare/v0.6.0...v0.7.0

@@ -138,24 +138,24 @@ flip that backend's row, and not before.
   between them. Both ends are in `docs/assets/transcripts/`, read in
   [docs/local-llms.md](docs/local-llms.md). What is still open is Ollama, llama.cpp, a run on
   this machine, and any task harder than the starter duck.
-- ⬜ **Both nightly jobs are red, and neither has ever been green.** Three separate things,
-  none of them a release gate and none of them touched by 0.9.
-  `microduck assets` (red on every run since 2026-09-09) fails one test on five of its six runs
-  and two on the sixth. The constant one is the fall-recovery test below. The other is the
-  trained-gait sweep `test_find_and_kick_on_the_real_duck`, which had 10 of 10 under
-  `QUACKD_STRICT_SEEDS=1` on 2026-09-09 to 09-13 and 9 of 10 on 09-14, seed 4 going, and which
-  returns 9 of 10 by hand on the laptop that cut 0.9.0 on the `mujoco` and `onnxruntime`
-  versions either side of this release's bump, so the bump is not what moved it. That seed ends
-  on the duck's own same-verb-fails-three-times rule with the duck standing and the ball
-  unmoved. Why seed 4 is the marginal one is unknown.
-  And `test_a_duck_that_fell_on_its_face_stands_up_facing_the_way_it_was_going` asserts the
-  recovered heading is π and gets 0.0 on the runner while passing on that same laptop, so it is
-  environment specific and osmesa is the obvious suspect.
-  `toddlerbot contract` (red on every run since 2026-09-07) fails
-  `test_stand_settles_on_a_body_that_pushes_back` with *stand never finished*, and
-  `test_a_client_that_goes_quiet_trips_the_deadman_on_real_physics` loses the connection.
-  Both jobs say in their own headers that a red run means go and look rather than stop the
-  release, which is why 0.7.0, 0.8.0 and 0.9.0 all shipped over them. Nobody has gone and looked.
+- ✅ **Both nightly jobs are green, and this release is what made them so.** Neither had ever
+  passed a scheduled run: `microduck assets` red since 2026-09-09, `toddlerbot contract` since
+  2026-09-07. Four failures, and every one of them was the job telling the truth.
+  The gait sweep went 9 of 10 because the physics backend raises a small twist to a gait floor
+  measured at 0.22 on MuJoCo 3.12, and the lock resolves 3.13, where 0.22 walks the duck
+  thirteen millimetres in ten seconds. A ball dead ahead was unreachable. The floor is 0.23,
+  re-measured across all ten seeds, and the achieved fraction with it is 0.38 where it was 0.42.
+  The fall-recovery test asserted a heading of π on a pose that is exactly the gimbal
+  singularity, so both arguments to the yaw's `atan2` are zero and the sign is the last bit of a
+  subtraction: π here, 0.0 on the runner. It asserts the degeneracy itself now. `stand` never
+  finished on the ToddlerBot because the slew advanced from the measured pose each tick, which
+  pins the position error at one step and starves a position-controlled motor of torque; it
+  advances from the last commanded target now and completes in the 5.2 seconds its own
+  arithmetic predicts. And the deadman test asked for the daemon's health over the very socket
+  it had just killed on purpose.
+  The record is short and worth stating as it is: both jobs went green on a manual run on
+  2026-09-17, the day the fixes landed, and the first scheduled run after that, on 2026-09-18,
+  was green for both. That is one scheduled green run each, not a record.
 
 - ✅ **Exercise `remember` against a cloud model.** `gpt-6-astra` called it in seven of its
   twelve runs on the arm on 2026-09-15, for five distinct notes, and the last run of that

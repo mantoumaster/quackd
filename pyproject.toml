@@ -43,19 +43,23 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.0,<2"]
-openai = ["openai>=1.50"]
-gemini = ["google-genai>=1.0"]
+# The floor is 1.66 because that is the release the Responses API arrived in, and
+# `providers/openai.py` opens there for the models the catalogue marks. On 1.65 the
+# client carries no `responses` at all, so the old `>=1.50` allowed an install that
+# could only fail at the first call on those models.
+openai = ["openai>=1.66,<4"]
+gemini = ["google-genai>=1.0,<3"]
 # Eight vendors, one wheel. Each speaks OpenAI's API at its own address, so the extra exists
 # to name the install a reader of `quackd doctor` or a ProviderNotInstalled actually wants,
 # not because there is a second package to fetch (see EXTRA_FOR in agent/providers/factory.py).
-grok = ["openai>=1.50"]
-mistral = ["openai>=1.50"]
-deepseek = ["openai>=1.50"]
-cohere = ["openai>=1.50"]
-qwen = ["openai>=1.50"]
-kimi = ["openai>=1.50"]
-glm = ["openai>=1.50"]
-meta = ["openai>=1.50"]
+grok = ["openai>=1.66,<4"]
+mistral = ["openai>=1.66,<4"]
+deepseek = ["openai>=1.66,<4"]
+cohere = ["openai>=1.66,<4"]
+qwen = ["openai>=1.66,<4"]
+kimi = ["openai>=1.66,<4"]
+glm = ["openai>=1.66,<4"]
+meta = ["openai>=1.66,<4"]
 # TypeSafe's Jev: the optional discrete stepper in front of the model (`quackd run --jev`,
 # docs/jev.md). Not a provider and deliberately not in `all`: it answers typed questions about
 # a state and generates nothing, so it cannot pilot a robot on its own and does not belong in
@@ -64,24 +68,24 @@ meta = ["openai>=1.50"]
 # container is spelled two ways in its own docs, and `quackd/agent/jev.py` reads it
 # tolerantly for that reason. A 0.x minor is allowed to break it.
 jev = ["typesafe-sdk>=0.7,<1"]
-all = ["anthropic>=1.0,<2", "openai>=1.50", "google-genai>=1.0"]
+all = ["anthropic>=1.0,<2", "openai>=1.66,<4", "google-genai>=1.0,<3"]
 yolo = ["ultralytics>=8.2"]
 live = ["pygame>=2.5"]
 # The physics simulator: MuJoCo on the CPU, no GPU, both imported only inside connect().
 # onnxruntime is what runs the robot's own walking policy; the Microduck's meshes and that
 # policy are fetched at run time and never shipped here (docs/licenses.md).
-mujoco = ["quackd-microduck[mujoco]"]
-microduck = ["quackd-microduck"]
+mujoco = ["quackd-microduck[mujoco]>=0.10,<0.11"]
+microduck = ["quackd-microduck>=0.10,<0.11"]
 # Every robot quackd publishes, each with the SDK its real backend needs. The honest "all":
 # it pulls torch on Python 3.12 because the arm does.
 robots = [
-  "quackd-microduck",
-  "quackd-lerobot[sdk]",
-  "quackd-rosbridge[sdk]",
-  "quackd-open-duck",
-  "quackd-xlerobot",
-  "quackd-alohamini",
-  "quackd-toddlerbot",
+  "quackd-microduck>=0.10,<0.11",
+  "quackd-lerobot[sdk]>=0.10,<0.11",
+  "quackd-rosbridge[sdk]>=0.10,<0.11",
+  "quackd-open-duck>=0.10,<0.11",
+  "quackd-xlerobot>=0.10,<0.11",
+  "quackd-alohamini>=0.10,<0.11",
+  "quackd-toddlerbot>=0.10,<0.11",
 ]
 # LAN: zeroconf discovery and the MQTT flock bus (docs/lan.md). Never imported by default.
 lan = ["zeroconf>=0.132", "paho-mqtt>=2,<3"]
@@ -89,22 +93,22 @@ lan = ["zeroconf>=0.132", "paho-mqtt>=2,<3"]
 # `[feetech]` is where the serial SDK lives (feetech-servo-sdk and pyserial, neither of them a
 # base dependency of lerobot). Without it `import lerobot` succeeds and opening the arm's port
 # fails, so it belongs in the extra rather than in a paragraph somebody has to read.
-lerobot = ["quackd-lerobot[sdk]"]
-rosbridge = ["quackd-rosbridge[sdk]"]
+lerobot = ["quackd-lerobot[sdk]>=0.10,<0.11"]
+rosbridge = ["quackd-rosbridge[sdk]>=0.10,<0.11"]
 # XLeRobot is not an installable package: its own install is copying files into a lerobot
 # tree. So quackd speaks its ZeroMQ host protocol instead and needs only pyzmq, which keeps
 # the 3.11 floor and works on Windows (ADR-0026, docs/adapters/xlerobot.md).
-xlerobot = ["quackd-xlerobot"]
+xlerobot = ["quackd-xlerobot>=0.10,<0.11"]
 # AlohaMini is a fork of LeRobot that calls itself lerobot and is not published, so it
 # cannot be a dependency at all. quackd speaks its ZeroMQ host protocol instead.
-alohamini = ["quackd-alohamini"]
-open_duck = ["quackd-open-duck"]
-toddlerbot = ["quackd-toddlerbot"]
+alohamini = ["quackd-alohamini>=0.10,<0.11"]
+open_duck = ["quackd-open-duck>=0.10,<0.11"]
+toddlerbot = ["quackd-toddlerbot>=0.10,<0.11"]
 # The Microduck's camera reaches clients only as an H.264 WebRTC track from mediad — there is
 # no camera method in duck-ipc-proto and no snapshot endpoint — so a picture means being a
 # WebRTC peer. Heavy (aiortc pulls av, which pulls FFmpeg), needed by nobody who is not
 # pointing quackd at a real Microduck, and never imported unless --camera-url says webrtc://.
-microduck-camera = ["quackd-microduck[camera]"]
+microduck-camera = ["quackd-microduck[camera]>=0.10,<0.11"]
 dev = [
   # hatchling is already the build backend; dev gets it so tests/test_pypi_readme.py
   # can import the metadata hook that rewrites the README for PyPI.

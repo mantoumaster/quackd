@@ -3,8 +3,10 @@
 Internal. Write it, don't publish it. 0.3's story was one duck kicking one ball. 0.4's was
 that the duck is no longer the point. 0.5's was that one of the robots is one you can build.
 0.8's is that you can watch it happen without installing anything, and the duck is really
-walking. **0.9's is that you register the robots you own, name a flock of them, hand the
-flock a goal, and every robot gets its own LLM pilot, talking to the others.**
+walking. 0.9's was that you register the robots you own, name a flock of them, hand the
+flock a goal, and every robot gets its own LLM pilot, talking to the others. **0.10's is that
+a real arm ran it, `uv pip install quackd` now installs no robot at all and you choose the
+body, and the arm no longer falls over when the run ends.**
 
 **The one sentence:** One CLI for all your robots. Connect them, command them, and let them
 work together, each with an LLM for a brain.

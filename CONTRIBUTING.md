@@ -38,7 +38,7 @@ extra once reached a release. Change a dependency anywhere, run `uv lock`, and c
 
 Versions move together. The core and each adapter carry their own `__version__`, because an
 adapter's sdist holds only its own source and cannot read the core's, and each one pins a
-window on the core (`quackd>=0.9,<0.10`). `uv run python scripts/set_version.py X.Y.Z`
+window on the core (`quackd>=0.10,<0.11`). `uv run python scripts/set_version.py X.Y.Z`
 rewrites all eight and the windows that tie them together; nothing here is edited by hand. A
 release then builds eight wheels and eight sdists with `uv build --all-packages`, core first
 to PyPI because every adapter depends on it. The full order is in [PLAN.md](PLAN.md).
