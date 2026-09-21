@@ -7,6 +7,7 @@ command a person types.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ def _run_args(tmp_path: Path) -> list[str]:
         "--provider",
         "fake",
         "--no-gif",
-        "--no-trace",
+        "--no-log",
         "--runs-dir",
         str(tmp_path / "runs"),
         "--memory-dir",
@@ -180,6 +181,31 @@ def test_no_memory_leaves_nothing_behind(tmp_path: Path) -> None:
     result = runner.invoke(app, ["run", "flock-hello", "--no-memory", *_run_args(tmp_path)])
     assert result.exit_code == 0, result.output
     assert not (tmp_path / "mem").exists()
+
+
+# ── what the summary wrote down ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("duckfile", ["flock-kick", "flock-hello"])
+def test_neither_kind_of_flock_writes_the_key_into_its_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, duckfile: str
+) -> None:
+    """Both summaries carry the command, so both carry the thing a solo run redacts out of
+    `run_start`. A run directory is pasted into issues, and a key that reaches one has to be
+    rotated.
+
+    `sys.argv` is pytest's own here, because `CliRunner` calls the command in-process while
+    the record is built from the arguments the process was given.
+    """
+    argv = [duckfile, "--api-key", "sk-never-in-a-run-directory", "--seed", "3"]
+    monkeypatch.setattr(sys, "argv", ["quackd", "run", *argv, *_run_args(tmp_path)])
+    result = runner.invoke(app, ["run", *argv, *_run_args(tmp_path)])
+    assert result.exit_code == 0, result.output
+    summary = _summary(tmp_path)
+    assert summary["command"][:3] == ["quackd", "run", duckfile]
+    # the flag itself stays: that a key was given is often the thing a reader is checking
+    assert summary["command"][3:5] == ["--api-key", "***"]
+    assert "sk-never-in-a-run-directory" not in json.dumps(summary)
 
 
 # ── refusals ────────────────────────────────────────────────────────────────────────────

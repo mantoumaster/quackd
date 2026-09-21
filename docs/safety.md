@@ -28,7 +28,7 @@ A biped falls in 0.3 s; an LLM answers in 3 s. Everything here follows from that
 Every verb call — from the agent loop, an MCP session or the discrete stepper — passes
 `Executor.run_verb`, which
 applies these in order and stops at the first one that refuses. The **gate** column is the word
-the trace and the transcript print, so a refusal tells you which row you are on.
+the log and the transcript print, so a refusal tells you which row you are on.
 
 | Gate | What it checks | What you change |
 |---|---|---|
@@ -129,7 +129,7 @@ behind.
 
 ## Dry run
 
-`--dry-run` sends nothing, and the trace names every verb a model *would* have run, with the
+`--dry-run` sends nothing, and the log names every verb a model *would* have run, with the
 parameters it chose:
 
 ```

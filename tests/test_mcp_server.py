@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -229,9 +230,9 @@ async def test_bundled_ducks_load_by_name(path: str) -> None:
         assert _data(await client.call_tool("robot_load_duckfile", {"path": path}))["ok"]
 
 
-def _flat(trace: list[str]) -> str:
-    """The trace as one string, with the label column's padding squeezed out."""
-    return " | ".join(" ".join(line.split()) for line in trace)
+def _flat(lines: list[str]) -> str:
+    """The log as one string, with the label column's padding squeezed out."""
+    return " | ".join(" ".join(line.split()) for line in lines)
 
 
 async def test_a_call_comes_back_with_what_happened_behind_it() -> None:
@@ -244,12 +245,12 @@ async def test_a_call_comes_back_with_what_happened_behind_it() -> None:
                 "robot_run_verb", {"verb": "move", "params": {"vx": 0.2, "duration_s": 1.0}}
             )
         )
-        trace = _flat(result["trace"])
-        assert "move(vx=0.2" in trace
-        assert "-> move" in trace
-        assert "-> stop" in trace  # `move` stops the robot when it is done
-        assert "<- move ok" in trace and "walked" in trace
-        assert "step 1/" in trace  # the budget it just spent
+        log_text = _flat(result["log"])
+        assert "move(vx=0.2" in log_text
+        assert "-> move" in log_text
+        assert "-> stop" in log_text  # `move` stops the robot when it is done
+        assert "<- move ok" in log_text and "walked" in log_text
+        assert "step 1/" in log_text  # the budget it just spent
 
 
 async def test_a_refusal_says_which_rule_refused_it() -> None:
@@ -257,21 +258,21 @@ async def test_a_refusal_says_which_rule_refused_it() -> None:
         assert _data(await client.call_tool("robot_load_duckfile", {"path": "hello-world"}))["ok"]
         refused = _data(await client.call_tool("robot_run_verb", {"verb": "kick"}))
         assert refused["ok"] is False
-        assert "allowlist" in _flat(refused["trace"])
+        assert "allowlist" in _flat(refused["log"])
 
 
-async def test_the_observe_tool_appends_its_trace_as_text() -> None:
+async def test_the_observe_tool_appends_its_log_as_text() -> None:
     async with connected() as (client, _session, _transport):
         frame = await client.call_tool("robot_observe", {})
         kinds = [c.type for c in frame.content]
-        assert kinds == ["text", "image", "text"]  # summary, picture, trace
+        assert kinds == ["text", "image", "text"]  # summary, picture, log
         assert frame.content[0].text.startswith("duck camera:") or "camera" in frame.content[0].text
-        assert frame.content[-1].text.startswith("trace:")
+        assert frame.content[-1].text.startswith("log:")
         assert "observe" in frame.content[-1].text
 
 
-async def test_the_tools_that_never_reach_the_robot_carry_no_trace() -> None:
-    """A trace on `robot_list` would be two lines of envelope, read by the model, saying
+async def test_the_tools_that_never_reach_the_robot_carry_no_log() -> None:
+    """A log on `robot_list` would be two lines of envelope, read by the model, saying
     nothing about a robot."""
     async with connected() as (client, _session, _transport):
         for tool, args in (
@@ -280,17 +281,17 @@ async def test_the_tools_that_never_reach_the_robot_carry_no_trace() -> None:
             ("robot_recall", {}),
             ("robot_remember", {"text": "the ball lives by the sofa"}),
         ):
-            assert "trace" not in _data(await client.call_tool(tool, args)), tool
+            assert "log" not in _data(await client.call_tool(tool, args)), tool
 
 
-async def test_the_trace_can_be_turned_off() -> None:
-    async with connected(trace=False) as (client, _session, _transport):
-        assert "trace" not in _data(await client.call_tool("robot_run_verb", {"verb": "quack"}))
+async def test_the_log_can_be_turned_off() -> None:
+    async with connected(log=False) as (client, _session, _transport):
+        assert "log" not in _data(await client.call_tool("robot_run_verb", {"verb": "quack"}))
         frame = await client.call_tool("robot_observe", {})
         assert [c.type for c in frame.content] == ["text", "image"]
 
 
-async def test_two_calls_at_once_never_swap_traces() -> None:
+async def test_two_calls_at_once_never_swap_logs() -> None:
     """The SDK runs every tool call as its own task. A buffer on the session would put one
     call's intents into the other call's result."""
     async with connected() as (client, _session, _transport):
@@ -301,7 +302,7 @@ async def test_two_calls_at_once_never_swap_traces() -> None:
             ),
             client.call_tool("robot_run_verb", {"verb": "quack", "params": {"text": "hi"}}),
         )
-        moved, quacked = _flat(_data(slow)["trace"]), _flat(_data(fast)["trace"])
+        moved, quacked = _flat(_data(slow)["log"]), _flat(_data(fast)["log"])
         assert "-> move" in moved and "quack" not in moved
         assert "quack" in quacked and "-> move" not in quacked
 
@@ -349,15 +350,15 @@ async def test_out_of_call_events_reach_stderr_at_once(caplog: Any) -> None:
     coalescing view it waited for a next event that never came."""
     caplog.set_level(logging.INFO, logger="quackd.mcp")
     async with connected() as (_client, session, _transport):
-        assert session.tracer is not None
-        session.tracer.emit("note", text="heartbeat failed: gone — sending stop")
-        session.tracer.emit("intent", intent="stop", params={}, accepted=True)
+        assert session.event_log is not None
+        session.event_log.emit("note", text="heartbeat failed: gone — sending stop")
+        session.event_log.emit("intent", intent="stop", params={}, accepted=True)
     flat = " | ".join(" ".join(m.split()) for m in caplog.messages)
     assert "duck: note heartbeat failed" in flat
     assert "duck: -> stop" in flat
 
 
-async def test_the_heartbeat_narrates_to_stderr_and_lands_in_no_calls_trace(caplog: Any) -> None:
+async def test_the_heartbeat_narrates_to_stderr_and_lands_in_no_calls_log(caplog: Any) -> None:
     """An event that belongs to no call must not be attributed to whichever call happens to
     be open. The heartbeat runs in a task that predates every capture block, so its note and
     the stop it sends go straight to stderr; the call that comes afterwards carries its own
@@ -369,17 +370,17 @@ async def test_the_heartbeat_narrates_to_stderr_and_lands_in_no_calls_trace(capl
         assert "duck: note heartbeat failed" in stderr
         assert "duck: -> stop" in stderr  # and the emergency stop, not only the note
         refused = _data(await client.call_tool("robot_run_verb", {"verb": "quack"}))
-    trace = _flat(refused["trace"])
-    assert refused["ok"] is False and "session_aborted" in trace
-    assert "note heartbeat failed" not in trace
-    assert "-> stop" not in trace
+    log_text = _flat(refused["log"])
+    assert refused["ok"] is False and "session_aborted" in log_text
+    assert "note heartbeat failed" not in log_text
+    assert "-> stop" not in log_text
 
 
 async def test_cap_lines_at_the_real_defaults_through_a_long_call(caplog: Any) -> None:
-    """An uncapped trace would put a megabyte of text into the model's context window on
+    """An uncapped log_text would put a megabyte of text into the model's context window on
     one call. stderr keeps every line; the result keeps the first few, the last many, and a
     line saying how many are missing so the reader knows to go and look."""
-    from quackd.trace import MCP_TRACE_MAX_LINES
+    from quackd.log import MCP_LOG_MAX_LINES
 
     caplog.set_level(logging.INFO, logger="quackd.mcp")
     async with connected() as (client, _session, _transport):
@@ -394,19 +395,76 @@ async def test_cap_lines_at_the_real_defaults_through_a_long_call(caplog: Any) -
             )
         )
     logged = [m.removeprefix("duck: ") for m in caplog.messages if m.startswith("duck: ")]
-    trace = result["trace"]
-    assert len(logged) > MCP_TRACE_MAX_LINES, f"only {len(logged)} lines; nothing to cap"
-    assert len(trace) == MCP_TRACE_MAX_LINES == 30
-    head = trace.index(next(line for line in trace if "more lines" in line))
-    assert trace[:head] == logged[:head]
-    assert trace[head + 1 :] == logged[-(len(trace) - head - 1) :]
-    assert f"... {len(logged) - len(trace) + 1} more lines" in trace[head]
-    assert "stderr" in trace[head]  # where the omitted lines really are
+    log_text = result["log"]
+    assert len(logged) > MCP_LOG_MAX_LINES, f"only {len(logged)} lines; nothing to cap"
+    assert len(log_text) == MCP_LOG_MAX_LINES == 30
+    head = log_text.index(next(line for line in log_text if "more lines" in line))
+    assert log_text[:head] == logged[:head]
+    assert log_text[head + 1 :] == logged[-(len(log_text) - head - 1) :]
+    assert f"... {len(logged) - len(log_text) + 1} more lines" in log_text[head]
+    assert "stderr" in log_text[head]  # where the omitted lines really are
+
+
+async def test_the_result_key_is_log_and_the_old_spelling_is_nowhere_beside_it() -> None:
+    """This key was `trace` until 0.11. The flags and the environment variables keep their old
+    spelling for a release because a person types those; the wire is read by a model that was
+    handed the payload, so a second key would be two names for one list with nothing to say
+    which one to read."""
+    async with connected() as (client, _session, _transport):
+        await _cleared(client)
+        result = _data(
+            await client.call_tool(
+                "robot_run_verb", {"verb": "move", "params": {"vx": 0.2, "duration_s": 1.0}}
+            )
+        )
+        assert result["log"], "the key the model reads"
+        assert "trace" not in json.dumps(result), f"the old spelling is still on the wire: {result}"
+
+
+async def test_the_observe_block_is_headed_log() -> None:
+    """`robot_observe` returns content rather than a dict, so its log arrives behind a header
+    line instead of a key, and that line is the whole of what names it there."""
+    async with connected() as (client, _session, _transport):
+        frame = await client.call_tool("robot_observe", {})
+        block = frame.content[-1].text
+        assert block.splitlines()[0] == "log:"
+        assert "trace" not in block, block
+
+
+async def test_no_tool_description_sends_a_model_looking_for_a_trace() -> None:
+    """There is no system prompt on this surface: these strings are everything a pilot is told
+    about the server. Two of them name the field that comes back, and a description still
+    saying `trace` would name a key the result no longer has."""
+    async with connected() as (client, _session, _transport):
+        said = {
+            t.name: (t.description or "") + json.dumps(t.input_schema)
+            for t in (await client.list_tools()).tools
+        }
+        assert "`log` lists what happened" in said["robot_run_verb"]
+        assert "a log block of what happened" in said["robot_observe"]
+        for name, text in said.items():
+            assert "trace" not in text.lower(), f"{name} still says trace: {text}"
+
+
+def test_the_two_lines_the_log_writes_about_itself_say_log() -> None:
+    """Every other line in the list comes from the robot; these two come from the renderer and
+    are what a pilot reads when the list is shorter than the call it just made. `cap_lines` and
+    `call_lines` are the pair `_call` runs, so this is the wording that reaches the wire."""
+    from quackd.log import LogEvent, call_lines, cap_lines
+
+    cut = next(line for line in cap_lines([f"line {i}" for i in range(100)]) if "more" in line)
+    assert "the full log is on the server's stderr" in cut
+    assert "trace" not in cut
+
+    # an elapsed_s the line formatter cannot render: the guard in `call_lines` answers instead
+    (failed,) = call_lines([LogEvent("verb_end", 0.0, {"elapsed_s": "soon", "intents": {}})])
+    assert failed.startswith("(the log could not be rendered: ")
+    assert "trace" not in failed
 
 
 async def test_an_aborted_sessions_refusal_says_the_heartbeat_failed() -> None:
     """The heartbeat's task predates every capture block, so its own note reaches no call's
-    trace. Without this the pilot was told the session had aborted and never why."""
+    log_text. Without this the pilot was told the session had aborted and never why."""
     from quackd.mcp_server import build_server
 
     transport = MockTransport(fail_heartbeat_after=0)
@@ -419,7 +477,7 @@ async def test_an_aborted_sessions_refusal_says_the_heartbeat_failed() -> None:
         await session.close()
     assert refused["ok"] is False
     assert "heartbeat" in refused["summary"]
-    assert "heartbeat" in _flat(refused["trace"])
+    assert "heartbeat" in _flat(refused["log"])
 
 
 async def test_an_aborted_session_says_why_it_refused() -> None:
@@ -427,7 +485,7 @@ async def test_an_aborted_session_says_why_it_refused() -> None:
         session.executor.abort.set()
         refused = _data(await client.call_tool("robot_run_verb", {"verb": "walk"}))
         assert refused["ok"] is False
-        assert "session_aborted" in _flat(refused["trace"])
+        assert "session_aborted" in _flat(refused["log"])
 
 
 async def test_stop_still_works_after_the_session_aborts() -> None:
@@ -457,7 +515,7 @@ async def test_nothing_moves_until_the_pilot_has_judged_the_task() -> None:
         assert refused["ok"] is False
         assert "robot_assess_task" in refused["summary"]
         assert "moves the body" in refused["summary"]
-        assert any("verdict" in line for line in refused["trace"])
+        assert any("verdict" in line for line in refused["log"])
         assert transport.world.steps == 0, "nothing was sent"
 
         # looking and speaking are how a pilot works out what it is being asked to do
@@ -704,7 +762,7 @@ async def test_robot_observe_returns_every_camera_as_its_own_named_image() -> No
         images = [c for c in frame.content if c.type == "image"]
         assert "top, side" in texts[0] and "top is the primary" in texts[0], texts[0]
         assert texts[1] == "camera top:" and texts[2] == "camera side:"
-        assert texts[-1].startswith("trace:")
+        assert texts[-1].startswith("log:")
         assert [i.mime_type for i in images] == ["image/png", "image/png"]
         assert images[0].data != images[1].data, "both cameras returned the same picture"
         assert [f.name for f in session.last_frames] == ["top", "side"]

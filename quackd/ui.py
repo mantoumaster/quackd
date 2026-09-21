@@ -27,6 +27,7 @@ live region never has to share a console with the answer it is decorating.
 from __future__ import annotations
 
 import contextlib
+import io
 import os
 import re
 import sys
@@ -35,10 +36,11 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from rich import box
-from rich.console import Console, RenderableType
+from rich.console import Console, NewLine, RenderableType
+from rich.control import Control
 from rich.measure import Measurement
 from rich.panel import Panel
 from rich.table import Table
@@ -78,7 +80,7 @@ reads a name; the coordinator's own lines are bold and wear none of these. Eight
 because that is what a pilot flock may hold (`PILOTS_MAX_MEMBERS`); an auction uses four."""
 
 MARKS = ("start", "send", "ok", "fail", "warn", "other", "note", "flock", "end")
-"""The kinds of moment a trace line can be, and the glyph fields that answer for them."""
+"""The kinds of moment a log line can be, and the glyph fields that answer for them."""
 
 
 @dataclass(frozen=True)
@@ -102,7 +104,7 @@ class Glyphs:
     spinner: str
 
     def mark(self, name: str | None) -> str:
-        """The glyph for a `TraceLine.mark`, or nothing for a line that speaks for itself."""
+        """The glyph for a `LogLine.mark`, or nothing for a line that speaks for itself."""
         return getattr(self, name) if name in MARKS else ""
 
 
@@ -161,7 +163,7 @@ def glyphs_for(target: Console) -> Glyphs:
     """ASCII when the stream cannot carry anything else.
 
     A redirected stderr on Windows is cp1252, and that is exactly the stream people redirect
-    a trace into: without this the arrows and ticks arrive as `?`."""
+    the log into: without this the arrows and ticks arrive as `?`."""
     return ASCII if target.options.ascii_only else UNICODE
 
 
@@ -197,13 +199,44 @@ def tolerate_narrow_encodings() -> None:
             stream.reconfigure(errors="replace")
 
 
-def make_console(*, stderr: bool = False, no_color: bool = False) -> Console:
+class TeeConsole(Console):
+    """A quackd console: whatever it prints is also printed into the open capture.
+
+    The forward happens AFTER the terminal has had the object, because `rich.rule.Rule`
+    truncates its title `Text` in place to the width it is being drawn at, and whichever
+    console renders first decides what the other one sees.
+
+    What the capture does NOT see is Rich's live region. A `Status` adds its spinner frame
+    inside `Console.print`, after the render hook has run, so the subclass only ever sees the
+    bare objects a caller passed; the refresh thread's own `print(Control())` is dropped by
+    `Capture.forward`; and `Live.stop` asks for its trailing blank line through `line()`,
+    which is overridden below because on the terminal that newline is erased again by a
+    cursor control the capture never gets.
+    """
+
+    def print(self, *objects: Any, **kwargs: Any) -> None:
+        super().print(*objects, **kwargs)
+        capture = _capture
+        if capture is not None:
+            capture.forward(self, objects, kwargs)
+
+    def line(self, count: int = 1) -> None:
+        """Rich's own blank line, kept off the capture.
+
+        Its only caller on the run path is `Live.stop`, which prints one and then erases it
+        with a control that does not go through `print`. Following it into the file would put
+        a blank line in for every prompt, every paused status and every spinner. A blank line
+        quackd asks for itself goes through `print` and is captured like anything else."""
+        Console.print(self, NewLine(count))
+
+
+def make_console(*, stderr: bool = False, no_color: bool = False) -> TeeConsole:
     """One console, built the way every quackd console is built.
 
     `highlight=False` because Rich's guesses at what is a number or a path are wrong as
     often as they are right in this output, and `emoji=False` because a robot that names a
     verb `:kick:` must not have it replaced by a picture."""
-    return Console(
+    return TeeConsole(
         stderr=stderr,
         theme=THEME,
         highlight=False,
@@ -221,7 +254,212 @@ console = make_console()
 """Answers: tables, verdicts, the things you would redirect into a file."""
 
 err_console = make_console(stderr=True)
-"""Everything else: the trace, the status line, warnings, errors."""
+"""Everything else: the log, the status line, warnings, errors."""
+
+
+_CONTROL = {c: None for c in range(0x20) if c not in (0x09, 0x0A)} | {0x7F: None}
+"""Every C0 control except tab and newline, and DEL, dropped on the way into the file.
+
+`terminal.txt` is the one thing in a run directory meant to be read with `cat`, and a control
+character in it is executed by the reader's terminal rather than shown to them. Rich strips
+its own set (`rich.control.STRIP_CONTROL_CODES`) and ESC is not in it, so an escape that
+arrived inside *text* rather than from a style goes straight through: `ESC[2J` clears the
+reader's screen, `ESC]0;...BEL` retitles their window, `ESC[?1049h` swaps their buffer. The
+text is not ours. It is the goal somebody typed, the body of a `.duck` fetched off the
+internet, whatever the model said it was thinking, and an error message from a robot.
+
+Dropped rather than escaped, because this file is read by a person and not parsed, and
+`transcript.jsonl` beside it keeps every byte as it came (JSON escapes it, so it is safe
+there and recoverable from there)."""
+
+
+def _printable(text: str) -> str:
+    """The text with anything that would drive the reader's terminal taken out."""
+    return text.translate(_CONTROL)
+
+
+class _CaptureSink:
+    """Where the capture console writes: a buffer until there is a run directory, then a file.
+
+    A plain object rather than a `TextIOWrapper` for two reasons. It has no `fileno` and no
+    `isatty`, which keeps Rich off both its terminal path and, on Windows, its Win32 console
+    path. And its `encoding` is set per forwarded print to the encoding of the console that
+    did the printing, which is the whole of how the file ends up wearing the same glyphs the
+    screen did: Rich derives `ascii_only` from nothing but that attribute."""
+
+    def __init__(self) -> None:
+        self.encoding = "utf-8"
+        self._sink: IO[str] = io.StringIO()
+        self._buffered = True
+
+    def write(self, text: str) -> int:
+        return self._sink.write(_printable(text))
+
+    def flush(self) -> None:
+        with contextlib.suppress(ValueError):
+            self._sink.flush()
+
+    def swap(self, opened: IO[str]) -> None:
+        """Move to a real file, carrying everything printed before it existed."""
+        if self._buffered:
+            opened.write(self._sink.getvalue())  # type: ignore[attr-defined]
+        self._sink = opened
+        self._buffered = False
+
+    def close(self) -> None:
+        if not self._buffered:
+            with contextlib.suppress(Exception):
+                self._sink.close()
+
+
+class TerminalCapture:
+    """Everything the run put on your terminal, kept so it can be read back.
+
+    The transcript says what quackd did. This says what you saw while it did it: the header,
+    the narration, the warnings, the questions and the answers you typed, the verdict. It
+    starts buffering before there is a run directory, because the first thing a run prints is
+    the header and the first thing a bad flag prints is an error, and a run that never gets
+    as far as a directory must not leave one behind.
+    """
+
+    def __init__(self, *, source: Console, width: int | None = None) -> None:
+        self._sink = _CaptureSink()
+        # A plain Console, never a TeeConsole: this one is the end of the line.
+        # `force_terminal=False` beats FORCE_COLOR and TTY_COMPATIBLE; `color_system=None`
+        # makes every style a pass-through, so the file carries no escape codes and no
+        # terminal hyperlinks; `theme` because an unknown style name raises; `legacy_windows`
+        # mirrored so the box characters and the width arithmetic match the screen's.
+        self._console = Console(
+            # a duck-typed writer: Rich only ever asks it to `write`, `flush` and say what
+            # its `encoding` is, and withholding `fileno`/`isatty` is the point
+            file=self._sink,  # type: ignore[arg-type]
+            force_terminal=False,
+            force_interactive=False,
+            force_jupyter=False,
+            color_system=None,
+            no_color=True,
+            theme=THEME,
+            highlight=False,
+            emoji=False,
+            legacy_windows=source.legacy_windows,
+            width=width,
+        )
+        self._lock = threading.RLock()
+        self.path: Path | None = None
+        self.broken: str | None = None
+        """Why the capture stopped, if it did. A file that cannot be written is never allowed
+        to cost the terminal a line, so the first failure disables the capture and is
+        remembered here instead of raised."""
+        self._closed = False
+
+    # ── what goes in ──
+
+    def forward(self, source: Console, objects: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        if objects and all(isinstance(o, Control) for o in objects):
+            return  # a live-region frame: it draws nothing off a terminal anyway
+        with self._lock:
+            if self._closed or self.broken is not None:
+                return
+            self._sink.encoding = source.encoding
+            try:
+                self._console.print(*objects, **kwargs)
+            except Exception as e:
+                self.broken = f"{type(e).__name__}: {e}"
+
+    def note(self, *lines: str) -> None:
+        """A line for the file that was never on the screen.
+
+        What you typed at a prompt is the reason this exists: the question is written raw to
+        stderr and your answer is echoed by the terminal itself, so quackd never prints it
+        and a tee cannot see it."""
+        with self._lock:
+            if self._closed or self.broken is not None:
+                return
+            try:
+                for line in lines:
+                    self._console.print(
+                        line, markup=False, highlight=False, soft_wrap=True, style=None
+                    )
+            except Exception as e:
+                self.broken = f"{type(e).__name__}: {e}"
+
+    # ── where it ends up ──
+
+    def attach(self, run_dir: Path, name: str = "terminal.txt") -> Path | None:
+        """Point the capture at a file in the run directory, carrying the buffer with it."""
+        with self._lock:
+            if self._closed or self.broken is not None or self.path is not None:
+                return self.path
+            path = Path(run_dir) / name
+            try:
+                opened = path.open("w", encoding="utf-8", errors="replace", newline="")
+                self._sink.swap(opened)
+            except OSError as e:
+                self.broken = f"{type(e).__name__}: {e}"
+                return None
+            self.path = path
+            return path
+
+    def close(self) -> None:
+        """Finish the file, and say so on screen if it is not the whole session.
+
+        A capture that broke stops forwarding and the file simply stops, which reads exactly
+        like a run that stopped there. So it says which it was, in the file where somebody
+        will read it and on the screen where somebody is still standing: a truncated record
+        that declares itself is recoverable, and one that does not is a wrong answer to the
+        only question the file exists to answer."""
+        broke = self.broken
+        path = self.path
+        with self._lock:
+            if broke is not None and path is not None:
+                # straight to the file: whatever broke is between here and the console
+                with contextlib.suppress(Exception):
+                    self._sink.write(f"\n(the terminal log stops here: {broke})\n")
+            self._closed = True
+            self._sink.close()
+        global _capture
+        if _capture is self:
+            _capture = None
+        if broke is not None and path is not None:
+            with contextlib.suppress(Exception):
+                err_console.print(
+                    Text(
+                        f"{path.name} is not the whole session: {broke}",
+                        style=STYLES["warn"],
+                    ),
+                    markup=False,
+                    soft_wrap=True,
+                )
+
+
+_capture: TerminalCapture | None = None
+
+
+def begin_capture(*, header: Iterable[str] = (), width: int | None = None) -> TerminalCapture:
+    """Start keeping what the terminal shows. Nothing is written until `attach`."""
+    global _capture
+    _capture = TerminalCapture(source=err_console, width=width)
+    if header:
+        _capture.note(*header)
+    return _capture
+
+
+def active_capture() -> TerminalCapture | None:
+    return _capture
+
+
+def note(*lines: str) -> None:
+    """Write a capture-only line, or do nothing when nothing is being captured."""
+    capture = _capture
+    if capture is not None:
+        capture.note(*lines)
+
+
+def attach_capture(run_dir: Path) -> None:
+    """Hand the capture its run directory. Safe to call when nothing is capturing."""
+    capture = _capture
+    if capture is not None:
+        capture.attach(run_dir)
 
 
 def configure(*, no_color: bool = False) -> None:
@@ -236,6 +474,8 @@ def configure(*, no_color: bool = False) -> None:
     tolerate_narrow_encodings()
     console = make_console(no_color=no_color)
     err_console = make_console(stderr=True, no_color=no_color)
+    # An open capture survives the rebuild: it is looked up at print time, not held by the
+    # console, so the new pair forwards into it exactly as the old pair did.
 
 
 # ── renderables ─────────────────────────────────────────────────────────────────────────
@@ -333,7 +573,7 @@ def run_header(
 ) -> RenderableType:
     """What is about to happen, in the one place a person looks before looking away.
 
-    Before the trace rather than inside it: with `--no-trace` this is the only thing between
+    Before the log rather than inside it: with `--no-log` this is the only thing between
     the command and the verdict, and on a run that never connects it is the only record of
     what was tried."""
 
@@ -376,7 +616,7 @@ def verdict(
 ) -> RenderableType:
     """How it ended: the word, why, what it cost, and where the evidence is.
 
-    `quackd trace` prints this from the transcript too, so a replay ends exactly the way the
+    `quackd log` prints this from the transcript too, so a replay ends exactly the way the
     run did rather than in a second dialect somebody has to keep in step."""
     style_key, mark = _OUTCOME.get(outcome, ("fail", "fail"))
     style = STYLES[style_key]
@@ -505,11 +745,11 @@ def _step_of(data: Mapping[str, Any]) -> str | None:
 
 
 class RunStatus:
-    """The line under the trace that says what the run is waiting for.
+    """The line under the log that says what the run is waiting for.
 
     A run spends nearly all its wall clock inside two calls: a model deciding, and a verb
-    steering a robot. The trace says what happened once it has happened; until then the
-    terminal had nothing, and with `--no-trace` it had nothing at all between the header and
+    steering a robot. The log says what happened once it has happened; until then the
+    terminal had nothing, and with `--no-log` it had nothing at all between the header and
     the verdict. This reads the same event stream and keeps one transient line at the
     bottom, so a slow provider looks like a slow provider rather than like a hang.
 
@@ -605,7 +845,7 @@ class RunStatus:
     # ── reading the run ─────────────────────────────────────────────────────────────
 
     def sink(self, event: Any) -> None:
-        """A trace observer. Never raises: the status line is decoration, and a decoration
+        """A log observer. Never raises: the status line is decoration, and a decoration
         that failed to draw must not be counted as an event the run could not show."""
         with contextlib.suppress(Exception):
             self._read(event)
@@ -623,7 +863,7 @@ class RunStatus:
         elif kind == "llm":
             self.update("choosing a verb")
         elif kind == "verb_start":
-            from quackd.trace import fmt_params
+            from quackd.log import fmt_params
 
             self.update(f"{data.get('name')}({fmt_params(data.get('params'))})")
         elif kind == "verb_end":
@@ -639,7 +879,7 @@ class RunStatus:
         elif kind in ("declare", "member_end", "run_end"):
             self.update("finishing")
         else:
-            from quackd.trace import flock_caption
+            from quackd.log import flock_caption
 
             caption = flock_caption(kind, data)
             if caption is not None:
@@ -695,10 +935,10 @@ def install_logging(level: int = 30) -> None:
 
     from rich.logging import RichHandler
 
-    log = logging.getLogger("quackd")
-    for handler in [h for h in log.handlers if isinstance(h, RichHandler)]:
-        log.removeHandler(handler)
-    log.addHandler(
+    logger = logging.getLogger("quackd")
+    for handler in [h for h in logger.handlers if isinstance(h, RichHandler)]:
+        logger.removeHandler(handler)
+    logger.addHandler(
         RichHandler(
             console=err_console,
             level=level,
@@ -708,4 +948,4 @@ def install_logging(level: int = 30) -> None:
             rich_tracebacks=False,
         )
     )
-    log.setLevel(level)
+    logger.setLevel(level)

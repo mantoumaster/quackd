@@ -18,7 +18,7 @@ from quackd.agent.transcript import Transcript
 from quackd.flock.messages import FlockMessage
 
 if TYPE_CHECKING:
-    from quackd.trace import TraceEvent
+    from quackd.log import LogEvent
 
 
 class FlockTranscript:
@@ -39,8 +39,8 @@ class FlockTranscript:
         self._fh.flush()
         self.events += 1
 
-    def sink(self, event: TraceEvent) -> None:
-        """`flock.jsonl` as a `Tracer` record: the flock's own line for what belongs to no
+    def sink(self, event: LogEvent) -> None:
+        """`flock.jsonl` as a `EventLog` record: the flock's own line for what belongs to no
         single member (the planner's model call). Stamped in `sim_t` like every other line in
         this file, so a replay lines it up with the world; the event's wall-clock `t` is
         dropped exactly as `Transcript.sink` drops it."""

@@ -196,7 +196,7 @@ def test_a_nullable_number_with_a_null_default_leaves_the_verb_a_choice() -> Non
 
 def test_a_verbs_labels_are_the_product_of_its_closed_sets_and_nothing_else() -> None:
     """And they read like something a person would say out loud, because Jev chooses between
-    these strings and the trace prints them."""
+    these strings and the log prints them."""
     gripper = discrete_calls(_verbs("lerobot")["gripper"].tool_schema())
     assert gripper is not None
     assert [c.label for c in gripper] == ["gripper(open=true)", "gripper(open=false)"]
@@ -1086,7 +1086,7 @@ def test_a_stepper_that_cannot_run_warns_once_and_the_run_carries_on(
             "fake",
             "--jev",
             "on",
-            "--no-trace",
+            "--no-log",
             "--runs-dir",
             str(tmp_path),
         ],
@@ -1163,7 +1163,7 @@ def test_switching_the_stepper_on_says_it_has_never_been_measured(
                     "fake",
                     "--jev",
                     mode,
-                    "--no-trace",
+                    "--no-log",
                     "--runs-dir",
                     str(tmp_path / mode),
                 ],

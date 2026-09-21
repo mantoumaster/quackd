@@ -16,7 +16,8 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +34,7 @@ from quackd.agent.providers.catalogue import (
     models_for,
     vendor_of,
 )
+from quackd.command import command_text
 
 if TYPE_CHECKING:  # every heavy module is imported inside the command that needs it
     from quackd.safety import KillSwitch
@@ -58,7 +60,7 @@ app = typer.Typer(
         # examples below, because the core on its own carries no robot and a first example
         # that refuses is a bad one.
         "[bold]Try[/bold]" + "\n\n"
-        "quackd doctor  |  quackd list-adapters  |  quackd trace" + "\n\n"
+        "quackd doctor  |  quackd list-adapters  |  quackd log" + "\n\n"
         # the backslash is Rich's escape: an unescaped [microduck] is a style tag, and Typer
         # renders this epilog as markup, so it would print the install line without the extra
         # that makes it work
@@ -66,6 +68,109 @@ app = typer.Typer(
         "quackd run --goal 'walk in a square' --provider anthropic --robot microduck:mujoco"
     ),
 )
+
+
+_OLD_SPELLINGS = {
+    "--trace": "--log",
+    "--no-trace": "--no-log",
+    "--trace-prompt": "--log-prompt",
+    "--no-trace-prompt": "--no-log-prompt",
+    "trace": "log",
+}
+"""What a reader typed, and what it is called now. `trace` is the subcommand; the rest are
+flags. Read off `sys.argv` rather than off the parsed value, because Click hands both
+spellings of an option to the same parameter and by then they are indistinguishable."""
+
+
+_DEPRECATIONS: list[str] = []
+"""Every deprecation line this process printed, in order, kept for the saved terminal.
+
+These are printed from the root callback, which Click runs before the subcommand body and so
+before there is a capture to forward them into. Rather than move the warning later, where a
+reader would meet it after the header panel instead of before it, the text is kept here and
+`_terminal_header` puts it back at the top of the file where it was on the screen."""
+
+
+def _deprecated(msg: str) -> None:
+    """One yellow line on stderr, the shape ADR-0017 used to retire a flag over a release.
+
+    `soft_wrap` because the sentence is an instruction a script may grep for and the longest
+    of them is 100 characters, which a default 80-column stderr would fold in the middle of
+    the new spelling."""
+    _DEPRECATIONS.append(msg)
+    ui.err_console.print(
+        Text(msg, style=ui.STYLES["warn"]), markup=False, highlight=False, soft_wrap=True
+    )
+
+
+def _warn_old_spellings() -> None:
+    """Say it once per process, for each old spelling actually used.
+
+    The trace became the log in 0.11 because the record outgrew the name: it holds the
+    robot's movement, the run's clocks, what the model cost and, now, the whole terminal
+    session. Both spellings work until 0.12.
+
+    The kept lines are cleared first. One process is one command when a person runs quackd,
+    but this module is also imported and driven twice in a row by tests, by a wrapper and by
+    `quackd.cli.app(...)`, and a second run whose saved terminal opened with the first run's
+    deprecations would be a header describing a command nobody typed."""
+    _DEPRECATIONS.clear()
+    args = sys.argv[1:]
+    # The subcommand is the first argument and nowhere else, so `--run-name trace` and a run
+    # called `trace` are not somebody using the old spelling and must not be told they are.
+    seen = {arg for arg in args if arg.startswith("--") and arg in _OLD_SPELLINGS}
+    if args and args[0] == "trace":
+        seen.add("trace")
+    for old in sorted(seen):
+        new = _OLD_SPELLINGS[old]
+        what = "command" if old == "trace" else "flag"
+        _deprecated(
+            f"the {what} `{old}` is now `{new}`; the old spelling still works and goes in 0.12"
+        )
+
+
+def _terminal_header() -> list[str]:
+    """What the saved terminal opens with: the command, then what ran it and when.
+
+    Two lines and a blank one, followed by any deprecation the root callback already printed,
+    which is the one thing said on screen before there was anywhere to write it down."""
+    started = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return [
+        f"$ {command_text()}",
+        f"quackd {__version__}, started {started}, cwd {Path.cwd()}",
+        "",
+        *_DEPRECATIONS,
+        *([""] if _DEPRECATIONS else []),
+    ]
+
+
+@contextlib.contextmanager
+def _terminal_record() -> Iterator[None]:
+    """Keep what this run puts on the terminal, and write it into the run directory.
+
+    Around the whole command rather than inside `_run_impl`, so the pre-flight refusals are
+    in it too: a run that dies on a bad flag prints one sentence and that sentence is part of
+    the story. Nothing is written until there is a run directory to write into, which is what
+    keeps a refused run from leaving one behind.
+
+    The three exits are told apart because the file should say which happened. `typer.Exit`
+    is a refusal that has already printed its own line. A `KeyboardInterrupt` is somebody
+    pressing Ctrl-C twice, which prints nothing at all. Anything else is a crash, and the
+    traceback for it is drawn by `sys.excepthook` after this has closed, so the file would
+    otherwise end mid-sentence with no sign of why."""
+    capture = ui.begin_capture(header=_terminal_header())
+    try:
+        yield
+    except typer.Exit:
+        raise
+    except KeyboardInterrupt:
+        ui.note("^C")
+        raise
+    except BaseException as e:
+        ui.note(f"quackd crashed: {type(e).__name__}: {e}")
+        raise
+    finally:
+        capture.close()
 
 
 def _version_callback(value: bool) -> None:
@@ -111,6 +216,7 @@ def _main(
     load_dotenv(Path.cwd() / ".env")
     load_dotenv()
     ui.configure(no_color=no_color)
+    _warn_old_spellings()
 
 
 _JSON = typer.Option(
@@ -159,20 +265,20 @@ def _print_outcome(
     counters: Sequence[str],
     run_dir: Path | str,
     gif_path: Path | str | None = None,
-    trace_dropped: int = 0,
+    log_dropped: int = 0,
 ) -> None:
     """How the run ended, in the one place a person looks after looking away.
 
-    `quackd trace` prints it from the transcript too, so a replay ends exactly the way the
+    `quackd log` prints it from the transcript too, so a replay ends exactly the way the
     run itself did rather than in a second dialect somebody has to keep in step. `counters`
     is a list because a flock counts different things than a solo run does."""
     ui.console.print(
         ui.verdict(outcome, reason, counters=counters, run_dir=run_dir, gif_path=gif_path)
     )
-    if trace_dropped:
-        # a console that raised on every event produced a silent trace and no sign of it
+    if log_dropped:
+        # a console that raised on every event produced a silent log and no sign of it
         ui.err_console.print(
-            f"trace: {trace_dropped} line(s) could not be shown (the console raised); "
+            f"log: {log_dropped} line(s) could not be shown (the console raised); "
             "transcript.jsonl has them",
             style="yellow",
             markup=False,
@@ -182,7 +288,7 @@ def _print_outcome(
 def _number(value: Any) -> float | None:
     """A figure out of a record, or None where there is not one.
 
-    `quackd trace` is pointed at files people hand-edit, truncate and copy between machines,
+    `quackd log` is pointed at files people hand-edit, truncate and copy between machines,
     and the renderers beside this one already shrug at a field that is not what it should be.
     A counter line is not worth a traceback."""
     if isinstance(value, bool) or not isinstance(value, int | float):
@@ -194,7 +300,7 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
     """What a finished run cost, in the line under the verdict.
 
     Built from the summary dict, which is what `run_end` carries and what `summary.json`
-    holds, so the live panel and `quackd trace` print one list rather than two that drift.
+    holds, so the live panel and `quackd log` print one list rather than two that drift.
 
     Every field is optional on purpose. A SOLO run recorded before any of this existed
     replays with exactly the three counters it always had. A flock is the one deliberate
@@ -202,7 +308,7 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
     an old flock record does gain a `time` counter from the number it was already writing.
     """
     from quackd.agent.providers.pricing import fmt_usd
-    from quackd.trace import fmt_duration
+    from quackd.log import fmt_duration
 
     usage = end.get("usage") or {}
     counters = [
@@ -648,6 +754,16 @@ class _TerminalHandOff:
     already runs the only thread reading stdin, and a second reader would race it for the same
     keystroke: whichever lost would sit on a line the other had taken."""
 
+    asks_a_person = True
+    """There is a person at the robot: what this asks goes in the record as a `prompt`.
+
+    Flatly true, and not `_can_prompt` like the three above, because the hand-off is only
+    wired in at all where `_can_prompt()` has already said yes.
+
+    A flock member and a `--dry-run` have no hand-off at all, so this mark is never the thing
+    that decides it; it is here so the loop does not have to know which of its callables
+    reaches a terminal."""
+
     def __init__(self) -> None:
         self.switch: KillSwitch | None = None
 
@@ -666,7 +782,11 @@ class _TerminalHandOff:
         if self.switch is None:  # `bind` runs before the loop does, so this is a bug if hit
             raise RuntimeError("the hand-off has no kill switch to read Enter from")
         self.say(text)
-        return await self.switch.wait_for_enter(timeout_s=timeout_s, until_abort=until_abort)
+        came = await self.switch.wait_for_enter(timeout_s=timeout_s, until_abort=until_abort)
+        # Enter is a keystroke nobody printed, and not pressing it is the more interesting
+        # half: a hand-off that timed out is why the arm was left where it was.
+        ui.note("(Enter)" if came else "(nobody answered: the wait ended without an Enter)")
+        return came
 
 
 _SWITCH: KillSwitch | None = None
@@ -684,19 +804,31 @@ def _ask(question: str) -> bool:
     terminal: whichever of the two took a character first kept it, so a gate asked on a real
     terminal waited for a newline that had already been swallowed, with a robot mid-verb.
     Where a switch is running its own reader answers; where none is, this is `typer.confirm`
-    as it always was."""
+    as it always was.
+
+    Both branches tell the saved terminal what was typed, because neither of them printed it:
+    the question goes out raw and the answer is echoed by the terminal driver, so a tee on
+    quackd's own output sees the asking and not the answering. A run with `--yes` never
+    reaches here, which is why a recorded question always means a person was really asked."""
     switch = _SWITCH
     if switch is None:
-        return typer.confirm(question, default=False)
+        agreed = typer.confirm(question, default=False)
+        ui.note(f"{question} [y/N]: {'y' if agreed else 'n'}")
+        return agreed
     answer = switch.ask(f"{question} [y/N]: ")
+    ui.note(f"{question} [y/N]: {answer.strip() or '(Enter)'}")
     return answer.strip().lower() in ("y", "yes")
 
 
 def _confirm_prompt(name: str, params: dict[str, Any]) -> bool:
     # under a running status line the question is invisible: a live region redirects stdout
-    # and a prompt writes without a newline, so it stays buffered until it is too late
+    # and a prompt writes without a newline, so it stays buffered until it is too late.
+    # `fmt_params` and not the raw dict, because the executor writes the same sentence into the
+    # record and the record has to quote the question in the words it was asked in.
+    from quackd.log import fmt_params
+
     with ui.pause_status():
-        return _ask(f"run {name}({params})?")
+        return _ask(f"run {name}({fmt_params(params)})?")
 
 
 def _decide_prompt(why: str) -> bool:
@@ -711,6 +843,24 @@ def _acknowledge_prompt(why: str) -> bool:
     with ui.pause_status():
         ui.err_console.print(Text(why, style=ui.STYLES["warn"]))
         return _ask("Are you watching the robot right now?")
+
+
+def _a_person_is_there() -> bool:
+    """`_can_prompt` looked up now rather than bound now, because it is the seam the tests
+    replace and a reference taken at import would not see the replacement."""
+    return _can_prompt()
+
+
+_confirm_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
+_decide_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
+_acknowledge_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
+"""These three are the ones that reach a terminal, and `allow_all`, `deny_all`, `_yes_to_go`
+and the flock's standing answers are not. The mark is `_can_prompt` rather than `True` because
+reaching a terminal is a thing to check at the moment of asking and not a property of the
+function: these same three run under `yes | quackd run` and under `quackd run < answers.txt`,
+where `input()` reads the pipe and returns a yes nobody said. The gate still opens, because
+that is what the pipe asked for and it is what quackd has always done; what must not happen is
+the record then testifying that a person cleared it."""
 
 
 def _entry_model(resolved: Any, provider: str | None) -> str | None:
@@ -778,8 +928,8 @@ def _run_impl(
     memory: bool = True,
     memory_dir: str | None = None,
     registry_dir: str | None = None,
-    trace: bool | None = None,
-    trace_prompt: bool | None = None,
+    log_on: bool | None = None,
+    log_prompt: bool | None = None,
     run_name: str | None = None,
     price: str | None = None,
 ) -> None:
@@ -797,16 +947,16 @@ def _run_impl(
     from quackd.duckfile.validate import validate_duck
     from quackd.flock.pilots import ADVISORY_FIELDS, roster_from_specs
     from quackd.flock.runner import member_specs
+    from quackd.log import (
+        ConsoleLog,
+        fan_out,
+        log_enabled_default,
+        prompt_shown_default,
+        thinking_limit_default,
+    )
     from quackd.perception import detector_for
     from quackd.registry import RegistryError, Resolved
     from quackd.safety import KillSwitch, allow_all
-    from quackd.trace import (
-        ConsoleTrace,
-        fan_out,
-        prompt_shown_default,
-        thinking_limit_default,
-        trace_enabled_default,
-    )
     from quackd.transport.base import TransportError
 
     if (duckfile is None) == (goal is None):
@@ -1016,8 +1166,8 @@ def _run_impl(
                 memory=memory,
                 memory_dir=memory_dir,
                 flock_name=flock_name,
-                trace=trace,
-                trace_prompt=trace_prompt,
+                log_on=log_on,
+                log_prompt=log_prompt,
                 run_name=run_name,
                 price=price,
             )
@@ -1062,8 +1212,8 @@ def _run_impl(
             extra_body=extra_body,
             n_override=flock_n,
             max_steps=max_steps,
-            trace=trace,
-            trace_prompt=trace_prompt,
+            log_on=log_on,
+            log_prompt=log_prompt,
             run_name=run_name,
             price=price,
         )
@@ -1164,28 +1314,28 @@ def _run_impl(
 
         recorder = FrameRecorder(duck_transport, size=gif_size)
 
-    # The flag wins; else QUACKD_TRACE, read here rather than at import so a `.env` line
+    # The flag wins; else QUACKD_LOG, read here rather than at import so a `.env` line
     # counts (the root callback loads it after the option defaults exist).
-    trace_on = trace if trace is not None else trace_enabled_default()
-    console_trace = (
-        ConsoleTrace(
+    log_on = log_on if log_on is not None else log_enabled_default()
+    console_log = (
+        ConsoleLog(
             ui.err_console,
             thinking_chars=thinking_limit_default(),
-            prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
+            prompt=log_prompt if log_prompt is not None else prompt_shown_default(),
         )
-        if trace_on
+        if log_on
         else None
     )
 
-    # on whether or not the trace is: with --no-trace this is the only thing between the
+    # on whether or not the log is: with --no-log this is the only thing between the
     # header and the verdict, and a model can think for a minute
     status = ui.RunStatus()
     ui.install_logging()
 
     def log(msg: str) -> None:
-        # the compact view: one line per verb and the executor's notes. The trace shows all
+        # the compact view: one line per verb and the executor's notes. The log shows all
         # of that and more, so with it on this prints nothing rather than every verb twice.
-        if verbose and console_trace is None:
+        if verbose and console_log is None:
             _verbose_line(msg)
 
     hand_off = _TerminalHandOff() if by_hand else None
@@ -1213,7 +1363,7 @@ def _run_impl(
         fov_deg=fov_deg,
         acknowledge=None if yes else _acknowledge_prompt,
         decide=_yes_to_go if yes else _decide_prompt,
-        trace=fan_out(console_trace, status.sink),
+        view=fan_out(console_log, status.sink),
         task_images=task_images,
         hand_off=hand_off,
         jev=jev_mode,
@@ -1238,6 +1388,9 @@ def _run_impl(
 
         global _SWITCH
         loop = AgentLoop(cfg)
+        # The first moment there is a directory to write into. Everything printed before
+        # now went into the capture's buffer and is carried across by `attach`.
+        ui.attach_capture(loop.run_dir)
         ks = KillSwitch(loop.executor.abort, log=killed)
         if hand_off is not None:
             hand_off.bind(ks)
@@ -1255,7 +1408,7 @@ def _run_impl(
             status.update(f"connecting to {here.label}")
             result = asyncio.run(main())
     except (TransportError, ProviderError) as e:
-        # the trace has already shown the call that failed; this is the one-line verdict
+        # the log has already shown the call that failed; this is the one-line verdict
         _fail(str(e))
         return
     if recorder is not None:
@@ -1270,7 +1423,7 @@ def _run_impl(
         counters=run_counters(result.summary),
         run_dir=result.run_dir,
         gif_path=result.gif_path,
-        trace_dropped=result.trace_dropped,
+        log_dropped=result.log_dropped,
     )
     if result.summary.get("cost_usd") is None and result.summary.get("provider") not in (
         "fake",
@@ -1296,37 +1449,37 @@ def _run_impl(
 def _member_views(
     member_names: list[str],
     *,
-    trace_on: bool,
-    trace_prompt: bool | None,
+    log_on: bool,
+    log_prompt: bool | None,
     status: Any,
 ) -> tuple[dict[str, Any], Any]:
     """One console view per member, coloured and prefixed by name, plus the flock's own.
 
     Shared by both kinds of flock, because a person reading either one needs the same thing:
     several robots narrating at once stay several readable columns rather than one
-    interleaving. Returns the views (so the caller can flush them) and the `trace(name)`
+    interleaving. Returns the views (so the caller can flush them) and the `view(name)`
     factory the runner takes."""
-    from quackd.flock.runner import FLOCK_TRACE
-    from quackd.trace import (
-        ConsoleTrace,
+    from quackd.flock.runner import FLOCK_LOG
+    from quackd.log import (
+        ConsoleLog,
         Sink,
         fan_out,
         prompt_shown_default,
         thinking_limit_default,
     )
 
-    views: dict[str, ConsoleTrace] = {}
-    width = max(len(name) for name in [*member_names, FLOCK_TRACE])
+    views: dict[str, ConsoleLog] = {}
+    width = max(len(name) for name in [*member_names, FLOCK_LOG])
 
     def view_for(name: str) -> Sink | None:
         if name not in views:
             # a colour per member as well as a name, because robots moving at once interleave
             # and the eye finds a colour faster than it reads a prefix
             order = member_names.index(name) if name in member_names else -1
-            views[name] = ConsoleTrace(
+            views[name] = ConsoleLog(
                 ui.err_console,
                 thinking_chars=thinking_limit_default(),
-                prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
+                prompt=log_prompt if log_prompt is not None else prompt_shown_default(),
                 prefix=f"{name:<{width}}  ",
                 prefix_style=ui.MEMBER_STYLES[order % len(ui.MEMBER_STYLES)]
                 if order >= 0
@@ -1335,11 +1488,11 @@ def _member_views(
         return fan_out(views[name], status.sink)
 
     def status_only(_name: str) -> Sink | None:
-        """With --no-trace nothing narrates, but the status line still has to say which robot
+        """With --no-log nothing narrates, but the status line still has to say which robot
         is doing what, or a flock is a minute of nothing at all."""
         return status.sink
 
-    return views, (view_for if trace_on else status_only)
+    return views, (view_for if log_on else status_only)
 
 
 def _run_pilots_impl(
@@ -1364,8 +1517,8 @@ def _run_pilots_impl(
     memory: bool,
     memory_dir: str | None,
     flock_name: str | None,
-    trace: bool | None = None,
-    trace_prompt: bool | None = None,
+    log_on: bool | None = None,
+    log_prompt: bool | None = None,
     run_name: str | None = None,
     price: str | None = None,
 ) -> None:
@@ -1374,9 +1527,9 @@ def _run_pilots_impl(
     from quackd.agent.providers.factory import make_provider
     from quackd.agent.providers.pricing import fmt_usd
     from quackd.flock.pilots import run_pilot_flock
+    from quackd.log import fmt_duration, log_enabled_default
     from quackd.memory import RobotMemory
     from quackd.safety import KillSwitch
-    from quackd.trace import fmt_duration, trace_enabled_default
     from quackd.transport.base import TransportError
 
     members = list(roster)
@@ -1406,17 +1559,17 @@ def _run_pilots_impl(
         else None
     )
 
-    trace_on = trace if trace is not None else trace_enabled_default()
+    log_on = log_on if log_on is not None else log_enabled_default()
 
     def log(msg: str) -> None:
-        # the trace says all of this and more, so two views of one line is noise
-        if verbose and not trace_on:
+        # the log says all of this and more, so two views of one line is noise
+        if verbose and not log_on:
             _verbose_line(msg)
 
     status = ui.RunStatus()
     ui.install_logging()
     views, view_factory = _member_views(
-        members, trace_on=trace_on, trace_prompt=trace_prompt, status=status
+        members, log_on=log_on, log_prompt=log_prompt, status=status
     )
     ui.console.print(
         ui.run_header(
@@ -1447,11 +1600,12 @@ def _run_pilots_impl(
                 memories=memories,
                 fov_deg=fov_deg,
                 log=log,
-                trace=view_factory,
+                view=view_factory,
                 abort=master,
                 flock_name=flock_name,
                 run_name=run_name,
                 price=price,
+                on_run_dir=ui.attach_capture,
             )
         finally:
             ks.uninstall()
@@ -1482,7 +1636,7 @@ def _run_pilots_impl(
             f"cost {fmt_usd(result.cost_usd)}",
         ],
         run_dir=result.run_dir,
-        trace_dropped=result.trace_dropped,
+        log_dropped=result.log_dropped,
     )
     if result.outcome == "infeasible":
         raise typer.Exit(code=EXIT_INFEASIBLE)
@@ -1569,25 +1723,25 @@ def _run_flock_impl(
     extra_body: str | None,
     n_override: int | None,
     max_steps: int | None,
-    trace: bool | None = None,
-    trace_prompt: bool | None = None,
+    log_on: bool | None = None,
+    log_prompt: bool | None = None,
     run_name: str | None = None,
     price: str | None = None,
 ) -> None:
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import make_provider
-    from quackd.flock.runner import FLOCK_TRACE, run_flock
-    from quackd.safety import KillSwitch
-    from quackd.sim2d.recorder import FrameRecorder
-    from quackd.trace import (
-        ConsoleTrace,
+    from quackd.flock.runner import FLOCK_LOG, run_flock
+    from quackd.log import (
+        ConsoleLog,
         Sink,
         fan_out,
         flock_caption,
+        log_enabled_default,
         prompt_shown_default,
         thinking_limit_default,
-        trace_enabled_default,
     )
+    from quackd.safety import KillSwitch
+    from quackd.sim2d.recorder import FrameRecorder
 
     if any(spec.backend != "sim2d" for spec in specs):
         _fail(
@@ -1639,15 +1793,15 @@ def _run_flock_impl(
         if duck.frontmatter.flock is not None
         else [f"duck-{i}" for i in range(count)]
     )
-    prefix_width = max(len(name) for name in [*member_names, FLOCK_TRACE])
-    trace_on = trace if trace is not None else trace_enabled_default()
+    prefix_width = max(len(name) for name in [*member_names, FLOCK_LOG])
+    log_on = log_on if log_on is not None else log_enabled_default()
 
     def log(msg: str) -> None:
-        # the trace says all of this and more, so two views of one line is noise
-        if verbose and not trace_on:
+        # the log says all of this and more, so two views of one line is noise
+        if verbose and not log_on:
             _verbose_line(msg)
 
-    views: dict[str, ConsoleTrace] = {}
+    views: dict[str, ConsoleLog] = {}
 
     def view_for(name: str) -> Sink | None:
         """One view per robot, its name on every line. A shared view would coalesce two
@@ -1656,10 +1810,10 @@ def _run_flock_impl(
             # a colour per member as well as a name, because three robots moving at once
             # interleave and the eye finds a colour faster than it reads a prefix
             order = member_names.index(name) if name in member_names else -1
-            views[name] = ConsoleTrace(
+            views[name] = ConsoleLog(
                 ui.err_console,
                 thinking_chars=thinking_limit_default(),
-                prompt=trace_prompt if trace_prompt is not None else prompt_shown_default(),
+                prompt=log_prompt if log_prompt is not None else prompt_shown_default(),
                 prefix=f"{name:<{prefix_width}}  ",
                 prefix_style=ui.MEMBER_STYLES[order % len(ui.MEMBER_STYLES)]
                 if order >= 0
@@ -1668,7 +1822,7 @@ def _run_flock_impl(
         return fan_out(views[name], status.sink)
 
     def status_only(_name: str) -> Sink | None:
-        """With --no-trace nothing narrates, but the status line still has to say which duck
+        """With --no-log nothing narrates, but the status line still has to say which duck
         is doing what, or a flock is a minute of nothing at all."""
         return status.sink
 
@@ -1732,9 +1886,10 @@ def _run_flock_impl(
                     on_recorder=on_ready,
                     log=log,
                     robots=robots,
-                    trace=view_for if trace_on else status_only,
+                    view=view_for if log_on else status_only,
                     run_name=run_name,
                     price=price,
+                    on_run_dir=ui.attach_capture,
                 )
             )
     except ValueError as e:
@@ -1765,7 +1920,7 @@ def _run_flock_impl(
         counters=counters,
         run_dir=result.run_dir,
         gif_path=result.gif_path,
-        trace_dropped=result.trace_dropped,
+        log_dropped=result.log_dropped,
     )
     if result.outcome == "infeasible":
         # its own code: 1 means the run happened and did not succeed, and a script trying one
@@ -2010,32 +2165,39 @@ _VERBOSE = typer.Option(
     False,
     "--verbose",
     "-v",
-    help="The compact view on stderr: one line per verb plus the executor's notes. The trace "
-    "(on by default) shows all of that and more, so this only adds anything with --no-trace.",
+    help="The compact view on stderr: one line per verb plus the executor's notes. The log "
+    "(on by default) shows all of that and more, so this only adds anything with --no-log.",
     rich_help_panel="Output",
 )
-_TRACE = typer.Option(
+_LOG = typer.Option(
     None,
+    "--log/--no-log",
     "--trace/--no-trace",
-    help="Show everything behind the scenes on stderr: the prompt, each observation, what the "
+    help="Narrate the run on stderr as it happens: the prompt, each observation, what the "
     "model thought and answered, every executor decision, every intent sent to the robot, "
-    "every result, tokens and timings. On by default; QUACKD_TRACE=0 turns it off too.",
+    "every result, tokens and timings. On by default; QUACKD_LOG=0 turns it off too. This "
+    "is about what you WATCH: the run directory gets its log either way. "
+    "`--trace/--no-trace` is the old spelling and goes in 0.12.",
     rich_help_panel="Output",
 )
-_TRACE_MCP = typer.Option(
+_LOG_MCP = typer.Option(
     None,
+    "--log/--no-log",
     "--trace/--no-trace",
-    help="Carry a trace of what happened on every tool result, and the uncapped version on "
+    help="Carry a log of what happened on every tool result, and the uncapped version on "
     "stderr: the verb, every gate that fired, every intent sent to the robot, every result "
     "and the budget. Over MCP the pilot is the client, so its own reasoning is not quackd's "
-    "to show. On by default; QUACKD_TRACE=0 turns it off too.",
+    "to show. On by default; QUACKD_LOG=0 turns it off too. `--trace/--no-trace` is the old "
+    "spelling and goes in 0.12.",
     rich_help_panel="Output",
 )
-_TRACE_PROMPT = typer.Option(
+_LOG_PROMPT = typer.Option(
     None,
+    "--log-prompt/--no-log-prompt",
     "--trace-prompt/--no-trace-prompt",
-    help="Print the system prompt once at the start of the trace. On by default; "
-    "QUACKD_TRACE_PROMPT=0 turns it off too. It is in the transcript either way.",
+    help="Print the system prompt once at the start of the log. On by default; "
+    "QUACKD_LOG_PROMPT=0 turns it off too. It is in the transcript either way. "
+    "`--trace-prompt/--no-trace-prompt` is the old spelling and goes in 0.12.",
     rich_help_panel="Output",
 )
 
@@ -2079,46 +2241,47 @@ def run(
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
     registry_dir: str | None = _REGISTRY_DIR,
-    trace: bool | None = _TRACE,
-    trace_prompt: bool | None = _TRACE_PROMPT,
+    log: bool | None = _LOG,
+    log_prompt: bool | None = _LOG_PROMPT,
 ) -> None:
     """Run a .duck file (or a --goal): the LLM picks verbs, quackd enforces the contract."""
-    _run_impl(
-        duckfile,
-        goal,
-        provider,
-        model,
-        seed,
-        dry_run,
-        max_steps,
-        runs_dir,
-        yes,
-        live,
-        address,
-        camera_url,
-        token,
-        fov_deg,
-        gif,
-        gif_size,
-        verbose,
-        base_url=base_url,
-        api_key=api_key,
-        vision=vision,
-        extra_body=extra_body,
-        jev=jev,
-        flock=flock,
-        robot=robot,
-        robots=robots,
-        memory=memory,
-        memory_dir=memory_dir,
-        registry_dir=registry_dir,
-        trace=trace,
-        trace_prompt=trace_prompt,
-        images=image,
-        by_hand=by_hand,
-        run_name=run_name,
-        price=price,
-    )
+    with _terminal_record():
+        _run_impl(
+            duckfile,
+            goal,
+            provider,
+            model,
+            seed,
+            dry_run,
+            max_steps,
+            runs_dir,
+            yes,
+            live,
+            address,
+            camera_url,
+            token,
+            fov_deg,
+            gif,
+            gif_size,
+            verbose,
+            base_url=base_url,
+            api_key=api_key,
+            vision=vision,
+            extra_body=extra_body,
+            jev=jev,
+            flock=flock,
+            robot=robot,
+            robots=robots,
+            memory=memory,
+            memory_dir=memory_dir,
+            registry_dir=registry_dir,
+            log_on=log,
+            log_prompt=log_prompt,
+            images=image,
+            by_hand=by_hand,
+            run_name=run_name,
+            price=price,
+        )
 
 
 @app.command(rich_help_panel="Run a duck")
@@ -2144,51 +2307,52 @@ def record(
         "pins the simulator, so a stored flock belongs to `quackd run`.",
         rich_help_panel="Robot",
     ),
-    trace: bool | None = _TRACE,
-    trace_prompt: bool | None = _TRACE_PROMPT,
+    log: bool | None = _LOG,
+    log_prompt: bool | None = _LOG_PROMPT,
 ) -> None:
     """Like `run` on sim2d, but always writes a GIF (for READMEs and launches)."""
-    if flock is not None and not flock.strip().isdigit():
-        _fail(
-            "record pins the simulator: --flock takes a count here, not a stored flock",
-            hint="quackd run <duck> --flock NAME",
+    with _terminal_record():
+        if flock is not None and not flock.strip().isdigit():
+            _fail(
+                "record pins the simulator: --flock takes a count here, not a stored flock",
+                hint="quackd run <duck> --flock NAME",
+            )
+            return
+        _run_impl(
+            duckfile,
+            goal,
+            provider,
+            model=model,
+            seed=seed,
+            dry_run=False,
+            max_steps=max_steps,
+            runs_dir=runs_dir,
+            yes=True,
+            live=False,
+            address=None,
+            camera_url=[],
+            token=None,
+            fov_deg=None,
+            gif=True,
+            gif_size=gif_size,
+            verbose=verbose,
+            base_url=base_url,
+            api_key=api_key,
+            vision=vision,
+            extra_body=extra_body,
+            flock=flock,
+            robot="microduck:sim2d",
+            # Pinned off, not merely absent. `record` makes the recordings in this repository and
+            # has to be reproducible without a network call, and leaving this to default meant
+            # `QUACKD_JEV` in somebody's environment quietly switched a stepper on for it.
+            jev="off",
+            log_on=log,
+            log_prompt=log_prompt,
+            run_name=run_name,
         )
-        return
-    _run_impl(
-        duckfile,
-        goal,
-        provider,
-        model=model,
-        seed=seed,
-        dry_run=False,
-        max_steps=max_steps,
-        runs_dir=runs_dir,
-        yes=True,
-        live=False,
-        address=None,
-        camera_url=[],
-        token=None,
-        fov_deg=None,
-        gif=True,
-        gif_size=gif_size,
-        verbose=verbose,
-        base_url=base_url,
-        api_key=api_key,
-        vision=vision,
-        extra_body=extra_body,
-        flock=flock,
-        robot="microduck:sim2d",
-        # Pinned off, not merely absent. `record` makes the recordings in this repository and
-        # has to be reproducible without a network call, and leaving this to default meant
-        # `QUACKD_JEV` in somebody's environment quietly switched a stepper on for it.
-        jev="off",
-        trace=trace,
-        trace_prompt=trace_prompt,
-        run_name=run_name,
-    )
 
 
-# ── trace: replay a finished run ────────────────────────────────────────────────────────
+# ── log: replay a finished run ──────────────────────────────────────────────────────────
 
 
 _LABELLED = re.compile(r"^\d{8}-\d{6}-")
@@ -2233,7 +2397,7 @@ def _resolve_run(run: str | None, runs_dir: str) -> Path:
             label = run_label(run)
             for d in reversed(runs):
                 # Against what follows the timestamp, and only where something precedes the
-                # label there. Otherwise `quackd trace hello-world` would match the bare
+                # label there. Otherwise `quackd log hello-world` would match the bare
                 # `<stamp>-hello-world` and quietly prefer an older unnamed run of that duck
                 # over a newer named one, which is not what typing a duck name asks for.
                 rest = _LABELLED.sub("", d.name, count=1)
@@ -2261,10 +2425,10 @@ def _replay(
 ) -> dict[str, Any] | None:
     """Records back through the same renderer that printed them live, and the `run_end`.
 
-    A transcript written before the trace existed has `verb` records and no `verb_end`; they
+    A transcript written before the log existed has `verb` records and no `verb_end`; they
     carry the same fields, so they are shown under the name the renderer knows. `frame` is
     skipped unless asked: one line per camera frame buries everything else."""
-    from quackd.trace import TraceEvent
+    from quackd.log import LogEvent
 
     end: dict[str, Any] | None = None
     # `verb` and `verb_end` both name the verb that ended; a live run has both and the
@@ -2287,19 +2451,20 @@ def _replay(
             continue
         if kind == "verb" and legacy:
             kind = "verb_end"
-        view(TraceEvent(kind, float(rec.get("t") or 0.0), data))
+        view(LogEvent(kind, float(rec.get("t") or 0.0), data))
     view.flush()
     return end
 
 
-_TRACE_RUN = typer.Argument(
+_LOG_RUN = typer.Argument(
     None, help="A run directory, a transcript file, a name or a prefix. Default: the newest."
 )
 
 
-@app.command("trace", rich_help_panel="Run a duck")
-def trace_cmd(
-    run: str | None = _TRACE_RUN,
+@app.command("trace", hidden=True, rich_help_panel="Run a duck")
+@app.command("log", rich_help_panel="Run a duck")
+def log_cmd(
+    run: str | None = _LOG_RUN,
     runs_dir: str = _RUNS,
     prompt: bool | None = typer.Option(
         None, "--prompt/--no-prompt", help="Show the system prompt the run was given."
@@ -2312,14 +2477,14 @@ def trace_cmd(
     ),
     frames: bool = typer.Option(False, "--frames", help="Also print one line per camera frame."),
 ) -> None:
-    """Replay a finished run's transcript as the trace it printed while it ran.
+    """Replay a finished run's log as the lines it printed while it ran.
 
     On stdout, because a replay is what you pipe to a pager or a file, and unaffected by
-    QUACKD_TRACE: that switch is about narrating live, and asking for a replay is asking."""
+    QUACKD_LOG: that switch is about narrating live, and asking for a replay is asking."""
     from quackd.agent.transcript import Transcript
-    from quackd.trace import ConsoleTrace, parse_thinking_limit
-    from quackd.trace import prompt_shown_default as _prompt_default
-    from quackd.trace import thinking_limit_default as _thinking_default
+    from quackd.log import ConsoleLog, parse_thinking_limit
+    from quackd.log import prompt_shown_default as _prompt_default
+    from quackd.log import thinking_limit_default as _thinking_default
 
     target = _resolve_run(run, runs_dir)
     run_dir = target.parent if target.is_file() else target
@@ -2338,7 +2503,7 @@ def trace_cmd(
     for i, path in enumerate(transcripts):
         records = Transcript.read(path, lenient=True)
         cut += int(records[-1].get("_skipped", 0)) if records else 0
-        view = ConsoleTrace(
+        view = ConsoleLog(
             ui.console,
             thinking_chars=(
                 parse_thinking_limit(thinking) if thinking is not None else _thinking_default()
@@ -2355,7 +2520,7 @@ def trace_cmd(
 
     if cut:
         ui.err_console.print(
-            f"trace: {cut} unreadable line(s) skipped, the run was cut while it was writing",
+            f"log: {cut} unreadable line(s) skipped, the run was cut while it was writing",
             style="yellow",
             markup=False,
         )
@@ -2383,7 +2548,11 @@ def trace_cmd(
         counters=counters,
         run_dir=run_dir,
         gif_path=gif if (gif := run_dir / "run.gif").exists() else None,
-        trace_dropped=int(end.get("trace_dropped") or 0),
+        # `trace_dropped` until 0.11: a run directory recorded before the rename
+        # still replays, and its counter still reaches the panel.
+        # through `_number` like every other counter here: this is the path an old run
+        # directory takes, and those are hand-edited, truncated and copied between machines
+        log_dropped=int(_number(end.get("log_dropped") or end.get("trace_dropped") or 0) or 0),
     )
 
 
@@ -2491,7 +2660,7 @@ def serve_mcp(
     ),
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
-    trace: bool | None = _TRACE_MCP,
+    log: bool | None = _LOG_MCP,
 ) -> None:
     """Expose a robot, or a flock of them, as MCP tools over stdio (Claude Code /
     Claude Desktop)."""
@@ -2514,7 +2683,7 @@ def serve_mcp(
             yes=yes,
             memory=memory,
             memory_dir=memory_dir,
-            trace=trace,
+            log=log,
         )
     except (AdapterError, RegistryError) as e:
         _fail(str(e))

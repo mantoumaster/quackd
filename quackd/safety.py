@@ -25,8 +25,14 @@ from pydantic import ValidationError
 
 from quackd.adapters.base import backend_name
 from quackd.duckfile.schema import Budgets, DuckFrontmatter
+from quackd.log import (
+    EventLog,
+    LoggedTransport,
+    a_person_was_asked,
+    counting,
+    fmt_params,
+)
 from quackd.perception.base import Detector
-from quackd.trace import TracedTransport, Tracer, counting
 from quackd.transport.base import CameraFrame, DuckState, DuckTransport
 from quackd.verbs.registry import Verb, VerbContext, VerbNotFound, VerbRegistry, VerbResult
 from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY, Verdict
@@ -36,7 +42,7 @@ if TYPE_CHECKING:
 
 Source = Literal["agent", "mcp", "cli", "jev"]
 """Who asked for this verb. `jev` is the discrete stepper answering a turn the model
-never saw, and the trace already prints `from <source>` for anything that is not the
+never saw, and the log already prints `from <source>` for anything that is not the
 agent, so the record says who chose a verb without a renderer knowing the word."""
 
 
@@ -45,7 +51,7 @@ class SafetyStop(Exception):
 
     outcome = "aborted"
     """The word `verb_end` records. A layer above the executor that ends a verb for a reason
-    of its own overrides this, so the trace says `PREEMPTED` and not the red `ERROR` that
+    of its own overrides this, so the log says `PREEMPTED` and not the red `ERROR` that
     means a bug."""
 
 
@@ -127,7 +133,7 @@ class Budget:
             f"llm calls {self.llm_calls}/{self.limits.max_llm_calls}, "
             # absent until the stepper has answered once, so every run without one reads
             # exactly as it always has: this string is in every observation the model is
-            # handed, and `quackd trace` parses it back out
+            # handed, and `quackd log` parses it back out
             + (f"{self.stepper_calls} by the stepper, " if self.stepper_calls else "")
             + f"{self.elapsed_s / 60:.1f}/{self.limits.max_minutes:g} min"
         )
@@ -171,19 +177,19 @@ class Executor:
     require_verdict: bool = False
     """On where an `assess_task` tool was offered: the agent loop and every MCP session. A
     flock member is a state machine with no pilot to ask, so its executor never does."""
-    trace: Tracer | None = None
+    event_log: EventLog | None = None
     """Where the executor narrates itself: `verb_start`, every `gate` that fires, every
     `intent` a verb sends, `verb_end`. None is silent, which is what tests get."""
 
     # ── narration ───────────────────────────────────────────────────────────────────
 
     def _emit(self, kind: str, **data: Any) -> None:
-        if self.trace is not None:
-            self.trace.emit(kind, **data)
+        if self.event_log is not None:
+            self.event_log.emit(kind, **data)
 
     def _note(self, text: str) -> None:
         """A free-text line for both audiences: `log` is a contract other callers rely on
-        (the flock's `member_log`, the MCP logger, tests), and the trace observes it."""
+        (the flock's `member_log`, the MCP logger, tests), and the event log observes it."""
         self.log(text)
         self._emit("note", text=text)
 
@@ -200,12 +206,12 @@ class Executor:
         is monotonic, so there is nothing to distinguish and the key is absent."""
         return "sim" if backend_name(self.transport) in ("sim2d", "mujoco") else None
 
-    def traced_transport(self) -> Any:
+    def logged_transport(self) -> Any:
         """The transport as verbs see it: the real one, or a wrapper that narrates every
         intent. Also what the executor itself sends its safety stops through."""
-        if self.trace is None:
+        if self.event_log is None:
             return self.transport
-        return TracedTransport(self.transport, self.trace)
+        return LoggedTransport(self.transport, self.event_log)
 
     # ── policy ──────────────────────────────────────────────────────────────────────
 
@@ -241,10 +247,10 @@ class Executor:
         """`source` is the outer call's, so a composite's nested verbs are narrated as coming
         from the same pilot (an MCP session's `approach_and` runs an MCP `go_to`)."""
         return VerbContext(
-            transport=self.traced_transport(),
+            transport=self.logged_transport(),
             detector=self.detector,
             dry_run=self.dry_run,
-            # a verb's own log line is a `note` as well, so it is not the one thing the trace
+            # a verb's own log line is a `note` as well, so it is not the one thing the log
             # cannot see. Not the executor's own arrows: those would double `verb_start`.
             log=self._note,
             on_frame=self.on_frame,
@@ -267,7 +273,7 @@ class Executor:
         """Every verb call, from the agent loop, an MCP client or a composite.
 
         The narration wraps the gates: exactly one `verb_start` and, whatever happens after
-        it, exactly one `verb_end` with an `outcome`, so a reader of the trace never sees a
+        it, exactly one `verb_end` with an `outcome`, so a reader of the log never sees a
         verb that started and vanished. `ok`/`fail` are the verb's own verdict; `refused`,
         `denied`, `budget` and `aborted` are the executor's, and `error` is a bug."""
         params = params or {}
@@ -422,13 +428,27 @@ class Executor:
                     "gate", name=name, gate="confirm", outcome="denied", answer=False, reason=why
                 )
                 raise ConfirmDenied(f"human declined {name} ({why})") from e
+            asked = a_person_was_asked(self.confirm)
+            if asked:
+                # the exchange, beside the gate's record of what it decided: only where a
+                # person was really asked, never for `--yes` or a flock's standing answer
+                self._emit(
+                    "prompt",
+                    what="confirm",
+                    question=f"run {name}({fmt_params(parsed.model_dump())})?",
+                    answer=answer,
+                )
+            # The same care in the gate's own reason, which said `a human said yes` however the
+            # answer arrived. Under `--yes`, a flock's standing answer or a pipe on stdin the
+            # gate really did open, and the record should say that and not name a witness.
+            said = ("yes" if answer else "no") if asked else ("allowed" if answer else "denied")
             self._emit(
                 "gate",
                 name=name,
                 gate="confirm",
                 outcome="allowed" if answer else "denied",
                 answer=answer,
-                reason="a human said yes" if answer else "a human said no",
+                reason=f"a human said {said}" if asked else f"the confirm gate was {said}",
             )
             if not answer:
                 raise ConfirmDenied(f"human declined {name}")
@@ -446,7 +466,7 @@ class Executor:
             # the one in-verb transport failure that used to send no stop. A link that
             # cannot report state cannot be trusted to be holding a zero twist either.
             with contextlib.suppress(Exception):
-                await self.traced_transport().stop()
+                await self.logged_transport().stop()
             raise
         try:
             self._check_abort_conditions(state)
@@ -493,12 +513,12 @@ class Executor:
                 verb, parsed, interruptible=canonical != "stop", source=source, name=name
             )
         except TimeoutError:
-            await self.traced_transport().stop()
+            await self.logged_transport().stop()
             result = VerbResult.fail(f"{name} timed out after {verb.timeout_s:g}s; stopped")
         except SafetyStop:
             raise
         except Exception as e:  # a buggy verb must not take the run down un-stopped
-            await self.traced_transport().stop()
+            await self.logged_transport().stop()
             result = VerbResult.fail(f"{name} raised {type(e).__name__}: {e}; stopped")
         self.log(f"← {name}: {'ok' if result.ok else 'FAIL'} {result.summary}")
         return self._record(name, params, result)
@@ -522,7 +542,7 @@ class Executor:
 
         The `finally` owns both tasks, because `asyncio.wait` cancels nothing when it is
         itself cancelled. Without it an outer cancellation — an MCP client dropping the call,
-        the second Ctrl-C this CLI documents — left the verb running with no stop: the trace
+        the second Ctrl-C this CLI documents — left the verb running with no stop: the log
         recorded that the verb had ended and then went on recording the intents it kept
         sending. `finished` says the block was left normally, so it is exactly the signal for
         "interrupted from outside" without catching `BaseException`.
@@ -565,7 +585,7 @@ class Executor:
                     reason="the call was cancelled; the verb was cancelled and a stop was sent",
                 )
                 with contextlib.suppress(Exception):
-                    await self.traced_transport().stop()
+                    await self.logged_transport().stop()
         if verb_task in done:
             return verb_task.result()
         if abort_task is not None and abort_task in done:
@@ -576,7 +596,7 @@ class Executor:
                 outcome="fired",
                 reason="aborted mid-verb: the verb was cancelled and a stop was sent",
             )
-            await self.traced_transport().stop()
+            await self.logged_transport().stop()
             raise Aborted("aborted mid-verb; the verb was cancelled and a stop was sent")
         raise TimeoutError
 
@@ -627,13 +647,13 @@ class Heartbeat:
         *,
         period_s: float = 0.5,
         log: Callable[[str], None] = lambda _m: None,
-        trace: Tracer | None = None,
+        event_log: EventLog | None = None,
     ) -> None:
         self.transport = transport
         self.abort = abort
         self.period_s = period_s
         self.log = log
-        self.trace = trace
+        self.event_log = event_log
         self.beats = 0
         self.failure: Exception | None = None
         self._task: asyncio.Task[None] | None = None
@@ -646,7 +666,7 @@ class Heartbeat:
             except Exception as e:
                 self.failure = e
                 # Everything in here is best effort and the abort is in a `finally`, because
-                # setting it is the one thing that must happen: a log or a trace sink that
+                # setting it is the one thing that must happen: a log call or an event sink that
                 # raised used to kill this task outright, leaving the abort unset and the run
                 # with no idea the link had gone.
                 try:
@@ -658,10 +678,10 @@ class Heartbeat:
                     with contextlib.suppress(Exception):
                         self.log(message)
                     stopper: Any = self.transport
-                    if self.trace is not None:
+                    if self.event_log is not None:
                         with contextlib.suppress(Exception):
-                            self.trace.emit("note", text=message)
-                        stopper = TracedTransport(self.transport, self.trace)
+                            self.event_log.emit("note", text=message)
+                        stopper = LoggedTransport(self.transport, self.event_log)
                     with contextlib.suppress(Exception):
                         await stopper.stop()
                 finally:

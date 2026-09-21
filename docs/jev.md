@@ -211,7 +211,7 @@ step 1/12, llm calls 1/12, 1 by the stepper, 0.0/3 min ------------------------
 Four things in that are worth reading twice.
 
 - **`from jev`** on the verb line. Who chose a verb is on the record, in the transcript and in
-  the trace, for every call.
+  the log, for every call.
 - **`0.97 >= 0.60`** is the confidence against the floor for that class of verb. A read answers
   to a lower floor than a move; see [How a turn is decided](#how-a-turn-is-decided).
 - **`escalate, to the model`** on the second turn. The stepper wanted the gripper, but no
@@ -236,7 +236,7 @@ on an Open Duck Mini.
 
 A body whose verbs are all numbers — a cart driving to a pose, an arm moving joints — escalates
 every turn and the stepper costs it one question a step and nothing else. That is expected, not
-broken, and the trace says `not_offered` for it without a request being made at all.
+broken, and the log says `not_offered` for it without a request being made at all.
 
 ## How much faster, and how much cheaper
 
@@ -474,16 +474,20 @@ hardware, and it records the per-call token figures the hero run never kept.
 ```bash
 # the grip loop on the mock arm: every turn is a choice, and no arm is needed
 quackd run arm-grip-check --robot lerobot:mock \
-  --provider openai --jev shadow --runs-dir runs/bench --no-trace
+  --provider openai --jev shadow --runs-dir runs/bench --no-log
 
 # the same run with no stepper, as the baseline to read it against
 quackd run arm-grip-check --robot lerobot:mock \
-  --provider openai --runs-dir runs/bench --no-trace
+  --provider openai --runs-dir runs/bench --no-log
 
 # the README's wave, shadowed: the counter-case, on the arm that ran it
 quackd run --goal "Wave to the camera with an extended arm" --robot arm-01 \
   --max-steps 10 --jev shadow --runs-dir runs/bench
 ```
+
+`--no-log` on the first two is about the terminal and nothing else. It stops the run narrating
+itself on stderr, which is what you want when the point is the rows rather than the watching,
+and the run directory gets its log either way.
 
 Then, per run directory:
 
@@ -511,7 +515,7 @@ rate is TypeSafe's and published. The token count under it is measured only wher
 reports one: where it does not, quackd estimates the request as the state plus the questions at
 four characters to the token, and flags the estimate three times over, with `usage_estimated`
 on the turn, `cost_estimated` on the run's `jev` block, and a `~` in front of both the tokens
-and the money on the trace line and in front of the run's cost on the verdict panel.
+and the money on the log line and in front of the run's cost on the verdict panel.
 
 That path is not a hypothetical. The SDK types both counts on `SystemOneResponse.usage` as
 `int | None`, documented as "when the API did not report it", and a call that raised after its

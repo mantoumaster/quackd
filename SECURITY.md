@@ -35,6 +35,31 @@ a daemon that walks a ToddlerBot.
 Also in scope:
 
 - API keys leaking into transcripts, GIFs, logs, run directories, or a robot's memory file. `TYPESAFE_API_KEY`, which the optional discrete stepper reads, is one of these.
+- **The command line, which the run record now holds.** A solo run writes down what it was
+  started with, in three places: `command` in the transcript's `run_start`, `command` in
+  `summary.json`, and the first line of `terminal.txt`. A flock root has no `run_start`, so
+  both flock runners write `command` and `version` into the root `summary.json` themselves,
+  and the root `terminal.txt` opens with the same line; a pilot flock's members each keep a
+  `run_start` of their own besides. The values of `--api-key` and `--token` are replaced with
+  `***` everywhere that line is written, so a reader sees that a key was passed and never
+  what it was. The three flags that take a URL, `--base-url`, `--address` and `--camera-url`,
+  keep the half a reader needs and lose the half that has to be rotated: the scheme, the
+  host, the port, the path and the username stay, a password in the URL becomes `***`, and so
+  does any query parameter named like a credential (`api_key`, `token`, `sig` and the rest of
+  `SECRET_QUERY_KEYS`). `--extra-body`, and `QUACKD_EXTRA_BODY` behind it, is a JSON object a
+  vendor asked for and quackd never reads, which makes it exactly where an `authorization`
+  header ends up; it reaches the transcript's `run_start` as `extra_body`, and it is walked
+  to the bottom on the way in with every credential-named key replaced. All of that is
+  redaction **by name**, of flag names and of key names and nothing cleverer, which is worth
+  stating plainly because it decides what is safe to paste into an issue. A secret typed as
+  the value of some **other** flag is written down in full, and so is a credential a vendor
+  asked for under a name these lists do not carry. A key handed to the provider through its
+  own environment variable, which is the normal way and the right one, is in no part of the
+  record, and `QUACKD_EXTRA_BODY` is the one environment variable that reaches it at all.
+  What would be a security issue: the value of either secret flag reaching any of the places
+  above, a password or a named credential surviving a URL flag, a credential-named key
+  surviving `extra_body`, or a new flag that takes a secret and is in neither `SECRET_FLAGS`
+  nor `URL_FLAGS` (`quackd/command.py`).
 - **What the discrete stepper is sent** (`quackd run --jev`, off by default,
   [docs/jev.md](docs/jev.md)). It is a hosted API, so a run that switches it on sends
   the task's goal, the robot's own description of itself and its last few results to a
@@ -55,7 +80,7 @@ Also in scope:
   secret store: if that is not good enough for your robot, keep passing `--token` on the line
   or through `QUACKD_DUCK_TOKEN`. quackd masks it in everything it prints, `--json` included,
   which reports only whether one is set. What would be a security issue: a token reaching a
-  transcript, a trace line, a run directory or an MCP tool result, or either file escaping the
+  transcript, a log line, a run directory or an MCP tool result, or either file escaping the
   directory `--registry-dir` names.
 - The MCP server executing verbs a loaded `.duck` contract does not allow.
 - Anything that lets a `.duck` file (untrusted input — people will share them) execute

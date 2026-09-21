@@ -35,8 +35,8 @@ from quackd.flock.messages import (
     Wedge,
 )
 from quackd.flock.transcript import FlockTranscript
+from quackd.log import EventLog
 from quackd.sim2d.clock import FlockClock, HookInterrupt
-from quackd.trace import Tracer
 
 FlockOutcome = Literal["success", "failure", "budget", "aborted", "error"]
 COORD_TICK_S = 0.05
@@ -58,8 +58,8 @@ class FlockCoordinator:
     log: Any = lambda *_: None
     on_event: Any = None
     """Optional callback (kind: str, data: dict) for a recorder or a live view."""
-    trace: Tracer | None = None
-    """The same events as `TraceEvent`s, for a view and never a record: flock.jsonl already
+    event_log: EventLog | None = None
+    """The same events as `LogEvent`s, for a view and never a record: flock.jsonl already
     carries every one of these kinds under its own name, written on the line above."""
 
     def __post_init__(self) -> None:
@@ -98,14 +98,14 @@ class FlockCoordinator:
         self.bus.publish(msg)
 
     def _event(self, kind: str, **data: Any) -> None:
-        """The coordinator's decisions to whoever is watching: the tracer's views first, then
+        """The coordinator's decisions to whoever is watching: the event_log's views first, then
         the recorder's callback.
 
-        There is no try/except here on purpose. `Tracer.emit` swallows and counts an
+        There is no try/except here on purpose. `EventLog.emit` swallows and counts an
         observer's exception, which is what makes a view safe to attach; `on_event` is the
         recorder's own contract and a raising callback there would end the run."""
-        if self.trace is not None:
-            self.trace.emit(kind, **data)
+        if self.event_log is not None:
+            self.event_log.emit(kind, **data)
         if self.on_event is not None:
             self.on_event(kind, data)
 

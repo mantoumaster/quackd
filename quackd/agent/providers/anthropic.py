@@ -2,7 +2,7 @@
 
 Written against `anthropic` 1.x: adaptive thinking is the model's default on Claude Opus 5,
 and the request asks for `display: "summarized"` because the default display leaves every
-thinking block's text empty, which would make the trace's "what it thought" a blank line.
+thinking block's text empty, which would make the log's "what it thought" a blank line.
 `display` changes what is shown, never what is thought or billed. A model that rejects the
 `thinking` parameter (one older than Claude 4.6) gets one retry without it, and the run goes
 on without thinking text. `tool_choice={"type": "any", "disable_parallel_tool_use": True}`

@@ -22,7 +22,7 @@ def test_cli_help() -> None:
         "list-adapters",
         "list-models",
         "record",
-        "trace",
+        "log",
         "discover",
         "announce",
         "memory",

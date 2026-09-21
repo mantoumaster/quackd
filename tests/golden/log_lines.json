@@ -285,6 +285,18 @@
    "red"
   ]
  ],
+ "prompt_yes": [
+  [
+   "asked   confirm: run kick(power=0.5)? -> yes",
+   "cyan"
+  ]
+ ],
+ "prompt_no": [
+  [
+   "asked   acknowledge: this robot cannot see a fall, so you are the only safety left -> no",
+   "yellow"
+  ]
+ ],
  "intent_one": [
   [
    "->      move(vx=0.1)",
@@ -734,6 +746,8 @@
   "gate    precondition: refused must be standing [state: fallen] [last: kick]",
   "gate    budget: exceeded max_steps (5)",
   "gate    abort_when: fired battery < 10%",
+  "asked   confirm: run kick(power=0.5)? -> yes",
+  "asked   acknowledge: this robot cannot see a fall, so you are the only safety left -> no",
   "->      move(vx=0.1)",
   "->      stop",
   "->      sound(tag='greet') REFUSED: the mock refuses sound",

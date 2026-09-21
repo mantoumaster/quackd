@@ -3,10 +3,10 @@
 Everything quackd does on the model's behalf used to happen behind a terminal that printed a
 header and an outcome, with the transcript on disk as the only record. This module is the
 event stream that record was written from, opened up: the loop, the executor and a wrapper
-around the transport emit `TraceEvent`s, and sinks render them. The transcript is the record
+around the transport emit `LogEvent`s, and sinks render them. The transcript is the record
 and always gets every event. The CLI's console and the MCP server's tool results are views of
-the same stream, on by default and off with `--no-trace` or `QUACKD_TRACE=0`. Over MCP the
-model is the client, so its reasoning never reaches quackd; there the trace shows what quackd
+the same stream, on by default and off with `--no-log` or `QUACKD_LOG=0`. Over MCP the
+model is the client, so its reasoning never reaches quackd; there the log shows what quackd
 can see: the verb, the gates that fired, every intent sent, what came back, and how long it
 took.
 
@@ -21,6 +21,7 @@ import contextlib
 import contextvars
 import os
 import re
+import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -34,28 +35,67 @@ from quackd.transport.base import Ack, Intent
 
 
 @dataclass(frozen=True)
-class TraceEvent:
+class LogEvent:
     kind: str
     t: float
-    """Seconds since the tracer was made. The transcript stamps its own clock and ignores it."""
+    """Seconds since the event_log was made. The transcript stamps its own clock and ignores it."""
     data: dict[str, Any]
     """The payload, verbatim: what the transcript writes after `t` and `kind`."""
 
 
-Sink = Callable[[TraceEvent], None]
+Sink = Callable[[LogEvent], None]
 
 _OFF = ("0", "false", "no", "off")
 
+_RENAMED = {
+    "QUACKD_LOG": "QUACKD_TRACE",
+    "QUACKD_LOG_THINKING": "QUACKD_TRACE_THINKING",
+    "QUACKD_LOG_PROMPT": "QUACKD_TRACE_PROMPT",
+}
+"""The name now, and the name until 0.11. Both are read until 0.12."""
 
-def trace_enabled_default() -> bool:
-    """On unless `QUACKD_TRACE` says otherwise. An empty value is on, so `QUACKD_TRACE=` in a
+_warned: set[str] = set()
+
+
+def _setting(name: str) -> str | None:
+    """`QUACKD_LOG*` if it is set, else the `QUACKD_TRACE*` it replaced, with one line saying
+    so the first time a process falls back.
+
+    The old name is honoured rather than ignored because these live in a `.env` file people
+    wrote months ago, and silently switching the log back on for them would be the worse
+    half of a rename.
+
+    The warning goes through `ui.err_console` where there is one, so that it lands in the
+    run's saved terminal like everything else a run says. Every caller is inside a command
+    body, which is after the consoles are built, but the import is done here and guarded
+    anyway: this module is imported long before `ui` is configured, and a warning that
+    raised on its way out would take the run with it."""
+    value = os.environ.get(name)
+    if value is not None:
+        return value
+    old = _RENAMED[name]
+    value = os.environ.get(old)
+    if value is not None and old not in _warned:
+        _warned.add(old)
+        line = f"{old} is now {name}; the old name still works and goes in 0.12"
+        try:
+            from quackd import ui
+
+            ui.err_console.print(line, style=ui.STYLES["warn"], markup=False, soft_wrap=True)
+        except Exception:
+            sys.stderr.write(line + "\n")
+    return value
+
+
+def log_enabled_default() -> bool:
+    """On unless `QUACKD_LOG` says otherwise. An empty value is on, so `QUACKD_LOG=` in a
     shell or a `.env` file switches nothing off by accident."""
-    return os.environ.get("QUACKD_TRACE", "1").strip().lower() not in _OFF
+    return (_setting("QUACKD_LOG") or "1").strip().lower() not in _OFF
 
 
 def parse_thinking_limit(raw: str | None) -> int | None:
     """`all` for everything, `0` for none, a number of characters otherwise; anything else
-    is the default. Shared with `quackd trace`, so a flag and the environment agree."""
+    is the default. Shared with `quackd log`, so a flag and the environment agree."""
     text = (raw or "").strip().lower()
     if text == "all":
         return None
@@ -66,19 +106,19 @@ def parse_thinking_limit(raw: str | None) -> int | None:
 
 
 def thinking_limit_default() -> int | None:
-    """How much of the model's thinking the console shows per turn: `QUACKD_TRACE_THINKING` in
+    """How much of the model's thinking the console shows per turn: `QUACKD_LOG_THINKING` in
     characters, `all` for everything, `0` for none. The transcript always has all of it."""
-    return parse_thinking_limit(os.environ.get("QUACKD_TRACE_THINKING"))
+    return parse_thinking_limit(_setting("QUACKD_LOG_THINKING"))
 
 
 def prompt_shown_default() -> bool:
-    """Whether the console prints the system prompt once at the start: `QUACKD_TRACE_PROMPT`.
+    """Whether the console prints the system prompt once at the start: `QUACKD_LOG_PROMPT`.
     It is forty to seventy lines, worth reading once and tiresome on the fiftieth run of an
     afternoon, and it is in the transcript either way."""
-    return os.environ.get("QUACKD_TRACE_PROMPT", "1").strip().lower() not in _OFF
+    return (_setting("QUACKD_LOG_PROMPT") or "1").strip().lower() not in _OFF
 
 
-class Tracer:
+class EventLog:
     """Fan-out. One `record` sink whose failure is the run's failure (the transcript), and any
     number of observers whose failure is their own: a console that cannot print must not end
     a run, so an observer's exception is swallowed and counted."""
@@ -99,7 +139,7 @@ class Tracer:
 
     def emit(self, kind: str, /, **data: Any) -> None:
         # positional-only: a payload is free to have a field of its own called `kind`
-        event = TraceEvent(kind, round(time.monotonic() - self._t0, 3), data)
+        event = LogEvent(kind, round(time.monotonic() - self._t0, 3), data)
         if self.record is not None:
             self.record(event)
         for sink in self.observers:
@@ -111,12 +151,29 @@ class Tracer:
 
 # ── capturing one call's events (the MCP server) ────────────────────────────────────────
 
-_capture: contextvars.ContextVar[list[TraceEvent] | None] = contextvars.ContextVar(
-    "quackd_trace_capture", default=None
+_capture: contextvars.ContextVar[list[LogEvent] | None] = contextvars.ContextVar(
+    "quackd_log_capture", default=None
 )
 
 
-def capture_sink(event: TraceEvent) -> None:
+def a_person_was_asked(asker: object) -> bool:
+    """Whether a `prompt` row may be written for what this callable answered.
+
+    `--yes`, a flock's standing answer and the MCP server all answer without asking anybody,
+    and they carry no mark, so nothing is recorded for them. The marked ones are the CLI's,
+    and a mark that is callable is asked *now* rather than trusted from import time: a run
+    with no terminal under it reaches the same callable, `input()` reads a pipe as happily as
+    a person, and `yes | quackd run` would otherwise leave a record saying somebody cleared a
+    verb on a robot nobody was standing next to. A record that under-claims is recoverable
+    and one that invents a human is not.
+    """
+    mark = getattr(asker, "asks_a_person", False)
+    if callable(mark):
+        return bool(mark())
+    return bool(mark)
+
+
+def capture_sink(event: LogEvent) -> None:
     """An observer that appends to whatever `capturing()` is open in this context. The MCP
     server runs every tool call as its own task, and asyncio copies the context into a task
     at creation, so two calls on one robot never see each other's events."""
@@ -131,7 +188,7 @@ def unless_capturing(sink: Sink) -> Sink:
     The MCP server logs a call's lines in one block when the call ends, so only events that
     belong to no call — the heartbeat's note and the stop it sends — go straight through."""
 
-    def forward(event: TraceEvent) -> None:
+    def forward(event: LogEvent) -> None:
         if _capture.get() is None:
             sink(event)
 
@@ -139,8 +196,8 @@ def unless_capturing(sink: Sink) -> Sink:
 
 
 @contextlib.contextmanager
-def capturing() -> Iterator[list[TraceEvent]]:
-    events: list[TraceEvent] = []
+def capturing() -> Iterator[list[LogEvent]]:
+    events: list[LogEvent] = []
     token = _capture.set(events)
     try:
         yield events
@@ -176,7 +233,7 @@ def counting() -> Iterator[Counter[str]]:
 # ── the transport as verbs see it ───────────────────────────────────────────────────────
 
 
-class TracedTransport:
+class LoggedTransport:
     """A transport for verbs: every intent they send becomes an `intent` event.
 
     Everything else is delegated to the real transport, so a verb's
@@ -185,9 +242,9 @@ class TracedTransport:
     verb is in flight in the sending task and for each of its parents: that is how
     `approach_and` reports the intents its `go_to` sent."""
 
-    def __init__(self, inner: Any, tracer: Tracer) -> None:
+    def __init__(self, inner: Any, event_log: EventLog) -> None:
         self._inner = inner
-        self._tracer = tracer
+        self._event_log = event_log
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):  # never delegate our own privates (copy, pickle, half-init)
@@ -210,7 +267,7 @@ class TracedTransport:
             ack = await self._inner.send_intent(intent)
         except Exception as e:
             self._count(intent.kind)
-            self._tracer.emit(
+            self._event_log.emit(
                 "intent",
                 intent=intent.kind,
                 params=intent.params,
@@ -220,7 +277,7 @@ class TracedTransport:
             )
             raise
         self._count(intent.kind)
-        self._tracer.emit(
+        self._event_log.emit(
             "intent",
             intent=intent.kind,
             params=intent.params,
@@ -235,7 +292,7 @@ class TracedTransport:
             await self._inner.stop()
         except Exception as e:
             self._count("stop")
-            self._tracer.emit(
+            self._event_log.emit(
                 "intent",
                 intent="stop",
                 params={},
@@ -245,7 +302,7 @@ class TracedTransport:
             )
             raise
         self._count("stop")
-        self._tracer.emit(
+        self._event_log.emit(
             "intent", intent="stop", params={}, accepted=True, reason=None, **self._robot_t()
         )
 
@@ -268,7 +325,7 @@ def _indent(text: str) -> str:
 
 
 @dataclass(frozen=True)
-class TraceLine:
+class LogLine:
     """One line of the story, before anybody decides what it looks like.
 
     Plain readers paste `label` into an eight-column gutter and get exactly the strings the
@@ -291,8 +348,8 @@ class TraceLine:
     itself."""
 
 
-def _flatten(line: TraceLine) -> Line:
-    """A `TraceLine` as the gutter-padded string every plain reader expects."""
+def _flatten(line: LogLine) -> Line:
+    """A `LogLine` as the gutter-padded string every plain reader expects."""
     return (_label(line.label) + (_indent(line.body) if line.multiline else line.body), line.style)
 
 
@@ -452,8 +509,8 @@ def flock_caption(kind: str, d: Mapping[str, Any]) -> tuple[str, str] | None:
 
 
 def render_events(
-    event: TraceEvent, *, thinking_chars: int | None = 2000, prompt: bool = True
-) -> list[TraceLine]:
+    event: LogEvent, *, thinking_chars: int | None = 2000, prompt: bool = True
+) -> list[LogLine]:
     """One event as zero or more lines. The loop's own `verb` record, the `frame` record and
     `run_end` render nothing: the first duplicates `verb_end`, the second is a file on disk,
     and the CLI prints the outcome itself."""
@@ -467,12 +524,12 @@ def render_events(
             head += " DRY RUN"
         if "connect_s" in d:
             head += f" connected in {d['connect_s']:.2f} s"
-        lines: list[TraceLine] = [TraceLine("run", head, "bold", mark="start")]
-        lines.append(TraceLine("tools", ", ".join(d.get("tools") or []), "dim"))
+        lines: list[LogLine] = [LogLine("run", head, "bold", mark="start")]
+        lines.append(LogLine("tools", ", ".join(d.get("tools") or []), "dim"))
         memory = d.get("memory")
         if memory:
             lines.append(
-                TraceLine(
+                LogLine(
                     "memory",
                     f"{memory.get('notes')} notes, {memory.get('episodes')} earlier runs",
                     "dim",
@@ -482,19 +539,19 @@ def render_events(
         if prompt and system:
             n_lines = system.count("\n") + 1
             lines.append(
-                TraceLine(
+                LogLine(
                     "prompt",
                     f"system prompt, {len(system)} chars, {n_lines} lines "
                     "(also in transcript.jsonl as run_start):",
                     "dim",
                 )
             )
-            lines.append(TraceLine("", system, "dim", multiline=True))
+            lines.append(LogLine("", system, "dim", multiline=True))
         return lines
     if k == "observation":
         if "error" in d:
-            return [TraceLine("obs", f"ERROR {d['error']}", "red", mark="fail")]
-        return [TraceLine("obs", str(d.get("text", "")), "", multiline=True)]
+            return [LogLine("obs", f"ERROR {d['error']}", "red", mark="fail")]
+        return [LogLine("obs", str(d.get("text", "")), "", multiline=True)]
     if k == "llm_request":
         # transcripts recorded before the loop split the count carry `images` alone, and there
         # it meant exchanges, so read it as `with_image` and an old run replays line for line
@@ -513,18 +570,18 @@ def render_events(
         )
         if d.get("reprompt"):
             text += " (re-prompt: it made no tool call)"
-        return [TraceLine("llm>", text, "dim")]
+        return [LogLine("llm>", text, "dim")]
     if k == "llm":
         if "error" in d:
             return [
-                TraceLine(
+                LogLine(
                     "llm<",
                     f"ERROR {d['error']} after {d.get('latency_s', 0):.1f} s",
                     "red",
                     mark="fail",
                 )
             ]
-        out: list[TraceLine] = []
+        out: list[LogLine] = []
         thinking = d.get("thinking")
         if thinking and thinking_chars != 0:
             text = str(thinking)
@@ -532,17 +589,15 @@ def render_events(
                 text = text[:thinking_chars] + (
                     f"... (+{len(text) - thinking_chars} chars in transcript.jsonl)"
                 )
-            out.append(TraceLine("think", text, "dim italic", multiline=True))
+            out.append(LogLine("think", text, "dim italic", multiline=True))
         if d.get("text"):
-            out.append(TraceLine("llm<", str(d["text"]), "", multiline=True))
+            out.append(LogLine("llm<", str(d["text"]), "", multiline=True))
         calls = d.get("tool_calls") or []
         if not calls:
-            out.append(TraceLine("tool", "(no tool call)", "yellow", mark="warn"))
+            out.append(LogLine("tool", "(no tool call)", "yellow", mark="warn"))
         for call in calls:
             out.append(
-                TraceLine(
-                    "tool", f"{call.get('name')}({fmt_params(call.get('arguments'))})", "bold"
-                )
+                LogLine("tool", f"{call.get('name')}({fmt_params(call.get('arguments'))})", "bold")
             )
         usage = d.get("usage") or {}
         total = d.get("usage_total") or {}
@@ -571,7 +626,7 @@ def render_events(
             tokens += f" cost={fmt_usd(d['cost_usd'])}"
         if d.get("stop_reason"):
             tokens += f" stop={d['stop_reason']}"
-        out.append(TraceLine("tokens", tokens, "dim"))
+        out.append(LogLine("tokens", tokens, "dim"))
         return out
     if k == "jev":
         # The stepper's own turn: what it chose and whether that was enough to act on. Drawn
@@ -589,7 +644,7 @@ def render_events(
                 took += f" {mark}{fmt_usd(d['cost_usd'])}"
         if d.get("error"):
             return [
-                TraceLine(
+                LogLine(
                     "jev",
                     f"ERROR {d['error']} after {took}, so the model takes this turn",
                     "red",
@@ -600,11 +655,11 @@ def render_events(
         confidence = float(d.get("confidence") or 0.0)
         floor = float(d.get("floor") or 0.0)
         if gate == "taken":
-            chosen = TraceLine(
+            chosen = LogLine(
                 "jev", f"{d.get('choice')} {confidence:.2f} >= {floor:.2f} ({took})", "bold"
             )
         elif gate == "below_floor":
-            chosen = TraceLine(
+            chosen = LogLine(
                 "jev",
                 f"{d.get('choice')} {confidence:.2f} < {floor:.2f}, to the model ({took})",
                 "yellow",
@@ -614,7 +669,7 @@ def render_events(
             # `escalate`, `done`, `need_human`, `not_offered`, `state_too_large`: nothing
             # happened and the model takes the turn, so this is dim like the request line
             # it comes just before
-            chosen = TraceLine("jev", f"{gate}, to the model ({took})", "dim")
+            chosen = LogLine("jev", f"{gate}, to the model ({took})", "dim")
         stepper = [chosen]
         # The runners-up, because a 0.93 beside a 0.91 is a different decision from a 0.93
         # beside a 0.02, and the floor on its own cannot say which one you are reading.
@@ -628,15 +683,15 @@ def render_events(
         )[:3]
         if rest:
             stepper.append(
-                TraceLine("jev?", ", ".join(f"{label} {v:.2f}" for v, label in rest), "dim")
+                LogLine("jev?", ", ".join(f"{label} {v:.2f}" for v, label in rest), "dim")
             )
         return stepper
     if k == "jev_shadow":
         # Shadow mode's whole point in one line: what the stepper would have done beside what
-        # the model did, on the same reading. The run is unchanged, so this is its only trace.
+        # the model did, on the same reading. The run is unchanged, so this is its only record.
         agrees = bool(d.get("agree"))
         return [
-            TraceLine(
+            LogLine(
                 "jev=",
                 f"{d.get('jev_choice')} {float(d.get('jev_confidence') or 0):.2f} "
                 f"vs model {d.get('model_verb')}: {'agrees' if agrees else 'differs'} "
@@ -650,14 +705,14 @@ def render_events(
         text = f"{d.get('issue')}: {d.get('action')}"
         if d.get("text"):  # the re-prompt's own words, which the record already carried
             text += f" ({d['text']})"
-        return [TraceLine("enforce", text, "yellow", mark="warn")]
+        return [LogLine("enforce", text, "yellow", mark="warn")]
     if k == "verb_start":
         text = f"{d.get('name')}({fmt_params(d.get('params'))})"
         if d.get("nested"):
             text = f"  {d.get('name')}({fmt_params(d.get('params'))}) [nested]"
         if d.get("source") and d.get("source") != "agent":
             text += f" from {d['source']}"
-        return [TraceLine("verb", text, "bold", mark="start")]
+        return [LogLine("verb", text, "bold", mark="start")]
     if k == "gate":
         text = f"{d.get('gate')}: {d.get('outcome')}"
         if d.get("reason"):
@@ -670,12 +725,29 @@ def render_events(
             text += f" [last: {d['last']}]"
         refused = d.get("outcome") in ("refused", "denied", "exceeded", "fired")
         return [
-            TraceLine(
+            LogLine(
                 "gate", text, "red" if refused else "yellow", mark="fail" if refused else "warn"
             )
         ]
+    if k == "prompt":
+        # What a PERSON was asked and what they said, which is only ever written down when
+        # one was really there. The consequence is recorded separately by whoever acted on
+        # it, so a "no" here is not a refusal in itself and is not drawn like one.
+        said = "yes" if d.get("answer") else "no"
+        asked = " ".join(str(d.get("question", "")).split())
+        return [
+            # `asked` and not `prompt`, which is already the label of the system prompt the run
+            # opens with: the console draws a line called `prompt` as a section rule, and a
+            # person's yes and no would both have come out as the same grey rule.
+            LogLine(
+                "asked",
+                f"{d.get('what')}: {asked} -> {said}",
+                "cyan" if d.get("answer") else "yellow",
+                mark="note" if d.get("answer") else "warn",
+            )
+        ]
     if k == "intent":
-        return [intent_trace_line([event])]
+        return [intent_log_line([event])]
     if k == "verb_end":
         outcome = str(d.get("outcome", "ok" if d.get("ok") else "fail"))
         verdict = "ok" if _ok(outcome) else ("FAIL" if outcome == "fail" else outcome.upper())
@@ -686,7 +758,7 @@ def render_events(
             text = f"  {d.get('name')} {verdict}: {d.get('summary')}{tail}"
         good = _ok(outcome)
         return [
-            TraceLine(
+            LogLine(
                 "<-",
                 text,
                 "green" if good else _BAD.get(outcome, "yellow"),
@@ -696,7 +768,7 @@ def render_events(
     if k == "declare":
         won = d.get("outcome") == "success"
         return [
-            TraceLine(
+            LogLine(
                 "declare",
                 f"{d.get('outcome')}: {d.get('reason')}",
                 "bold green" if won else "bold red",
@@ -706,7 +778,7 @@ def render_events(
     if k == "assess":
         word = d.get("verdict")
         if not word:
-            return [TraceLine("assess", f"invalid: {d.get('summary')}", "red", mark="fail")]
+            return [LogLine("assess", f"invalid: {d.get('summary')}", "red", mark="fail")]
         text = f"{word}: {d.get('reason')}"
         if d.get("human"):
             text += " (the human said " + ("go" if d["human"] == "go" else "no") + ")"
@@ -716,18 +788,18 @@ def render_events(
             "feasible": ("bold green", "ok"),
             "uncertain": ("yellow", "warn"),
         }.get(str(word), ("bold yellow", "warn"))
-        lines = [TraceLine("assess", text, style, mark=mark)]
+        lines = [LogLine("assess", text, style, mark=mark)]
         if d.get("estimates"):
             guessed = "; ".join(
                 f"{e['object']} {e['quantity']}={e['value']:g} ({e['basis']}, {e['confidence']})"
                 for e in d["estimates"]
             )
-            lines.append(TraceLine("est", guessed, "dim"))
+            lines.append(LogLine("est", guessed, "dim"))
         if d.get("needs"):
-            lines.append(TraceLine("needs", fmt_params(d["needs"]), "dim"))
+            lines.append(LogLine("needs", fmt_params(d["needs"]), "dim"))
         return lines
     if k == "memory":
-        return [TraceLine("memory", str(d.get("summary")), "cyan", mark="note")]
+        return [LogLine("memory", str(d.get("summary")), "cyan", mark="note")]
     if k == "hand_off":
         stage = str(d.get("stage", ""))
         reason = str(d.get("reason", ""))
@@ -736,41 +808,39 @@ def render_events(
         if joints:
             text += " (" + ", ".join(f"{j} {float(v):.0f}" for j, v in sorted(joints.items())) + ")"
         colour = "yellow" if stage in ("released", "skipped") else "cyan"
-        return [TraceLine("hand", text, colour, mark="note")]
+        return [LogLine("hand", text, colour, mark="note")]
     if k == "note":
-        return [TraceLine("note", str(d.get("text", "")), "dim", multiline=True, mark="note")]
+        return [LogLine("note", str(d.get("text", "")), "dim", multiline=True, mark="note")]
     if (caption := flock_caption(k, d)) is not None:
         word, detail = caption
-        return [TraceLine(word.lower(), detail, _FLOCK_STYLE.get(k, "cyan"), mark="flock")]
+        return [LogLine(word.lower(), detail, _FLOCK_STYLE.get(k, "cyan"), mark="flock")]
     if k == "member_end":
         return [
-            TraceLine("end", f"{d.get('status')} after {d.get('steps')} steps", "bold", mark="end")
+            LogLine("end", f"{d.get('status')} after {d.get('steps')} steps", "bold", mark="end")
         ]
     if k == "tool_call":
         args = {key: value for key, value in d.items() if key not in ("tool", "robot")}
-        return [
-            TraceLine("tool", f"{d.get('tool')} {fmt_params(args)} on {d.get('robot')}", "bold")
-        ]
+        return [LogLine("tool", f"{d.get('tool')} {fmt_params(args)} on {d.get('robot')}", "bold")]
     if k == "tool_result":
         text = f"{'ok' if d.get('ok') else 'FAIL'} in {_seconds(d)}"
         if d.get("budget"):
             text += f" budget: {d['budget']}"
-        return [TraceLine("done", text, "dim", mark="ok" if d.get("ok") else "fail")]
+        return [LogLine("done", text, "dim", mark="ok" if d.get("ok") else "fail")]
     return []
 
 
 def render_lines(
-    event: TraceEvent, *, thinking_chars: int | None = 2000, prompt: bool = True
+    event: LogEvent, *, thinking_chars: int | None = 2000, prompt: bool = True
 ) -> list[Line]:
     """The same lines, padded into the gutter: what every plain reader has always seen, and
-    what the MCP tool result carries (`tests/golden/trace_lines.json` holds it to that)."""
+    what the MCP tool result carries (`tests/golden/log_lines.json` holds it to that)."""
     return [
         _flatten(line)
         for line in render_events(event, thinking_chars=thinking_chars, prompt=prompt)
     ]
 
 
-def _ranges(events: list[TraceEvent]) -> str:
+def _ranges(events: list[LogEvent]) -> str:
     """`vx 0.05..0.2, vy 0, wz -1..0.4` for numbers; the distinct values for anything else."""
     seen: dict[str, list[Any]] = {}
     for event in events:
@@ -798,7 +868,7 @@ def _ranges(events: list[TraceEvent]) -> str:
     return ", ".join(parts)
 
 
-def intent_trace_line(events: list[TraceEvent]) -> TraceLine:
+def intent_log_line(events: list[LogEvent]) -> LogLine:
     """One line for a burst of intents of one kind: the intent itself when there is one, a
     count with the parameter ranges when a steering loop sent dozens."""
     first = events[0]
@@ -808,8 +878,8 @@ def intent_trace_line(events: list[TraceEvent]) -> TraceLine:
         text = f"{kind}({params})" if params else f"{kind}"
         if not first.data.get("accepted", True):
             reason = first.data.get("reason") or "no reason given"
-            return TraceLine("->", f"{text} REFUSED: {reason}", "red", mark="fail")
-        return TraceLine("->", text, "dim", mark="send")
+            return LogLine("->", f"{text} REFUSED: {reason}", "red", mark="fail")
+        return LogLine("->", text, "dim", mark="send")
     if (first_t := first.data.get("robot_t")) is not None and (
         last_t := events[-1].data.get("robot_t")
     ) is not None:
@@ -820,12 +890,12 @@ def intent_trace_line(events: list[TraceEvent]) -> TraceLine:
     text = f"{kind} x{len(events)} over {span:.1f} s"
     if ranges:
         text += f" ({ranges})"
-    return TraceLine("->", text, "dim", mark="send")
+    return LogLine("->", text, "dim", mark="send")
 
 
-def intent_line(events: list[TraceEvent]) -> Line:
+def intent_line(events: list[LogEvent]) -> Line:
     """The burst line, padded into the gutter."""
-    return _flatten(intent_trace_line(events))
+    return _flatten(intent_log_line(events))
 
 
 def fan_out(*sinks: Sink | None) -> Sink:
@@ -834,10 +904,10 @@ def fan_out(*sinks: Sink | None) -> Sink:
     `AgentLoop` takes a single observer and a run wants two: the view that narrates and the
     status line that says what it is waiting for. A sink that raises must not starve the
     others, so every one is called and the first failure is re-raised afterwards, which
-    leaves the `Tracer` counting exactly one drop for the event."""
+    leaves the `EventLog` counting exactly one drop for the event."""
     live = [sink for sink in sinks if sink is not None]
 
-    def forward(event: TraceEvent) -> None:
+    def forward(event: LogEvent) -> None:
         failure: Exception | None = None
         for sink in live:
             try:
@@ -861,7 +931,7 @@ is the bound that matters in a free-running simulator: it crosses that in under 
 seconds, so the time rule never fires there."""
 
 
-class LineTrace:
+class LineLog:
     """A sink that renders events as lines through `write(text, style)`, coalescing a burst of
     one intent kind into one line. A `go_to` sends a different twist every 100 ms, so the
     burst is collapsed by kind, not by identical parameters, and flushed when anything else
@@ -892,20 +962,20 @@ class LineTrace:
         self.prefix = prefix
         """Put before every line, continuation lines included: a flock's terminal interleaves
         its members, and each line has to say whose it is."""
-        self._pending: list[TraceEvent] = []
+        self._pending: list[LogEvent] = []
 
     def _out(self, text: str, style: str) -> None:
         if self.prefix:
             text = self.prefix + text.replace("\n", "\n" + self.prefix)
         self._write(text, style)
 
-    def _show(self, line: TraceLine, event: TraceEvent | None) -> None:
+    def _show(self, line: LogLine, event: LogEvent | None) -> None:
         """One line, as this view draws it. The default is the gutter every plain reader
         expects; a terminal overrides this to draw glyphs and colour instead. `event` is the
         one the line came from, or None for a coalesced burst, which belongs to several."""
         self._out(*_flatten(line))
 
-    def __call__(self, event: TraceEvent) -> None:
+    def __call__(self, event: LogEvent) -> None:
         if event.kind == "intent" and event.data.get("accepted", True):
             if self._pending and self._pending[0].data.get("intent") != event.data.get("intent"):
                 self.flush()
@@ -922,9 +992,9 @@ class LineTrace:
     def flush(self) -> None:
         if not self._pending:
             return
-        # write first, clear after: a write that fails (the Tracer swallows and counts it)
+        # write first, clear after: a write that fails (the EventLog swallows and counts it)
         # should leave the burst for the next flush rather than losing it
-        self._show(intent_trace_line(self._pending), None)
+        self._show(intent_log_line(self._pending), None)
         self._pending = []
 
 
@@ -944,7 +1014,7 @@ _GUTTER = 3
 ASCII half spells an arrow `->`; every other glyph in both halves is one cell wide."""
 
 
-class ConsoleTrace(LineTrace):
+class ConsoleLog(LineLog):
     """The CLI's view: the same events, wearing what a terminal can wear.
 
     The plain renderer is a contract with a model (the MCP tool result carries it verbatim)
@@ -979,7 +1049,7 @@ class ConsoleTrace(LineTrace):
         header: bool = False,
     ) -> None:
         # `None` means unlimited here exactly as it does in `render_lines`: one sentinel, one
-        # meaning. The environment is read by the caller, where `QUACKD_TRACE` already is,
+        # meaning. The environment is read by the caller, where `QUACKD_LOG` already is,
         # because that has to happen after `.env` is loaded rather than at import.
         super().__init__(
             self._print,
@@ -994,7 +1064,7 @@ class ConsoleTrace(LineTrace):
         self.console = console
         self.prefix_style = prefix_style
         self.header = header
-        """Draw `run_start` as the panel a run opens with. True for `quackd trace`, which has
+        """Draw `run_start` as the panel a run opens with. True for `quackd log`, which has
         no other header, and False for a live run, where the CLI printed one before it
         connected and a second would say the same thing twice."""
         self._ui = ui
@@ -1005,7 +1075,7 @@ class ConsoleTrace(LineTrace):
     # ── drawing ─────────────────────────────────────────────────────────────────────
 
     def _print(self, text: str, style: str) -> None:
-        """The plain line, for anything that reaches `LineTrace`'s own path."""
+        """The plain line, for anything that reaches `LineLog`'s own path."""
         self.console.print(text, style=style or None, markup=False, highlight=False, soft_wrap=True)
 
     def _plain(self, text: str) -> str:
@@ -1032,7 +1102,7 @@ class ConsoleTrace(LineTrace):
     def _ascii(self) -> bool:
         return self._glyphs is self._ui.ASCII
 
-    def _show(self, line: TraceLine, event: TraceEvent | None) -> None:
+    def _show(self, line: LogLine, event: LogEvent | None) -> None:
         """One line, as a terminal wears it: a glyph, a word, and the line itself."""
         if not self.prefix:
             # a flock prints three of everything, so the ruled-off forms are solo only
@@ -1067,13 +1137,13 @@ class ConsoleTrace(LineTrace):
         for raw in body.splitlines():
             # respelled like every other line, and no padding on a blank one:
             # seventy lines of trailing whitespace is most of what a diff of a
-            # redirected trace turns out to be
+            # redirected log turns out to be
             shown = self._plain(raw.rstrip())
             body_line = pad_text + shown if shown else ""
             self._write_line(Text(body_line, style=self._ui.STYLES["muted"]))
         self._rule()
 
-    def _run_panel(self, event: TraceEvent) -> None:
+    def _run_panel(self, event: LogEvent) -> None:
         d = event.data
         adapter = d.get("adapter")
         robot = f"{adapter}:{d.get('transport')}" if adapter else str(d.get("transport"))
@@ -1107,7 +1177,7 @@ class ConsoleTrace(LineTrace):
 
     # ── reading ─────────────────────────────────────────────────────────────────────
 
-    def __call__(self, event: TraceEvent) -> None:
+    def __call__(self, event: LogEvent) -> None:
         if event.kind == "observation" and "error" not in event.data:
             # the loop puts `[step 3/40 · llm calls 3/40, 0.1/5 min]` at the top of every
             # observation. It is the one line that says where the run is up to, and it was
@@ -1129,7 +1199,7 @@ class ConsoleTrace(LineTrace):
                 # a live run was introduced by the CLI before it connected; all this adds is
                 # how long connecting took, which the panel could not have known
                 self._show(
-                    TraceLine("run", f"connected in {event.data['connect_s']:.2f} s", "dim"), event
+                    LogLine("run", f"connected in {event.data['connect_s']:.2f} s", "dim"), event
                 )
             for line in render_events(
                 event, thinking_chars=self.thinking_chars, prompt=self.prompt
@@ -1143,61 +1213,59 @@ class ConsoleTrace(LineTrace):
         super().__call__(event)
 
 
-MCP_TRACE_MAX_LINES = 30
+MCP_LOG_MAX_LINES = 30
 _MCP_HEAD = 10
 
 
-def cap_lines(
-    lines: list[str], limit: int = MCP_TRACE_MAX_LINES, head: int = _MCP_HEAD
-) -> list[str]:
+def cap_lines(lines: list[str], limit: int = MCP_LOG_MAX_LINES, head: int = _MCP_HEAD) -> list[str]:
     """The first few and the last many, with one line saying what was cut. A tool result is
-    read by the model on every call; the uncapped trace is on the server's stderr."""
+    read by the model on every call; the uncapped log is on the server's stderr."""
     if len(lines) <= limit:
         return lines
     tail = limit - head - 1
     cut = len(lines) - head - tail
     return [
         *lines[:head],
-        f"... {cut} more lines (the full trace is on the server's stderr)",
+        f"... {cut} more lines (the full log is on the server's stderr)",
         *lines[-tail:],
     ]
 
 
-def call_lines(events: list[TraceEvent]) -> list[str]:
+def call_lines(events: list[LogEvent]) -> list[str]:
     """One call's events as plain lines, uncapped.
 
-    Guarded, unlike the `Tracer`'s observers: this runs outside the tracer, so a formatting
+    Guarded, unlike the `EventLog`'s observers: this runs outside the event_log, so a formatting
     error here would turn a robot's refusal into an MCP internal error rather than a result.
     """
     lines: list[str] = []
     # `progress_s=None`: this renders once the call has already ended, so splitting one
     # `-> move x200` into ten progressive lines would only spend the model's line cap
-    view = LineTrace(lambda text, _style: lines.append(text), prompt=False, progress_s=None)
+    view = LineLog(lambda text, _style: lines.append(text), prompt=False, progress_s=None)
     try:
         for event in events:
             view(event)
         view.flush()
     except Exception as e:
-        lines.append(f"(the trace could not be rendered: {type(e).__name__}: {e})")
+        lines.append(f"(the log could not be rendered: {type(e).__name__}: {e})")
     return lines
 
 
-def render_call(events: list[TraceEvent]) -> list[str]:
-    """One MCP tool call's events as short plain lines for the `trace` field of its result."""
+def render_call(events: list[LogEvent]) -> list[str]:
+    """One MCP tool call's events as short plain lines for the `log` field of its result."""
     return cap_lines(call_lines(events))
 
 
 __all__ = [
     "MAX_BURST",
-    "MCP_TRACE_MAX_LINES",
+    "MCP_LOG_MAX_LINES",
     "PROGRESS_S",
-    "ConsoleTrace",
-    "LineTrace",
+    "ConsoleLog",
+    "EventLog",
+    "LineLog",
+    "LogEvent",
+    "LogLine",
+    "LoggedTransport",
     "Sink",
-    "TraceEvent",
-    "TraceLine",
-    "TracedTransport",
-    "Tracer",
     "call_lines",
     "cap_lines",
     "capture_sink",
@@ -1207,13 +1275,13 @@ __all__ = [
     "flock_caption",
     "fmt_params",
     "intent_line",
-    "intent_trace_line",
+    "intent_log_line",
+    "log_enabled_default",
     "parse_thinking_limit",
     "prompt_shown_default",
     "render_call",
     "render_events",
     "render_lines",
     "thinking_limit_default",
-    "trace_enabled_default",
     "unless_capturing",
 ]

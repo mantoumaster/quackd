@@ -3,7 +3,7 @@
 Function calling with `mode="ANY"` so a turn always yields a call; images ride as inline
 PNG parts; tool results go back as `function_response` parts. Gemini's schema dialect
 rejects a few JSON-Schema keywords, so `render_tools` strips them. Thought summaries are
-asked for (`thinking_config.include_thoughts`) so the trace can show them; a model that
+asked for (`thinking_config.include_thoughts`) so the log can show them; a model that
 rejects the field gets one retry without it, and `QUACKD_GEMINI_THOUGHTS=0` never asks.
 """
 

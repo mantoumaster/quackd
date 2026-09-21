@@ -128,12 +128,12 @@ def test_flock_kick_seed_3_conversation_is_unchanged(tmp_path: Path) -> None:
     assert got["bus"] == want["bus"]
 
 
-def test_the_plain_trace_lines_are_unchanged() -> None:
+def test_the_plain_log_lines_are_unchanged() -> None:
     """The MCP tool result carries these bytes and a model reads them (docs/mcp.md), so the
     terminal view may be redrawn but the renderer under it may not move."""
-    from tests.golden.trace_cases import golden
+    from tests.golden.log_cases import golden
 
-    want = _load("trace_lines.json")
+    want = _load("log_lines.json")
     got = golden()
     assert sorted(got) == sorted(want), "a case appeared or vanished: regenerate on purpose"
     for name in sorted(want):

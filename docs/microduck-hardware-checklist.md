@@ -32,7 +32,7 @@ step 1 with nothing to connect with.
 The first run fetches the model and the policies into `~/.quackd/cache`, so do that before you
 are standing next to somebody else's robot rather than on their Wi-Fi.
 
-What it rehearses is the pilot, your provider, each task's allowlist, and reading a run's trace
+What it rehearses is the pilot, your provider, each task's allowlist, and reading a run's log
 while it happens. It touches nothing below: no socket, no `hello` handshake, no `robot.health`,
 no camera transport and no deadman. Four skills there are quackd's own stand-ins rather than the
 robot's, and say so in `state.extras.assumptions`: `kick` and `grab` use the cartoon's contact

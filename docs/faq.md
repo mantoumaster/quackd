@@ -164,28 +164,48 @@ turns; every provider gets a text line like `ball at bearing 12° left, ~0.80 m`
 detector. Composite verbs steer on detections at 10 Hz and never wait for the model.
 
 **How do I see what the model was told, what it thought, and what it sent the robot?**
-You already do: the trace is on by default. `quackd run` narrates the whole run to stderr as
-it happens, and every MCP tool call that reaches a robot comes back with a `trace` list of
+You already do: the log is on by default. `quackd run` narrates the whole run to stderr as
+it happens, and every MCP tool call that reaches a robot comes back with a `log` list of
 the same lines. You get the system prompt once, then per turn the observation, the model's
 reasoning where the provider returns any, the tool it chose, the tokens, the latency and
 what that call cost, every executor gate that fired, every intent that went to the robot (a
 steering loop's burst collapsed into one line with its parameter ranges), and the result.
-`--no-trace` or `QUACKD_TRACE=0` turns the views off; `runs/<ts>/transcript.jsonl` keeps
-everything either way, uncapped. Details and the event list: [architecture.md](architecture.md#trace),
-[ADR-0029](adr/0029-tracing.md).
+`--no-log` or `QUACKD_LOG=0` decides what you *watch* and nothing else: the narration stops,
+the run still writes its log, and `runs/<ts>/transcript.jsonl` has all of it either way,
+uncapped. It was the trace until 0.11, so `quackd trace`, `--trace/--no-trace` and
+`QUACKD_TRACE*` still work for one release, each printing one line on stderr naming what it
+is called now, and go in 0.12. The MCP result key is the one that changed outright, because a
+model learns the name from the tool description on every call and carrying both would cost
+every call a second copy of the same thirty lines. Details and the event list:
+[architecture.md](architecture.md#log), [ADR-0029](adr/0029-tracing.md).
 
-**Can I read a run after it finished?** Yes. `quackd trace` replays the newest run under
+**Can I read a run after it finished?** Yes. `quackd log` replays the newest run under
 `runs/` as the same lines it printed while it ran, and it takes a directory name, a timestamp
 prefix, the name you gave the run, a duck name or a transcript file if you want an older one.
 `--from-step N` starts part way in, `--no-prompt` drops the system prompt, `--thinking all`
 shows every character the model thought, and `--frames` adds a line per camera frame. It
-prints to stdout, so piping it to a pager or a file is the point. A flock run replays every
-member, each line prefixed with the robot that wrote it, and its counters come from the
-flock's own summary rather than from whichever member happened to finish last. A SOLO replay
-opens with a header saying when the run started, what it was named and what the model was
-priced at, so a transcript you come back to a month later still says what it cost and why. A
-flock has no such header, because there is no one model and no one clock to put in it: its
-name and its rate are in `summary.json`.
+prints to stdout, so piping it to a pager or a file is the point. A run recorded before 0.11
+replays unchanged, because the only thing the rename touched on disk is one counter,
+`trace_dropped`, and the reader still takes that spelling beside `log_dropped`. A flock run
+replays every member, each line prefixed with the robot that wrote it, and its counters come
+from the flock's own summary rather than from whichever member happened to finish last. A
+SOLO replay opens with a header saying when the run started, what it was named and what the
+model was priced at, so a transcript you come back to a month later still says what it cost
+and why. A flock has no such header, because there is no one model and no one clock to put in
+it: its name and its rate are in `summary.json`.
+
+**Where is what was actually on my screen?** In the run directory, as `terminal.txt`:
+everything the run printed, as plain text with no colour codes in it, opening with the command
+that started it and the version that ran it. `quackd log` replays the record and this is the
+screen, which is not the same thing: the file has the header panel, the warnings, the
+questions you were asked and the answers you typed, in the order you saw them. It holds what
+you watched, so a run started with `--no-log` leaves a short one, and a flock keeps a single
+file at the run root because a flock is still one terminal. A key you passed on the line is
+not in it: the command it opens with has the value of `--api-key` and `--token` replaced by
+`***`, and `--base-url`, `--address` and `--camera-url` keep their host and lose a password
+in the URL. That is redaction by name, so a secret typed as the value of some other flag is
+in the file in full, and that is the thing to check before you paste one into an issue
+([SECURITY.md](../SECURITY.md)).
 
 **How do I find one run again a week later?** Name it when you start it. `--run-name
 "Example 1"` puts the name in the directory after the duck,
@@ -202,7 +222,7 @@ $ quackd run find-and-kick --run-name "!!!"
 ✗ error: --run-name '!!!' has no ASCII letters or digits in it, so there is nothing to name the directory after
 ```
 
-Afterwards `quackd trace example-1` finds it by that label. That pass runs ahead of both the
+Afterwards `quackd log example-1` finds it by that label. That pass runs ahead of both the
 timestamp prefix and the loose substring, so a bench holding both `-example-1` and
 `-example-19` hands you the run you actually named rather than whichever is newer, and a run
 you called `2` is reachable by `2` rather than being answered by the first run of 2026 that
@@ -213,11 +233,11 @@ some do, and each in its own way: Claude returns a summary (quackd asks for one,
 default is to send the blocks back empty), an OpenAI-compatible server may fill
 `reasoning_content` or `reasoning`, Gemini returns thought parts when asked, and a local
 server that separates nothing gets its `<think>` block split out of the answer. OpenAI's own
-Chat Completions returns a reasoning token count and no text, so that is what the trace
+Chat Completions returns a reasoning token count and no text, so that is what the log
 shows. The scripted pilot has no reasoning either, but it does report which rule it followed
 — what it saw, how the last verb ended, and the verb that fell out — on the same line, marked
 `[scripted]` so it can never be mistaken for a model's own words. So a run with no API key
-still shows you the shape of the trace.
+still shows you the shape of the log.
 
 ## Real robots
 

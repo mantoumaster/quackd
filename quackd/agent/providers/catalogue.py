@@ -72,7 +72,7 @@ class Price:
     def record(self) -> dict[str, Any]:
         """The rate as `run_start` and `summary.json` carry it.
 
-        Written into the run rather than looked up at replay, so `quackd trace` prices a run at
+        Written into the run rather than looked up at replay, so `quackd log` prices a run at
         what it cost on the day rather than at whatever this table says months later."""
         return {
             "input": self.input,

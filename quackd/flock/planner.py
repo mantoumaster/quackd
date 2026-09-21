@@ -19,7 +19,7 @@ from quackd.agent.providers.base import Exchange, LLMProvider, Observation, Prov
 from quackd.agent.providers.pricing import cost_usd, resolve_price
 from quackd.duckfile.schema import DuckFile
 from quackd.flock.messages import FlockTask, Wedge
-from quackd.trace import Tracer
+from quackd.log import EventLog
 
 PLAN_TOOL = {
     "name": "plan_flock_task",
@@ -73,13 +73,13 @@ async def plan_flock_task(
     log: Any = lambda *_: None,
     wedge_members: list[str] | None = None,
     *,
-    trace: Tracer | None = None,
+    event_log: EventLog | None = None,
     price: str | None = None,
 ) -> tuple[FlockTask, dict[str, Wedge], Usage, int, bool, float | None]:
     """Returns (task, wedges, usage, llm_calls, fallback_used). Wedges are split over the
     members that can move (`wedge_members`); a member with no wedge sweeps its whole range.
 
-    `trace` narrates the one model call this run makes, as the same `llm_request`/`llm` pair
+    `event_log` narrates the one model call this run makes, as the same `llm_request`/`llm` pair
     a solo run emits, so a flock's transcript reads like any other run's."""
     wedges = equal_wedges(wedge_members or members)
     task = default_task(duck, task_id)
@@ -88,11 +88,12 @@ async def plan_flock_task(
         return task, wedges, Usage(), 0, False, 0.0
 
     def emit(kind: str, **data: Any) -> None:
-        if trace is not None:
-            trace.emit(kind, **data)
+        if event_log is not None:
+            event_log.emit(kind, **data)
 
     def note(text: str) -> None:
-        """One line for both audiences: `log` is `--verbose`, the trace shows the same words."""
+        """One line for both audiences: `log` is `--verbose`, and the run's log shows the
+        same words."""
         log(text)
         emit("note", text=text)
 

@@ -192,7 +192,7 @@ async def test_anthropic_request_and_response_mapping() -> None:
     assert kw["tool_choice"] == {"type": "any", "disable_parallel_tool_use": True}
     assert kw["output_config"] == {"effort": "medium"}
     # adaptive is the model's default; `display` is what makes the blocks carry text at all,
-    # and without it the trace's "what it thought" would be blank on every turn
+    # and without it the log's "what it thought" would be blank on every turn
     assert kw["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert kw["betas"] == ["server-side-fallback-2026-07-01"] and kw["fallbacks"] == "default"
     assert kw["tools"][0]["input_schema"]["additionalProperties"] is False
@@ -875,7 +875,7 @@ def test_factory_reports_missing_extra_or_key(monkeypatch: pytest.MonkeyPatch) -
         make_provider("openai")
 
 
-# ── what the model thought: the `thinking` field the trace shows ────────────────────────
+# ── what the model thought: the `thinking` field the log shows ──────────────────────────
 
 
 class BadRequestError(Exception):
@@ -923,7 +923,7 @@ async def test_anthropic_all_empty_thinking_is_none_not_a_blank_line() -> None:
 
 async def test_anthropic_retries_once_without_thinking_on_an_older_model() -> None:
     """A model older than Claude 4.6 rejects the parameter. Losing the thinking text is
-    acceptable; losing the run because the trace asked for it is not."""
+    acceptable; losing the run because the log asked for it is not."""
     calls: list[dict[str, Any]] = []
 
     async def create(**kwargs: Any) -> Any:

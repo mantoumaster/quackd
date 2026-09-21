@@ -276,7 +276,7 @@ async def test_the_artifacts_are_what_the_docs_say(tmp_path: Path) -> None:
         "model",
         "robot",
         "run_dir",
-        "trace_dropped",
+        "log_dropped",
     }
     start = _flock_lines(result)[0]
     assert start["clock"] == "wall"
@@ -469,11 +469,11 @@ async def test_a_task_no_body_can_do_refuses_before_anything_connects(tmp_path: 
 async def test_each_member_gets_its_own_view_and_the_flock_gets_one(tmp_path: Path) -> None:
     seen: dict[str, list[str]] = {}
 
-    def trace(name: str) -> Any:
+    def view(name: str) -> Any:
         seen.setdefault(name, [])
         return lambda event: seen[name].append(event.kind)
 
-    await _run(tmp_path, trace=trace)
+    await _run(tmp_path, view=view)
     assert set(seen) == {"duck", "arm", "flock"}
     assert "run_start" in seen["duck"] and "run_start" not in seen["flock"]
     assert seen["flock"] == ["talk", "talk"], "the flock view carries the runner's own notices"

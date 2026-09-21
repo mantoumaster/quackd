@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,8 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from quackd import __version__
+from quackd import cli as cli_mod
 from quackd.agent.providers.factory import CLOUD_NAMES, default_model_for, model_ids
 from quackd.cli import EXIT_INFEASIBLE, app
 
@@ -20,27 +23,27 @@ from .conftest import DUCKS
 runner = CliRunner()
 
 
-# ── the trace ───────────────────────────────────────────────────────────────────────────
+# ── the log ───────────────────────────────────────────────────────────────────────────
 
 
-def _traced(tmp_path: Path, monkeypatch, *args: str, env: str | None = "") -> str:
+def _one_command(tmp_path: Path, monkeypatch, *args: str, env: str | None = "") -> str:
     """Any command whose stderr the CliRunner folds into `output`, with the label column's
     padding squeezed out so an assertion can name a line as a reader would say it. `env` is
-    what QUACKD_TRACE says: "" is on (an empty value must never read as off), None removes
-    it — the suite turns the trace off for everyone else (conftest)."""
+    what QUACKD_LOG says: "" is on (an empty value must never read as off), None removes
+    it. The suite turns the log off for everyone else (conftest)."""
     if env is None:
-        monkeypatch.delenv("QUACKD_TRACE", raising=False)
+        monkeypatch.delenv("QUACKD_LOG", raising=False)
     else:
-        monkeypatch.setenv("QUACKD_TRACE", env)
+        monkeypatch.setenv("QUACKD_LOG", env)
     result = runner.invoke(app, [*args, "--runs-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     return " ".join(result.output.split())
 
 
-def _trace_run(tmp_path: Path, monkeypatch, *flags: str, env: str | None = "") -> str:
-    """One `run` on the mock, which sends no frames and writes no GIF: the trace itself is
+def _log_run(tmp_path: Path, monkeypatch, *flags: str, env: str | None = "") -> str:
+    """One `run` on the mock, which sends no frames and writes no GIF: the log itself is
     what these tests read."""
-    return _traced(
+    return _one_command(
         tmp_path,
         monkeypatch,
         "run",
@@ -55,9 +58,9 @@ def _trace_run(tmp_path: Path, monkeypatch, *flags: str, env: str | None = "") -
     )
 
 
-def _trace_record(tmp_path: Path, monkeypatch, *flags: str, env: str | None = "") -> str:
+def _log_record(tmp_path: Path, monkeypatch, *flags: str, env: str | None = "") -> str:
     """The same run through `record`, which pins the simulator and always writes a GIF."""
-    return _traced(
+    return _one_command(
         tmp_path,
         monkeypatch,
         "record",
@@ -76,9 +79,9 @@ def _kinds(tmp_path: Path) -> list[str]:
     return [e["kind"] for e in Transcript.read(next(tmp_path.rglob("transcript.jsonl")))]
 
 
-def test_the_trace_is_on_by_default(tmp_path: Path, monkeypatch) -> None:
+def test_the_log_is_on_by_default(tmp_path: Path, monkeypatch) -> None:
     """Someone who types `quackd run` and watches a robot move should see why it moved."""
-    out = _trace_run(tmp_path, monkeypatch)
+    out = _log_run(tmp_path, monkeypatch)
     assert "system prompt" in out  # what the model was told
     assert "quack(text='hello!')" in out  # what it chose
     assert "send sound" in out  # what went to the robot
@@ -86,45 +89,45 @@ def test_the_trace_is_on_by_default(tmp_path: Path, monkeypatch) -> None:
     assert "SUCCESS" in out  # and the outcome still reaches stdout
 
 
-def test_no_trace_prompt_hides_only_the_prompt(tmp_path: Path, monkeypatch) -> None:
+def test_no_log_prompt_hides_only_the_prompt(tmp_path: Path, monkeypatch) -> None:
     """The prompt is forty to seventy lines, worth reading once and tiresome on the fiftieth
     run of an afternoon. Hiding it must not cost the verbs and the intents."""
-    out = _trace_run(tmp_path, monkeypatch, "--no-trace-prompt")
+    out = _log_run(tmp_path, monkeypatch, "--no-log-prompt")
     assert "system prompt" not in out and "You are the brain" not in out
     assert "send sound" in out and "result quack ok" in out
 
 
 def test_the_env_hides_the_prompt_and_the_flag_wins(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("QUACKD_TRACE_PROMPT", "0")
-    assert "system prompt" not in _trace_run(tmp_path, monkeypatch)
-    assert "system prompt" in _trace_run(tmp_path, monkeypatch, "--trace-prompt")
+    monkeypatch.setenv("QUACKD_LOG_PROMPT", "0")
+    assert "system prompt" not in _log_run(tmp_path, monkeypatch)
+    assert "system prompt" in _log_run(tmp_path, monkeypatch, "--log-prompt")
 
 
-def test_no_trace_leaves_the_header_and_the_outcome(tmp_path: Path, monkeypatch) -> None:
-    out = _trace_run(tmp_path, monkeypatch, "--no-trace")
+def test_no_log_leaves_the_header_and_the_outcome(tmp_path: Path, monkeypatch) -> None:
+    out = _log_run(tmp_path, monkeypatch, "--no-log")
     assert "send sound" not in out and "system prompt" not in out
     assert "SUCCESS" in out and "hello-world" in out
 
 
-def test_the_env_can_turn_the_trace_off_too(tmp_path: Path, monkeypatch) -> None:
+def test_the_env_can_turn_the_log_off_too(tmp_path: Path, monkeypatch) -> None:
     """A `.env` line has to work, so the default is read when the command runs, not when the
     module is imported."""
-    assert "send sound" not in _trace_run(tmp_path, monkeypatch, env="0")
-    assert "send sound" in _trace_run(tmp_path, monkeypatch, env=None)
+    assert "send sound" not in _log_run(tmp_path, monkeypatch, env="0")
+    assert "send sound" in _log_run(tmp_path, monkeypatch, env=None)
 
 
 def test_the_flag_beats_the_env(tmp_path: Path, monkeypatch) -> None:
-    assert "send sound" in _trace_run(tmp_path, monkeypatch, "--trace", env="0")
+    assert "send sound" in _log_run(tmp_path, monkeypatch, "--log", env="0")
 
 
-def test_verbose_is_the_compact_view_and_does_not_double_the_trace(
+def test_verbose_is_the_compact_view_and_does_not_double_the_log(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """With the trace on, the executor's own log lines would say every verb a second time."""
-    traced = _trace_run(tmp_path, monkeypatch, "--verbose")
-    assert "send sound" in traced
-    assert "→ quack" not in traced, "the old compact line must not double the trace"
-    compact = _trace_run(tmp_path, monkeypatch, "--verbose", "--no-trace")
+    """With the log on, the executor's own log lines would say every verb a second time."""
+    logged = _log_run(tmp_path, monkeypatch, "--verbose")
+    assert "send sound" in logged
+    assert "→ quack" not in logged, "the old compact line must not double the log"
+    compact = _log_run(tmp_path, monkeypatch, "--verbose", "--no-log")
     assert "→ quack" in compact and "send sound" not in compact
 
 
@@ -132,38 +135,38 @@ def test_record_writes_a_gif_and_a_transcript(tmp_path: Path, monkeypatch) -> No
     """Every GIF in the README and every launch post comes out of `record`, and no test
     ever ran the command: it pins its own robot, always renders, and could have been broken
     for a whole release without a single failure to say so."""
-    out = _trace_record(tmp_path, monkeypatch)
+    out = _log_record(tmp_path, monkeypatch)
     assert "SUCCESS" in out
     gif = next(tmp_path.rglob("run.gif"))
     assert gif.stat().st_size > 0, "an empty GIF is a README with a broken image in it"
     assert {"run_start", "llm", "verb_end", "run_end"} <= set(_kinds(tmp_path))
 
 
-def test_record_no_trace_still_writes_every_event(tmp_path: Path, monkeypatch) -> None:
+def test_record_no_log_still_writes_every_event(tmp_path: Path, monkeypatch) -> None:
     """The switch is about the console and nothing else (ADR-0029). The transcript is the
     record, and a run recorded quietly must be as complete as a noisy one."""
-    out = _trace_record(tmp_path, monkeypatch, "--no-trace")
+    out = _log_record(tmp_path, monkeypatch, "--no-log")
     assert "send sound" not in out and "SUCCESS" in out
     kinds = _kinds(tmp_path)
     assert "intent" in kinds and "verb_end" in kinds
 
 
-def test_no_trace_verbose_prints_the_dry_run_line_intact(tmp_path: Path, monkeypatch) -> None:
-    """`--verbose` predates the trace and people's scripts still pass it, so with the trace
+def test_no_log_verbose_prints_the_dry_run_line_intact(tmp_path: Path, monkeypatch) -> None:
+    """`--verbose` predates the log and people's scripts still pass it, so with the log
     off it is still the only thing that says what a dry run would have done — and the line
     opens with `[dry-run]`, which Rich would eat as a style tag if it were printed as
     markup."""
-    out = _trace_run(tmp_path, monkeypatch, "--no-trace", "--dry-run", "--verbose")
+    out = _log_run(tmp_path, monkeypatch, "--no-log", "--dry-run", "--verbose")
     assert "[dry-run] would run quack(" in out
     assert "Traceback" not in out
 
 
-def test_serve_mcp_forwards_no_trace(monkeypatch) -> None:
-    """`--no-trace` is what silences an MCP server that logs to the same stderr its client
+def test_serve_mcp_forwards_no_log(monkeypatch) -> None:
+    """`--no-log` is what silences an MCP server that logs to the same stderr its client
     reads. The flag is parsed by one module and honoured by another, so nothing but a call
     recorder proves it survives the hand-off."""
     from quackd import mcp_server
-    from quackd.trace import trace_enabled_default
+    from quackd.log import log_enabled_default
 
     captured: dict[str, object] = {}
 
@@ -171,18 +174,18 @@ def test_serve_mcp_forwards_no_trace(monkeypatch) -> None:
         captured.update(kwargs)
 
     monkeypatch.setattr(mcp_server, "serve", recorder)
-    monkeypatch.setenv("QUACKD_TRACE", "")  # an empty value is on
+    monkeypatch.setenv("QUACKD_LOG", "")  # an empty value is on
 
-    off = runner.invoke(app, ["serve-mcp", "--no-trace", "--robot", "microduck:mock"])
+    off = runner.invoke(app, ["serve-mcp", "--no-log", "--robot", "microduck:mock"])
     assert off.exit_code == 0, off.output
-    assert captured["trace"] is False
+    assert captured["log"] is False
 
     captured.clear()
     on = runner.invoke(app, ["serve-mcp", "--robot", "microduck:mock"])
     assert on.exit_code == 0, on.output
     # without the flag the CLI forwards None — "ask the environment" — because a server a
-    # desktop spawned has no shell to read QUACKD_TRACE in. `serve` resolves it, and on.
-    assert captured["trace"] is None and trace_enabled_default() is True
+    # desktop spawned has no shell to read QUACKD_LOG in. `serve` resolves it, and on.
+    assert captured["log"] is None and log_enabled_default() is True
 
 
 def test_the_outcome_line_prints_the_models_reason_verbatim(tmp_path: Path, monkeypatch) -> None:
@@ -722,15 +725,15 @@ def test_a_camera_robot_that_is_not_the_simulator_still_gets_a_detector(tmp_path
 
 def test_a_console_that_raises_is_reported_once_at_the_end(tmp_path: Path, monkeypatch) -> None:
     """An observer that raises never ends a run, which is right. It also meant a console that
-    raised on every event produced a silent trace and no sign at all that it had."""
-    import quackd.trace as trace_module
+    raised on every event produced a silent log and no sign at all that it had."""
+    import quackd.log as log_module
 
-    class Broken(trace_module.ConsoleTrace):  # type: ignore[misc]
+    class Broken(log_module.ConsoleLog):  # type: ignore[misc]
         def __call__(self, event: object) -> None:
             raise RuntimeError("the terminal went away")
 
-    monkeypatch.setattr(trace_module, "ConsoleTrace", Broken)
-    out = _trace_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(log_module, "ConsoleLog", Broken)
+    out = _log_run(tmp_path, monkeypatch)
     assert "could not be shown" in out
     assert "transcript.jsonl has them" in out
     assert "SUCCESS" in out, "a broken console must not change the outcome"
@@ -840,9 +843,16 @@ def _help(argv: list[str]) -> str:
     On GitHub Actions Typer forces coloured help: it reads GITHUB_ACTIONS when `rich_utils`
     is imported, which is before any fixture can say otherwise. Rich then styles an option
     name in pieces, so `--no-color` reaches a substring check as three spans with escape
-    sequences between them. What this test is about is the words, not the colour."""
+    sequences between them. What this test is about is the words, not the colour.
+
+    The panel borders come off for the same reason. Rich draws each row of an options
+    table inside a box, so a help sentence long enough to wrap picks up a border
+    character in the middle of itself, and an assertion on a phrase then fails for a
+    reason that has nothing to do with the phrase. One flag alias re-wraps the rest."""
     out = CliRunner().invoke(app, argv, env={"COLUMNS": "200"}).output
-    return " ".join(re.sub(r"\[[0-9;]*m", "", out).split())
+    plain = re.sub(r"\[[0-9;]*m", "", out)
+    rows = [re.sub(r"^[│|]\s?|\s?[│|]$", "", line) for line in plain.splitlines()]
+    return " ".join(" ".join(rows).split())
 
 
 @pytest.mark.parametrize(
@@ -963,9 +973,9 @@ def test_a_confirmation_prompt_is_asked_with_the_status_line_out_of_the_way(
 def test_a_run_into_a_pipe_adds_no_status_line_to_what_a_script_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The status line is wired in whether the trace is on or off, and a terminal is the only
+    """The status line is wired in whether the log is on or off, and a terminal is the only
     place it may appear. Under a runner or a pipe nothing of it reaches the output."""
-    out = _trace_run(tmp_path, monkeypatch, "--no-trace")
+    out = _log_run(tmp_path, monkeypatch, "--no-log")
     assert "SUCCESS" in out
     for chatter in ("waiting on", "observing", "choosing a verb", "finishing"):
         assert chatter not in out, chatter
@@ -1126,7 +1136,7 @@ def _picture_run(tmp_path: Path, *flags: str, robot: str | None = "microduck:moc
         "--runs-dir",
         str(tmp_path),
         "--no-gif",
-        "--no-trace",
+        "--no-log",
         *flags,
     ]
     if robot is not None:
@@ -1258,7 +1268,7 @@ def _by_hand_run(tmp_path: Path, *flags: str, duck: str = "hello-world") -> Any:
             "--runs-dir",
             str(tmp_path),
             "--no-gif",
-            "--no-trace",
+            "--no-log",
             "--by-hand",
             *flags,
         ],
@@ -1331,7 +1341,7 @@ def test_by_hand_needs_a_rest_pose_to_let_go_at(
             "--runs-dir",
             str(runs),
             "--no-gif",
-            "--no-trace",
+            "--no-log",
             "--by-hand",
         ],
     )
@@ -1368,7 +1378,7 @@ def test_by_hand_with_no_terminal_to_ask_on_is_refused(tmp_path: Path) -> None:
             "--runs-dir",
             str(runs),
             "--no-gif",
-            "--no-trace",
+            "--no-log",
             "--by-hand",
         ],
     )
@@ -1417,7 +1427,7 @@ def test_by_hand_hands_the_arm_over_and_asks_for_it_back(
             "--runs-dir",
             str(runs),
             "--no-gif",
-            "--no-trace",
+            "--no-log",
             "--by-hand",
         ],
     )
@@ -1515,7 +1525,7 @@ def test_a_run_name_becomes_the_end_of_the_run_directory(tmp_path: Path) -> None
     minute, and the only way to find the one you meant is to open them.
 
     The name is slugged rather than taken as typed, because a run directory gets typed back
-    into `quackd trace` and pasted into a shell. It goes after the duck and before the
+    into `quackd log` and pasted into a shell. It goes after the duck and before the
     collision counter, so the timestamp still sorts the runs."""
     result = _verdict_run(tmp_path, "--run-name", "Example 1")
     assert result.exit_code == 0, result.output
@@ -1561,3 +1571,240 @@ def test_the_help_offers_the_name_on_disk_and_the_price_of_the_model() -> None:
     record_help = _help(["record", "--help"])
     assert "--run-name" in record_help
     assert "--price" not in record_help
+
+
+# ── terminal.txt: what you saw while it ran ─────────────────────────────────────────────
+
+
+def _typed_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *flags: str,
+    duck: str = "hello-world",
+    answer: str | None = None,
+) -> Any:
+    """One run on the mock duck, invoked as if somebody had typed it at a shell.
+
+    `sys.argv` because `CliRunner.invoke` parses a list of its own and never touches it, and
+    `quackd.command` reads the command line off `sys.argv`: without this every run here
+    would write down pytest's own arguments. The first word is a console script's path on
+    purpose, because what the record has to show instead of it is `quackd`.
+
+    The runs directory is a subdirectory rather than `tmp_path` itself, so a refused run can
+    be asked to have left nothing at all under it. `COLUMNS` for the reason `_verdict_run`
+    sets it: the capture is a console of its own and folds long lines at its width like any
+    other, and these tests read the file a line at a time. `answer` is what a person types
+    at a prompt."""
+    args = [
+        "run",
+        duck,
+        "--provider",
+        "fake",
+        "--robot",
+        "microduck:mock",
+        "--runs-dir",
+        str(tmp_path / "runs"),
+        "--no-gif",
+        *flags,
+    ]
+    monkeypatch.setattr(sys, "argv", ["/opt/venv/bin/quackd", *args])
+    return runner.invoke(app, args, input=answer, env={"COLUMNS": "200"})
+
+
+def _terminal(tmp_path: Path) -> str:
+    """The one terminal.txt the run left, read as it is on disk rather than as the runner
+    saw it: the whole point of the file is that it is not the stream."""
+    (path,) = list(tmp_path.rglob("terminal.txt"))
+    return path.read_text(encoding="utf-8")
+
+
+def _events(tmp_path: Path) -> list[dict[str, Any]]:
+    from quackd.agent.transcript import Transcript
+
+    return list(Transcript.read(next(tmp_path.rglob("transcript.jsonl"))))
+
+
+def _summary(tmp_path: Path) -> dict[str, Any]:
+    return json.loads(next(tmp_path.rglob("summary.json")).read_text(encoding="utf-8"))
+
+
+def _gated(tmp_path: Path) -> str:
+    """A duck whose `quack` is behind a confirm gate, which no shipped duck has.
+
+    The gates are the thing `--yes` answers, so a question on screen needs a duck that asks
+    one, and every duck in `ducks/` is a duck somebody can run unattended."""
+    path = tmp_path / "gated.duck"
+    path.write_text(
+        "---\nduck: 1\nname: gated\ndescription: d\nverbs:\n  allow: [quack, walk, stop]\n"
+        "  confirm: [quack]\nsuccess: [x]\n---\n# Task\n\nQuack once, then stop.\n",
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_a_run_writes_down_the_terminal_it_showed_you(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The transcript says what quackd did; this says what you saw while it did it.
+
+    A bug report is a run directory, and the half of the evidence anybody actually looked at
+    was the half that scrolled past. The file opens with the command and the version because
+    the first two questions asked of any report are what was run and which quackd ran it,
+    and it carries no escape codes because it is read in a browser, a diff and an issue.
+
+    `FORCE_COLOR` so that the last claim is about the file rather than about the runner: the
+    screen this run drew really is full of escape codes, and the capture is a console of its
+    own that has to be the one thing in the process not writing them."""
+    monkeypatch.setenv("QUACKD_LOG", "")  # the narration is the middle of the story
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = _typed_run(tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "\x1b" in result.output, "nothing is proved about the file if the screen is plain"
+    text = _terminal(tmp_path)
+    lines = text.splitlines()
+    assert lines[0].startswith("$ quackd run hello-world --provider fake"), lines[0]
+    assert lines[1].startswith(f"quackd {__version__}, started "), lines[1]
+    assert re.search(r"started \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ,", lines[1]), lines[1]
+    assert "microduck:mock" in text, "the header panel"
+    assert "sound(tag='chirp'" in text, "a narrated line"
+    assert "steps 3" in _counters(text), "the counters under the verdict"
+    assert "\x1b" not in text, "a saved terminal is read anywhere but on a terminal"
+
+
+def test_a_secret_on_the_command_line_is_hidden_everywhere_it_is_written_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run directory is pasted into issues and copied off a bench machine, so a key that
+    reaches one is a key somebody has to rotate.
+
+    Both spellings a shell allows, because a separate value and an `=` are hidden by
+    different branches, and all three files, because the command is now written down three
+    times: at the top of the saved terminal, in `run_start` and in the summary."""
+    result = _typed_run(tmp_path, monkeypatch, "--api-key", "hunter2", "--token=abc")
+    assert result.exit_code == 0, result.output
+    text = _terminal(tmp_path)
+    transcript = next(tmp_path.rglob("transcript.jsonl")).read_text(encoding="utf-8")
+    written = {"terminal.txt": text, "transcript.jsonl": transcript}
+    written["summary.json"] = json.dumps(_summary(tmp_path))
+    for where, carrier in written.items():
+        # the values as bare substrings: the claim is that the secret is nowhere in the
+        # file, not that one spelling of one flag came out of the redactor redacted
+        assert "***" in carrier, where
+        assert "hunter2" not in carrier, where
+        assert "abc" not in carrier, where
+    assert "--api-key" in text and "--token=***" in text, "the flag shows; the value does not"
+    assert _events(tmp_path)[0]["command"][-3:] == ["--api-key", "***", "--token=***"]
+
+
+def test_the_record_says_what_was_asked_for_and_which_quackd_ran_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Which robot, which model, which budget, whether it was a dry run: the flags are half
+    the story of a run, and reading a transcript a month later meant guessing at them.
+
+    The first word is `quackd` and not the path that was really invoked, which is an
+    absolute path to a console script on one machine and `__main__.py` under `python -m`,
+    and neither is what was typed or what a reader wants."""
+    result = _typed_run(tmp_path, monkeypatch, "--seed", "7")
+    assert result.exit_code == 0, result.output
+    start = _events(tmp_path)[0]
+    assert start["kind"] == "run_start"
+    assert start["command"][:2] == ["quackd", "run"], start["command"]
+    assert start["command"][-2:] == ["--seed", "7"]
+    assert "/opt/venv/bin" not in " ".join(start["command"])
+    assert start["version"] == __version__
+    summary = _summary(tmp_path)
+    assert summary["command"] == start["command"]
+    assert summary["version"] == __version__
+
+
+def test_a_run_refused_before_the_directory_leaves_no_terminal_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The capture is opened around the whole command, so the one sentence a bad flag prints
+    is in the file too. That is only safe because nothing is written until there is a run
+    directory to write into: a run refused before it had one must not leave a directory
+    behind just to say it was refused."""
+    result = _typed_run(tmp_path, monkeypatch, "--run-name", "!!!")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "--run-name '!!!' has no ASCII letters or digits in it" in flat, flat
+    assert list(tmp_path.rglob("terminal.txt")) == []
+    assert not (tmp_path / "runs").exists(), "the refusal came after the run directory"
+
+
+def test_no_log_keeps_the_two_ends_of_the_file_and_drops_the_middle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The switch is about the console, and the file is the console (ADR-0029). What it
+    silences is the narration; what somebody who opens a saved terminal is looking for is
+    almost always the header or the verdict, and neither was ever the log's to take."""
+    result = _typed_run(tmp_path, monkeypatch, "--no-log")
+    assert result.exit_code == 0, result.output
+    text = _terminal(tmp_path)
+    assert "microduck:mock" in text and "SUCCESS" in text
+    assert "steps 3" in _counters(text)
+    assert "sound(tag='chirp'" not in text and "system prompt" not in text
+
+
+def test_a_question_and_the_answer_to_it_are_both_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither half reaches the file on its own: the question is written straight to stderr
+    rather than through a console the capture can see, and the answer is echoed by the
+    terminal driver, so a tee on quackd's own output gets the asking and not the answering.
+    The file has both because `_ask` puts them there itself.
+
+    The transcript gains the exchange beside the gate's note of what it decided, and quotes
+    the question in the words it was asked in, which is why the two are compared rather than
+    both asserted against a sentence written here.
+
+    `_can_prompt` is forced because a `CliRunner` has no terminal under it, and the record
+    refuses to name a person it cannot find one for. This is the run where somebody really is
+    standing there; the run where nobody is is directly below."""
+    monkeypatch.setattr(cli_mod, "_can_prompt", lambda: True)
+    result = _typed_run(tmp_path, monkeypatch, duck=_gated(tmp_path), answer="y\n")
+    assert result.exit_code == 0, result.output
+    asked = [line for line in _terminal(tmp_path).splitlines() if "[y/N]" in line]
+    assert len(asked) == 1, asked
+    assert asked[0].startswith("run quack(") and asked[0].endswith("[y/N]: y"), asked[0]
+    (prompt,) = [e for e in _events(tmp_path) if e["kind"] == "prompt"]
+    assert prompt["what"] == "confirm" and prompt["answer"] is True
+    assert prompt["question"] == asked[0].split(" [y/N]")[0]
+
+
+def test_a_pipe_on_stdin_opens_the_gate_and_is_not_written_down_as_a_person(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`yes | quackd run` is how people drive a CLI that asks questions, out of a CI job or a
+    cron wrapper, and `input()` reads a pipe exactly as happily as it reads a person.
+
+    The gate opens, because that is what the pipe asked for and what quackd has always done,
+    and the screen keeps the question and the answer because that is what was on it. What must
+    not happen is the record then testifying that somebody cleared a verb on a robot nobody was
+    standing next to. `_can_prompt` already knows whether there is a terminal; this is that
+    answer reaching the two fields a reader would take as a witness."""
+    monkeypatch.setattr(cli_mod, "_can_prompt", lambda: False)
+    result = _typed_run(tmp_path, monkeypatch, duck=_gated(tmp_path), answer="y\n")
+    assert result.exit_code == 0, result.output
+    assert "[y/N]: y" in _terminal(tmp_path)
+    events = _events(tmp_path)
+    (gate,) = [e for e in events if e["kind"] == "gate" and e.get("gate") == "confirm"]
+    assert gate["outcome"] == "allowed" and gate["answer"] is True
+    assert "human" not in gate["reason"], gate["reason"]
+    assert [e for e in events if e["kind"] == "prompt"] == []
+
+
+def test_a_yes_run_leaves_no_claim_that_anybody_was_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--yes` answers the gate with a callable, and a record saying a question was put to
+    somebody who was never at the terminal is worse than no record at all. The gate still
+    ran and still says what it decided; what is missing is the exchange, because there
+    wasn't one."""
+    result = _typed_run(tmp_path, monkeypatch, "--yes", duck=_gated(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert "[y/N]" not in _terminal(tmp_path)
+    events = _events(tmp_path)
+    assert [e for e in events if e["kind"] == "gate" and e.get("gate") == "confirm"]
+    assert [e for e in events if e["kind"] == "prompt"] == []

@@ -89,8 +89,8 @@ def test_readme_promises() -> None:
         "--flock",
         "flock-kick",
         "docs/flock.md",
-        "--no-trace",
-        "QUACKD_TRACE",
+        "--no-log",
+        "QUACKD_LOG",
     ):
         assert needle in README, needle
     # every vendor, from the code rather than a list here, so a vendor cannot be added to quackd
@@ -124,7 +124,7 @@ def test_every_provider_key_is_named_where_keys_are_configured() -> None:
 
 
 def test_the_catalogue_is_documented_where_it_is_configured() -> None:
-    """The same rule the trace is held to, for the thing that now decides every run's model."""
+    """The same rule the log is held to, for the thing that now decides every run's model."""
     for path, needles in (
         ("README.md", ("quackd list-models", "catalogue")),
         ("docs/faq.md", ("quackd list-models", "catalogue")),
@@ -206,12 +206,12 @@ def _emitted_kinds(*modules: str) -> set[str]:
     return kinds
 
 
-def test_the_docs_describe_every_trace_event_the_code_emits() -> None:
+def test_the_docs_describe_every_log_event_the_code_emits() -> None:
     """architecture.md is the one place that enumerates the transcript, so it is the one
     place this can go stale."""
     # the three modules that write a *run* transcript. The flock keeps its own `flock.jsonl`
     # (docs/flock.md) and the MCP server's two envelope kinds are documented in docs/mcp.md.
-    emitted = _emitted_kinds("agent/loop.py", "safety.py", "trace.py")
+    emitted = _emitted_kinds("agent/loop.py", "safety.py", "log.py")
     doc = (REPO / "docs" / "architecture.md").read_text(encoding="utf-8")
     missing = [kind for kind in sorted(emitted) if f"`{kind}`" not in doc]
     assert not missing, f"docs/architecture.md does not describe: {missing}"
@@ -280,22 +280,22 @@ def test_extra_body_is_documented_where_it_is_configured() -> None:
             assert needle in text, f"{path} does not mention {needle!r}"
 
 
-def test_the_trace_is_documented_where_it_is_configured() -> None:
+def test_the_log_is_documented_where_it_is_configured() -> None:
     for path, needles in (
         (
             "docs/architecture.md",
             (
-                "## Trace",
-                "--no-trace",
-                "QUACKD_TRACE",
-                "QUACKD_TRACE_PROMPT",
-                "QUACKD_TRACE_THINKING",
+                "## Log",
+                "--no-log",
+                "QUACKD_LOG",
+                "QUACKD_LOG_PROMPT",
+                "QUACKD_LOG_THINKING",
             ),
         ),
-        ("docs/mcp.md", ("trace", "--no-trace", "QUACKD_TRACE")),
+        ("docs/mcp.md", ("log", "--no-log", "QUACKD_LOG")),
         ("docs/safety.md", ("--dry-run", "dry_run")),
-        (".env.example", ("QUACKD_TRACE", "QUACKD_TRACE_THINKING", "QUACKD_TRACE_PROMPT")),
-        ("docs/flock.md", ("trace", "--no-trace")),
+        (".env.example", ("QUACKD_LOG", "QUACKD_LOG_THINKING", "QUACKD_LOG_PROMPT")),
+        ("docs/flock.md", ("log", "--no-log")),
     ):
         text = (REPO / path).read_text(encoding="utf-8")
         for needle in needles:
@@ -303,7 +303,7 @@ def test_the_trace_is_documented_where_it_is_configured() -> None:
 
 
 def test_the_price_of_a_run_is_documented_where_it_is_configured() -> None:
-    """The same rule the trace and the catalogue are held to, for the thing that decides
+    """The same rule the log and the catalogue are held to, for the thing that decides
     whether a run's cost counter reads a number or `cost unpriced`.
 
     A rate is the one knob here somebody only goes looking for after a bill, so it has to be
@@ -537,7 +537,12 @@ def test_no_living_document_quotes_an_exact_test_count() -> None:
 
 def test_no_document_still_promises_a_removal_that_happened() -> None:
     """0.4 said `--transport` and the duck_* tools go in 0.5. They did, so nothing should
-    still be promising it, and nothing should still be offering them."""
+    still be promising it, and nothing should still be offering them.
+
+    A promise about a release that has NOT happened is a different thing and is allowed: 0.11
+    renamed the trace to the log and says the old spellings go in 0.12, which is exactly the
+    shape of the promise 0.4 made and 0.5 kept. What this guards against is the stale half,
+    a document still describing a removal that is already behind us."""
     from quackd.mcp_server import TOOL_NAMES
 
     assert not [n for n in TOOL_NAMES if n.startswith("duck_")]
@@ -550,7 +555,7 @@ def test_no_document_still_promises_a_removal_that_happened() -> None:
     for path in _living_docs():
         text = _prose(path.read_text(encoding="utf-8"))
         assert "--transport" not in text, f"{path.name} still documents --transport"
-        for promise in ("go away in 0.5", "gone in 0.5", "are removed in 0.5", "for one release"):
+        for promise in ("go away in 0.5", "gone in 0.5", "are removed in 0.5"):
             assert promise not in text, f"{path.name} still promises {promise!r}, which happened"
 
 
@@ -916,7 +921,13 @@ def test_every_command_is_named_in_the_readme_table_and_the_module_map() -> None
     can find is a command nobody has."""
     from quackd.cli import app
 
-    names = {c.name or (c.callback.__name__ if c.callback else "") for c in app.registered_commands}
+    # hidden commands are left out: `trace` is the 0.11 alias of `log` and is deliberately
+    # absent from `--help`, so a README row for it would advertise the spelling being retired
+    names = {
+        c.name or (c.callback.__name__ if c.callback else "")
+        for c in app.registered_commands
+        if not c.hidden
+    }
     names |= {g.name or "" for g in app.registered_groups}
     names = {n.replace("_", "-") for n in names if n}
     architecture = (REPO / "docs" / "architecture.md").read_text(encoding="utf-8")

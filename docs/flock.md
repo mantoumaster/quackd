@@ -185,14 +185,18 @@ runs/<timestamp>-flock-hello/
   flock.jsonl          # flock_start, every TALK, member_end per robot, flock_end
   summary.json         # outcome, reason, run_name, per_member rollup, messages, usage,
                        # cost_usd, wall_elapsed_s
+  terminal.txt         # everything that was on the terminal, as plain text, opening with
+                       # the command that started it
   ducks/duck/          # a full solo-style transcript.jsonl and frames/ per robot
   ducks/arm/
   ducks/cart/
 ```
 
 No `run.gif`, and no per-robot `summary.json`. The rollup is the flock's, and a member's
-directory must not read as a solo run. Times in `flock.jsonl` are stamped `t`, in wall
-seconds since the run started, where the coordinator's are `sim_t`.
+directory must not read as a solo run. `terminal.txt` is at the root for the same reason:
+every member narrated to one terminal, so there is one file of what was on it. Times in
+`flock.jsonl` are stamped `t`, in wall seconds since the run started, where the
+coordinator's are `sim_t`.
 
 `--run-name` works here exactly as it does on a solo run: the slug goes in the directory
 name after the task (`runs/20260921-160600-flock-hello-demo-2/`) and the text as you typed
@@ -206,13 +210,13 @@ carried into a flock and applies to every member at that one rate, because it is
 the run rather than one per robot, and `QUACKD_PRICE` does the same thing per shell. Either is
 how you price a flock whose models quackd has no published rate for.
 
-`quackd trace <run>` replays each member's transcript in turn.
+`quackd log <run>` replays each member's transcript in turn.
 
 ## Watching a pilot run
 
 Each robot gets its own view with its name and colour on every line, and the runner's own
-notices print under `flock`. `--no-trace` or `QUACKD_TRACE=0` removes the views and leaves
-every record intact.
+notices print under `flock`. `--no-log` or `QUACKD_LOG=0` removes the views and leaves every
+record intact: the flag says what you watch, and every member writes its own log either way.
 
 ## What this is not
 
@@ -416,10 +420,12 @@ executor. The kicker's ball approach uses perception only, exactly like a solo r
 
 ```
 runs/<timestamp>-flock-kick/
-  flock.jsonl          # the coordinator's log: every bus message, auction, verb
+  flock.jsonl          # the coordinator's own record: every bus message, auction, verb
   summary.json         # outcome, run_name, kicker, auctions, bids, planner proof, per duck
                        # rollup; with roles also robots, roles, assignments, spotter, verdicts
   run.gif              # world view | the claimant's own camera, with phase captions
+  terminal.txt         # everything that was on the terminal, as plain text, opening with
+                       # the command that started it
   ducks/duck-0/        # per robot transcript.jsonl and frames/ (no summary.json on purpose)
 ```
 
@@ -433,9 +439,9 @@ Three annotated lines from a real `flock.jsonl`:
 
 ## Watching a flock run
 
-A flock is traced like a solo run, and on by default. Each robot gets its own view with its
-name on every line, so three robots moving at once stay three readable columns rather than
-one interleaving, and the coordinator's own decisions print under `flock`.
+A flock is logged like a solo run, and narrated as it happens by default. Each robot gets its
+own view with its name on every line, so three robots moving at once stay three readable
+columns rather than one interleaving, and the coordinator's own decisions print under `flock`.
 
 ```
 duck-2  ▶  verb    search_scan(target='ball', step_deg=45, max_steps=3)
@@ -459,15 +465,17 @@ screen and a frame in `run.gif` say the same thing about the same moment.
 Each robot's `ducks/<name>/transcript.jsonl` is its own record and gets every event whether
 or not anyone is watching, exactly as a solo run's transcript does. `flock.jsonl` keeps the
 coordinator's story as it always has, under its own names, so nothing is written twice.
-`quackd trace <run>` replays those records afterwards, one member's transcript in full
+`quackd log <run>` replays those records afterwards, one member's transcript in full
 after another rather than interleaved, and it does not read `flock.jsonl`, so no `flock`
-line appears in a replay.
+line appears in a replay. The screen is kept once, at the run root, as `terminal.txt`: the
+columns in the order they actually arrived, which is the one reading a replay cannot give
+back.
 
-With a real provider the planner's one model call is traced under `flock` and recorded
+With a real provider the planner's one model call is narrated under `flock` and recorded
 in `flock.jsonl` as `llm_request` and `llm`. With `--provider fake`
-there is no call to trace: the planner short circuits before it reaches a model.
+there is nothing to narrate: the planner short circuits before it reaches a model.
 
-`--no-trace` or `QUACKD_TRACE=0` removes the views and leaves every record intact.
+`--no-log` or `QUACKD_LOG=0` removes the views and leaves every record intact.
 
 ## The shared clock
 

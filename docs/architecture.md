@@ -87,7 +87,7 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 
 | Path | Why it exists |
 |---|---|
-| `quackd/cli.py` | The front door: `run · validate · doctor · serve-mcp · list-verbs · list-adapters · list-models · record · trace · memory · robot · flock · discover · announce`. `--robot <adapter>:<backend>` or a registered name everywhere, with `--address`, `--camera-url` and `--token` for a real robot. `--camera-url` repeats for a body that reads several cameras, which today is the LeRobot arm and nothing else. |
+| `quackd/cli.py` | The front door: `run · validate · doctor · serve-mcp · list-verbs · list-adapters · list-models · record · log · memory · robot · flock · discover · announce`. `--robot <adapter>:<backend>` or a registered name everywhere, with `--address`, `--camera-url` and `--token` for a real robot. `--camera-url` repeats for a body that reads several cameras, which today is the LeRobot arm and nothing else. |
 | `quackd/duckfile/` | The `.duck` contract (v0, v1 and v2): strict pydantic frontmatter, parser, generated `schema.json`, `validate.py` (a task against one or more manifests). |
 | `quackd/adapters/` | The robot-shaped part of the core, which contains no robot: `RobotManifest` (data: what a robot is and can do), the `RobotAdapter` protocol, `catalogue.py` (the seven bodies quackd publishes, as strings, importing none of them), and `factory.py`, the factory behind `--robot`, which finds an installed adapter through the `quackd.adapters` entry point group, imports it lazily, and refuses an adapter that is not installed with the extra to type. |
 | `adapters/` | One distribution per robot, seven of them, each a member of the uv workspace and each imported as `quackd_<name>` rather than from the core. `microduck/` is the row below; `lerobot/` is a desktop arm (`mock`, `real`, [adapters/lerobot.md](adapters/lerobot.md)); `rosbridge/` is any wheeled base over rosbridge (`mock`, `ws`, [adapters/rosbridge.md](adapters/rosbridge.md)); `open_duck/` is an Open Duck Mini v2 (`sim2d`, `mock`, `bridge`, [adapters/open_duck.md](adapters/open_duck.md)), the first body whose robot side quackd also ships, in `bridge/open_duck/`, because its runtime has no network control API; `xlerobot/` is a dual-arm mobile manipulator (`mock`, `zmq`, [adapters/xlerobot.md](adapters/xlerobot.md)), the first body with both a base and arms, and the one quackd talks to by speaking its ZeroMQ host protocol rather than importing it, because upstream is not an installable package; `alohamini/` is two arms on a lift on a wheeled base (`mock`, `sim2d`, `zmq`, [adapters/alohamini.md](adapters/alohamini.md)), which quackd also reaches by speaking its ZeroMQ host protocol; `toddlerbot/` is a small humanoid (`mock`, `sim2d`, `bridge`, [adapters/toddlerbot.md](adapters/toddlerbot.md)), the third body whose robot side quackd ships, because upstream has no network API at all. Each declares its own `quackd.adapters` entry point, each depends on the core rather than the other way round, and every SDK-touching package owns an `upstream_api.py` and a containment test. |
@@ -102,7 +102,7 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 | `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `images.py` is what `--image` goes through: it opens whatever a person passed, shrinks anything over 1568 px on a side or 1.5 MB, re-encodes every one of them to PNG, and hands back names the model can refer to, so a provider only ever meets PNG bytes and a caption. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
 | `quackd/agent/providers/pricing.py` | Tokens into dollars: the rate a run is costed at (`--price`, then `QUACKD_PRICE`, then the catalogue's own entry, with `fake` and the local presets free by what they are rather than by any table) and the arithmetic that turns a `Usage` into a figure. A rate quackd does not have is `None` and prints `cost unpriced`, never `$0`, because a frontier model that reads as free is the one failure here that costs somebody real money; and where a rate is missing but tokens are not, the estimate goes up, so an unpublished cache rate is billed at the full input rate. Standard library and the catalogue and nothing else, because it sits beside the module every `--help` and every press of TAB already imports. |
 | `quackd/agent/jev.py` | The optional discrete stepper (`quackd run --jev`, [jev.md](jev.md), [ADR-0040](adr/0040-a-discrete-stepper-in-front-of-the-model.md)). It decides which of a body's tools are a *choice* rather than a number, from each tool's own JSON schema and nothing else, so `move_joints` is refused on every arm and a body quackd has never shipped is classified by the same rule as the seven that are. Builds the named text state and the four questions, and reads the answer against a confidence floor per verb class. Nothing here imports `typesafe_sdk` at module scope: the loop imports this file on every run and must not pay for a vendor that is not in the run. |
-| `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
+| `quackd/log.py` | The run narrating itself: `LogEvent`, the `EventLog` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
 | `quackd/memory.py` | What a robot keeps between runs: one JSONL file per `adapter:backend`, or per registered robot name, with the notes the pilot saved (`remember`) and an episode per run; rendered into the prompt next time ([memory.md](memory.md), ADR-0025, ADR-0034). |
 | `quackd/registry.py` | The robots you have named and the flocks you made of them: `robots.json` and `flocks.json` under `~/.quackd`, strict reads, atomic writes, and `--robot NAME` resolution ([registry.md](registry.md), ADR-0034). |
 | `quackd/mcp_server.py` | A robot, or a flock (`--robots`, or a stored flock with `--flock NAME`), as MCP tools: nine `robot_*` tools through one executor per robot. |
@@ -154,20 +154,20 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
    `stop` is exempt from the abort gate, so the brake still works after one.
 4. **Act.** The verb runs; composites loop on the camera at 10 Hz; `move` re-sends its
    velocity every 100 ms to feed the robot's deadman.
-5. **Record.** Every step above is a `TraceEvent`, and `transcript.jsonl` is the sink that
+5. **Record.** Every step above is a `LogEvent`, and `transcript.jsonl` is the sink that
    never turns off (every kind it writes is in the table below); `frames/` as the run goes and
-   `images/` once at the top of it; `summary.json` at the end; `run.gif` from the recorder in
-   either simulator. The directory all of that lands in says when, which task, and what you
-   called it: `runs/20260921-155444-find-and-kick-example-1` is `--run-name "Example 1"`,
-   slugged. The label goes after the task name and before the collision counter, so the
-   timestamp prefix and the task name both still resolve in `quackd trace` and two runs named
-   the same thing in the same second read as `-example-1` and `-example-1-1`. A name with no
-   letter or digit in it is refused before anything connects, alongside a `--price` nobody can
-   parse, because a typing mistake should cost you one sentence rather than a robot moving and
-   a directory to clean up after. With memory on, the run ends by appending one episode line
-   to the robot's memory file
-   ([memory.md](memory.md)). The terminal and the MCP tool results are views of the same
-   stream (see [Trace](#trace)).
+   `images/` once at the top of it; `summary.json` at the end; `terminal.txt`, everything that
+   was on the terminal during the run as plain text, opening with the command that started it;
+   `run.gif` from the recorder in either simulator. The directory all of that lands in says
+   when, which task, and what you called it: `runs/20260921-155444-find-and-kick-example-1`
+   is `--run-name "Example 1"`, slugged. The label goes after the task name and before the
+   collision counter, so the timestamp prefix and the task name both still resolve in
+   `quackd log` and two runs named the same thing in the same second read as `-example-1` and
+   `-example-1-1`. A name with no letter or digit in it is refused before anything connects,
+   alongside a `--price` nobody can parse, because a typing mistake should cost you one
+   sentence rather than a robot moving and a directory to clean up after. With memory on, the
+   run ends by appending one episode line to the robot's memory file ([memory.md](memory.md)).
+   The terminal and the MCP tool results are views of the same stream (see [Log](#log)).
 
 Step 0, before all of that: the loop calls `connect()` and, when an adapter answers with a
 manifest, builds the registry from it (`registry_from_manifest`). A bare transport answers
@@ -191,32 +191,35 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | Kind | What it records |
 |---|---|
 | `task_image` | one per picture `--image` brought to the task, written before `run_start` so a reader of the record meets the pictures the task is about before the run that was given them: where it landed under `images/`, the name the model sees it by, and how many bytes of PNG that is |
-| `run_start` | contract, system prompt, tool names, robot manifest, the names of the pictures the task came with (`images`, empty on a run given none), any `extra_body` sent with every request, how long connecting took (`connect_s`), what the run was called (`run_name`, the text as it was typed rather than the slug the directory got), when `t = 0` was (`started_at`, the one absolute time in the whole file: every other record's wall time is that plus its own `t`), and the rate this run is being costed at (`price`, and `jev_price` beside it when a stepper ran), written down here rather than looked up at replay so a run is always priced at what it cost on the day |
+| `run_start` | contract, system prompt, tool names, robot manifest, the names of the pictures the task came with (`images`, empty on a run given none), any `extra_body` sent with every request, with its credential-named keys already replaced by `***`, how long connecting took (`connect_s`), what the run was called (`run_name`, the text as it was typed rather than the slug the directory got), the command that started it (`command`, as a list, with the value of `--api-key` and `--token` replaced by `***` and a URL flag's password and credential-named query parameters with it, see [SECURITY.md](../SECURITY.md)) and the version that ran it (`version`), when `t = 0` was (`started_at`, the one absolute time in the whole file: every other record's wall time is that plus its own `t`), and the rate this run is being costed at (`price`, and `jev_price` beside it when a stepper ran), written down here rather than looked up at replay so a run is always priced at what it cost on the day |
 | `observation` | what the model was shown this turn, and how long gathering it took |
 | `llm_request` | how many messages went out, how many still carry an image (`with_image`), how many camera frames that is (`images`, which differs from `with_image` only on a body with several cameras), and separately how many pictures came with the task rather than from a camera (`task_pictures`, counted on its own and never inside `images`, and the same number every step of a run that was given any), whether this is the re-prompt |
 | `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total, `input_tokens` being the whole prompt with `cache_read_tokens` and `cache_write_tokens` the slices of it that were billed at cache rates rather than additions to it), stop_reason, latency, and what this call cost beside what the run has spent so far (`cost_usd` and `cost_usd_total`, both null on a run quackd has no rate for, because a frontier model recorded as zero reads as a free one), or `error` when the call failed |
 | `enforce` | zero tool calls (re-prompt) or several (first only) |
 | `jev` | one per turn the optional discrete stepper was asked, in both of its modes and with the same fields in each, so an `--jev on` row and an `--jev shadow` row can be read against each other: the labels it was offered, the one it chose, the whole probability distribution, its confidence, the floor that applied and which gate fired (`taken` · `below_floor` · `escalate` · `repeat` · `handover` · `unreadable` · `done` · `need_human` · `not_offered` · `state_too_large` · `error`), the two Noul values, how long it took, how large the state was and which fields were trimmed to fit, and what the question itself cost: `usage` (the tokens it spent), `usage_estimated` (true where TypeSafe reported no count of its own and quackd fell back to the state plus the questions at four characters to the token, because an estimate a reader cannot tell from a measurement is worse than no number at all) and `cost_usd` at the stepper's own published rate. Those three are absent on a turn that never reached the network at all, which is every `not_offered` and `state_too_large` gate and a call that failed before the request went out, because a machine with no `typesafe_sdk` installed owes nobody anything ([jev.md](jev.md)) |
-| `jev_shadow` | only on `--jev shadow`, after that step's `llm` record: what the stepper would have chosen beside what the model actually chose on the same reading, whether they agree (on the whole call, since `gripper(open=true)` and `gripper(open=false)` are opposite instructions that share a name, with `same_verb` recording the coarser comparison beside it), whether the stepper cleared its floor, and what each of them cost in seconds and in dollars (`llm_latency_s` with `llm_usage` and `llm_cost_usd` for the model, `jev_cost_usd` for the stepper), which is the ratio the whole mode exists to measure and the one [jev.md](jev.md) could previously only reach by arithmetic. Either of those two figures can be null, the model's where nobody publishes a rate for it and the stepper's where the turn never reached the network. A shadow run changes nothing, so this is the only trace it leaves |
+| `jev_shadow` | only on `--jev shadow`, after that step's `llm` record: what the stepper would have chosen beside what the model actually chose on the same reading, whether they agree (on the whole call, since `gripper(open=true)` and `gripper(open=false)` are opposite instructions that share a name, with `same_verb` recording the coarser comparison beside it), whether the stepper cleared its floor, and what each of them cost in seconds and in dollars (`llm_latency_s` with `llm_usage` and `llm_cost_usd` for the model, `jev_cost_usd` for the stepper), which is the ratio the whole mode exists to measure and the one [jev.md](jev.md) could previously only reach by arithmetic. Either of those two figures can be null, the model's where nobody publishes a rate for it and the stepper's where the turn never reached the network. A shadow run changes nothing, so this is the only mark it leaves |
 | `verb_start` | name as called, canonical name, params, source (`agent` · `mcp` · `cli` · `jev`, the last of which is a verb the discrete stepper chose and the model never saw), whether it is nested inside a composite |
 | `gate` | one per executor rule that fired: `abort` · `allowlist` · `unknown` · `verdict` · `params` · `confirm` · `budget` · `abort_when` · `precondition` · `dry_run` · `cancelled`, with the reason and, where it matters, the robot state that caused it |
+| `prompt` | a question a **person** was put at the terminal, and what they answered: `what` (`confirm` · `decide` · `acknowledge` · `hand_off`), the `question` in the words it was asked in, and the `answer`. Written only where somebody was really there: `--yes`, a flock member and any other standing answer decide without asking, and none of them writes a row here. What the answer *caused* is recorded by whoever acted on it (`gate.answer`, `assess.human`, the `hand_off` stages); this is the exchange itself, which nothing used to hold |
 | `intent` | every command sent to the robot: kind, params, whether it was accepted, and the robot's own clock when it has one |
 | `verb_end` | outcome (`ok` · `fail` · `refused` · `denied` · `budget` · `aborted` · `preempted` · `error`), summary, wall seconds, the robot's own seconds on a simulator, and how many intents of each kind it sent |
 | `verb` | the loop's own record of the call it made (name, params, ok, summary, data) |
 | `assess` | the pilot's feasibility verdict on this task against this body: the word, the reason, the datasheet fields it read, what it estimated about the world and how, what the task would need, whether a person cleared it, and whether the run ends there |
 | `talk` | one pilot to another in a flock: who said it, to whom (a member name or `all`), the words, and whether the message was accepted. Sent through the `tell` tool, so it moves nothing and counts as no step ([flock.md](flock.md)) |
 | `hand_off` | only on a `--by-hand` run: the moments where the arm belongs to a person rather than to the pilot. `stage` says which moment it is: `released` (torque is off at the recorded rest pose and the arm is yours), `held` (the pose you left it in was written as the goal and read back, with the `joints` it read), `skipped` (the end-of-run wait ran out with nobody there, or a second Ctrl-C landed on it, so the gripper was not opened) and `unloaded` (somebody took what was in the gripper, so the gripper opens before the arm folds). `how` is the arm's own word for what happened, `released` · `held` · `refused`, so a stage the arm refused is on the record as loudly as one it took |
-| `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame (one record per camera, each naming its own, on a body with several), and the summary, which is `summary.json` verbatim: the outcome and the counts, the three clocks (`wall_s` the run as a person stood through it, `elapsed_s` the budget's own, and `connect_s` with `llm_latency_s` splitting out the two waits worth naming separately), the wall time at either end of it (`started_at` and `ended_at`, the second of which is the first plus `wall_s` rather than a second reading of the clock), what the run cost and what it was costed at (`cost_usd` and `price`, with the stepper's own bill in the `jev` block beside them), and `trace_dropped`: events a view raised on and never showed |
+| `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame (one record per camera, each naming its own, on a body with several), and the summary, which is `summary.json` verbatim: the outcome and the counts, the three clocks (`wall_s` the run as a person stood through it, `elapsed_s` the budget's own, and `connect_s` with `llm_latency_s` splitting out the two waits worth naming separately), the wall time at either end of it (`started_at` and `ended_at`, the second of which is the first plus `wall_s` rather than a second reading of the clock), what the run cost and what it was costed at (`cost_usd` and `price`, with the stepper's own bill in the `jev` block beside them), the `command` and the `version`, which a solo run repeats from `run_start` so the summary answers on its own and a flock root writes here first hand, having no `run_start` of its own, and `log_dropped`: events a view raised on and never showed |
 
 Example: [`assets/transcript-example.jsonl`](assets/transcript-example.jsonl), recorded
-before the trace kinds existed.
+before the log's own kinds existed.
 
-## Trace
+<a id="trace"></a>
+## Log
 
-The transcript is one *sink* of an event stream, not a thing the loop writes directly
-([ADR-0029](adr/0029-tracing.md)). The same events drive three live views, all on by default:
+The log is an event stream, and the transcript is one *sink* of it rather than a thing the
+loop writes directly ([ADR-0029](adr/0029-tracing.md)). The same events drive three live
+views, all on by default:
 
-- **The terminal** (`quackd run`), on stderr, so `2> trace.log` keeps the outcome on screen.
+- **The terminal** (`quackd run`), on stderr, so `2> run.log` keeps the outcome on screen.
   It shows the system prompt once, then per turn: the observation, what the model thought,
   the tool it called, tokens, latency and what the call cost, each gate that fired, each
   intent, and the result.
@@ -224,35 +227,61 @@ The transcript is one *sink* of an event stream, not a thing the loop writes dir
   `go_to` recomputes its twist every 100 ms: `→  send    move x42 over 4.1 s (vx 0.1..0.2, vy 0, wz -0.055..0.01)`.
   A burst still going after two seconds is flushed as it stands and the next line continues
   it, so a long approach narrates itself instead of printing nothing until it ends.
-- **The MCP tool result**, as a `trace` list on every call that reaches an executor, capped
+- **The MCP tool result**, as a `log` list on every call that reaches an executor, capped
   at thirty lines, with the uncapped version on the server's stderr. Over MCP the pilot is
   the client, so its reasoning and its token counts are not quackd's to show. What quackd can
   see it says: the verb, the gates, the intents, the result and the budget.
 - **A flock's terminal**, one view per member with its name and its own colour on every line,
   and the coordinator's decisions under `flock`. Each robot's own transcript is its record.
 
-`quackd trace` replays a finished run from its transcript afterwards, through the same
+`quackd log` replays a finished run from its transcript afterwards, through the same
 renderer, on stdout, under a header that says when the run was, what it was called and what it
 was costed at, and above the same counter line the live run printed. With nothing after it you
 get the newest run, which is what you want the moment one ends. What you do type is resolved in
 order: a transcript file, a directory, an exact name under `--runs-dir`, the newest directory
 carrying that `--run-name`, a timestamp prefix, and only then the newest whose name merely
-contains the text. The name pass is the reason `quackd trace example-1` finds the run you
+contains the text. The name pass is the reason `quackd log example-1` finds the run you
 named: a bench session has `-example-1` and `-example-19` in it, and a substring match hands
 you whichever of the two happens to be newer. It sits above the timestamp prefix because a
 name can be all digits, and a run you called `20260921` would otherwise be answered by
 whichever run's stamp started the same way. It matches the name against what follows the
-stamp and only where a duck name comes first, so `quackd trace find-and-kick` still means the
+stamp and only where a duck name comes first, so `quackd log find-and-kick` still means the
 newest run of that duck rather than the one that happened to go unnamed.
 
-`--no-trace` or `QUACKD_TRACE=0` removes the views. The transcript is unaffected, because a
-run that cannot be argued about afterwards is the thing this project cannot give up. A
-one-line status stays on stderr either way, saying what the run is waiting for, because a
-model deciding and a verb steering a robot are most of a run's wall clock and both used to
-be silence. `--no-trace-prompt` or `QUACKD_TRACE_PROMPT=0` keeps the narration and drops the
-system prompt, which is forty to seventy lines and worth reading once.
-`QUACKD_TRACE_THINKING` is how much of the model's thinking each turn shows: a number of
-characters, `all`, or `0`. The transcript always has all of it.
+`--no-log` or `QUACKD_LOG=0` removes the views. A one-line status stays on stderr either way,
+saying what the run is waiting for, because a model deciding and a verb steering a robot are
+most of a run's wall clock and both used to be silence.
+
+What that flag stops is the run narrating itself to your terminal. The log in the run
+directory is written either way and is not optional: `transcript.jsonl` gets every event on
+every run, with `--no-log` or without it, because a run that cannot be argued about afterwards
+is the thing this project cannot give up. The new name makes the other reading easy, so it is
+said plainly here: the flag is about what you watch, not about what is kept.
+
+What you watched is kept as well, as `terminal.txt` in the run directory: the screen as plain
+text with no colour codes in it, opening with the command that started the run and the version
+that ran it. It is the screen and not the record, so what `--no-log` takes off the terminal is
+missing from the file too, and the questions you were asked are in it with the answers you
+typed, which the terminal echoed and no view ever printed. It buffers from the first line and
+moves into the directory the moment there is one, so a run refused before there is a directory
+leaves nothing behind to clean up.
+
+`--no-log-prompt` or `QUACKD_LOG_PROMPT=0` keeps the narration and drops the system prompt,
+which is forty to seventy lines and worth reading once. `QUACKD_LOG_THINKING` is how much of
+the model's thinking each turn shows: a number of characters, `all`, or `0`. The transcript
+always has all of it.
+
+All of this was the *trace* until 0.11, and the record outgrew the word: it holds every prompt,
+gate and intent, the robot's own movement, the three clocks and what the model cost.
+`quackd trace`, `--trace/--no-trace`, `--trace-prompt/--no-trace-prompt` and the
+`QUACKD_TRACE*` variables all still work, each printing one yellow line naming what it is
+called now, and all of them go in 0.12: one release of grace and then gone, which is how the
+flag `--robot` replaced was retired over 0.4 and 0.5
+([ADR-0017](adr/0017-robot-adapters-and-manifest.md)). A run directory recorded before the
+rename replays unchanged, because the reader takes `trace_dropped` as well as `log_dropped`.
+The one spelling that is gone outright is the MCP result key: a model learns that name from the
+tool description on every call, and carrying both would cost it a second copy of up to thirty
+lines every time it used a tool ([mcp.md](mcp.md)).
 
 ### Time and money
 
@@ -316,7 +345,7 @@ table, and a paid OpenAI-compatible endpoint behind `--provider local --base-url
 > billed at the full input rate, because a bill that is too low is the one that gets believed.
 
 Whichever rate applied is written into `run_start` and `summary.json` with its source and the
-date it was checked, so `quackd trace` costs a run at what it cost on the day rather than at
+date it was checked, so `quackd log` costs a run at what it cost on the day rather than at
 whatever the catalogue says months later, and a rate that turns out to have been wrong is
 visible in the runs it priced rather than silently reapplied to all of them.
 
@@ -324,7 +353,7 @@ visible in the runs it priced rather than silently reapplied to all of them.
 
 The MCP result carries the renderer's lines verbatim and a model reads them, so those bytes
 are frozen: `->`, `<-`, an eight-column label, ASCII throughout, held to it case by case by
-`tests/golden/trace_lines.json`. A person at a terminal is a different reader, so the same
+`tests/golden/log_lines.json`. A person at a terminal is a different reader, so the same
 events are drawn differently there ([ADR-0033](adr/0033-terminal-theme.md)): the arrow is a
 glyph in a gutter and the column says the word it stood for (`send`, `result`), each step is
 ruled off with the budget lifted out of the observation, the system prompt is an indented
@@ -335,7 +364,7 @@ redirected stderr on Windows is cp1252 and gets `->`, `+` and `x`; a terminal th
 an arrow gets one. Nothing is ever printed as markup, because a model that thinks about
 `[/think]` must not raise a formatting error.
 
-The trace shows intents as verbs issue them. A keepalive inside an adapter, a daemon's own
+The log shows intents as verbs issue them. A keepalive inside an adapter, a daemon's own
 deadman resend and an adapter's stop-on-close are that adapter's business and appear only in
 its logs.
 

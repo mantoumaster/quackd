@@ -476,7 +476,7 @@ recorded
     Nothing asks you about the gripper on this path, because the run never reached the pilot.
     The fold drives the five body joints and never the gripper, so whatever you closed the jaws
     on folds up with the arm: take it out before you press Ctrl-C rather than after. The run is
-    recorded as an abort like any other, with one `hand` line in its trace saying the arm was
+    recorded as an abort like any other, with one `hand` line in its log saying the arm was
     released and nothing after it saying anybody took it.
 
 ## The gripper, and only then a policy

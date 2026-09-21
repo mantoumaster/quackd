@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -30,12 +30,15 @@ from quackd.agent.providers.fake import FakeProvider
 from quackd.agent.providers.openai import render_messages
 from quackd.agent.transcript import Transcript
 from quackd.duckfile.schema import Budgets, DuckFile
-from quackd.transport.base import CameraFrame
+from quackd.safety import Aborted
+from quackd.transport.base import CameraFrame, DuckState
 from quackd.transport.mock import MockTransport
 from quackd_lerobot import LeRobotAdapter
 from quackd_lerobot.mock import REST, LeRobotMock
 from quackd_lerobot.verbs import GRIPPER_OPEN, TOL_DEG, rest_goal
 from quackd_microduck import MicroduckAdapter
+from quackd_open_duck import OpenDuckAdapter
+from quackd_open_duck.mock import OpenDuckMock
 
 # the verdict comes first on every run now: the scripted pilot answers it as a rule, and the
 # duck's own three verbs follow exactly as they did
@@ -65,6 +68,33 @@ async def test_run_start_records_the_extra_body(hello_duck: DuckFile, tmp_path: 
         )
     )
     assert Transcript.read(plain.run_dir / "transcript.jsonl")[0]["extra_body"] is None
+
+
+async def test_the_extra_body_reaches_the_record_with_no_credential_in_it(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`--extra-body` is a JSON object a vendor asked for and quackd never reads, which makes
+    it exactly where an `authorization` header ends up. It also arrives from
+    `QUACKD_EXTRA_BODY`, so no amount of argv redaction reaches it, and a run directory is
+    pasted into issues and copied off a bench machine.
+
+    The shape survives, because the thing a reader came for is which fields the model was
+    sent; only the values that would have to be rotated go."""
+    provider = FakeProvider.for_duck(hello_duck.name)
+    provider.extra_body = {  # type: ignore[attr-defined]
+        "authorization": "Bearer sk-live-X",
+        "chat_template_kwargs": {"enable_thinking": False, "api_key": "sk-live-Y"},
+    }
+    result = await run_duck(
+        RunConfig(duck=hello_duck, provider=provider, transport=MockTransport(), runs_dir=tmp_path)
+    )
+    start = Transcript.read(result.run_dir / "transcript.jsonl")[0]
+    assert start["extra_body"] == {
+        "authorization": "***",
+        "chat_template_kwargs": {"enable_thinking": False, "api_key": "***"},
+    }, "the nesting and everything a vendor asked for stay"
+    whole = (result.run_dir / "transcript.jsonl").read_text(encoding="utf-8")
+    assert "sk-live" not in whole, "and the key is nowhere else in the record either"
 
 
 async def test_hello_world_golden(hello_duck: DuckFile, tmp_path: Path) -> None:
@@ -279,7 +309,7 @@ async def test_dry_run_touches_nothing(hello_duck: DuckFile, tmp_path: Path) -> 
     assert [i.kind for i in transport.intents] == ["stop"]  # only the final safety stop
 
 
-# ── the trace: the run narrates itself ──────────────────────────────────────────────────
+# ── the log: the run narrates itself ────────────────────────────────────────────────────
 
 
 class ThinkingProvider:
@@ -348,7 +378,7 @@ async def test_the_transcript_carries_the_whole_conversation(
     assert verb["name"] == "quack" and verb["ok"] is True
 
 
-async def test_the_final_safety_stop_is_in_the_trace_too(
+async def test_the_final_safety_stop_is_in_the_log_too(
     hello_duck: DuckFile, tmp_path: Path
 ) -> None:
     """The intents that matter most are the ones sent because something went wrong."""
@@ -401,7 +431,7 @@ async def test_a_cancelled_run_ends_as_an_abort_that_still_stops_and_records(
 ) -> None:
     """`KeyboardInterrupt` and `CancelledError` are not `Exception`, so neither reached the
     error branch and `run_end` kept its default, `loop exited unexpectedly` — the very string
-    the trace work claimed to have removed. The CLI's second Ctrl-C is this path."""
+    the log work claimed to have removed. The CLI's second Ctrl-C is this path."""
 
     class Stalling:
         name, model, supports_vision = "stalling", "test", False
@@ -462,7 +492,7 @@ async def test_a_record_that_fails_at_run_end_still_gets_its_summary_and_is_clos
             raise OSError("disk full")
         good(event)
 
-    loop.tracer.record = record
+    loop.event_log.record = record
     with pytest.raises(OSError, match="disk full"):
         await loop.run()
     assert (run_dir / "summary.json").exists()
@@ -472,12 +502,12 @@ async def test_a_record_that_fails_at_run_end_still_gets_its_summary_and_is_clos
 def test_writing_to_a_closed_transcript_is_a_no_op(tmp_path: Path) -> None:
     """A verb task cancelled during teardown narrates its last intent after the record has
     closed; that must not raise inside a task nobody awaits."""
-    from quackd.trace import TraceEvent
+    from quackd.log import LogEvent
 
     t = Transcript(tmp_path)
     t.close()
     t.write("intent", intent="stop")
-    t.sink(TraceEvent("intent", 0.0, {"intent": "stop"}))
+    t.sink(LogEvent("intent", 0.0, {"intent": "stop"}))
     assert t.events == 0
 
 
@@ -489,7 +519,7 @@ async def test_a_console_sees_the_run_as_it_happens(hello_duck: DuckFile, tmp_pa
             provider=FakeProvider.for_duck("hello-world"),
             transport=MockTransport(),
             runs_dir=tmp_path,
-            trace=lambda event: seen.append(event.kind),
+            view=lambda event: seen.append(event.kind),
         )
     )
     assert seen[0] == "run_start" and seen[-1] == "run_end"
@@ -508,7 +538,7 @@ async def test_a_broken_console_never_ends_a_run(hello_duck: DuckFile, tmp_path:
             provider=FakeProvider.for_duck("hello-world"),
             transport=MockTransport(),
             runs_dir=tmp_path,
-            trace=broken,
+            view=broken,
         )
     )
     assert result.outcome == "success"
@@ -518,7 +548,7 @@ async def test_a_broken_console_never_ends_a_run(hello_duck: DuckFile, tmp_path:
 async def test_the_summary_counts_the_events_a_broken_console_dropped(
     hello_duck: DuckFile, tmp_path: Path
 ) -> None:
-    """A console that raises on every event produced a silent trace, an unchanged exit code
+    """A console that raises on every event produced a silent log, an unchanged exit code
     and no line anywhere saying events had been dropped."""
 
     def broken(_event: Any) -> None:
@@ -530,10 +560,10 @@ async def test_the_summary_counts_the_events_a_broken_console_dropped(
             provider=FakeProvider.for_duck("hello-world"),
             transport=MockTransport(),
             runs_dir=tmp_path,
-            trace=broken,
+            view=broken,
         )
     )
-    assert result.trace_dropped > 0
+    assert result.log_dropped > 0
     summary = json.loads((result.run_dir / "summary.json").read_text(encoding="utf-8"))
     end = next(
         e for e in Transcript.read(result.run_dir / "transcript.jsonl") if e["kind"] == "run_end"
@@ -541,7 +571,7 @@ async def test_the_summary_counts_the_events_a_broken_console_dropped(
     # the record's own count is one short of the run's, and can only ever be: it is taken
     # while the summary is built, and emitting `run_end` with it is one more event to drop.
     # The CLI prints the result's, which is complete.
-    assert summary["trace_dropped"] == end["trace_dropped"] == result.trace_dropped - 1
+    assert summary["log_dropped"] == end["log_dropped"] == result.log_dropped - 1
 
 
 async def test_thinking_on_the_reprompt_turn_is_recorded(
@@ -584,7 +614,7 @@ async def test_thinking_on_the_reprompt_turn_is_recorded(
     assert enforce["text"] == "You must call exactly one tool. Choose now."
 
 
-async def test_a_composite_is_traced_as_nested_pairs_with_the_parents_tally(
+async def test_a_composite_is_logged_as_nested_pairs_with_the_parents_tally(
     kick_duck: DuckFile, tmp_path: Path
 ) -> None:
     """A composite sends nothing itself: every intent `approach_and` reports came from the
@@ -612,7 +642,7 @@ async def test_a_composite_is_traced_as_nested_pairs_with_the_parents_tally(
             transport=Sim2DTransport(seed=6),
             detector=ColorBlobDetector(),
             runs_dir=tmp_path,
-            trace=seen.append,
+            view=seen.append,
         )
     )
     assert result.outcome == "success", result.reason
@@ -639,7 +669,7 @@ async def test_the_log_callback_still_gets_the_lines_that_only_it_had(
     hello_duck: DuckFile, tmp_path: Path
 ) -> None:
     """`log` is a contract other callers rely on: the flock's member records, the MCP
-    logger, and tests that assert on what a run said. The trace observes it, never replaces
+    logger, and tests that assert on what a run said. The log observes it, never replaces
     it."""
     # a v1 task may allow more than it needs; a verb this body lacks is dropped with a line
     hello_duck.frontmatter.duck = 1
@@ -654,7 +684,7 @@ async def test_the_log_callback_still_gets_the_lines_that_only_it_had(
             transport=MockTransport(),
             runs_dir=tmp_path,
             log=lines.append,
-            trace=seen.append,
+            view=seen.append,
         )
     )
     assert any("does not have fly" in line for line in lines)
@@ -2149,6 +2179,11 @@ class ScriptedPerson:
     that are not an answer: a Ctrl-C landing in the middle of the wait, and a cancellation
     landing in the hand-back."""
 
+    asks_a_person = False
+    """Whether a wait here counts as a question somebody was really put. The CLI's
+    `_TerminalHandOff` sets it, because it prints and waits on a key; a test that leaves it
+    off stands in for every caller that answers on its own, and gets no `prompt` row."""
+
     def __init__(
         self,
         mock: LeRobotMock,
@@ -2551,6 +2586,331 @@ async def test_a_terminal_that_goes_away_mid_wait_ends_the_run_instead_of_hangin
     assert mock.torque is False and mock.close_note is None, "and it is down and let go of"
 
 
+# ── what a person was asked, and whether anybody was asked at all ───────────────────────
+#
+# One event kind for four questions the record held only the consequence of: `assess.human`
+# said a verdict had been cleared, the `hand_off` stages said an arm had been placed, and the
+# fall warning said nothing whatsoever. None of them held the exchange.
+#
+# The rule that makes the kind worth having is that it is written only where somebody was
+# really asked. `--yes`, an MCP session and every flock member answer these themselves, so
+# the emitter reads `asks_a_person` off the asker and the CLI is the only thing that sets it.
+# Every test here has its twin in the last one, which is the one that keeps the record from
+# claiming a witness.
+
+
+class _FallBlindDuck(OpenDuckMock):
+    """The Open Duck as its bridge backend reports itself: `fall_detection` is a constant
+    False, because the IMU has one owner and it is upstream's loop. With no `stand_up` in the
+    manifest either, this is the body the warning exists for."""
+
+    async def get_state(self) -> DuckState:
+        state = await super().get_state()
+        return state.model_copy(update={"extras": {**state.extras, "fall_detection": False}})
+
+
+def _fall_blind(
+    runs: Path, acknowledge: Callable[[str], bool], *, run_dir: Path | None = None
+) -> RunConfig:
+    """A run that reaches the fall warning: a task that can make this body walk is the whole
+    of what turns it on. `run_dir` is for the ending that raises, where there is no
+    `RunResult` to read the directory off afterwards."""
+    from quackd.duckfile.parser import parse_duck_text
+
+    duck = parse_duck_text(
+        "---\nduck: 0\nname: blind\ndescription: d\nverbs:\n"
+        "  allow: [move, report_state, stop]\nsuccess: [x]\n---\n# Task\nx\n"
+    )
+    return RunConfig(
+        duck=duck,
+        provider=FakeProvider(
+            script=[
+                _verdict_call("feasible", "a short walk on a flat floor"),
+                ToolCall(name="declare_success", arguments={"reason": "walked"}),
+            ]
+        ),
+        transport=OpenDuckAdapter(_FallBlindDuck()),
+        runs_dir=runs,
+        run_dir=run_dir,
+        acknowledge=acknowledge,
+    )
+
+
+def _prompts(events: list[dict[str, Any]]) -> list[tuple[str, str, bool]]:
+    return [(e["what"], e["question"], e["answer"]) for e in events if e["kind"] == "prompt"]
+
+
+async def test_a_verdict_a_person_cleared_records_the_question_they_answered(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`assess.human` says the verdict came back `go`. It does not say what was put to
+    whoever made that call, and the pilot's own reason for being unsure is the entire case
+    they were deciding on."""
+
+    def says_go(_why: str) -> bool:
+        return True
+
+    says_go.asks_a_person = True  # type: ignore[attr-defined]
+
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see the thing from here"),
+                    ToolCall(name="declare_success", arguments={"reason": "looked"}),
+                ]
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+            decide=says_go,
+        )
+    )
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert next(e for e in events if e["kind"] == "assess")["human"] == "go"
+    rows = _prompts(events)
+    assert [(what, answer) for what, _question, answer in rows] == [("decide", True)]
+    assert "cannot see the thing from here" in rows[0][1], "the case they decided on"
+
+
+async def test_the_fall_warning_is_the_answer_that_used_to_be_recorded_nowhere(
+    tmp_path: Path,
+) -> None:
+    """A yes here left nothing at all behind, so a run on a robot that cannot see a fall read
+    exactly like one nobody was watching. A no is already an abort with a reason, but the
+    reason is quackd's words for it; this is the person's."""
+
+    def watching(_why: str) -> bool:
+        return True
+
+    watching.asks_a_person = True  # type: ignore[attr-defined]
+
+    watched = await run_duck(_fall_blind(tmp_path / "yes", watching))
+    assert watched.outcome == "success", watched.reason
+
+    events = Transcript.read(watched.run_dir / "transcript.jsonl")
+    rows = _prompts(events)
+    assert [(what, answer) for what, _question, answer in rows] == [("acknowledge", True)]
+    assert "no way to get up" in rows[0][1]
+
+    def not_watching(_why: str) -> bool:
+        return False
+
+    not_watching.asks_a_person = True  # type: ignore[attr-defined]
+
+    run_dir = tmp_path / "no"
+    run_dir.mkdir()
+    with pytest.raises(Aborted, match="watching"):
+        await run_duck(_fall_blind(tmp_path / "no", not_watching, run_dir=run_dir))
+    refused = _prompts(Transcript.read(run_dir / "transcript.jsonl"))
+    assert [(what, answer) for what, _question, answer in refused] == [("acknowledge", False)]
+
+
+async def test_both_waits_of_a_hand_off_record_what_the_person_said(tmp_path: Path) -> None:
+    """A hand-off is two questions with a run in between, and the second one is asked to an
+    empty room often enough to matter: somebody places the arm, the run takes twenty minutes,
+    and they are not there at the end. The stages say the gripper stayed shut. These rows say
+    the question was put at all, and that the wait ended with nobody there to answer it."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED, answers=[True, False])
+    person.asks_a_person = True
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert _prompts(events) == [
+        ("hand_off", AgentLoop.PLACE_IT, True),
+        ("hand_off", AgentLoop.HAND_IT_BACK, False),
+    ]
+    assert _stages(events) == ["released", "held", "skipped"]
+
+
+async def test_an_asker_nobody_marked_writes_no_prompt_row(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """The twin of the three above, and the reason the mark exists at all. What `--yes`
+    passes, what a flock wires into its members and what a test passes are all callables that
+    answer at once, and a row saying a person was asked is worse than no row: it is the record
+    inventing somebody who was in the room."""
+    cleared = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see the thing from here"),
+                    ToolCall(name="declare_success", arguments={"reason": "looked"}),
+                ]
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path / "decide",
+            decide=lambda _why: True,  # what `--yes` passes (cli.py `_yes_to_go`)
+        )
+    )
+    events = Transcript.read(cleared.run_dir / "transcript.jsonl")
+    assert next(e for e in events if e["kind"] == "assess")["human"] == "go"
+    assert not _prompts(events), "the verdict gate"
+
+    asked: list[str] = []
+
+    def unmarked_watcher(why: str) -> bool:
+        asked.append(why)
+        return True
+
+    watched = await run_duck(_fall_blind(tmp_path / "acknowledge", unmarked_watcher))
+    events = Transcript.read(watched.run_dir / "transcript.jsonl")
+    assert asked, "the warning really was put to this one"
+    assert not _prompts(events), "the fall warning"
+
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED)
+    handed = await run_duck(_by_hand(mock, person, tmp_path / "hand-off"))
+    events = Transcript.read(handed.run_dir / "transcript.jsonl")
+    assert person.waits == 2, "both waits really happened"
+    assert not _prompts(events), "the hand-off"
+
+
+async def test_a_mark_that_says_nobody_is_there_writes_no_prompt_row(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """The mark the CLI sets is a callable, and a callable that answers no is the case it
+    exists for: `yes | quackd run` and `quackd run < answers.txt` reach the same three
+    askers a person reaches, and `input()` reads a pipe as happily as it reads a person.
+
+    Every question is still put and every answer still has its consequence. All that is
+    withheld is the testimony, at all three of the loop's sites and both of the hand-off's
+    waits."""
+
+    def nobody_is_there() -> bool:
+        return False
+
+    def says_go(_why: str) -> bool:
+        return True
+
+    says_go.asks_a_person = nobody_is_there  # type: ignore[attr-defined]
+
+    cleared = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see the thing from here"),
+                    ToolCall(name="declare_success", arguments={"reason": "looked"}),
+                ]
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path / "decide",
+            decide=says_go,
+        )
+    )
+    assert cleared.outcome == "success", cleared.reason
+    events = Transcript.read(cleared.run_dir / "transcript.jsonl")
+    assert next(e for e in events if e["kind"] == "assess")["human"] == "go", "it went ahead"
+    assert not _prompts(events), "the verdict gate"
+
+    warned: list[str] = []
+
+    def watching(why: str) -> bool:
+        warned.append(why)
+        return True
+
+    watching.asks_a_person = nobody_is_there  # type: ignore[attr-defined]
+
+    watched = await run_duck(_fall_blind(tmp_path / "acknowledge", watching))
+    assert watched.outcome == "success", watched.reason
+    assert warned, "the warning really was put to somebody"
+    assert not _prompts(Transcript.read(watched.run_dir / "transcript.jsonl")), "the warning"
+
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED, answers=[True, False])
+    person.asks_a_person = nobody_is_there  # type: ignore[assignment]
+    handed = await run_duck(_by_hand(mock, person, tmp_path / "hand-off"))
+    assert handed.outcome == "success", handed.reason
+    events = Transcript.read(handed.run_dir / "transcript.jsonl")
+    assert person.waits == 2, "both waits really happened"
+    assert _stages(events) == ["released", "held", "skipped"], "and both answers still told"
+    assert not _prompts(events), "the hand-off"
+
+
+async def test_the_mark_is_asked_at_the_time_of_asking_and_not_at_import(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """One asker, two runs, two different answers about who was in the room.
+
+    The CLI marks its three askers with `_can_prompt` rather than with `True` because
+    reaching a terminal is a thing to check when the question is put: the same
+    `_decide_prompt` is the one a person answers at a bench and the one a redirected stdin
+    answers, and a mark read once at import could only ever describe one of them."""
+    there = [False]
+
+    def anybody_there() -> bool:
+        return there[0]
+
+    def says_go(_why: str) -> bool:
+        return True
+
+    says_go.asks_a_person = anybody_there  # type: ignore[attr-defined]
+
+    async def decide_in(runs: Path) -> list[dict[str, Any]]:
+        result = await run_duck(
+            RunConfig(
+                duck=hello_duck,
+                provider=FakeProvider(
+                    script=[
+                        _verdict_call("uncertain", "cannot see the thing from here"),
+                        ToolCall(name="declare_success", arguments={"reason": "looked"}),
+                    ]
+                ),
+                transport=MockTransport(),
+                runs_dir=runs,
+                decide=says_go,
+            )
+        )
+        assert result.outcome == "success", result.reason
+        return Transcript.read(result.run_dir / "transcript.jsonl")
+
+    piped = await decide_in(tmp_path / "piped")
+    assert next(e for e in piped if e["kind"] == "assess")["human"] == "go"
+    assert not _prompts(piped), "nobody was there for the first one"
+
+    there[0] = True
+    watched = await decide_in(tmp_path / "watched")
+    assert [(what, answer) for what, _question, answer in _prompts(watched)] == [("decide", True)]
+
+
+async def test_a_callable_mark_that_says_yes_records_as_much_as_a_flat_one(
+    tmp_path: Path,
+) -> None:
+    """The twin of the three above at the other two sites. A mark that answers yes is a
+    person at a keyboard, and the rows it writes are the ones a flat `asks_a_person = True`
+    has always written: the fall warning's acknowledgement, and both of the hand-off's
+    waits."""
+
+    def somebody_is_there() -> bool:
+        return True
+
+    def watching(_why: str) -> bool:
+        return True
+
+    watching.asks_a_person = somebody_is_there  # type: ignore[attr-defined]
+
+    watched = await run_duck(_fall_blind(tmp_path / "acknowledge", watching))
+    assert watched.outcome == "success", watched.reason
+    rows = _prompts(Transcript.read(watched.run_dir / "transcript.jsonl"))
+    assert [(what, answer) for what, _question, answer in rows] == [("acknowledge", True)]
+
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED)
+    person.asks_a_person = somebody_is_there  # type: ignore[assignment]
+    handed = await run_duck(_by_hand(mock, person, tmp_path / "hand-off"))
+    assert handed.outcome == "success", handed.reason
+    assert _prompts(Transcript.read(handed.run_dir / "transcript.jsonl")) == [
+        ("hand_off", AgentLoop.PLACE_IT, True),
+        ("hand_off", AgentLoop.HAND_IT_BACK, True),
+    ]
+
+
 # ── the clocks, the money and the name a run was given ──────────────────────────────────
 #
 # A transcript counted tokens from the first release and never said what they cost, and the
@@ -2558,7 +2918,7 @@ async def test_a_terminal_that_goes_away_mid_wait_ends_the_run_instead_of_hangin
 # run by somebody who was not in the room, which is why they go in the record rather than on
 # the terminal: `run_start` carries the rate and the wall clock, `summary.json` carries what
 # the run spent of both, and `RunResult.summary` hands the CLI the same dict so the live
-# verdict and `quackd trace` cannot drift apart.
+# verdict and `quackd log` cannot drift apart.
 
 
 class FailsAfterOneAnswer(ThinkingProvider):
@@ -2852,11 +3212,11 @@ async def test_a_named_run_is_called_that_on_disk_and_quoted_as_typed_in_the_rec
     """A bench afternoon is a hundred runs on one arm, and a hundred directories that differ
     only in a timestamp nobody wrote down.
 
-    The slug goes in the directory name, because a run directory is typed back into `quackd
-    trace` and pasted into a shell, and a space in one is a quoting problem on two operating
-    systems. The record keeps the words that were typed, because `example-1` is not what the
-    person called it. The label lands after the duck name and before any collision counter, so
-    both the timestamp prefix and the duck name still resolve."""
+    The slug goes in the directory name, because a run directory is typed back into
+    `quackd log` and pasted into a shell, and a space in one is a quoting problem on two
+    operating systems. The record keeps the words that were typed, because `example-1` is not
+    what the person called it. The label lands after the duck name and before any collision
+    counter, so both the timestamp prefix and the duck name still resolve."""
     result = await run_duck(
         RunConfig(
             duck=hello_duck,
