@@ -222,6 +222,9 @@ Four things in that are worth reading twice.
   the stepper did, because none of it is anything the model said. It is told instead, once, in
   the observation it is next shown, and told who chose them.
 - **`0.00 s`** is a stub answering instantly in a test, not a measurement. See the note above.
+  A run made today puts two more figures in that parenthesis, the tokens the question spent and
+  what they cost; see [Measuring it yourself](#measuring-it-yourself). This transcript was
+  recorded before quackd counted either, and replays exactly as it was written.
 
 ### 4. The other six bodies
 
@@ -267,7 +270,7 @@ And what quackd brings to it, all measured:
 |---|---|
 | **6.21 s** mean model call | the wave run: 62.1 s over 10 calls ([README](../README.md#what-happened-in-that-run)) |
 | **49,096** input tokens over those 10 calls | the same run |
-| **527 tokens** per Jev request on this arm | measured: 388 characters of state plus 1,721 of questions, on `lerobot:mock` |
+| **527 tokens** per Jev request on this arm | measured by hand before the estimator existed: 388 characters of state plus 1,721 of questions, on `lerobot:mock`. The shipped estimator counts the questions at 1,299 characters on that arm before the verdict clears and 1,454 after, because the criteria are one line per verb on offer, so it prints 421 and 460 where this row says 527 |
 
 ### One decision
 
@@ -284,9 +287,11 @@ observations are in it, while the question it hands Jev is about a tenth of that
 cheaper per token *and* asked a much smaller question.
 
 That ratio assumes the model's input is priced like Claude Fable 5.1, which is the comparison
-TypeSafe's own 238× is drawn against. `gpt-6-astra` drove the wave run and this repository does
-not know what it costs, so substitute your own vendor's rate: the token counts on both sides are
-measured, and only the prices are borrowed.
+TypeSafe's own 238× is drawn against. `gpt-6-astra` drove the wave run, and the catalogue now
+prices it at $10 per million input tokens, the same input rate as Claude Fable 5.1, so the
+comparison holds for the model that actually did the driving. The token counts on both sides
+are measured and both rates are the vendors' own, but a rate read off a page by hand on one day
+is not an invoice: substitute yours where it differs.
 
 ### One run: it depends entirely on how many turns are a choice
 
@@ -444,7 +449,8 @@ Two new kinds in `transcript.jsonl`, both described in
 `jev`, one per turn the stepper was asked, **identical in both modes** so the rows can be read
 against each other: the labels it was offered, the one it chose, the whole probability
 distribution, its confidence, the floor that applied, which gate fired, both Noul values, how
-long it took, how large the state was and what was trimmed to fit.
+long it took, how large the state was and what was trimmed to fit, and, on the turns that
+actually reached the network, what the question spent and what that cost.
 
 `jev_shadow`, only in shadow mode and only after that step's `llm` record: what the stepper
 would have chosen beside what the model actually chose, whether they agree, whether the stepper
@@ -488,13 +494,57 @@ Then, per run directory:
 | **Coverage** | how many `gate` values are `taken`, out of all of them | every `{"kind":"jev"}` |
 | **Agreement** | how often `agree` is true, and separately among rows where `would_have_acted` is true | every `{"kind":"jev_shadow"}` |
 | **Calibration** | `confidence` bucketed against `agree` — the plot that earns the right to move a floor | join the two kinds on `step` |
-| **What the model cost** | `latency_s`, `usage` | every `{"kind":"llm"}` |
-| **The rollup** | `steps`, `llm_calls`, `elapsed_s`, `usage`, `jev` | `summary.json` |
+| **What a stepper turn cost** | `usage` and `cost_usd`, with `usage_estimated` for whether that token count came from TypeSafe or from quackd's own arithmetic | every `{"kind":"jev"}` |
+| **What the model cost** | `latency_s`, `usage`, `cost_usd` | every `{"kind":"llm"}` |
+| **The two bills, on one turn** | `llm_cost_usd` beside `jev_cost_usd`: the ratio the section above could only reach by hand, now on the record for the turn that produced it | every `{"kind":"jev_shadow"}` |
+| **The rollup** | `steps`, `llm_calls`, `elapsed_s`, `wall_s`, `usage`, `cost_usd`, `jev` | `summary.json` |
+| **The stepper's rollup** | `usage`, `cost_usd`, `cost_estimated`, and `price`, which is the rate that run was actually costed at rather than whatever the rate is when you read it back | the `jev` block of `summary.json` |
 
-**Prices are yours to apply, not quackd's to print.** quackd counts tokens and has never
-computed money. TypeSafe publish Jev at **$0.042 per million input tokens, with output not
-charged** ([models](https://docs.typesafe.ai/models), read 2026-09-18); your model's rate card
-is on your vendor's page. If you run any of this, the numbers are worth an issue.
+**quackd prices a stepper turn now, and marks the ones it had to guess at.** TypeSafe publish
+Jev at **$0.042 per million input tokens, with output not charged**
+([models](https://docs.typesafe.ai/models), re-read 2026-09-21), and that is the rate a turn is
+costed at unless `QUACKD_JEV_PRICE` says otherwise. The turns that never reach the network,
+`not_offered` and `state_too_large`, are charged nothing and carry no figure at all.
+
+Which half of that is measured and which half is arithmetic is never left to be inferred. The
+rate is TypeSafe's and published. The token count under it is measured only where their API
+reports one: where it does not, quackd estimates the request as the state plus the questions at
+four characters to the token, and flags the estimate three times over, with `usage_estimated`
+on the turn, `cost_estimated` on the run's `jev` block, and a `~` in front of both the tokens
+and the money on the trace line and in front of the run's cost on the verdict panel.
+
+That path is not a hypothetical. The SDK types both counts on `SystemOneResponse.usage` as
+`int | None`, documented as "when the API did not report it", and a call that raised after its
+request had already left the machine reports nothing at all while quite possibly still being
+billed, so quackd charges that turn at the estimate rather than at nothing.
+
+Here is the estimated reading, on the mock arm with a stub in Jev's place and no count coming
+back from it. The `~` is the whole of the difference, and it sits on both numbers:
+
+```text
+   jev     report_state 0.97 >= 0.60 (0.00 s, ~992 tok ~$0.000042)
+```
+
+That is 992 tokens rather than the 527 quoted further up, and the arithmetic is on the record:
+this turn's state was 2,669 characters and its questions 1,299, which is `(2669 + 1299) // 4`.
+Both halves moved. The state grew because a real turn carries a real reading, and the questions
+are smaller than the 527 row's 1,721 because that row was measured by hand before this code
+existed and because the criteria are one line per verb on offer, which is two here and five
+once the verdict clears. The record keeps `state_chars` beside the estimate for exactly that
+reason: an estimate you cannot re-derive is a number you have to take on faith.
+
+The model's half of the bill comes from quackd's own price catalogue, or from `--price` where
+your rate is negotiated or your model is not in it. The two halves are kept apart **in the
+record**, which is where the ratio this section exists to answer is read from: `cost_usd` on
+every `llm` row against `cost_usd` on every `jev` row, and both of them on one `jev_shadow` row
+for the same turn. The verdict panel is the one place they are added together, because a person
+watching a run wants what it cost rather than a division; the exception is a model quackd has
+no rate for, where the panel says `cost unpriced (stepper ~$0.0002)` rather than throw away the
+half it does know.
+
+None of this has been run against TypeSafe, so the measured path has never returned a real
+token count here: every stepper figure in this repository came either from the estimate or from
+a stub answering in its place. If you run any of it, the numbers are worth an issue.
 
 ## Configuration
 
@@ -504,6 +554,7 @@ is on your vendor's page. If you run any of this, the numbers are worth an issue
 | Key | `TYPESAFE_API_KEY`, in the environment or a `.env` |
 | Model | `TYPESAFE_DEFAULT_MODEL`, default `jev-1.13.0`. Pinned rather than `jev-latest`, because a run whose stepper changed under it is a run whose transcript describes a model that is no longer the one that answered |
 | Endpoint | `TYPESAFE_BASE_URL`, if it is not TypeSafe's own |
+| Price | `QUACKD_JEV_PRICE`, written `in=0.042,out=0` in USD per million tokens, which is the same form `--price` takes for the model. quackd's own variable rather than the SDK's, and spelled that way on purpose: everything beginning `TYPESAFE_` is read by `typesafe_sdk` itself and quackd only ever checks that the key is there, while this one quackd reads and applies. Unset, a turn is costed at TypeSafe's published rate, and either way the rate used is written into the run |
 | Install | `quackd[jev]`, which is not part of `quackd[all]` |
 
 `--jev` is on `quackd run` and nowhere else. It is deliberately not on `quackd record`, which

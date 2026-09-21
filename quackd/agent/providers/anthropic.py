@@ -118,12 +118,30 @@ def parse_response(response: Any) -> ProviderTurn:
         texts.append(f"[refusal] {explanation}")
         tool_calls = []
     usage = getattr(response, "usage", None)
+    # Anthropic is the one vendor that reports its three input buckets DISJOINT: `input_tokens`
+    # is what was neither read from a cache nor written to one. quackd's `input_tokens` is the
+    # whole prompt (`providers.base.Usage`), so the three are added back up here and the two
+    # cache numbers ride along beside it for the rates they are actually billed at. Nothing in
+    # quackd sets `cache_control` today, so both are 0 on every run so far, and this is the
+    # arithmetic that stops being a no-op on the day one is set.
+    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+    # `cache_creation_input_tokens`, not the `cache_creation` object beside it: that object is
+    # a breakdown of this same number by cache lifetime (5 minute and 1 hour), and adding both
+    # would charge every cached prompt twice.
+    cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    # Thinking is inside `output_tokens`, which Anthropic calls "the inclusive, authoritative
+    # total used for billing"; `output_tokens_details` is a read-only decomposition of it. So
+    # this is recorded for the reader and never priced again (`providers.base.Usage`).
+    out_details = getattr(usage, "output_tokens_details", None)
     return ProviderTurn(
         tool_calls=tool_calls,
         text="\n".join(texts) or None,
         usage=Usage(
-            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0) + cache_read + cache_write,
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            reasoning_tokens=int(getattr(out_details, "thinking_tokens", 0) or 0),
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
         ),
         stop_reason=stop_reason,
         raw=[_block_to_dict(b) for b in response.content],

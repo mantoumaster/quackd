@@ -66,6 +66,66 @@ def _flock_lines(result: Any) -> list[dict[str, Any]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
+async def test_a_pilot_flock_takes_the_name_you_gave_the_run(tmp_path: Path) -> None:
+    """`--run-name` is for the afternoon somebody runs a hundred examples on one bench, and a
+    flock is as much a run as a solo pilot is: it gets the same label on the same directory and
+    the name as typed in the same summary field."""
+    result = await _run(tmp_path, run_name="Bench 7")
+    assert result.run_dir.name.endswith("-flock-hello-bench-7"), result.run_dir.name
+    assert _summary(result)["run_name"] == "Bench 7"
+
+
+async def test_a_pilot_flock_without_a_name_is_named_as_it_always_was(tmp_path: Path) -> None:
+    """Every flock recorded before there was a flag for it, and every one that does not ask,
+    keeps exactly the directory name it had."""
+    result = await _run(tmp_path)
+    assert result.run_dir.name.endswith("-flock-hello"), result.run_dir.name
+    assert _summary(result)["run_name"] is None
+
+
+async def test_a_pilot_flock_adds_up_what_its_members_cost(tmp_path: Path) -> None:
+    """The flock sums money where it already sums tokens. Its members are scripted here, so
+    each of them is free and the total is a real zero rather than a missing number."""
+    result = await _run(tmp_path)
+    summary = _summary(result)
+    assert summary["cost_usd"] == 0.0
+    assert result.cost_usd == 0.0
+    per_member = summary["per_member"]
+    assert all(m["cost_usd"] == 0.0 for m in per_member.values())
+    assert sum(m["cost_usd"] for m in per_member.values()) == summary["cost_usd"]
+
+
+async def test_the_price_you_passed_reaches_every_member(tmp_path: Path) -> None:
+    """`--price` is validated on `quackd run` whether or not there is a flock, so a flock that
+    quietly ignored it would be a flag that checks your typing and then does nothing. Each
+    member is costed at the one rate: it is a rate for the run, not one per robot."""
+    result = await _run(tmp_path, price="in=1000000,out=0")
+    summary = _summary(result)
+    for member in summary["per_member"].values():
+        assert member["cost_usd"] == member["usage"]["input_tokens"], (
+            "a million dollars per million input tokens makes the bill the token count, "
+            "which is the cheapest way to prove the rate arrived rather than a default"
+        )
+    assert summary["cost_usd"] == sum(m["cost_usd"] for m in summary["per_member"].values())
+
+
+async def test_one_unpriced_member_makes_the_whole_flock_bill_unpriced(tmp_path: Path) -> None:
+    """A total that quietly left a robot out would read as a cheaper flock rather than an
+    incomplete one, so one member quackd cannot price makes the flock figure None. The member
+    is made unpriceable the way a real one would be: a real vendor name and a model id no
+    catalogue has ever listed."""
+    roster = _roster()
+    providers = _providers(roster)
+    first = next(iter(providers.values()))
+    first.name = "openai"
+    first.model = "a-model-no-catalogue-lists"
+    result = await _run(tmp_path, roster=roster, providers=providers)
+    summary = _summary(result)
+    assert summary["cost_usd"] is None
+    assert result.cost_usd is None
+    assert any(m["cost_usd"] is None for m in summary["per_member"].values())
+
+
 # ── the contract, per body ──────────────────────────────────────────────────────────────
 
 
@@ -208,6 +268,10 @@ async def test_the_artifacts_are_what_the_docs_say(tmp_path: Path) -> None:
         "steps",
         "llm_calls",
         "usage",
+        # what this member cost and how long it took, beside the tokens it already reported
+        "cost_usd",
+        "wall_s",
+        "llm_latency_s",
         "provider",
         "model",
         "robot",
@@ -292,9 +356,18 @@ async def test_a_provider_that_raises_is_that_members_error(tmp_path: Path) -> N
     roster = _roster()
     providers: dict[str, Any] = _providers(roster)
     providers["arm"] = _Angry()
-    result = await _run(tmp_path, roster, providers=providers)
+    result = await _run(tmp_path, roster, providers=providers, price="in=1000000,out=0")
     assert result.outcome == "error"
     assert "429 from the vendor" in result.per_member["arm"]["reason"]
+    # A member that raised never reaches its own `return RunResult(...)`, and the flock used
+    # to throw away the wall clock, the model seconds and the bill that member had already
+    # measured. A flock of priced models then read `cost_usd: null` on the strength of one of
+    # them being interrupted, which is a bill going missing rather than a bill being unknown.
+    for name in ("duck", "arm"):
+        member = result.per_member[name]
+        assert member["cost_usd"] is not None, f"{name} measured a bill before it stopped"
+        assert member["wall_s"] is not None and member["llm_latency_s"] is not None
+    assert result.cost_usd is not None
 
 
 async def test_the_kill_switch_reaches_every_member(tmp_path: Path) -> None:

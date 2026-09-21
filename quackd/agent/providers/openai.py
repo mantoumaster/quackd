@@ -244,6 +244,9 @@ def parse_responses(response: Any) -> ProviderTurn:
                     thoughts.append(text)
     usage = getattr(response, "usage", None)
     details = getattr(usage, "output_tokens_details", None)
+    # the Responses API spells the same things `input_tokens` and `input_tokens_details`, and
+    # means them the same way: the total already contains both cached slices
+    input_details = getattr(usage, "input_tokens_details", None)
     return ProviderTurn(
         tool_calls=tool_calls,
         text="\n".join(texts) or None,
@@ -251,6 +254,8 @@ def parse_responses(response: Any) -> ProviderTurn:
             input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
             reasoning_tokens=int(getattr(details, "reasoning_tokens", 0) or 0),
+            cache_read_tokens=int(getattr(input_details, "cached_tokens", 0) or 0),
+            cache_write_tokens=int(getattr(input_details, "cache_write_tokens", 0) or 0),
         ),
         # No finish_reason here. `status` is "completed" or "incomplete", and the loop only
         # reads this for the trace, so say the same words the other parser would.
@@ -290,6 +295,16 @@ def parse_response(response: Any) -> ProviderTurn:
         None,
     )
     details = getattr(usage, "completion_tokens_details", None)
+    # `prompt_tokens` already CONTAINS both cached slices, because `prompt_tokens_details` is
+    # a breakdown of the prompt rather than an addition to it. So the total passes through as
+    # quackd's whole prompt and the two slices are named beside it. OpenAI's own guide puts it
+    # exactly the way `pricing.cost_usd` reads it: "input tokens use the uncached-input,
+    # cached-input, or cache-write rate", one rate per token and never two.
+    #
+    # From the second turn of a run most of the input is the cached slice, at a tenth of the
+    # rate, so a cost computed without this would be wrong by most of the bill. Cache writes
+    # are charged only on GPT-5.6 and later and are 0 on everything older.
+    prompt_details = getattr(usage, "prompt_tokens_details", None)
     return ProviderTurn(
         tool_calls=tool_calls,
         text=getattr(message, "content", None) or None,
@@ -297,6 +312,8 @@ def parse_response(response: Any) -> ProviderTurn:
             input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
             output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
             reasoning_tokens=int(getattr(details, "reasoning_tokens", 0) or 0),
+            cache_read_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0),
+            cache_write_tokens=int(getattr(prompt_details, "cache_write_tokens", 0) or 0),
         ),
         stop_reason=getattr(choice, "finish_reason", None),
         raw=None,

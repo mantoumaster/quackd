@@ -190,7 +190,7 @@ def test_equal_wedges_partition_the_circle() -> None:
 
 
 async def test_planner_fake_makes_zero_calls() -> None:
-    task, wedges, _usage, calls, fallback = await plan_flock_task(
+    task, wedges, _usage, calls, fallback, _cost = await plan_flock_task(
         DUCK, ["duck-0", "duck-1"], FakeProvider.for_duck("flock-kick"), "t1"
     )
     assert calls == 0 and not fallback and task.target == "ball" and len(wedges) == 2
@@ -218,7 +218,9 @@ async def test_planner_applies_valid_tuning_and_counts_one_call() -> None:
         usage=Usage(input_tokens=10, output_tokens=5),
     )
     stub = _PlannerStub(turn)
-    task, _, usage, calls, fallback = await plan_flock_task(DUCK, ["duck-0", "duck-1"], stub, "t")
+    task, _, usage, calls, fallback, _cost = await plan_flock_task(
+        DUCK, ["duck-0", "duck-1"], stub, "t"
+    )
     assert calls == 1 and stub.calls == 1 and not fallback
     assert task.stop_distance == 0.3 and usage.input_tokens == 10
 
@@ -231,7 +233,7 @@ async def test_planner_applies_valid_tuning_and_counts_one_call() -> None:
     ],
 )
 async def test_planner_falls_back_on_trouble(turn: Any) -> None:
-    task, _, _, calls, fallback = await plan_flock_task(
+    task, _, _, calls, fallback, _cost = await plan_flock_task(
         DUCK, ["duck-0", "duck-1"], _PlannerStub(turn), "t"
     )
     assert calls == 1 and fallback and task.stop_distance == 0.22  # defaults
@@ -246,7 +248,7 @@ async def test_planner_clamps_numbers_and_drops_only_the_invalid_field() -> None
             )
         ]
     )
-    task, _, _, calls, fallback = await plan_flock_task(
+    task, _, _, calls, fallback, _cost = await plan_flock_task(
         DUCK, ["duck-0", "duck-1"], _PlannerStub(turn), "t"
     )
     assert calls == 1 and not fallback
@@ -262,7 +264,7 @@ async def test_the_planners_one_call_is_traced_as_a_request_and_an_answer() -> N
         usage=Usage(input_tokens=10, output_tokens=5),
         text="one wedge each",
     )
-    _task, _wedges, _usage, calls, fallback = await plan_flock_task(
+    _task, _wedges, _usage, calls, fallback, _cost = await plan_flock_task(
         DUCK, ["duck-0", "duck-1"], _PlannerStub(turn), "t", trace=Tracer(record=events.append)
     )
     assert calls == 1 and not fallback
@@ -288,7 +290,7 @@ async def test_the_planners_one_call_is_traced_as_a_request_and_an_answer() -> N
 async def test_a_planner_that_fails_is_traced_as_an_error_and_a_fallback_note() -> None:
     events: list[TraceEvent] = []
     logged: list[str] = []
-    task, _wedges, _usage, calls, fallback = await plan_flock_task(
+    task, _wedges, _usage, calls, fallback, _cost = await plan_flock_task(
         DUCK,
         ["duck-0", "duck-1"],
         _PlannerStub(RuntimeError("provider down")),

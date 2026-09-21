@@ -96,6 +96,49 @@ def events() -> list[tuple[str, TraceEvent]]:
         ),
         ("llm_error", _e("llm", 0.3, error="ProviderError: rate limited", latency_s=3.0)),
         ("llm_bare", _e("llm", 0.3, tool_calls=[{"name": "stop", "arguments": {}}], usage={})),
+        # ── llm: the cache buckets and the money, which ride on the same tokens line ──
+        (
+            "llm_priced",
+            _e(
+                "llm",
+                0.3,
+                step=3,
+                text="kicking now",
+                tool_calls=[{"name": "kick", "arguments": {"leg": "right"}}],
+                # `in=` is the WHOLE prompt and `cached=`/`cache_write=` are slices of it, so
+                # these three do not add up and are not meant to. A reader who sums them is
+                # reading Anthropic's disjoint buckets into the one convention quackd stores.
+                usage={
+                    "input_tokens": 1631,
+                    "output_tokens": 16,
+                    "cache_read_tokens": 1024,
+                    "cache_write_tokens": 512,
+                },
+                usage_total={"input_tokens": 9812, "output_tokens": 96},
+                cost_usd=0.002752,
+                cost_usd_total=0.030876,
+                latency_s=0.04,
+                stop_reason="tool_use",
+            ),
+        ),
+        (
+            # A model the catalogue has no rate for: both figures are None, not 0.0, and no
+            # dollar sign may appear anywhere on the line. Printing `$0.00` for a frontier
+            # model is the one failure here that costs somebody real money, so it is frozen.
+            "llm_unpriced",
+            _e(
+                "llm",
+                0.3,
+                step=3,
+                tool_calls=[{"name": "kick", "arguments": {"leg": "right"}}],
+                usage={"input_tokens": 1631, "output_tokens": 16, "cache_read_tokens": 1024},
+                usage_total={"input_tokens": 9812, "output_tokens": 96},
+                cost_usd=None,
+                cost_usd_total=None,
+                latency_s=0.04,
+                stop_reason="tool_use",
+            ),
+        ),
         # ── jev: the discrete stepper's own turn, taken and declined ──
         (
             "jev_taken",
@@ -132,6 +175,64 @@ def events() -> list[tuple[str, TraceEvent]]:
         (
             "jev_error",
             _e("jev", 0.3, mode="shadow", latency_s=1.0, error="TypeSafeAPITimeoutError"),
+        ),
+        # ── jev: what the question cost, measured and guessed ──
+        (
+            # The whole argument for a stepper is the ratio between this and the model call it
+            # stands in for, so the figure rides in the same parenthesis as the seconds.
+            "jev_billed",
+            _e(
+                "jev",
+                0.3,
+                mode="on",
+                model="jev-1.13.0",
+                latency_s=0.11,
+                gate="taken",
+                choice="gripper(open=false)",
+                confidence=0.93,
+                floor=0.85,
+                probabilities={"gripper(open=false)": 0.93, "stop": 0.04},
+                call={"name": "gripper", "arguments": {"open": False}},
+                usage={"input_tokens": 527, "output_tokens": 3},
+                cost_usd=0.000022,
+            ),
+        ),
+        (
+            # TypeSafe reported no input count, so the stepper divided the characters it had
+            # sent by four and marked BOTH numbers `~`. The tilde is the only thing telling a
+            # reader this is a guess, which is exactly the kind of mark that vanishes in a
+            # refactor nobody notices, so it is frozen here.
+            "jev_billed_estimated",
+            _e(
+                "jev",
+                0.3,
+                mode="on",
+                latency_s=0.44,
+                gate="below_floor",
+                choice="place",
+                confidence=0.62,
+                floor=0.85,
+                probabilities={"place": 0.62, "gripper(open=true)": 0.30},
+                usage={"input_tokens": 612, "output_tokens": 0},
+                usage_estimated=True,
+                cost_usd=0.000026,
+            ),
+        ),
+        (
+            # The request went out and then the call raised, which TypeSafe still bills, so the
+            # estimate rides in the `after ...` of the error line rather than being dropped on
+            # the floor with the answer.
+            "jev_error_billed",
+            _e(
+                "jev",
+                0.3,
+                mode="shadow",
+                latency_s=1.0,
+                error="TypeSafeAPITimeoutError",
+                usage={"input_tokens": 640, "output_tokens": 0},
+                usage_estimated=True,
+                cost_usd=0.000027,
+            ),
         ),
         (
             "jev_shadow_agree",

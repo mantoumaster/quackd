@@ -9,18 +9,21 @@ from typing import Any
 import pytest
 from rich.console import Console
 
+from quackd.agent.providers.catalogue import PRICES_CHECKED, Price
 from quackd.trace import (
     ConsoleTrace,
     LineTrace,
     TracedTransport,
     TraceEvent,
     Tracer,
+    _price_line,
     cap_lines,
     capture_sink,
     capturing,
     counting,
     fan_out,
     flock_caption,
+    fmt_duration,
     fmt_value,
     parse_thinking_limit,
     prompt_shown_default,
@@ -310,6 +313,49 @@ def test_fmt_value_truncates_long_strings_and_long_reprs() -> None:
     assert len(fmt_value(big)) == 120
 
 
+def test_a_whole_run_is_timed_in_the_units_a_person_would_say_it_in() -> None:
+    """`3847.2 s` is a number the reader has to do arithmetic on before it means anything.
+    The minute boundary is in here on both sides because rounding is what picks the band: at
+    59.9 the run is still seconds long, and one tenth later it is a minute. The hour boundary
+    is the same trick a second time, and it is the one a plain `divmod` gets wrong: an hour
+    exactly is `1h 00m`, never `60m 00s`."""
+    assert fmt_duration(43.21) == "43.2 s"
+    assert fmt_duration(59.94) == "59.9 s"
+    # 59.97 printed to one place IS "60.0 s", which is a minute spelled as if it were not one,
+    # so the comparison happens after the rounding rather than before it
+    assert fmt_duration(59.97) == "1m 00s"
+    assert fmt_duration(60.0) == "1m 00s"
+    assert fmt_duration(103.4) == "1m 43s"
+    assert fmt_duration(3599.0) == "59m 59s"
+    assert fmt_duration(3600.0) == "1h 00m"
+    assert fmt_duration(3720.0) == "1h 02m"
+    assert fmt_duration(7380.0) == "2h 03m"
+    # A clock that went backwards is somebody else's bug, and `-0.0 s` in the verdict line
+    # would be this one's.
+    assert fmt_duration(-5.0) == "0.0 s"
+
+
+def test_the_price_line_says_where_the_rate_came_from_or_that_there_is_no_rate() -> None:
+    """The head of a replay has to account for the cost figure the rest of the run shows,
+    including when there is not one: a missing row would leave a reader to guess whether the
+    run was free, whether quackd forgot, or whether the model is simply unpriced. The dicts
+    here are real `Price.record()` output, because that is what `run_start` carries."""
+    assert _price_line(None) == (
+        "unpriced: quackd has no rate for this model, so no cost was computed"
+    )
+    catalogue = Price(input=10.0, output=50.0, cache_read=1.0, cache_write=12.5).record()
+    assert _price_line(catalogue) == f"$10/M in, $50/M out (catalogue, checked {PRICES_CHECKED})"
+    # A rate the person typed was true on the day they typed it and on no other day, so it
+    # carries its source and no date at all.
+    typed = Price(3.0, 15.0, 0.3, 3.75, source="--price").record()
+    assert _price_line(typed) == "$3/M in, $15/M out (--price)"
+    stepper = Price(input=0.042, output=0.0, source="published").record()
+    assert _price_line(typed, stepper) == "$3/M in, $15/M out (--price), stepper $0.042/M in"
+    assert _price_line(None, stepper) == (
+        "unpriced: quackd has no rate for this model, so no cost was computed, stepper $0.042/M in"
+    )
+
+
 def test_a_burst_with_many_distinct_labels_shows_three_and_an_ellipsis() -> None:
     tracer = Tracer()
     seen = events(tracer)
@@ -367,6 +413,92 @@ def test_the_llm_line_shows_thinking_the_call_and_the_tokens() -> None:
     assert any("the ball is 0.4 m away" in line for line in out)
     assert any("go_to(target='ball')" in line for line in out)
     assert any("in=1200 out=40" in line and "latency=1.2 s" in line for line in out)
+
+
+def test_the_tokens_line_prices_the_call_when_it_can() -> None:
+    """Four numbers a reader needs and cannot get anywhere else: how much of the prompt came
+    back out of the cache, how much went into it, what this one call cost, and what the run
+    has spent so far. The run total goes inside the parenthesis that already holds the running
+    token counts, because it answers the same question those do."""
+    event = TraceEvent(
+        "llm",
+        0.0,
+        {
+            "step": 3,
+            "tool_calls": [],
+            "usage": {
+                "input_tokens": 1631,
+                "output_tokens": 16,
+                "cache_read_tokens": 1024,
+                "cache_write_tokens": 512,
+            },
+            "usage_total": {"input_tokens": 9812, "output_tokens": 96},
+            "cost_usd": 0.0051,
+            "cost_usd_total": 0.0309,
+            "latency_s": 0.04,
+            "stop_reason": "tool_use",
+        },
+    )
+    tokens = [text for text, _ in render_lines(event)][-1]
+    assert tokens == (
+        "tokens  in=1631 out=16 cached=1024 cache_write=512"
+        " (run total in=9812 out=96 $0.0309) latency=0.0 s cost=$0.0051 stop=tool_use"
+    )
+    # `in=` stays the whole prompt, cached slice included: it is the number the vendor bills
+    # against, and a reader who subtracted the cache from it would be wrong about both.
+    assert "in=1631" in tokens and "cached=1024" in tokens
+
+
+def test_a_tokens_line_from_before_the_money_renders_exactly_as_it_always_did() -> None:
+    """Every transcript recorded before this change replays through this renderer: `quackd
+    trace` reads run directories written months ago, and tests/golden/trace_lines.json holds
+    the lines those runs printed. A record with no cache buckets, no cost and no running cost
+    has to come out of here byte for byte, which is why every new piece is written only when
+    the key is there."""
+    event = TraceEvent(
+        "llm",
+        0.0,
+        {
+            "step": 2,
+            "tool_calls": [{"name": "go_to", "arguments": {"target": "ball"}}],
+            "usage": {"input_tokens": 1200, "output_tokens": 40},
+            "usage_total": {"input_tokens": 5000, "output_tokens": 130},
+            "latency_s": 1.25,
+            "stop_reason": "tool_use",
+        },
+    )
+    tokens = [text for text, _ in render_lines(event)][-1]
+    assert (
+        tokens == "tokens  in=1200 out=40 (run total in=5000 out=130) latency=1.2 s stop=tool_use"
+    )
+
+
+def test_the_stepper_line_carries_its_tokens_and_its_fraction_of_a_cent() -> None:
+    """The whole argument for a stepper is the ratio between what one of its questions costs
+    and what the model call it stands in for costs, so both numbers ride in the parenthesis
+    that already holds the seconds. A `~` marks a turn TypeSafe did not count for itself and
+    quackd had to estimate from the characters it sent, and it goes on both numbers because
+    the cost is derived from the count."""
+
+    def line(**extra: Any) -> str:
+        data = {
+            "gate": "taken",
+            "choice": "kick",
+            "confidence": 0.93,
+            "floor": 0.7,
+            "latency_s": 0.11,
+            **extra,
+        }
+        ((text, _),) = render_lines(TraceEvent("jev", 0.0, data))
+        return text
+
+    counted = {"usage": {"input_tokens": 527, "output_tokens": 3}, "cost_usd": 0.000022}
+    assert "(0.11 s, 527 tok $0.000022)" in line(**counted, usage_estimated=False)
+    assert "(0.11 s, ~527 tok ~$0.000022)" in line(**counted, usage_estimated=True)
+    # The gates that never reach the network owe nothing, and a `0 tok` on them would read as
+    # a question that was asked and came back empty.
+    assert line() == "jev     kick 0.93 >= 0.70 (0.11 s)"
+    assert line(gate="not_offered") == "jev     not_offered, to the model (0.11 s)"
 
 
 def test_long_thinking_is_cut_with_a_pointer_to_the_transcript() -> None:
@@ -786,6 +918,40 @@ def test_a_replay_introduces_the_run_because_nothing_else_did() -> None:
         "connected in 0.50 s",
     ):
         assert needle in out, needle
+
+
+def test_a_replay_says_when_the_run_happened_what_it_was_called_and_its_rate() -> None:
+    """A replay has no CLI header in front of it, and until the record carried a wall clock
+    the only answer to "when was this" was the directory name, which gets renamed and copied.
+
+    The run name row is there only when somebody typed one. The price row has three states and
+    they are not two: a rate that was used, a `price` of null for a run quackd could not cost
+    and which needs the panel to say so, and no `price` key at all for a transcript recorded
+    before there were prices. Telling that third reader their run was "unpriced" would be
+    describing this release rather than their run, so it gets no row."""
+    started = "2026-09-21T15:44:01.507Z"
+    price = Price(3.0, 15.0, 0.3, 3.75, source="--price").record()
+
+    def panel(**extra: Any) -> str:
+        view, buffer = console_trace(header=True)
+        data = {"duck": "find-and-kick", "provider": "fake", "transport": "sim2d", **extra}
+        view(TraceEvent("run_start", 0.0, data))
+        return buffer.getvalue()
+
+    named = panel(started_at=started, run_name="Example 1", price=price)
+    assert "started   2026-09-21 15:44:01.507 UTC" in named, "the T and the Z are machine spelling"
+    assert "run name  Example 1" in named, "the name as it was typed, not the slug"
+    assert "price     $3/M in, $15/M out (--price)" in named
+
+    anonymous = panel(started_at=started, price=None)
+    assert "run name" not in anonymous, "an empty row would read as a run called nothing"
+    assert "price     unpriced: quackd has no rate for this model" in anonymous
+
+    before = panel(started_at=started)
+    assert "price" not in before, (
+        "a transcript from before there were prices has no rate to report and was not "
+        "'unpriced': every published transcript in docs/assets replays through this"
+    )
 
 
 def test_the_terminal_view_never_reads_what_a_model_wrote_as_markup() -> None:

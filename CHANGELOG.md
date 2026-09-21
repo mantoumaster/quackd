@@ -5,6 +5,170 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+A run records when it started, when it ended, where its seconds went and what it cost, and you
+can give it a name. Until now the only absolute time a run had was the name of its directory,
+which is the local clock at second precision and gone the moment anybody renames the folder, and
+the nearest thing to a cost was a token count, which is not a cost: it is one of the two numbers
+a cost is made of. `summary.json` carries both halves now, per call and per run, and `quackd
+trace` reprints them from a run recorded weeks ago.
+
+What is measured and what is arithmetic is worth separating once, plainly, because the rest of
+this is money. Measured: `wall_s`, `connect_s` and `llm_latency_s` come off a clock in this
+process, and the token counts are the vendor's own, returned beside the answer. Arithmetic:
+every `cost_usd` in this release is those counts multiplied by a rate a person read off the
+vendor's own pricing page on 2026-09-21 and typed into `quackd/agent/providers/catalogue.py`.
+quackd has never seen an invoice, and not one figure here has been reconciled against a bill. It
+knows nothing about your discount, your committed tier, your free credits or a minimum charge,
+and it cannot know that a rate moved this morning: a price read by hand is wrong from the day the
+vendor edits the page until the day somebody reads it again, and wrong silently. So every price
+is recorded with where it came from and the date it was checked, every run keeps the rate it was
+actually costed at, and `--price` is there for the moment quackd's number and your bill disagree.
+
+Reading those pricing pages caught two counting bugs quackd has been shipping. Google reports
+thinking beside the answer rather than inside it, and quackd read `candidates_token_count` alone,
+so every thinking Gemini run has been under-reporting the output it was billed for by however
+much it thought. Anthropic reports its three input buckets disjoint, and quackd read only the
+bucket that was neither read from a cache nor written to one. Both are corrected here, and the
+second is a no-op today, because nothing in quackd sets `cache_control` yet: it is the arithmetic
+that stops being a no-op the day something does. The loop had a smaller one of the same shape,
+reading `perf_counter` twice on a model turn and disagreeing with itself about how long the call
+took. It times a call once now, and the record and the running total read that one number.
+
+### Added
+
+- **Timing in the record: `started_at`, `ended_at`, `wall_s`, `connect_s` and `llm_latency_s`.**
+  `run_start` carries the wall clock read in the same breath as the monotonic zero that every
+  record's `t` counts from, so one absolute time at the top of a transcript places all of them and
+  no intent has to carry an ISO string of its own. `run_end` and `summary.json` carry the rest,
+  and each answers a different question: `wall_s` is how long the whole thing took, `connect_s`
+  how much of that went on reaching the robot before anything was asked of it, and
+  `llm_latency_s` how much went on waiting for a model, summed over every call including one that
+  raised, because a run that died on a timeout spent that time too. `ended_at` is derived as
+  `started_at + wall_s` rather than read off the clock a second time, so `ended_at` minus
+  `started_at` is `wall_s` in every record quackd writes, including on a laptop that synced its
+  clock or slept through part of a run. `elapsed_s` keeps exactly the meaning it had, which is
+  the budget clock: it starts later than the record does, it restarts after a `--by-hand`
+  handover, and it runs on the transport's own clock, so on a simulator it is the simulator's.
+  The two are far apart and that is not a bug. The example run below recorded `elapsed_s` 7.8
+  against a `wall_s` of 0.219, because 7.8 seconds of simulated duck happened in a fifth of a
+  second of laptop.
+  Reading one as the other is the mistake this record invites, so they are named apart and said
+  apart here.
+
+- **Cost in the record: `cost_usd` on every model call and on the run.** The `llm` line prints
+  what that call cost and what the run has spent so far, `summary.json` keeps the total and the
+  rate it was computed at, and the verdict counts it:
+  `tokens  in=1784 out=16 (run total in=10730 out=96 $0.0336) latency=0.0 s cost=$0.0056`. The
+  rates are USD per million tokens off each vendor's own pricing page, read on 2026-09-21, and
+  112 of the 115 models in the catalogue carry one. The three that do not are Cohere's
+  `command-a-plus-05-2026`, `command-a-03-2025` and `command-a-reasoning-08-2025`, which is the
+  whole Command A family and includes that vendor's own default: Cohere publish per-token rates
+  for Command R and R7B only and sell Command A as dedicated instances by the hour, which is not
+  a number of dollars per token and cannot be made into one. A run on one of those records
+  `cost_usd: null` and prints `cost unpriced`. It must not print `$0`, because `$0` is a thing
+  quackd also says truthfully: several GLM Flash models and Mistral's Leanstral are priced at
+  zero by their own vendors, and a model with no published rate is a different thing from a model
+  that is free. Where a prompt was partly cached the cached slices are billed at their own rates
+  and the remainder at the full input rate, and where a vendor publishes no cache rate the cached
+  tokens are charged at the full input rate rather than skipped, which overstates on purpose. Of
+  the two ways to be wrong about somebody's bill, the low one is the one that gets them in
+  trouble.
+
+- **The stepper's own bill, measured where TypeSafe report a usage and estimated where they do
+  not.** Jev's published rate is $0.042 per million input tokens with output not charged
+  ([their models page](https://docs.typesafe.ai/models), read 2026-09-21), and it is the one rate
+  in quackd that does not live in the catalogue, because there is a single model behind the flag
+  rather than a table. Where the API reports an input count the bill is measured from it. Where
+  it does not, which their own SDK types as a possibility, quackd estimates from the size of the
+  request it actually sent, the named state and the four questions together at four characters to
+  the token, and flags the figure as estimated everywhere it surfaces: `usage_estimated` on the
+  turn, `cost_estimated` in the summary, and a `~` in front of both numbers on the console,
+  `jev     place 0.62 < 0.85, to the model (0.44 s, ~612 tok ~$0.000026)`. A call that raised
+  after the request went out is billed, because the tokens went out with it. The gates that
+  refuse a turn before the network is touched, `not_offered` and `state_too_large`, add nothing
+  at all, and a machine with no `typesafe_sdk` installed owes nothing.
+
+- **`--price`, `QUACKD_PRICE` and `QUACKD_JEV_PRICE`, for the rate quackd does not have.**
+  `--price "in=3,out=15,cache_read=0.3,cache_write=3.75"`, USD per million tokens, `in` and `out`
+  required and the two cache rates optional. It is validated at the top of the run, before
+  anything connects and before a directory is made, so a typo costs one line and no half a run on
+  disk: *--price 'junk' is not a price: 'junk' has no `=`. Write it as
+  in=3,out=15[,cache_read=0.3,cache_write=3.75], in USD per million tokens.* `QUACKD_PRICE` is
+  the same thing for a shell that runs many and `QUACKD_JEV_PRICE` the same for the stepper, and
+  an override beats everything, including the zero the fake provider would otherwise report,
+  because a rehearsal you want costed is a reason to pass a rate. Every price written into a
+  record says where it came from, which is `--price`, `QUACKD_PRICE`, `catalogue` with the date
+  that page was read, `published`, `fake` or `self-hosted`, so any figure can be traced back to
+  the rate that produced it. A local model is `self-hosted` and costs nothing per token by
+  construction, which is a different claim from a vendor charging nothing and is labelled as one.
+
+- **A run can be named: `--run-name` on `quackd run` and `quackd record`, and a pass in `quackd
+  trace` that resolves one.** This is for the person running a hundred examples on one arm in an
+  afternoon, who ends the day with a hundred directories named after the second they started and
+  no way to tell which was which without opening them. `--run-name "Example 1"` slugs to
+  `example-1` and goes into the directory name after the duck and before the collision counter,
+  `runs/20260921-160009-find-and-kick-example-1/`, and the text as you typed it is kept in
+  `run_start`, `run_end` and the replay header, which grew a `run name` row beside new `started`
+  and `price` rows. `quackd trace example-1` then finds it: an exact label match is tried ahead
+  of both the timestamp prefix and the loose substring, so `example-1` resolves to the run you
+  called `Example 1` even when `example-19` was recorded later, and a run you called `20260921`
+  is reachable by that name rather than being answered by whichever run's timestamp starts the
+  same way. The label is matched against what follows the stamp and only where a duck name
+  precedes it, so `quackd trace find-and-kick` still means the newest run of that duck rather
+  than the one that happens to have gone unnamed. A name with nothing ASCII in it is refused
+  before anything connects, *--run-name '!!!' has no ASCII letters or digits in it, so there is
+  nothing to name the directory after*, rather than quietly becoming something else, because a
+  hundred directories that all say `run` is the problem the flag was reached for. Accents fold
+  rather than drop, so `Café 1` and `Cafe 1` land in the same place. Both flock runners take a
+  name too and put it in their summary, and both take `--price` and apply it to every member at
+  the one rate.
+
+- **[ADR-0041](docs/adr/0041-the-record-says-when-it-ran-and-what-it-cost.md)**, on why a run
+  records money at all, what the record is and is not evidence of, and where the arithmetic
+  stops.
+
+### Changed
+
+- **The `Usage` convention is written down, and two vendors' numbers move to match it.**
+  `input_tokens` is the whole prompt, cached parts included; `cache_read_tokens` and
+  `cache_write_tokens`, both new and both on every usage object quackd builds, are the slices of
+  that prompt billed at cache rates; `output_tokens` is everything generated, thinking included;
+  and `reasoning_tokens` is the part of the output the vendor counts apart, a subset of it, never
+  priced again. Gemini's `output_tokens` now adds `thoughts_token_count`, because Google's own
+  reference defines the total as prompt plus thoughts plus response candidates, three addends,
+  so a thinking run was under-reporting output it was billed for by exactly the thinking.
+  Anthropic's `input_tokens` now adds its two cache buckets, because that vendor is the one that
+  reports the three disjoint, and its `reasoning_tokens` comes from the thinking count in
+  `output_tokens_details` rather than from a field that was never there. OpenAI's two parsers and
+  the local providers are unchanged, and deliberately so: those prompt counts already contain the
+  cached part, and all that is new for them is that the cached slice is now named beside the
+  total instead of being invisible inside it.
+
+- **The verdict panel and `quackd trace` print the same counters, through one function.** They
+  were two lists that had already drifted, and both gained a time counter and a cost counter:
+  `steps 4 - llm calls 6 - tokens 10730+96 - time 0.2 s (model 0.0 s) - cost $0.0336`. The time
+  counter carries the split and not only the total, because on the one hardware run this project
+  has, 62.1 of 78.8 seconds were spent waiting on the model, and that ratio is the most useful
+  thing a run measures about itself; the stepper's seconds join it when one ran. The cost counter
+  reports an unpriced model and a priced stepper separately rather than summing them away, and
+  wears a `~` when the stepper's half was estimated. Every field is optional on purpose: a
+  transcript recorded before this change has no `wall_s`, no `cost_usd` and no `jev` block, and
+  replays with exactly the three counters it has always had rather than with `time None`. The one
+  thing that is new on screen and not in the record is a single dim line under the verdict when a
+  run could not be costed, naming the model and the flag that would fix it, because a missing
+  number should say it is missing rather than leave a reader deciding whether it means zero.
+
+- **The stepper's summary block grew `usage`, `cost_usd`, `cost_estimated` and `price`**, so the
+  `jev` block answers what it cost as well as what it decided, and its own trace line carries the
+  tokens and the money inside the parenthesis it already had:
+  `jev     gripper(open=false) 0.93 >= 0.85 (0.11 s, 527 tok $0.000022)`. The shadow event carries
+  `llm_cost_usd` and `jev_cost_usd` side by side, which is the comparison shadow mode exists to
+  make and the one that was previously left for a reader to do by hand out of two other records.
+  `run_start` carries the stepper's rate too, so a run costed against `QUACKD_JEV_PRICE` says so
+  in the file rather than in somebody's shell history.
+
 ## [0.10.0] — 2026-09-19
 
 A robot ran quackd, `uv pip install quackd` stopped installing one, and quackd learned to put the

@@ -167,20 +167,46 @@ detector. Composite verbs steer on detections at 10 Hz and never wait for the mo
 You already do: the trace is on by default. `quackd run` narrates the whole run to stderr as
 it happens, and every MCP tool call that reaches a robot comes back with a `trace` list of
 the same lines. You get the system prompt once, then per turn the observation, the model's
-reasoning where the provider returns any, the tool it chose, the tokens and latency, every
-executor gate that fired, every intent that went to the robot (a steering loop's burst
-collapsed into one line with its parameter ranges), and the result. `--no-trace` or
-`QUACKD_TRACE=0` turns the views off; `runs/<ts>/transcript.jsonl` keeps everything either
-way, uncapped. Details and the event list: [architecture.md](architecture.md#trace),
+reasoning where the provider returns any, the tool it chose, the tokens, the latency and
+what that call cost, every executor gate that fired, every intent that went to the robot (a
+steering loop's burst collapsed into one line with its parameter ranges), and the result.
+`--no-trace` or `QUACKD_TRACE=0` turns the views off; `runs/<ts>/transcript.jsonl` keeps
+everything either way, uncapped. Details and the event list: [architecture.md](architecture.md#trace),
 [ADR-0029](adr/0029-tracing.md).
 
 **Can I read a run after it finished?** Yes. `quackd trace` replays the newest run under
-`runs/` as the same lines it printed while it ran, and it takes a run name, a timestamp
-prefix, a duck name or a transcript file if you want an older one. `--from-step N` starts
-part way in, `--no-prompt` drops the system prompt, `--thinking all` shows every character
-the model thought, and `--frames` adds a line per camera frame. It prints to stdout, so piping
-it to a pager or a file is the point. A flock run replays every member, each line prefixed
-with the robot that wrote it.
+`runs/` as the same lines it printed while it ran, and it takes a directory name, a timestamp
+prefix, the name you gave the run, a duck name or a transcript file if you want an older one.
+`--from-step N` starts part way in, `--no-prompt` drops the system prompt, `--thinking all`
+shows every character the model thought, and `--frames` adds a line per camera frame. It
+prints to stdout, so piping it to a pager or a file is the point. A flock run replays every
+member, each line prefixed with the robot that wrote it, and its counters come from the
+flock's own summary rather than from whichever member happened to finish last. A SOLO replay
+opens with a header saying when the run started, what it was named and what the model was
+priced at, so a transcript you come back to a month later still says what it cost and why. A
+flock has no such header, because there is no one model and no one clock to put in it: its
+name and its rate are in `summary.json`.
+
+**How do I find one run again a week later?** Name it when you start it. `--run-name
+"Example 1"` puts the name in the directory after the duck,
+`runs/20260921-155628-find-and-kick-example-1/`, slugging it on the way: lowercased, every
+run of anything that is not an ASCII letter or digit becomes one hyphen, and the result is
+capped at 64 characters. Accents are folded rather than dropped, so `Café 1` and `Cafe 1` both
+land on `cafe-1`. The text as you typed it is kept as `run_name` in `summary.json` and shown
+in the replay header, so the slug names a directory and never loses what you wrote. A name
+with nothing ASCII in it at all, which includes a name written entirely in another script, is
+refused before anything connects and before any directory exists:
+
+```
+$ quackd run find-and-kick --run-name "!!!"
+✗ error: --run-name '!!!' has no ASCII letters or digits in it, so there is nothing to name the directory after
+```
+
+Afterwards `quackd trace example-1` finds it by that label. That pass runs ahead of both the
+timestamp prefix and the loose substring, so a bench holding both `-example-1` and
+`-example-19` hands you the run you actually named rather than whichever is newer, and a run
+you called `2` is reachable by `2` rather than being answered by the first run of 2026 that
+comes to hand. `quackd record` takes `--run-name` too.
 
 **Why is the thinking line empty for my model?** Because that model did not return any. Only
 some do, and each in its own way: Claude returns a summary (quackd asks for one, since the
@@ -253,8 +279,29 @@ maps your text to the closest tone (`greet`, `inquire`, `alarm`, `wheee`, …) a
 text.
 
 **What does it cost?** A `find-and-kick` run is 3–8 model turns, each a few thousand input
-tokens (mostly the system prompt and one image) and a short tool call. `transcript.jsonl`
-records usage per turn.
+tokens (mostly the system prompt and one image) and a short tool call. quackd works the
+dollars out itself rather than leaving you to multiply a token count by a rate you looked up:
+the catalogue carries a price per model in USD per million tokens, read off that vendor's own
+pricing page and dated with the day it was read, and 112 of the 115 ids have one. So every
+`llm` record in `transcript.jsonl` carries `cost_usd` for that call and `cost_usd_total` for
+the run so far, `summary.json` carries the run's `cost_usd` beside its `usage` and the exact
+rate it was charged at, and the counters under the verdict print the total:
+
+```
+steps 4 · llm calls 6 · tokens 7688+96 · time 0.2 s (model 0.0 s) · cost $0.0245
+```
+
+Cached input is billed at the cache rate wherever a vendor reports the cached slice, and a
+cache rate the vendor does not publish is charged at the full input rate, because a figure
+you act on should overstate rather than understate. A model quackd has no published rate for
+records `cost_usd: null` and prints `cost unpriced` instead of a zero, since a number that
+could not be computed must never read as a number that came out to nothing, and the run says
+so once on stderr with the flag that fixes it. That is three ids today, Cohere's Command A
+family, for which Cohere publish no per-token rate at all. Your own rate goes in with
+`--price in=3,out=15[,cache_read=0.3,cache_write=3.75]` for one run, or `QUACKD_PRICE` for a
+shell full of them: a negotiated rate, a paid endpoint behind a local preset, or an id the
+catalogue has never heard of. The `fake` pilot and every local preset are priced at zero
+rather than left unpriced, so a sim run honestly reads `cost $0`.
 
 **Windows?** Fully supported for sim, MCP and development. The real-robot `unix://` socket
 is POSIX-only; forward it with `ssh -L 9870:/run/robotd.sock <robot>` and use

@@ -16,7 +16,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -177,6 +177,75 @@ def _print_outcome(
             style="yellow",
             markup=False,
         )
+
+
+def _number(value: Any) -> float | None:
+    """A figure out of a record, or None where there is not one.
+
+    `quackd trace` is pointed at files people hand-edit, truncate and copy between machines,
+    and the renderers beside this one already shrug at a field that is not what it should be.
+    A counter line is not worth a traceback."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return None if value != value else float(value)  # NaN is not a figure either
+
+
+def run_counters(end: Mapping[str, Any]) -> list[str]:
+    """What a finished run cost, in the line under the verdict.
+
+    Built from the summary dict, which is what `run_end` carries and what `summary.json`
+    holds, so the live panel and `quackd trace` print one list rather than two that drift.
+
+    Every field is optional on purpose. A SOLO run recorded before any of this existed
+    replays with exactly the three counters it always had. A flock is the one deliberate
+    exception: it has kept a wall clock of its own since long before a solo run had one, so
+    an old flock record does gain a `time` counter from the number it was already writing.
+    """
+    from quackd.agent.providers.pricing import fmt_usd
+    from quackd.trace import fmt_duration
+
+    usage = end.get("usage") or {}
+    counters = [
+        f"steps {int(_number(end.get('steps')) or 0)}",
+        f"llm calls {int(_number(end.get('llm_calls')) or 0)}",
+        f"tokens {usage.get('input_tokens', 0)}+{usage.get('output_tokens', 0)}",
+    ]
+    wall = _number(end.get("wall_s"))
+    if wall is None:
+        wall = _number(end.get("wall_elapsed_s"))
+    if wall is not None:
+        # The split, not just the total: on the one hardware run this project has, 62.1 of
+        # 78.8 seconds were spent waiting on the model, and that ratio is the single most
+        # useful number a run produces. The stepper's seconds join it when one ran.
+        spent = []
+        if (llm := _number(end.get("llm_latency_s"))) is not None:
+            spent.append(f"model {fmt_duration(llm)}")
+        if (jev := _number((end.get("jev") or {}).get("latency_s"))) is not None:
+            spent.append(f"stepper {fmt_duration(jev)}")
+        where = f" ({', '.join(spent)})" if spent else ""
+        counters.append(f"time {fmt_duration(wall)}{where}")
+    jev_block = end.get("jev") or {}
+    jev_cost = _number(jev_block.get("cost_usd"))
+    # On a cost KEY, not on the presence of a stepper block. Every `--jev` run recorded before
+    # this change already wrote a `jev` block, and gating on that gave those records a fourth
+    # counter reading `cost unpriced` that they never had and that says nothing true about
+    # them: nobody tried to price them.
+    if "cost_usd" in end or jev_cost is not None:
+        model_cost = _number(end.get("cost_usd")) if end.get("cost_usd") is not None else None
+        estimated = bool(jev_block.get("cost_estimated")) and bool(jev_cost)
+        if model_cost is None:
+            # A model quackd has no rate for must never read as a free one, and the two
+            # halves are reported separately rather than summed away: "unpriced" plus a
+            # stepper figure is the truth, and a bare "unpriced" would throw away the half
+            # that IS known.
+            unpriced = "cost unpriced"
+            if jev_cost:
+                unpriced += f" (stepper {'~' if estimated else ''}{fmt_usd(jev_cost)})"
+            counters.append(unpriced)
+        else:
+            total = model_cost + (jev_cost or 0.0)
+            counters.append(f"cost {'~' if estimated else ''}{fmt_usd(total)}")
+    return counters
 
 
 def _header_rows(
@@ -711,6 +780,8 @@ def _run_impl(
     registry_dir: str | None = None,
     trace: bool | None = None,
     trace_prompt: bool | None = None,
+    run_name: str | None = None,
+    price: str | None = None,
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
@@ -719,6 +790,8 @@ def _run_impl(
     from quackd.agent.loop import RunConfig, run_duck
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import make_provider
+    from quackd.agent.providers.pricing import parse_price as _parse_price
+    from quackd.agent.transcript import run_label
     from quackd.duckfile.parser import DuckParseError, duck_from_goal, load_duck
     from quackd.duckfile.schema import AUCTION_MAX_MEMBERS, PILOTS_MAX_MEMBERS
     from quackd.duckfile.validate import validate_duck
@@ -739,6 +812,18 @@ def _run_impl(
     if (duckfile is None) == (goal is None):
         _fail('give either a .duck file (or bundled name) or --goal "...", not both')
         return
+    # Both before anything is built, connected to or written down: a name that cannot be a
+    # directory and a price nobody can parse are typing mistakes, and a typing mistake should
+    # cost you one sentence rather than a robot moving and a run directory to clean up after.
+    checks = ((run_name, run_label), (price, lambda t: _parse_price(t, source="--price")))
+    for text, check in checks:
+        if text is None:
+            continue
+        try:
+            check(text)
+        except ValueError as e:
+            _fail(str(e))
+            return
     flock_n, roster = _parse_flock_flag(flock, registry_dir)
     flock_name = flock if roster is not None else None
     if roster is not None and (robot or robots):
@@ -933,6 +1018,8 @@ def _run_impl(
                 flock_name=flock_name,
                 trace=trace,
                 trace_prompt=trace_prompt,
+                run_name=run_name,
+                price=price,
             )
             return
         if roster is not None:
@@ -977,6 +1064,8 @@ def _run_impl(
             max_steps=max_steps,
             trace=trace,
             trace_prompt=trace_prompt,
+            run_name=run_name,
+            price=price,
         )
         return
     try:
@@ -1115,6 +1204,8 @@ def _run_impl(
         dry_run=dry_run,
         confirm=allow_all if yes else _confirm_prompt,
         runs_dir=runs_dir,
+        run_name=run_name,
+        price=price,
         max_steps=max_steps,
         log=log,
         on_frame=recorder.capture if recorder is not None else None,
@@ -1176,15 +1267,24 @@ def _run_impl(
     _print_outcome(
         result.outcome,
         result.reason,
-        counters=[
-            f"steps {result.steps}",
-            f"llm calls {result.llm_calls}",
-            f"tokens {result.usage.input_tokens}+{result.usage.output_tokens}",
-        ],
+        counters=run_counters(result.summary),
         run_dir=result.run_dir,
         gif_path=result.gif_path,
         trace_dropped=result.trace_dropped,
     )
+    if result.summary.get("cost_usd") is None and result.summary.get("provider") not in (
+        "fake",
+        None,
+    ):
+        # One dim line, in the style of the dropped-events warning: a run that could not be
+        # costed should say why and how to fix it, once, rather than leaving a reader to
+        # wonder whether the number is missing or zero.
+        ui.err_console.print(
+            f"cost: quackd has no published rate for {result.summary.get('provider')} "
+            f"{result.summary.get('model')}; pass --price in=N,out=N to compute one",
+            style="yellow",
+            markup=False,
+        )
     if result.outcome == "infeasible":
         # its own code: 1 means the run happened and did not succeed, and a script trying one
         # body after another branches on "this body could not, try the next"
@@ -1266,14 +1366,17 @@ def _run_pilots_impl(
     flock_name: str | None,
     trace: bool | None = None,
     trace_prompt: bool | None = None,
+    run_name: str | None = None,
+    price: str | None = None,
 ) -> None:
     """A pilot per body, all at once. The other flock is `_run_flock_impl`."""
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import make_provider
+    from quackd.agent.providers.pricing import fmt_usd
     from quackd.flock.pilots import run_pilot_flock
     from quackd.memory import RobotMemory
     from quackd.safety import KillSwitch
-    from quackd.trace import trace_enabled_default
+    from quackd.trace import fmt_duration, trace_enabled_default
     from quackd.transport.base import TransportError
 
     members = list(roster)
@@ -1347,6 +1450,8 @@ def _run_pilots_impl(
                 trace=view_factory,
                 abort=master,
                 flock_name=flock_name,
+                run_name=run_name,
+                price=price,
             )
         finally:
             ks.uninstall()
@@ -1373,6 +1478,8 @@ def _run_pilots_impl(
             f"steps {result.steps}",
             f"llm calls {result.llm_calls}",
             f"tokens {result.usage.input_tokens}+{result.usage.output_tokens}",
+            f"time {fmt_duration(result.wall_elapsed_s)}",
+            f"cost {fmt_usd(result.cost_usd)}",
         ],
         run_dir=result.run_dir,
         trace_dropped=result.trace_dropped,
@@ -1464,6 +1571,8 @@ def _run_flock_impl(
     max_steps: int | None,
     trace: bool | None = None,
     trace_prompt: bool | None = None,
+    run_name: str | None = None,
+    price: str | None = None,
 ) -> None:
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import make_provider
@@ -1624,6 +1733,8 @@ def _run_flock_impl(
                     log=log,
                     robots=robots,
                     trace=view_for if trace_on else status_only,
+                    run_name=run_name,
+                    price=price,
                 )
             )
     except ValueError as e:
@@ -1808,6 +1919,21 @@ _MAXSTEPS = typer.Option(
 _RUNS = typer.Option(
     "runs", "--runs-dir", help="Where run directories go.", rich_help_panel="Output"
 )
+_RUN_NAME = typer.Option(
+    None,
+    "--run-name",
+    help="Name this run on disk: runs/<stamp>-<duck>-<name>/. Lowercased to a slug, so "
+    '"Example 1" becomes example-1. Omitted, the directory is named as it always was.',
+    rich_help_panel="Output",
+)
+_PRICE = typer.Option(
+    None,
+    "--price",
+    help="What the model costs, in USD per million tokens: in=3,out=15[,cache_read=0.3,"
+    "cache_write=3.75]. Beats QUACKD_PRICE and the built-in rates. Use it for a negotiated "
+    "rate, a model quackd has no price for, or a paid server behind a local preset.",
+    rich_help_panel="Model",
+)
 _YES = typer.Option(
     False,
     "--yes",
@@ -1948,6 +2074,8 @@ def run(
     extra_body: str | None = _EXTRA_BODY,
     jev: str | None = _JEV,
     flock: str | None = _FLOCK,
+    run_name: str | None = _RUN_NAME,
+    price: str | None = _PRICE,
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
     registry_dir: str | None = _REGISTRY_DIR,
@@ -1988,6 +2116,8 @@ def run(
         trace_prompt=trace_prompt,
         images=image,
         by_hand=by_hand,
+        run_name=run_name,
+        price=price,
     )
 
 
@@ -2000,6 +2130,7 @@ def record(
     seed: int | None = typer.Option(0, "--seed"),
     max_steps: int | None = _MAXSTEPS,
     runs_dir: str = _RUNS,
+    run_name: str | None = _RUN_NAME,
     gif_size: int = _GIFSIZE,
     verbose: bool = _VERBOSE,
     base_url: str | None = _BASEURL,
@@ -2053,16 +2184,34 @@ def record(
         jev="off",
         trace=trace,
         trace_prompt=trace_prompt,
+        run_name=run_name,
     )
 
 
 # ── trace: replay a finished run ────────────────────────────────────────────────────────
 
 
+_LABELLED = re.compile(r"^\d{8}-\d{6}-")
+"""The stamp `new_run_dir` writes, so the rest of a directory name can be read on its own."""
+
+
+def _ends_with_label(rest: str, label: str) -> bool:
+    """Is `label` the name somebody gave this run?
+
+    `-example-1` matches `find-and-kick-example-1` and also `find-and-kick-example-1-1`, which
+    is the same run's collision counter and not a different name, but never
+    `find-and-kick-example-19`, which is a different run entirely and the reason this pass
+    exists at all."""
+    return re.search(rf"-{re.escape(label)}(-\d+)?$", rest) is not None
+
+
 def _resolve_run(run: str | None, runs_dir: str) -> Path:
     """A run directory from what the user typed. In order: a transcript file, a directory, an
-    exact name under --runs-dir, a timestamp prefix, the newest whose name contains the text.
-    Nothing at all means the newest run, which is what you want after `quackd run` ends."""
+    exact name under --runs-dir, the newest carrying that `--run-name`, a timestamp prefix,
+    the newest whose name contains the text. Nothing at all means the newest run, which is
+    what you want after `quackd run` ends."""
+    from quackd.agent.transcript import run_label
+
     root = Path(runs_dir)
     runs = sorted((d for d in root.glob("*") if d.is_dir()), key=lambda d: d.name)
     if run:
@@ -2074,6 +2223,22 @@ def _resolve_run(run: str | None, runs_dir: str) -> Path:
         exact = root / run
         if exact.is_dir():
             return exact
+        # The `--run-name` pass, ABOVE the timestamp prefix rather than below it. A bench
+        # session of a hundred runs has `-example-1` and `-example-19` in it, and a substring
+        # match hands you whichever is newest, so an exact label is what somebody typing the
+        # name they gave a run meant. It goes first because a label can be all digits: a run
+        # named `20260921` was unreachable by its own name while the prefix pass, which every
+        # directory's timestamp satisfies, got to answer first.
+        with contextlib.suppress(ValueError):
+            label = run_label(run)
+            for d in reversed(runs):
+                # Against what follows the timestamp, and only where something precedes the
+                # label there. Otherwise `quackd trace hello-world` would match the bare
+                # `<stamp>-hello-world` and quietly prefer an older unnamed run of that duck
+                # over a newer named one, which is not what typing a duck name asks for.
+                rest = _LABELLED.sub("", d.name, count=1)
+                if rest != d.name and rest != label and _ends_with_label(rest, label):
+                    return d
         for d in reversed(runs):
             if d.name.startswith(run):
                 return d
@@ -2195,12 +2360,14 @@ def trace_cmd(
             markup=False,
         )
     summary = run_dir / "summary.json"
-    if end is None and summary.exists():
+    if summary.exists() and (end is None or len(transcripts) > 1):
+        # A flock replays every member, so `end` is whichever member happened to finish last
+        # and its wall clock and its bill are that ONE robot's. The flock's own summary is
+        # sitting in the same directory and is the thing the counters are about.
         end = json.loads(summary.read_text(encoding="utf-8"))
     if end is None:
         _fail("no run_end: the run did not finish, or is still running")
         return
-    usage = end.get("usage") or {}
     if "kicker" in end:  # a flock counts different things, and its summary is the only source
         counters = [f"spotter {end['spotter']}"] if end.get("spotter") else []
         counters += [
@@ -2209,11 +2376,7 @@ def trace_cmd(
             f"bids {end.get('bids')}",
         ]
     else:
-        counters = [
-            f"steps {int(end.get('steps') or 0)}",
-            f"llm calls {int(end.get('llm_calls') or 0)}",
-            f"tokens {usage.get('input_tokens', 0)}+{usage.get('output_tokens', 0)}",
-        ]
+        counters = run_counters(end)
     _print_outcome(
         str(end.get("outcome", "error")),
         str(end.get("reason", "")),

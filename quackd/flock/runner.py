@@ -18,7 +18,7 @@ from typing import Any
 from quackd.adapters.base import AdapterError
 from quackd.adapters.factory import RobotSpec, describe, parse_robot_spec
 from quackd.agent.providers.base import LLMProvider, Usage
-from quackd.agent.transcript import new_run_dir
+from quackd.agent.transcript import new_run_dir, run_label
 from quackd.duckfile.schema import DuckFile, FlockSection
 from quackd.flock.auction import AuctionPolicy
 from quackd.flock.bus import Bus, InProcessBus
@@ -151,6 +151,8 @@ async def run_flock(
     robots: dict[str, str] | None = None,
     bus_factory: BusFactory | None = None,
     trace: TraceFactory | None = None,
+    run_name: str | None = None,
+    price: str | None = None,
 ) -> FlockResult:
     flock: FlockSection = duck.frontmatter.flock or FlockSection()
     if n_override is not None:
@@ -166,8 +168,8 @@ async def run_flock(
     mobile = [name for name in members if manifests[name].mobility != "none"]
     policy = AuctionPolicy.from_flock(flock)
 
-    run_name = duck.name if duck.name.startswith("flock") else f"flock-{duck.name}"
-    run_dir = new_run_dir(runs_dir, run_name)
+    stem = duck.name if duck.name.startswith("flock") else f"flock-{duck.name}"
+    run_dir = new_run_dir(runs_dir, stem, run_label(run_name) if run_name else None)
     world, clock, adapters = make_sim_flock(specs, seed=seed, live=live)
     transcript = FlockTranscript(run_dir, now=clock.now)
     bus: Bus = (
@@ -186,7 +188,7 @@ async def run_flock(
     planner_trace = Tracer(record=transcript.sink, observers=flock_views)
 
     task_id = uuid.uuid4().hex[:8]
-    task, wedges, usage, llm_calls, fallback = await plan_flock_task(
+    task, wedges, usage, llm_calls, fallback, planner_cost = await plan_flock_task(
         duck,
         members,
         provider,
@@ -194,6 +196,7 @@ async def run_flock(
         log=log,
         wedge_members=mobile or members,
         trace=planner_trace,
+        price=price,
     )
     frame_hints = flock.frame_hints == "on" or (
         flock.frame_hints == "auto" and all(s.backend == "sim2d" for s in specs.values())
@@ -302,6 +305,7 @@ async def run_flock(
         "outcome": outcome,
         "reason": reason,
         "flock": {"members": ordered, "method": flock.allocation.method},
+        "run_name": run_name,
         "robots": {name: spec.key for name, spec in specs.items()},
         "roles": {name: role.model_dump() for name, role in (flock.roles or {}).items()},
         "assignments": coordinator.assignments,
@@ -319,6 +323,7 @@ async def run_flock(
             "llm_calls": llm_calls,
             "fallback": fallback,
             "usage": usage.model_dump(),
+            "cost_usd": planner_cost,
         },
         "policy": policy.__dict__,
         "per_duck": per_duck,

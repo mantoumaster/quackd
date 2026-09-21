@@ -96,6 +96,17 @@ def _no_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_price_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`QUACKD_PRICE` and `QUACKD_JEV_PRICE` cost a run money, and the CLI loads a developer's
+    `.env` in its root callback, so one line in an untracked file could have half this suite
+    asserting against a rate nobody chose. Empty reads as unset everywhere either is consumed,
+    and unlike `delenv` it survives `load_dotenv`, which does not overwrite a name already in
+    the environment. The tests that exercise them set them themselves."""
+    monkeypatch.setenv("QUACKD_PRICE", "")
+    monkeypatch.setenv("QUACKD_JEV_PRICE", "")
+
+
+@pytest.fixture(autouse=True)
 def _no_extra_body(monkeypatch: pytest.MonkeyPatch) -> None:
     """`QUACKD_EXTRA_BODY` adds fields to every request an OpenAI-compatible provider sends, so
     one line in a developer's `.env` would reach every test in this suite that reads a request

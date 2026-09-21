@@ -147,11 +147,17 @@ class FakeAnthropic:
         self.beta = NS(messages=NS(create=beta))
 
 
-def anthropic_response(*blocks: Any, stop_reason: str = "tool_use") -> Any:
+def anthropic_response(*blocks: Any, stop_reason: str = "tool_use", usage: Any = None) -> Any:
+    """The default `usage` is the two plain counts an older SDK reports and nothing else.
+
+    A test about the cache buckets hands over a usage object of its own rather than setting a
+    field on this one, because Anthropic's three input numbers are read together and what is
+    being proved is the arithmetic between them.
+    """
     return NS(
         content=list(blocks),
         stop_reason=stop_reason,
-        usage=NS(input_tokens=120, output_tokens=30),
+        usage=usage if usage is not None else NS(input_tokens=120, output_tokens=30),
         stop_details=None,
     )
 
@@ -702,6 +708,21 @@ class FakeGemini:
         self.aio = NS(models=NS(generate_content=generate_content))
 
 
+def gemini_response(**usage: Any) -> Any:
+    """One `walk` call, and whatever counts the caller cares about on `usage_metadata`.
+
+    Only the fields a test names exist on the namespace, which is the point: google-genai
+    leaves a count off the object entirely when the model has no thoughts or no cache, so a
+    parser that reached for one directly would fail on the ordinary response rather than on
+    an exotic one.
+    """
+    part = NS(function_call=NS(name="walk", args={}), text=None)
+    return NS(
+        candidates=[NS(content=NS(parts=[part]), finish_reason="STOP")],
+        usage_metadata=NS(**usage),
+    )
+
+
 async def test_gemini_request_and_response_mapping() -> None:
     part = NS(function_call=NS(name="walk", args={"vx": 0.25}), text=None)
     response = NS(
@@ -1149,12 +1170,183 @@ async def test_a_malformed_response_is_a_provider_error_not_a_traceback(
 
 
 def test_usage_adds_reasoning_tokens_too() -> None:
+    """A run's totals are these objects summed turn by turn, so a bucket left out of `__add__`
+    reads as 0 for the whole run however many tokens went through it. For the cache buckets
+    that is not a cosmetic loss: `pricing.cost_usd` subtracts them from the prompt to find what
+    was billed at the full rate, so a cache read that failed to add gets charged as if it had
+    never been cached, roughly ten times over.
+
+    The whole `model_dump` is compared rather than a field at a time because it is the dict
+    that reaches `summary.json`, and a sixth bucket added later without a line in `__add__`
+    should fail here rather than quietly report zero for the length of a run.
+    """
     from quackd.agent.providers.base import Usage
 
-    total = Usage(input_tokens=1, output_tokens=2, reasoning_tokens=3) + Usage(
-        input_tokens=10, output_tokens=20, reasoning_tokens=30
+    total = Usage(
+        input_tokens=1,
+        output_tokens=2,
+        reasoning_tokens=3,
+        cache_read_tokens=4,
+        cache_write_tokens=5,
+    ) + Usage(
+        input_tokens=10,
+        output_tokens=20,
+        reasoning_tokens=30,
+        cache_read_tokens=40,
+        cache_write_tokens=50,
     )
-    assert total.model_dump() == {"input_tokens": 11, "output_tokens": 22, "reasoning_tokens": 33}
+    assert total.model_dump() == {
+        "input_tokens": 11,
+        "output_tokens": 22,
+        "reasoning_tokens": 33,
+        "cache_read_tokens": 44,
+        "cache_write_tokens": 55,
+    }
+
+
+# ── the token buckets a bill is itemised by ─────────────────────────────────────────────
+#
+# Every vendor reports the same spend in a different shape, and the adapters normalise them
+# into one convention (`providers.base.Usage`): `input_tokens` is the WHOLE prompt with the
+# cached slices inside it, `output_tokens` is everything generated with the thinking inside
+# it. Anthropic is the single adapter that has to add, because it is the single vendor that
+# reports its input buckets disjoint. Each parser is checked on its own: they are separate
+# functions over separate attribute names, and a run that switched API mid-way would
+# otherwise lose the numbers from that turn onwards.
+
+
+async def test_anthropic_adds_its_three_disjoint_input_buckets_into_one_prompt_total() -> None:
+    """Anthropic reports the three apart: `input_tokens` counts only what was neither read
+    from a cache nor written to one, and the two cached slices are named beside it. Everyone
+    else reports one inclusive total that already contains the cached part, so this is the one
+    adapter that adds, and reading its three the way OpenAI's are read would under-report the
+    prompt by everything that was cached, which from the second turn of a run is most of it.
+
+    `cache_creation` is on the response too and is deliberately not summed: it is the same
+    number as `cache_creation_input_tokens` broken down by cache lifetime, so an adapter that
+    added both would bill every cached prompt twice.
+    """
+    usage = NS(
+        input_tokens=200,
+        cache_read_input_tokens=1000,
+        cache_creation_input_tokens=50,
+        cache_creation=NS(ephemeral_5m_input_tokens=50, ephemeral_1h_input_tokens=0),
+        output_tokens=30,
+    )
+    client = FakeAnthropic(anthropic_response(tool_use_block(), usage=usage))
+    turn = await AnthropicProvider(client=client).step("S", history()[:1], TOOLS)
+    assert turn.usage.input_tokens == 1250, "the whole prompt, both cached slices included"
+    assert turn.usage.cache_read_tokens == 1000 and turn.usage.cache_write_tokens == 50
+    assert turn.usage.output_tokens == 30
+
+
+async def test_anthropic_reasoning_tokens_are_a_slice_of_an_output_total_already_whole() -> None:
+    """`output_tokens` is what Anthropic bills and calls inclusive; `output_tokens_details` is
+    a read-only decomposition of that same number. So the thinking count is recorded for the
+    reader and added to nothing: folding it into the output the way Gemini's has to be folded
+    would charge the output rate twice for every thought the model had.
+    """
+    usage = NS(input_tokens=120, output_tokens=30, output_tokens_details=NS(thinking_tokens=18))
+    client = FakeAnthropic(anthropic_response(tool_use_block(), usage=usage))
+    turn = await AnthropicProvider(client=client).step("S", history()[:1], TOOLS)
+    assert turn.usage.reasoning_tokens == 18
+    assert turn.usage.output_tokens == 30, "a decomposition of a total, not an addition to it"
+
+
+async def test_openai_chat_keeps_the_prompt_total_and_names_its_cached_slices() -> None:
+    """`prompt_tokens_details` is a breakdown of `prompt_tokens`, not an addition to it, so the
+    total passes through as quackd's whole prompt and only the slices are new. Adding them the
+    way the Anthropic adapter must would count every cached token twice.
+
+    The slices are what make the bill come out right: from the second turn of a run most of the
+    prompt is the cached part at a tenth of the rate, and `pricing.cost_usd` can only take that
+    tenth off a run that said which tokens it applied to.
+    """
+    response = openai_response("walk", "{}")
+    response.usage.prompt_tokens_details = NS(cached_tokens=40, cache_write_tokens=8)
+    turn = await OpenAIProvider(client=FakeOpenAI(response)).step("S", history()[:1], TOOLS)
+    assert turn.usage.input_tokens == 50, "unchanged: the cached part was always inside it"
+    assert turn.usage.cache_read_tokens == 40 and turn.usage.cache_write_tokens == 8
+
+
+async def test_openai_responses_names_the_cached_slices_under_its_own_spelling(
+    _no_effort_env: None,
+) -> None:
+    """Responses calls them `input_tokens` and `input_tokens_details` and means them exactly as
+    Chat Completions means `prompt_tokens`, so the total passes through here too. It is a
+    parser of its own, though, which is why it is proved on its own: the cache numbers added to
+    one of the two are not added to the other for free.
+    """
+    result = responses_result("walk", '{"vx": 0.2}')
+    result.usage.input_tokens_details = NS(cached_tokens=7, cache_write_tokens=2)
+    p = OpenAIProvider(model="gpt-6-astra", client=RefusesToolsOnChat(result))
+    turn = await p.step("SYS", history()[:1], TOOLS)
+    assert turn.usage.input_tokens == 11, "the prompt total already contains the cached part"
+    assert turn.usage.cache_read_tokens == 7 and turn.usage.cache_write_tokens == 2
+
+
+async def test_gemini_bills_the_thoughts_beside_the_answer_and_names_its_cached_prompt() -> None:
+    """Google's own reference defines the total as prompt plus thoughts plus response
+    candidates, three addends, so `candidates_token_count` cannot already contain the thinking.
+    quackd's `output_tokens` is everything generated at the output rate, so the two are summed
+    here and nowhere else: before that, a thinking Gemini run under-reported its output by
+    however much it thought, which on a reasoning model is most of what it generated.
+
+    `reasoning_tokens` stays the slice of that sum the vendor counted apart, never a third
+    number to price. The prompt side needs no such addition: `prompt_token_count` is the
+    effective prompt size with the cached content already in it, and Google charges nothing
+    per token to create a cache, so there is no write bucket to fill.
+    """
+    response = gemini_response(
+        prompt_token_count=800,
+        candidates_token_count=12,
+        thoughts_token_count=64,
+        cached_content_token_count=700,
+    )
+    turn = await GeminiProvider(client=FakeGemini(response)).step("SYS", history()[:1], TOOLS)
+    assert turn.usage.output_tokens == 76, "the answer plus the thinking that produced it"
+    assert turn.usage.reasoning_tokens == 64, "and the same thinking, named, never priced twice"
+    assert turn.usage.input_tokens == 800, "the prompt total already contains the cached part"
+    assert turn.usage.cache_read_tokens == 700
+    assert turn.usage.cache_write_tokens == 0, "Google has no per-token charge for writing one"
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: AnthropicProvider(client=FakeAnthropic(anthropic_response(tool_use_block()))),
+            id="anthropic",
+        ),
+        pytest.param(
+            lambda: OpenAIProvider(client=FakeOpenAI(openai_response("walk", "{}"))), id="openai"
+        ),
+        pytest.param(
+            lambda: OpenAIProvider(
+                model="gpt-6-astra", client=RefusesToolsOnChat(responses_result("walk", "{}"))
+            ),
+            id="openai-responses",
+        ),
+        pytest.param(
+            lambda: GeminiProvider(
+                client=FakeGemini(gemini_response(prompt_token_count=5, candidates_token_count=6))
+            ),
+            id="gemini",
+        ),
+    ],
+)
+async def test_a_usage_object_with_none_of_the_cache_fields_still_parses(
+    build: Callable[[], Any], _no_effort_env: None
+) -> None:
+    """The ordinary answer has none of these attributes on it: a vendor with no prompt cache,
+    an SDK older than the fields, a gateway that forwards the two counts it knows about. The
+    buckets have to read as 0 there, the way the malformed-response test above asks for an
+    error rather than a traceback, because a `getattr` that reached for one directly would take
+    the run down at its first model call on the common case rather than on a rare one.
+    """
+    turn = await build().step("S", history()[:1], TOOLS)
+    assert turn.usage.cache_read_tokens == 0 and turn.usage.cache_write_tokens == 0
+    assert turn.usage.input_tokens > 0, "and the counts that were reported still arrived"
 
 
 # ── task pictures (`--image`) in front of the frames ────────────────────────────────────

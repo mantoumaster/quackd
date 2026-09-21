@@ -155,14 +155,16 @@ own run for nothing.
 Every pilot declares for itself. The flock succeeds only when all of them declared success:
 
 ```
-+- + SUCCESS -------------------------------------------------------------+
-| every member declared success: duck, arm, cart                          |
-| members 3/3 succeeded - talk 3 - steps 0 - llm calls 9 - tokens 16703+144|
-+-------------------------------------------------------------------------+
++- + SUCCESS --------------------------------------------------------------------------------------+
+| every member declared success: duck, arm, cart                                                   |
+| members 3/3 succeeded - talk 3 - steps 0 - llm calls 9 - tokens 17936+144 - time 0.1 s - cost $0 |
++--------------------------------------------------------------------------------------------------+
 ```
 
 That count is from a `--no-memory` run. With memory on it climbs by whatever each robot has
 remembered, because every note and every past outcome goes into that pilot's next prompt.
+The cost is the flock's, summed over its members, and it reads `$0` rather than `unpriced`
+here because the scripted pilot is priced at nothing rather than left without a rate.
 
 Otherwise the worst outcome wins, in the order `error`, `aborted`, `infeasible`, `budget`,
 `failure`, and the reason names every member that did not succeed, worst first. `error` beats
@@ -181,7 +183,8 @@ reason that names it.
 ```
 runs/<timestamp>-flock-hello/
   flock.jsonl          # flock_start, every TALK, member_end per robot, flock_end
-  summary.json         # outcome, reason, per_member rollup, messages, usage, wall_elapsed_s
+  summary.json         # outcome, reason, run_name, per_member rollup, messages, usage,
+                       # cost_usd, wall_elapsed_s
   ducks/duck/          # a full solo-style transcript.jsonl and frames/ per robot
   ducks/arm/
   ducks/cart/
@@ -190,6 +193,18 @@ runs/<timestamp>-flock-hello/
 No `run.gif`, and no per-robot `summary.json`. The rollup is the flock's, and a member's
 directory must not read as a solo run. Times in `flock.jsonl` are stamped `t`, in wall
 seconds since the run started, where the coordinator's are `sim_t`.
+
+`--run-name` works here exactly as it does on a solo run: the slug goes in the directory
+name after the task (`runs/20260921-160600-flock-hello-demo-2/`) and the text as you typed
+it is kept as `run_name` in the summary. Money rolls up the way usage always has. Each
+member's block in `per_member` carries its own `cost_usd` beside its `usage`, along with the
+`wall_s` and `llm_latency_s` that member spent, and the flock's own `cost_usd` is the sum of
+them. That total is `null` the moment one member could not be priced, rather than a figure
+quietly missing a robot: a flock bill short one duck is worse than no flock bill. The rate is
+each member's own, from the catalogue entry for the model that pilot ran. `--price` is
+carried into a flock and applies to every member at that one rate, because it is a rate for
+the run rather than one per robot, and `QUACKD_PRICE` does the same thing per shell. Either is
+how you price a flock whose models quackd has no published rate for.
 
 `quackd trace <run>` replays each member's transcript in turn.
 
@@ -376,7 +391,11 @@ parameters are clamped into the schema's ranges, an invalid field is dropped on 
 (the valid ones survive), and a missing or broken call falls back to deterministic
 defaults, logged. With `--provider fake` even that call is skipped and the plan is a pure
 function. The auction, the roles and the steering are deterministic code. `summary.json`
-records `planner.llm_calls` (0 or 1) as proof.
+records `planner.llm_calls` (0 or 1) as proof, and `planner.cost_usd` beside it, priced from
+the planner's own model exactly as a solo run's turn is. That is the whole bill for this kind
+of flock: `per_duck` carries no cost because a coordinator member is a state machine that
+never calls a model. `--run-name` names the run here too, and the name you typed is kept as
+`run_name` in the summary.
 
 Per robot LLM pilots do cost N times the tokens and the latency, which is why this is still
 what the kick demo runs. They are no longer out of scope: they are the
@@ -398,8 +417,8 @@ executor. The kicker's ball approach uses perception only, exactly like a solo r
 ```
 runs/<timestamp>-flock-kick/
   flock.jsonl          # the coordinator's log: every bus message, auction, verb
-  summary.json         # outcome, kicker, auctions, bids, planner proof, per duck rollup;
-                       # with roles also robots, roles, assignments, spotter and verdicts
+  summary.json         # outcome, run_name, kicker, auctions, bids, planner proof, per duck
+                       # rollup; with roles also robots, roles, assignments, spotter, verdicts
   run.gif              # world view | the claimant's own camera, with phase captions
   ducks/duck-0/        # per robot transcript.jsonl and frames/ (no summary.json on purpose)
 ```

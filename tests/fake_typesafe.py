@@ -73,8 +73,20 @@ class NoulAnswer:
 
 
 @dataclass
+class Usage:
+    """What the API says the call cost. Both counts are `int | None` in the real SDK, which
+    documents None as "when the API did not report it", and that None is the difference
+    between a cost quackd measured and one it estimated."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
+@dataclass
 class SystemOneResult:
     answers: dict[str, Any]
+    model: str = ""
+    usage: Usage | None = None
 
 
 class FakeJev:
@@ -91,10 +103,14 @@ class FakeJev:
         answers: dict[str, Any] | None = None,
         script: list[dict[str, Any]] | None = None,
         raises: Exception | None = None,
+        usage: Usage | None = None,
     ) -> None:
         self.answers = answers or {}
         self.script = list(script or [])
         self.raises = raises
+        self.usage = usage
+        """What every turn reports spending, or None for an API that reported nothing, which
+        is the path where quackd has to estimate the size of its own question."""
         self.calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
         """(state, questions) per turn, so a test can assert what was and was not sent."""
         self.model = ""
@@ -111,7 +127,7 @@ class FakeJev:
         if self.raises is not None:
             raise self.raises
         answers = self.script.pop(0) if self.script else self.answers
-        return SystemOneResult(answers=dict(answers))
+        return SystemOneResult(answers=dict(answers), model=self.model, usage=self.usage)
 
 
 def choice(label: str, confidence: float = 0.99, **rest: float) -> ChoiceAnswer:
@@ -142,6 +158,7 @@ def install(monkeypatch: Any, fake: FakeJev) -> FakeJev:
     module.AsyncTypeSafeClient = fake  # type: ignore[attr-defined]
     module.TypeSafeClient = fake  # type: ignore[attr-defined]
     module.Choice = Choice  # type: ignore[attr-defined]
+    module.Usage = Usage  # type: ignore[attr-defined]
     module.Score = Score  # type: ignore[attr-defined]
     module.Noul = Noul  # type: ignore[attr-defined]
     module.RetryPolicy = RetryPolicy  # type: ignore[attr-defined]
