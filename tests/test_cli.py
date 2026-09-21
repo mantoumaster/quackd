@@ -1434,3 +1434,130 @@ def test_by_hand_hands_the_arm_over_and_asks_for_it_back(
     events = Transcript.read(next(runs.rglob("transcript.jsonl")))
     stages = [e["stage"] for e in events if e["kind"] == "hand_off"]
     assert stages == ["released", "held", "unloaded"], stages
+
+
+# ── --run-name and --price: what the run is called, and what it cost ────────────────────
+
+
+def _verdict_run(tmp_path: Path, *flags: str) -> Any:
+    """`hello-world` on the mock duck, at a width that leaves the counter line whole.
+
+    Not `_run_hello`: Rich folds the verdict at the terminal width, and at the default eighty
+    columns `cost $0.0163` lands half on one line and half on the next with the panel's border
+    between the halves, so a flattened `"cost $0.0163" in output` is a check that can never
+    pass. The runs directory is `tmp_path` itself, because the refusals below finish by
+    asserting that nothing at all was written."""
+    return runner.invoke(
+        app,
+        [
+            "run",
+            "hello-world",
+            "--provider",
+            "fake",
+            "--robot",
+            "microduck:mock",
+            "--runs-dir",
+            str(tmp_path),
+            "--no-gif",
+            *flags,
+        ],
+        env={"COLUMNS": "200"},
+    )
+
+
+def _counters(output: str) -> str:
+    """The one line of counters under the verdict, without the panel's border and padding.
+
+    Read as a line rather than as a substring of everything, so that "no cost counter" is a
+    claim about the counters and not about whether the word appears somewhere on screen."""
+    lines = [
+        line.strip("│| ").strip()
+        for line in output.splitlines()
+        if "steps " in line and "llm calls" in line
+    ]
+    assert len(lines) == 1, output
+    return lines[0]
+
+
+def test_a_priced_run_says_how_long_it_took_and_what_it_cost(tmp_path: Path) -> None:
+    """The two counters this release adds to the verdict.
+
+    A run of a frontier model costs real money and takes real minutes, and until now neither
+    number was anywhere on screen when it ended: you read the token counts and did the
+    arithmetic yourself, or you found out at the end of the month.
+
+    `--price` rather than a catalogued model because the only provider a test may run is
+    `fake`, which is free: `$0` would prove the counter prints and nothing about the sum
+    behind it."""
+    result = _verdict_run(tmp_path, "--price", "in=3,out=15")
+    assert result.exit_code == 0, result.output
+    counters = _counters(result.output)
+    assert "time " in counters, counters
+    assert "(model " in counters, "the split is the useful half: how much of it was waiting"
+    assert re.search(r"cost \$\d", counters), counters
+
+
+def test_a_fake_run_with_no_price_is_free_rather_than_unpriced(tmp_path: Path) -> None:
+    """`fake` sends nothing to anybody, so a run on it costs nothing and says so.
+
+    The distinction is the whole reason `Price` and `None` are different things: `unpriced`
+    means quackd has no rate for this model and the number is unknown, `$0` means the number
+    is known and it is nothing. A model with no published rate printing `$0` would be telling
+    somebody their frontier run was free."""
+    result = _verdict_run(tmp_path)
+    assert result.exit_code == 0, result.output
+    counters = _counters(result.output)
+    assert "cost $0" in counters and "unpriced" not in counters, counters
+
+
+def test_a_run_name_becomes_the_end_of_the_run_directory(tmp_path: Path) -> None:
+    """An afternoon at the bench is forty directories named after the same duck and the same
+    minute, and the only way to find the one you meant is to open them.
+
+    The name is slugged rather than taken as typed, because a run directory gets typed back
+    into `quackd trace` and pasted into a shell. It goes after the duck and before the
+    collision counter, so the timestamp still sorts the runs."""
+    result = _verdict_run(tmp_path, "--run-name", "Example 1")
+    assert result.exit_code == 0, result.output
+    (run_dir,) = list(tmp_path.iterdir())
+    assert run_dir.name.endswith("-hello-world-example-1"), run_dir.name
+
+
+def test_a_bad_run_name_or_price_is_refused_before_a_run_directory_exists(tmp_path: Path) -> None:
+    """Both are typing mistakes, and a typing mistake should cost one sentence.
+
+    They are checked at the top of the run, before a provider is built, before the robot is
+    connected and before the directory is made, so an empty `tmp_path` afterwards is the
+    claim: nothing moved and there is nothing to clean up. A run directory for a run that
+    never started is one somebody has to explain later."""
+    named = _verdict_run(tmp_path, "--run-name", "!!!")
+    assert named.exit_code == 1, named.output
+    flat = " ".join(named.output.split())  # the console wraps the line at the terminal width
+    assert "--run-name '!!!' has no ASCII letters or digits in it" in flat, flat
+    assert "Traceback" not in named.output
+    assert list(tmp_path.iterdir()) == [], "the refusal came after the run directory"
+
+    priced = _verdict_run(tmp_path, "--price", "junk")
+    assert priced.exit_code == 1, priced.output
+    flat = " ".join(priced.output.split())
+    assert "--price 'junk' is not a price" in flat, flat
+    assert "in=3,out=15" in flat, "the refusal has to show what a price looks like"
+    assert "Traceback" not in priced.output
+    assert list(tmp_path.iterdir()) == [], "the refusal came after the run directory"
+
+
+def test_the_help_offers_the_name_on_disk_and_the_price_of_the_model() -> None:
+    """A flag nobody can find is a flag nobody uses, and `--price` is the one that decides
+    whether a run can be costed at all.
+
+    `--price` is on `run` and not on `record`: a recording is a GIF for a README, and its
+    cost is not what anybody reaches for the command to learn. The brackets of the optional
+    cache rates are the same markup trap as `quackd[live]` a few tests up, which is why the
+    example is asserted whole."""
+    run_help = _help(["run", "--help"])
+    assert "--run-name" in run_help and "--price" in run_help
+    assert '"Example 1" becomes example-1' in run_help, "the help must show the name on disk"
+    assert "in=3,out=15[,cache_read=0.3,cache_write=3.75]" in run_help, "markup ate the brackets"
+    record_help = _help(["record", "--help"])
+    assert "--run-name" in record_help
+    assert "--price" not in record_help

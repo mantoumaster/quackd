@@ -51,7 +51,9 @@ from quackd.agent.providers.base import (
     ToolCall,
     Usage,
 )
-from quackd.agent.transcript import Transcript, new_run_dir, png_bytes
+from quackd.agent.providers.catalogue import Price
+from quackd.agent.providers.pricing import cost_usd, resolve_price
+from quackd.agent.transcript import Transcript, new_run_dir, png_bytes, run_label
 from quackd.duckfile.schema import DuckFile
 from quackd.memory import RobotMemory
 from quackd.perception import detector_for
@@ -196,6 +198,18 @@ class RunConfig:
     """Whether to write `summary.json` beside the transcript. False for a flock member, whose
     rollup belongs in the flock's own summary and whose directory must not read as a solo run
     (`quackd/flock/transcript.py`)."""
+    run_name: str | None = None
+    """What to call this run on disk (`quackd run --run-name`), as the person typed it.
+
+    Slugged into the run directory name after the duck (`20260915-145349-goal-example-1`) and
+    written into the record as typed. None is every run before there was a flag for it, and
+    those are named exactly as they always were.
+
+    It exists for a bench session: a hundred runs on one arm in one afternoon are a hundred
+    directories that differ only in a timestamp nobody wrote down."""
+    price: str | None = None
+    """What the model costs, as `--price` spells it, overriding the catalogue and
+    `QUACKD_PRICE` (`providers.pricing`). None asks the catalogue, which is the usual path."""
 
 
 @dataclass
@@ -212,6 +226,12 @@ class RunResult:
     """Events a view raised on and never showed. The transcript has them all."""
     jev_calls: int = 0
     """Turns the discrete stepper answered. 0 on every run that did not ask for one."""
+    summary: dict[str, Any] = field(default_factory=dict)
+    """The dict written to `summary.json`, verbatim, and the payload of `run_end`.
+
+    Carried back whole rather than unpacked into a field apiece, because the CLI prints the
+    same counters from a finished run and from a replayed transcript, and those two used to be
+    two hand-kept lists that drifted. One shape, one printer (`cli.run_counters`)."""
 
     @property
     def ok(self) -> bool:
@@ -234,7 +254,22 @@ class AgentLoop:
             # budget the run actually stopped at, and every `--max-steps` run before this one
             # did the same.
             self.duck = cfg.duck.model_copy(update={"frontmatter": self.fm})
-        self.run_dir = cfg.run_dir or new_run_dir(cfg.runs_dir, self.fm.name)
+        # `getattr`, because a config whose provider is None is a real and supported one: a
+        # run that will refuse before its first turn (a body that turned out to have no camera)
+        # never needs a model and is built without one. It prices as unpriced, which is the
+        # truth about a run that called nothing.
+        self.price: Price | None = resolve_price(
+            getattr(cfg.provider, "name", "") or "",
+            getattr(cfg.provider, "model", "") or "",
+            override=cfg.price,
+        )
+        """What this run is priced at: `--price`, `QUACKD_PRICE`, or the catalogue
+        (`providers.pricing`). None where nobody publishes a rate for this model, which is not
+        the same as free. Resolved here, before the run directory is made and before anything
+        connects, because an unparsable price should cost you a sentence rather than a run."""
+        self.run_dir = cfg.run_dir or new_run_dir(
+            cfg.runs_dir, self.fm.name, run_label(cfg.run_name) if cfg.run_name else None
+        )
         self.transcript = Transcript(self.run_dir)
         # the transcript is the record, so its failure is the run's; a console is an observer
         self.tracer = Tracer(
@@ -268,6 +303,15 @@ class AgentLoop:
         self.executor.require_verdict = True
         self.history: list[Exchange] = []
         self.usage = Usage()
+        self.llm_latency_s = 0.0
+        """Seconds this run spent waiting on the model, every call including the ones that
+        raised. The single largest number in a quackd run and, until now, the one a reader had
+        to add up by hand out of the `llm` records (ADR-0040 did exactly that)."""
+        self.cost_usd: float | None = 0.0 if self.price is not None else None
+        """What the model has cost so far, or None when there is no rate to cost it at.
+
+        None is load-bearing: a model quackd has no rate for must not report `$0.00`, which
+        would read as a free run rather than an unpriced one."""
         self._handed_over = False
         """Somebody answered the invitation to place this arm, so the gripper may be holding
         whatever they put in it.
@@ -287,6 +331,9 @@ class AgentLoop:
         refuses outright, and would teach every other model that answering nothing is fine."""
         self.highlights: list[str] = []
         """Verb results worth carrying into the episode memory (the last few that went ok)."""
+        self.summary: dict[str, Any] = {}
+        """What `run_end` said, kept for a caller that never gets a `RunResult` because the
+        run raised its way out. A flock reads it off the loop to cost a member that died."""
 
     # ── narration ───────────────────────────────────────────────────────────────────
 
@@ -863,6 +910,21 @@ class AgentLoop:
                 images=[p.name for p in cfg.task_images],
                 flock=cfg.link.describe() if cfg.link is not None else None,
                 connect_s=connect_s,
+                # What this run was called and when it began. The directory name held both
+                # until now, at second precision on the local clock, and stopped being
+                # evidence the moment anybody renamed the folder or copied it off the machine.
+                run_name=cfg.run_name,
+                started_at=self.transcript.started_at_iso,
+                # The rate this run is costed at, written down rather than looked up later, so
+                # a replay prices it at what it cost on the day rather than at whatever the
+                # catalogue says months from now (`providers.pricing`). `null` is a model
+                # quackd has no rate for, and says so rather than implying a free one.
+                price=self.price.record() if self.price is not None else None,
+                **(
+                    {"jev_price": stepper.price.record()}
+                    if stepper is not None and stepper.price is not None
+                    else {}
+                ),
             )
             outcome: Outcome = "error"
             reason = "loop exited unexpectedly"
@@ -968,21 +1030,45 @@ class AgentLoop:
                     llm_started = time.perf_counter()
                     try:
                         turn = await cfg.provider.step(system, history, tools)
-                    except Exception as e:
-                        # the call that failed is part of the record: what, and after how long
+                    except BaseException as e:
+                        # BaseException, not Exception. The second Ctrl-C raises a bare
+                        # KeyboardInterrupt and a flock cancels its members, and both land
+                        # here: with `Exception` the wait was dropped from `llm_latency_s` AND
+                        # no `llm` record was written, so the seconds a person actually spent
+                        # waiting on a hanging model could not even be recovered by hand. That
+                        # is the one case the number exists for.
+                        #
+                        # The call that failed is part of the record: what, and after how long.
+                        # Its seconds count towards `llm_latency_s` like any other call's,
+                        # because the run waited every one of them, and a provider that hangs
+                        # until it times out is exactly the case somebody reads that number
+                        # to find.
+                        latency_s = round(time.perf_counter() - llm_started, 3)
+                        self.llm_latency_s += latency_s
                         self._emit(
                             "llm",
                             step=self.budget.steps,
                             provider=cfg.provider.name,
                             model=cfg.provider.model,
                             error=f"{type(e).__name__}: {e}",
-                            latency_s=round(time.perf_counter() - llm_started, 3),
+                            latency_s=latency_s,
                         )
                         raise
+                    # One reading of the clock and one costing, used by all three records
+                    # below. They each called `perf_counter()` for themselves before, so the
+                    # shadow record and the trace disagreed about the same call by however
+                    # long the lines between them took.
+                    latency_s = round(time.perf_counter() - llm_started, 3)
+                    self.llm_latency_s += latency_s
                     self.usage = self.usage + turn.usage
+                    turn_usage = turn.usage.model_dump()
+                    turn_cost = cost_usd(turn_usage, self.price) if self.price is not None else None
+                    if turn_cost is not None and self.cost_usd is not None:
+                        self.cost_usd = round(self.cost_usd + turn_cost, 6)
                     last_llm = {
-                        "latency_s": round(time.perf_counter() - llm_started, 3),
-                        "usage": turn.usage.model_dump(),
+                        "latency_s": latency_s,
+                        "usage": turn_usage,
+                        "cost_usd": turn_cost,
                     }
                     self._emit(
                         "llm",
@@ -991,12 +1077,14 @@ class AgentLoop:
                         model=cfg.provider.model,
                         text=turn.text,
                         tool_calls=[tc.model_dump() for tc in turn.tool_calls],
-                        usage=turn.usage.model_dump(),
+                        usage=turn_usage,
                         stop_reason=turn.stop_reason,
                         thinking=turn.thinking,
-                        latency_s=round(time.perf_counter() - llm_started, 3),
+                        latency_s=latency_s,
                         usage_total=self.usage.model_dump(),
                         llm_calls=self.budget.llm_calls,
+                        cost_usd=turn_cost,
+                        cost_usd_total=self.cost_usd,
                     )
                     self.budget.check_time()
 
@@ -1195,14 +1283,36 @@ class AgentLoop:
                 await cfg.transport.close()
             if note := getattr(cfg.transport, "close_note", None):
                 self._note(str(note))
+            # The whole run, on the transcript's own clock, which started the instant the
+            # record opened rather than when the budget did. Read once so `ended_at`,
+            # `wall_s` and `run_end.t` are three spellings of one number.
+            wall_s = round(self.transcript.elapsed_s, 3)
             summary = {
                 "duck": self.fm.name,
+                "run_name": cfg.run_name,
                 "outcome": outcome,
                 "reason": reason,
                 "steps": self.budget.steps,
                 "llm_calls": self.budget.llm_calls,
+                # Three clocks that were one, and they answer different questions. `elapsed_s`
+                # is the budget's: it starts after `run_start`, restarts after a `--by-hand`
+                # handover, and on a simulator it is the simulator's own time, which is what
+                # `max_minutes` is checked against and all it is. `wall_s` is the run as
+                # somebody standing next to the robot experienced it, connect and teardown
+                # included. `llm_latency_s` is how much of that was spent waiting on the
+                # model, which on the arm was 62.1 seconds of 78.8 and had to be added up by
+                # hand to say so.
                 "elapsed_s": round(self.budget.elapsed_s, 2),
+                "started_at": self.transcript.started_at_iso,
+                "ended_at": self.transcript.ended_at_iso(wall_s),
+                "wall_s": wall_s,
+                "connect_s": connect_s,
+                "llm_latency_s": round(self.llm_latency_s, 3),
                 "usage": self.usage.model_dump(),
+                # What it cost and what it was costed at. `cost_usd` is the model only: the
+                # stepper bills separately and keeps its figure in its own block below.
+                "price": self.price.record() if self.price is not None else None,
+                "cost_usd": self.cost_usd,
                 "provider": cfg.provider.name,
                 "model": cfg.provider.model,
                 "transport": backend_name(cfg.transport),
@@ -1220,6 +1330,10 @@ class AgentLoop:
             # the only unguarded statements in this teardown used to be these three, so a
             # disk that filled at `run_end` skipped summary.json, leaked the file handle,
             # skipped the episode, and replaced the run's real exception with an OSError
+            # Kept on the loop as well as returned, because a member that raises never
+            # reaches its `return RunResult(...)` and the flock would otherwise throw away the
+            # wall clock, the model seconds and the bill it had already measured.
+            self.summary = summary
             try:
                 self._emit("run_end", **summary)
             finally:
@@ -1248,6 +1362,7 @@ class AgentLoop:
             final_state=final_state,
             trace_dropped=self.tracer.dropped,
             jev_calls=self.budget.stepper_calls,
+            summary=summary,
         )
 
 

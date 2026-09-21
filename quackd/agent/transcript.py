@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import time
+import unicodedata
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,15 +26,65 @@ if TYPE_CHECKING:
     from quackd.trace import TraceEvent
 
 
-def new_run_dir(base: str | Path = "runs", name: str | None = None) -> Path:
+def run_label(text: str) -> str:
+    """What `--run-name "Example 1"` is called on disk: `example-1`.
+
+    The same slug every other name in quackd already is (`registry._NAME_RE`,
+    `adapters.factory._NAME_RE`, `memory.robot_slug`), because a run directory is typed back
+    into `quackd trace` and pasted into a shell, and a space or a colon in it is a quoting
+    problem on two operating systems rather than one.
+
+    This raises where `robot_slug` falls back to a default, and the difference is the whole
+    point of the flag: a name that quietly became `run` would leave a bench session of a
+    hundred runs in a hundred directories nobody can tell apart, which is the thing somebody
+    reached for `--run-name` to avoid.
+
+    Accents are folded rather than deleted, so `Cafe 1` and `Café 1` land in the same place
+    instead of the second one reading `caf-1`. A name in a script with no ASCII form at all is
+    refused, and the refusal says ASCII rather than "letters", because a directory name typed
+    back into two shells on two operating systems is not the place to find out otherwise.
+    """
+    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", folded.lower()).strip("-")[:64].strip("-")
+    if not slug:
+        raise ValueError(
+            f"--run-name {text!r} has no ASCII letters or digits in it, so there is nothing "
+            "to name the directory after"
+        )
+    return slug
+
+
+def new_run_dir(
+    base: str | Path = "runs", name: str | None = None, label: str | None = None
+) -> Path:
+    """`runs/20260915-145349-goal-example-1/`: when, what, and what you called it.
+
+    `label` is `--run-name`, already slugged, and it goes last so the timestamp prefix and the
+    duck name in the middle both still resolve in `quackd trace`. The collision counter goes
+    after it for the same reason: two runs named the same thing in the same second read as
+    `-example-1` and `-example-1-1`, and the suffix is still the last thing in the name.
+    """
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     suffix = f"-{name}" if name else ""
+    if label:
+        suffix += f"-{label}"
     path = Path(base) / f"{stamp}{suffix}"
     i = 1
     while path.exists():
         path = Path(base) / f"{stamp}{suffix}-{i}"
         i += 1
-    path.mkdir(parents=True, exist_ok=False)
+    try:
+        path.mkdir(parents=True, exist_ok=False)
+    except OSError as e:
+        # A name adds up to 65 characters to every path inside the run, frames included, and
+        # on a Windows box without long paths enabled that is how a `--run-name` turns into a
+        # bare traceback from the standard library. Say which path and how long it was: the
+        # number is the whole diagnosis and nothing else in the message hints at it.
+        raise OSError(
+            f"{e.strerror or e}: could not make the run directory {str(path)!r} "
+            f"({len(str(path.resolve()))} characters). A shorter --run-name or a shorter "
+            "--runs-dir will fit."
+        ) from e
     return path
 
 
@@ -50,6 +102,16 @@ class Transcript:
         self.images_dir = run_dir / "images"
         self._fh = self.path.open("a", encoding="utf-8")
         self._t0 = time.monotonic()
+        self.started_at = datetime.now(UTC)
+        """The wall clock at `t = 0`, read in the same breath as `_t0`.
+
+        Every record carries `t`, seconds on the monotonic clock since this line ran, so one
+        absolute time at the top is enough to place all of them: a record's wall time is
+        `started_at + t`. Stamping each of the two hundred intents in a steering burst with
+        its own ISO string would cost bytes for an answer that is already derivable.
+
+        Until this existed the only absolute time a run had was the name of its directory,
+        which is the local clock at second precision and gone the moment anybody renames it."""
         self.events = 0
         self.frame_count = 0
 
@@ -69,6 +131,33 @@ class Transcript:
             # lose to well under one verb's worth of lines.
             self._fh.flush()
         self.events += 1
+
+    @property
+    def started_at_iso(self) -> str:
+        """When `t = 0` was, as the record spells it: `2026-09-21T10:15:02.123Z`."""
+        return self.started_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    @property
+    def elapsed_s(self) -> float:
+        """Seconds since this transcript opened, on the clock every record's `t` is on.
+
+        Not the budget's clock (`safety.Budget.elapsed_s`), which starts later, restarts after
+        a `--by-hand` handover and runs on the simulator's time on a simulator. This one is
+        the whole run, wall seconds, start to finish."""
+        return time.monotonic() - self._t0
+
+    def ended_at_iso(self, wall_s: float) -> str:
+        """`started_at` plus the run's own span, rather than a second reading of the clock.
+
+        A laptop that synced its clock mid-run, or slept through part of one, moves
+        `datetime.now()` by an amount the monotonic clock never sees. Deriving the end from
+        the start keeps `ended_at - started_at == wall_s` true of every record quackd writes,
+        which is the arithmetic anybody reading these files will do without checking."""
+        return (
+            (self.started_at + timedelta(seconds=wall_s))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
 
     def sink(self, event: TraceEvent) -> None:
         """The transcript as a `Tracer` record: the event's kind and payload, on the

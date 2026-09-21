@@ -302,6 +302,32 @@ def test_the_trace_is_documented_where_it_is_configured() -> None:
             assert needle in text, f"{path} does not mention {needle!r}"
 
 
+def test_the_price_of_a_run_is_documented_where_it_is_configured() -> None:
+    """The same rule the trace and the catalogue are held to, for the thing that decides
+    whether a run's cost counter reads a number or `cost unpriced`.
+
+    A rate is the one knob here somebody only goes looking for after a bill, so it has to be
+    findable from the page they are already on: the README's usage table for the flag, the
+    architecture page for the order the three sources are tried in, `.env.example` for the
+    variable, and jev.md for the stepper's own rate, which is a separate variable because it
+    prices a separate vendor's tokens.
+
+    The `.env.example` needles carry their `=` on purpose. `QUACKD_PRICE` is also spelled in
+    the prose above the stepper's variable ("the same syntax as QUACKD_PRICE above"), so a
+    bare substring check would still pass with the line that actually sets it deleted."""
+    for path, needles in (
+        ("README.md", ("--price", "--run-name")),
+        ("docs/architecture.md", ("QUACKD_PRICE", "--price", "--run-name")),
+        ("docs/jev.md", ("QUACKD_JEV_PRICE",)),
+        (".env.example", ("QUACKD_PRICE=", "QUACKD_JEV_PRICE=")),
+        # where somebody lands who has already been surprised by a figure, or by its absence
+        ("docs/faq.md", ("--price", "--run-name", "unpriced")),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+
+
 def test_task_pictures_are_documented_where_they_are_configured() -> None:
     """A flag whose whole point is that the model can see the thing has to be findable by
     somebody who has the thing and does not know the flag exists. The README quickstart is

@@ -722,7 +722,17 @@ the pose you set rather than the fold, which is the whole point of the flag, and
 07](#or-start-from-a-pose-you-set-by-hand) rather than an empty hand.
 
 Every run writes `runs/<timestamp>-<name>/` with the full transcript, every frame quackd
-captured and a summary. `quackd trace` replays any of it afterwards.
+captured and a summary. `quackd trace` replays any of it afterwards, and the summary now says
+when the run started and ended, how much of it was spent waiting on the model, and what the
+model calls cost.
+
+> [!TIP]
+> **Name your runs if you are doing more than a few.** `--run-name "example 1"` puts the name
+> on the directory, so the afternoon reads back as
+> `runs/20260915-145349-goal-example-1/` instead of thirty timestamps you would have had to
+> write down at the time. `quackd trace example-1` then finds that run by the name you gave it,
+> and prefers an exact match over a newer directory that merely contains the text, so
+> `example-1` does not hand you `example-19`.
 
 <br>
 

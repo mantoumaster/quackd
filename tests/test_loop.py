@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ from PIL import Image
 from quackd.adapters.base import AdapterError
 from quackd.agent.images import load_task_images
 from quackd.agent.loop import AgentLoop, RunConfig, run_duck
+from quackd.agent.providers import pricing
 from quackd.agent.providers.base import (
     Exchange,
     Observation,
@@ -22,6 +25,7 @@ from quackd.agent.providers.base import (
     ToolCall,
     Usage,
 )
+from quackd.agent.providers.catalogue import Price
 from quackd.agent.providers.fake import FakeProvider
 from quackd.agent.providers.openai import render_messages
 from quackd.agent.transcript import Transcript
@@ -2545,3 +2549,369 @@ async def test_a_terminal_that_goes_away_mid_wait_ends_the_run_instead_of_hangin
     assert "nobody placed the arm" in result.reason
     assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
     assert mock.torque is False and mock.close_note is None, "and it is down and let go of"
+
+
+# ── the clocks, the money and the name a run was given ──────────────────────────────────
+#
+# A transcript counted tokens from the first release and never said what they cost, and the
+# only absolute time a run had was the name of its directory. Both are read off a finished
+# run by somebody who was not in the room, which is why they go in the record rather than on
+# the terminal: `run_start` carries the rate and the wall clock, `summary.json` carries what
+# the run spent of both, and `RunResult.summary` hands the CLI the same dict so the live
+# verdict and `quackd trace` cannot drift apart.
+
+
+class FailsAfterOneAnswer(ThinkingProvider):
+    """A pilot that answers once and then dies, which is what a 429 halfway through a run
+    looks like from inside the loop. It inherits the usage `ThinkingProvider` reports, so the
+    successful call has tokens on it and the failed one has nothing but seconds.
+
+    It waits before it raises, and that is the whole point of it: a failure that came back
+    instantly would leave a latency of 0.0 in the record, and a total that dropped it would
+    still be arithmetically correct. The wait makes the difference visible."""
+
+    name = "failing-thinker"
+    waits_s = 0.02
+
+    async def step(
+        self, system: str, history: list[Exchange], tools: list[dict[str, Any]]
+    ) -> ProviderTurn:
+        if self.calls:
+            self.calls += 1
+            await asyncio.sleep(self.waits_s)
+            raise ProviderError("anthropic: rate limited (retry-after 7s)")
+        return await super().step(system, history, tools)
+
+
+class UnlistedModel(ThinkingProvider):
+    """A real vendor and a model the catalogue has never heard of.
+
+    Not an exotic case: it is every model in the week after it launches, and every private
+    deployment name a company puts in front of one."""
+
+    name = "openai"
+    model = "gpt-not-a-model-yet"
+
+
+def _quack_then_done() -> ThinkingProvider:
+    """Two turns that cost tokens: one verb the verdict gate lets through, then the
+    declaration. Two `llm` records is the smallest run that can show a running total
+    accumulating rather than merely existing."""
+    return ThinkingProvider(
+        ToolCall(name="quack", arguments={"text": "hi"}),
+        ToolCall(name="declare_success", arguments={"reason": "quacked"}),
+    )
+
+
+async def test_the_record_says_in_absolute_time_when_the_run_began(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Every record carries `t`, seconds on a monotonic clock, and nothing said what second
+    zero was. The directory name was the only answer, and it is the local clock at second
+    precision, gone the moment anybody renames the folder or copies it off the machine.
+
+    It is aware and it is UTC because a bench in one timezone and a CI job in another compare
+    their runs by subtracting these."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    start = events[0]
+    assert start["kind"] == "run_start"
+    began = datetime.fromisoformat(start["started_at"])
+    assert began.tzinfo is not None and began.utcoffset() == timedelta(0), start["started_at"]
+    assert start["started_at"].endswith("Z"), "the record spells UTC with a Z"
+
+    end = next(e for e in events if e["kind"] == "run_end")
+    assert end["started_at"] == start["started_at"], "one reading, quoted twice"
+    assert result.summary["started_at"] == start["started_at"]
+
+
+async def test_the_end_of_a_run_is_its_start_plus_the_span_the_run_measured(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`ended_at` is derived from `started_at` and `wall_s` rather than read off the clock a
+    second time, so `ended_at - started_at == wall_s` is true of every record quackd writes,
+    including on a laptop that synced its clock or slept through part of a run.
+
+    Nothing here compares `wall_s` with `elapsed_s`, and nothing should. `elapsed_s` is the
+    budget's clock, which reads the transport's own time, and on a simulator that is the
+    simulator's: a real sim2d run recorded `elapsed_s` 7.8 against a `wall_s` of 0.172. They
+    are two different questions rather than two readings of one, and an assertion ordering
+    them would fail on the first simulator run to reach it."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    summary = result.summary
+    began = datetime.fromisoformat(summary["started_at"])
+    ended = datetime.fromisoformat(summary["ended_at"])
+    assert summary["wall_s"] >= 0
+    assert (ended - began).total_seconds() == pytest.approx(summary["wall_s"], abs=0.001)
+
+    end = next(
+        e for e in Transcript.read(result.run_dir / "transcript.jsonl") if e["kind"] == "run_end"
+    )
+    # `run_end` is written immediately after `wall_s` is read, on the same clock, so its own
+    # `t` is that number plus however long building the summary took
+    assert end["t"] >= summary["wall_s"]
+    assert end["t"] == pytest.approx(summary["wall_s"], abs=0.5)
+    assert summary["connect_s"] >= 0
+
+
+async def test_the_seconds_spent_waiting_on_the_model_count_the_call_that_raised(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`llm_latency_s` is the largest number in most runs, and a reader used to have to add it
+    up by hand out of the `llm` records to say so. A provider that hangs until it times out is
+    exactly the case somebody reads it to find, so the call that raised is in the sum: the run
+    waited every one of those seconds too, and a total that quietly dropped them would be
+    smallest on the runs where it mattered most."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    loop = AgentLoop(
+        RunConfig(
+            duck=hello_duck,
+            provider=FailsAfterOneAnswer(ToolCall(name="quack", arguments={"text": "hi"})),
+            transport=MockTransport(),
+            run_dir=run_dir,
+            runs_dir=tmp_path,
+        )
+    )
+    with pytest.raises(ProviderError):
+        await loop.run()
+
+    events = Transcript.read(run_dir / "transcript.jsonl")
+    calls = [e for e in events if e["kind"] == "llm"]
+    assert len(calls) == 2, "one answer and one failure"
+    assert "error" not in calls[0] and "rate limited" in calls[1]["error"]
+    assert calls[1]["latency_s"] > 0, "the failed call really did take time, so dropping it shows"
+    assert loop.llm_latency_s > calls[0]["latency_s"]
+    assert loop.llm_latency_s == pytest.approx(sum(c["latency_s"] for c in calls), abs=1e-9)
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["llm_latency_s"] == pytest.approx(loop.llm_latency_s, abs=0.0005)
+
+
+async def test_every_call_is_costed_at_the_rate_the_environment_named(
+    hello_duck: DuckFile, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The arithmetic a reader of a transcript used to do by hand against a rate card they had
+    to go and find, done once per call and accumulated as the run goes, so a run killed
+    halfway still says what it had spent by then.
+
+    The rate is checked against a `Price` built here rather than against the one the run
+    parsed, because a parser agreeing with itself about the wrong rate would pass."""
+    monkeypatch.setenv("QUACKD_PRICE", "in=3,out=15,cache_read=0.3,cache_write=3.75")
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=_quack_then_done(),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    rate = events[0]["price"]
+    assert rate["source"] == "QUACKD_PRICE", "and the record says which of the three it was"
+    assert (rate["input"], rate["output"]) == (3.0, 15.0)
+    assert (rate["cache_read"], rate["cache_write"]) == (0.3, 3.75)
+    assert rate["unit"] == "USD per million tokens"
+    assert rate["checked"] is None, "only a catalogue rate carries the date it was read"
+
+    price = Price(input=3.0, output=15.0, cache_read=0.3, cache_write=3.75, source="QUACKD_PRICE")
+    calls = [e for e in events if e["kind"] == "llm"]
+    assert len(calls) == 2
+    running = 0.0
+    for call in calls:
+        assert call["cost_usd"] == pricing.cost_usd(call["usage"], price)
+        running = round(running + call["cost_usd"], 6)
+        assert call["cost_usd_total"] == running
+    assert running > 0, "the fixture spends tokens, so the run cost something"
+    assert result.summary["cost_usd"] == running
+    assert result.summary["price"] == rate
+
+
+async def test_a_price_on_the_run_beats_one_in_the_environment(
+    hello_duck: DuckFile, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--price` is somebody typing the rate they negotiated at the moment they start the run;
+    `QUACKD_PRICE` is whatever a `.env` three directories up happens to say. The flag wins,
+    and the record names which of the two it was, because months later that is the only way to
+    tell a deliberate rate from an inherited one."""
+    monkeypatch.setenv("QUACKD_PRICE", "in=99,out=99")
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=_quack_then_done(),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+            price="in=3,out=15",
+        )
+    )
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    rate = events[0]["price"]
+    assert rate["source"] == "--price"
+    assert (rate["input"], rate["output"]) == (3.0, 15.0), "not the 99 the environment asked for"
+    call = next(e for e in events if e["kind"] == "llm")
+    assert call["cost_usd"] == pricing.cost_usd(
+        call["usage"], Price(input=3.0, output=15.0, source="--price")
+    )
+
+
+async def test_a_model_quackd_has_no_rate_for_records_null_and_never_zero(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """The expensive kind of wrong. `$0.00` beside a frontier model reads as a free run, and
+    somebody adding up a week of them believes it and goes on running them; `null` reads as a
+    question and gets asked. If an unpriced run and a genuinely free one both said zero,
+    neither number would mean anything.
+
+    The tokens are still counted. It is only the money that is unknown, and the record says
+    exactly that much and no more."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=UnlistedModel(
+                ToolCall(name="quack", arguments={"text": "hi"}),
+                ToolCall(name="declare_success", arguments={"reason": "quacked"}),
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert events[0]["price"] is None, "no rate, rather than a rate of nothing"
+    calls = [e for e in events if e["kind"] == "llm"]
+    assert calls and all(c["cost_usd"] is None for c in calls)
+    assert all(c["cost_usd_total"] is None for c in calls)
+    assert result.summary["price"] is None and result.summary["cost_usd"] is None
+    assert result.summary["usage"]["input_tokens"] > 0, "the tokens were counted all the same"
+
+
+async def test_the_scripted_pilot_is_free_rather_than_unpriced(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`fake` calls nothing and bills nothing, so `$0` is the truth about it rather than an
+    absence of one, and it is the one shape of run where a zero is the right answer. It is
+    also what makes the whole cost path testable with no key and no bill."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    rate = events[0]["price"]
+    assert rate["source"] == "fake" and (rate["input"], rate["output"]) == (0.0, 0.0)
+    calls = [e for e in events if e["kind"] == "llm"]
+    assert calls and all(c["cost_usd"] == 0.0 for c in calls)
+    assert result.summary["cost_usd"] == 0.0
+    assert result.summary["cost_usd"] is not None, "free is a number; unpriced is not"
+
+
+async def test_the_result_hands_back_the_summary_that_was_written_to_disk(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """One dict, written once, read three ways. The CLI prints the same counters from a run
+    that has just finished and from a transcript replayed a month later, and those used to be
+    two hand-kept lists that drifted: a counter added to one was missing from the other until
+    somebody noticed. `RunResult.summary`, `summary.json` and the `run_end` record are the
+    same mapping now, so a number that is right in one of them is right in all three."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    on_disk = json.loads((result.run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert result.summary == on_disk
+    end = next(
+        e for e in Transcript.read(result.run_dir / "transcript.jsonl") if e["kind"] == "run_end"
+    )
+    assert {k: v for k, v in end.items() if k not in ("t", "kind")} == on_disk
+
+
+async def test_a_named_run_is_called_that_on_disk_and_quoted_as_typed_in_the_record(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """A bench afternoon is a hundred runs on one arm, and a hundred directories that differ
+    only in a timestamp nobody wrote down.
+
+    The slug goes in the directory name, because a run directory is typed back into `quackd
+    trace` and pasted into a shell, and a space in one is a quoting problem on two operating
+    systems. The record keeps the words that were typed, because `example-1` is not what the
+    person called it. The label lands after the duck name and before any collision counter, so
+    both the timestamp prefix and the duck name still resolve."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+            run_name="Example 1",
+        )
+    )
+    assert re.fullmatch(r"\d{8}-\d{6}-hello-world-example-1", result.run_dir.name), (
+        result.run_dir.name
+    )
+    start = Transcript.read(result.run_dir / "transcript.jsonl")[0]
+    assert start["run_name"] == "Example 1", "as typed, not as slugged"
+    assert result.summary["run_name"] == "Example 1"
+
+
+async def test_a_run_nobody_named_is_called_exactly_what_it_always_was(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Every run in the README, and every run recorded before there was a flag for this, is
+    one of these. The name gains nothing at all, and the field is null rather than absent so a
+    reader never has to guess which kind of record they are holding."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert re.fullmatch(r"\d{8}-\d{6}-hello-world", result.run_dir.name), result.run_dir.name
+    start = Transcript.read(result.run_dir / "transcript.jsonl")[0]
+    assert start["run_name"] is None and result.summary["run_name"] is None
+
+
+async def test_a_name_with_nothing_to_slug_is_refused_before_a_directory_exists(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`--run-name "!!!"` has nothing in it to name a directory after. Falling back to a
+    default the way `memory.robot_slug` does would give that bench afternoon a hundred folders
+    called the same thing, which is the exact outcome somebody reached for the flag to avoid.
+
+    So it raises, and it raises while the loop is still being built: before the run directory
+    is made and before anything connects to a robot. A typo costs a sentence rather than a
+    run, and leaves nothing behind to clean up."""
+    runs = tmp_path / "runs"
+    with pytest.raises(ValueError, match="has no ASCII letters or digits"):
+        await run_duck(
+            RunConfig(
+                duck=hello_duck,
+                provider=FakeProvider.for_duck("hello-world"),
+                transport=MockTransport(),
+                runs_dir=runs,
+                run_name="!!!",
+            )
+        )
+    assert not runs.exists(), "nothing was written for a run that never started"

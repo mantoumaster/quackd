@@ -100,6 +100,7 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 | `quackd/sim2d/` | The cartoon world, two renders (top-down, duck-cam), the GIF recorder, the optional live window. |
 | `quackd/perception/` | `Detection` + `Detector`; the HSV colour-blob default; the lazy YOLO extra. |
 | `quackd/agent/` | The loop, the prompts, the transcript, and one provider per vendor behind `LLMProvider`. `images.py` is what `--image` goes through: it opens whatever a person passed, shrinks anything over 1568 px on a side or 1.5 MB, re-encodes every one of them to PNG, and hands back names the model can refer to, so a provider only ever meets PNG bytes and a caption. `providers/catalogue.py` is the single source of truth for model names: every id `--model` accepts, its label, its status and whether the vendor documents image input, in a module that imports nothing but the standard library so the CLI can read it without paying for an SDK. `providers/factory.py` turns `--provider` and `--model` into a provider, refusing an unlisted cloud id before it reads a key. |
+| `quackd/agent/providers/pricing.py` | Tokens into dollars: the rate a run is costed at (`--price`, then `QUACKD_PRICE`, then the catalogue's own entry, with `fake` and the local presets free by what they are rather than by any table) and the arithmetic that turns a `Usage` into a figure. A rate quackd does not have is `None` and prints `cost unpriced`, never `$0`, because a frontier model that reads as free is the one failure here that costs somebody real money; and where a rate is missing but tokens are not, the estimate goes up, so an unpublished cache rate is billed at the full input rate. Standard library and the catalogue and nothing else, because it sits beside the module every `--help` and every press of TAB already imports. |
 | `quackd/agent/jev.py` | The optional discrete stepper (`quackd run --jev`, [jev.md](jev.md), [ADR-0040](adr/0040-a-discrete-stepper-in-front-of-the-model.md)). It decides which of a body's tools are a *choice* rather than a number, from each tool's own JSON schema and nothing else, so `move_joints` is refused on every arm and a body quackd has never shipped is classified by the same rule as the seven that are. Builds the named text state and the four questions, and reads the answer against a confidence floor per verb class. Nothing here imports `typesafe_sdk` at module scope: the loop imports this file on every run and must not pay for a vendor that is not in the run. |
 | `quackd/trace.py` | The run narrating itself: `TraceEvent`, the `Tracer` that fans out to the transcript and to any number of views, the transport wrapper that turns every intent into an event, and the renderer both surfaces share ([ADR-0029](adr/0029-tracing.md)). |
 | `quackd/memory.py` | What a robot keeps between runs: one JSONL file per `adapter:backend`, or per registered robot name, with the notes the pilot saved (`remember`) and an episode per run; rendered into the prompt next time ([memory.md](memory.md), ADR-0025, ADR-0034). |
@@ -155,8 +156,16 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
    velocity every 100 ms to feed the robot's deadman.
 5. **Record.** Every step above is a `TraceEvent`, and `transcript.jsonl` is the sink that
    never turns off (every kind it writes is in the table below); `frames/` as the run goes and
-   `images/` once at the top of it; `summary.json` at the end; `run.gif` from the recorder in either simulator. With
-   memory on, the run ends by appending one episode line to the robot's memory file
+   `images/` once at the top of it; `summary.json` at the end; `run.gif` from the recorder in
+   either simulator. The directory all of that lands in says when, which task, and what you
+   called it: `runs/20260921-155444-find-and-kick-example-1` is `--run-name "Example 1"`,
+   slugged. The label goes after the task name and before the collision counter, so the
+   timestamp prefix and the task name both still resolve in `quackd trace` and two runs named
+   the same thing in the same second read as `-example-1` and `-example-1-1`. A name with no
+   letter or digit in it is refused before anything connects, alongside a `--price` nobody can
+   parse, because a typing mistake should cost you one sentence rather than a robot moving and
+   a directory to clean up after. With memory on, the run ends by appending one episode line
+   to the robot's memory file
    ([memory.md](memory.md)). The terminal and the MCP tool results are views of the same
    stream (see [Trace](#trace)).
 
@@ -182,13 +191,13 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | Kind | What it records |
 |---|---|
 | `task_image` | one per picture `--image` brought to the task, written before `run_start` so a reader of the record meets the pictures the task is about before the run that was given them: where it landed under `images/`, the name the model sees it by, and how many bytes of PNG that is |
-| `run_start` | contract, system prompt, tool names, robot manifest, the names of the pictures the task came with (`images`, empty on a run given none), any `extra_body` sent with every request, how long connecting took |
+| `run_start` | contract, system prompt, tool names, robot manifest, the names of the pictures the task came with (`images`, empty on a run given none), any `extra_body` sent with every request, how long connecting took (`connect_s`), what the run was called (`run_name`, the text as it was typed rather than the slug the directory got), when `t = 0` was (`started_at`, the one absolute time in the whole file: every other record's wall time is that plus its own `t`), and the rate this run is being costed at (`price`, and `jev_price` beside it when a stepper ran), written down here rather than looked up at replay so a run is always priced at what it cost on the day |
 | `observation` | what the model was shown this turn, and how long gathering it took |
 | `llm_request` | how many messages went out, how many still carry an image (`with_image`), how many camera frames that is (`images`, which differs from `with_image` only on a body with several cameras), and separately how many pictures came with the task rather than from a camera (`task_pictures`, counted on its own and never inside `images`, and the same number every step of a run that was given any), whether this is the re-prompt |
-| `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total), stop_reason, latency, or `error` when the call failed |
+| `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total, `input_tokens` being the whole prompt with `cache_read_tokens` and `cache_write_tokens` the slices of it that were billed at cache rates rather than additions to it), stop_reason, latency, and what this call cost beside what the run has spent so far (`cost_usd` and `cost_usd_total`, both null on a run quackd has no rate for, because a frontier model recorded as zero reads as a free one), or `error` when the call failed |
 | `enforce` | zero tool calls (re-prompt) or several (first only) |
-| `jev` | one per turn the optional discrete stepper was asked, in both of its modes and with the same fields in each, so an `--jev on` row and an `--jev shadow` row can be read against each other: the labels it was offered, the one it chose, the whole probability distribution, its confidence, the floor that applied and which gate fired (`taken` · `below_floor` · `escalate` · `repeat` · `handover` · `unreadable` · `done` · `need_human` · `not_offered` · `state_too_large` · `error`), the two Noul values, how long it took, how large the state was and which fields were trimmed to fit ([jev.md](jev.md)) |
-| `jev_shadow` | only on `--jev shadow`, after that step's `llm` record: what the stepper would have chosen beside what the model actually chose on the same reading, whether they agree (on the whole call, since `gripper(open=true)` and `gripper(open=false)` are opposite instructions that share a name, with `same_verb` recording the coarser comparison beside it), whether the stepper cleared its floor, and what each of them cost. A shadow run changes nothing, so this is the only trace it leaves |
+| `jev` | one per turn the optional discrete stepper was asked, in both of its modes and with the same fields in each, so an `--jev on` row and an `--jev shadow` row can be read against each other: the labels it was offered, the one it chose, the whole probability distribution, its confidence, the floor that applied and which gate fired (`taken` · `below_floor` · `escalate` · `repeat` · `handover` · `unreadable` · `done` · `need_human` · `not_offered` · `state_too_large` · `error`), the two Noul values, how long it took, how large the state was and which fields were trimmed to fit, and what the question itself cost: `usage` (the tokens it spent), `usage_estimated` (true where TypeSafe reported no count of its own and quackd fell back to the state plus the questions at four characters to the token, because an estimate a reader cannot tell from a measurement is worse than no number at all) and `cost_usd` at the stepper's own published rate. Those three are absent on a turn that never reached the network at all, which is every `not_offered` and `state_too_large` gate and a call that failed before the request went out, because a machine with no `typesafe_sdk` installed owes nobody anything ([jev.md](jev.md)) |
+| `jev_shadow` | only on `--jev shadow`, after that step's `llm` record: what the stepper would have chosen beside what the model actually chose on the same reading, whether they agree (on the whole call, since `gripper(open=true)` and `gripper(open=false)` are opposite instructions that share a name, with `same_verb` recording the coarser comparison beside it), whether the stepper cleared its floor, and what each of them cost in seconds and in dollars (`llm_latency_s` with `llm_usage` and `llm_cost_usd` for the model, `jev_cost_usd` for the stepper), which is the ratio the whole mode exists to measure and the one [jev.md](jev.md) could previously only reach by arithmetic. Either of those two figures can be null, the model's where nobody publishes a rate for it and the stepper's where the turn never reached the network. A shadow run changes nothing, so this is the only trace it leaves |
 | `verb_start` | name as called, canonical name, params, source (`agent` · `mcp` · `cli` · `jev`, the last of which is a verb the discrete stepper chose and the model never saw), whether it is nested inside a composite |
 | `gate` | one per executor rule that fired: `abort` · `allowlist` · `unknown` · `verdict` · `params` · `confirm` · `budget` · `abort_when` · `precondition` · `dry_run` · `cancelled`, with the reason and, where it matters, the robot state that caused it |
 | `intent` | every command sent to the robot: kind, params, whether it was accepted, and the robot's own clock when it has one |
@@ -197,7 +206,7 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | `assess` | the pilot's feasibility verdict on this task against this body: the word, the reason, the datasheet fields it read, what it estimated about the world and how, what the task would need, whether a person cleared it, and whether the run ends there |
 | `talk` | one pilot to another in a flock: who said it, to whom (a member name or `all`), the words, and whether the message was accepted. Sent through the `tell` tool, so it moves nothing and counts as no step ([flock.md](flock.md)) |
 | `hand_off` | only on a `--by-hand` run: the moments where the arm belongs to a person rather than to the pilot. `stage` says which moment it is: `released` (torque is off at the recorded rest pose and the arm is yours), `held` (the pose you left it in was written as the goal and read back, with the `joints` it read), `skipped` (the end-of-run wait ran out with nobody there, or a second Ctrl-C landed on it, so the gripper was not opened) and `unloaded` (somebody took what was in the gripper, so the gripper opens before the arm folds). `how` is the arm's own word for what happened, `released` · `held` · `refused`, so a stage the arm refused is on the record as loudly as one it took |
-| `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame (one record per camera, each naming its own, on a body with several), the summary (with `trace_dropped`: events a view raised on and never showed) |
+| `declare`, `memory`, `note`, `frame`, `run_end` | the model's verdict, a saved note, a free-text line, a captured frame (one record per camera, each naming its own, on a body with several), and the summary, which is `summary.json` verbatim: the outcome and the counts, the three clocks (`wall_s` the run as a person stood through it, `elapsed_s` the budget's own, and `connect_s` with `llm_latency_s` splitting out the two waits worth naming separately), the wall time at either end of it (`started_at` and `ended_at`, the second of which is the first plus `wall_s` rather than a second reading of the clock), what the run cost and what it was costed at (`cost_usd` and `price`, with the stepper's own bill in the `jev` block beside them), and `trace_dropped`: events a view raised on and never showed |
 
 Example: [`assets/transcript-example.jsonl`](assets/transcript-example.jsonl), recorded
 before the trace kinds existed.
@@ -209,7 +218,8 @@ The transcript is one *sink* of an event stream, not a thing the loop writes dir
 
 - **The terminal** (`quackd run`), on stderr, so `2> trace.log` keeps the outcome on screen.
   It shows the system prompt once, then per turn: the observation, what the model thought,
-  the tool it called, tokens and latency, each gate that fired, each intent, and the result.
+  the tool it called, tokens, latency and what the call cost, each gate that fired, each
+  intent, and the result.
   A burst of intents from a steering loop is one line with its parameter ranges, because
   `go_to` recomputes its twist every 100 ms: `→  send    move x42 over 4.1 s (vx 0.1..0.2, vy 0, wz -0.055..0.01)`.
   A burst still going after two seconds is flushed as it stands and the next line continues
@@ -222,7 +232,18 @@ The transcript is one *sink* of an event stream, not a thing the loop writes dir
   and the coordinator's decisions under `flock`. Each robot's own transcript is its record.
 
 `quackd trace` replays a finished run from its transcript afterwards, through the same
-renderer, on stdout.
+renderer, on stdout, under a header that says when the run was, what it was called and what it
+was costed at, and above the same counter line the live run printed. With nothing after it you
+get the newest run, which is what you want the moment one ends. What you do type is resolved in
+order: a transcript file, a directory, an exact name under `--runs-dir`, the newest directory
+carrying that `--run-name`, a timestamp prefix, and only then the newest whose name merely
+contains the text. The name pass is the reason `quackd trace example-1` finds the run you
+named: a bench session has `-example-1` and `-example-19` in it, and a substring match hands
+you whichever of the two happens to be newer. It sits above the timestamp prefix because a
+name can be all digits, and a run you called `20260921` would otherwise be answered by
+whichever run's stamp started the same way. It matches the name against what follows the
+stamp and only where a duck name comes first, so `quackd trace find-and-kick` still means the
+newest run of that duck rather than the one that happened to go unnamed.
 
 `--no-trace` or `QUACKD_TRACE=0` removes the views. The transcript is unaffected, because a
 run that cannot be argued about afterwards is the thing this project cannot give up. A
@@ -232,6 +253,72 @@ be silence. `--no-trace-prompt` or `QUACKD_TRACE_PROMPT=0` keeps the narration a
 system prompt, which is forty to seventy lines and worth reading once.
 `QUACKD_TRACE_THINKING` is how much of the model's thinking each turn shows: a number of
 characters, `all`, or `0`. The transcript always has all of it.
+
+### Time and money
+
+A run is timed by three clocks, and all three are in the summary because they answer three
+different questions and no two of them are interchangeable:
+
+- `wall_s` is the run as somebody standing next to the robot experienced it, from the moment
+  the record opened to the moment it closed, connecting and teardown included.
+- `elapsed_s` is the **budget's** clock, the one a `.duck`'s `budgets.max_minutes` is checked
+  against and all it is. It starts after `run_start` rather than at the top of the run, it
+  restarts after a `--by-hand` handover, and it reads the transport's own time, which on a
+  simulator is the simulator's.
+- `connect_s` and `llm_latency_s` lift out the two waits worth naming on their own: getting to
+  the robot at all, and sitting waiting on the model. On the one hardware run this project has,
+  62.1 of 78.8 seconds were the model, and that ratio is the most useful single number a run
+  produces. It used to have to be added up by hand from the transcript to say so.
+
+> [!WARNING]
+> `elapsed_s` and `wall_s` do not measure the same span and neither one bounds the other. The
+> published `find-and-kick` transcripts predate `wall_s` entirely, but a fresh run of that
+> duck on the cartoon at seed 3 records `elapsed_s` 7.8 against a `wall_s` under two tenths of
+> a second: the cartoon runs nearly eight seconds of duck time inside a fifth of a second of
+> yours, and `elapsed_s` is the same 7.8 on any machine while `wall_s` is whatever yours took.
+> Divide a cost or a token count by the wrong one and the answer is off by a factor of forty.
+
+`started_at` is the single wall anchor. It is read in the same breath as the monotonic clock
+every record's `t` counts from, so any record's wall time is `started_at + t` and the two
+hundred intents of a steering burst need not each carry an ISO string to say when they were.
+`ended_at` is derived the same way, `started_at` plus `wall_s`, rather than read off the clock
+a second time: a laptop that synced its clock mid-run or slept through part of one moves
+`datetime.now()` by an amount the monotonic clock never sees, and
+`ended_at - started_at == wall_s` is arithmetic every reader of these files will do without
+thinking to check it first.
+
+Tokens are recorded in the buckets a bill is itemised by, normalised across vendors, because a
+number that means one thing on Anthropic and another on Gemini cannot be added up or multiplied
+by a rate. `input_tokens` is the WHOLE prompt, cached or not; `cache_read_tokens` and
+`cache_write_tokens` are slices of that number rather than additions to it, so `input_tokens`
+stays the figure a reader has always seen whether or not a cache was in play; `output_tokens`
+is everything generated, thinking included, because that is what the output rate is charged on;
+and `reasoning_tokens` is the slice of the output the vendor counts apart, recorded and never
+priced a second time.
+
+Rates are USD per million tokens, read off each vendor's own page on a dated check
+(`PRICES_CHECKED`, `2026-09-21` here) and carried on the model's own catalogue entry. Three
+sources, in the order a person expects to be obeyed:
+`--price in=3,out=15,cache_read=0.3,cache_write=3.75`, then `QUACKD_PRICE` with the same
+syntax, then the catalogue. An override beats `fake` as well as the catalogue, and that is
+deliberate: pricing a scripted run is how the whole cost path gets exercised end to end with no
+key and no bill. `fake` and the local presets are free by what they are rather than by any
+table, and a paid OpenAI-compatible endpoint behind `--provider local --base-url` is the case
+`--price` is there for. The discrete stepper bills separately at its own published rate, which
+`QUACKD_JEV_PRICE` overrides in the same syntax ([jev.md](jev.md)).
+
+> [!NOTE]
+> A rate quackd does not have records `null` and prints `cost unpriced`, never `0`. Three of
+> the catalogue's 115 models are unpriced today, all of them Cohere's Command A family, for
+> which Cohere publish no per-token rate at all. A model that is genuinely free is a rate of
+> zero and prints `$0`, which is a different claim from "nobody knows". Where a rate is missing
+> but the tokens are not, the estimate goes up rather than down: an unpublished cache rate is
+> billed at the full input rate, because a bill that is too low is the one that gets believed.
+
+Whichever rate applied is written into `run_start` and `summary.json` with its source and the
+date it was checked, so `quackd trace` costs a run at what it cost on the day rather than at
+whatever the catalogue says months later, and a rate that turns out to have been wrong is
+visible in the runs it priced rather than silently reapplied to all of them.
 
 ### What the terminal adds, and what it may not change
 

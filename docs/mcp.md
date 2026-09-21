@@ -105,7 +105,11 @@ and `no_sound_intent` when `robot_say` reaches a body with nothing to say it wit
 
 Over MCP the pilot is the client, so the model's own reasoning and token counts live in
 Claude Code or Claude Desktop, not here. So does the model itself: quackd never chose one, never
-read a key for one, and never counted a token against one. quackd shows what quackd can see.
+read a key for one, and never counted a token against one. There is no cost figure here
+either, and for two reasons rather than one: those tokens are billed to whichever subscription
+or key is driving the session, which makes them the operator's to account for and not
+quackd's, and an MCP session has no run boundary to total anything over, since it begins when
+the client spawns the server and ends whenever the chat does. quackd shows what quackd can see.
 
 On a simulator the robot's own clock and the wall clock are different numbers, and the line
 shows both when they disagree. On hardware there is one clock and one number.

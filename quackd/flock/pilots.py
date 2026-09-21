@@ -35,7 +35,7 @@ from quackd.adapters.factory import RobotSpec, describe, make_adapter
 from quackd.adapters.manifest import RobotManifest
 from quackd.agent.loop import AgentLoop, Outcome, RunConfig, RunResult
 from quackd.agent.providers.base import LLMProvider, Usage
-from quackd.agent.transcript import new_run_dir
+from quackd.agent.transcript import new_run_dir, run_label
 from quackd.duckfile.schema import DuckFile, DuckFrontmatter
 from quackd.flock.bus import Bus, InProcessBus
 from quackd.flock.runner import FLOCK_TRACE, BusFactory, TraceFactory
@@ -124,6 +124,9 @@ class PilotFlockResult:
     steps: int = 0
     llm_calls: int = 0
     wall_elapsed_s: float = 0.0
+    cost_usd: float | None = None
+    """What the whole flock cost, or None the moment one member could not be priced: a flock
+    bill quietly missing a robot is worse than no flock bill."""
     trace_dropped: int = 0
     gif_path: Path | None = None
 
@@ -198,6 +201,8 @@ async def run_pilot_flock(
     trace: TraceFactory | None = None,
     abort: asyncio.Event | None = None,
     flock_name: str | None = None,
+    run_name: str | None = None,
+    price: str | None = None,
 ) -> PilotFlockResult:
     """One pilot per member, all at once, until every one of them has ended."""
     members = list(roster)
@@ -229,8 +234,8 @@ async def run_pilot_flock(
         for name, entry in roster.items()
     }
 
-    run_name = duck.name if duck.name.startswith("flock") else f"flock-{duck.name}"
-    run_dir = new_run_dir(runs_dir, run_name)
+    stem = duck.name if duck.name.startswith("flock") else f"flock-{duck.name}"
+    run_dir = new_run_dir(runs_dir, stem, run_label(run_name) if run_name else None)
     wall0 = time.perf_counter()
 
     def now() -> float:
@@ -283,6 +288,10 @@ async def run_pilot_flock(
                 log=lambda m, who=name: log(f"{who}: {m}"),
                 trace=view(name),
                 link=links[name],
+                # every member is priced the same way, because `--price` is one rate for the
+                # run rather than one per robot: a flock of the same model on three bodies
+                # is three bills at one rate
+                price=price,
                 summary_file=False,
             )
         )
@@ -340,6 +349,11 @@ async def run_pilot_flock(
             usage=loop.usage,
             run_dir=loop.run_dir,
             trace_dropped=loop.tracer.dropped,
+            # The loop's own teardown built this before it re-raised, so a member that died
+            # still reports the wall clock, the model seconds and the bill it had already
+            # measured. Without it a flock of fully priced models read `cost_usd: null` on
+            # the strength of one member being interrupted.
+            summary=loop.summary,
         )
 
     async def member(name: str) -> None:
@@ -425,6 +439,7 @@ async def run_pilot_flock(
             seed=seed,
             dry_run=dry_run,
             flock_name=flock_name,
+            run_name=run_name,
         )
     return result
 
@@ -468,6 +483,7 @@ def _finish(
     seed: int | None,
     dry_run: bool,
     flock_name: str | None,
+    run_name: str | None = None,
 ) -> PilotFlockResult:
     """The rollup, the summary and the teardown. Runs whatever happened to the members."""
     outcome, reason = aggregate_outcome(
@@ -480,6 +496,11 @@ def _finish(
             "steps": results[name].steps,
             "llm_calls": results[name].llm_calls,
             "usage": results[name].usage.model_dump(),
+            # off the member's own summary, which `_ended` recovers from the loop for a member
+            # that raised rather than returned
+            "cost_usd": results[name].summary.get("cost_usd"),
+            "wall_s": results[name].summary.get("wall_s"),
+            "llm_latency_s": results[name].summary.get("llm_latency_s"),
             "provider": providers[name].name,
             "model": providers[name].model,
             "robot": roster[name].robot_spec.key,
@@ -491,6 +512,10 @@ def _finish(
     usage = Usage()
     for name in members:
         usage = usage + results[name].usage
+    # None the moment ONE member could not be priced, rather than a total that quietly leaves
+    # that member out: a flock bill missing a robot is worse than no flock bill.
+    costs: list[float | None] = [results[name].summary.get("cost_usd") for name in members]
+    total_cost = None if any(c is None for c in costs) else round(sum(c or 0.0 for c in costs), 6)
     backends = {roster[name].robot_spec.backend for name in members}
     trace_dropped = story.dropped + sum(loops[name].tracer.dropped for name in members)
     summary: dict[str, Any] = {
@@ -498,11 +523,13 @@ def _finish(
         "outcome": outcome,
         "reason": reason,
         "flock": {"members": list(members), "method": "pilots", "name": flock_name},
+        "run_name": run_name,
         "robots": {name: roster[name].robot_spec.key for name in members},
         "messages": talks["members"],
         "notices": talks["notices"],
         "bus_messages": getattr(bus, "published", 0),
         "usage": usage.model_dump(),
+        "cost_usd": total_cost,
         "steps": sum(results[name].steps for name in members),
         "llm_calls": sum(results[name].llm_calls for name in members),
         "wall_elapsed_s": wall_elapsed_s,
@@ -529,6 +556,7 @@ def _finish(
         steps=int(summary["steps"]),
         llm_calls=int(summary["llm_calls"]),
         wall_elapsed_s=wall_elapsed_s,
+        cost_usd=total_cost,
         trace_dropped=trace_dropped,
     )
 

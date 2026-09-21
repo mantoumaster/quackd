@@ -143,14 +143,27 @@ def parse_response(response: Any) -> ProviderTurn:
             else:
                 texts.append(part.text)
     meta = getattr(response, "usage_metadata", None)
+    # Google reports thoughts BESIDE the answer rather than inside it: its own reference
+    # defines `total_token_count` as "prompt + thoughts + response candidates", three addends,
+    # so `candidates_token_count` cannot already contain the thinking without that total
+    # double-counting. quackd's `output_tokens` is everything generated and billed at the
+    # output rate, so the two are added up here. Every other vendor reports one inclusive
+    # number and needs no such line, which is why this was the easy one to get wrong: before
+    # this, a thinking Gemini run under-reported its output by however much it thought.
+    thought_tokens = int(getattr(meta, "thoughts_token_count", 0) or 0)
     finish = getattr(candidates[0], "finish_reason", None) if candidates else None
     return ProviderTurn(
         tool_calls=tool_calls,
         text="\n".join(texts) or None,
         usage=Usage(
+            # `prompt_token_count` is documented as "the total effective prompt size",
+            # cached content included, so it passes through whole and the cached part is
+            # named beside it. Google charges nothing to create a cache (it bills storage by
+            # the hour instead, which is not a per-token rate and is not costed here).
             input_tokens=int(getattr(meta, "prompt_token_count", 0) or 0),
-            output_tokens=int(getattr(meta, "candidates_token_count", 0) or 0),
-            reasoning_tokens=int(getattr(meta, "thoughts_token_count", 0) or 0),
+            output_tokens=int(getattr(meta, "candidates_token_count", 0) or 0) + thought_tokens,
+            reasoning_tokens=thought_tokens,
+            cache_read_tokens=int(getattr(meta, "cached_content_token_count", 0) or 0),
         ),
         stop_reason=str(finish) if finish is not None else None,
         raw=None,

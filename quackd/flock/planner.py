@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 from quackd.agent.providers.base import Exchange, LLMProvider, Observation, ProviderTurn, Usage
+from quackd.agent.providers.pricing import cost_usd, resolve_price
 from quackd.duckfile.schema import DuckFile
 from quackd.flock.messages import FlockTask, Wedge
 from quackd.trace import Tracer
@@ -73,7 +74,8 @@ async def plan_flock_task(
     wedge_members: list[str] | None = None,
     *,
     trace: Tracer | None = None,
-) -> tuple[FlockTask, dict[str, Wedge], Usage, int, bool]:
+    price: str | None = None,
+) -> tuple[FlockTask, dict[str, Wedge], Usage, int, bool, float | None]:
     """Returns (task, wedges, usage, llm_calls, fallback_used). Wedges are split over the
     members that can move (`wedge_members`); a member with no wedge sweeps its whole range.
 
@@ -82,7 +84,8 @@ async def plan_flock_task(
     wedges = equal_wedges(wedge_members or members)
     task = default_task(duck, task_id)
     if provider.name == "fake":
-        return task, wedges, Usage(), 0, False
+        # the scripted pilot plans nothing and calls nothing, so there is no bill either
+        return task, wedges, Usage(), 0, False, 0.0
 
     def emit(kind: str, **data: Any) -> None:
         if trace is not None:
@@ -108,6 +111,9 @@ async def plan_flock_task(
     )
     fallback = False
     usage = Usage()
+    # the planner is one model call like any other, so it is priced like any other
+    rate = resolve_price(provider.name, provider.model, override=price)
+    spent: float | None = 0.0 if rate is not None else None
     # `step=0`: the planner runs before the flock has taken a step, and a reader of the
     # transcript should be able to read it exactly as a solo run's first turn
     emit(
@@ -139,8 +145,11 @@ async def plan_flock_task(
             usage=turn.usage.model_dump(),
             stop_reason=turn.stop_reason,
             latency_s=round(time.perf_counter() - started, 3),
+            cost_usd=(cost_usd(turn.usage.model_dump(), rate) if rate is not None else None),
         )
         usage = turn.usage
+        if rate is not None:
+            spent = cost_usd(turn.usage.model_dump(), rate)
         call = next((c for c in turn.tool_calls if c.name == "plan_flock_task"), None)
         if call is None:
             raise ValueError("no plan_flock_task call in the reply")
@@ -174,4 +183,4 @@ async def plan_flock_task(
             )
         note(f"planner fallback: {type(e).__name__}: {e}")
         task = default_task(duck, task_id)
-    return task, wedges, usage, 1, fallback
+    return task, wedges, usage, 1, fallback, spent

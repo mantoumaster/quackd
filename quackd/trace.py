@@ -29,6 +29,7 @@ from typing import Any
 
 from rich.text import Text
 
+from quackd.agent.providers.pricing import fmt_usd
 from quackd.transport.base import Ack, Intent
 
 
@@ -336,6 +337,52 @@ def _seconds(d: Mapping[str, Any]) -> str:
     return f"{float(robot):.1f} s {label}, {wall:.1f} s wall"
 
 
+def fmt_duration(seconds: float) -> str:
+    """How long a run took, in the units a person would say it in.
+
+    `43.2 s` under a minute, `1m 43s` under an hour, `1h 02m` above that. A verb's own seconds
+    stay with `_seconds` above, which is a different question at a different scale: this one is
+    for a whole run, where three decimal places of a two hour session are noise."""
+    seconds = max(float(seconds), 0.0)
+    # rounded first, because `59.97` printed to one place is `60.0 s`, which is a minute
+    # spelled as if it were not one
+    if round(seconds, 1) < 60:
+        return f"{seconds:.1f} s"
+    minutes, rest = divmod(round(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {rest:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def _rate(value: Any) -> str:
+    """A per-million-token rate as a rate card writes it: `$10`, `$0.042`, `$0.0375`.
+
+    Not `fmt_usd`, which formats an amount somebody is charged and pads a dollar figure to two
+    places. `$10.00/M in` reads as a bill for ten dollars; `$10/M in` reads as a rate."""
+    if value is None:
+        return "?"
+    return f"${float(value):g}"
+
+
+def _price_line(price: Mapping[str, Any] | None, jev_price: Mapping[str, Any] | None = None) -> str:
+    """What the run was costed at, for the head of a replay.
+
+    A sentence rather than a missing row when there is no rate, because "quackd has no price
+    for this model" is exactly what a reader of a run with no cost figure needs to be told, and
+    an absent line tells them nothing at all."""
+    if not price:
+        text = "unpriced: quackd has no rate for this model, so no cost was computed"
+    else:
+        source = str(price.get("source") or "")
+        when = f", checked {price['checked']}" if price.get("checked") else ""
+        where = f" ({source}{when})" if source else ""
+        text = f"{_rate(price.get('input'))}/M in, {_rate(price.get('output'))}/M out{where}"
+    if jev_price:
+        text += f", stepper {_rate(jev_price.get('input'))}/M in"
+    return text
+
+
 def _ok(outcome: str) -> bool:
     return outcome == "ok"
 
@@ -500,15 +547,28 @@ def render_events(
         usage = d.get("usage") or {}
         total = d.get("usage_total") or {}
         tokens = f"in={usage.get('input_tokens', 0)} out={usage.get('output_tokens', 0)}"
+        # Only when there was one, so a vendor with no cache, and every transcript recorded
+        # before there were buckets, reads exactly as it always did. `in=` is the whole prompt
+        # either way and `cached=` says how much of it came at the cheaper rate.
+        if usage.get("cache_read_tokens"):
+            tokens += f" cached={usage['cache_read_tokens']}"
+        if usage.get("cache_write_tokens"):
+            tokens += f" cache_write={usage['cache_write_tokens']}"
         if usage.get("reasoning_tokens"):
             tokens += f" reasoning={usage['reasoning_tokens']}"
         if total:
             tokens += (
-                f" (run total in={total.get('input_tokens', 0)} "
-                f"out={total.get('output_tokens', 0)})"
+                f" (run total in={total.get('input_tokens', 0)} out={total.get('output_tokens', 0)}"
             )
+            # the running bill inside the running totals, because that parenthesis already
+            # answers the question it belongs to: what has this run spent so far
+            if d.get("cost_usd_total") is not None:
+                tokens += f" {fmt_usd(d['cost_usd_total'])}"
+            tokens += ")"
         if "latency_s" in d:
             tokens += f" latency={d['latency_s']:.1f} s"
+        if d.get("cost_usd") is not None:
+            tokens += f" cost={fmt_usd(d['cost_usd'])}"
         if d.get("stop_reason"):
             tokens += f" stop={d['stop_reason']}"
         out.append(TraceLine("tokens", tokens, "dim"))
@@ -518,6 +578,15 @@ def render_events(
         # whether or not it acted, because the turns it declined are the ones a reader most
         # wants to understand, and in shadow mode they are all of them.
         took = f"{float(d.get('latency_s') or 0):.2f} s"
+        # A stepper question is a few hundred tokens and a fraction of a cent, and the whole
+        # argument for one is the ratio between that and the model call it stands in for. Both
+        # ride in the same parenthesis as the seconds, and a `~` marks a turn TypeSafe did not
+        # count for itself. Absent on the turns that never reached the network at all.
+        if (asked := d.get("usage")) is not None:
+            mark = "~" if d.get("usage_estimated") else ""
+            took += f", {mark}{asked.get('input_tokens', 0)} tok"
+            if d.get("cost_usd") is not None:
+                took += f" {mark}{fmt_usd(d['cost_usd'])}"
         if d.get("error"):
             return [
                 TraceLine(
@@ -1020,6 +1089,19 @@ class ConsoleTrace(LineTrace):
             )
         if tools := d.get("tools"):
             rows.append(("tools", ", ".join(tools)))
+        # A replay has no CLI header in front of it and, until the record carried a wall clock,
+        # no way at all of saying when the run it is showing you happened: the directory name
+        # was the only answer, and a directory gets renamed and copied.
+        if started := d.get("started_at"):
+            rows.append(("started", str(started).replace("T", " ").replace("Z", " UTC")))
+        if name := d.get("run_name"):
+            rows.append(("run name", str(name)))
+        # Only when the run recorded one either way. A `price` of None is a run quackd could
+        # not cost and should say so; a record with no `price` KEY at all is a transcript from
+        # before there were prices, and telling its reader it was "unpriced" would be
+        # describing this release rather than their run.
+        if "price" in d:
+            rows.append(("price", _price_line(d.get("price"), d.get("jev_price"))))
         hint = f"connected in {d['connect_s']:.2f} s" if "connect_s" in d else ""
         self._write_line(self._ui.run_header(str(d.get("duck")), rows, hint=hint))
 

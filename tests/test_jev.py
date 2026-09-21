@@ -351,6 +351,99 @@ async def _advise(fake: Any, monkeypatch: pytest.MonkeyPatch, **over: Any) -> An
     return advice, stepper, fake
 
 
+class _UsageThatRaises:
+    """A `usage` whose read blows up in a way the tolerant reader does not catch.
+
+    Not a hypothetical shape: the SDK is early access and both token counts are documented as
+    optional, so a lazily parsed or computed `input_tokens` is exactly the kind of thing that
+    raises something other than AttributeError on a bad response."""
+
+    @property
+    def input_tokens(self) -> int:
+        raise ArithmeticError("the vendor's own parser fell over")
+
+    output_tokens = 0
+
+
+async def test_a_usage_that_raises_costs_the_turn_an_estimate_and_not_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading the vendor's count was the one read of its answer outside a guard, so a usage
+    field that raised ended the whole run with a traceback while the arm was energised. That is
+    the single thing this module must never do, and the neighbouring guard around `_route`
+    exists for exactly this reason. The turn is charged at the estimate rather than lost."""
+    from tests import fake_typesafe
+
+    fake = fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state"))
+    fake.usage = _UsageThatRaises()  # type: ignore[assignment]
+    advice, stepper, _ = await _advise(fake, monkeypatch, cleared=True)
+
+    assert advice.record["usage_estimated"] is True, "an unreadable count is not a measurement"
+    assert advice.record["usage"]["input_tokens"] > 0
+    assert advice.record["cost_usd"] > 0
+    assert stepper.summary()["cost_estimated"] is True
+    assert advice.record["gate"] == "taken", "the answer itself was fine; only the bill was not"
+
+
+async def test_a_client_that_cannot_be_built_is_billed_for_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_client()` imports the SDK and constructs it with a retry policy, and any of that can
+    raise without a byte leaving the machine. Billing it as a sent request put a phantom cost
+    and a misleading `~` on a run whose model cost was measured exactly, which is the one kind
+    of error a cost figure must not make: an invented charge reads exactly like a real one."""
+    from tests import fake_typesafe
+
+    class _WillNotBuild(fake_typesafe.FakeJev):
+        def __call__(self, **kw: Any) -> Any:
+            raise TypeError("AsyncTypeSafeClient() got an unexpected keyword argument 'retry'")
+
+    advice, stepper, _ = await _advise(_WillNotBuild(), monkeypatch, cleared=True)
+
+    assert advice.record["gate"] == "error"
+    assert "usage" not in advice.record, "nothing was sent, so nothing is owed"
+    assert "cost_usd" not in advice.record
+    assert stepper.summary()["cost_usd"] == 0.0
+    assert stepper.summary()["cost_estimated"] is False
+
+
+async def test_a_token_count_that_is_not_positive_is_not_a_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request always has input, so a zero or a negative is a field nobody filled in rather
+    than a free turn. Taken at face value it recorded a negative token count at no cost with
+    `usage_estimated` false, and it would have cancelled out the real tokens of the turns
+    around it in the run's rollup."""
+    from tests import fake_typesafe
+
+    fake = fake_typesafe.FakeJev(
+        answers=fake_typesafe.turn("report_state"),
+        usage=fake_typesafe.Usage(input_tokens=-10_000, output_tokens=0),
+    )
+    advice, stepper, _ = await _advise(fake, monkeypatch, cleared=True)
+
+    assert advice.record["usage"]["input_tokens"] > 0
+    assert advice.record["usage_estimated"] is True
+    assert stepper.summary()["usage"]["input_tokens"] > 0
+
+
+async def test_questions_whose_text_is_under_other_names_still_bill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The question half of the estimate is read off duck-typed attributes. An SDK that renamed
+    them used to make `_question_chars` return zero, and a zero there does not merely
+    under-bill the turn: `advise` reads it as "nothing was sent" and skips the bill for a
+    request that did go out. The fallback is the wrong number in the right direction."""
+    from quackd.agent.jev import _question_chars
+
+    class _Opaque:
+        def __init__(self, text: str) -> None:
+            self.prompt = text
+
+    assert _question_chars({}) == 0, "no questions really is nothing"
+    assert _question_chars({"next_verb": _Opaque("choose one of these five verbs")}) > 0
+
+
 async def test_the_arm_never_offers_the_stepper_a_pose() -> None:
     """The headline claim, on the body that has run on real hardware."""
     stepper, adapter, _m = await _arm()
@@ -1216,3 +1309,243 @@ async def test_the_model_is_answered_with_its_own_verbs_result(
         answered += 1
     assert answered, "no tool_result was checked, so this proves nothing"
     assert result.outcome == "success"
+
+
+# ── what a turn costs ───────────────────────────────────────────────────────────────────
+
+
+async def test_a_turn_the_api_counted_is_billed_at_what_it_said_it_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TypeSafe charge per input token, so a turn they counted is priced and never guessed.
+
+    The rate is theirs and published: $0.042 per million input tokens, output not charged.
+    This multiplies it out here rather than trusting the number elsewhere, because the whole
+    case for the stepper in `docs/jev.md` is a ratio, and a rate that quietly moved would move
+    that ratio with it."""
+    from quackd.agent.jev import PRICE
+    from tests import fake_typesafe
+
+    advice, stepper, _f = await _advise(
+        fake_typesafe.FakeJev(
+            answers=fake_typesafe.turn("report_state", 0.91),
+            usage=fake_typesafe.Usage(input_tokens=1631, output_tokens=16),
+        ),
+        monkeypatch,
+        cleared=False,
+    )
+    assert (PRICE.input, PRICE.output) == (0.042, 0.0), "TypeSafe's published rate moved"
+    assert advice.record["usage"] == {"input_tokens": 1631, "output_tokens": 16}
+    assert advice.record["usage_estimated"] is False
+    assert advice.record["cost_usd"] == round(1631 * 0.042 / 1_000_000, 9)
+    assert stepper.input_tokens == 1631 and stepper.estimated is False
+
+
+async def test_a_turn_the_api_did_not_count_is_estimated_from_the_whole_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The state was never the size of the request, and billing it as if it were bills a
+    quarter of the turn.
+
+    The four questions carry every label, every verb's one-line description and every
+    criterion, which on this mock arm is over a thousand characters against 388 of state;
+    `docs/jev.md`'s worked example counted 1,721 against that same 388. The record keeps
+    `state_tokens_est` for the trim, and the estimate has to be strictly bigger than it."""
+    from quackd.agent.jev import _question_chars
+    from tests import fake_typesafe
+
+    advice, stepper, fake = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.91), usage=None),
+        monkeypatch,
+        cleared=False,
+    )
+    _state, questions = fake.calls[0]
+    asked_chars = _question_chars(questions)
+    assert asked_chars > 1_000, "the questions stopped being the larger half of the request"
+    assert advice.record["usage_estimated"] is True and stepper.estimated is True
+    assert (
+        advice.record["usage"]["input_tokens"] == (advice.record["state_chars"] + asked_chars) // 4
+    )
+    assert advice.record["usage"]["input_tokens"] > advice.record["state_tokens_est"]
+
+
+async def test_a_negotiated_rate_beats_the_published_one_and_the_run_says_which_it_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Somebody whose contract differs has to be able to say so, and the summary has to carry
+    which rate the figure came from. A cost checked months later against the pricing page is
+    the one way a wrong rate gets found, and it only works if the run wrote down its own."""
+    from tests import fake_typesafe
+
+    monkeypatch.setenv("QUACKD_JEV_PRICE", "in=0.42,out=0")
+    advice, stepper, _f = await _advise(
+        fake_typesafe.FakeJev(
+            answers=fake_typesafe.turn("report_state", 0.91),
+            usage=fake_typesafe.Usage(input_tokens=1631, output_tokens=16),
+        ),
+        monkeypatch,
+        cleared=False,
+    )
+    assert advice.record["cost_usd"] == round(1631 * 0.42 / 1_000_000, 9)
+    assert advice.record["cost_usd"] > round(1631 * 0.042 / 1_000_000, 9), "the rate was ignored"
+    price = stepper.summary()["price"]
+    assert price["source"] == "QUACKD_JEV_PRICE" and price["input"] == 0.42
+
+
+async def test_a_turn_that_never_reached_the_network_is_not_billed_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both of these gates answer before a request is made, so both owe nothing, and the way
+    to say nothing is to write no keys rather than a zero. A `cost_usd: 0.0` on a turn that
+    never happened reads as a turn that was free, which is a different and false claim."""
+    from tests import fake_typesafe
+
+    nothing_discrete, idle, used = await _advise(
+        fake_typesafe.FakeJev(answers=fake_typesafe.turn("move_joints", 0.99)),
+        monkeypatch,
+        cleared=True,
+        allow=["move_joints"],
+    )
+    assert nothing_discrete.gate == "not_offered" and used.calls == []
+
+    fake = fake_typesafe.FakeJev(answers=fake_typesafe.turn("report_state", 0.99))
+    fake_typesafe.install(monkeypatch, fake)
+    stepper, adapter, _m = await _arm()
+    stepper.goal = "x" * 40_000
+    too_large = await stepper.advise(await _observation(adapter), cleared=False, budget=BUDGET)
+    await adapter.disconnect()
+    assert too_large.gate == "state_too_large" and fake.calls == []
+
+    for advice, unbilled in ((nothing_discrete, idle), (too_large, stepper)):
+        for key in ("usage", "usage_estimated", "cost_usd"):
+            assert key not in advice.record, f"{advice.gate} was billed a {key}"
+        assert unbilled.cost_usd == 0.0 and unbilled.input_tokens == 0
+
+
+async def test_a_call_that_failed_after_the_request_left_is_billed_as_an_estimate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TypeSafe do not publish whether a call that failed on their side is charged, and
+    between an estimate that is slightly high and a bill that silently is not there, the high
+    one is the one nobody is hurt by.
+
+    The other half of the same rule is why the bill hangs off what actually went out: a
+    machine with no `typesafe_sdk` installed never reaches the network, and a run there must
+    not invent a cost for the request it could not send."""
+    import sys
+
+    from tests import fake_typesafe
+
+    advice, stepper, _f = await _advise(
+        fake_typesafe.FakeJev(raises=fake_typesafe.APITimeoutError("took too long")),
+        monkeypatch,
+        cleared=True,
+    )
+    assert advice.gate == "error"
+    assert advice.record["usage_estimated"] is True
+    assert advice.record["usage"]["input_tokens"] > 0
+    assert advice.record["cost_usd"] > 0
+    assert stepper.cost_usd == advice.record["cost_usd"] and stepper.estimated is True
+
+    never_sent, adapter, _m = await _arm()
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", None)
+    unsent = await never_sent.advise(await _observation(adapter), cleared=True, budget=BUDGET)
+    await adapter.disconnect()
+    assert unsent.gate == "error", "the missing SDK ended the turn some other way"
+    assert "cost_usd" not in unsent.record, "a machine with no SDK was billed for a request"
+    assert never_sent.cost_usd == 0.0
+
+
+async def test_the_summary_block_carries_the_bill_and_says_when_it_was_guessed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One measured turn and one the API did not count, and the run total says estimated.
+
+    It has to say so on the first turn that guessed rather than on the last: a total a reader
+    cannot tell from a measurement is worse than no total, and the console prints `~$` off
+    exactly this flag."""
+    from tests import fake_typesafe
+
+    fake = fake_typesafe.FakeJev(
+        script=[fake_typesafe.turn("report_state", 0.97), fake_typesafe.turn("stop", 0.95)],
+        usage=fake_typesafe.Usage(input_tokens=1200, output_tokens=12),
+    )
+    fake_typesafe.install(monkeypatch, fake)
+    stepper, adapter, _m = await _arm()
+    obs = await _observation(adapter)
+    measured = await stepper.advise(obs, cleared=False, budget=BUDGET)
+    assert stepper.summary()["cost_estimated"] is False, "a counted turn claimed to be a guess"
+    fake.usage = None  # the second turn comes back with no count at all
+    guessed = await stepper.advise(obs, cleared=False, budget=BUDGET)
+    await adapter.disconnect()
+
+    block = stepper.summary()
+    assert block["usage"]["input_tokens"] == (
+        measured.record["usage"]["input_tokens"] + guessed.record["usage"]["input_tokens"]
+    )
+    assert block["usage"]["output_tokens"] == 12, "the uncounted turn invented an output count"
+    assert block["cost_usd"] == round(measured.record["cost_usd"] + guessed.record["cost_usd"], 6)
+    assert block["cost_estimated"] is True
+    assert block["price"]["source"] == "published"
+    assert block["price"]["unit"] == "USD per million tokens"
+
+
+async def test_the_shadow_record_puts_the_two_bills_for_one_turn_side_by_side(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The number `--jev shadow` exists to produce, and the one `docs/jev.md` could only reach
+    by arithmetic: what the model charged for a turn, beside what the stepper charged for the
+    same reading. Either half can be None, and None is not zero: the model's is missing when
+    nobody publishes a rate for it, the stepper's when the turn never reached the network."""
+    from quackd.agent.providers.base import ToolCall
+    from tests import fake_typesafe
+
+    advice, stepper, _f = await _advise(
+        fake_typesafe.FakeJev(
+            answers=fake_typesafe.turn("report_state", 0.91),
+            usage=fake_typesafe.Usage(input_tokens=1631, output_tokens=16),
+        ),
+        monkeypatch,
+        mode="shadow",
+        cleared=False,
+    )
+    event = stepper.shadow_event(
+        advice,
+        ToolCall(name="report_state"),
+        {"latency_s": 8.2, "usage": {"input_tokens": 4465}, "cost_usd": 0.0134},
+    )
+    assert event["llm_cost_usd"] == 0.0134
+    assert event["jev_cost_usd"] == advice.record["cost_usd"]
+    assert event["jev_cost_usd"] < event["llm_cost_usd"], "the cheap half was not the cheap one"
+
+    unpriced = stepper.shadow_event(advice, ToolCall(name="report_state"), {"cost_usd": None})
+    assert unpriced["llm_cost_usd"] is None and unpriced["jev_cost_usd"] is not None
+
+
+async def test_the_runs_jev_block_is_what_its_own_turns_add_up_to(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end, on the arm: the total in `summary.json` is the turns in `transcript.jsonl`.
+
+    They are written by two different pieces of code from two different accumulators, and a
+    reader who adds the records up and gets a different number has no way to tell which of
+    them is lying, which is the whole value of the record."""
+    from tests import fake_typesafe
+
+    result, _rec = await _on_run(
+        tmp_path,
+        monkeypatch,
+        fake_typesafe.FakeJev(
+            answers=fake_typesafe.turn("report_state", 0.99),
+            usage=fake_typesafe.Usage(input_tokens=1200, output_tokens=10),
+        ),
+    )
+    billed = [r for r in _records(result, "jev") if "cost_usd" in r]
+    assert billed, "no turn was billed, so there is nothing to add up"
+    ended = _records(result, "run_end")
+    assert len(ended) == 1
+    block = ended[0]["jev"]
+    assert block == result.summary["jev"], "the record and the result disagree about the bill"
+    assert block["cost_usd"] == round(sum(r["cost_usd"] for r in billed), 6)
+    assert block["usage"]["input_tokens"] == sum(r["usage"]["input_tokens"] for r in billed)
+    assert block["cost_estimated"] is False, "a turn the API counted was billed as a guess"

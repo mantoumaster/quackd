@@ -36,17 +36,51 @@ class ToolCall(BaseModel):
 
 
 class Usage(BaseModel):
+    """What one call spent, in the buckets a bill is itemised by.
+
+    Every vendor reports these differently and quackd normalises them here, because a number
+    that means one thing on Anthropic and another on Gemini cannot be added up, compared
+    across a run, or multiplied by a rate. The convention, which every adapter converts into
+    and `providers.pricing` prices:
+
+    - `input_tokens` is the WHOLE prompt, cached or not. The two cache fields are parts of
+      it, not additions to it, so `input_tokens` stays the same number a reader has always
+      seen whether or not a cache was in play that turn.
+    - `output_tokens` is everything generated, thinking included, because that is what every
+      vendor charges the output rate for.
+    - `reasoning_tokens` is the slice of the output the vendor counts apart. A subset, never
+      an addition: pricing it again would bill thinking twice.
+    """
+
     input_tokens: int = 0
+    """Every prompt token the request consumed, `cache_read_tokens` and `cache_write_tokens`
+    among them. Anthropic reports its three disjoint and the adapter adds them up; OpenAI and
+    Gemini report a total that already contains the cached part, and it is passed through."""
     output_tokens: int = 0
+    """Everything generated, thinking included."""
     reasoning_tokens: int = 0
-    """Tokens spent thinking, when the API counts them apart from the answer (OpenAI does).
-    Anthropic folds thinking into `output_tokens`, so it stays 0 there."""
+    """Tokens spent thinking, where the vendor counts them apart from the answer.
+
+    A slice of `output_tokens` rather than an addition to it, so it is recorded and never
+    priced a second time. OpenAI reports it under `completion_tokens_details`, Anthropic as a
+    read-only decomposition of the output it bills, and Gemini as `thoughts_token_count`
+    beside the answer, which is the one that has to be added in to get the billed total."""
+    cache_read_tokens: int = 0
+    """The part of `input_tokens` served from a prompt cache, billed at the cache read rate,
+    which is a tenth of the full one on most vendors. 0 on a vendor with no cache and on every
+    run recorded before there was a field for it."""
+    cache_write_tokens: int = 0
+    """The part of `input_tokens` written INTO a prompt cache, billed at the write rate where
+    the vendor has one. Anthropic is the one that charges for it; elsewhere caching happens by
+    itself and costs nothing to create, so this stays 0."""
 
     def __add__(self, other: Usage) -> Usage:
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
         )
 
 

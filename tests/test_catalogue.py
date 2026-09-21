@@ -402,7 +402,7 @@ def test_every_vendor_file_is_reachable_from_the_factory() -> None:
     """A provider module nobody dispatches to is a vendor that silently does not exist."""
     directory = REPO / "quackd" / "agent" / "providers"
     modules = {p.stem for p in directory.glob("*.py")}
-    plumbing = {"__init__", "base", "catalogue", "factory", "fake", "local", "openai"}
+    plumbing = {"__init__", "base", "catalogue", "factory", "fake", "local", "openai", "pricing"}
     assert modules - plumbing - {"anthropic", "gemini"} == set(OPENAI_COMPATIBLE)
 
 

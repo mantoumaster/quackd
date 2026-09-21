@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from quackd.agent.providers.base import ToolCall
+from quackd.agent.providers.catalogue import Price
+from quackd.agent.providers.pricing import cost_usd, parse_price
 from quackd.verbs.registry import Verb
 from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY
 
@@ -48,6 +50,20 @@ run whose transcript describes a model that is no longer the one that answered."
 
 KEY_ENV = "TYPESAFE_API_KEY"
 EXTRA = "jev"
+
+PRICE = Price(input=0.042, output=0.0, source="published")
+"""TypeSafe charge $0.042 per million input tokens and do not charge for output
+([their models page](https://docs.typesafe.ai/models), read 2026-09-21).
+
+One published rate for the one model quackd pins, rather than a table: there is a single
+System One model here and `TYPESAFE_DEFAULT_MODEL` is how you point at another. If yours is
+priced differently, `QUACKD_JEV_PRICE` is how you say so, and the rate a run actually used is
+written into its `run_start` either way."""
+
+PRICE_ENV = "QUACKD_JEV_PRICE"
+"""quackd's knob, which is why it is not spelled `TYPESAFE_*`. Everything with that prefix is
+read by `typesafe_sdk` itself and quackd only ever checks that the key is present; this one
+quackd reads, so it carries quackd's prefix."""
 
 ESCALATE = "escalate"
 """The way out, offered on every turn. Without it a Choice always returns *something*, and the
@@ -412,6 +428,80 @@ def _questions(sdk: Any, offered: Sequence[Call], what: Mapping[str, str]) -> di
 # ── the stepper ─────────────────────────────────────────────────────────────────────────
 
 
+def _question_chars(questions: Mapping[str, Any]) -> int:
+    """How much text the four questions are, for the turns TypeSafe does not count for us.
+
+    Measured off the objects themselves rather than rebuilt from the criteria, so a question
+    somebody adds or rewords is counted without anybody remembering there was a second place.
+
+    On `lerobot:mock` under `arm-grip-check` this is 1,299 characters before the pilot's
+    verdict clears and 1,454 after, against a few hundred of state, which is why the state on
+    its own was never the size of the request. It moves with the allowlist because the criteria
+    are one line per verb on offer, so it is a figure to re-measure rather than to quote.
+
+    This half is the plain text and the state half is a JSON dump of itself, so the two are not
+    counted to the same convention and their sum is an estimate rather than a measurement of
+    the bytes on the wire. That is what `usage_estimated` on the record is for."""
+    total = 0
+    for question in questions.values():
+        total += len(str(getattr(question, "instructions", "") or ""))
+        criteria = getattr(question, "criteria", None)
+        if isinstance(criteria, Mapping):
+            total += sum(len(str(k)) + len(str(v)) for k, v in criteria.items())
+        elif isinstance(criteria, list | tuple):
+            total += sum(len(str(c)) for c in criteria)
+    if questions and not total:
+        # An SDK that keeps its text under other names would otherwise report a request that
+        # did go out as having cost nothing, and a zero here does not merely under-bill the
+        # turn: `advise` reads it as "nothing was sent" and skips the bill entirely. A rough
+        # length off whatever can be read is the wrong number in the right direction.
+        total = sum(len(repr(question)) for question in questions.values())
+    return total
+
+
+def _usage(result: Any) -> tuple[int | None, int]:
+    """`(input_tokens, output_tokens)` off a `SystemOneResponse`, read tolerantly.
+
+    `None` for the input is TypeSafe's own documented possibility -- their SDK types both
+    counts `int | None`, "when the API did not report it" -- and it is the difference between
+    a cost quackd measured and one it estimated. Read with `getattr` and a mapping fallback in
+    the style of `_answer`, because an early-access SDK that renamed a field should cost the
+    run an estimate rather than a traceback through the loop."""
+    usage = getattr(result, "usage", None)
+    if usage is None and isinstance(result, Mapping):
+        usage = result.get("usage")
+
+    def read(*names: str) -> int | None:
+        for name in names:
+            value = getattr(usage, name, None)
+            if value is None and isinstance(usage, Mapping):
+                value = usage.get(name)
+            if value is None:
+                continue
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            if number <= 0:
+                # Not a measurement: a request always has input, so a zero or a negative is a
+                # field that was never filled in. Falling through to the estimate is the
+                # direction this module errs in everywhere else, and it keeps a glitched turn
+                # from cancelling out the real tokens of the turns around it.
+                continue
+            return number
+        return None
+
+    return read("input_tokens", "prompt_tokens"), read("output_tokens", "completion_tokens") or 0
+
+
+def _price() -> Price:
+    """What a stepper turn is costed at: `QUACKD_JEV_PRICE`, or TypeSafe's published rate."""
+    text = os.environ.get(PRICE_ENV)
+    if text is not None and text.strip():
+        return parse_price(text, source=PRICE_ENV)
+    return PRICE
+
+
 def _answer(result: Any, key: str) -> Any:
     """One question's answer, however this SDK version hands them back.
 
@@ -471,6 +561,16 @@ class Stepper:
     taken: int = 0
     errors: int = 0
     latency_s: float = 0.0
+    price: Price = PRICE
+    """What a question costs, published or overridden (`PRICE_ENV`)."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    """What the whole run asked of TypeSafe. Output is counted and not charged, because their
+    price is per input token; it is here so a reader can see the shape of the exchange."""
+    cost_usd: float = 0.0
+    estimated: bool = False
+    """True once any turn had to estimate its own size, so the run total says `~$` rather than
+    claiming a precision the API never gave it."""
 
     @classmethod
     def build(
@@ -492,6 +592,7 @@ class Stepper:
             body=body,
             model=model or os.environ.get("TYPESAFE_DEFAULT_MODEL") or DEFAULT_MODEL,
             client=client,
+            price=_price(),
         )
         for name in allow:
             verb = registry.view(name)
@@ -534,6 +635,45 @@ class Stepper:
             "taken": self.taken,
             "errors": self.errors,
             "latency_s": round(self.latency_s, 3),
+            # What the stepper asked for and what that cost, kept apart from the model's own
+            # `usage` and `cost_usd` at the top of the summary rather than folded into them:
+            # they are two different vendors at two rates three orders of magnitude apart, and
+            # the whole question `--jev shadow` exists to answer is the ratio between them.
+            "usage": {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+            },
+            "cost_usd": round(self.cost_usd, 6),
+            "cost_estimated": self.estimated,
+            "price": self.price.record(),
+        }
+
+    def _bill(self, result: Any, state_chars: int, question_chars: int) -> dict[str, Any]:
+        """What this turn asked for and what it cost, measured wherever TypeSafe said so.
+
+        Their SDK types both token counts `int | None`, "when the API did not report it", and
+        a call that raised reports nothing at all. Both fall back to the arithmetic
+        `docs/jev.md` did by hand -- the state plus the questions, four characters to the
+        token -- and both say which they are, because an estimate a reader cannot tell from a
+        measurement is worse than no number at all.
+
+        Output is counted and costs nothing: TypeSafe charge per input token and their models
+        page says output is not charged, so `PRICE.output` is 0 and this multiplies it out
+        rather than special-casing it, which is what makes `QUACKD_JEV_PRICE` able to say
+        otherwise for somebody whose contract differs.
+        """
+        measured, out_tokens = _usage(result) if result is not None else (None, 0)
+        estimated = measured is None
+        in_tokens = (state_chars + question_chars) // 4 if measured is None else measured
+        self.input_tokens += in_tokens
+        self.output_tokens += out_tokens
+        self.estimated = self.estimated or estimated
+        cost = cost_usd({"input_tokens": in_tokens, "output_tokens": out_tokens}, self.price)
+        self.cost_usd += cost
+        return {
+            "usage": {"input_tokens": in_tokens, "output_tokens": out_tokens},
+            "usage_estimated": estimated,
+            "cost_usd": cost,
         }
 
     # ── one turn ──
@@ -627,28 +767,53 @@ class Stepper:
             return Advice(None, {**record, "gate": "state_too_large", "latency_s": 0.0})
 
         started = time.perf_counter()
+        # Characters of questions that actually went out, and 0 while nothing has. A machine
+        # with no `typesafe_sdk` installed never reaches the network and owes nothing; a call
+        # that timed out after the request left probably does.
+        #
+        # Set AFTER the client is built rather than before, because `_client()` imports the SDK
+        # and constructs `AsyncTypeSafeClient` with a `RetryPolicy`, and every one of those can
+        # raise without a byte leaving the machine. Billing that as a sent request put a
+        # phantom cost and a misleading `~` on runs whose model cost was measured exactly.
+        sent = 0
         try:
             sdk = importlib.import_module("typesafe_sdk")
-            result = await self._client().system_one(state, _questions(sdk, offered, self.what))
+            questions = _questions(sdk, offered, self.what)
+            client = self._client()
+            sent = _question_chars(questions)
+            result = await client.system_one(state, questions)
         except Exception as e:
             self.errors += 1
             self.asked += 1
             took = round(time.perf_counter() - started, 3)
             self.latency_s += took
-            return Advice(
-                None,
-                {
-                    **record,
-                    "gate": "error",
-                    "error": f"{type(e).__name__}: {e}",
-                    "latency_s": took,
-                },
-            )
+            failed = {
+                **record,
+                "gate": "error",
+                "error": f"{type(e).__name__}: {e}",
+                "latency_s": took,
+            }
+            if sent:
+                # The request left the machine, so it is counted as billed. TypeSafe do not
+                # publish whether a call that failed on their side is charged, and between an
+                # estimate that is slightly high and a bill that silently is not there, the
+                # high one is the one nobody is hurt by.
+                failed.update(self._bill(None, record["state_chars"], sent))
+            return Advice(None, failed)
         self.asked += 1
         took = round(time.perf_counter() - started, 3)
         self.latency_s += took
         record["latency_s"] = took
         record["questions"] = 4
+        try:
+            record.update(self._bill(result, record["state_chars"], sent))
+        except Exception:
+            # Reading the vendor's own count was the one read of its answer outside a guard, so
+            # a usage field that raised anything the tolerant reader does not catch ended the
+            # run with a traceback while the arm was energised. Falling back to the estimate
+            # charges the turn rather than losing it, and the guard below then gets its chance
+            # to turn a bad answer into a handover instead of a crash.
+            record.update(self._bill(None, record["state_chars"], sent))
         try:
             return self._route(result, record, offered)
         except Exception as e:
@@ -758,4 +923,10 @@ class Stepper:
             "would_have_acted": advice.gate == "taken",
             "llm_latency_s": (llm or {}).get("latency_s"),
             "llm_usage": (llm or {}).get("usage"),
+            # The two bills for the same turn, which is the number this whole mode exists to
+            # produce and the one `docs/jev.md` could only reach by arithmetic. Either can be
+            # None: the model's when nobody publishes a rate for it, the stepper's when the
+            # turn never reached the network.
+            "llm_cost_usd": (llm or {}).get("cost_usd"),
+            "jev_cost_usd": advice.record.get("cost_usd"),
         }
