@@ -32,9 +32,18 @@ Three documents cover this arm and they do different jobs:
 > differs from that account is the part worth writing down. [What to
 > report](#14-what-to-report) still matters most, whether or not the arm waves.
 
+This page is in two parts, and they are two ways of driving the same arm rather than two
+different jobs. **Part 1 is the terminal**, `quackd run` with a model you bring and a key in a
+file. **Part 2 is Claude**, where the arm arrives as a set of tools in a chat and the model you
+are already talking to is the pilot. Part 1 comes first because it is the path an arm has
+actually been down. Part 2 repeats the commands the two share rather than sending you back for
+them, so it reads straight through, and links here for the long explanations.
+
 <br>
 
-## 00. Read this first
+## Part 1: from the terminal
+
+### 00. Read this first
 
 Three things this task implies that the arm cannot do. Read them now so that nothing at the
 bench is a surprise.
@@ -74,7 +83,7 @@ Two reflexes, and they matter more than anything you type:
 
 <br>
 
-## 01. What to bring
+### 01. What to bring
 
 - **A laptop with quackd already installed.** Section 02 needs real internet and pulls
   torch, so do it the night before rather than on lab wifi.
@@ -95,7 +104,7 @@ Two reflexes, and they matter more than anything you type:
 
 <br>
 
-## 02. Install quackd
+### 02. Install quackd
 
 Python 3.12 or newer, in a clean environment of its own. quackd's own floor is 3.11, but the
 `lerobot` extra carries a `python_version >= '3.12'` marker, and below that floor it resolves
@@ -142,7 +151,7 @@ motor. `quackd[lerobot]` asks for `lerobot[feetech]` for exactly that reason.
 
 <br>
 
-## 03. Choose your pilot
+### 03. Choose your pilot
 
 quackd never ships a model. You bring one, and the choice is a flag. Eleven cloud vendors
 have a `--provider` name, five local presets cover the common self-hosted servers, and
@@ -151,7 +160,7 @@ have a `--provider` name, five local presets cover the common self-hosted server
 `quackd doctor` prints a row per provider with the extra, the key it found and the model it
 would use, and `quackd list-models` prints every model id quackd knows for every vendor.
 
-### A cloud vendor
+#### A cloud vendor
 
 Put the key in the environment or in a `.env` file, then name the provider. The key variable
 per vendor is in [`.env.example`](../.env.example) and in `quackd doctor`.
@@ -164,7 +173,7 @@ quackd run lerobot-lookout --robot lerobot:real --address COM5 --provider openai
 > The provider for Claude is spelled `anthropic`. There is no `--provider claude`, and an
 > unknown name is refused before anything connects, with the full list in the message.
 
-### Where the key goes
+#### Where the key goes
 
 This cost time at the lab, so it gets its own subsection. quackd reads a `.env` from the folder
 you are standing in when you type the command, and then from beside its own install, walking up
@@ -215,7 +224,7 @@ and last two characters, which is the quickest way to see whether your file was 
 > file would have found no key at all on either. Copy the name out of
 > [`.env.example`](../.env.example) rather than typing it.
 
-### A local model, no key
+#### A local model, no key
 
 Five presets, all of them served by the `openai` extra because they all speak the OpenAI
 wire format. Start your server, then name the preset:
@@ -237,7 +246,7 @@ JSON text fallback quackd uses when a server is weak at native tool calls.
 > `not-needed`. Set `LOCAL_API_KEY=not-needed` or pass `--api-key not-needed` if that server
 > is not yours.
 
-### The one that decides whether the arm can see you
+#### The one that decides whether the arm can see you
 
 Whether the camera frame reaches the model at all is a per-provider default:
 
@@ -256,7 +265,7 @@ webcam.
 `--vision` and `--no-vision` override all of it in both directions. A local pilot that is
 meant to look at you needs `--vision` **and** a vision-capable model loaded in the server.
 
-### The scripted pilot, and its one job
+#### The scripted pilot, and its one job
 
 `--provider fake` is the default and needs no key, no extra and no network. It is not a
 model: it is a small set of rules that picks its script from the task file's name, or from a
@@ -284,7 +293,7 @@ few keywords in a goal.
 
 <br>
 
-## 04. At the lab, before power
+### 04. At the lab, before power
 
 Everything here happens with the arm still unplugged.
 
@@ -298,7 +307,7 @@ Everything here happens with the arm still unplugged.
 
 <br>
 
-## 05. Find the port, then calibrate
+### 05. Find the port, then calibrate
 
 This is the step that is easiest to skip and cannot be. quackd refuses to drive an arm that
 is not calibrated, because the calibration file is where every joint's travel comes from,
@@ -347,7 +356,7 @@ connecting as `arm-01`.
 
 <br>
 
-## 06. First contact
+### 06. First contact
 
 The first command that energises the arm. It connects, reads, and moves nothing.
 
@@ -371,7 +380,7 @@ Read four things off it:
 - What the servos report for temperature with the arm cold. Write that number down. It is
   the baseline for everything later.
 
-### Name it
+#### Name it
 
 Every command from here on names the arm rather than respelling the backend and the port, and
 the next section needs a name to keep a pose under. Register it with the same id you
@@ -407,7 +416,7 @@ registry instead of from your hand.
 
 <br>
 
-## 07. Record the rest pose
+### 07. Record the rest pose
 
 An SO-101 has no brake. It holds its own weight up because torque is on, and LeRobot's
 `disconnect()` disables torque by its own default, which quackd keeps. So until quackd had a
@@ -462,7 +471,7 @@ refuses with `no terminal to ask on: pass --yes to record it` rather than guessi
 > the arm before you run the command and watch whether it stays there. If it sags, fold it
 > lower and record again.
 
-### What a run then does with it
+#### What a run then does with it
 
 | When | What happens |
 |---|---|
@@ -515,7 +524,7 @@ quackd robot rest-pose arm-01 --clear
 > accepting one and quietly ignoring it: a body with no joints says so, and a body with joints
 > that quackd does not drive home says that only the LeRobot arm does this today.
 
-### Or start from a pose you set by hand
+#### Or start from a pose you set by hand
 
 The rest pose is one shape, and every run so far begins there. That is exactly what you want
 when the question is what a model does with a known arm, and exactly what you do not want when
@@ -643,7 +652,7 @@ rather than releasing an arm into an empty room and waiting for an Enter that is
 
 <br>
 
-## 08. The first task
+### 08. The first task
 
 `lerobot-lookout` ships with quackd, moves no joint, and asks only for `report_state`. It is
 the first thing to point at an arm nobody has driven, and it is the first thing that ran on
@@ -717,7 +726,7 @@ captured and a summary. `quackd trace` replays any of it afterwards.
 
 <br>
 
-## 09. Add the camera
+### 09. Add the camera
 
 Find which OpenCV index your webcam is, which is the part nobody can guess for you:
 
@@ -765,7 +774,7 @@ where the cameras are today, the way `--address` already does. `quackd robot edi
 > once you know it. Without it quackd assumes the simulator's 90 degrees, says so in every
 > detection line, and every bearing and distance is scaled wrong.
 
-### More than one camera
+#### More than one camera
 
 `--camera-url` repeats. One view of a desk is rarely enough to tell whether the gripper is
 above the thing or in front of it, so the arm takes a second camera:
@@ -811,7 +820,7 @@ registry file written by quackd 0.9 loads unchanged.
 
 <br>
 
-## 10. Rehearse with `--dry-run`
+### 10. Rehearse with `--dry-run`
 
 `--dry-run` connects to the arm for real and sends it nothing. Read-only verbs actually run,
 so `report_state` reads the servos and the heartbeat keeps its round trip going; every other
@@ -870,7 +879,7 @@ connects, so typing both out of habit costs you the message and nothing else.
 
 <br>
 
-## 11. Prove the safety net
+### 11. Prove the safety net
 
 From here the [hardware checklist](lerobot-hardware-checklist.md) is the authority on order
 and on what a hand stays near. What follows is the same five checks expressed as commands.
@@ -923,7 +932,8 @@ Use any body joint except `wrist_roll`, whose recorded travel is the whole turn.
 > test quackd's range gate, but the model chooses the number, so it may talk itself out of
 > the attempt first, or pick a different joint. If the refusal you get is the pilot's rather
 > than the executor's, you have learned something about the model and nothing about the
-> gate. Over MCP you send the number yourself, which is the appendix.
+> gate. Over MCP you send the number yourself, which is
+> [M11](#m11-prove-the-safety-net).
 
 **4. Pull the USB cable mid move.** Start a longer motion, then unplug the arm. The run
 should end within about a second saying the arm did not answer. The arm holds its last goal
@@ -964,7 +974,7 @@ third press lands somewhere without that guard and still quits at once.
 
 <br>
 
-## 12. Wave to me
+### 12. Wave to me
 
 Stand where the camera can see you, and ask:
 
@@ -1003,7 +1013,7 @@ outside its calibrated range, and it cannot move faster than the step cap, howev
 request is phrased. What quackd does not cap is force, so the sweep still has to be clear and
 your hands still have to be out of it.
 
-### Whether it can actually see you
+#### Whether it can actually see you
 
 This is the honest part, and it differs by pilot.
 
@@ -1029,14 +1039,15 @@ so treat it as a rough guess rather than a measurement.
 > allowlist is built from the arm's static manifest, and that manifest cannot know whether
 > you plugged a webcam in, so it claims no camera. The frame and the detections still reach
 > the pilot in every observation, which is how "sees a person and waves" works here. Asking
-> for a look as a deliberate act needs an MCP client, which is the appendix.
+> for a look as a deliberate act needs an MCP client, which is
+> [M09](#m09-add-the-camera).
 
 There is a real person detector behind the `yolo` extra, and today it is reachable only from
 Python by constructing `YoloDetector()` and passing it in. No CLI flag selects it. The same
 is true of tuning the colour ranges to your own shirt, which [the FAQ](faq.md) covers as a
 Python constructor.
 
-### Give it a picture
+#### Give it a picture
 
 The camera answers what the room looks like now. It cannot answer what the task is about, and
 "draw what is in the picture" is not a sentence a robot's own webcam can be asked. `--image`
@@ -1100,7 +1111,7 @@ set the tip on the paper, so the model begins with the sketch, a known contact p
 nothing to improvise except the drawing. Neither of those has been tried on a real arm, and the
 second one is where a pencil either stays put through a move or does not.
 
-### Making it repeatable
+#### Making it repeatable
 
 A `.duck` file turns the goal into a contract with an allowlist, a budget and a success test
 that the model cannot talk its way out of. It is also the provider-agnostic way to carry this
@@ -1140,7 +1151,7 @@ the observation.
 
 <br>
 
-## 13. When it will not work
+### 13. When it will not work
 
 The arm is not touched by anything in the first group: these all happen before or during
 connect.
@@ -1174,7 +1185,7 @@ owners report that nobody here has reproduced.
 
 <br>
 
-## 14. What to report
+### 14. What to report
 
 [Open a LeRobot hardware report](https://github.com/rokbenko/quackd/issues/new?template=lerobot-hardware-report.yml),
 or a plain issue with the transcript and your `quackd doctor` output. A report that says it
@@ -1234,31 +1245,1524 @@ most of that page is a description rather than a record.
 
 <br>
 
-## Appendix: driving it from an MCP client
+## Part 2: from Claude, over MCP
 
-Everything above is the command line, because that works with every pilot quackd supports.
-There is a second way in, and it is the only way to run exactly one verb and stop, or to ask
-for a camera frame as a deliberate act.
+Everything above is the command line. This is the same arm, the same executor and the same
+contract, reached from a chat instead. `quackd serve-mcp` hands Claude Code or Claude Desktop
+nine `robot_*` tools over a local pipe, and the model you are chatting with picks the verbs.
+quackd chooses no model here and reads no key of yours.
 
-`quackd serve-mcp` exposes a robot as [Model Context Protocol](https://modelcontextprotocol.io)
-tools over stdio, so the client spawns it as a subprocess and the client's own model is the
-pilot. quackd chooses no model in this mode and reads no key.
+The steps below are numbered `M00` to `M14` and they mirror Part 1's `00` to `14`, so if you
+have just walked the terminal path you will recognise every one of them. Where a step is the
+same, the command is repeated here and the explanation stays in Part 1 behind a link. Where MCP
+differs, and it differs most at the camera, at the feasibility gate and at what happens when a
+session ends, that difference is the whole point of the step.
 
-```bash
-quackd serve-mcp --robot arm-01
+If you are starting here rather than reading through, read
+[M00](#m00-what-changes-when-claude-is-the-pilot) and then
+[section 00](#00-read-this-first), which is the part about what this arm cannot do and is true
+whoever is holding the controls.
+
+<br>
+
+### M00. What changes when Claude is the pilot
+
+The arm does not change. Nothing underneath a tool call changes. What changes is who decides
+what happens next, and where you watch it happen. One thing does happen before the first tool
+call: spawning the server drives the arm to its rest pose, where one is recorded, before the
+model gets a turn, and a session that cannot reach it refuses to open.
+
+**The model in your client is the pilot.** Your client spawns `quackd serve-mcp` as a
+subprocess and talks to it over stdio, so the thinking happens in the session you are already
+sitting in. quackd chooses no model here and reads no API key. There is no `--provider`, no
+`--model`, and `quackd list-models` has nothing to say about an MCP session, because all three
+belong to the commands that bring a model of their own. [Choosing a pilot](#03-choose-your-pilot)
+is a decision you do not make in this part. You made it when you opened Claude Code or Claude
+Desktop.
+
+**Nine tools, and one executor under all of them.** A client lists them like this:
+
+```
+robot_assess_task
+robot_list
+robot_list_verbs
+robot_load_duckfile
+robot_observe
+robot_recall
+robot_remember
+robot_run_verb
+robot_say
 ```
 
-A session does the same thing with the rest pose that a run does, at both ends: it puts the
-arm at the pose before the client's model gets a verb, and refuses to start at all if it
-cannot get there.
+Behind them is the same executor Part 1 describes: the same allowlist, the same budgets, the
+same feasibility verdict, the same calibrated range clamp and the same heartbeat. The confirm
+gate is the one that is genuinely different. There is nobody to ask over stdio, so a
+confirm-gated verb is refused outright unless the server was started as
+`quackd serve-mcp --yes`, and that one flag typed at spawn allows every confirm-gated verb for
+the rest of the session. On this arm that means `pick`, which hands the whole arm to a learned
+policy for up to a minute. A refusal over MCP is the same gate refusing for the same reason,
+with a sentence appended about what to do about it here: a verdict refusal ends
+`call robot_assess_task(robot='arm-01', verdict=...) first`, a confirm refusal ends by telling
+you to start the server with `--yes`, and a budget refusal arrives prefixed `budget exhausted`.
+None of those sentences reaches a terminal run, where the confirm gate asks you rather than
+refusing. There is no `declare_success` tool. The model says it is finished in the chat, in
+prose, and what that is worth is your judgement rather than quackd's.
 
-The tools are `robot_list_verbs`, `robot_observe`, `robot_assess_task`, `robot_run_verb` and
-the rest. `robot_run_verb` refuses anything other than `report_state`, `observe` and `stop`
-until a verdict has been recorded, and `robot_observe` returns the frame itself, which is
-what makes a deliberate look possible here and not on the CLI. A `.duck` loaded with
-`robot_load_duckfile` is checked against the manifest of the robot **already connected**, so
-a task that allows `observe` loads cleanly on a session started with a camera.
+**What the server tells the model before it has called anything.** This arrives at connect, as
+the server's instructions, and it is what the pilot is working from on its first turn:
 
-[mcp.md](mcp.md) has the client configuration, the full tool list and what the trace shows.
-Two clients are documented and both are Anthropic's; the transport itself is a plain local
-stdio server and nothing in it is specific to them.
+```
+You are piloting one robot through quackd: arm-01, which is a six-joint desktop robot arm with a parallel gripper (an SO-101 class arm driven by LeRobot), bolted to a table.
+This body: lerobot-so101: height 0.53 m (estimate: one vendor's listing; reaching straight up), actuated joints 6 (official: the LeRobot SO-101 docs; five joints and a gripper), payload 0.5 kg (estimate: one vendor's listing), one arm with a gripper, mains powered, so nothing runs down. it does not move: no base and no legs. Not published: mass, reach. Cannot: go anywhere: it is bolted to a table and has no base; lift or hold more than about half a kilogram, and nothing whose weight is not known; reach anything that is not already within arm's length of its base: the reach is not published; feel what it holds: nothing reports grip force, so holding is inferred from the gripper stopping short of shut, which an empty hand that binds also does; know its own mass: vendor listings disagree by a factor of three. Clamps: joints within 180 degrees, gripper 0 to 100.
+Call robot_list_verbs first: the verbs come from that robot's own manifest, so what it can
+do is what it lists and nothing else. Before the first verb that moves the body, call
+robot_assess_task with your verdict on whether this body can do the task at all, judged
+against that datasheet: feasible, infeasible or uncertain. robot_run_verb refuses anything
+that moves the body until you have answered, and loading a .duck starts a new task and
+needs a new verdict. Every action is a *verb*; the executor enforces an allowlist, budgets
+and confirmation gates, so a refused call is a rule, not a bug. Prefer composite verbs
+(search_scan, go_to) over micro-managing velocities. Load a .duck file with
+robot_load_duckfile(path) to adopt a task contract; then follow its body as your
+instructions. Call robot_recall early: it is what this robot learned in earlier
+sessions, and robot_remember(text) keeps one short fact for the next one. Call robot_run_verb(verb="stop") if anything looks wrong.
+```
+
+That was captured against the mock arm, registered as `arm-01`. The blurb and the datasheet
+come from the adapter rather than from the backend, so a real arm registered under the same
+name is handed the same paragraph.
+
+**One sentence in there is generic and wrong for this body.** `Prefer composite verbs
+(search_scan, go_to) over micro-managing velocities` is advice for something with a base and a
+neck. An arm bolted to a table has neither verb, and never will. The model finds that out from
+`robot_list_verbs`, which is exactly why the same paragraph tells it to call that first and
+says the manifest is the whole vocabulary. Expect a first turn that lists the verbs and drops
+the idea without comment.
+
+**There is no per-step camera frame.** A `quackd run` loop with a model that takes images puts
+the webcam picture in front of the pilot on every step, and a model that takes none is refused
+the picture rather than handed it. An MCP session does not put a frame anywhere by itself. The
+model sees one when it calls `robot_observe` and its contract allows that verb, and at no other
+moment, so looking is a deliberate act here rather than something that happens to it. A loaded
+`.duck` can take the tool away: under `lerobot-lookout`, the contract Part 2 loads later on this
+same page, `observe` comes back `"allowed": false` and the call returns words.
+
+**There is no Ctrl-C kill switch.** Part 1's [section 11](#11-prove-the-safety-net) leans on
+one, and it does not exist in a chat window. Three things you can reach for: the model calling
+`robot_run_verb(verb="stop")`, you closing the session, and the power switch. The first costs a
+budget step like every other verb and is refused once the budget is spent, which five minutes
+from the spawn leaves you the other two. The second parks the arm on the way out only where a
+rest pose is recorded for this robot ([section 07](#07-record-the-rest-pose)), and not at all
+under `--dry-run`: with no pose recorded the close releases torque and the arm sags where it
+stands. The third releases torque as well, so the arm falls from wherever it was holding.
+Support it by hand before you cut, and keep your fingers out of the jaws. The heartbeat is the
+one thing here that acts without being asked: one missed ping sends a stop and shuts the session.
+A contract's `abort_when` is not the same mechanism. It is checked only when the model runs a
+verb, it needs a loaded `.duck` to exist at all, so a bare session has none, and it shuts the
+session rather than sending a stop of its own.
+
+**A hard kill parks nothing.** Task Manager, `taskkill /F` or a SIGKILL takes the process away
+before any of the shutdown runs, so the arm holds its last goal under torque rather than falling.
+Do not leave it there. Nothing is reading temperature once the process is gone, and a loaded joint
+heats until it trips its own overload protection, which goes slack without announcing it. Take the
+arm's weight and cut the supply, or reconnect and let quackd put it down. Cutting the supply
+releases torque and the arm drops from wherever that goal left it, which in this case is by
+definition not its rest pose, so take its weight first and keep your fingers out of the jaws.
+
+**Nothing run-shaped is written to disk.** No `runs/` directory, no `transcript.jsonl`, no
+`frames/`. The record of an MCP session is the chat itself, the server's own log on stderr, and
+whatever the model chose to keep with `robot_remember`, which appends one line per note to
+`~/.quackd/memory/<name>.jsonl` ([memory.md](memory.md)).
+
+**The budget clock starts when the client spawns the server.** Without a loaded `.duck` a
+session allows every verb that is not `dangerous`, on a default of 40 verb steps and five
+minutes, and those five minutes begin at the spawn rather than at the first verb. Time spent
+reading, thinking or talking to you is spent out of them. Running out ends nothing and parks
+nothing: every verb after that comes back `ok: false` with `budget exhausted`, `stop` among
+them, the session stays open, and the arm holds its last goal under torque. A spent budget ends
+a `quackd run` instead, through the same parking teardown as any other exit, so Part 1's
+intuition does not carry here.
+
+**An `uncertain` verdict does not end anything here.** In Part 1 it ended a run: one of the
+bench's dry runs on 2026-09-15 stopped because the pilot answered `uncertain` and the person at
+the keyboard answered no. Over MCP there is no terminal to ask at, so the model asks you in the
+chat and then answers `robot_assess_task` again with what you told it. The gate is the same
+gate. The question arrives where you are already reading instead.
+
+**The three things this arm cannot do are still those three, and the third changes shape.**
+There is no `wave` verb and the camera cannot look for you, whoever is piloting. Part 1's third
+one is that whether it can see you at all depends on the model you bring, and over MCP the pilot
+takes images by construction, so that half resolves itself and what is left of it is the bundled
+detector: a colour threshold carrying the simulator's own ranges rather than a person detector.
+[Section 00](#00-read-this-first) has all three in full.
+
+> [!CAUTION]
+> There is still no e-stop, and a chat window is not one. quackd bounds which angles a joint
+> may reach and how fast it gets there. It does not bound how hard the arm pushes, and no tool
+> call can. Cutting the servo supply is the only thing that stops this arm in every case,
+> including the one where the client has gone away with a goal still standing. It stops it by
+> releasing torque, which means the arm falls, so take its weight before you cut. Have your
+> hand near the switch from the moment the server starts, not from the first `move_joints`.
+
+One SO-101 has run quackd. That was 2026-09-15, and it was `quackd run` from a terminal rather
+than an MCP session. The parking this part leans on, at both ends of a session, is exercised
+against `lerobot:mock` and in the test suite, and no MCP session has yet driven a real arm.
+Every capture quoted in Part 2 came from the mock, and each one says so where it appears. So
+going down this path makes you the first, which is worth knowing before you start rather than
+afterwards, and it is why [what to report](#14-what-to-report) matters more here than anywhere
+else on this page.
+
+<br>
+
+### M01. What to bring
+
+Everything physical in [section 01](#01-what-to-bring) still applies, because the arm does not
+know which half of this guide you are reading.
+
+- **A laptop with quackd already installed.** The next section is Part 1's install and it still
+  pulls torch, so do it the night before rather than on lab wifi.
+- **Claude Code or Claude Desktop, installed and signed in**, on that same laptop. The client
+  starts quackd as a subprocess on the machine it runs on, so a client anywhere else cannot
+  reach the arm's port.
+- **A couple of USB cables for the arm's controller board**, in more than one shape, and a hub
+  if your laptop is short on ports.
+- **A USB webcam, and something to prop it up and aim it.** A small tripod, a clip, a stack of
+  books. The arm cannot move the camera for you.
+- **A way to cut power fast.** A power strip with its own switch, or a firm decision about which
+  plug you are going to pull. It carries more weight here than it does in Part 1, because an MCP
+  session has no Ctrl-C kill switch the way a `quackd run` does, and because once
+  [section M07](#m07-record-the-rest-pose) has recorded a rest pose the session drives the arm to
+  it twice on its own, with no verb and no model involved: once as the client starts the server,
+  before a single tool is offered, and again as you quit the client. Hands clear before either.
+- **Permission, and the arm's own parts list.** Whoever runs the lab confirms that you may
+  connect your own laptop, and which supply that specific arm takes. Motors and supplies vary
+  between builds and neither LeRobot nor quackd reads the voltage, so neither can warn you.
+
+**What drops off the list is the key.** Part 1's last bullet asks for a cloud vendor's key or a
+local model server, because `quackd run` has to go and find a model. In MCP mode quackd picks no
+model and reads no key: the pilot is the model you are already chatting with, so the account you
+signed into the client with is all of it. The blue top goes with it, since that bullet is there
+for a pilot that cannot take images and this one can.
+
+<br>
+
+### M02. Install quackd
+
+The same three commands as [section 02](#02-install-quackd), which is where the two `doctor` rows
+below are explained. Python 3.12 or newer, in an environment of its own:
+
+```bash
+uv venv --python 3.12
+uv pip install "quackd[lerobot]"
+quackd doctor
+```
+
+**`quackd[lerobot]` alone is the whole install this time**, and that is the one difference. Part
+1 adds a second extra for the pilot in the same line, `quackd[lerobot,anthropic]` or whichever
+vendor it was, and there is no pilot to install here. Two rows still decide whether a serial port
+can be opened at all:
+
+```
+- lerobot                    not installed (quackd[lerobot])
+- lerobot (feetech bus)      not installed (quackd[lerobot])
+```
+
+Both have to be green, and that is what a missing install looks like.
+
+**Then note where that venv put `quackd`.** [Section M03](#m03-choose-your-client) hands that
+path to the client and it has to be the absolute one:
+`D:\Development\lerobot-test\.venv\Scripts\quackd.exe` on Windows, and
+`~/lerobot-test/.venv/bin/quackd` on macOS and Linux. Those are this guide's folders, so yours is
+the `Scripts\` directory of the venv you just made, or its `bin/` directory elsewhere. It has to
+be absolute because the client starts the server itself, from a directory you did not choose and,
+on Windows especially, often with none of your shell's PATH.
+
+> [!WARNING]
+> If `lerobot` reads `not installed` after an install that succeeded, check `python --version`
+> before you reinstall anything. On 3.11 that extra resolves to zero packages, silently, and
+> `doctor` has nothing else to complain about. It is the same reason Part 2 points the client at
+> this venv's `quackd` rather than at `uvx`: `uvx` builds a second environment on whichever
+> interpreter uv picks, and on a 3.11 machine that one has no LeRobot in it. The `uvx` configs in
+> [mcp.md](mcp.md) and [adapters/lerobot.md](adapters/lerobot.md) follow the same rule, so they
+> need a 3.12 or newer interpreter for the LeRobot half of that extra to resolve.
+
+<br>
+
+### M03. Choose your client
+
+[Section 03](#03-choose-your-pilot) was a flag and a key. This one is neither. quackd picks no
+model in MCP mode and reads no key, so there is no pilot to choose: whichever model you are
+already chatting with is the one that will move the arm. What you choose here is the client,
+and how that client launches the server.
+
+**The shape of the thing.** The client runs `quackd serve-mcp` as a subprocess of its own and
+talks to it over stdin and stdout. Nothing is listening on a port, there is no address to
+visit, and there is no server to start by hand before you open the client. It lives exactly as
+long as the session that spawned it: the client starts it when the session starts, and stops
+it when the session ends. The only `--address` this server takes is the arm's serial port, and
+by now the registry is carrying that for you. [mcp.md](mcp.md) lists the four things that would
+have to land before your phone could reach this, and none of them are built.
+
+> [!WARNING]
+> Starting that server moves the arm. Before the client's model can call a single tool, the
+> server drives the arm to the rest pose you recorded in
+> [section M07](#m07-record-the-rest-pose), and it refuses to start at all if it cannot get
+> there. Opening Claude Code or Claude Desktop is therefore the same act as starting a run:
+> hands, cables and anything breakable clear of the arm first.
+>
+> At the other end, an orderly shutdown parks the arm again and releases torque at the rest
+> pose, so the arm goes limp folded up. Where the pose was not reached, torque is deliberately
+> left on instead, so the arm holds itself rather than dropping. That park is best effort
+> inside a graceful stop and there is no signal handler, so a client that kills the subprocess,
+> a crashed session or a Task Manager kill parks nothing and leaves the arm energised wherever
+> it stopped. Never leave it unattended on the assumption that closing the client put it down.
+
+**The command you are wiring up is the same on every client**, and it is the venv from
+[section M02](#m02-install-quackd), named by its absolute path:
+
+```
+D:\Development\lerobot-test\.venv\Scripts\quackd.exe serve-mcp --robot arm-01
+~/lerobot-test/.venv/bin/quackd serve-mcp --robot arm-01
+```
+
+The first is Windows, the second is macOS and Linux. Use your own venv's path rather than
+either of those.
+
+> [!WARNING]
+> Do not launch this one with `uvx`. `uvx --from "quackd[lerobot]"` builds a second
+> environment on whichever interpreter uv happens to pick, and on a machine whose default
+> Python is 3.11 the LeRobot half of that extra resolves to nothing at all, silently, exactly
+> as in [section 02](#02-install-quackd). The adapter package itself installs fine there and
+> its mock backend still works, so what is missing is only the arm's own SDK, and the way you
+> meet that is a server that does not come up at all: the connect raises, the client shows the
+> server as failed rather than connected, and the stderr log names `lerobot` and the
+> `quackd[lerobot]` extra that would buy it. And where uv does pick 3.12, it downloads torch
+> all over again. The venv you already built has the right interpreter and the SDK in it, so
+> point the client straight at it. [mcp.md](mcp.md) uses `uvx` for the simulated bodies, where
+> no SDK with a version floor is involved, and that form does not carry over to the arm.
+
+**Claude Code, the one command.** Everything after the bare `--` is the command and its
+arguments, which is what stops `--robot` being read as a flag of `claude mcp add` itself:
+
+```
+claude mcp add arm -- D:\Development\lerobot-test\.venv\Scripts\quackd.exe serve-mcp --robot arm-01
+```
+
+`-s local|user|project` chooses where the entry is written, and local is the default: private
+to you, in this project. `-e KEY=value` sets a variable for the server, and it repeats.
+
+Here are the add, the list and the get from one capture on this machine, against a mock arm.
+The `claude mcp remove` at the end of that same capture is under **Changing it later** below:
+
+```
+$ claude mcp add arm -- D:\Development\quackd\.venv\Scripts\quackd.exe serve-mcp --robot arm-01 --registry-dir <TMPREG>
+Added stdio MCP server arm with command: D:\Development\quackd\.venv\Scripts\quackd.exe serve-mcp --robot arm-01 --registry-dir <TMPREG> to local config
+File modified: C:\Users\<you>\.claude.json [project: D:\Development\quackd]
+
+$ claude mcp list
+Checking MCP server health…
+
+quackd: uv run --no-sync quackd serve-mcp --robot microduck:sim2d - ⏸ Pending approval (run `claude` to approve)
+arm: D:\Development\quackd\.venv\Scripts\quackd.exe serve-mcp --robot arm-01 --registry-dir <TMPREG> - ✔ Connected
+
+$ claude mcp get arm
+arm:
+  Scope: Local config (private to you in this project)
+  Status: ✔ Connected
+  Type: stdio
+  Command: D:\Development\quackd\.venv\Scripts\quackd.exe
+  Args: serve-mcp --robot arm-01 --registry-dir <TMPREG>
+  Environment:
+
+To remove this server, run: claude mcp remove arm -s local
+```
+
+> [!WARNING]
+> `claude mcp list` is not a read of a configuration file. The health check in it spawns every
+> server on the list, so with `arm` configured it starts `quackd serve-mcp`, connects to
+> whatever `--robot arm-01` resolves to, and drives that arm to its rest pose. Here that was a
+> mock in a throwaway registry. On your bench it is the arm. Clear the arm before you run the
+> list, and treat `claude mcp get` the same way, since it prints a status of its own.
+
+Three things there are this machine's rather than yours. `<TMPREG>` is a placeholder put in by
+hand where a scratch `--registry-dir` was, because that `arm-01` was `lerobot:mock` in a
+throwaway registry rather than the arm you registered in [section M06](#m06-first-contact): on
+the default registry you pass no `--registry-dir` at all and those lines are shorter. `<you>`
+stands in for a home directory the same way, because the file that line names is the client's
+own configuration and it lives under yours. And the command path is this repo's own checkout
+rather than the `lerobot-test` venv you built. Put your own in all three places and the shape
+is unchanged.
+
+**Be precise about what that capture proves.** On 2026-09-21, on Windows, with Claude Code
+2.1.270, the server started, connected to a mock arm and answered the client's health check,
+which is the `✔ Connected` row. That is the launch path working end to end. It is not an arm.
+The row above it, `quackd:`, is this repo's own project-scoped `.mcp.json` waiting for
+somebody to approve it in a session, which is what that state looks like when you meet it.
+
+**Claude Code, the project file.** The other form is a `.mcp.json` at the root of the folder
+you open Claude Code in:
+
+```json
+{
+  "mcpServers": {
+    "arm": {
+      "command": "D:\\Development\\lerobot-test\\.venv\\Scripts\\quackd.exe",
+      "args": ["serve-mcp", "--robot", "arm-01"]
+    }
+  }
+}
+```
+
+No `"type"` key is needed: an entry with a `command` is read as a stdio server. Backslashes
+are doubled because it is JSON, not because of anything quackd does. A server that arrives
+this way is project scoped, so it shows as ⏸ Pending approval (run `claude` to approve)
+until somebody approves it inside a session, exactly like the row in the capture above.
+
+**Claude Desktop** takes the same three fields in its own file. Settings, then Developer, then
+Edit Config opens it:
+
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "arm": {
+      "command": "D:\\Development\\lerobot-test\\.venv\\Scripts\\quackd.exe",
+      "args": ["serve-mcp", "--robot", "arm-01"],
+      "env": {"QUACKD_TRACE": "1"}
+    }
+  }
+}
+```
+
+Then restart Claude Desktop completely, not just the window. The server appears under
+Connectors, Manage connectors. `QUACKD_TRACE` is `1` already and is shown here because `env`
+is where you would set it to `0`: a desktop-spawned server has no shell and starts in a
+directory you did not choose, so `env` is the reliable way to give it a variable, and a `.env`
+file may or may not be found. That same missing shell is why the command is an absolute path.
+A desktop app usually does not see your `PATH`, so if the server will not start on Windows,
+suspect that before anything else.
+
+**Changing it later** is a remove and an add, or an edit to the JSON:
+
+```
+$ claude mcp remove arm
+Removed MCP server "arm" from local config
+File modified: C:\Users\<you>\.claude.json [project: D:\Development\quackd]
+```
+
+> [!IMPORTANT]
+> A running server keeps the tools, the flags it started with and what the registry gave it at
+> launch: the address, the camera and the token. So after you edit a verb, add a camera to the
+> registry in [section M09](#m09-add-the-camera), or change anything in that `args` list,
+> restart it: `/mcp` in Claude Code, or a new session. In Desktop, restart the app. Nothing
+> warns you that you are talking to the old one. The contract is the one thing a live server
+> can swap without a restart, and the model is who does it: `robot_load_duckfile` adopts a new
+> `.duck` in place, taking the allowlist, the budget and the datasheet corrections with it,
+> changing which verbs `robot_list_verbs` reports as allowed, starting a new task and shutting
+> the verdict gate again.
+
+> [!NOTE]
+> `--provider`, `--model` and `quackd list-models` play no part here. They belong to `quackd
+> run`, and `serve-mcp` takes none of them. The consequence is worth spelling out: whichever
+> model you are chatting with is flying the arm, and a model that cannot accept images cannot
+> use the frame `robot_observe` hands back. [Section M09](#m09-add-the-camera) is where that
+> matters.
+
+<br>
+
+### M04. At the lab, before power
+
+Nothing in this step changes when Claude is the pilot, so [section 04](#04-at-the-lab-before-power)
+is the whole of it and this is the short form. The arm is still unplugged. Clear the whole sweep
+it can reach rather than the desk footprint, take anything fragile out of the gripper and off the
+desk within arm's length, and confirm that your switch, or the plug you have decided on, is
+within reach of where you will actually be standing.
+
+**Confirm the supply with whoever owns the arm** before anything is powered on. Motors and
+supplies vary between builds, and neither LeRobot nor quackd reads the voltage, so neither can
+warn you.
+
+<br>
+
+### M05. Find the port, then calibrate
+
+The same two commands as the terminal half. [Section 05](#05-find-the-port-then-calibrate)
+explains what each one does, what to do when no port appears at all, and why `wrist_roll` ends up
+recorded differently from every other joint.
+
+```bash
+lerobot-find-port
+```
+
+```bash
+lerobot-calibrate --robot.type=so101_follower --robot.port=COM5 --robot.id=arm-01
+```
+
+The first lists the ports, asks you to unplug the arm, and names the one that disappeared. The
+second moves nothing on its own: it asks *you* to move each joint through its range, and it
+writes the file every travel limit later comes from. quackd refuses to drive an arm that has no
+such file, over MCP exactly as it does from a terminal.
+
+> [!CAUTION]
+> Power goes on before both of these, and the arm is limp for the whole of the second one.
+> `configure()` runs `configure_motors()` inside `torque_disabled()`, so `lerobot-calibrate`
+> drops torque the moment it connects, and the procedure then keeps torque off while you sweep
+> each joint by hand. Fold the arm low, or have a hand on it, before you run that command.
+
+> [!IMPORTANT]
+> The id has to be the name you are going to pass after `--robot`, which is why the command above
+> says `arm-01`. That name becomes the manifest id, and the manifest id is the calibration id
+> quackd goes looking for. Register the arm as `lab-arm` and you have to calibrate as `lab-arm`.
+> Two arms sharing an id share one file with nothing in it to say which arm it came from, so if
+> this is not the only SO-101 in the room today, pick a name nobody else is using and use that
+> name in both places. This one bites harder here than in a terminal, because the name goes into
+> a client config file once and then nobody looks at it again.
+
+<br>
+
+### M06. First contact
+
+The first command that leaves torque on, and it is still yours rather than Claude's. It
+connects, reads, and moves nothing.
+
+```bash
+quackd doctor --robot lerobot:real --address COM5
+```
+
+> [!CAUTION]
+> Support the arm while this starts. `configure()` runs with torque off, so connecting drops the
+> arm for a moment whatever else is true, and that is the moment an arm folded somewhere awkward
+> falls. Support it at the end too, for now: until [section 07](#07-record-the-rest-pose) has
+> recorded a rest pose there is nothing for quackd to put the arm back to, so LeRobot's
+> `disconnect()` disables torque where the arm stands, a `doctor` probe included.
+
+[Section 06](#06-first-contact) has the four things to read off that probe: the calibration file
+it found, each joint's range, that torque is on, and what the servos report for temperature with
+the arm cold. Write the cold number down. It is the baseline for every reading Claude will show
+you later in a session.
+
+Then register the arm under the id you calibrated, and check that the address comes back out of
+the registry:
+
+```bash
+quackd robot add arm-01 lerobot:real --address COM5
+quackd doctor --robot arm-01
+```
+
+The second should print what the first probe printed, with the address coming from the registry
+instead of from your hand. What it does not check is the name. `doctor` resolves a registered
+name to its spec and then probes under the adapter's own default id `arm-01`, whatever you
+registered it as, while an MCP session connects under the registered name. Register as `arm-01`,
+as above, and those are the same id. Register as `lab-arm` and this probe still reads `arm-01`,
+refusing or reading some other arm's travel, while the MCP server you are about to configure
+reads `lab-arm`.
+
+**`--provider` is optional on `quackd robot add` here, and an MCP session ignores it.** The
+registry's stored pilot only matters to `quackd run`. In MCP mode quackd picks no model and reads
+no key: the model you are chatting with is the pilot, and nothing in the registry has a say in
+that.
+
+**What the registry is carrying for you is the address, the cameras, the token and the rest
+pose.** That is why the client configuration in the next sections is `--robot arm-01` and little
+else. Put the port in the registry now, at a prompt where you can read the error, rather than
+into a JSON file you edit once and then restart an application to test.
+
+<br>
+
+### M07. Record the rest pose
+
+This one is not an MCP command. Fold the arm low by hand first, while nothing has connected to
+it and it is limp, and then type the command once at a terminal. It connects, reads every joint
+and keeps the answer, and every session afterwards inherits it. Use the venv you built, by
+absolute path:
+
+```bash
+D:\Development\lerobot-test\.venv\Scripts\quackd.exe robot rest-pose arm-01
+```
+
+[Section 07](#07-record-the-rest-pose) is the whole of it: the joint table the command prints,
+`--yes`, `--json`, `--clear`, and why the pose has to be one the arm holds with torque off. An
+SO-101 has no brake, so a pose it cannot hold limp is a pose it will fall from.
+
+Part 2's half is what a **session** does with that pose, and sessions end in ways runs do not.
+
+| When | What happens |
+|---|---|
+| The client spawns the server | the arm is driven to the recorded pose as part of connecting, before the heartbeat starts and before a single tool is offered. Nothing has happened in the chat yet |
+| It cannot get there | the server raises and exits. No tools, no session, and the arm keeps its torque. The refusal is below |
+| The session closes cleanly | the arm is parked again between the `stop` and the disconnect. A client disconnect, stdin EOF and Ctrl-C in the client unwind this way only where the client ends the server gently instead of killing it, which is the client's behaviour and not quackd's |
+| Started with `--dry-run` | no park at either end. `stop` is still sent, and separately the close finds the arm away from its pose and leaves torque on, and says so |
+| A hard kill | nothing runs at all. Task Manager, `taskkill /F` or a SIGKILL takes the process before any of that, and the arm holds its last goal under torque |
+| `--by-hand` | not a flag here at all. It belongs to `quackd run`, and it needs a terminal to press Enter at, so there is no hand-placed MCP session |
+
+**The connect park, in the server's own log.** The first two lines of the session's stderr,
+captured against the mock arm, whose `shoulder_pan` had been left at 45 before the session
+started:
+
+```
+quackd-mcp INFO arm-01: moved to the rest pose
+quackd-mcp INFO quackd MCP server up: robot=arm-01 transport=mock dry_run=False
+```
+
+Read the order. The park comes first, so the arm is folded before the client has a tool list at
+all. An arm that was there already and had nothing to travel logs `already at the rest pose`
+instead.
+
+The first `report_state` reads 0 where 45 was. The mock's numbers, yours will be your arm's:
+
+```
+shoulder_pan 0, shoulder_lift -90, elbow_flex 90, wrist_flex 0, wrist_roll 0, gripper 100; torque on; hottest shoulder_pan 30°C; holding nothing
+```
+
+**The whole feature is one line.** What the mock transport was asked to do across a session
+that connected, ran one verb and closed:
+
+```
+['rest', 'stop', 'rest', 'close']
+```
+
+Park, hold, park, let go. The first `rest` is the connect, the `stop` and the second `rest` are
+the teardown in that order, and `close` is the port. Neither end is the model's to skip.
+
+**A dry run is the same line with the parks taken out:**
+
+```
+['stop', 'close']
+```
+
+The arm is left where it stood, on the mock still `shoulder_pan` 45, and its torque flag read
+`torque=True` afterwards. The session closes on this warning, which is
+[M10](#m10-rehearse-with---dry-run) keeping its promise rather than a fault:
+
+```
+quackd-mcp WARNING arm-01: the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall: hold the arm and cut its power, or run again
+```
+
+**When the arm cannot reach the pose, the session never starts.** The server raises before it
+offers a tool, and the message names the joint that fell short and what quackd did about it.
+This one is the mock arm, handed `shoulder_lift stopped 40 deg short` as a scripted failure, so
+that clause is the capture script's wording and not a sentence quackd writes. A real arm that
+stalls names the joint and both numbers, in the form `shoulder_lift is at -50 with a goal of
+-90, and it has stopped moving`, and one that runs out of time ends the same shortfall with
+`when the time ran out` and the seconds:
+
+```
+arm-01: the arm did not reach its rest pose: shoulder_lift stopped 40 deg short. the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall: hold the arm and cut its power, or run again
+```
+
+The same warning reaches the server's stderr, under one line carrying the mock's scripted
+wording: `quackd-mcp INFO arm-01: shoulder_lift stopped 40 deg short`.
+
+**This is the one that will confuse somebody tomorrow.** In the client it does not look like a
+safety rule firing. It looks like the server failed to start, which is literally what happened:
+the process raised and exited before the handshake, so the client has nothing to connect to and
+no sentence of quackd's to show you. The reason is in the stderr log, at the path
+[M08](#m08-the-first-session) gives for your client and
+[M13](#m13-when-it-will-not-work) repeats. Then, in this order: hold the arm, because it is
+energised and holding itself up, cut its power, clear whatever stopped the fold, and start again.
+
+> [!CAUTION]
+> A session that ends any way but cleanly leaves an energised arm. Torque comes off only where
+> the arm is known to have reached the recorded pose, which is deliberate: an arm holding itself
+> up is better than an arm on the desk. The one exception is written in the stderr note: where
+> it says quackd could not keep torque on and the arm was released where it stood, torque is off
+> and nothing is holding the arm up, so read that line before you trust the rest of this. A hard
+> kill, a dry run away from the pose and a failed park all end with servos under load, and
+> nothing in the chat says so. There is no Ctrl-C kill switch here the way there is in
+> `quackd run`, so the power switch is the one that always works.
+
+**Three things here were captured against the mock arm and in the test suite.** The park at
+both ends, the refusal and the dry run's missing parks: the mock transport records them and
+`tests/test_mcp_server.py` holds them to it. The other rows are how the code reads, with no
+capture and no test behind them. No MCP session has yet parked a real arm. The bench arm on
+2026-09-15 fell at the end of every run of the day and this is the answer to that, written
+afterwards and not yet tried against servos with weight in them. Keep a hand near the arm for
+the first connect and the first close, and say in [what to report](#m14-what-to-report)
+whether the fold held with torque off and whether the park at the end put it back in shape.
+
+<br>
+
+### M08. The first session
+
+The twin of [section 08](#08-the-first-task), and like that one, no verb the model can reach
+here moves a joint. The server itself does: it drives the arm to the rest pose as it connects,
+and again as the client quits, so have your hands clear when you start the server and when you
+quit. This is the first time Claude talks to your arm: reading, listing, one refusal, one note
+kept.
+
+**Start the server with the contract already loaded.** `lerobot-lookout` allows `report_state`
+and `stop` and nothing else, so no verb the model can call moves a joint even if it talks
+itself into trying, which is what you want the first time. `stop` is not quite nothing: on an
+arm that is already energised it re-sends the present position as the goal, so the arm holds
+where it is. It does not energise a limp arm. Writing a goal to a servo whose torque is off
+changes nothing, and the only thing in quackd that turns torque back on is the hand-off in
+[section 07](#or-start-from-a-pose-you-set-by-hand), which belongs to `quackd run` and has no
+MCP equivalent. Add `--duckfile lerobot-lookout` to the args you registered in
+[M03](#m03-choose-your-client). In Claude Code:
+
+```bash
+claude mcp remove arm
+claude mcp add arm -- D:\Development\lerobot-test\.venv\Scripts\quackd.exe serve-mcp --robot arm-01 --duckfile lerobot-lookout
+```
+
+In Claude Desktop the flag and its value go on the end of `args` in
+`claude_desktop_config.json`, which then reads
+`["serve-mcp", "--robot", "arm-01", "--duckfile", "lerobot-lookout"]`. The bare name resolves
+because that duck ships with quackd. One of your own needs an absolute path, because a relative
+one resolves against a working directory nobody chose.
+
+> [!IMPORTANT]
+> A running server keeps the contract the flag gave it, so editing the flag changes nothing
+> until you restart. Restart it: `/mcp` in Claude Code or a new session, and in Desktop quit
+> the app and reopen it. From inside a running session, `robot_load_duckfile` swaps the
+> contract in place, which is the route [M09](#m09-add-the-camera) takes.
+
+**What to type into the chat**, and you can paste this one:
+
+> Recall what you remember about this arm, list your verbs, then read the arm back and say where
+> its joints are, whether torque is on and whether anything reads hot. Do not move anything.
+
+The server's instructions ask for `robot_list_verbs` first and `robot_recall` early. What
+follows takes them in a reader-friendly order instead, and your model may vary it either way.
+Everything quoted below was captured against the mock arm, so the numbers are the mock's.
+
+**`robot_recall` comes first here**, because those instructions ask for it early. On a first
+session its `summary` reads `nothing remembered yet: this is the first session on this robot`,
+with empty `notes` and `episodes`, and a `path` naming the file those notes live in,
+`~/.quackd/memory/arm-01.jsonl`, keyed by the name you registered in
+[M06](#m06-first-contact). The capture ran with a scratch memory directory, so its own `path`
+is a temp folder rather than your home directory.
+
+**`robot_list` is the arm as quackd sees it.** The row is long, so here it is trimmed to the
+part to read:
+
+```json
+    {
+      "name": "arm-01",
+      "adapter": "lerobot",
+      "backend": "mock",
+      "model": "lerobot-so101",
+      "manifest_id": "arm-01",
+      "contract": "lerobot-lookout",
+      "healthy": true,
+      "default": true
+    }
+```
+
+`"backend": "mock"` is the tell that this was not a real arm, and `contract` is the duck you
+loaded at startup. The same row carries `vendor`, `embodiment`, `mobility`, a `digest`,
+`health_reason` and `aborted`, plus `datasheet` and `datasheet_text`, the structured and
+one-paragraph versions of what this body is. Those two are what the model weighs a task against
+at `robot_assess_task` in [M10](#m10-rehearse-with---dry-run).
+
+**`robot_list_verbs` is the body's list with the contract's answer on each row.** Seven verbs
+come back with their parameters, all of them, though this contract allows two. Two fields carry
+the meaning: `allowed` is the contract's answer right now, and `before_verdict` marks the verbs
+that run before a feasibility verdict exists.
+
+| Verb | Safety class | `allowed` here | `before_verdict` |
+|---|---|---|---|
+| `observe` | safe | no | yes |
+| `report_state` | safe | yes | yes |
+| `stop` | safe | yes | yes |
+| `move_joints` | safe | no | no |
+| `gripper` | safe | no | no |
+| `place` | safe | no | no |
+| `pick` | confirm | no | no |
+
+Two of those rows are the mock's. A real arm lists `observe` only when `--camera-url` named a
+camera that opened, and never lists `pick`, because nothing you can start from the command line
+hands the real backend a policy. `pick` is also the only confirm-class verb, which is why
+`--yes` changes nothing on a bare real arm.
+
+**`robot_run_verb` with `report_state` is the first verb you send through the executor**, though
+it is not the first thing to touch the bus. `robot_list`'s health row is a round trip of its own,
+the heartbeat has been pinging the arm since connect, and the connect-time park drove it before
+any tool existed. The summary is one line, and these are the mock's angles and the mock's
+temperature:
+
+```
+shoulder_pan 0, shoulder_lift -90, elbow_flex 90, wrist_flex 0, wrist_roll 0, gripper 100; torque on; hottest shoulder_pan 30°C; holding nothing
+```
+
+Yours will be your own arm's, and the temperature is the number worth writing down, for the
+reason [section 06](#06-first-contact) gives. The trace comes back with it:
+
+```
+tool    robot_run_verb verb='report_state', params={} on arm-01
+verb    report_state() from mcp
+<-      report_state ok: shoulder_pan 0, shoulder_lift -90, elbow_flex 90, wrist_flex 0, wrist_roll 0, gripper 100; torque on; hottest shoulder_pan 30°C; holding nothing (0.0 s, 0 intents)
+done    ok in 0.0 s budget: step 1/12, llm calls 0/12, 0.0/3 min
+```
+
+Read it downwards. The `tool` line is the call your client made, arguments and all. The `verb`
+line is what quackd turned it into, and `from mcp` says a client asked rather than a run loop.
+The `<-` line is the result, with the wall time and the count of intents sent to the arm, zero
+because reading state sends nothing. The `done` line is the budget, and those numbers are
+`lerobot-lookout`'s rather than the default: 12 steps, 12 model calls, 3 minutes. `llm calls`
+reads `0/12` all session, because quackd makes none of them. You are the model.
+
+**Then ask it to move something, and watch the contract refuse:**
+
+```
+verb 'move_joints' is not in this duck's allowlist (report_state, stop)
+```
+
+That is the contract doing its job rather than something broken. It arrives as a result with
+`ok: false` rather than as an error, so the model reads it, knows why, and carries on. The
+trace says it twice, once as `gate    allowlist: refused` and once as the result, and ends
+`done    FAIL in 0.0 s`. A refusal at the allowlist gate costs no step, which is why the `done`
+line still reads `step 1/12`.
+
+**`robot_remember` is the only call that writes anything.** Ask Claude to keep one short fact
+for next time and the summary comes back as `remembered for future sessions: Commanded gripper
+100 read back 98; closed on nothing read 3.`, with `"notes": 1`. One line is appended to the
+memory file, and that is the whole of what an MCP session puts on disk:
+
+```
+{"kind": "note", "text": "Commanded gripper 100 read back 98; closed on nothing read 3.", "ts": 1789994680.374, "duck": "lerobot-lookout"}
+```
+
+**Where the record is.** The server's own view goes to stderr, which your client keeps:
+
+```
+quackd-mcp INFO arm-01: already at the rest pose
+quackd-mcp INFO quackd MCP server up: robot=arm-01 transport=mock dry_run=False
+quackd-mcp INFO arm-01: tool    robot_run_verb verb='report_state', params={} on arm-01
+```
+
+The first line is the parking from [M07](#m07-record-the-rest-pose), the arm being driven to
+its rest pose before a single tool was offered. The mock was already there, which is why it
+reads `already at the rest pose` rather than `moved to the rest pose`. An arm that is not there
+moves to get there, and moves again when you quit the client. Claude Code writes that stream to
+`%LOCALAPPDATA%\claude-cli-nodejs\Cache\<cwd slug>\mcp-logs-<server name>\<timestamp>.jsonl`,
+one JSON object per line, each wrapping the text as `{"error":"Server stderr: ..."}`, which is
+the client's framing rather than a sign anything went wrong. Claude Desktop writes
+`%APPDATA%\Claude\logs\mcp-server-<name>.log`, and `~/Library/Logs/Claude/` on macOS.
+`--no-trace`, or `QUACKD_TRACE=0` in the environment, turns the trace off.
+
+> [!IMPORTANT]
+> This is the one place where MCP gives you less than the terminal. `quackd run` writes
+> `runs/<timestamp>-<name>/` with the transcript, every frame it captured and a summary, and
+> `quackd trace` replays it later. An MCP session writes none of that: no `runs/` directory, no
+> `transcript.jsonl`, no `frames/`, no episode kept at the end. The record is the chat, the
+> stderr log above, and whatever `robot_remember` kept. If you want it, keep the chat.
+
+<br>
+
+### M09. Add the camera
+
+The camera is found and registered exactly as in [section 09](#09-add-the-camera), which keeps the
+index hunt, the query keys and the rules for a second camera. Three commands, from the same
+terminal as before:
+
+```bash
+lerobot-find-cameras opencv
+quackd doctor --robot arm-01 --camera-url "opencv://1"
+quackd robot edit arm-01 --camera-url "opencv://1?fov=62"
+```
+
+**The middle one moves the arm**, and this is the step where you are standing at the bench with
+your hands near it aiming a webcam. `doctor` connects, which drops torque for a moment as
+`configure()` opens the port, and then drives the arm back to its recorded rest pose before it
+lets go. Hands and the webcam clear of the sweep before you run it. The first and the third touch
+nothing.
+
+**The lens goes on the url, because there is no flag for it here.** `quackd run` takes
+`--fov-deg` and `quackd serve-mcp` does not, so the field of view rides on the url as `?fov=62`.
+Without it quackd assumes the simulator's 90 degrees, scales every bearing and distance wrong,
+and says so on every detection line. `62` is one camera module's figure: use your own lens's.
+
+> [!IMPORTANT]
+> Restart the server after that `robot edit`. A running one keeps the registry it started with, so
+> the session already open has no camera and `robot_list_verbs` still does not list `observe`.
+> `/mcp` in Claude Code reconnects it, and in Claude Desktop you restart the app. Both move the
+> arm. Closing the session drives it to its recorded rest pose and then releases torque, and the
+> reconnect drives it to that pose again before the client's model gets a verb, so nobody should be
+> in reach when you press it. This is the most likely "why has nothing changed" moment in Part 2.
+
+> [!IMPORTANT]
+> Take `--duckfile lerobot-lookout` off the server's command before the rest of this section.
+> That duck allows `report_state` and `stop` and nothing else, so with it still loaded every
+> `robot_observe` below is refused by the allowlist rather than returning a frame. In Claude Code
+> that is a `claude mcp remove arm` and an add without the flag, and in Desktop it is that entry
+> gone from `args` and a restart. Both restarts move the arm, as the note above says. The other
+> way round is to leave the flag alone and load `arm-look.duck` with `robot_load_duckfile`, which
+> this section introduces further down, since that contract does allow `observe`.
+
+**`robot_observe` is a look the model asked for.** In a `quackd run` the frame arrives in every
+observation whether the task asked for it or not. Over MCP nothing arrives unless the model asks,
+and asking is `robot_observe`: one call, one frame, at the moment the model decided it wanted to
+see. On a real SO-101 that is the only way to ask on purpose, because the static manifest
+`quackd run` validates a task against cannot know you plugged a webcam in, so `observe` cannot be
+in the allowlist there at all.
+
+What comes back from a one-camera arm with the trace on is three content blocks rather than one,
+`text, image, text`. A text summary, the frame itself as an image block carrying
+`mime_type=image/png`, and the trace as a final text block. A second camera names each picture and
+adds a block per lens, and a step where no frame arrived is one text block with no image in it. A
+rehearsal is not one of those cases: `observe` is read-only, so `--dry-run` really opens the
+camera and really hands the picture back, the same way `report_state` really reads the servos.
+Captured against the mock arm, the first and the last of the three read:
+
+```
+arm-01 camera: ball at bearing 30° left ~0.58 m
+```
+
+```
+trace:
+tool    robot_observe  on arm-01
+verb    observe() from mcp
+<-      observe ok: frame captured; ball at bearing 30° left ~0.58 m (0.0 s, 0 intents)
+done    ok in 0.0 s budget: step 1/40, llm calls 0/40, 0.0/5 min
+```
+
+> [!NOTE]
+> That ball is the mock's synthetic scene and nothing on a real desk will produce that line. The
+> detector behind it is a colour threshold carrying the simulator's own ranges, so on your desk it
+> will usually report nothing, and say so. The picture is still the picture, and a model that takes
+> images can ignore the sentence. [Section 12](#12-wave-to-me) has what it can and cannot see.
+
+**A `.duck` that allows `observe` loads here, and the same contract is refused by `quackd run` on
+`lerobot:real`.** `robot_load_duckfile` checks the contract against the manifest of the arm
+**already connected**, which knows whether a camera opened. A command-line run is checked against a
+static manifest instead, and on `lerobot:real` that manifest claims no camera until connect. The
+mock's static manifest always declares its camera, so the file used below, which names
+`robots: lerobot:mock`, is one `quackd run` would take as well. The difference is the backend, not
+the tool that loaded it.
+
+The file is `arm-look.duck`, and it allows `observe`, `report_state` and `stop`, eight steps, three
+minutes. Ask the client to load it by absolute path, which is the model calling
+`robot_load_duckfile`, and the `note` that comes back reads, on the mock arm again:
+
+```
+"note": "The executor now enforces this contract for every call to arm-01. This is a new task: assess it with robot_assess_task before anything moves. What this session already spent still counts: step 0/8, llm calls 0/8, 0.0/3 min."
+```
+
+The first contract a session adopts starts its budget fresh, whatever that last sentence says.
+The numbers are the proof: `step 0/8` in a session whose `robot_observe` had already counted
+`step 1/40`. The carry-over line is boilerplate the tool appends whenever a budget object existed,
+which on a first adoption it always has. A second and later load is where it is true, and there
+the spent steps, the llm calls and the clock all cross into the new contract, so its budget lands
+part spent from the moment it arrives.
+
+**Read "first" as the first adoption rather than the first `robot_load_duckfile`**, because a
+`--duckfile` on the command line is adopted as the server starts. The capture above came from a
+server started without one. Start it the way [M08](#m08-the-first-session) did, with
+`--duckfile lerobot-lookout`, and the contract you load with the tool a minute later is the
+*second*, so it carries the spend across instead of starting at zero.
+
+> [!WARNING]
+> `--duckfile` on the `serve-mcp` command line is checked against the static manifest instead, so a
+> duck that allows `observe` can be refused there and load cleanly through the tool a minute later.
+> Pass an absolute path either way, because a server a desktop app spawned starts in a directory you
+> did not choose. A bundled name like `lerobot-lookout` resolves by name and needs no path, though
+> that one allows no `observe` at all. Its allowlist is `report_state` and `stop`, and it is named
+> here only for how the resolution works.
+
+> [!TIP]
+> Aim the camera at the volume the arm moves through rather than at the gripper, and aim it before
+> you start the server. A session holds the arm under torque from connect until close, so moving a
+> webcam while one is open means reaching in beside a live arm: close the session and let torque
+> drop first. That was the mistake on the bench on 2026-09-15: the webcam framed the gripper,
+> cropping the raised arm out of the picture, so the pilot checked its waves against joint angles
+> rather than against a picture.
+
+<br>
+
+### M10. Rehearse with `--dry-run`
+
+**`--dry-run` is a flag on the server, not something you ask for in the chat.** It belongs in
+the arguments the client spawns quackd with, and a running server keeps the contract it started
+with, so turning a rehearsal on means starting the server again. In Claude Code that is a
+remove and an add, then `/mcp` to reconnect, or a fresh session:
+
+```bash
+claude mcp remove arm
+claude mcp add arm -- D:\Development\lerobot-test\.venv\Scripts\quackd.exe serve-mcp --robot arm-01 --dry-run
+```
+
+In Claude Desktop, add `"--dry-run"` to that server's `"args"` array in
+`claude_desktop_config.json` and restart the app completely. [M03](#m03-choose-your-client) has
+both files in full.
+
+**The `--duckfile lerobot-lookout` of [M08](#m08-the-first-session) is gone from that line on
+purpose.** That duck allows `report_state` and `stop` and nothing else, so with it still loaded a
+request to move a joint is refused by the allowlist gate long before it reaches either of the
+gates this section is about. The rehearsal server starts with no contract, and everything below
+was captured that way.
+
+**A dry run still connects to the arm for real.** The port opens, torque comes on, the
+heartbeat keeps its round trip going, and the read-only verbs genuinely read the servos. What
+is withheld is every verb that is not marked read-only, which is wider than the ones that move a
+joint. `stop` carries no such flag and neither does `say`, so both are skipped as well: a `stop`
+asked for during a rehearsal reaches no servo, and the only thing that actually stops the arm
+while you are rehearsing is cutting its power. So ask the model for `report_state` first,
+because that reading is the proof there is something real on the other end. Captured against the
+mock arm, so the numbers are the mock's and yours will be your own arm's:
+
+```
+shoulder_pan 45, shoulder_lift -90, elbow_flex 90, wrist_flex 0, wrist_roll 0, gripper 100; torque on; hottest shoulder_pan 30°C; holding nothing
+```
+
+**Then ask for something that moves.** The feasibility gate below applies to a rehearsal too, so
+on a freshly started server that request is refused until a verdict has been recorded. The
+capture recorded `feasible`, with the reason `A rehearsal moves nothing.`, and only then asked
+for the move. The tool answers as though it had worked:
+
+```
+[dry-run] move_joints not sent
+```
+
+The trace that comes back with the call, and the server's stderr log, carry the whole of it:
+
+```
+tool    robot_run_verb verb='move_joints', params={'positions': {'wrist_roll': 10}, 'duration_s': 2} on arm-01
+verb    move_joints(positions={'wrist_roll': 10}, duration_s=2) from mcp
+gate    dry_run: skipped would run move_joints, sent nothing (positions={'wrist_roll': 10.0}, duration_s=2)
+<-      move_joints ok: [dry-run] move_joints not sent (0.0 s, 0 intents)
+done    ok in 0.0 s budget: step 1/40, llm calls 0/40, 0.0/5 min
+```
+
+The `gate dry_run` line is the place the call stopped. Everything above it happened: the tool
+arrived, the verb resolved, and the arguments were parsed into the numbers the arm would have
+been sent. Nothing below it reached a servo, which is what `0 intents` says. The step is spent
+all the same, `step 1/40`, so a rehearsal costs the same budget a real session does.
+
+> [!WARNING]
+> A dry run does not park the arm, at either end. Connecting skips the rest move and so does
+> closing, and the teardown is a `stop` and then the close, with no rest move between them. A
+> rehearsal therefore leaves the arm exactly where it found it, and the close is what decides
+> whether it is still held: torque stays on only where the arm is not at the recorded rest pose,
+> and then the server says so on its way out. At the rest pose, or on a server started against
+> an arm with no rest pose recorded at all, the close releases torque where the arm stands and
+> says nothing. [M07](#m07-record-the-rest-pose) has that line and what to do about it, which is
+> to hold the arm and cut its power rather than walk away from it.
+
+**The feasibility gate is the thing most likely to surprise you here.** A verb that moves the
+body is refused until `robot_assess_task` has recorded a verdict the gate accepts, which means
+`feasible`, or an `uncertain` that a person has cleared. `uncertain` and `infeasible` are
+recorded verdicts too and motion stays refused on both. Loading a `.duck` starts a new task and
+wants a new verdict. Asked to move a joint before it has judged, the model is handed this:
+
+```
+move_joints moves the body, and no feasibility verdict has been recorded for this task yet: record a verdict first (feasible, infeasible or uncertain): call robot_assess_task(robot='arm-01', verdict=...) first
+```
+
+```
+tool    robot_run_verb verb='move_joints', params={'positions': {'wrist_roll': 10}} on arm-01
+verb    move_joints(positions={'wrist_roll': 10}) from mcp
+gate    verdict: refused move_joints moves the body, and no feasibility verdict has been recorded for this task yet: record a verdict first (feasible, infeasible or uncertain)
+<-      move_joints REFUSED: move_joints moves the body, and no feasibility verdict has been recorded for this task yet: record a verdict first (feasible, infeasible or uncertain) (0.0 s, 0 intents)
+done    FAIL in 0.0 s budget: step 0/40, llm calls 0/40, 0.0/5 min
+```
+
+That pair, and the `uncertain` blocks further down, come from a plain session with no
+`--dry-run` and no duck loaded, which is why the counter reads `step 0/40` here after the
+rehearsal's `step 1/40` above rather than carrying on from it. The gate is the same one either
+way.
+
+`step 0/40` is worth noticing for its own sake. A refusal at this gate costs no step, so a model
+that stalls here is not burning the session down while it works out what to do. That holds for
+this gate and the ones above it rather than for refusals in general: the step is counted before
+a verb's preconditions and its joint ranges are checked, so a refusal from below that point does
+spend one, and [M11](#m11-prove-the-safety-net) has one of those.
+
+**Which verbs get through anyway.** On the mock arm, `stop`, `observe` and `report_state`, the
+three marked `before_verdict` in [M08](#m08-the-first-session)'s verb list. `observe` is on that
+list because the mock ships a camera, and on a real SO-101 it does not appear at all until the
+camera of [M09](#m09-add-the-camera) has been registered. The set behind it is wider than this
+body's vocabulary, nine names: `stop`, `observe`, `report_state`, `say`, `quack`, `express`,
+`gaze`, `look`, `introspect`. The gate is wider still, because a verb the adapter itself marks
+read-only under a name quackd does not count as motion runs before a verdict without being in
+the set at all. The point of it is order: a pilot has to be able to look at the thing, read the
+joints and reach the brake before it judges whether the arm can do what you asked. That is the
+verdict gate's reasoning, not the dry run's, and it is why the brake is worth saying twice: in a
+rehearsal `stop` is skipped like every other verb that is not read-only.
+
+**Then `uncertain`, which is the interesting one.** It records, and it clears nothing. The tool
+answers `"pending": true` and this note:
+
+```
+recorded as uncertain, which does not clear verbs that move the body. There is no terminal here: ask the person you are chatting with, then call robot_assess_task again with feasible on your own responsibility, or with infeasible.
+```
+
+Meanwhile a verb that moves the body gets the refusal with the model's own reason quoted back
+at it:
+
+```
+move_joints moves the body, and the verdict is uncertain and nobody has cleared it (The task needs the arm's reach, which its datasheet does not publish.): record a verdict first (feasible, infeasible or uncertain): call robot_assess_task(robot='arm-01', verdict=...) first
+```
+
+Compare that with the terminal. On the bench on 2026-09-15 one dry run ended right here,
+because [section 10](#10-rehearse-with---dry-run) asks the person at the keyboard and they said
+no, and a no ends the run. Over MCP nothing ends that way. You are in the conversation, so the
+model asks you, you answer in the chat, and it calls `robot_assess_task` again. On `feasible`
+the gate opens and the session carries on from where it stopped. On `infeasible` it does not:
+the tool answers that nothing on that arm will move for this task, names any robot in the flock
+that meets what the task needs, and the gate stays shut for the rest of that task.
+
+> [!NOTE]
+> A model handed a long verb list and a vague sentence answers `uncertain` more often than one
+> given a narrow contract, which is why [M08](#m08-the-first-session) started with a `.duck`
+> loaded rather than with a free-form goal. If a session keeps stalling at the gate, load a
+> contract with `robot_load_duckfile` and ask again.
+
+<br>
+
+### M11. Prove the safety net
+
+> [!CAUTION]
+> This is where the arm starts moving, so from here **a hand stays on the power switch**. There is
+> no e-stop, and cutting the servo supply is the only thing that stops this arm in every case. Keep
+> the sweep clear and your hands out of it for everything below. The [hardware
+> checklist](lerobot-hardware-checklist.md) is the authority on the order these happen in and on
+> where a hand stays. What follows is the same five checks, asked of Claude rather than typed.
+
+Take `--dry-run` off the server command and restart it, because a running server keeps the flags it
+started with: `/mcp` in Claude Code, or restart Desktop. The first movement is still not the
+model's, because connecting parks the arm at the pose you recorded in [section
+M07](#m07-record-the-rest-pose). That park has two conditions. If no rest pose was ever recorded
+there is nothing to park at, quackd skips the move, and the first movement is the model's after
+all. If a pose was recorded and the arm cannot reach it, `connect()` closes the transport and
+refuses to start the server at all, saying the arm did not reach its rest pose. Every block below
+was captured against the mock arm, so the numbers are the mock's and yours will be your own arm's.
+
+**The clock is already running.** The session gets five wall-clock minutes, and they start when the
+server starts rather than when you start check 1. The `done` lines below count them out. Five
+checks on a real arm, with a cable to pull and a server to restart, goes past five minutes easily,
+and when it does verbs start coming back `budget exhausted` naming `max_minutes`. That is the clock
+running out rather than any of the checks below catching something, so do not read it as one of
+them. Restart the server and the five minutes start again.
+
+**Nothing below moves until a verdict is on the record.** Ask for `robot_assess_task` with
+`feasible` and a reason, and read the `note` field of what comes back:
+
+```
+"note": "verbs that move the body now run.",
+```
+
+**1. The gripper, and which way it goes.** Ask for
+`robot_run_verb(verb="gripper", params={"open": true})`, then the same call with `false`:
+
+```
+gripper open (stopped at 100/100)
+gripper closed on nothing (stopped at 0/100)
+```
+
+The mock lands exactly on its goal, which a real arm does not. The bench arm on 2026-09-15 was
+close rather than exact: commanded 100 it reported 98 and stood open, and closed it settled at 3
+with the jaws nearly touching. That 100 is open is an assumption about how your arm was assembled,
+and everything quackd believes about holding rests on it. If yours runs the other way, stop here
+and say so in an issue.
+
+**2. One joint, small, in the middle of its range.** Ask for
+`robot_run_verb(verb="move_joints", params={"positions": {"wrist_roll": 10}, "duration_s": 2})`.
+The chat gets one line, `moved wrist_roll=10`, and the call's trace has the whole of it:
+
+```
+tool    robot_run_verb verb='move_joints', params={'positions': {'wrist_roll': 10}, 'duration_s': 2} on arm-01
+verb    move_joints(positions={'wrist_roll': 10}, duration_s=2) from mcp
+->      joint(positions={'wrist_roll': 10.0}, duration_s=2)
+<-      move_joints ok: moved wrist_roll=10 (0.0 s, 1 intent)
+done    ok in 0.0 s budget: step 4/40, llm calls 0/40, 0.0/5 min
+```
+
+Read the `->` line rather than the others. It is the single intent that actually reached the arm,
+and the rest are the model asking, the executor answering, and the budget after the call. The
+server's stderr carries these same lines with a `quackd-mcp INFO arm-01: ` prefix on each, as the
+heartbeat block in check 4 shows.
+
+**3. A goal outside the calibrated range.** Ask for
+`robot_run_verb(verb="move_joints", params={"positions": {"shoulder_pan": 170}})`, and nothing
+should reach the arm:
+
+```
+move_joints: joint refused: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it
+```
+
+**This is the check [Part 1](#11-prove-the-safety-net) could not make properly.** On a `--goal` run
+the model picks the number, so a refusal that came from the pilot rather than the executor teaches
+you about the model and nothing about the gate. Here you send 170 yourself and the executor
+answers, which is the clearest reason there is to be driving this arm from a client.
+
+`-100..100` is the mock's range, and a real arm's comes off the calibration file you wrote in
+[section M05](#m05-find-the-port-then-calibrate). Use any body joint except `wrist_roll`: upstream
+records a full turn for that one rather than anything you swept, so nothing you can name is outside
+it. The trace shows what the chat does not, which is that a refused goal is followed by a `stop`.
+Its middle three lines:
+
+```
+->      joint(positions={'shoulder_pan': 170.0}, duration_s=5) REFUSED: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it
+->      stop
+<-      move_joints FAIL: move_joints: joint refused: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it (0.0 s, 2 intents)
+```
+
+The `2 intents` counted on the `<-` line are the goal that was refused and the `stop` that followed
+it.
+
+**4. Pull the USB cable mid move.** Start a longer motion, then unplug the arm. The heartbeat's
+round trip fails and the session is finished as a session: every later call gets this line back
+rather than reaching the arm.
+
+```
+session aborted: the heartbeat failed (mock heartbeat failure (scripted)); restart quackd. `stop` still works and is worth sending.
+```
+
+`mock heartbeat failure (scripted)` is the mock's wording, because the mock fails on cue. On a real
+arm the reason names the timeout. `stop` is the exception that line names, and it does still
+answer, `stopped (velocity zeroed)`. That is deliberate: an aborted session is exactly the moment a
+pilot reaches for the brake, so the one verb worth keeping is the one that is kept. Read that
+answer for exactly what it is. That `stopped (velocity zeroed)` is the mock's, and the mock's hold
+always lands. On a real arm with the cable out the hold cannot reach the bus, the transport
+records why, and the verb refuses to claim success: it comes back `ok: false` reading `stop could
+not be delivered: the hold did not reach the arm: ...`, ending `otherwise use the hardware
+switch`. Either answer proves the session kept the verb. Only a real success says the hold was
+written, and even then the arm is still energised on the last goal that did reach it. The server
+does not wait to be asked either, and its stderr shows it sending `stop` the moment the heartbeat
+failed:
+
+```
+quackd-mcp WARNING arm-01: heartbeat failed: mock heartbeat failure (scripted) — sending stop
+quackd-mcp INFO arm-01: note    heartbeat failed: mock heartbeat failure (scripted) — sending stop
+quackd-mcp INFO arm-01: ->      stop
+```
+
+That one travels the same unplugged cable, so it says the server tried and nothing more. The arm is
+still energised on the last goal that did reach it, which is what should happen: it must not sag
+and it must not carry on. Until the cable is back or the supply is off, nothing in software is
+touching this arm, which is why the hand stays on the switch. Plug the cable back in and restart
+the server, and the new session parks the arm on its way up like any other, or refuses to start and
+says the arm did not reach its rest pose.
+
+**5. Stopping, and the three ways there are.** There is no Ctrl-C here. Part 1's kill switch is a
+terminal running `quackd run`, and an MCP session has no terminal of its own:
+
+- **Ask for `robot_run_verb(verb="stop")`.** It re-sends the present position as the goal, so the
+  arm holds where it is rather than sagging. It answers `stopped (velocity zeroed)` on the mock.
+  **It is not a mid-move brake.** Part 1's Ctrl-C is: the kill switch sets the executor's abort,
+  which cancels the verb that is running. The `stop` verb sets nothing, cancels nothing, and a
+  `move_joints` already in flight re-sends its own goal ten times a second, so it overwrites the
+  hold within a tenth of a second and finishes the motion. In practice the model cannot call it
+  mid-move anyway, because it is still waiting for that `move_joints` tool call to return. `stop`
+  is what you reach for between verbs, and cutting power is what you reach for during one.
+- **End the session.** A client disconnect, stdin closing, or quitting the client unwinds the
+  server, which stops, parks and disconnects every robot it holds. The disconnect releases torque,
+  which is LeRobot's default and quackd keeps it, so the ordinary end leaves the arm limp at the
+  rest pose. A rest pose your arm does not hold by itself is a falling arm, which is what the bench
+  saw at the end of every run on 2026-09-15 before the rest pose existed. quackd keeps torque on
+  when the park did not get there, and that fallback has not been tried on hardware.
+- **Cut power.** Still the only thing that works in every case, including the one where the process
+  holding the goal has died.
+
+> [!WARNING]
+> A hard kill runs none of the teardown. Ending the client or the server from Task Manager, with
+> `taskkill /F`, or with a SIGKILL skips the `stop`, the rest move and the disconnect alike. The
+> arm holds its last goal under torque, so it does not fall while the servos hold. That hold is
+> not indefinite: nothing is reading temperature once the process is gone, and a loaded joint
+> heats until it trips its own overload protection and goes slack without announcing it. Do not
+> leave it there. Take the arm's weight and cut its supply, or reconnect and let quackd put it
+> down. There is no second Ctrl-C to think about here, because there was no first one.
+
+**`--yes` changes nothing on a bare real arm.** `pick` is the only confirm-class verb on the
+LeRobot arm, and a real SO-101 with no policy loaded does not list it, so there is no gate for the
+flag to open until a loaded `.duck` puts a verb under `confirm:`. Load a policy and `pick` is
+listed and gated like any other confirm verb, and other adapters gate more verbs than this one
+does. With nobody at a terminal to ask, a gated verb answers this, on the mock arm, which lists
+`pick` because it carries a scripted policy:
+
+```
+human declined pick: this verb needs human confirmation; start `quackd serve-mcp --yes` to allow it
+```
+
+> [!CAUTION]
+> If any of these five surprises you, stop. Cut power and read [when it will not
+> work](#m13-when-it-will-not-work) before going further.
+
+<br>
+
+### M12. Wave to me
+
+Over MCP the payoff is a sentence typed into the chat, and the server it runs against is the bare
+one.
+
+**No `--duckfile`, and by now nothing to take off.** [M08](#m08-the-first-session) and
+[M09](#m09-add-the-camera) ran under a duck, and a duck is a short allowlist with a success test
+attached. That duck left the command line in [M10](#m10-rehearse-with---dry-run), `--dry-run` left
+it again in [M11](#m11-prove-the-safety-net), so the server you are running is already the one
+this section wants. If you have registered something else since, this is the line, keeping the
+camera from [M09](#m09-add-the-camera):
+
+```bash
+claude mcp remove arm
+claude mcp add arm -- D:\Development\lerobot-test\.venv\Scripts\quackd.exe serve-mcp --robot arm-01 --camera-url "opencv://1?fov=62"
+```
+
+In Desktop the same arguments live in `claude_desktop_config.json`, and a change to them takes a
+restart of the app. A running server keeps the contract it started with, and a duck loaded with
+`robot_load_duckfile` stays loaded for the rest of that session, so dropping either one is a
+restart as well. A restart moves the arm by itself: the server parks it at the rest pose on its
+way out, and the next one parks it again on its way up, before your client is offered a single
+tool. Stand out of reach until it is up, then stand where the camera can see you. Ask for the
+robot list in the chat and read two lines of the answer, captured against the mock arm:
+
+```json
+      "contract": null,
+      "healthy": true,
+```
+
+**What `null` buys you is every verb that is neither `confirm` nor `dangerous`.** The confirm gate
+is still shut without `--yes`, and on the mock arm `pick` is the verb behind it, which
+[M11](#m11-prove-the-safety-net) ends on. `null` also takes the success test away, and there is no
+`declare_success` tool over MCP in any case, so the wave ends with the model saying it waved.
+Nothing checks that, and the only record of what ran is the chat and the server's stderr trace
+that [M08](#m08-the-first-session) locates.
+
+**What it costs is a budget you did not choose.** A bare session runs on 40 verb steps and five
+minutes, and the `done` line of every call carries both, as
+`budget: step 1/40, llm calls 0/40, 0.0/5 min`. The middle column stays at zero because quackd
+calls no model here. The five minutes starts when the client spawned the server, not at your first
+verb.
+
+> [!WARNING]
+> A session you set up slowly can reach the arm with most of its clock gone. Reading back through
+> [M11](#m11-prove-the-safety-net) and aiming the webcam again both count. If it runs out before
+> the wave does, load a duck rather than restart. The first duck loaded into a session that never
+> had one swaps the ceilings for the contract's own and starts its steps and its clock at zero,
+> though its `note` still says `What this session already spent still counts` and then prints a
+> counter reading zero, as [M09](#m09-add-the-camera) captured. That sentence is true of a second
+> load, which does carry the spend over, and wrong about the first. Loading is also a new task, so
+> the verdict gate shuts until the model answers for it. Restarting gives you a fresh clock as
+> well, and walks the arm to the rest pose twice on the way, so step out of reach first.
+
+**Then type a sentence.** This works:
+
+```
+Wave to me with the arm.
+```
+
+That is the honest test. A sentence that says more gives you a better idea of what is coming:
+
+```
+Look through the camera first. If you can see a person, greet them: move wrist_flex, shoulder_pan
+and elbow_flex back and forth a few times, no more than about 20 degrees from where each one is
+now, in small moves. Keep wrist_roll especially small, do not touch the gripper, then return to
+the start and stop.
+```
+
+**What should happen** is that the model lists the verbs, reads the arm with `report_state`,
+looks if it has a camera, answers `robot_assess_task` with a verdict because nothing that moves
+the body runs before it does, and then issues several small `move_joints` calls alternating
+about a neutral pose. Nobody wrote a wave. That is the thesis, and [section 12](#12-wave-to-me)
+has what the bench arm did with it on 2026-09-15. No MCP session has yet driven a real arm, so
+what your client's model does with that sentence is the open part.
+
+quackd's ceilings hold underneath whatever it decides: no joint outside its calibrated range,
+nothing faster than the step cap. Force is not capped, so the sweep has to be clear and your hands
+out of it. Your brake between verbs is `stop` asked for in the chat, and there is no Ctrl-C,
+which [M11](#m11-prove-the-safety-net) covers along with the thing `stop` is not, which is a way
+to interrupt a move already running. `stop` spends a budget step like any other verb, so once
+the 40 steps or the five minutes are gone it is refused too, and the last resort is the one the
+rest of this page uses, which is to hold the arm and cut its power.
+
+**Whether it can see you** differs in one way that matters. The frame reaches the model only
+when it calls `robot_observe`, so ask for a look or it will work from joint readings alone.
+That is what happened on the bench, where the webcam was framed on the gripper and cropped the
+raised arm out of the picture. [M09](#m09-add-the-camera) has the aiming and the detector.
+
+**Giving it a picture** is shorter here than on the command line. There is no `--image` on
+`serve-mcp`. You attach the picture to your chat message and it reaches the model directly
+without passing through quackd, which therefore neither sees it, resizes it nor records it.
+That is also why there is no copy afterwards. `--image` and `--vision` are `quackd run` flags.
+
+**Making it repeatable** is the same `.duck` file Part 1 ends on, loaded with
+`robot_load_duckfile` once the session is up. Give it an absolute path,
+`D:\Development\lerobot-test\wave-hello.duck` or the full path from `/` elsewhere, because a
+desktop-spawned server starts in a directory you did not choose. Bundled names like
+`lerobot-lookout` resolve by name. And the bonus from [M09](#m09-add-the-camera) applies: the
+file is checked against the manifest of the arm already connected, camera included, which is
+something a `quackd run` cannot do for the same file. Part 1 leaves `observe` out of that duck's
+`allow` and its `requires` on purpose, so adding it to both is what makes the bonus worth
+anything here.
+
+<br>
+
+### M13. When it will not work
+
+Part 1's [13. When it will not work](#13-when-it-will-not-work) is still the table for
+anything the arm itself says, because the arm does not know which pilot it has. What changes
+is where those sentences arrive. A wrong port, a goal outside the calibrated range, a stall,
+a camera that gave no frame: over MCP each of those comes back inside a result's `summary`,
+in more detail in the `trace` block under it, and in the server's stderr log. None of it
+prints on a terminal you are watching. So read that table there when the arm is the thing
+that complained, and read this one here, which is only the failures belonging to the client,
+the server and the session.
+
+| What you see | What it means | What to do |
+|---|---|---|
+| no quackd tools in the client at all | the client never spawned the server, or spawned it and it died at once | Claude Code: `claude mcp list`, then `/mcp` inside a session. Desktop: Connectors, Manage connectors, and restart the app completely ([M03](#m03-choose-your-client)) |
+| the server listed as pending approval | it came from a project `.mcp.json`, and nobody has approved it in a session yet | run `claude` in that directory and approve it there. You are asked once per project, not once per session |
+| the server will not start, and the log says the command was not found | the path is wrong, or a desktop app cannot see your shell `PATH` | give the absolute path from [M02](#m02-install-quackd). A desktop client has no shell and starts in a directory you did not choose |
+| `adapter 'lerobot' needs an extra` | the client launched a different environment from the one you installed into | check the command is your venv's own `quackd`, and that the same venv's `python --version` is 3.12 or newer |
+| the session refuses to start, and the log says `the arm did not reach its rest pose` | it could not get home, so not one tool was ever offered | hold the arm, cut its power, clear whatever stopped it, then start the session again. The refusal carries the closing note, which says whether torque was left on or the arm is limp in your hands ([M07](#m07-record-the-rest-pose)) |
+| a verb refused with `no feasibility verdict has been recorded for this task yet` | the verdict gate, shut until the model answers for this body | ask it to call `robot_assess_task` first ([M10](#m10-rehearse-with---dry-run)) |
+| the same verb refused with `the verdict is uncertain and nobody has cleared it` | uncertain does not clear anything that moves the body, and there is no terminal here to ask on | answer the model in the chat, and let it record again on its own responsibility ([M10](#m10-rehearse-with---dry-run)) |
+| `verb 'move_joints' is not in this duck's allowlist` | the loaded contract does not allow it, which is the contract doing its job | widen the `.duck` and load it again, or ask for a verb it does allow ([M08](#m08-the-first-session)) |
+| a verb refused with `this verb needs human confirmation` | a confirm-class verb, and there is no terminal here to ask on. On this arm `pick` is confirm-class whenever a policy is loaded | restart the server with `--yes` in its command, which is the only way to answer that gate from a chat client |
+| `budget exhausted` | the session has spent its steps or its minutes | the paragraphs under this table are about this row |
+| every verb except `stop` refused with `session aborted` | the heartbeat gave up, or a contract's `abort_when` fired | send `stop`, which is refused by nothing except an exhausted budget, then restart the server. Nothing in an aborted session recovers on its own ([M11](#m11-prove-the-safety-net)) |
+| a flock `.duck` refused as not available over MCP | an MCP session is one pilot, and a flock needs a coordinator this process does not run | run that file with `quackd run` from a terminal, which is what the refusal tells you |
+| `file not found (also not a bundled starter duck)` for a file that is plainly there | a relative path resolved against the server's working directory, which you did not choose | pass an absolute path. Bundled names like `lerobot-lookout` resolve by name and need none |
+| tools, verbs or a camera that do not match what you changed a minute ago | a running server keeps the tools and the contract it started with | restart it: `/mcp` in Claude Code, or a new session. In Desktop, restart the app |
+| a summary you cannot act on | the trace in a result is capped at thirty lines, and the whole block goes to stderr | read the server's log, which is the last paragraph here |
+
+**The budget row is the one that will bite tomorrow.** Without a loaded `.duck`, a session's
+allowlist holds every verb that is not `dangerous`, and the session runs on a default budget
+of 40 verb steps and five minutes. The allowlist is the only gate open that wide: a
+confirm-class verb still needs `--yes` on the server's command, which is the confirm row
+above. That clock starts when the client spawned the server, not when you asked for the first
+verb. A session you opened, then spent ten minutes talking through, is out of minutes before
+the arm has moved at all.
+
+This is what it looks like, captured against the mock arm on a contract whose budgets were
+one step, four model calls and three minutes, so the numbers are small enough to watch. The
+first call went through and returned the state:
+
+```
+shoulder_pan 0, shoulder_lift -90, elbow_flex 90, wrist_flex 0, wrist_roll 0, gripper 100; torque on; hottest shoulder_pan 30°C; holding nothing
+```
+
+That pose and that temperature are the mock's, and yours will be your own arm's. The second
+call, the same verb again, came back:
+
+```
+budget exhausted: max_steps (1) reached
+```
+
+Nothing reached the arm for that one. The budget gate closes before the verb goes anywhere
+near the transport, so an exhausted session leaves the arm exactly where the last verb left
+it, still under torque, still holding its goal. It is a refusal, not a shutdown.
+
+The budget is also the one gate `stop` does not walk through. `stop` is exempt from the
+allowlist, the confirm gate, the verdict gate and the abort gate, but it charges a step like
+any other verb, so a session with nothing left refuses the brake with that same sentence.
+What you have then is an energised arm holding its goal and a tool surface with no brake left
+on it. The way out is to end the server, whose closing path stops the arm and walks it back
+to the rest pose before it lets any torque go, or to cut the arm's power.
+
+**Loading a `.duck` restarts the clock**, the first time. `robot_load_duckfile` on a session
+that has not adopted a contract yet hands the executor the contract's budget and starts
+counting from zero, because a task's five minutes should be the task's rather than whatever
+was left of the session's. A second load refunds nothing already spent: the steps, the model
+calls and the clock carry across from the first contract. The limits do not. They become the
+new contract's, so a pilot that has spent a narrow budget can load a wider file and carry on,
+with the spend it already has counted against the wider ceiling.
+
+> [!NOTE]
+> After the first contract, no tool zeroes those counters. `robot_load_duckfile` can still raise
+> the ceiling, because the loaded contract's budgets become the session's, but the steps and the
+> minutes already spent stay spent. So a session that has never adopted a contract has one free
+> reset in it, which is the first load, and after that a fresh clock means a fresh server:
+> `/mcp` in Claude Code, or restarting Desktop.
+
+**Where the logs are.** Claude Code writes the server's stderr to
+`%LOCALAPPDATA%\claude-cli-nodejs\Cache\<cwd slug>\mcp-logs-<server name>\<timestamp>.jsonl`,
+one JSON object per line. The server's lines are the objects with an `error` key, wrapped as
+`{"error":"Server stderr: ..."}`, and the rest are the client's own `debug` entries for the
+connection, the capabilities it negotiated and the teardown. Every object carries a
+`timestamp`, a `sessionId` and a `cwd` as well, so grep the file for `Server stderr` rather
+than reading it top to bottom. The word `error` there is the client's name for the stream
+rather than a verdict on the line, so an ordinary trace block reads back as a run of those
+objects, and the only escaping an ordinary line shows is the `\r\n` at the end of it. Claude
+Desktop writes `%APPDATA%\Claude\logs\mcp-server-<name>.log` on Windows and
+`~/Library/Logs/Claude/` on macOS, as plain text. Either one holds the uncapped trace, the
+heartbeat's own lines, and the reason a session refused to start, which is the one failure
+the chat cannot show you because no tool ever appeared. `--no-trace`, or `QUACKD_TRACE=0` in
+the config's `env` block, turns the trace off and leaves everything else.
+
+> [!IMPORTANT]
+> Nothing quoted in this section came from a real arm. No MCP session has yet driven one, so
+> these are the failures quackd knows how to produce on purpose, against the mock and in the
+> test suite. The one it could not rehearse is yours, and
+> [M14](#m14-what-to-report) is where it goes.
+
+<br>
+
+### M14. What to report
+
+[Open a LeRobot hardware report](https://github.com/rokbenko/quackd/issues/new?template=lerobot-hardware-report.yml),
+or a plain issue with the chat pasted into it. A report that says it did not work is worth as
+much as one that says it did, and this half of the page is the half with the least behind it.
+
+**What you attach is different here.** An MCP session writes nothing run shaped: no `runs/`
+directory, no `transcript.jsonl`, no `frames/`. Four things stand in for that.
+
+- **The chat itself.** Every tool call and every result is in it, which is the whole record of
+  what the pilot asked for and what the executor answered. Copy it from the first `robot_` call
+  to the end.
+- **The server's stderr log**, which is where the trace went. Claude Code keeps it under
+  `%LOCALAPPDATA%\claude-cli-nodejs\Cache\<cwd slug>\mcp-logs-<server name>\`, one JSON object
+  per line. Claude Desktop keeps `%APPDATA%\Claude\logs\mcp-server-<name>.log`, and
+  `~/Library/Logs/Claude/` on macOS. [M13](#m13-when-it-will-not-work) has the longer version.
+- **The memory file**, unless you passed `--no-memory`, because memory is on by default on
+  `serve-mcp`: `~/.quackd/memory/arm-01.jsonl`, one JSON object per line. It is the one thing an
+  MCP session leaves on disk, and it is what the next session reads back.
+- **A `doctor` run afterwards**, by the same absolute path you gave the client. Run it with the
+  sweep clear and the arm free to rest at its pose, because the probe connects, parks the arm
+  again on its way through, and then lets go of it:
+
+```bash
+D:\Development\lerobot-test\.venv\Scripts\quackd.exe doctor --robot arm-01
+```
+
+**Four questions that are still open.** One SO-101 has run quackd, on 2026-09-15, and that day
+was `quackd run` from a terminal rather than a session like this one. The parking at both ends is
+exercised against the mock arm and in `tests/test_mcp_server.py`, and no rest-pose park has run on
+a real arm by either route, which is what leaves the first three open. `quackd run` brackets a
+run with the same park, so the first two are not questions a session alone can answer. What is
+particular here is that the client's lifecycle is what triggers them. The fourth is open for a
+different reason: the verdict gate has fired on hardware once, on 2026-09-15, when a dry run
+ended because the pilot answered `uncertain` and the person at the keyboard said no. What has
+never happened is a chat client's model answering it.
+
+- **Did the connect-time park work?** Before the client was offered a single tool, the server
+  drove the arm to the pose you recorded in [M07](#m07-record-the-rest-pose). Say whether it got
+  there, whether the path it took was a sensible one to watch, and whether the log said so.
+- **Did the close-time park work?** Ending the session should stop the arm, fold it, and then
+  let go, in that order. Say whether the arm was at its pose when torque dropped, and whether it
+  stayed where it was once torque was off.
+- **What did an unclean exit leave?** Kill the server process from Task Manager, the `quackd.exe`
+  the client launched rather than the client itself, with the arm somewhere away from its pose.
+  None of the teardown runs in that case. What should happen is that the arm holds its last goal
+  under torque and does not fall. Say whether it did, and say so either way. Killing the *client*
+  is a different test and nobody knows which way it goes, so treat it as its own report: if your
+  client leaves the server to notice stdin close, the server unwinds and the arm **moves** to its
+  rest pose with nobody expecting it, and if the client kills the subprocess instead, nothing
+  parks and the arm stays energised where it stopped. Which one your client does is its own
+  behaviour and quackd cannot promise either. Stand clear, watch the arm and the stderr log,
+  and say which one you saw.
+- **Did the feasibility gate help, or get in the way?** `robot_assess_task` has to be answered
+  before anything moves. Say how often the model answered `uncertain` before you cleared it, and
+  whether the verdict it wrote matched what the arm then did.
+
+> [!CAUTION]
+> The unclean exit is a test you run on purpose, so treat it as one. The arm is left energised
+> with its last goal standing. Cutting the servo supply is the immediate way to end that, and a
+> fresh connect, the `doctor` run in the bullet above, also takes the arm back to its pose and
+> puts it down. Nothing is reading temperature once the process is gone, so the hold is not
+> indefinite: a loaded joint heats until it trips its own protection, and a joint that trips its
+> own protection goes slack without announcing it. End the test in seconds rather than minutes,
+> keep the arm unloaded, keep a hand near the switch, and do it with the arm somewhere it can
+> hold safely rather than halfway through a reach.
+
+**The rest of the questions are the terminal half's**, because they are about the arm rather
+than about how you are talking to it: the holding band, what a joint reads after ten minutes of
+work, whether a stall is caught, whether five degrees an action felt right in the room, and
+which end of the gripper's range is open. [Section 14](#14-what-to-report) writes each one out,
+and an answer from an MCP session counts the same as an answer from a run.
+
+**If your arm did something this one did not**, change the `lerobot:real` row in
+[adapter-status.md](adapter-status.md) in the same commit, and say that an MCP session did it.
+That row describes one afternoon at a terminal, so whichever way yours went, it is the first of
+its kind on that page.

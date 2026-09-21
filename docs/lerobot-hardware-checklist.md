@@ -341,6 +341,10 @@ Both of those drive the arm to its rest pose before you get a turn, and back to 
 let go. An MCP session refuses to start at all if it cannot get there, which is the same rule
 as the run's, moved to the moment the daemon comes up.
 
+[Part 2 of the first run](lerobot-first-run.md#part-2-from-claude-over-mcp) is that MCP session
+at walking pace: which client to configure and how, what each tool answers, what every refusal
+means, and which moments move the arm without anybody asking for it.
+
 10. **`gripper` open, then closed on nothing, and watch which way it goes.** quackd assumes
     100 is open and 0 is closed, and that is an assumption about how your arm was assembled
     and calibrated, not a fact about the model. If yours runs the other way, stop here and
