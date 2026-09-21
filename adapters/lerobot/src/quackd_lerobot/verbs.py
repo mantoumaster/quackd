@@ -50,6 +50,12 @@ GRIPPER_S = 6.0
 open takes 100 divided by the step, times the tick."""
 
 PICK_POLL_S = 0.5
+PICK_SETTLE_S = STALL_TICKS * TICK_S
+"""After the policy stops, how long to let the gripper come to rest before reading `holding`
+one last time. `_holding` needs two gripper samples at least `SETTLE_GAP_S` apart that agree,
+so the read that catches the policy going idle can be too early to see a grasp that is still
+closing. This is the same window `_drive` calls a stall, which is this file's own definition
+of a joint that has stopped moving, and it is comfortably wider than that gap."""
 
 
 class MoveJointsParams(BaseModel):
@@ -390,15 +396,29 @@ async def pick(ctx: VerbContext, p: PickParams) -> VerbResult:
     if (fail := await send_or_fail(ctx, Intent.do(f"policy:pick:{p.target}"))) is not None:
         return fail
     t0 = ctx.transport.now()
+
+    def picked() -> VerbResult:
+        return VerbResult.success(
+            f"picked {p.target}", target=p.target, seconds=round(ctx.transport.now() - t0, 1)
+        )
+
     state = await ctx.transport.get_state()
     while ctx.transport.now() - t0 < p.max_s:
         await ctx.transport.sleep(PICK_POLL_S)
         state = await ctx.transport.get_state()
         if state.holding:
-            return VerbResult.success(
-                f"picked {p.target}", target=p.target, seconds=round(ctx.transport.now() - t0, 1)
-            )
+            return picked()
         if not str(state.policy).startswith("policy:"):
+            # The policy has stopped and its last grasp may still be closing. `holding` is
+            # inferred from the gripper coming to rest short of shut, which is only knowable
+            # once two readings a real interval apart agree, so the read that caught the
+            # policy going idle can be one sample too early. Give it one settle and look
+            # again: without this a policy that grasps and finishes inside a single poll is
+            # reported as a failed pick while the object is in the jaws.
+            await ctx.transport.sleep(PICK_SETTLE_S)
+            state = await ctx.transport.get_state()
+            if state.holding:
+                return picked()
             break  # the policy finished without a grasp
     await ctx.transport.stop()
     broke = state.extras.get("policy_error")

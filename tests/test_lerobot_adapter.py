@@ -627,6 +627,47 @@ async def test_a_verb_is_refused_while_a_policy_has_the_arm() -> None:
         await adapter.close()
 
 
+async def test_pick_looks_once_more_before_calling_a_finished_policy_a_failed_grasp() -> None:
+    """A policy can grasp and finish inside a single poll, and `holding` is not knowable the
+    instant it does: it is inferred from two gripper readings a real interval apart agreeing,
+    so the read that catches the policy going idle can be one sample too early.
+
+    Without the second look that is a `pick` reporting nothing held with the object in the
+    jaws. It is also what a macOS runner saw on 2026-09-21, where the same race failed
+    `test_real_backend_runs_an_injected_policy_for_pick` once and has not since."""
+
+    class SettlesAfterTheLastPoll(LeRobotMock):
+        """Idle by the time `pick` first looks, and holding only on the read after that."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.looks = 0
+            self.watching = False
+
+        async def send_intent(self, intent: Intent) -> Any:
+            ack = await super().send_intent(intent)
+            if intent.kind == "do":
+                self.watching = True  # the policy ran and finished between polls
+                self.policy = "idle"
+            return ack
+
+        async def get_state(self) -> Any:
+            if self.watching:
+                self.looks += 1
+                # 1 is the read before the loop, 2 is the poll that finds the policy idle
+                # with the grasp still settling, and 3 is the look after the settle
+                self.holding = self.looks >= 3
+            return await super().get_state()
+
+    transport = SettlesAfterTheLastPoll()
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 10})
+    assert picked.ok, picked.summary
+    assert transport.looks >= 3, "pick decided without giving the grasp a settle"
+
+
 async def test_a_policy_that_raises_is_a_failed_pick_and_says_so() -> None:
     class Broken:
         def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
