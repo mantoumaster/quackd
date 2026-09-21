@@ -480,7 +480,9 @@ one verb and stop:
 Nine `robot_*` tools appear. `robot_list_verbs` first, then `robot_assess_task` with a
 verdict, which `robot_run_verb` requires before anything that moves the body, then
 `robot_run_verb(verb="move_joints", params={...})`. Both clients, the full tool list and a
-two-minute script: [mcp.md](../mcp.md).
+two-minute script: [mcp.md](../mcp.md). The same path at walking pace, from an empty laptop to
+a waving arm in fifteen steps, is
+[Part 2 of the first run](../lerobot-first-run.md#part-2-from-claude-over-mcp).
 
 A session parks the arm at both ends, the same as a run does, and **refuses to start** if it
 cannot reach the recorded rest pose. Repeat `--camera-url` here too, and the session reads

@@ -66,6 +66,8 @@ The first of those has passed 10 of 10 on the physics simulator too, with the du
 ## Table of Contents
 
 - [Quickstart: a LeRobot SO-101 arm](#quickstart-a-lerobot-so-101-arm)
+  * [From the terminal](#from-the-terminal)
+  * [From Claude, over MCP](#from-claude-over-mcp)
   * [What happened in that run](#what-happened-in-that-run)
 - [No robot yet? Try it in 60 seconds](#no-robot-yet-try-it-in-60-seconds)
 - [Why?](#why)
@@ -97,7 +99,9 @@ The first of those has passed 10 of 10 on the physics simulator too, with the du
 
 ## Quickstart: a LeRobot SO-101 arm
 
-The path the recording at the top of this page took, in ten steps, with the arm calibrated, named and parked before anything you type can move it. You need the arm and its serial port, a USB webcam, a key for one cloud vendor, and Python 3.12 or newer, because LeRobot itself needs it.
+Two ways to drive the same arm, and the steps that set the arm up are shared between them. **[From the terminal](#from-the-terminal)** is the path the recording at the top of this page took, in ten steps, with the arm calibrated, named and parked before anything you type can move it. **[From Claude, over MCP](#from-claude-over-mcp)** is the same arm reached from a chat instead, where the model you are already talking to is the pilot. Either way you need the arm and its serial port, a USB webcam, and Python 3.12 or newer, because LeRobot itself needs it. Only the terminal path needs a key for one cloud vendor, because only that one brings a model of its own.
+
+### From the terminal
 
 1. **Install the arm and a pilot into one environment.** Below Python 3.12 the `lerobot` extra resolves to nothing while the install still reports success, so pin the interpreter.
 
@@ -184,6 +188,24 @@ quackd run --goal "draw what is in the picture" --robot arm-01 --image sketch.pn
 **Two of those steps were not taken in the recording.** The run in the GIF was reached as `--robot lerobot:real --address COM3`, with no registered name and no rest pose. Step 5 existed that day and simply was not used, so the registry has still never been pointed at hardware. Step 6 did not exist at all: the rest pose was written after that afternoon, in answer to it, and has been exercised against `lerobot:mock` and in the test suite and not yet on a real arm. The arm in the recording is held up by torque alone, which is why it fell when the run ended. The two options after step 10 postdate that afternoon as well, and `--by-hand` and `--image` have both been exercised against `lerobot:mock` and in the test suite, and not yet on a real arm. Walk all ten and you are the second person down this path and the first down the whole of it, so what differs on your bench is the part worth writing down.
 
 [docs/lerobot-first-run.md](docs/lerobot-first-run.md) is the long way round the same path: every refusal you can hit and what it means, the safety checks worth running before a wave, what the camera can and cannot see with each kind of pilot, and [what to report](docs/lerobot-first-run.md#14-what-to-report) afterwards. Nothing moves until step 10 of [the hardware checklist](docs/lerobot-hardware-checklist.md).
+
+### From Claude, over MCP
+
+Steps 3 to 8 above are the same whichever way you drive the arm, because they are about the body rather than about the pilot: find the port and calibrate, connect once, name it, record a rest pose, add the webcam. Two of the others change. Step 1 needs no pilot extra, so it is `uv pip install "quackd[lerobot]"` on its own, and step 2 goes away, because quackd picks no model in this mode and reads no key. The model you are already chatting with is the pilot, so there is no `--provider` and no `--model` here at all.
+
+Steps 9 and 10 become one thing: point your client at the arm, then ask it in the chat. In Claude Code that is one command, and what it names is the `quackd` inside the venv from step 1, by its absolute path.
+
+```bash
+claude mcp add arm -- D:\Development\lerobot-test\.venv\Scripts\quackd.exe serve-mcp --robot arm-01
+```
+
+That path is a Windows one, and elsewhere it is the same venv's `bin/quackd`. Use the venv rather than `uvx`, which builds a second environment on whichever interpreter it picks: on a machine whose default Python is 3.11 the LeRobot half of that extra resolves to nothing, silently, and you get a server with no arm backend in it. Claude Desktop takes the same command and arguments in `claude_desktop_config.json`, under Settings, then Developer, then Edit Config, and wants a full restart of the app afterwards.
+
+Either way nine `robot_*` tools appear, and behind them is the executor the rest of this page describes: the same allowlist, the same budgets, the same feasibility verdict before anything moves, and the same refusal for a joint goal outside the range your calibration recorded. What you gain over a `--goal` run is that you choose each verb and each number yourself, which is the only way to ask for one verb and stop, and the only way to ask a real arm for a camera frame on purpose.
+
+Two things are worth knowing before the first session. Starting the server moves the arm, because connecting drives it to the rest pose from step 6 and refuses to start at all if it cannot get there, so nobody should be in reach when a client spawns it. And there is no Ctrl-C: between verbs the brake is asking for `stop`, and during one it is the power switch.
+
+[Part 2 of docs/lerobot-first-run.md](docs/lerobot-first-run.md#part-2-from-claude-over-mcp) is that path in fifteen steps, with both clients configured, what each tool answers, what every refusal means, and which moments move the arm without anybody asking. No MCP session has yet driven a real arm, so that half of the page is the half with the least behind it.
 
 ### What happened in that run
 

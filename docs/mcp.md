@@ -238,6 +238,13 @@ quackd serve-mcp --robot open_duck:sim2d                                     # a
 > the deciding happens in Claude. The flag belongs to `quackd run`, where quackd owns the loop
 > ([jev.md](jev.md)).
 
+## Driving a real LeRobot SO-101 arm from Claude
+
+That one has a page of its own, because an arm wants a calibration, a rest pose and a Python
+3.12 environment in place before a client is pointed at it, and because a session moves the arm
+at both ends on its own:
+[Part 2 of the first run](lerobot-first-run.md#part-2-from-claude-over-mcp).
+
 ## Driving a real Open Duck Mini from Claude
 
 A real Open Duck Mini needs three flags, because its camera is a separate
