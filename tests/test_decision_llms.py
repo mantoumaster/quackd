@@ -487,6 +487,31 @@ async def test_the_in_process_one_loads_once_and_asks_for_the_decision_checkpoin
     assert {model for _s, _q, model in router.calls} == {"typed-decisions"}
 
 
+async def test_the_in_process_one_reports_a_count_quackd_bills_as_measured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Laya counts the tokens it actually read, so its turns are measured rather than estimated.
+
+    This was documented backwards for a while, in the module docstring, on the page and in the
+    fake, which between them had the suite proving the estimate path for the one backend that
+    does not use it. `laya/agent.py` returns `usage={"input_tokens": int(attention_mask.sum()),
+    "output_tokens": 0}`, and a positive input count is exactly what `_usage` reads as a
+    measurement. The zero output is discarded as a field never filled in and never reaches the
+    flag. It still costs nothing: a checkpoint in this process is charged at the self-hosted
+    rate.
+    """
+    fake_laya.install(
+        monkeypatch,
+        fake_laya.FakeRouter(answers=fake_laya.turn("report_state"), input_tokens=321),
+    )
+    llm = make_decision_llm(PRESETS["laya"])
+    result = await llm.decide({"goal": "look"}, {"next_verb": {"type": "choice"}})
+    assert result["usage"]["input_tokens"] == 321, "the count Laya reported has to survive"
+    assert result["usage"]["output_tokens"] == 0
+    # and the choice carries a distribution, which is what gives these turns a runner-up line
+    assert result["answers"]["next_verb"]["probabilities"], "a choice answer carries its spread"
+
+
 async def test_an_older_in_process_package_still_loads(monkeypatch: pytest.MonkeyPatch) -> None:
     """The keyword that preloads the right checkpoint is younger than the class it belongs to,
     and quackd would rather load the wrong one once than refuse to run."""

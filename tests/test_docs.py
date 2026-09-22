@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from quackd.agent.decision.catalogue import PRESET_NAMES, PRESETS
 from quackd.agent.providers.factory import CLOUD_NAMES, KEY_ENV, default_model_for
 from quackd.verbs.registry import default_registry
 from quackd_microduck import upstream_api as up
@@ -439,13 +440,6 @@ def test_mcp_json_is_a_stdio_server() -> None:
     # Scripts/quackd.exe on Windows, so the repo pins --no-sync. Users get `uvx` (docs/mcp.md).
     if server["command"] == "uv" and args[0] == "run":
         assert "--no-sync" in args, "uv run re-syncs and fights the server it is launching"
-
-
-def test_adr_links_resolve() -> None:
-    for md in (REPO / "docs").rglob("*.md"):
-        text = md.read_text(encoding="utf-8")
-        for target in re.findall(r"\]\((adr/[^)]+\.md)\)", text):
-            assert (REPO / "docs" / target).exists(), f"{md.name} links to missing {target}"
 
 
 # ── counts, so a release cannot ship a number the code disagrees with ────────────────────
@@ -970,3 +964,201 @@ def test_every_command_is_named_in_the_readme_table_and_the_module_map() -> None
     for name in sorted(names):
         assert f"| `quackd {name}" in rows, f"the README usage table has no row for {name}"
         assert name in architecture, f"docs/architecture.md never names {name}"
+
+
+def _github_slug(heading: str) -> str:
+    """The anchor GitHub mints for a heading, near enough to check links against.
+
+    Backticks and inline links are stripped to their text, everything that is not a word
+    character, a hyphen or a space goes, what is left is lowercased and its spaces become
+    hyphens. That is GitHub's rule, and it is why `## The ones quackd names` is reached as
+    `#the-ones-quackd-names`."""
+    text = re.sub(r"`|<[^>]+>", "", heading)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    return re.sub(r"[^\w\- ]", "", text.strip().lower()).replace(" ", "-")
+
+
+def _anchors(path: Path) -> set[str]:
+    """Every fragment a link may point at in this file: one per heading, plus any explicit
+    `id=` or `name=`. A heading that repeats gets `-1`, `-2`, the way GitHub numbers them."""
+    text = path.read_text(encoding="utf-8")
+    seen: dict[str, int] = {}
+    out: set[str] = set()
+    for heading in re.findall(r"^#{1,6}\s+(.+?)\s*#*$", _prose(text), flags=re.M):
+        slug = _github_slug(heading)
+        n = seen.get(slug, 0)
+        seen[slug] = n + 1
+        out.add(slug if n == 0 else f"{slug}-{n}")
+    return out | set(re.findall(r'\b(?:id|name)="([^"]+)"', text))
+
+
+def test_every_relative_link_and_anchor_in_the_markdown_resolves() -> None:
+    """Every link between two files in this repository points at something that is there.
+
+    Its predecessor checked one shape, `](adr/....md)`, and resolved it against `docs/`
+    whatever file did the linking. So a page in a subdirectory writing `](../adr/....md)`
+    was never checked at all, and one writing `](adr/....md)` passed while being broken on
+    GitHub. That hole was invisible while every page sat directly under `docs/`, and stopped
+    being invisible the day the decision LLM pages moved a level down.
+
+    Anchors are checked too, because this is now a repository where one page links a heading
+    on another, and a heading is renamed far more easily than a file.
+
+    Links inside fenced blocks are not checked: those are examples of what a reader would
+    type, and `_prose` takes them out for every other guard here as well.
+    """
+    anchors: dict[Path, set[str]] = {}
+    broken: list[str] = []
+    for md in sorted(REPO.glob("*.md")) + sorted((REPO / "docs").rglob("*.md")):
+        for target in re.findall(r"\]\(([^)\s]+)\)", _prose(md.read_text(encoding="utf-8"))):
+            if re.match(r"^[a-z][a-z0-9+.-]*:", target):  # http, https, mailto, any scheme
+                continue
+            path, _, fragment = target.partition("#")
+            dest = md if not path else (md.parent / path).resolve()
+            if not dest.exists():
+                broken.append(f"{md.relative_to(REPO)} -> {target} (no such file)")
+            elif (
+                fragment
+                and dest.suffix == ".md"
+                and fragment.lower() not in anchors.setdefault(dest, _anchors(dest))
+            ):
+                broken.append(f"{md.relative_to(REPO)} -> {target} (no such heading)")
+    assert not broken, "links that go nowhere:\n" + "\n".join(broken)
+
+
+# ── a page per decision LLM, and the row it has to agree with ───────────────────────────
+
+
+@pytest.mark.parametrize("name", PRESET_NAMES)
+def test_every_decision_llm_preset_has_a_page_that_agrees_with_its_row(name: str) -> None:
+    """A decision LLM is a row of data, and its page is where a reader checks the row.
+
+    The reason this is a test and not a convention: the hub's table once carried a `kev`
+    install line that had lost `KEV_DTYPE=bf16` and the `uv run --extra serve` prefix the
+    catalogue still had, and nothing in the suite could see it. A reader copying that cell
+    ran bare `python` outside the synced environment. So every value a page quotes is read
+    back off the page and compared with the row it came from.
+
+    The three literals at the end are the honesty rule `docs/adapters.md` puts on an adapter
+    page, applied to a server: say what you read and when, say what you are assuming, and
+    keep the word never until somebody has actually run it.
+    """
+    spec = PRESETS[name]
+    path = REPO / "docs" / "decision-llms" / f"{name}.md"
+    assert path.exists(), f"every preset has a page: docs/decision-llms/{name}.md is missing"
+    page = path.read_text(encoding="utf-8")
+    for field in ("url", "model", "key_env", "install"):
+        value = getattr(spec, field)
+        if value is not None:
+            assert value in page, f"{path.name} does not carry the row's {field}: {value!r}"
+    if spec.extra:
+        assert f"quackd[{spec.extra}]" in page, f"{path.name} does not name its extra"
+    if spec.price is not None:
+        assert f"{spec.price.input:g}" in page, f"{path.name} does not carry its published rate"
+    assert f"--decision-llm {name}" in page, f"{path.name} does not show how to name it"
+    assert "--decision-mode shadow" in page, f"{path.name} does not point at shadow mode"
+    # As headings, and in that spelling: `"VERIFIED" in page` is satisfied by the word
+    # UNVERIFIED, so the first half of this pair could not fail on any page that had the
+    # second. The status line is checked literally for the same reason -- `never` on its own
+    # is a word that turns up seven times in ordinary prose on one of these pages.
+    for honesty in ("\n## VERIFIED", "\n## UNVERIFIED"):
+        assert honesty in page, f"{path.name} has no {honesty.strip()} section"
+    assert "**Nothing here has ever answered a real robot.**" in page, (
+        f"{path.name} drops the status line before anybody has run it"
+    )
+    if name == "local":
+        assert "--decision-url" in page and "/v1/systemone" in page
+
+
+def test_the_decision_llms_hub_links_every_preset_page_from_its_table() -> None:
+    """The table is the way in, so it carries the links, in the order `doctor` prints.
+
+    It also carries each install line verbatim, which is the cell that drifted before: a
+    table nobody reads against the code is a table that describes an older release.
+    """
+    hub = (REPO / "docs" / "decision-llms.md").read_text(encoding="utf-8")
+    lines = hub.splitlines()
+    rows: dict[str, int] = {}
+    for name in PRESET_NAMES:
+        row = next((i for i, line in enumerate(lines) if line.startswith(f"| `{name}` |")), None)
+        assert row is not None, f"the hub's table has no row for {name}"
+        rows[name] = row
+        assert f"](decision-llms/{name}.md)" in lines[row], f"{name}'s row does not link its page"
+        assert PRESETS[name].install in lines[row], f"{name}'s row does not quote its install line"
+    assert list(rows) == sorted(rows, key=lambda n: rows[n]), "the table is not in doctor's order"
+    linked = set(re.findall(r"\]\(decision-llms/([a-z_]+)\.md\)", hub))
+    assert linked == set(PRESET_NAMES), f"the hub links {sorted(linked)}"
+
+
+def test_no_living_document_claims_the_wrong_number_of_decision_llms() -> None:
+    """Seven is `len(PRESET_NAMES)`, and the README says it in a status cell.
+
+    The same shape as the cloud-provider guard above, and for the same reason: a count in
+    prose is a fact about the code that nothing else would notice going stale."""
+    right = len(PRESET_NAMES)
+    wrong = [word for count, word in _NUMBER_WORDS.items() if count != right]
+    for path in _living_docs():
+        prose = _prose(path.read_text(encoding="utf-8")).lower()
+        for word in wrong:
+            assert f"{word} decision llms" not in prose, (
+                f"{path.name} says {word} decision LLMs and the catalogue has {right}"
+            )
+
+
+#: TypeSafe's confidence page publishes exactly two numbers, 0.5 and 0.9, which are quackd's
+#: brake and confirm-gated floors. The read floor at 0.60 and the motion floor at 0.85 are
+#: quackd's own, set between those two, and nothing published sits there. The claim that all
+#: four are theirs was written once and then copied onto nine pages and a README row, where it
+#: outlived two rounds of editing, so it is a string now rather than a convention. A number
+#: nobody published is a number nobody has calibrated either, and that is the whole reason
+#: `--decision-mode shadow` exists.
+_FLOORS_ARE_NOT_ALL_PUBLISHED = (
+    "floors are jev's published numbers",
+    "floors are jev's numbers",
+    "these are jev's own published numbers",
+    "floors on this page are jev's published numbers",
+    "floors set on jev's published numbers",
+    "floors are typesafe's published numbers",
+    "every one of them a number typesafe publish",
+    "typesafe's own universal floor",
+    "confidence floors are typesafe's own published numbers",
+)
+#: An ADR body is what was believed on the day it was accepted, and both of these ADRs still
+#: say it there. What has to be true today is the amendment note above the first heading,
+#: which is the house's own correction mechanism, so that is the part read back -- minus
+#: anything in quotation marks, because a note corrects a sentence by quoting it and a
+#: checker that cannot tell a citation from a claim would forbid the fix along with the bug.
+
+
+def test_no_living_document_credits_all_four_confidence_floors_to_typesafe() -> None:
+    """Two of the four are quackd's own, and the docs have said otherwise twice.
+
+    `https://docs.typesafe.ai/confidence` states 0.5 (genuinely unsure, route to a human) and
+    0.9 (high stakes, proceed with confirmation), and says the right values are domain-specific.
+    quackd's brake and confirm floors sit on those. Its read floor (0.60) and motion floor
+    (0.85) sit between them and are nobody's published guidance, so a page that credits all
+    four to a vendor is telling a reader those numbers carry an authority they do not have.
+
+    The history files are exempt the way they always are, with one addition: ADR-0040 and
+    ADR-0043 both state the old claim in their Consequences, and both now carry an amendment
+    note correcting it. A body records what was believed and is left alone. The note is the
+    live document, so the text above the ADR's first heading is what is read back, with
+    quoted spans removed: both notes work by quoting the sentence they are overturning.
+    """
+    sources = [
+        REPO / "quackd" / "agent" / "decision" / "stepper.py",
+        REPO / "docs" / "adr" / "0040-a-discrete-stepper-in-front-of-the-model.md",
+        REPO / "docs" / "adr" / "0043-decision-llms-are-a-wire-format-and-a-data-row.md",
+    ]
+    for path in _living_docs() + sources:
+        text = path.read_text(encoding="utf-8")
+        if "adr" in path.parts:
+            # the metadata line and the amendment notes, which stop at the first section,
+            # and not the sentences they quote in order to overturn them
+            text = re.sub(r'"[^"]*"', "", text.split("\n## ", 1)[0])
+        text = text.lower()
+        for wrong in _FLOORS_ARE_NOT_ALL_PUBLISHED:
+            assert wrong not in text, (
+                f"{path.relative_to(REPO)} says {wrong!r}, but TypeSafe publish only 0.5 and "
+                "0.9; the 0.60 read floor and the 0.85 motion floor are quackd's own"
+            )
