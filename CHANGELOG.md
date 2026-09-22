@@ -70,6 +70,10 @@ the reading of it is.
   `decision_llm` with its name, model and address beside `decision_price`, and the summary's
   block carries `llm` and `url`. `kev-latest` on two machines is two different servers, and a
   transcript that recorded only the id could not tell a reader which one it had.
+- **One second means one second, whoever is answering.** The turn is bounded at the seam
+  rather than left to each backend, because a vendor's client has a timeout of its own with
+  its own meaning -- TypeSafe's retry budget is not its request timeout, and its request
+  timeout defaults to ten seconds -- while a model running in this process has none at all.
 - **`quackd doctor` lists every preset** with its extra, its key variable, its model and where
   it listens, so "could this run here?" is answerable without starting a task. It does not
   probe any of them, the way it does not probe a cloud vendor.
@@ -83,9 +87,14 @@ the reading of it is.
   where the spec came from, so a bad value in a `.env` three directories up reads differently
   from one still on your screen.
 - **Breaking. `~/.quackd/robots.json` stores one `llm` key** instead of `provider` and `model`.
-  A file written by 0.11 or earlier is folded on read (`provider` alone, both together, or a
-  bare model id whose vendor is inferred), and the next write stores the new shape, so nothing
-  needs migrating by hand. `quackd robot show --json` emits `llm` where it emitted the pair.
+  A file written by 0.11 or earlier is folded on read -- `provider` alone is the vendor, the
+  pair together is the spec, and a `model` with no `provider` beside it names no pilot, because
+  under the old flags it named none either -- and the next write stores the new shape, so
+  nothing needs migrating by hand. `quackd robot show --json` emits `llm` where it emitted the
+  pair. Reading is deliberately lenient: a spec the catalogue can no longer resolve is kept as
+  written, and the run that names that robot is what refuses, because refusing on read would
+  take `quackd robot edit` down with everything else and leave no way to mend the file.
+  `quackd robot add` and `robot edit` check in full, which is where a typo is actually made.
 - **Breaking. There is no longer any way to mix a vendor from one place with a model from
   another.** A robot registered against OpenAI and run with `--llm gemini` gets Gemini's
   default, full stop. The guard that used to carry a model across vendors, and the refusals it
