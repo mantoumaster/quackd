@@ -1,0 +1,78 @@
+"""Every decision LLM that speaks `POST /v1/systemone`, over one client.
+
+TypeSafe published the format and the client; Kev, Von, OpenJev, OpenDecision and the rest
+implement it and document the same sentence -- point the SDK at our base URL. So this is one
+class with a row of data in front of it rather than a module per vendor, and a server quackd
+has never heard of is `--decision-llm local --decision-url` and no code at all.
+
+`typesafe_sdk` is the transport for all of them because it is the protocol's reference client:
+it owns the retry policy, the typed errors and the `int | None` usage the billing already
+reads tolerantly. The extra that installs it is named `decision` rather than for the vendor
+for exactly that reason.
+
+Imported only when a run has named one of these. Nothing at module scope touches the SDK.
+"""
+
+from __future__ import annotations
+
+import importlib
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
+
+from quackd.agent.decision.base import DecisionNotInstalled
+
+if TYPE_CHECKING:
+    from quackd.agent.decision.catalogue import DecisionSpec
+
+NO_KEY = "local"
+"""What goes in the key field for a server that wants none. Not the empty string: the SDK
+rejects that, and this is the word Kev's own example uses. A row with a `key_env` sends
+nothing instead and lets the SDK read the variable itself, so a hosted key in somebody's
+`.env` never reaches a server on their own machine."""
+
+TIMEOUT_S = 1.0
+"""A decision LLM that has not answered in a second is not worth waiting for: the point of it
+is that it is quicker than the model, and past this the turn is cheaper spent on the model
+directly. The turn escalates and the record says the call timed out.
+
+A starting value, like the floors. It was chosen against Jev's published latency, and a
+CPU-only server on your own machine may well need more; `--decision-mode shadow` is how you
+find out before it matters."""
+
+MAX_RETRIES = 1
+
+
+class SystemOneLLM:
+    """One System One server, reached where its row says.
+
+    Built while the CLI is still parsing rather than on the first turn: constructing a client
+    can fail -- a missing extra, an SDK that renamed its own constructor -- and that is a
+    sentence before the robot connects, not a phantom cost on a turn that never left the
+    machine.
+    """
+
+    def __init__(self, spec: DecisionSpec, *, model: str | None = None, url: str | None = None):
+        try:
+            sdk = importlib.import_module("typesafe_sdk")
+        except ImportError as e:  # pragma: no cover - exercised by tests/test_extras_absent
+            raise DecisionNotInstalled(spec.name, spec.extra or "decision") from e
+        self.name = spec.name
+        self.model = model or ""
+        self.url = url
+        # A row with its own key env hands the SDK nothing and lets it read that variable, with
+        # its own validation; a row without one is a server that wants no key, and gets a word
+        # rather than the hosted key that may be sitting in the environment beside it.
+        api_key = None if spec.key_env else NO_KEY
+        self._client: Any = sdk.AsyncTypeSafeClient(
+            **({"api_key": api_key} if api_key is not None else {}),
+            **({"base_url": url} if url else {}),
+            **({"model": self.model} if self.model else {}),
+            retry=sdk.RetryPolicy(max_retries=MAX_RETRIES, backoff_max=0.2, timeout=TIMEOUT_S),
+        )
+
+    async def decide(
+        self, state: Mapping[str, str], questions: Mapping[str, Mapping[str, Any]]
+    ) -> Any:
+        """One fan-out. The questions go as plain dicts, which the SDK takes beside its own
+        `Choice` and `Noul`, so the same four reach every backend unrebuilt."""
+        return await self._client.system_one(dict(state), dict(questions))

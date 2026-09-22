@@ -60,14 +60,23 @@ qwen = ["openai>=1.66,<4"]
 kimi = ["openai>=1.66,<4"]
 glm = ["openai>=1.66,<4"]
 meta = ["openai>=1.66,<4"]
-# TypeSafe's Jev: the optional discrete stepper in front of the model (`quackd run --jev`,
-# docs/jev.md). Not a provider and deliberately not in `all`: it answers typed questions about
-# a state and generates nothing, so it cannot pilot a robot on its own and does not belong in
-# `--provider`. Off by default and never imported unless a run asks for it.
-# Pinned under 1.0 the way every vendor SDK here is: this one is early access, its answer
-# container is spelled two ways in its own docs, and `quackd/agent/jev.py` reads it
-# tolerantly for that reason. A 0.x minor is allowed to break it.
-jev = ["typesafe-sdk>=0.7,<1"]
+# The System One protocol client: the optional discrete stepper in front of the model
+# (`quackd run --decision-llm`, `quackd/agent/decision/`, docs/decision-llms.md). Every
+# decision LLM quackd knows that is a server speaks the same wire format and is reached by
+# repointing its base URL, so this one wheel covers Jev, Kev, Von, OpenJev, OpenDecision and
+# whatever else answers at `--decision-url`. That is why the extra is named for the protocol
+# and not for a vendor.
+# Not a provider, and deliberately not in `all`: it answers typed questions about a state and
+# generates nothing, so it cannot pilot a robot and does not belong in `--llm`. Nothing here
+# is imported unless a run names a decision LLM.
+# Pinned under 1.0 the way every vendor SDK here is: the format is young, and
+# `quackd/agent/decision/systemone.py` reads its answers tolerantly for that reason. A 0.x
+# minor is allowed to break it.
+decision = ["typesafe-sdk>=0.7,<1"]
+# The one decision LLM that runs in this process rather than behind a server: no port, no key,
+# and no request leaving the machine. It pulls torch and transformers, so it is out of `all`
+# for the same reason the robot simulators are.
+laya = ["laya>=0.3,<1"]
 all = ["anthropic>=1.0,<2", "openai>=1.66,<4", "google-genai>=1.0,<3"]
 yolo = ["ultralytics>=8.2"]
 live = ["pygame>=2.5"]
@@ -264,9 +273,10 @@ markers = [
     # Cost money and reach the network. Opt-in twice: this marker and QUACKD_LIVE_LLM=1, so a
     # bare `pytest -m live_llm` on a machine with a key still skips until it is asked for.
     "live_llm: calls a real LLM over the network (needs OPENAI_API_KEY and QUACKD_LIVE_LLM=1)",
-    # The same bargain for the stepper, and the only test that can measure how long Jev takes,
-    # because TypeSafe publish no latency figure anywhere.
-    "live_jev: calls TypeSafe over the network (needs TYPESAFE_API_KEY and QUACKD_LIVE_JEV=1)",
+    # The same bargain for the stepper, and the only tests that can measure how long a real
+    # decision LLM takes, because none of them publishes a latency figure anywhere.
+    """live_decision: calls a real decision LLM over the network (needs that preset's key, \
+TYPESAFE_API_KEY for jev, and QUACKD_LIVE_DECISION=1)""",
 ]
 # A single test that runs five minutes has hung: the slowest here, a ten-seed sweep, takes
 # well under one. pytest then dumps every thread's stack to stderr and carries on, so the

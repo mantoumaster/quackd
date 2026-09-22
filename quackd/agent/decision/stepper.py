@@ -1,69 +1,46 @@
-"""A discrete stepper in front of the model: the turns that are a choice, answered as one.
+"""Which turns are a choice, and what an answer must clear before it moves a servo.
 
-quackd's loop asks one question a turn — which single tool call now — and pays a frontier
-model's full latency for it whether the answer is `report_state` or a six-joint pose. On the
-SO-101 run at the top of `README.md` that is 62.1 seconds of a 78.8 second run. Some of those
-turns are not writing, they are choosing, and TypeSafe's Jev answers a choice without
-generating anything: typed questions against a named state, back as a value and a probability
-distribution (https://docs.typesafe.ai/introduction).
+quackd's loop asks one question a turn and pays a frontier model's full latency for it whether
+the answer is `report_state` or a six-joint pose. On the SO-101 run at the top of `README.md`
+that is 62.1 seconds of a 78.8 second run. Some of those turns are not writing, they are
+choosing, and a decision LLM answers a choice without generating anything.
 
 Which turns those are is decided here, from each tool's own JSON Schema and nothing else, so a
 body quackd has never shipped is classified by the same rule as the seven that do. A verb whose
-meaning is a number — every `move_joints`, every `move` — is not a choice and never becomes
+meaning is a number -- every `move_joints`, every `move` -- is not a choice and never becomes
 one. On the arm that is not even a judgement call: `move_joints` takes a free-form object of
 joint names the schema never lists, because they live in a `field_validator` rather than in an
 enum, so there is nothing for a classifier to enumerate even in principle.
 
-Off by default, off when the SDK is absent, off when the key is missing. Nothing in this file
-imports `typesafe_sdk` at module scope: `quackd.agent.loop` imports this module on every run
-and must not pay for a vendor that is not in the run.
+This is quackd's half and does not change with the vendor. The questions go out as plain dicts
+in the System One shape, so the same four reach a hosted API, a server on this machine and a
+model in this process without being rebuilt; which of those answers them is `factory.py`'s
+question and `catalogue.py`'s table. Nothing here imports a backend at all.
 """
 
 from __future__ import annotations
 
-import importlib
 import itertools
 import json
 import math
-import os
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any
 
+from quackd.agent.decision.catalogue import DecisionMode
 from quackd.agent.providers.base import ToolCall
 from quackd.agent.providers.catalogue import Price
-from quackd.agent.providers.pricing import cost_usd, parse_price
+from quackd.agent.providers.pricing import SELF_HOSTED, cost_usd
+from quackd.command import redacted_url
 from quackd.verbs.registry import Verb
 from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY
 
 if TYPE_CHECKING:
+    from quackd.agent.decision.base import DecisionLLM
     from quackd.agent.providers.base import Observation
     from quackd.verbs.registry import VerbRegistry
-
-JevMode = Literal["off", "shadow", "on"]
-
-DEFAULT_MODEL = "jev-1.13.0"
-"""Pinned, not `jev-latest`. The aliases move, and a run whose stepper changed under it is a
-run whose transcript describes a model that is no longer the one that answered."""
-
-KEY_ENV = "TYPESAFE_API_KEY"
-EXTRA = "jev"
-
-PRICE = Price(input=0.042, output=0.0, source="published")
-"""TypeSafe charge $0.042 per million input tokens and do not charge for output
-([their models page](https://docs.typesafe.ai/models), read 2026-09-21).
-
-One published rate for the one model quackd pins, rather than a table: there is a single
-System One model here and `TYPESAFE_DEFAULT_MODEL` is how you point at another. If yours is
-priced differently, `QUACKD_JEV_PRICE` is how you say so, and the rate a run actually used is
-written into its `run_start` either way."""
-
-PRICE_ENV = "QUACKD_JEV_PRICE"
-"""quackd's knob, which is why it is not spelled `TYPESAFE_*`. Everything with that prefix is
-read by `typesafe_sdk` itself and quackd only ever checks that the key is present; this one
-quackd reads, so it carries quackd's prefix."""
 
 ESCALATE = "escalate"
 """The way out, offered on every turn. Without it a Choice always returns *something*, and the
@@ -78,8 +55,10 @@ two-armed body: three sides times open or shut), so this is headroom rather than
 # The confidence a Choice must clear before the stepper acts on it, by what the verb does.
 # Every number here is one TypeSafe publishes, and the citation is the point: quackd is not in
 # a position to invent thresholds for somebody else's model, and their own confidence page says
-# the right values are domain-specific and have to be tuned on your own data. `--jev shadow`
-# records what would have happened at each of these, which is how they get moved.
+# the right values are domain-specific and have to be tuned on your own data. They are Jev's
+# numbers and every other decision LLM inherits them unmeasured, which is what
+# `--decision-mode shadow` is for: it records what would have happened at each of these, on
+# whichever one you named, and that is how they get moved.
 FLOORS: dict[str, float] = {
     # `stop`, and deliberately the lowest floor in the system. Below 0.5 is "genuinely unsure"
     # in TypeSafe's own words, and 0.5 is exactly where an unsure stepper should still be
@@ -104,8 +83,9 @@ FLOORS: dict[str, float] = {
 class Call:
     """One concrete tool call the stepper may author, and the words it is offered in.
 
-    `label` is what Jev chooses between and what the log prints, so it has to read like
-    something a person would say out loud: `gripper(open=false)`, not a schema fragment."""
+    `label` is what the decision LLM chooses between and what the log prints, so it has to
+    read like something a person would say out loud: `gripper(open=false)`, not a schema
+    fragment."""
 
     name: str
     arguments: dict[str, Any]
@@ -159,9 +139,10 @@ def _render(value: Any) -> str:
 def _label(name: str, arguments: Mapping[str, Any]) -> str:
     """How one concrete call is spelled, everywhere it is spelled.
 
-    Jev chooses between these strings and `_route` matches the answer back by equality, so the
-    spelling is load-bearing rather than cosmetic. Sorted by key, so a call built here and a
-    call that came back from a provider render the same whatever order their keys arrived in."""
+    The decision LLM chooses between these strings and `_route` matches the answer back by
+    equality, so the spelling is load-bearing rather than cosmetic. Sorted by key, so a call
+    built here and a call that came back from a provider render the same whatever order their
+    keys arrived in."""
     shown = ", ".join(f"{prop}={_render(arguments[prop])}" for prop in sorted(arguments))
     return f"{name}({shown})" if shown else name
 
@@ -245,46 +226,15 @@ def labels(calls: Sequence[Call]) -> list[str]:
     return [call.label for call in calls] + [ESCALATE]
 
 
-# ── is it here at all ───────────────────────────────────────────────────────────────────
-
-
-def resolve_jev_mode(flag: str | None) -> JevMode:
-    """`--jev`, then `QUACKD_JEV`, then off.
-
-    Off is not a fallback, it is the answer: a key sitting in a `.env` file is somebody's
-    other project, and quackd never switches a paid dependency on because it found one."""
-    raw = (flag if flag is not None else os.environ.get("QUACKD_JEV") or "off").strip().lower()
-    if raw not in get_args(JevMode):
-        allowed = ", ".join(get_args(JevMode))
-        raise ValueError(f"unknown --jev mode {raw!r}; choose one of {allowed}")
-    return raw  # type: ignore[return-value]
-
-
-def jev_is_available() -> tuple[bool, str]:
-    """Whether a stepper could run here, and in plain words why not.
-
-    Phrased like `ProviderNotInstalled` and `ProviderMissingKey` next door, because a reader
-    who has met one of those should recognise this one."""
-    try:
-        importlib.import_module("typesafe_sdk")
-    except Exception:
-        return False, (
-            f"the stepper needs the optional extra quackd[{EXTRA}] — "
-            f'run: uv pip install "quackd[{EXTRA}]"'
-        )
-    if not os.environ.get(KEY_ENV):
-        return False, f"the stepper needs {KEY_ENV} (set it in .env or the environment)"
-    return True, ""
-
-
 # ── what one turn looks like ────────────────────────────────────────────────────────────
 
 STATE_SOFT_CHARS = 6_000
 STATE_HARD_CHARS = 24_000
 """The API allows 32k tokens of state; neither of these is near it, because the limit that
-binds is accuracy rather than the API. TypeSafe say plainly that a Jev answer gets worse as
-the state grows with content unrelated to the decision, so the cap is an accuracy budget and
-the trim order below is which parts of a turn are least likely to decide it."""
+binds is accuracy rather than the API. TypeSafe say plainly that an answer gets worse as the
+state grows with content unrelated to the decision, and nothing about that is particular to
+them, so the cap is an accuracy budget and the trim order below is which parts of a turn are
+least likely to decide it."""
 
 NEVER_TRIMMED = ("goal", "success_when", "body", "where", "now", "last")
 """A turn without these is not a turn worth answering, so if they alone blow the hard cap the
@@ -295,13 +245,6 @@ TRIM_ORDER = ("flock", "notes", "recent", "tried", "camera")
 runs remembered, then the tail of this run, then the counters, and the camera last because on
 a body that can see it is often the whole question."""
 
-TIMEOUT_S = 1.0
-"""A stepper that has not answered in a second is not worth waiting for: the point of it is
-that it is quicker than the model, and past this the turn is cheaper spent on the model
-directly. The turn escalates and the record says the call timed out."""
-
-MAX_RETRIES = 1
-
 MAX_IN_A_ROW = 8
 """Turns the stepper may answer before the model is consulted whatever it says.
 
@@ -310,9 +253,9 @@ reaches it is a run that can only end on a budget. This is the backstop that sto
 stepper eating a whole run: a `lerobot-lookout` whose stepper answered `report_state` at 0.99
 every turn spent all twelve steps on it and ended `budget`, having asked the model nothing.
 
-A starting value, like the floors, to be moved once `--jev shadow` has said what real runs
-look like. Eight because the longest wholly discrete sequence quackd can presently describe is
-the arm's six-turn grip loop, and this has to clear it with room."""
+A starting value, like the floors, to be moved once `--decision-mode shadow` has said what
+real runs look like. Eight because the longest wholly discrete sequence quackd can presently
+describe is the arm's six-turn grip loop, and this has to clear it with room."""
 
 
 @dataclass(frozen=True)
@@ -358,7 +301,7 @@ def _fits(state: Mapping[str, str]) -> bool:
 
 
 def _one_line(text: str, limit: int = 240) -> str:
-    """Somebody else's prose as one field of a named state. Jev reads text, not layout."""
+    """Somebody else's prose as one field of a named state. These read text, not layout."""
     flat = " ".join(str(text).split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
@@ -378,60 +321,79 @@ def _escalate_criterion() -> str:
     )
 
 
-def _questions(sdk: Any, offered: Sequence[Call], what: Mapping[str, str]) -> dict[str, Any]:
-    """One fan-out per turn.
+def build_questions(offered: Sequence[Call], what: Mapping[str, str]) -> dict[str, dict[str, Any]]:
+    """One fan-out per turn, in the shape every decision LLM takes.
 
-    All four go every time. TypeSafe run questions in parallel and in isolation on the same
-    state, so adding one costs almost nothing, and `feasible` is asked on every turn even
+    Plain dicts rather than an SDK's own `Choice` and `Noul`: the System One format spells a
+    question as a type, an instruction and its criteria, and each backend reads that mapping
+    itself. Built once here, they go to a hosted API, to a server on this machine and to a
+    model in this process without being rebuilt for any of them.
+
+    All four go every time. The questions are answered in parallel and in isolation against the
+    same state, so adding one costs almost nothing, and `feasible` is asked on every turn even
     though v1 never acts on it: recording it beside the model's own verdict is the cheapest
     possible way to earn the right to act on it later."""
     criteria = {call.label: what[call.label] for call in offered}
     criteria[ESCALATE] = _escalate_criterion()
     return {
-        "next_verb": sdk.Choice(
-            instructions=(
+        "next_verb": {
+            "type": "choice",
+            "instructions": (
                 "Which single action should the robot take right now to make progress on "
                 "`goal`? Read `now` for what the robot reports about itself, `last` for what "
                 "the previous action returned, and `tried` for how often each action has "
                 "already been used on this task."
             ),
-            criteria=criteria,
-        ),
-        "done": sdk.Noul(
-            instructions=(
+            "criteria": criteria,
+        },
+        "done": {
+            "type": "noul",
+            "instructions": (
                 "Everything listed under `success_when` has already happened, according to "
                 "`now`, `last` and `recent`. Something merely planned or in progress is not "
                 "done."
-            )
-        ),
-        "need_human": sdk.Noul(
-            instructions=(
+            ),
+        },
+        "need_human": {
+            "type": "noul",
+            "instructions": (
                 "A person has to decide before this robot does anything else: the readings "
                 "contradict each other, something is stuck or jammed, or the obvious next "
                 "step could damage the body or what it is holding."
-            )
-        ),
-        "feasible": sdk.Choice(
-            instructions=(
+            ),
+        },
+        "feasible": {
+            "type": "choice",
+            "instructions": (
                 "Can this body, as `body` describes it, do `goal` at all? Judge the body "
                 "against the task, not how far along it is."
             ),
-            criteria={
+            "criteria": {
                 "feasible": "This body can do it with the actions it has.",
                 "infeasible": "This body cannot do it however well it is driven.",
                 "uncertain": "It depends on something the body does not report.",
             },
-        ),
+        },
     }
 
 
 # ── the stepper ─────────────────────────────────────────────────────────────────────────
 
 
-def _question_chars(questions: Mapping[str, Any]) -> int:
-    """How much text the four questions are, for the turns TypeSafe does not count for us.
+def _read(question: Any, name: str) -> Any:
+    """One field of a question, whether it is a dict or somebody's object.
 
-    Measured off the objects themselves rather than rebuilt from the criteria, so a question
+    quackd builds dicts, and a plugin is free to hand its backend whatever it likes; this is
+    the same tolerance `_answer` applies to what comes back, applied to what goes out."""
+    if isinstance(question, Mapping):
+        return question.get(name)
+    return getattr(question, name, None)
+
+
+def _question_chars(questions: Mapping[str, Any]) -> int:
+    """How much text the four questions are, for the turns a server does not count for us.
+
+    Measured off the questions themselves rather than rebuilt from the criteria, so a question
     somebody adds or rewords is counted without anybody remembering there was a second place.
 
     On `lerobot:mock` under `arm-grip-check` this is 1,299 characters before the pilot's
@@ -444,15 +406,15 @@ def _question_chars(questions: Mapping[str, Any]) -> int:
     the bytes on the wire. That is what `usage_estimated` on the record is for."""
     total = 0
     for question in questions.values():
-        total += len(str(getattr(question, "instructions", "") or ""))
-        criteria = getattr(question, "criteria", None)
+        total += len(str(_read(question, "instructions") or ""))
+        criteria = _read(question, "criteria")
         if isinstance(criteria, Mapping):
             total += sum(len(str(k)) + len(str(v)) for k, v in criteria.items())
         elif isinstance(criteria, list | tuple):
             total += sum(len(str(c)) for c in criteria)
     if questions and not total:
-        # An SDK that keeps its text under other names would otherwise report a request that
-        # did go out as having cost nothing, and a zero here does not merely under-bill the
+        # A backend that keeps its text under other names would otherwise report a request
+        # that did go out as having cost nothing, and a zero here does not merely under-bill the
         # turn: `advise` reads it as "nothing was sent" and skips the bill entirely. A rough
         # length off whatever can be read is the wrong number in the right direction.
         total = sum(len(repr(question)) for question in questions.values())
@@ -460,13 +422,14 @@ def _question_chars(questions: Mapping[str, Any]) -> int:
 
 
 def _usage(result: Any) -> tuple[int | None, int]:
-    """`(input_tokens, output_tokens)` off a `SystemOneResponse`, read tolerantly.
+    """`(input_tokens, output_tokens)` off whatever answered, read tolerantly.
 
     `None` for the input is TypeSafe's own documented possibility -- their SDK types both
-    counts `int | None`, "when the API did not report it" -- and it is the difference between
-    a cost quackd measured and one it estimated. Read with `getattr` and a mapping fallback in
-    the style of `_answer`, because an early-access SDK that renamed a field should cost the
-    run an estimate rather than a traceback through the loop."""
+    counts `int | None`, "when the API did not report it" -- and it is what a backend that
+    counts nothing at all reports too. Either way it is the difference between a cost quackd
+    measured and one it estimated. Read with `getattr` and a mapping fallback in the style of
+    `_answer`, because a backend that renamed a field should cost the run an estimate rather
+    than a traceback through the loop."""
     usage = getattr(result, "usage", None)
     if usage is None and isinstance(result, Mapping):
         usage = result.get("usage")
@@ -494,21 +457,18 @@ def _usage(result: Any) -> tuple[int | None, int]:
     return read("input_tokens", "prompt_tokens"), read("output_tokens", "completion_tokens") or 0
 
 
-def _price() -> Price:
-    """What a stepper turn is costed at: `QUACKD_JEV_PRICE`, or TypeSafe's published rate."""
-    text = os.environ.get(PRICE_ENV)
-    if text is not None and text.strip():
-        return parse_price(text, source=PRICE_ENV)
-    return PRICE
-
-
 def _answer(result: Any, key: str) -> Any:
-    """One question's answer, however this SDK version hands them back.
+    """One question's answer, however this backend hands them back.
 
-    Tolerant on purpose. Jev is early access, the answer container has already been spelled
-    two ways in its own docs, and an attribute rename upstream must cost a run one escalation
-    rather than ending it with a traceback while an arm is energised."""
-    for holder in (getattr(result, "answers", None), result):
+    Tolerant on purpose, and load-bearing rather than defensive. An SDK returns an object with
+    an `answers` attribute; a server's JSON and an in-process model both return a plain
+    mapping with an `"answers"` key; the format is young and its own docs have spelled the
+    container two ways. Every one of those must cost a run one escalation rather than ending
+    it with a traceback while an arm is energised."""
+    answers = getattr(result, "answers", None)
+    if answers is None and isinstance(result, Mapping):
+        answers = result.get("answers")
+    for holder in (answers, result):
         if holder is None:
             continue
         with_key = None
@@ -539,18 +499,25 @@ class Stepper:
     those refusals are unreachable rather than caught.
     """
 
-    mode: JevMode
+    mode: DecisionMode
     goal: str
     success: Sequence[str] = ()
     body: str = ""
+    llm: DecisionLLM | None = None
+    """What answers. `None` only where nothing will be asked: a bare instance built to render
+    a shadow record, and the `off` runs that never build one at all."""
+    name: str = ""
+    """The preset that answered, for the record: `jev`, `kev`, a plugin's own name."""
     model: str = ""
-    client: Any = None
-    """A test double, or None to build the real one lazily on the first turn."""
+    url: str | None = None
+    """Where it was reached, for the record. Already redacted: `build` is the only thing that
+    sets it, and it redacts. A password or a credential-shaped query parameter in a
+    `--decision-url` is `***` by the time anything here can write it down."""
 
     calls: dict[str, Call] = field(default_factory=dict)
     classes: dict[str, str] = field(default_factory=dict)
     what: dict[str, str] = field(default_factory=dict)
-    """Label to the verb's own one-line description: what Jev is told each option means."""
+    """Label to the verb's own one-line description: what each option is said to mean."""
     early: set[str] = field(default_factory=set)
     """Labels whose verb may run before the pilot has judged the task."""
     tried: Counter[str] = field(default_factory=Counter)
@@ -561,38 +528,47 @@ class Stepper:
     taken: int = 0
     errors: int = 0
     latency_s: float = 0.0
-    price: Price = PRICE
-    """What a question costs, published or overridden (`PRICE_ENV`)."""
+    price: Price = SELF_HOSTED
+    """What a question costs: the preset's published rate, `QUACKD_DECISION_PRICE`, or the
+    self-hosted `$0` of a server you run. Always resolved by `factory`; the default here is
+    only so a bare instance constructs."""
     input_tokens: int = 0
     output_tokens: int = 0
-    """What the whole run asked of TypeSafe. Output is counted and not charged, because their
-    price is per input token; it is here so a reader can see the shape of the exchange."""
+    """What the whole run asked of it. Output is counted and, at every rate quackd ships,
+    not charged; it is here so a reader can see the shape of the exchange."""
     cost_usd: float = 0.0
     estimated: bool = False
     """True once any turn had to estimate its own size, so the run total says `~$` rather than
-    claiming a precision the API never gave it."""
+    claiming a precision nothing ever gave it."""
 
     @classmethod
     def build(
         cls,
         *,
-        mode: JevMode,
+        mode: DecisionMode,
+        llm: DecisionLLM,
+        price: Price,
         registry: VerbRegistry,
         allow: Sequence[str],
         goal: str,
         success: Sequence[str] = (),
         body: str = "",
-        model: str | None = None,
-        client: Any = None,
     ) -> Stepper:
         stepper = cls(
             mode=mode,
             goal=goal,
             success=list(success),
             body=body,
-            model=model or os.environ.get("TYPESAFE_DEFAULT_MODEL") or DEFAULT_MODEL,
-            client=client,
-            price=_price(),
+            llm=llm,
+            name=llm.name,
+            model=llm.model,
+            # Redacted here, once, rather than at each of the two places that write it out.
+            # A `--decision-url` can carry a password or a credential-shaped query parameter,
+            # and it also arrives from `QUACKD_DECISION_URL`, which argv redaction never sees;
+            # holding the safe spelling is what makes every reader of this object safe by
+            # default rather than by remembering.
+            url=redacted_url(raw_url) if (raw_url := getattr(llm, "url", None)) else None,
+            price=price,
         )
         for name in allow:
             verb = registry.view(name)
@@ -627,18 +603,24 @@ class Stepper:
         return [call for label, call in self.calls.items() if cleared or label in self.early]
 
     def summary(self) -> dict[str, Any]:
-        """The `jev` block of `summary.json`, written only when the stepper actually ran."""
+        """The `decision` block of `summary.json`, written only when a stepper actually ran."""
         return {
             "mode": self.mode,
+            # Which decision LLM, not just which model id: `jev-1.13.0` names itself, but
+            # `kev-latest` on one machine and on another are two different servers, and a
+            # transcript that recorded only the id could not tell a reader which answered.
+            "llm": self.name,
             "model": self.model,
+            "url": self.url,
             "asked": self.asked,
             "taken": self.taken,
             "errors": self.errors,
             "latency_s": round(self.latency_s, 3),
             # What the stepper asked for and what that cost, kept apart from the model's own
             # `usage` and `cost_usd` at the top of the summary rather than folded into them:
-            # they are two different vendors at two rates three orders of magnitude apart, and
-            # the whole question `--jev shadow` exists to answer is the ratio between them.
+            # they are two different things at rates that can be three orders of magnitude
+            # apart, and the whole question `--decision-mode shadow` exists to answer is the
+            # ratio between them.
             "usage": {
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
@@ -649,18 +631,19 @@ class Stepper:
         }
 
     def _bill(self, result: Any, state_chars: int, question_chars: int) -> dict[str, Any]:
-        """What this turn asked for and what it cost, measured wherever TypeSafe said so.
+        """What this turn asked for and what it cost, measured wherever the backend said so.
 
-        Their SDK types both token counts `int | None`, "when the API did not report it", and
-        a call that raised reports nothing at all. Both fall back to the arithmetic
-        `docs/jev.md` did by hand -- the state plus the questions, four characters to the
-        token -- and both say which they are, because an estimate a reader cannot tell from a
-        measurement is worse than no number at all.
+        TypeSafe's SDK types both token counts `int | None`, "when the API did not report it";
+        a model running in this process reports no count at all; and a call that raised reports
+        nothing either. All three fall back to the arithmetic `docs/decision-llms.md` does by
+        hand -- the state plus the questions, four characters to the token -- and all three say
+        which they are, because an estimate a reader cannot tell from a measurement is worse
+        than no number at all.
 
-        Output is counted and costs nothing: TypeSafe charge per input token and their models
-        page says output is not charged, so `PRICE.output` is 0 and this multiplies it out
-        rather than special-casing it, which is what makes `QUACKD_JEV_PRICE` able to say
-        otherwise for somebody whose contract differs.
+        Output is counted and, at every rate quackd ships, costs nothing: TypeSafe charge per
+        input token and do not charge for output, and a server you run charges for neither. So
+        the rate's output is 0 and this multiplies it out rather than special-casing it, which
+        is what lets `QUACKD_DECISION_PRICE` say otherwise for somebody whose contract differs.
         """
         measured, out_tokens = _usage(result) if result is not None else (None, 0)
         estimated = measured is None
@@ -678,16 +661,6 @@ class Stepper:
 
     # ── one turn ──
 
-    def _client(self) -> Any:
-        """The SDK, imported the first time a turn actually needs it and not before."""
-        if self.client is None:
-            sdk = importlib.import_module("typesafe_sdk")
-            self.client = sdk.AsyncTypeSafeClient(
-                model=self.model,
-                retry=sdk.RetryPolicy(max_retries=MAX_RETRIES, backoff_max=0.2, timeout=TIMEOUT_S),
-            )
-        return self.client
-
     def _build_state(
         self,
         obs: Observation,
@@ -698,10 +671,10 @@ class Stepper:
     ) -> tuple[dict[str, str], list[str]]:
         """A named JSON object, in English, carrying only what the questions need.
 
-        Never a picture: Jev is documented as text only, and quackd would rather escalate a
-        turn that needs eyes than pretend otherwise. Never the system prompt either, because
-        the instructions belong in the questions, and never the history, which is the
-        distractor TypeSafe warn about by name."""
+        Never a picture: these models read text, and quackd would rather escalate a turn that
+        needs eyes than pretend otherwise. Never the system prompt either, because the
+        instructions belong in the questions, and never the history, which is the distractor
+        TypeSafe warn about by name."""
         from quackd.perception.base import Detection, summarize_detections
         from quackd.transport.base import DuckState
 
@@ -750,6 +723,7 @@ class Stepper:
         offered = self.labels_for(cleared=cleared)
         record: dict[str, Any] = {
             "mode": self.mode,
+            "llm": self.name,
             "model": self.model,
             "labels": labels(offered),
         }
@@ -767,21 +741,16 @@ class Stepper:
             return Advice(None, {**record, "gate": "state_too_large", "latency_s": 0.0})
 
         started = time.perf_counter()
-        # Characters of questions that actually went out, and 0 while nothing has. A machine
-        # with no `typesafe_sdk` installed never reaches the network and owes nothing; a call
-        # that timed out after the request left probably does.
-        #
-        # Set AFTER the client is built rather than before, because `_client()` imports the SDK
-        # and constructs `AsyncTypeSafeClient` with a `RetryPolicy`, and every one of those can
-        # raise without a byte leaving the machine. Billing that as a sent request put a
-        # phantom cost and a misleading `~` on runs whose model cost was measured exactly.
+        # Characters of questions that actually went out, and 0 while nothing has: a turn that
+        # could not build its questions owes nobody anything, and one that timed out after the
+        # request left probably does. The client itself was built before the robot connected,
+        # so nothing in here can fail without the request being real.
         sent = 0
         try:
-            sdk = importlib.import_module("typesafe_sdk")
-            questions = _questions(sdk, offered, self.what)
-            client = self._client()
+            questions = build_questions(offered, self.what)
             sent = _question_chars(questions)
-            result = await client.system_one(state, questions)
+            assert self.llm is not None  # `build` always sets it; `advise` is never reached without
+            result = await self.llm.decide(state, questions)
         except Exception as e:
             self.errors += 1
             self.asked += 1
@@ -794,33 +763,33 @@ class Stepper:
                 "latency_s": took,
             }
             if sent:
-                # The request left the machine, so it is counted as billed. TypeSafe do not
-                # publish whether a call that failed on their side is charged, and between an
-                # estimate that is slightly high and a bill that silently is not there, the
-                # high one is the one nobody is hurt by.
+                # The questions were built and handed over, so the turn is counted as billed.
+                # Nobody publishes whether a call that failed on their side is charged, and
+                # between an estimate that is slightly high and a bill that silently is not
+                # there, the high one is the one nobody is hurt by.
                 failed.update(self._bill(None, record["state_chars"], sent))
             return Advice(None, failed)
         self.asked += 1
         took = round(time.perf_counter() - started, 3)
         self.latency_s += took
         record["latency_s"] = took
-        record["questions"] = 4
+        record["questions"] = len(questions)
         try:
             record.update(self._bill(result, record["state_chars"], sent))
         except Exception:
-            # Reading the vendor's own count was the one read of its answer outside a guard, so
-            # a usage field that raised anything the tolerant reader does not catch ended the
-            # run with a traceback while the arm was energised. Falling back to the estimate
+            # Reading the backend's own count was the one read of its answer outside a guard,
+            # so a usage field that raised anything the tolerant reader does not catch ended
+            # the run with a traceback while the arm was energised. Falling back to the estimate
             # charges the turn rather than losing it, and the guard below then gets its chance
             # to turn a bad answer into a handover instead of a crash.
             record.update(self._bill(None, record["state_chars"], sent))
         try:
             return self._route(result, record, offered)
         except Exception as e:
-            # Reading the answer is part of the call, so it fails the way the call does. An
-            # early-access SDK that returns a confidence of "high" or a list where a mapping
-            # belongs would otherwise raise through the loop and end the run with a traceback
-            # while the arm is energised, which is the one thing this must never do.
+            # Reading the answer is part of the call, so it fails the way the call does. A
+            # backend that returns a confidence of "high" or a list where a mapping belongs
+            # would otherwise raise through the loop and end the run with a traceback while
+            # the arm is energised, which is the one thing this must never do.
             self.errors += 1
             return self._hand_back({**record, "gate": "error", "error": f"{type(e).__name__}: {e}"})
 
@@ -884,7 +853,7 @@ class Stepper:
         self.last_call = choice
         self.in_a_row += 1
         return Advice(
-            ToolCall(id=f"jev-{self.asked}", name=call.name, arguments=dict(call.arguments)),
+            ToolCall(id=f"decision-{self.asked}", name=call.name, arguments=dict(call.arguments)),
             {
                 **record,
                 "gate": "taken",
@@ -904,29 +873,29 @@ class Stepper:
     ) -> dict[str, Any]:
         """What the stepper would have done, beside what the model did, on the same reading.
 
-        The only record shadow mode leaves, and what turns the arithmetic in `docs/jev.md`
-        into a measurement."""
+        The only record shadow mode leaves, and what turns the arithmetic in
+        `docs/decision-llms.md` into a measurement."""
         chosen = advice.record.get("choice")
         return {
-            "jev_choice": chosen,
-            "jev_confidence": advice.record.get("confidence"),
-            "jev_gate": advice.gate,
-            "jev_latency_s": advice.record.get("latency_s"),
+            "decision_choice": chosen,
+            "decision_confidence": advice.record.get("confidence"),
+            "decision_gate": advice.gate,
+            "decision_latency_s": advice.record.get("latency_s"),
             "model_verb": call.name,
             "model_arguments": dict(call.arguments),
             # The whole call, not the verb's name. Every discrete verb worth comparing is one
             # whose arguments are the decision: `gripper(open=true)` and `gripper(open=false)`
             # are opposite instructions that share a word, and scoring them as agreement would
-            # corrupt the one measurement `docs/jev.md` says earns the right to move a floor.
+            # corrupt the one measurement that earns the right to move a floor.
             "agree": bool(chosen) and chosen == _label(call.name, call.arguments),
             "same_verb": bool(chosen) and str(chosen).split("(")[0] == call.name,
             "would_have_acted": advice.gate == "taken",
             "llm_latency_s": (llm or {}).get("latency_s"),
             "llm_usage": (llm or {}).get("usage"),
             # The two bills for the same turn, which is the number this whole mode exists to
-            # produce and the one `docs/jev.md` could only reach by arithmetic. Either can be
-            # None: the model's when nobody publishes a rate for it, the stepper's when the
-            # turn never reached the network.
+            # produce and the one `docs/decision-llms.md` could only reach by arithmetic.
+            # Either can be None: the model's when nobody publishes a rate for it, the
+            # stepper's when the turn never got as far as asking.
             "llm_cost_usd": (llm or {}).get("cost_usd"),
-            "jev_cost_usd": advice.record.get("cost_usd"),
+            "decision_cost_usd": advice.record.get("cost_usd"),
         }
