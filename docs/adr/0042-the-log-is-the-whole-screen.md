@@ -1,6 +1,19 @@
 # ADR-0042: The log is the whole screen
 
-**Status:** accepted · **Date:** 2026-09-21 · Renames what [ADR-0029](0029-tracing.md) called the trace and widens it to what the terminal showed · Extends [ADR-0041](0041-the-record-says-when-it-ran-and-what-it-cost.md) (the record carries the run's clocks and its money) · Retires the old spellings over one release the way [ADR-0017](0017-robot-adapters-and-manifest.md) retired `--transport` · Implemented in `quackd/log.py` (was `quackd/trace.py`), `quackd/ui.py`, `quackd/command.py`, `quackd/safety.py` and `quackd/cli.py` ([architecture.md](../architecture.md#log))
+**Status:** accepted, amended · **Date:** 2026-09-21 · Renames what [ADR-0029](0029-tracing.md) called the trace and widens it to what the terminal showed · Extends [ADR-0041](0041-the-record-says-when-it-ran-and-what-it-cost.md) (the record carries the run's clocks and its money) · Retires the old spellings over one release the way [ADR-0017](0017-robot-adapters-and-manifest.md) retired `--transport` · Implemented in `quackd/log.py` (was `quackd/trace.py`), `quackd/ui.py`, `quackd/command.py`, `quackd/safety.py` and `quackd/cli.py` ([architecture.md](../architecture.md#log))
+
+**Amended 2026-09-22:** the promise below was kept. 0.12 removes `quackd trace`, both
+`--trace` flag pairs and the three `QUACKD_TRACE*` variables, along with the `sys.argv` scan in
+`quackd/cli.py` and the environment fallback in `quackd/log.py` that existed only to carry
+them. The subcommand and the flags are refused the way any unknown one is, and a refusal writes
+no run directory. The variables do not simply go quiet, which is the failure the fallback
+existed to prevent: a `QUACKD_TRACE*` name still set is ignored and named in one yellow line
+before the header, the line 0.12 gives `QUACKD_MODEL`. Because that check moved to the app
+callback, where the command line is read, rather than staying where each value was consulted,
+a run now names every old line in a `.env` at once rather than only the one it would have
+read, which lifts the limit the "Two spellings of six things" bullet under Consequences
+describes. The reader still takes `trace_dropped` out of a `summary.json`, because a run
+directory outlives the release that wrote it. Nothing else in this ADR changes.
 
 ## Context
 
