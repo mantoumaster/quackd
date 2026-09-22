@@ -333,9 +333,10 @@ server should answer as, since this row has no default of its own.
 
 This is the row that exists to be told, so it is the one that refuses rather than guesses when
 it is not: `--decision-llm local` with no address and no `QUACKD_DECISION_URL` stops the run and
-names both ways of supplying one. (Not run here: that refusal is raised while building the
-client, and building the client needs `quackd[decision]`, which is not installed on this
-machine.)
+names both ways of supplying one. (Not run here, though not for the reason you might expect:
+the refusal itself is raised before the client is built and needs nothing installed, but the
+run never reaches it, because a machine without `quackd[decision]` has already said so once and
+carried on without a stepper. Install the extra and the refusal is what you get.)
 
 A paid endpoint behind `local` is the one case where the self-hosted $0 is wrong, and
 `QUACKD_DECISION_PRICE` is how you say so.
@@ -637,8 +638,10 @@ mean call and *L* the stepper's, the think time goes from `N*M` to `N*L + (1-f)*
 
 Two real runs, to put a number on *f* rather than guess at one. Driven on `lerobot:mock` with
 the scripted pilot and a fake in the decision LLM's place, `arm-grip-check` answered **4 of its
-6 turns** with the stepper and `lerobot-lookout` **3 of 6**, which is 67% and 50%. Neither
-reaches higher, and on a short task neither can: the feasibility verdict and the closing
+6 turns** with the stepper and `lerobot-lookout` **3 of 6**, which is 67% and 50%. Those are
+what those two runs did rather than a ceiling: a differently answering decision LLM reaches a
+different share, and the runs are not a fixed six turns long either. What does hold on a short
+task is the floor under the model's share: the feasibility verdict and the closing
 `declare_success` are sentences, so they are always the model's, and on a six-turn run that is a
 third of it before anything else is counted. The share climbs with the length of the task, which
 is the opposite of the usual intuition about where an optimisation pays.

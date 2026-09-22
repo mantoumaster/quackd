@@ -19,7 +19,7 @@ import importlib
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from quackd.agent.decision.base import DecisionNotInstalled
+from quackd.agent.decision.base import TIMEOUT_S, DecisionNotInstalled
 
 if TYPE_CHECKING:
     from quackd.agent.decision.catalogue import DecisionSpec
@@ -29,15 +29,6 @@ NO_KEY = "local"
 rejects that, and this is the word Kev's own example uses. A row with a `key_env` sends
 nothing instead and lets the SDK read the variable itself, so a hosted key in somebody's
 `.env` never reaches a server on their own machine."""
-
-TIMEOUT_S = 1.0
-"""A decision LLM that has not answered in a second is not worth waiting for: the point of it
-is that it is quicker than the model, and past this the turn is cheaper spent on the model
-directly. The turn escalates and the record says the call timed out.
-
-A starting value, like the floors. It was chosen against Jev's published latency, and a
-CPU-only server on your own machine may well need more; `--decision-mode shadow` is how you
-find out before it matters."""
 
 MAX_RETRIES = 1
 
@@ -62,11 +53,24 @@ class SystemOneLLM:
         # A row with its own key env hands the SDK nothing and lets it read that variable, with
         # its own validation; a row without one is a server that wants no key, and gets a word
         # rather than the hosted key that may be sitting in the environment beside it.
-        api_key = None if spec.key_env else NO_KEY
+        #
+        # The second half of that condition is the interesting one. A keyed row reached at an
+        # address somebody typed is no longer the hosted service: `--decision-llm jev
+        # --decision-url http://localhost:8009` means "Jev's model id, at my address", and
+        # sending a company's API key to whatever is listening on that port is precisely what
+        # `SECURITY.md` lists as a thing that must not happen. An explicit address makes it a
+        # server you run, and a server you run gets the word.
+        api_key = None if (spec.key_env and not url) else NO_KEY
         self._client: Any = sdk.AsyncTypeSafeClient(
             **({"api_key": api_key} if api_key is not None else {}),
             **({"base_url": url} if url else {}),
             **({"model": self.model} if self.model else {}),
+            # Two different clocks, and the difference is the whole reason this is spelled
+            # out. `RetryPolicy.timeout` is the budget for the retry sequence; `timeout` is
+            # how long one request may take, and its default is ten seconds. Setting only the
+            # first left a turn able to wait ten, which is a promise the docs made and the
+            # code did not keep. `Stepper.advise` bounds the turn either way.
+            timeout=TIMEOUT_S,
             retry=sdk.RetryPolicy(max_retries=MAX_RETRIES, backoff_max=0.2, timeout=TIMEOUT_S),
         )
 

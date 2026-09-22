@@ -72,9 +72,10 @@ Also in scope:
   the network to TypeSafe. `kev`, `von`, `openjev`, `opendecision` and `local` are servers you
   run, so it goes wherever `--decision-url` points, which is a port on your own machine unless
   you moved it. `laya` runs inside this process, so nothing leaves it at all. None of them is
-  ever sent a camera frame, a system prompt or an API key, and the state that was sent is
-  recorded in the transcript as `state_chars` and can be read back in full from the `decision`
-  events. The address is on the record too, in `run_start.decision_llm`, with a password in it
+  ever sent a camera frame, a system prompt or an API key. How much was sent is on the
+  record, as `state_chars` and `state_tokens_est` on each `decision` event, and which fields
+  were dropped to fit is there as `trimmed`; the text itself is not, so a reader auditing what
+  left the machine is reading a size and a shape rather than the words. The address is on the record too, in `run_start.decision_llm`, with a password in it
   or a credential-named query parameter already replaced by `***`, because that url can arrive
   through `QUACKD_DECISION_URL` where argv redaction would never see it. What would be a
   security issue: a picture or a credential reaching any of them, a credential surviving that

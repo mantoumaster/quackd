@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -57,10 +58,13 @@ class LayaLLM:
         # twice and throws the first one away. Tried and then dropped rather than assumed,
         # because the keyword is younger than the class and quackd would rather load the wrong
         # checkpoint once than refuse to run at all.
-        try:
+        # Asked of the signature rather than discovered by catching `TypeError`, because a
+        # `TypeError` raised *inside* somebody's `Router.__init__` is indistinguishable from
+        # one raised by the call not matching it -- and swallowing the first would silently
+        # load the wrong checkpoint, which is the outcome this is here to avoid.
+        if "default" in inspect.signature(laya.Router).parameters:
             return laya.Router(preload=True, default=self.model)
-        except TypeError:
-            return laya.Router(preload=True, max_loaded=2)
+        return laya.Router(preload=True, max_loaded=2)
 
     async def decide(
         self, state: Mapping[str, str], questions: Mapping[str, Mapping[str, Any]]

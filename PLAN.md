@@ -65,8 +65,8 @@ flip that backend's row, and not before.
   `--decision-mode shadow` is built to produce all three without changing a run, on
   `lerobot:mock` or on a real arm, and it is how this line stops being true. Until somebody runs
   it, the break-even in [docs/decision-llms.md](docs/decision-llms.md) is arithmetic rather than
-  a result: on the wave run the stepper is a net loss unless the answer comes back in under
-  1.24 seconds.
+  a result: the break-even there is a stepper answering in under 1.40 seconds, and below that
+  it is a net loss.
 
 - ⬜ **No `cost_usd` quackd reports has been checked against an invoice.** Every rate in
   `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand on

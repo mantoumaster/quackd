@@ -82,13 +82,15 @@ template argument rather than a sampling parameter. One reported step of `find-a
 with it off. There are two places to turn it off. On a server you run yourself, do it once at serve time:
 
 ```bash
-vllm serve Qwen/Qwen3-8B --enable-auto-tool-choice --tool-call-parser hermes \n  --reasoning-parser qwen3 --default-chat-template-kwargs '{"enable_thinking": false}'
+vllm serve Qwen/Qwen3-8B --enable-auto-tool-choice --tool-call-parser hermes \
+  --reasoning-parser qwen3 --default-chat-template-kwargs '{"enable_thinking": false}'
 ```
 
 On a server somebody else runs, or when you want it per run, send it with the request:
 
 ```bash
-quackd run find-and-kick --llm vllm:Qwen/Qwen3-8B \n  --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'
+quackd run find-and-kick --llm vllm:Qwen/Qwen3-8B \
+  --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'
 ```
 
 That flag is a JSON string, and no single spelling of one survives every shell: the line above

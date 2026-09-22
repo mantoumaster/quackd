@@ -20,6 +20,7 @@ question and `catalogue.py`'s table. Nothing here imports a backend at all.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import math
@@ -29,6 +30,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from quackd.agent.decision.base import TIMEOUT_S
 from quackd.agent.decision.catalogue import DecisionMode
 from quackd.agent.providers.base import ToolCall
 from quackd.agent.providers.catalogue import Price
@@ -150,11 +152,26 @@ def _label(name: str, arguments: Mapping[str, Any]) -> str:
 def _finite(value: Any) -> tuple[float, bool]:
     """A probability as a number, and whether it was one.
 
+    Three things are not a probability and all three used to read as one.
+
     NaN and the infinities are not low values, they are absent ones, and they lose every
     comparison they are put through: `nan < 0.85` is False, which clears a floor rather than
-    missing it. The caller hands the turn back when this says False."""
+    missing it.
+
+    `None` is not zero. It is what comes back when a backend did not answer that question at
+    all, and zero is a confident answer: read as one, a missing `done` says "certainly not
+    finished" and a missing `need_human` says "certainly nobody is needed", which are the two
+    answers that let everything after them move a servo.
+
+    `True` is not one. Python will float it to 1.0 without complaining, and 1.0 clears every
+    floor in the table, so a backend that spelled a confidence as a boolean would be believed
+    absolutely rather than doubted.
+
+    The caller hands the turn back to the model whenever this says False."""
+    if value is None or isinstance(value, bool):
+        return 0.0, False
     try:
-        number = float(value or 0.0)
+        number = float(value)
     except (TypeError, ValueError):
         return 0.0, False
     return (number, True) if math.isfinite(number) else (0.0, False)
@@ -201,18 +218,28 @@ def discrete_calls(schema: Mapping[str, Any]) -> list[Call] | None:
     return calls
 
 
-def verb_class(verb: Verb, canonical: str | None = None) -> str:
+def verb_class(
+    verb: Verb, canonical: str | None = None, gated: frozenset[str] = frozenset()
+) -> str:
     """Which confidence floor this verb answers to. Always a key of `FLOORS`.
 
     Read off what the verb says about itself rather than off its name, with the one exception
     the verdict gate already makes (`safety.py`): `MOVES_THE_BODY` wins over `read_only`,
     because a verb arriving under a name quackd has recorded as motion while claiming to only
     read is saying two contradictory things, and quackd believes its own record.
+
+    `gated` is the task contract's own `verbs.confirm`, canonical names, and it is here because
+    a floor that could not see it was a floor that disagreed with the executor. `Executor.
+    needs_confirm` treats a verb the `.duck` named exactly as it treats one the manifest marked
+    `confirm`; without this, a verb its author gated on a person answered to the 0.85 motion
+    floor rather than the 0.90 one, and under `--yes` nothing else would have noticed.
     """
     name = canonical or verb.name
     if verb.safety_class == "dangerous":
         return "never"
-    if verb.safety_class == "confirm":
+    if verb.safety_class == "confirm" or (name in gated and name != "stop"):
+        # `stop` is never gated whatever a contract says, which is the same exemption
+        # `Executor.needs_confirm` makes and for the same reason: the brake.
         return "confirm"
     if name == "stop":
         return "brake"
@@ -246,16 +273,22 @@ runs remembered, then the tail of this run, then the counters, and the camera la
 a body that can see it is often the whole question."""
 
 MAX_IN_A_ROW = 8
-"""Turns the stepper may answer before the model is consulted whatever it says.
+"""The most turns in a row a stepper may answer, on a run long enough for the number to mean
+anything.
 
 Only the model can record a verdict, declare an outcome or write a note, so a run that never
-reaches it is a run that can only end on a budget. This is the backstop that stops a confident
-stepper eating a whole run: a `lerobot-lookout` whose stepper answered `report_state` at 0.99
-every turn spent all twelve steps on it and ended `budget`, having asked the model nothing.
+reaches it is a run that can only end on a budget. Eight because the longest wholly discrete
+sequence quackd can presently describe is the arm's six-turn grip loop, and this has to clear
+it with room.
+
+Eight alone is not a backstop, which is the correction this constant needed. A duck's whole
+step budget can be smaller than it: `hello-world` allows five, so a streak of eight can never
+be reached and the model would be consulted once, or not at all, before `max_steps` ended the
+run. `Stepper.streak_limit` is the number that actually holds, and it is this or half the
+budget, whichever is less.
 
 A starting value, like the floors, to be moved once `--decision-mode shadow` has said what
-real runs look like. Eight because the longest wholly discrete sequence quackd can presently
-describe is the arm's six-turn grip loop, and this has to clear it with room."""
+real runs look like."""
 
 
 @dataclass(frozen=True)
@@ -503,6 +536,9 @@ class Stepper:
     goal: str
     success: Sequence[str] = ()
     body: str = ""
+    max_steps: int = 0
+    """The run's own step budget, or 0 where nobody said. Read only by `streak_limit`, which
+    is why a bare instance built for a shadow record can leave it alone."""
     llm: DecisionLLM | None = None
     """What answers. `None` only where nothing will be asked: a bare instance built to render
     a shadow record, and the `off` runs that never build one at all."""
@@ -553,6 +589,8 @@ class Stepper:
         goal: str,
         success: Sequence[str] = (),
         body: str = "",
+        gated: Sequence[str] = (),
+        max_steps: int = 0,
     ) -> Stepper:
         stepper = cls(
             mode=mode,
@@ -569,11 +607,15 @@ class Stepper:
             # default rather than by remembering.
             url=redacted_url(raw_url) if (raw_url := getattr(llm, "url", None)) else None,
             price=price,
+            max_steps=max_steps,
         )
+        # The contract's own confirm list, in canonical names, so a verb the task file gated
+        # answers to the same floor as one the manifest did.
+        confirm = frozenset(registry.canonical(c) for c in gated)
         for name in allow:
             verb = registry.view(name)
             canonical = registry.canonical(name)
-            kind = verb_class(verb, canonical)
+            kind = verb_class(verb, canonical, confirm)
             if kind == "never":
                 continue  # a dangerous verb is never offered, so no confidence can reach it
             found = discrete_calls(verb.tool_schema())
@@ -594,6 +636,19 @@ class Stepper:
         return stepper
 
     # ── what is on offer this turn ──
+
+    @property
+    def streak_limit(self) -> int:
+        """How many turns in a row this stepper may answer on *this* run.
+
+        `MAX_IN_A_ROW` is an absolute number and a budget is not, so on a short duck the
+        absolute one never binds: five steps against a limit of eight is a stepper that can
+        own the entire run. Half the budget is the floor under that, and it is halves rather
+        than some tuned fraction because the property worth keeping is simple enough to say
+        out loud -- the model gets at least as many turns as the stepper does."""
+        if self.max_steps <= 0:
+            return MAX_IN_A_ROW
+        return max(1, min(MAX_IN_A_ROW, self.max_steps // 2))
 
     def labels_for(self, *, cleared: bool) -> list[Call]:
         """The calls the executor would actually run right now.
@@ -750,10 +805,20 @@ class Stepper:
             questions = build_questions(offered, self.what)
             sent = _question_chars(questions)
             assert self.llm is not None  # `build` always sets it; `advise` is never reached without
-            result = await self.llm.decide(state, questions)
+            # Bounded here rather than in each backend, because "quicker than the model" is a
+            # promise quackd makes and only quackd can keep: a hosted client has its own
+            # timeout with its own meaning, a model in this process has none, and a plugin has
+            # whatever its author thought of. A turn that runs out escalates like any other
+            # failure, and the record says which.
+            result = await asyncio.wait_for(self.llm.decide(state, questions), TIMEOUT_S)
         except Exception as e:
             self.errors += 1
             self.asked += 1
+            # A bare `TimeoutError` stringifies to nothing, and `error:` with nothing after it
+            # tells a reader less than the gate already did. The one thing they want to know
+            # is how long it waited, because that is the number they would change.
+            if isinstance(e, TimeoutError) and not str(e):
+                e = TimeoutError(f"no answer within {TIMEOUT_S:.1f} s")
             took = round(time.perf_counter() - started, 3)
             self.latency_s += took
             failed = {
@@ -801,26 +866,36 @@ class Stepper:
         person, and the stepper is allowed to do neither."""
         verb = _answer(result, "next_verb")
         choice = str(_field(verb, "choice", ESCALATE))
-        confidence, finite = _finite(_field(verb, "confidence", 0.0))
+        confidence, finite = _finite(_field(verb, "confidence"))
         spread = {str(k): float(v) for k, v in (_field(verb, "probabilities") or {}).items()}
-        done, done_ok = _finite(_field(_answer(result, "done"), "noul", 0.0))
-        human, human_ok = _finite(_field(_answer(result, "need_human"), "noul", 0.0))
+        # No default. A question a backend did not answer has to arrive here as nothing, so
+        # that the guard below can tell it from an answer of zero.
+        done, done_ok = _finite(_field(_answer(result, "done"), "noul"))
+        human, human_ok = _finite(_field(_answer(result, "need_human"), "noul"))
         feasible = _answer(result, "feasible")
         record.update(
             choice=choice,
             confidence=confidence,
             probabilities=spread,
-            done=done,
-            need_human=human,
+            # `null` rather than `0.0` where nothing was answered, because a reader of this
+            # record should be able to tell a backend that said "not done" from one that was
+            # never asked or never replied.
+            done=done if done_ok else None,
+            need_human=human if human_ok else None,
             feasible={
                 "choice": _field(feasible, "choice"),
                 "confidence": _field(feasible, "confidence"),
             },
         )
-        # NaN is not a low confidence, it is no confidence, and it loses every comparison it
-        # is put through: `nan < 0.85` is False, so an unguarded NaN would clear the motion
-        # floor, the done gate and the need_human gate at once and move the body. A number
-        # that is not a number is an answer that cannot be read.
+        # An answer that cannot be read is not a permissive answer. NaN is no confidence
+        # rather than a low one and loses every comparison it is put through, so an unguarded
+        # one would clear the motion floor, the done gate and the need_human gate at once and
+        # move the body. A missing Noul is the same failure wearing different clothes: read as
+        # zero it says "certainly not done, certainly no person needed", which is exactly the
+        # pair of answers that lets a verb through. A backend that answered only `next_verb`
+        # -- a plugin under construction, a server that dropped a field, a model that does not
+        # implement Nouls at all -- must hand the turn to the model rather than move the body
+        # on two questions nobody answered.
         if not (finite and done_ok and human_ok):
             return self._hand_back({**record, "gate": "unreadable"})
         if done >= DONE_THRESHOLD:
@@ -840,7 +915,7 @@ class Stepper:
         # times in a row`), and these calls succeed, so nothing else here would catch it.
         if choice == self.last_call:
             return self._hand_back({**record, "gate": "repeat"})
-        if self.in_a_row >= MAX_IN_A_ROW:
+        if self.in_a_row >= self.streak_limit:
             return self._hand_back({**record, "gate": "handover"})
         kind = self.classes[choice]
         floor = FLOORS[kind]

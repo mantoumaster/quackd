@@ -59,10 +59,15 @@ def _plugins() -> dict[str, str]:
     """
     found: dict[str, str] = {}
     for ep in importlib.metadata.entry_points(group=ENTRY_POINT_GROUP):
-        # an editable install keeps the metadata it was built with, so a module moved or
+        # An editable install keeps the metadata it was built with, so a module moved or
         # removed since is still announced here; believing that turns a missing plugin into an
-        # ImportError from somewhere far away
-        with contextlib.suppress(ImportError, ValueError):
+        # ImportError from somewhere far away.
+        #
+        # Every exception and not only the two, because `find_spec("pkg.mod")` imports `pkg`
+        # to ask it, and a stranger's package is free to raise anything at all while being
+        # imported. This runs on the path of `quackd doctor` and of every press of TAB, and
+        # somebody else's broken package must not be able to take either of those down.
+        with contextlib.suppress(Exception):
             if importlib.util.find_spec(ep.value) is not None:
                 found[ep.name] = ep.value
     return found
@@ -85,10 +90,21 @@ def find_preset(name: str, *, source: str = "--decision-llm") -> DecisionSpec:
     if (known := PRESETS.get(folded)) is not None:
         return known
     if (module_path := _plugins().get(folded)) is not None:
-        module = importlib.import_module(module_path)
+        try:
+            module = importlib.import_module(module_path)
+        except Exception as e:
+            # Named rather than propagated. `doctor` asks about every name it can see, so an
+            # unguarded import here let one broken plugin end the command that exists to say
+            # which things are broken.
+            raise DecisionError(
+                f"the decision LLM {folded!r} is installed here as {module_path}, and "
+                f"importing it failed: {type(e).__name__}: {e}"
+            ) from e
         return DecisionSpec(
             name=folded,
-            backend=folded,
+            # Prefixed, so a plugin that called itself `systemone` or `laya` cannot be
+            # mistaken for one of quackd's own backends by `make_decision_llm`.
+            backend=f"plugin:{folded}",
             summary=str(getattr(module, "SUMMARY", "a decision LLM quackd does not publish")),
             install=str(getattr(module, "INSTALL", f"installed here as {module_path}")),
             url=getattr(module, "URL", None),
@@ -120,7 +136,7 @@ def parse_decision_llm(
     return find_preset(name, source=where), (model.strip() or None)
 
 
-def resolve_decision_mode(flag: str | None, *, named: bool) -> DecisionMode:
+def resolve_decision_mode(flag: str | None, *, named: bool, refused: bool = False) -> DecisionMode:
     """`--decision-mode`, then `QUACKD_DECISION_MODE`, then whether one was named at all.
 
     Naming a decision LLM is asking for it, so the default once you have is `on` rather than
@@ -128,10 +144,21 @@ def resolve_decision_mode(flag: str | None, *, named: bool) -> DecisionMode:
     `on` warning points at.
 
     A mode without a decision LLM is a run that would silently do nothing, so it stops instead
-    and says which of the two said so.
+    and says which of the two said so -- unless the line itself said off, which is `refused`.
+    `--decision-llm off` is how one command opts out of a `QUACKD_DECISION_LLM` sitting in a
+    `.env`, and refusing that command because the same `.env` also set a mode would be
+    answering "I do not want this" with a demand to name one.
+
+    A blank flag is not an answer either. `--decision-mode ""` is what a shell produces from an
+    unset variable in a wrapper script, and reading it as "nothing was said on the line" is
+    what lets the variable behind it be heard: taken as a spoken answer it discarded a
+    `QUACKD_DECISION_MODE=shadow` and ran the stepper for real.
     """
-    where = "--decision-mode" if flag is not None else ENV_MODE
-    raw = (flag if flag is not None else os.environ.get(ENV_MODE) or "").strip().lower()
+    if refused:
+        return "off"
+    spoken = (flag or "").strip()
+    where = "--decision-mode" if spoken else ENV_MODE
+    raw = (spoken or os.environ.get(ENV_MODE) or "").strip().lower()
     if not raw:
         return "on" if named else "off"
     if raw not in MODES:
@@ -150,8 +177,23 @@ def resolve_decision_url(spec: DecisionSpec, url: str | None = None) -> str | No
     `None` is right for two rows and wrong for one: the hosted model's address belongs to the
     SDK, the in-process one has none, and `local` is the row that exists to be told, so
     `make_decision_llm` refuses it rather than guessing.
+
+    The variable is read only for a row that wants no key, and that is a security rule rather
+    than a tidiness one. `QUACKD_DECISION_URL` is the sort of line somebody leaves in a `.env`
+    after an afternoon with a server on their own machine. Left to apply to every row, it
+    would silently retarget the hosted one, and the hosted one is the row whose client reads
+    `TYPESAFE_API_KEY` for itself -- so a key meant for a company's API would be sent to
+    whatever is listening on localhost. A flag typed on the line is a different thing: it says
+    where this run goes, and it is obeyed for any row.
+
+    Whitespace is stripped everywhere, because `QUACKD_DECISION_URL="   "` is a shell saying
+    unset and reading it as an address defeated the one refusal `local` exists to make.
     """
-    return url or os.environ.get(ENV_URL) or spec.url or None
+    if given := (url or "").strip():
+        return given
+    if spec.key_env is None and (from_env := (os.environ.get(ENV_URL) or "").strip()):
+        return from_env
+    return spec.url or None
 
 
 def resolve_decision_model(spec: DecisionSpec, model: str | None = None) -> str | None:
@@ -224,6 +266,6 @@ def make_decision_llm(
         from quackd.agent.decision.laya import LayaLLM
 
         return LayaLLM(spec, model=model)
-    module = importlib.import_module(_plugins()[spec.backend])
+    module = importlib.import_module(_plugins()[spec.backend.removeprefix("plugin:")])
     built: Any = module.make(spec, url=url, model=model)
     return built  # type: ignore[no-any-return]

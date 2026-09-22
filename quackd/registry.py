@@ -112,6 +112,22 @@ class FlockNotRunnable(RegistryError):
     pass
 
 
+def _check_llm(spec: str) -> None:
+    """Refuse a pilot spec on the way into the file, in the provider's own words.
+
+    The counterpart to `RobotEntry._llm`, which reads leniently so that one bad line cannot
+    take the whole registry down. Writing is the other half of that bargain: what goes in is
+    checked against the catalogue in full, so the lenient read is a kindness to files that
+    were already there rather than a hole somebody new can fall into."""
+    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.factory import parse_llm
+
+    try:
+        parse_llm(spec, source="llm")
+    except ProviderError as e:
+        raise RegistryError(str(e)) from e
+
+
 def check_name(name: str, *, kind: str = "robot") -> str:
     """A name a person types on a command line, and never anything else it could be mistaken
     for: a number (`--flock 3` means three simulated ducks), an adapter (`--robot microduck`
@@ -190,10 +206,13 @@ class RobotEntry(BaseModel):
         folded = dict(data)
         provider = folded.pop("provider", None)
         model = folded.pop("model", None)
-        if provider and model:
-            folded["llm"] = f"{provider}:{model}"
-        else:
-            folded["llm"] = provider or model or None
+        # A `model` with no `provider` beside it named no pilot and must not start naming one.
+        # Under the old pair the vendor came from the flag or from the default, and the default
+        # was `fake`, which ignores a model id entirely -- so such an entry did nothing unless
+        # a `--provider` was also typed. Read as a spec it would do two things instead, both
+        # bad: `{"model": "mistral"}` would become the paid Mistral API for a run that used to
+        # cost nothing, and `{"model": "gpt-4-turbo"}` would be a vendor quackd cannot resolve.
+        folded["llm"] = f"{provider}:{model}" if provider and model else (provider or None)
         return folded
 
     @field_validator("spec")
@@ -263,17 +282,22 @@ class RobotEntry(BaseModel):
     @field_validator("llm")
     @classmethod
     def _llm(cls, value: str | None) -> str | None:
-        """Strict at the door, lenient on the shelf.
+        """Strict at the door, lenient on the shelf, and the shelf is this.
 
-        The vendor has to be one quackd knows, because a stored `anthropc:...` is a robot that
-        can never run and the file should say so. The model id is deliberately *not* checked
-        against the catalogue (`check_model=False`): `quackd robot add --llm ...` checks it
-        fully, which is where the typo is actually made, and the catalogue moves under a file
-        that does not. One entry naming a model the vendor has since retired would, with a
-        strict read here, make every `quackd robot` command refuse -- including the
-        `quackd robot edit` that would fix it, because `update_robot` reads every entry before
-        it writes one. So the shelf keeps loading, and it is the run that names that robot
-        which stops, saying which id it could not find."""
+        `quackd robot add` and `quackd robot edit` check a spec against the catalogue in full,
+        because the door is where the typo is actually made and the person who made it is
+        looking at the answer. Reading is the opposite: whatever cannot be resolved is kept
+        exactly as it was written, and the run that names that robot is what stops.
+
+        The reason is that `update_robot` reads every entry before it writes one, so anything
+        refused here is refused by `quackd robot list`, `show`, `remove` and by the very
+        `quackd robot edit` that would fix it. One bad line would take the whole file down and
+        leave no command able to mend it. That is a worse failure than a robot that refuses on
+        the day it is run, and it is reachable by ordinary means: a catalogue that retires a
+        model id, a vendor quackd drops, or a hand-edited file.
+
+        So this canonicalises what it can -- a bare listed id gains its vendor, a vendor is
+        folded to lower case -- and leaves the rest alone."""
         if value is None or not str(value).strip():
             return None
         # imported here rather than at module scope, deliberately: the provider catalogue is a
@@ -283,10 +307,8 @@ class RobotEntry(BaseModel):
 
         try:
             vendor, model = parse_llm(str(value), source="llm", check_model=False)
-        except ProviderError as e:
-            # re-raised as a ValueError so pydantic folds it into the one-line message that
-            # names which robot in the file is wrong; the wording stays the provider's own
-            raise ValueError(str(e)) from e
+        except ProviderError:
+            return str(value).strip()
         return f"{vendor}:{model}" if model else vendor
 
     @property
@@ -523,6 +545,8 @@ class Registry:
 
     def add_robot(self, entry: RobotEntry) -> RobotEntry:
         check_name(entry.name, kind="robot")
+        if entry.llm is not None:
+            _check_llm(entry.llm)  # a pilot chosen now is a pilot that can be checked now
         entries = self.robots()
         if entry.name in entries:
             raise RegistryError(
@@ -539,6 +563,14 @@ class Registry:
         current = entries.get(name)
         if current is None:
             raise UnknownRobot(f"no robot called {name!r} is registered")
+        # The pilot being set, and only the one being set. `RobotEntry` reads a spec it cannot
+        # resolve rather than refusing it, because refusing on read would take down the whole
+        # file including this command; but a spec handed in here is one somebody is choosing
+        # now, and a choice made now can be checked now. Checking the whole entry instead
+        # would put the bricking back: editing the note on a robot whose stored pilot names a
+        # retired model would fail on the pilot.
+        if (named := changes.get("llm")) is not None:
+            _check_llm(str(named))
         data = current.model_dump()
         data.update(changes)
         data["updated"] = _now()

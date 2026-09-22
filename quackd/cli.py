@@ -132,6 +132,16 @@ def _warn_old_spellings() -> None:
         _deprecated(
             f"the {what} `{old}` is now `{new}`; the old spelling still works and goes in 0.12"
         )
+    # A variable rather than a flag, and the reason it gets a line of its own is that a flag
+    # that is gone fails loudly while a variable that is gone goes quiet. `QUACKD_MODEL` is
+    # the kind of line that sits in a `.env` for a year; unread, it does not stop the run, it
+    # lets the run bill a model nobody chose.
+    for gone, now in (
+        ("QUACKD_MODEL", "QUACKD_LLM=vendor:model"),
+        ("QUACKD_JEV", "QUACKD_DECISION_LLM"),
+    ):
+        if os.environ.get(gone):
+            _deprecated(f"{gone} is not read any more and this run ignores it; set {now} instead")
 
 
 def _terminal_header() -> list[str]:
@@ -724,9 +734,12 @@ def list_models_cmd(
     provider = None
     if llm is not None:
         # A spec, a bare vendor or a bare id: whichever it is, what this command wants out of
-        # it is the vendor, so it is read the same way `--llm` itself is read.
+        # it is the vendor, so it is read the same way `--llm` itself is read. Folded once and
+        # used for both lookups: folding it for the vendor test and not for the catalogue one
+        # refused `--llm CLAUDE-OPUS-5` while quoting back a string that works, which reads as
+        # quackd disagreeing with itself about its own shift key.
         head = llm.split(":", 1)[0].strip().lower()
-        provider = head if head in PROVIDER_NAMES else vendor_of(llm.split(":", 1)[0].strip())
+        provider = head if head in PROVIDER_NAMES else vendor_of(head)
         if provider is None:
             _fail(
                 f"unknown provider {head!r}",
@@ -989,6 +1002,7 @@ def _run_impl(
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
     from quackd.agent.decision.base import DecisionError
+    from quackd.agent.decision.factory import PRICE_ENV as DECISION_PRICE_ENV
     from quackd.agent.decision.factory import (
         decision_llm_is_available,
         make_decision_llm,
@@ -1025,7 +1039,19 @@ def _run_impl(
     # Both before anything is built, connected to or written down: a name that cannot be a
     # directory and a price nobody can parse are typing mistakes, and a typing mistake should
     # cost you one sentence rather than a robot moving and a run directory to clean up after.
-    checks = ((run_name, run_label), (price, lambda t: _parse_price(t, source="--price")))
+    # `QUACKD_DECISION_PRICE` is here rather than beside the stepper for the same reason as
+    # the other two: it has no flag of its own, so an unparseable line in a `.env` would
+    # otherwise surface as a traceback out of the first turn that needed a rate.
+    checks = (
+        (run_name, run_label),
+        (price, lambda t: _parse_price(t, source="--price")),
+        (
+            # `or None` because a blank variable is a shell saying unset, which is how the
+            # suite clears it and how a `.env` line with nothing after the `=` reads.
+            os.environ.get(DECISION_PRICE_ENV) or None,
+            lambda t: _parse_price(t, source=DECISION_PRICE_ENV),
+        ),
+    )
     for text, check in checks:
         if text is None:
             continue
@@ -1149,7 +1175,15 @@ def _run_impl(
     # a mode that was spelled right used to be accepted and silently do nothing.
     try:
         named_decision = parse_decision_llm(decision_llm)
-        decision = resolve_decision_mode(decision_mode, named=named_decision is not None)
+        decision = resolve_decision_mode(
+            decision_mode,
+            named=named_decision is not None,
+            # Said on the line rather than merely absent. `--decision-llm off` is how one
+            # command opts out of a `QUACKD_DECISION_LLM` in a `.env`, and refusing it because
+            # the same `.env` also set a mode would answer "I do not want this" with a demand
+            # to name one.
+            refused=(decision_llm or "").strip().lower() == "off",
+        )
     except DecisionError as e:
         _fail(str(e))
         return
@@ -3127,6 +3161,12 @@ def robot_edit(
         "llm": llm,
         "note": note,
     }
+    if llm is not None and not llm.strip():
+        # An empty value is not a pilot, and silently taking it as "forget the one you had"
+        # loses a setting and reports success. `--clear llm` is the way to say that, and it is
+        # a word rather than an absence.
+        _fail("--llm needs a pilot: quackd robot edit NAME --clear llm forgets the stored one")
+        return
     changes: dict[str, Any] = {k: v for k, v in given.items() if v is not None}
     for field in clear:
         key = field.strip().lower().replace("-", "_")

@@ -4,7 +4,7 @@
 
 ## Context
 
-[ADR-0040](0040-a-discrete-stepper-in-front-of-the-model.md) is seventeen days old and its
+[ADR-0040](0040-a-discrete-stepper-in-front-of-the-model.md) is four days old and its
 reasoning has held up completely. What has not held up is a single word in it.
 
 That ADR decided quackd should put something in front of the model on the turns whose answer is

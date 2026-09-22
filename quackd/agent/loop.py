@@ -928,6 +928,8 @@ class AgentLoop:
                     allow=allow,
                     goal=self.duck.body,
                     success=self.fm.success,
+                    gated=self.fm.verbs.confirm,
+                    max_steps=self.budget.limits.max_steps,
                     body=manifest.summary()
                     if manifest is not None
                     else backend_name(cfg.transport),

@@ -482,8 +482,20 @@ def test_a_run_by_name_is_refused_when_the_robots_own_model_is_no_longer_listed(
     `quackd robot edit` down with it. The run is where it stops, and the refusal has to say
     which robot and which file: nothing on the command line is wrong, so a reader told only
     "unknown model" would search the line they just typed and find nothing to fix.
+
+    Written straight to the file rather than through `add_robot`, because that is the door and
+    the door refuses this. It is how the entry gets there in life too: a catalogue that retired
+    the id after the robot was registered.
     """
-    _seed(tmp_path, llm="openai:gpt-5")
+    (tmp_path / "robots.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "robots": {"duck-a": {"spec": "microduck:mock", "llm": "openai:gpt-5"}},
+            }
+        ),
+        encoding="utf-8",
+    )
     result = runner.invoke(
         app,
         [

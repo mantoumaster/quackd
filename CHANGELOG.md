@@ -703,7 +703,7 @@ reports that it did.
   arm, with a stub standing in for Jev, put four of six turns on the stepper. That run measures
   which turns are a choice and nothing about the model that would answer them.
   **Those are estimates and are labelled as such: none of this has run against a real robot.**
-  The workings, the inputs and what would make them wrong are in [docs/jev.md](docs/jev.md)
+  The workings, the inputs and what would make them wrong are in `docs/jev.md`
   ([ADR-0040](docs/adr/0040-a-discrete-stepper-in-front-of-the-model.md)). Behind
   `quackd[jev]`, which is not part of `quackd[all]`, and `TYPESAFE_API_KEY`, or `QUACKD_JEV` for
   the mode where you would rather not pass the flag. It is not a provider: `--provider` does not
@@ -1358,7 +1358,7 @@ reports that it did.
   nightly job.
 
 - **The stepper has never made a real call in this repository.** Every speed and cost figure in
-  [docs/jev.md](docs/jev.md) is arithmetic over measured inputs rather than a measurement of Jev:
+  `docs/jev.md` is arithmetic over measured inputs rather than a measurement of Jev:
   TypeSafe's published latency and price, quackd's own measured model latency from the arm run,
   and a request size measured against the mock. The two runs that put a share of turns
   on it were driven on `lerobot:mock` with a stub in Jev's place, so they measure which turns are

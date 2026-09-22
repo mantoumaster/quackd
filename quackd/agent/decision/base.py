@@ -14,6 +14,23 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
+TIMEOUT_S = 1.0
+"""How long one turn may wait for an answer, whoever is answering.
+
+A decision LLM that has not answered in a second is not worth waiting for: the point of it is
+that it is quicker than the model, and past this the turn is cheaper spent on the model
+directly. The turn escalates and the record says the call timed out.
+
+Enforced here, at the seam, rather than left to each backend. A vendor's client has a timeout
+of its own with its own meaning -- TypeSafe's `RetryPolicy.timeout` is the budget for the whole
+retry sequence and its per-request default is ten seconds -- a model in this process has none
+at all, and a plugin has whatever its author thought of. One `wait_for` around `decide` is the
+only way the number quoted in the docs is the number that holds.
+
+A starting value, like the floors. It was chosen against Jev's published latency, and a
+CPU-only server on your own machine may well need more; `--decision-mode shadow` is how you
+find that out before it matters."""
+
 
 class DecisionError(RuntimeError):
     """A decision LLM that cannot be built or cannot be reached. Raised while the CLI is still

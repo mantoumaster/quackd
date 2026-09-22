@@ -13,16 +13,19 @@ here would be a suite that never tested the thing this release is.
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib.metadata
 import sys
+import time
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from quackd.agent.decision import factory
-from quackd.agent.decision.base import DecisionError
+from quackd.agent.decision.base import TIMEOUT_S, DecisionError
 from quackd.agent.decision.catalogue import (
     ENTRY_POINT_GROUP,
     IN_PROCESS,
@@ -41,9 +44,36 @@ from quackd.agent.decision.factory import (
     resolve_decision_price,
     resolve_decision_url,
 )
+from quackd.agent.decision.stepper import MAX_IN_A_ROW, Call, Stepper, verb_class
 from tests import fake_laya, fake_systemone
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+async def _advise_with(answers: dict[str, Any] | None, llm: Any = None) -> Any:
+    """One turn against a backend that answers exactly what it was handed.
+
+    Built bare rather than through `Stepper.build`, because what is under test is how an
+    answer is read and a registry of verbs would only be scenery."""
+
+    class Says:
+        name, model, url = "probe", "p", None
+
+        async def decide(self, state: Any, questions: Any) -> Any:
+            return {"answers": answers or {}}
+
+    stepper = Stepper(
+        mode="on",
+        goal="a goal",
+        llm=llm or Says(),
+        name="probe",
+        price=resolve_decision_price(PRESETS["local"]),
+    )
+    stepper.calls["stop"] = Call(name="stop", arguments={}, label="stop")
+    stepper.classes["stop"] = "brake"
+    stepper.what["stop"] = "the brake"
+    stepper.early.add("stop")
+    return await stepper.advise(SimpleNamespace(features={}), cleared=True, budget="b")
 
 
 # ── the table ───────────────────────────────────────────────────────────────────────────
@@ -581,3 +611,176 @@ def test_an_entry_point_whose_module_is_gone_is_ignored(monkeypatch: pytest.Monk
         assert "ghost" not in preset_names()
     finally:
         factory._plugins.cache_clear()
+
+
+# ── what an adversarial pass found ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {"next_verb": {"choice": "stop", "confidence": 0.99}},
+        {"next_verb": {"choice": "stop", "confidence": 0.99}, "done": {"noul": 0.0}},
+        {
+            "next_verb": {"choice": "stop", "confidence": 0.99},
+            "done": {"noul": 0.0},
+            "need_human": {},
+        },
+        {
+            "next_verb": {"choice": "stop", "confidence": 0.99},
+            "done": 0.0,
+            "need_human": 0.0,
+        },
+    ],
+    ids=["only-a-verb", "one-noul-missing", "a-noul-with-nothing-in-it", "nouls-as-bare-floats"],
+)
+async def test_a_question_nobody_answered_is_not_an_answer_of_no(answers: dict[str, Any]) -> None:
+    """The two Nouls stop a run and ask for a person, and read as zero they say the opposite.
+
+    A backend that answers only `next_verb` -- a plugin under construction, a server that
+    dropped a field, a model with no Nouls at all -- used to have both gates default to 0.0,
+    which is "certainly not finished, certainly nobody needed", and those are exactly the two
+    answers that let a verb through. A question nobody answered hands the turn to the model.
+    """
+    advice = await _advise_with(answers)
+    assert advice.record["gate"] == "unreadable"
+    assert advice.call is None
+    assert advice.record["done"] is None or advice.record["need_human"] is None
+
+
+async def test_a_confidence_spelled_as_a_boolean_clears_nothing() -> None:
+    """`float(True)` is 1.0, which is above every floor in the table, so a backend that wrote
+    a confidence as a boolean was believed absolutely rather than doubted."""
+    advice = await _advise_with(
+        {
+            "next_verb": {"choice": "stop", "confidence": True},
+            "done": {"noul": 0.0},
+            "need_human": {"noul": 0.0},
+        }
+    )
+    assert advice.record["gate"] == "unreadable" and advice.call is None
+
+
+async def test_a_backend_that_never_answers_costs_one_turn_and_not_the_run() -> None:
+    """The page promises a second. The SDK's own per-request default is ten, its retry budget
+    is a different clock again, and a model in this process has no timeout at all, so the only
+    place the promise can be kept is the seam."""
+
+    class Hangs:
+        name, model, url = "hangs", "h", None
+
+        async def decide(self, state: Any, questions: Any) -> Any:
+            await asyncio.sleep(30)
+
+    started = time.perf_counter()
+    advice = await _advise_with(None, llm=Hangs())
+    assert time.perf_counter() - started < TIMEOUT_S * 3
+    assert advice.record["gate"] == "error" and advice.call is None
+    assert str(TIMEOUT_S) in advice.record["error"], "the record should say what it waited"
+
+
+def test_the_address_variable_never_retargets_the_hosted_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`QUACKD_DECISION_URL` is the line somebody leaves in a `.env` after an afternoon with a
+    server on their own machine. Applied to the hosted row it would send that vendor's key --
+    which its client reads for itself -- to whatever is listening on localhost."""
+    monkeypatch.setenv(factory.ENV_URL, "http://127.0.0.1:8009")
+    assert resolve_decision_url(PRESETS["jev"]) is None
+    assert resolve_decision_url(PRESETS["kev"]) == "http://127.0.0.1:8009"
+
+
+def test_a_hosted_row_at_an_address_you_typed_is_a_server_you_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--decision-llm jev --decision-url http://localhost:8009` means Jev's model id at my
+    address, and a company's API key has no business going there."""
+    fake = fake_systemone.install(monkeypatch, fake_systemone.FakeDecisionLLM())
+    monkeypatch.setenv("TYPESAFE_API_KEY", "sk-hosted-and-private")
+    make_decision_llm(PRESETS["jev"], url="http://127.0.0.1:8009")
+    assert fake.api_key == "local"
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_address_is_a_shell_saying_unset(
+    blank: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read as an address it defeated the one refusal `local` exists to make, and then errored
+    once per turn, each of them billed."""
+    monkeypatch.setenv(factory.ENV_URL, blank)
+    assert resolve_decision_url(PRESETS["local"]) is None
+
+
+def test_a_blank_mode_flag_does_not_discard_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--decision-mode ""` is what a wrapper script produces from an unset variable of its
+    own. Taken as a spoken answer it threw away a `QUACKD_DECISION_MODE=shadow` and ran the
+    stepper for real, which is the one direction this must never fail in."""
+    monkeypatch.setenv(factory.ENV_MODE, "shadow")
+    assert resolve_decision_mode("", named=True) == "shadow"
+
+
+def test_saying_off_on_the_line_is_not_a_run_with_nothing_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--decision-llm off` is how one command opts out of a `.env`, and refusing it because
+    that same `.env` also set a mode answers "I do not want this" with a demand to name one."""
+    monkeypatch.setenv(factory.ENV_MODE, "shadow")
+    assert resolve_decision_mode(None, named=False, refused=True) == "off"
+
+
+def test_a_plugin_that_cannot_be_imported_does_not_take_doctor_with_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`find_spec("pkg.mod")` imports `pkg` to ask it, and a stranger's package may raise
+    anything at all. This runs on the path of `quackd doctor` and of every press of TAB."""
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda **kw: [_Entry("ghost", "tests.no_such_module_at_all")],
+    )
+    factory._plugins.cache_clear()
+    try:
+        assert "ghost" not in preset_names()
+    finally:
+        factory._plugins.cache_clear()
+
+
+def test_a_plugin_cannot_take_a_backends_name_either(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A built-in name is guarded; a *backend* name was not, so a plugin calling itself
+    `systemone` had quackd's own HTTP client built for it and its `make` never called."""
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda **kw: [_Entry("systemone", "tests.stub_decision_llm")],
+    )
+    factory._plugins.cache_clear()
+    try:
+        import tests.stub_decision_llm as stub
+
+        stub.built.clear()
+        llm = make_decision_llm(find_preset("systemone"))
+        assert stub.built and stub.built[-1] is llm
+    finally:
+        factory._plugins.cache_clear()
+
+
+def test_a_streak_can_never_be_longer_than_half_the_run() -> None:
+    """`MAX_IN_A_ROW` is an absolute number and a budget is not. `hello-world` allows five
+    steps, so a limit of eight never binds and a stepper could own the whole run, which is the
+    failure the constant's own docstring says it prevents."""
+    assert Stepper(mode="on", goal="g", max_steps=0).streak_limit == MAX_IN_A_ROW
+    assert Stepper(mode="on", goal="g", max_steps=5).streak_limit == 2
+    assert Stepper(mode="on", goal="g", max_steps=1).streak_limit == 1
+    assert Stepper(mode="on", goal="g", max_steps=100).streak_limit == MAX_IN_A_ROW
+
+
+def test_a_verb_the_task_file_gated_answers_to_the_confirm_floor() -> None:
+    """`Executor.needs_confirm` reads the `.duck`'s own `verbs.confirm` as well as the
+    manifest's safety class. A floor that could not see it let a verb its author gated on a
+    person through at 0.85 instead of 0.90, and under `--yes` nothing else would have noticed.
+    """
+    verb = SimpleNamespace(name="quack", safety_class="safe", read_only=False, kind="core")
+    assert verb_class(verb, "quack") == "motion"
+    assert verb_class(verb, "quack", frozenset({"quack"})) == "confirm"
+    brake = SimpleNamespace(name="stop", safety_class="safe", read_only=False, kind="core")
+    assert verb_class(brake, "stop", frozenset({"stop"})) == "brake", "the brake is never gated"
