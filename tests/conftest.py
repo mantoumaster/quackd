@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import faulthandler
 import re
+import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -172,3 +174,38 @@ def help_text(argv: list[str]) -> str:
     plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
     rows = [re.sub(r"^[\u2502|]\s?|\s?[\u2502|]$", "", line) for line in plain.splitlines()]
     return " ".join(" ".join(rows).split())
+
+
+REPO_RUNS = Path(__file__).resolve().parent.parent / "runs"
+"""The `runs/` a person's own runs land in, which is not the suite's to write into."""
+
+
+@pytest.fixture(autouse=True)
+def _no_test_writes_into_the_checkout() -> Iterator[None]:
+    """Fail the test that leaves a run directory in the checkout, and name it.
+
+    `RunConfig.runs_dir` defaults to the relative string `runs`, so a config built without one
+    resolves against the working directory, which under pytest is the repository. `AgentLoop`
+    makes the directory in `__init__`, before the run does anything and whatever the run then
+    does, so a test that only wanted to watch a config get refused still leaves one behind.
+
+    They accumulated for weeks before anybody noticed, because each is a directory holding one
+    line and nothing fails. What made them worth stopping is that they sit among a person's own
+    runs, which is where `quackd log` looks and where the evidence from a real robot lives.
+
+    Only a directory with no `summary.json` is swept up, and the same rule is why: a run that
+    finished wrote one, and the suite's leavings never get that far because the loop makes the
+    directory before the run does anything. Somebody who starts a real run while the suite is
+    going still fails a test here, which is noise, but their run is theirs and stays.
+    """
+    before = {p.name for p in REPO_RUNS.iterdir()} if REPO_RUNS.is_dir() else set()
+    yield
+    after = {p.name for p in REPO_RUNS.iterdir()} if REPO_RUNS.is_dir() else set()
+    leaked = sorted(after - before)
+    swept = [n for n in leaked if not (REPO_RUNS / n / "summary.json").exists()]
+    for name in swept:
+        shutil.rmtree(REPO_RUNS / name, ignore_errors=True)
+    assert not leaked, (
+        f"this test wrote {leaked} into the checkout's runs/. Pass runs_dir=tmp_path to the "
+        "RunConfig (or runs_dir= to the flock runner): the default is relative and lands here."
+    )
