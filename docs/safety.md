@@ -51,6 +51,46 @@ rather than an abort.
 The `cancelled` row is the one worth knowing about: that path used to return at once and leave
 the legs moving with nothing to halt them, which is the failure this page exists to rule out.
 
+## Who the record says was asked
+
+The `confirm` row above records what the gate decided. The run also records the exchange
+itself: a `prompt` event carrying `what` (`confirm`, `decide`, `acknowledge` or `hand_off`),
+the question in the words it was put in, and the answer. Those four are the confirm gate, the
+pilot's own question when it is unsure (below), the acknowledgement that somebody is watching
+a fall-blind robot, and each half of a `--by-hand` handover. What an answer *caused* was always
+written down by whoever acted on it, in `gate.answer` here, `assess.human` for a verdict and
+the `hand_off` stages for an arm. What was asked, and what somebody said back, was not.
+
+**It is written only where a person was really asked.** `--yes`, a flock's standing answer and
+the MCP server all answer without asking anybody, and none of them leaves a `prompt` event: the
+server has no terminal to ask on, so it refuses a gated verb unless it was started with `--yes`
+and clears it standing if it was. Neither does a run with no terminal under it.
+`yes | quackd run` and `quackd run < answers.txt` open the gate exactly as they always have,
+because `input()` reads a pipe as happily as a person and opening it is what the pipe asked
+for. What is withheld is the testimony: there is no `prompt` event, and the gate's own reason
+reads `the confirm gate was allowed` where a run somebody stood through reads
+`a human said yes`.
+
+That distinction is a safety property and not a nicety. A run directory is what somebody
+reaches for after a robot did something it should not have, and the question they put to it is
+who cleared the verb that did it. A record that invents a witness is worse than no record,
+because it sends that reader after a person who was never there, and it does so at the one gate
+whose whole job is to put a human in front of a verb. It fails the other way on purpose: an
+asker that reaches a person and is not marked as one writes nothing, so the record under-claims
+rather than inventing somebody.
+
+One field is less careful than that, and it is worth knowing which. A verdict cleared by
+`--yes`, by a flock's standing answer or by a pipe is recorded as `assess.human: go` all the
+same, because that field holds the answer the run was given rather than who gave it. The
+`prompt` events are the ones that say a person was there, so read a `human` against them and
+not on its own.
+
+The questions and the answers are in `terminal.txt` too, and that file is the only place the
+answer survives in the words it was typed in. Neither half of the exchange goes through the
+view that keeps the file: the question is written out raw and the terminal itself echoes what
+you type, so both are put into `terminal.txt` deliberately rather than picked up off the
+screen. The record keeps a yes or a no; the file keeps what was typed.
+
 ## Heartbeat
 
 A task pings `transport.heartbeat()` every 500 ms (`robot.health` on a Microduck, each
@@ -87,7 +127,9 @@ thing's mass or size, which is why the verbs that look run before the verdict: t
 take a frame from where it stands. What it cannot do is go to the thing first. `search_scan`,
 `go_to` and `move` all wait for the verdict, so when the deciding figure is on something out
 of frame, `uncertain` is the honest answer and the person is the way past it. At a terminal
-that is a y/N question with no as the default. A no ends the run `aborted` and exits 1, not `infeasible` and 3, because a person
+that is a y/N question with no as the default, and one a person really answered is in the record
+as a `decide` prompt ([above](#who-the-record-says-was-asked)).
+A no ends the run `aborted` and exits 1, not `infeasible` and 3, because a person
 stopping a robot is the kill switch's kind of act rather than a statement about the body.
 
 **`--yes` answers that question with go**, the same way it answers a confirm gate, and

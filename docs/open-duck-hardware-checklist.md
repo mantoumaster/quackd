@@ -220,10 +220,20 @@ Open an issue with the Open Duck hardware report template, and attach:
 3. `git rev-parse HEAD` inside your `Open_Duck_Mini_Runtime` checkout, and which walk policy
    you used.
 4. `journalctl -u quackd-duck-bridge` for the run.
-5. The first 40 lines of `transcript.jsonl`.
+5. `runs/<timestamp>-<name>/terminal.txt` from the run, which is the whole session as plain
+   text and opens with the command that started it and the version that ran it. It is
+   usually the one file that answers what happened. Send `transcript.jsonl` beside it when
+   the question is about the records rather than the session, such as every `loop_hz` the
+   run's `report_state` reported.
 6. Which step you reached, what the duck physically did, and **whether you tested the
    deadman in step 9**.
 7. A video or a GIF, if you can.
+
+Read the first line of `terminal.txt` before you paste it. The values of `--api-key` and
+`--token` are replaced there, and so is a password or a credential-named query parameter in
+`--base-url`, `--address` and `--camera-url`. Nothing else on the screen is
+([SECURITY.md](../SECURITY.md)). The bridge token is safest in `QUACKD_DUCK_TOKEN` rather than
+`--token`, because an environment variable reaches no part of the record.
 
 A report earns a row on this adapter's page and our thanks. Only a run on the maintainer's
 own duck flips a status to ✅, which is the same rule every other adapter lives under.

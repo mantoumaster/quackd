@@ -69,7 +69,18 @@ script that ignores it.
 
 ## What to report
 
-Open an issue with the transcript. The four things that most need a real robot:
+Open an issue with `runs/<timestamp>-<name>/terminal.txt` from whichever `quackd run` you did.
+It is the whole session as plain text, opening with the command that started it and the
+version that ran it, so it is usually the one file that answers what happened. Send
+`transcript.jsonl` beside it when the question is about one record rather than the session. The
+steps you drove from an MCP client have neither, because a session writes nothing run shaped,
+and there the record is the chat itself.
+
+Read that first line before you paste it. The values of `--api-key` and `--token` are replaced
+there, and so is a password or a credential-named query parameter in `--base-url`, `--address`
+and `--camera-url`. Nothing else on the screen is ([SECURITY.md](../SECURITY.md)).
+
+The four things that most need a real robot:
 
 - **Does the safe-pose slew work from a crawl or a prone start?** Untested and unknown. It is
   the largest remaining unknown in the whole adapter.

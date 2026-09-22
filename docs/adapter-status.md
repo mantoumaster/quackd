@@ -240,8 +240,12 @@ its allowlist moves a leg.
 Ran `--robot open_duck:bridge` against a duck you built, `toddlerbot:bridge` against a
 ToddlerBot on its stand, `xlerobot:zmq` against a cart, `alohamini:zmq` against an AlohaMini,
 `microduck:jsonrpc` against a real duck, or `rosbridge:ws` against a bridge?
-Open an issue with `quackd doctor` output and the first lines of
-`transcript.jsonl`. Every row above that flips from 🧪/⏳ to ✅ is one line in an
+Open an issue with `quackd doctor` output and the first lines of `transcript.jsonl`, whose
+`run_start` names the command that was typed and the version that ran it, so a report no longer
+rests on anyone remembering either. A run directory holds `terminal.txt` beside it, and that is
+not the evidence: it is the screen, a rendering of the same events that `--no-log` shortens. The
+transcript is every intent quackd sent and every answer the robot gave back, which is what
+somebody else can check. Every row above that flips from 🧪/⏳ to ✅ is one line in an
 `upstream_api.py` and one row here. `lerobot:real` is the one that has already flipped, on one
 arm on one bench, so a second run against an SO-101 is still worth an issue: it either widens
 that row or contradicts it, and the one that contradicts it is worth more.

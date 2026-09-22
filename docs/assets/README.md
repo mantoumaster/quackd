@@ -43,9 +43,11 @@ than fixtures to be tidied, and `quackd log` replays them as they are because th
 both spellings. [ADR-0029](../adr/0029-tracing.md) keeps its name for the same reason.
 
 **The next transcript published here needs one more field scrubbed.** A run recorded from 0.11
-writes the command that started it into `run_start.command`, and the values of `--api-key` and
-`--token` are the only things in it replaced with `***`. Everything else is there as typed, so a
-`--runs-dir`, a `--base-url` or a duck path off somebody's machine lands in the record with it.
+writes the command that started it into `run_start.command`. What quackd takes out of it is in
+[SECURITY.md](../../SECURITY.md): the values of `--api-key` and `--token`, and the password and
+any credential-named query parameter in a `--base-url`, an `--address` or a `--camera-url`.
+Everything else is there as typed, so a `--runs-dir`, a bare host and a duck path off somebody's
+machine all land in the record.
 `tests/test_transcript_assets.py` reads every string in every row and fails on a home directory,
 a host or an IP address wherever it finds one, so it catches this, and a contributor who has just
 had it fail on `command` is reading the right paragraph: make the paths relative or take them out

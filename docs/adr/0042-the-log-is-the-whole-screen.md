@@ -288,6 +288,19 @@ inventing a human. Anything added beside `_confirm_prompt`, `_decide_prompt`,
 `_acknowledge_prompt` and `_TerminalHandOff` has to carry the mark, and a standing answer must
 never be given one.
 
+**One field is not held to that, and it is the one field that cannot simply be.** `assess.human`
+is set to `go` whenever the decide callable answered yes, including `--yes`, a flock's standing
+answer and a pipe on stdin, and the console draws it as `(the human said go)`. Blanking it where
+nobody was asked is not available: `Verdict.go` is `feasible or (uncertain and human == "go")`,
+so the field is what lets an uncertain verdict proceed at all, and emptying it would refuse every
+`--yes` run the pilot was unsure about. The field is doing two jobs, the gate's state and a claim
+about a person, and only the second is wrong. Separating them means a new key on the `assess`
+event saying who cleared it, which is a wire change and belongs to whoever next has reason to
+open that record rather than to this one. Until then the `prompt` rows are the honest half: where
+one sits beside an `assess`, a person really answered, and where none does, the `human` in that
+sentence is a callable. `docs/safety.md` says so in as many words, because that is the page
+somebody reads after a robot did something it should not have.
+
 **With two threads printing at once the file's order can differ from the screen's by a line or
 two.** The forward happens after `super().print` and the capture's lock deliberately never spans
 it, so two threads that print at the same moment can reach the file in the other order. There is

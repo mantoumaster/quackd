@@ -579,7 +579,7 @@ uvx --from "quackd[microduck,anthropic]" quackd run --goal "find the ball and ki
 uvx --from "quackd[microduck]" quackd run find-and-kick --provider fake --seed 3
 ```
 
-Every run writes `runs/<timestamp>-<name>/` (`--runs-dir` replaces `runs/`, and `--run-name "Example 1"` adds your own label to the end of that directory, `runs/20260921-155518-find-and-kick-example-1/`) with `transcript.jsonl` (every prompt, tool call, gate, intent, result and token count, what each model call cost and what the run has cost so far, when the run started and when it ended, plus the robot's manifest in `run_start`), every frame quackd captured, `summary.json`, `terminal.txt` (everything that was on the terminal during the run, as plain text, opening with the command that started it), and `run.gif` on the simulator. `quackd log` replays any of it afterwards.
+Every run writes `runs/<timestamp>-<name>/` (`--runs-dir` replaces `runs/`, and `--run-name "Example 1"` adds your own label to the end of that directory, `runs/20260921-155518-find-and-kick-example-1/`) with `transcript.jsonl` (every prompt, tool call, gate, intent, result and token count, what each model call cost and what the run has cost so far, when the run started and when it ended, plus the robot's manifest in `run_start`), every frame quackd captured, `summary.json`, `terminal.txt` (everything that was on the terminal during the run, as plain text, opening with the command that started it and the version that ran it), and `run.gif` on the simulator. `quackd log` replays any of it afterwards.
 
 Cloud or local, same command.
 

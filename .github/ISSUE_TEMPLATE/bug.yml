@@ -55,6 +55,18 @@ body:
       label: Output of `quackd doctor`
       render: shell
   - type: textarea
+    id: terminal
+    attributes:
+      label: "`terminal.txt` from the run directory"
+      description: >-
+        The whole session as you saw it, which is usually the one file that answers the
+        question, because it opens with
+        the command that started the run and the version that ran it. Check it before you
+        paste: quackd replaces the values of `--api-key` and `--token` and the credentials
+        in a `--base-url`, an `--address` or a `--camera-url`, and nothing else on that
+        screen (see SECURITY.md).
+      render: text
+  - type: textarea
     id: transcript
     attributes:
       label: Relevant lines from `runs/<timestamp>/transcript.jsonl`

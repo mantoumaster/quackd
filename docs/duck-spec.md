@@ -34,7 +34,7 @@ Encoding UTF-8. The first non-blank, non-comment line must be `---`.
 | `description` | string | yes | — | One human-facing line. Shown in the system prompt. |
 | `author` | string | no | — | Credit. |
 | `verbs.allow` | list of verb names, ≥ 1, unique | yes | **executor** | The only verbs the LLM may call. `stop` is always allowed. Unknown names fail `quackd validate`. |
-| `verbs.confirm` | list ⊆ `allow` | no (default `[]`) | **executor** | Verbs that prompt a human y/N before running (`--yes` auto-accepts; MCP refuses unless `--yes`). |
+| `verbs.confirm` | list ⊆ `allow` | no (default `[]`) | **executor** | Verbs that prompt a human y/N before running (`--yes` auto-accepts; MCP refuses unless `--yes`; a pipe on stdin opens the gate as it always has, and only an answer a person really gave is recorded as one, [safety.md](safety.md#who-the-record-says-was-asked)). |
 | `budgets.max_steps` | int 1–1000 (default 40) | no | **executor** | Maximum verb executions. |
 | `budgets.max_minutes` | number > 0 ≤ 180 (default 5) | no | **loop** | Robot-clock cap (sim time in both simulators, `sim2d` and `mujoco`, wall-clock on hardware). Checked before each model call and again the moment the model answers, so a provider that replies late cannot spend the overrun. A verb already running is not interrupted, so a run can overshoot by that verb's own timeout. |
 | `budgets.max_llm_calls` | int 1–2000 (default 40) | no | **loop** | Maximum provider calls (re-prompts count). |

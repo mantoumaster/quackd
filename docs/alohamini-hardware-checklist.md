@@ -67,4 +67,15 @@ script that ignores it.
 
 Whether the arms really were limp on the stock host, what the lift's travel speed actually is
 in mm/s, and whether the over-current trip fired before anything you would have wanted it to
-catch. Open an issue with the transcript.
+catch.
+
+Open an issue with `runs/<timestamp>-<name>/terminal.txt` from whichever `quackd run` you did.
+It is the whole session as plain text, opening with the command that started it and the version
+that ran it, so it is usually the one file that answers what happened. Send `transcript.jsonl`
+beside it when the question is about one record rather than the session. The steps you drove
+from an MCP client have neither, because a session writes nothing run shaped, and there the
+record is the chat itself.
+
+Read that first line before you paste it. The values of `--api-key` and `--token` are replaced
+there, and so is a password or a credential-named query parameter in `--base-url`, `--address`
+and `--camera-url`. Nothing else on the screen is ([SECURITY.md](../SECURITY.md)).

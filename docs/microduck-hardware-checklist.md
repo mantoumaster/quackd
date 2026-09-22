@@ -177,9 +177,16 @@ out of your simulator's.
 ## 10. Tell everyone
 
 `microduck:jsonrpc` is 🧪 in [`docs/adapter-status.md`](adapter-status.md) because nobody has
-done this. What flips it is a `quackd doctor` output and the first lines of a
-`transcript.jsonl`, in an issue. The memory file is an index of what you tried, not evidence —
-the transcript is the artefact.
+done this. What flips it is a `quackd doctor` output and `runs/<timestamp>-<name>/terminal.txt`,
+in an issue: that file is the whole session as plain text, opening with the command that
+started it and the version that ran it, so it is usually the one that answers what happened.
+Send `transcript.jsonl` beside it when the question is about one record rather than the
+session, which is what step 3 has you open it for. The memory file is an index of what you
+tried, not evidence.
+
+Read that first line before you paste it. The values of `--api-key` and `--token` are replaced
+there, and so is a password or a credential-named query parameter in `--base-url`, `--address`
+and `--camera-url`. Nothing else on the screen is ([SECURITY.md](../SECURITY.md)).
 
 What is most worth writing down, because it is what nobody can check without a duck:
 
