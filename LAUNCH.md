@@ -47,7 +47,7 @@ command; a sentence needs something to read it.
 | LeRobot / Hugging Face robotics | An LLM picks the skill, your policy executes it. `pick` is one intent that hands the arm to its own learned policy; quackd does the deciding, the gating and the transcript, and never writes a controller. |
 | ROS folks | Any base that takes a `geometry_msgs/msg/Twist` over rosbridge becomes an LLM-drivable robot. No node to write, no message we invented, no deadman we pretend to have. |
 | Robotics / RL folks | Three loops: the body's own reflexes (50 Hz on the duck), 10 Hz steering in Python, ~0.5 Hz LLM deliberation. The registry hook for learned verbs is the v2 story. |
-| Local-LLM folks (r/LocalLLaMA, llama.cpp / vLLM / Ollama Discords) | Your own model pilots a robot, no API key: `quackd run find-and-kick --provider ollama`. Weak tool callers get a JSON text fallback. We have not benchmarked local models yet, so a transcript is a contribution. |
+| Local-LLM folks (r/LocalLLaMA, llama.cpp / vLLM / Ollama Discords) | Your own model pilots a robot, no API key: `quackd run find-and-kick --llm ollama`. Weak tool callers get a JSON text fallback. We have not benchmarked local models yet, so a transcript is a contribution. |
 
 ## Show HN title candidates
 
@@ -116,7 +116,7 @@ please correct it" framing.
    which the page writes the post for. Not recorded: the page boots and the keyboard works, but
    nobody has run the Record button.
 4. **find-and-kick (sim).** ✅ `docs/assets/hero.gif`, scripted pilot, still the cartoon shot.
-   Re-record with `--provider anthropic` once a key is available and drop the "scripted" label.
+   Re-record with `--llm anthropic` once a key is available and drop the "scripted" label.
 5. **Claude Desktop piloting a flock via MCP.** Screen capture: connector listed → "list my
    robots" (`robot_list` shows two robots) → "make the duck find the ball" → the run's
    frames. Crop to the chat and the GIF side by side. Not recorded yet.

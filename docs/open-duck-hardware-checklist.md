@@ -116,7 +116,7 @@ ask it what it sees:
 ```bash
 quackd run --goal "look once and report what you can see, then stop" \
     --robot open_duck:bridge --address tcp://127.0.0.1:9871 \
-    --camera-url http://127.0.0.1:9872/snapshot.jpg --max-steps 3 --provider anthropic
+    --camera-url http://127.0.0.1:9872/snapshot.jpg --max-steps 3 --llm anthropic
 ```
 
 This one step catches three different faults at once: a wrong `--rotate`, an inverted colour
@@ -155,13 +155,13 @@ without moving, which is a perfectly good first result and the one to prefer. On
 
 ## 8. Walk in place, feet still off the ground
 
-This is the first thing that moves a leg. `--provider fake` has no script for a free-form
+This is the first thing that moves a leg. `--llm fake` has no script for a free-form
 goal, so this one needs a real model:
 
 ```bash
 quackd run --goal "walk in place with small forward steps, do not turn, then stop" \
     --robot open_duck:bridge --address tcp://127.0.0.1:9871 \
-    --provider anthropic --max-steps 6
+    --llm anthropic --max-steps 6
 ```
 
 Watch `loop_hz` in the run's own `report_state`. Anything below 35 Hz fails the heartbeat on

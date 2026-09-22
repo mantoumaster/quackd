@@ -5,9 +5,9 @@ it, which differ in who decides what each robot does next.
 
 ```bash
 # the pilots: a duck and an arm say hello
-uvx --from "quackd[microduck,lerobot]" quackd run flock-hello --provider fake
+uvx --from "quackd[microduck,lerobot]" quackd run flock-hello --llm fake
 # the coordinator: ducks bid, closest one kicks
-uvx --from "quackd[microduck]" quackd run flock-kick --provider fake --seed 3
+uvx --from "quackd[microduck]" quackd run flock-kick --llm fake --seed 3
 ```
 
 Every body is its own package, so the install names each robot the run will open: the pilot
@@ -48,7 +48,7 @@ The members divide the task between them by saying what they are going to do
 ([ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)).
 
 ```bash
-uvx --from "quackd[microduck,lerobot]" quackd run flock-hello --provider fake
+uvx --from "quackd[microduck,lerobot]" quackd run flock-hello --llm fake
 ```
 
 That is the bundled demo: a simulated duck and a mock arm, no registry, no API key.
@@ -63,7 +63,7 @@ quackd robot add duck microduck:mock
 quackd robot add arm lerobot:mock
 quackd robot add cart rosbridge:mock
 quackd flock create trio --robot duck --robot arm --robot cart
-quackd run flock-hello --flock trio --provider fake
+quackd run flock-hello --flock trio --llm fake
 ```
 
 ```
@@ -393,7 +393,7 @@ At most **one** model call per run: the planner may tune task parameters (target
 approach distance, scan step, timeout) through a single forced tool call. Numeric
 parameters are clamped into the schema's ranges, an invalid field is dropped on its own
 (the valid ones survive), and a missing or broken call falls back to deterministic
-defaults, logged. With `--provider fake` even that call is skipped and the plan is a pure
+defaults, logged. With `--llm fake` even that call is skipped and the plan is a pure
 function. The auction, the roles and the steering are deterministic code. `summary.json`
 records `planner.llm_calls` (0 or 1) as proof, and `planner.cost_usd` beside it, priced from
 the planner's own model exactly as a solo run's turn is. That is the whole bill for this kind
@@ -472,7 +472,7 @@ columns in the order they actually arrived, which is the one reading a replay ca
 back.
 
 With a real provider the planner's one model call is narrated under `flock` and recorded
-in `flock.jsonl` as `llm_request` and `llm`. With `--provider fake`
+in `flock.jsonl` as `llm_request` and `llm`. With `--llm fake`
 there is nothing to narrate: the planner short circuits before it reaches a model.
 
 `--no-log` or `QUACKD_LOG=0` removes the views and leaves every record intact.
@@ -481,7 +481,7 @@ there is nothing to narrate: the planner short circuits before it reaches a mode
 
 Sim time is a shared resource: the world advances one tick only while every participant
 (each duck and the coordinator) is asleep, and it freezes while anyone thinks. A slow LLM
-therefore costs zero sim time, and with `--provider fake` and a fixed seed a flock run is
+therefore costs zero sim time, and with `--llm fake` and a fixed seed a flock run is
 reproducible. Wall clock heartbeat scheduling is the one nondeterministic input, and it
 only influences failure path timing, as in solo runs.
 

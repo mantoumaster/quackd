@@ -11,7 +11,7 @@ verb of its own, `introspect`, which asks the bridge what the body under it actu
 
 ```bash
 uvx --from "quackd[rosbridge]" quackd list-verbs --robot rosbridge:mock
-uvx --from "quackd[rosbridge]" quackd run patrol-and-quack --robot rosbridge:mock --provider fake   # exit 1: requires quack, but base-01 (rosbridge-base) does not provide it
+uvx --from "quackd[rosbridge]" quackd run patrol-and-quack --robot rosbridge:mock --llm fake   # exit 1: requires quack, but base-01 (rosbridge-base) does not provide it
 uv pip install "quackd[rosbridge]"
 quackd doctor --robot rosbridge:ws --address "ws://robot.local:9090?cmd_vel=/cmd_vel&odom=/odom&image=/camera/image/compressed"
 ```

@@ -180,7 +180,7 @@ reads that as a refusal and never sends the POST. The `POST` itself does carry
 `Authorization` header and a JSON content type is always preflighted, so the browser never
 reaches it. Nothing the page can do fixes that from this side. It needs a header from Z.ai.
 
-GLM therefore stays on the CLI, where it works — `quackd run --provider glm` is unaffected —
+GLM therefore stays on the CLI, where it works — `quackd run --llm glm` is unaffected —
 and stays in `catalogue.js` so the two model lists remain identical. `tests/test_web.py` fails
 if a vendor drops out of `PROVIDERS` without being named in this file, so this cannot happen
 quietly to the next vendor.
@@ -324,7 +324,7 @@ Deliberately, and none of it is a bug. This list is the canonical one: `README.m
   `--extra-body` or `QUACKD_EXTRA_BODY`, for a field a server wants and quackd never sends.
   This page has no such door, so a model that has to be told something in the body, Qwen3 and
   its thinking being the one that came up, cannot be told it here.
-- **There is no scripted pilot.** Python's `--provider fake` walks the whole task with no
+- **There is no scripted pilot.** Python's `--llm fake` walks the whole task with no
   model. Here the pre-filled goal still needs a key, or a local server, before anything
   happens.
 

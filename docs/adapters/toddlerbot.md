@@ -17,7 +17,7 @@ non-commercial**, so quackd vendors none of it.
 uv pip install 'quackd[toddlerbot]'
 
 # offline
-quackd run toddlerbot-lookout --robot toddlerbot:sim2d --provider fake
+quackd run toddlerbot-lookout --robot toddlerbot:sim2d --llm fake
 
 # a real robot, once quackd's daemon is running on it
 quackd run toddlerbot-lookout --robot toddlerbot:bridge \

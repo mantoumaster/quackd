@@ -298,7 +298,7 @@ clear and the switch from step 3 has to be fitted and within reach before you st
 
    ```bash
    uv run quackd run --goal "roll the wrist ten degrees, then stop" \
-       --robot arm-01 --provider anthropic --max-steps 3 --dry-run
+       --robot arm-01 --llm anthropic --max-steps 3 --dry-run
    ```
 
    A dry run connects to the arm for real and holds the connection open. Read-only verbs
@@ -334,8 +334,8 @@ There is no command that runs one verb. Either drive the daemon from an MCP clie
 (`quackd serve-mcp --robot arm-01`, then `robot_run_verb`, which is what these steps assume.
 The camera comes with the name if you stored it in step 8, and a session with no camera has no
 `observe` verb at all) or give a model a goal narrow enough to reach one verb
-(`quackd run --goal "..." --robot arm-01 --provider anthropic --max-steps 3`).
-`--provider fake` will not do: it answers a free-form goal with a fixed script that ignores it.
+(`quackd run --goal "..." --robot arm-01 --llm anthropic --max-steps 3`).
+`--llm fake` will not do: it answers a free-form goal with a fixed script that ignores it.
 
 Both of those drive the arm to its rest pose before you get a turn, and back to it before they
 let go. An MCP session refuses to start at all if it cannot get there, which is the same rule
@@ -528,14 +528,16 @@ and `--camera-url`. Nothing else on the screen is, so read it before you paste i
   fails with where it stopped. Nobody has done this on purpose yet.
 
 **And one the discrete stepper brought with it**, which nobody has any answer to either.
-`--jev` is off by default and postdates that afternoon, so leave it off for every step of this
-checklist: a first run is about proving the arm, and one more moving part between you and it is
-the opposite of what that wants. Afterwards, `--jev shadow` changes nothing about a run and
-records what a classifier would have chosen on each turn beside what the model actually chose.
-Two numbers come out of it that exist nowhere yet: how long Jev takes to answer a real arm's
-state, and how often it agrees with the model on one. The task
+`--decision-llm` is off unless you name one and postdates that afternoon, so leave it off for
+every step of this checklist: a first run is about proving the arm, and one more moving part
+between you and it is the opposite of what that wants. Afterwards,
+`--decision-llm jev --decision-mode shadow` changes nothing about a run and records what the
+decision LLM would have chosen on each turn beside what the model actually chose.
+Two numbers come out of it that exist nowhere yet, for `jev` and for every other name on that
+page alike: how long one takes to answer a real arm's state, and how often it agrees with the
+model on one. The task
 built for it is `arm-grip-check`, which also happens to be the one that asks the holding-band
-question above ([jev.md](jev.md)).
+question above ([decision-llms.md](decision-llms.md)).
 
 **And two the hand placed start brought with it**, which nobody has any answer to: `--by-hand`
 postdates that afternoon and has been exercised against `lerobot:mock` and in the test suite,

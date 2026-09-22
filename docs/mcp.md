@@ -5,11 +5,11 @@
 Claude Desktop becomes the pilot; quackd's executor still sits between the model and every
 robot (allowlist, budgets, confirm gates, heartbeat), one executor per robot.
 
-**In MCP mode quackd selects no model at all.** `serve-mcp` takes no `--provider` and no
-`--model`, it never consults the model catalogue the CLI ships, and `QUACKD_MODEL` is ignored
+**In MCP mode quackd selects no model at all.** `serve-mcp` takes no `--llm`, it never consults
+the model catalogue the CLI ships, and `QUACKD_LLM` is ignored
 here even when it is set — because the client's own model is the pilot. Whichever model you are
 chatting with in Claude Code or Claude Desktop is the one flying the robot, and quackd contributes
-the robot, the verbs and the executor rather than a choice of brain. Everything about `--model`,
+the robot, the verbs and the executor rather than a choice of brain. Everything about `--llm`,
 `quackd list-models` and the catalogue belongs to `quackd run`.
 
 Works against a simulated duck with no hardware at all. The simulator is the Microduck's own,
@@ -249,10 +249,11 @@ quackd serve-mcp --robot open_duck:sim2d                                     # a
 ```
 
 > [!NOTE]
-> `--jev` is not among these, on purpose. Over MCP the model *is* the client, so quackd has no
-> think path to put a stepper in front of: it hands out tools and enforces the contract, and
-> the deciding happens in Claude. The flag belongs to `quackd run`, where quackd owns the loop
-> ([jev.md](jev.md)).
+> `--decision-llm` is not among these, on purpose. Over MCP the model *is* the client, so
+> quackd has no think path to put a stepper in front of: it hands out tools and enforces the
+> contract, and the deciding happens in Claude. That flag and its two companions,
+> `--decision-url` and `--decision-mode`, belong to `quackd run`, where quackd owns the loop
+> ([decision-llms.md](decision-llms.md)).
 
 ## Driving a real LeRobot SO-101 arm from Claude
 

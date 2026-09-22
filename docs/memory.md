@@ -139,7 +139,7 @@ is read by the next `quackd run` on the same `adapter:backend`, and the other wa
   [flock](flock.md): members key by body, so two of one kind share a file unless they are
   registered, and what one needs another to know *during* a run it says with `tell` rather
   than through memory, which the other pilot would not read until its next run anyway.
-- **Not written by the scripted pilot.** `--provider fake` has no `remember` in its script,
+- **Not written by the scripted pilot.** `--llm fake` has no `remember` in its script,
   so it accumulates episodes and never a note. Notes have been exercised by two local models
   on two machines, and by one cloud model on a real robot: `gpt-6-astra` called
   `remember` in seven of its twelve runs on the SO-101 arm on 2026-09-15, and five

@@ -40,7 +40,7 @@ quackd robot remove NAME [--force]            # forget it
 ```
 
 `add` takes `--address`, `--camera-url` and `--token` (the same three flags `run` takes), plus
-`--provider` and `--model` for the pilot that drives this robot, and `--note` for a line only
+`--llm VENDOR[:MODEL]` for the pilot that drives this robot, and `--note` for a line only
 people read. `--camera-url` repeats, for the one body that reads more than one camera.
 
 ```
@@ -95,9 +95,8 @@ one field here that was measured rather than typed, and the section below is wha
 $ quackd robot show arm --json
 {"name": "arm", "spec": "lerobot:mock", "adapter": "lerobot", "backend": "mock", "address": null,
 "camera_url": null, "rest_pose": {"shoulder_pan": 0.0, "shoulder_lift": -90.0, "elbow_flex": 90.0,
-"wrist_flex": 0.0, "wrist_roll": 0.0, "gripper": 100.0}, "token_set": false, "provider": "fake",
-"model": null, "note": null, "added": "2026-09-13T13:10:53Z", "updated": "2026-09-13T13:10:53Z",
-"flocks": []}
+"wrist_flex": 0.0, "wrist_roll": 0.0, "gripper": 100.0}, "token_set": false, "llm": "fake",
+"note": null, "added": "2026-09-13T13:10:53Z", "updated": "2026-09-13T13:10:53Z", "flocks": []}
 ```
 
 That is one line of output, wrapped here to fit the page.
@@ -274,8 +273,7 @@ microduck:mock` is a spec, and a bare word that is neither says so in one line.
         "wrist_roll": 0.0,
         "gripper": 100.0
       },
-      "provider": "fake",
-      "model": null,
+      "llm": "fake",
       "note": null,
       "added": "2026-09-13T13:10:53Z",
       "updated": "2026-09-13T13:10:53Z"
@@ -284,12 +282,22 @@ microduck:mock` is a spec, and a bare word that is neither says so in one line.
 }
 ```
 
-Two of those fields carry more than one shape:
+Three of those fields carry more than one shape:
 
 | Field | Shape |
 |---|---|
 | `camera_url` | `null`, one url as a string, or several as a list in the order given, the first being the primary. One camera is stored as a string, so a `robots.json` written by 0.9 reads back unchanged |
 | `rest_pose` | `null`, or degrees per joint as `quackd robot rest-pose` read them off the arm. `null` on every body quackd does not park, which is every body but the LeRobot arm |
+| `llm` | `null`, a vendor on its own (`"fake"`, `"anthropic"`), or a vendor and a model (`"anthropic:claude-opus-5"`). One key, in the shape `--llm` takes, and stored canonically: a bare catalogue id is written back with its vendor in front |
+
+**This was two keys until 0.11.** `provider` and `model` were separate, and a file written by
+0.11 or earlier still has them, because nobody re-saves `robots.json` on upgrade. It reads back
+folded into the new shape, so `{"provider": "anthropic", "model": "claude-opus-5"}` is the same
+robot as `"llm": "anthropic:claude-opus-5"`, and the next write of that robot, a
+`quackd robot edit` or anything else that saves the file, stores the new key. A file carrying
+both `llm` and one of the old pair is refused by name instead: it says two different things
+about which pilot this robot uses, and guessing which half was meant is worse than stopping and
+letting you delete the line you did not want.
 
 A file that says something untrue names itself rather than being trimmed to fit: two camera
 urls under a body that reads one are refused when the file is read, and a rest pose under a
@@ -318,9 +326,9 @@ Microducks on one desk shared one file. A registered robot keys by its name, so 
 **The manifest id is it.** `quackd validate hello-world --robot duck-a` reports the robot as
 `duck-a`, which is what `--robots name=spec` has always done for a flock.
 
-**The pilot can be it.** `quackd robot add scout open_duck:bridge --provider anthropic` means
-`quackd run fetch --robot scout` uses Claude without a flag. `--provider` on the line still
-wins, and so does `--model`.
+**The pilot can be it.** `quackd robot add scout open_duck:bridge --llm anthropic` means
+`quackd run fetch --robot scout` uses Claude without a flag. `--llm` on the line still wins,
+and the stored one still beats `QUACKD_LLM`.
 
 **Endpoints come from it.** `--address`, `--token` and `--camera-url` on the line each override
 the stored one, field by field, because reaching the same robot through a tunnel today is not

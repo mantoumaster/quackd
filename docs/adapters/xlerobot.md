@@ -18,7 +18,7 @@ over loopback sockets and against nothing else.
 uv pip install 'quackd[xlerobot]'     # quackd's own adapter package, plus pyzmq
 
 # offline, the default
-quackd run xlerobot-lookout --robot xlerobot:mock --provider fake
+quackd run xlerobot-lookout --robot xlerobot:mock --llm fake
 
 # a real cart, once its host is running (see "Before it will answer" below)
 quackd run xlerobot-lookout --robot xlerobot:zmq --address tcp://192.168.1.42:5555

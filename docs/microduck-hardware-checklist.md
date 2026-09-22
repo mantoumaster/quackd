@@ -20,8 +20,8 @@ the two tasks you will run on the robot run against it unchanged:
 
 ```bash
 uv pip install 'quackd[mujoco,anthropic]'   # the duck's package with its simulator, and your provider
-quackd run microduck-lookout --robot microduck:mujoco --provider anthropic
-quackd run find-and-kick --robot microduck:mujoco --provider anthropic
+quackd run microduck-lookout --robot microduck:mujoco --llm anthropic
+quackd run find-and-kick --robot microduck:mujoco --llm anthropic
 ```
 
 `quackd[mujoco]` is `quackd-microduck[mujoco]`, the duck's own package plus its physics
@@ -74,7 +74,7 @@ Read three things: that the handshake passed, what `robot.health` said, and the 
 
 ```bash
 quackd run microduck-lookout --robot microduck:jsonrpc --address tcp://127.0.0.1:9870 \
-  --provider fake --dry-run --no-memory
+  --llm fake --dry-run --no-memory
 ```
 
 Then read `report_state` in the transcript. **`posture` must not be `unknown`.**
@@ -96,7 +96,7 @@ The command above already had `--dry-run`. Watch the duck while it runs: it shou
 
 ```bash
 quackd run microduck-lookout --robot microduck:jsonrpc --address tcp://127.0.0.1:9870 \
-  --provider fake --no-memory
+  --llm fake --no-memory
 ```
 
 `say` and `quack` map text to one of seven duck tones. Nothing here moves a leg.
@@ -150,12 +150,12 @@ thing that broke.
 > **Abort the whole session if the legs keep driving.** The deadman is the protection every
 > step below this one depends on. Nothing else quackd does matters if it is not there.
 
-The command, since this step never named one. `--provider fake` answers a free-form goal with a fixed script that ignores it, so it needs a real model:
+The command, since this step never named one. `--llm fake` answers a free-form goal with a fixed script that ignores it, so it needs a real model:
 
 ```bash
 quackd run --goal "walk in place with small steps, do not turn, then stop" \
     --robot microduck:jsonrpc --address tcp://127.0.0.1:9870 \
-    --provider anthropic --max-steps 6
+    --llm anthropic --max-steps 6
 ```
 
 ## 9. Feet down
@@ -164,7 +164,7 @@ Now, and only now, put the duck on the floor and run a short walk. Hand on the g
 
 ```bash
 quackd run find-and-kick --robot microduck:jsonrpc --address tcp://127.0.0.1:9870 \
-  --camera-url webrtc://127.0.0.1:8443 --provider anthropic --memory-dir ./duck-day
+  --camera-url webrtc://127.0.0.1:8443 --llm anthropic --memory-dir ./duck-day
 ```
 
 Start with `--no-memory` for a clean first run, then `--memory-dir` so the campaign's notes stay

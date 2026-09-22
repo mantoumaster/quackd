@@ -19,7 +19,7 @@ on-robot code). Read on 2026-09-03 at `3203734` and `b23317a`.
 uv pip install 'quackd[open_duck]'
 
 quackd list-verbs --robot open_duck:sim2d
-quackd run open-duck-scout --robot open_duck:sim2d --provider fake
+quackd run open-duck-scout --robot open_duck:sim2d --llm fake
 quackd validate ducks/find-and-kick.duck --robot open_duck:sim2d
 # exit 1: requires kick, but open-duck-01 (open-duck-mini-v2) does not provide it
 ```

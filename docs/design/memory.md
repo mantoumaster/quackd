@@ -134,7 +134,7 @@ is how two of its three subcommands came to be wrong.
 ## What is still not true
 
 - **No cloud model has ever called `remember`.** The scripted pilot has no script for it, so
-  `--provider fake` accumulates episodes and never writes a note. The only evidence a model
+  `--llm fake` accumulates episodes and never writes a note. The only evidence a model
   uses the tool at all is the contributor's Qwen 2.5 Coder 14B runs on `find-and-kick`,
   seeds 5 and 6.
 - **`--no-memory` does not silence the ducks.** The seven starter tasks ask for a `remember`

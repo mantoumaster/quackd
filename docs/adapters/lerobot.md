@@ -5,7 +5,7 @@ A six-joint desktop arm with a parallel gripper, driven through
 manifest lists none of that: `move`, `go_to`, `search_scan`, `say` and `gaze` do not exist
 on this robot. What it has is joints, a gripper, `place`, and, when a policy is available,
 `pick` as one skill intent that the arm's own learned policy executes. The thesis holds:
-the LLM picks the verb, LeRobot moves the arm, quackd enforces the contract. (With the optional `--jev`, some of the verbs that are a choice rather than a number can be picked by a classifier instead; every angle is still the model's, and the flag is off unless you ask for it: [jev.md](../jev.md).)
+the LLM picks the verb, LeRobot moves the arm, quackd enforces the contract. (With the optional `--decision-llm`, some of the verbs that are a choice rather than a number can be picked by a decision LLM instead; every angle is still the model's, and it is off unless you name one: [decision-llms.md](../decision-llms.md).)
 
 Upstream pinned at
 [`fbb811f`](https://github.com/huggingface/lerobot/tree/fbb811fca92504439792b97d216f0d00c2268382)
@@ -26,7 +26,7 @@ and why the adapter is shaped the way it is is
 
 ```bash
 # offline, the default
-uv run quackd run lerobot-lookout --robot lerobot:mock --provider fake
+uv run quackd run lerobot-lookout --robot lerobot:mock --llm fake
 
 uvx --from "quackd[lerobot]" quackd list-verbs --robot lerobot:mock
 uvx --from "quackd[lerobot]" quackd validate ducks/find-and-kick.duck --robot lerobot:mock     # exit 1: requires ... does not provide it
@@ -79,7 +79,7 @@ drive the arm.
    anything:
 
    ```bash
-   uvx --from "quackd[lerobot]" quackd run lerobot-lookout --robot lerobot:mock --provider fake
+   uvx --from "quackd[lerobot]" quackd run lerobot-lookout --robot lerobot:mock --llm fake
    ```
 
    The scripted pilot needs no API key. It answers `assess_task`, calls `report_state`, and
@@ -419,7 +419,7 @@ x error: lerobot-lookout cannot run on lerobot:real: observe is not provided by 
 That is why `lerobot-lookout` asks for `report_state` instead, and on an arm you have not
 driven before that is the better question anyway: whether it answers at all, whether torque is
 on, and how warm it is. It is what ran first on the bench on 2026-09-15, and it is what ran
-again with `--provider fake` to separate the arm from the model.
+again with `--llm fake` to separate the arm from the model.
 
 Over MCP it is the other way, and better. `robot_load_duckfile` validates against the manifest
 of the robot **already connected**, so the same task loads cleanly on a session started with
@@ -442,7 +442,7 @@ Three ways, and they differ only in who chooses the verbs.
 budgets and the success test, and quackd enforces all three:
 
 ```bash
-quackd run lerobot-lookout --robot lerobot:real --address /dev/ttyACM0 --provider anthropic
+quackd run lerobot-lookout --robot lerobot:real --address /dev/ttyACM0 --llm anthropic
 ```
 
 `lerobot-lookout` ships with quackd and moves no joint: it reads the arm back and says what
@@ -455,10 +455,10 @@ still has to pass `assess_task`, and everything else still applies:
 
 ```bash
 quackd run --goal "roll the wrist ten degrees and stop" --robot lerobot:real \
-  --address /dev/ttyACM0 --provider anthropic --max-steps 3
+  --address /dev/ttyACM0 --llm anthropic --max-steps 3
 ```
 
-Keep `--max-steps` small. `--provider fake` will not do here: the scripted pilot answers a
+Keep `--max-steps` small. `--llm fake` will not do here: the scripted pilot answers a
 free-form goal with a fixed script that ignores it.
 
 **From an MCP client**, which is you choosing each verb with the model doing the talking.
@@ -499,12 +499,12 @@ camera, both go out together, task pictures first and then the frames, each name
 can tell the drawing it is copying from the desk it is copying onto:
 
 ```bash
-quackd run --goal "draw what is in the picture" --robot arm-01 --image sketch.png --provider anthropic
+quackd run --goal "draw what is in the picture" --robot arm-01 --image sketch.png --llm anthropic
 ```
 
 Every request line says what actually went out, so a picture that never arrived is something
-you read in the transcript rather than infer from a bad drawing (captured with `--provider
-fake --vision`, the one pilot here that takes a picture and needs no key):
+you read in the transcript rather than infer from a bad drawing (captured with `--llm fake
+--vision`, the one pilot here that takes a picture and needs no key):
 
 ```
    llm>    step 0: 1 messages (1 with image, 1 task picture) to fake scripted:goal
@@ -571,7 +571,8 @@ refusal, which is quackd's rule and not LeRobot's.
 
 ## Which of this arm's verbs are a choice
 
-Only relevant with the optional `--jev` ([jev.md](../jev.md)), and off unless you ask for it.
+Only relevant with the optional `--decision-llm` ([decision-llms.md](../decision-llms.md)), and
+off unless you name one.
 The stepper decides what it may answer from each tool's own JSON schema, and on this arm the
 split falls like this:
 
@@ -584,7 +585,7 @@ split falls like this:
 `gripper` is a choice because its only parameter is a boolean. `move_joints` is not, for two
 reasons that hold independently. Its `positions` is a required object, which is enough on its
 own. And the joint names are nowhere in the schema: they are enforced by a `field_validator`
-against `JOINTS`, so there is nothing for a classifier to enumerate even in principle, and no
+against `JOINTS`, so there is nothing for a decision LLM to enumerate even in principle, and no
 version of this could be talked into offering one.
 
 `pick` is out on both counts, being a free string and confirm gated. The step cap, the range
@@ -735,7 +736,7 @@ driven to from a folded start puts it there: the pencil has to be handed to it. 
 
 ```bash
 quackd run --goal "draw the circle in the picture" --robot arm-01 --by-hand \
-  --image circle.png --provider anthropic --max-steps 12
+  --image circle.png --llm anthropic --max-steps 12
 ```
 
 The order below is the whole of the feature, and none of it is a step you can skip:
@@ -1174,7 +1175,7 @@ only one of quackd's seven bodies that has been on hardware at all.
 
 What ran:
 
-- `lerobot-lookout`, with a real pilot and once with `--provider fake`, which is how you tell
+- `lerobot-lookout`, with a real pilot and once with `--llm fake`, which is how you tell
   an arm that will not answer from a model that will not decide.
 - Free-form `--goal` runs. It waved by rolling the wrist about 27 degrees either way, waved
   again from an extended pose with `shoulder_lift` at -39 and `elbow_flex` between 24 and 30,

@@ -55,13 +55,18 @@ flip that backend's row, and not before.
 
 ## Open here
 
-- ⬜ **Nobody has run the discrete stepper against TypeSafe's own API.** `--jev` ships off by
-  default and exercised against a stub, so there is no agreement rate and no calibration curve,
-  and the only latency figure anywhere is TypeSafe's own, on TypeSafe's own task. `--jev shadow` is built to produce all
-  three without changing a run, on `lerobot:mock` or on a real arm. Until somebody runs it, the
-  break-even in [docs/jev.md](docs/jev.md) is arithmetic rather than a result: on the wave run
-  the stepper is a net loss unless Jev answers in under 1.24 seconds. The floors are TypeSafe's
-  own published numbers and have never been tuned against quackd data.
+- ⬜ **Nobody has run the discrete stepper against a real decision LLM.** Not TypeSafe's hosted
+  API, not a `kev`, `von`, `openjev` or `opendecision` server, not `laya` in this process, and
+  not on hardware in any of those shapes. `--decision-llm` ships off unless you name one and is
+  exercised against a stub, so there is no agreement rate and no calibration curve, and the only
+  latency figure anywhere is TypeSafe's own, on TypeSafe's own task, for Jev alone. The floors
+  every one of the seven names is gated on are Jev's published numbers, inherited by the other
+  six unmeasured, which is a guess wearing a number's clothes until somebody checks it.
+  `--decision-mode shadow` is built to produce all three without changing a run, on
+  `lerobot:mock` or on a real arm, and it is how this line stops being true. Until somebody runs
+  it, the break-even in [docs/decision-llms.md](docs/decision-llms.md) is arithmetic rather than
+  a result: on the wave run the stepper is a net loss unless the answer comes back in under
+  1.24 seconds.
 
 - ⬜ **No `cost_usd` quackd reports has been checked against an invoice.** Every rate in
   `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand on
@@ -167,7 +172,7 @@ flip that backend's row, and not before.
 - ✅ **Exercise `remember` against a cloud model.** `gpt-6-astra` called it in seven of its
   twelve runs on the arm on 2026-09-15, for five distinct notes, and the last run of that
   afternoon read all five back out of its own prompt. Still open in a simulator, where the scripted pilot has no
-  script for it, so `--provider fake` writes episodes and never a note.
+  script for it, so `--llm fake` writes episodes and never a note.
 - ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
   for it, so it is the one asset a commit here cannot ship, and it is now a version behind: the
   card was rebuilt around the duck head the README and quackd.org both use, so the one GitHub
@@ -223,7 +228,7 @@ this, and the per-release detail is in [CHANGELOG.md](CHANGELOG.md).
    meets `quackd-lerobot` before `quackd` has nothing to resolve against. Then check the
    SHA256 of all sixteen files is identical in both places.
 7. `uvx --from "quackd[microduck]==<version>" quackd run find-and-kick --robot microduck:sim2d
-   --provider fake` from a clean install, twice, so the second run reads the first one's
+   --llm fake` from a clean install, twice, so the second run reads the first one's
    episode. Then `uvx quackd run find-and-kick` with no extra, which must refuse and name what
    to install rather than running anything.
 8. Update the About description (GitHub's cap is 350 characters) and Topics (cap 20).

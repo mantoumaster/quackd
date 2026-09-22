@@ -5,6 +5,130 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Jev turned out to be the first of many. In the week after it launched, thirty-odd projects
+shipped models that answer the same typed questions over the same wire format, most of them
+open and several small enough to run on a laptop, and quackd had spelled one vendor's name into
+a flag, an extra, three variables, two transcript kinds, a module and a 600-line page. This
+release names the thing rather than the vendor.
+
+The pilot is `--llm`, one spec where `--provider` and `--model` used to be two flags:
+`--llm anthropic:claude-opus-5`, or `--llm anthropic` for that vendor's default, or
+`--llm claude-opus-5` on its own because the catalogue's ids are unique across vendors. The
+split is at the first colon, so `--llm ollama:qwen3:8b` keeps the tag. The stepper is
+`--decision-llm`, naming which decision LLM answers, with `--decision-url` beside it the way
+`--base-url` sits beside `--llm`, and `--decision-mode off|shadow|on` for what its answer is
+allowed to do. Naming one defaults the mode to `on`, so the common case is still one flag.
+
+Jev is a preset, and so are Kev, Von, OpenJev, OpenDecision and Laya. Any other server that
+speaks `POST /v1/systemone` is `--decision-llm local --decision-url`, and a decision LLM with a
+Python API of its own is a plugin under the `quackd.decision_llms` entry point group. Adding a
+wire-compatible one to quackd itself is a row of data. What has not changed at all is the part
+that matters near a robot: which turns are a choice, what an answer has to clear before it
+moves a servo, and the rule that a stepper may never record a verdict, declare an outcome or
+end a run. That is quackd's half and it does not move with the vendor
+([ADR-0043](docs/adr/0043-decision-llms-are-a-wire-format-and-a-data-row.md)).
+
+Two honest notes, because the rest of this is a robot. The confidence floors are Jev's
+published numbers, and every other preset inherits them unmeasured, each computing confidence
+by its own formula. And nothing here has been run against a real robot: the client is tested
+against a stub. `--decision-mode shadow` asks a decision LLM every turn, records what it would
+have chosen beside what the model did, and changes nothing about the run. It is how that
+changes, and `--decision-mode on` says so, loudly, every time you use it.
+
+The old spellings are gone rather than deprecated, and that is a deliberate departure from how
+0.11 retired `quackd trace`. Those spellings were three releases old and in people's scripts.
+These are three days old, `quackd record` pinned the stepper off so no recording in this
+repository carries them, and [ADR-0040](docs/adr/0040-a-discrete-stepper-in-front-of-the-model.md)
+already said a transcript kind the renderer does not know is drawn as nothing. So `quackd log`
+on a run directory from 0.10 or 0.11 that used the stepper prints no stepper lines at all, still
+prints `from jev` on the verbs it chose, and shows no stepper seconds or cost in its counters,
+because it is now looking for a `decision` block. The run directory itself is untouched; only
+the reading of it is.
+
+### Added
+
+- **Six decision LLMs beside Jev, as rows of data rather than modules.** `kev` (Qwen3.5 with a
+  decision head, your own GPU), `von` (a 395M encoder, about 18 ms, CPU viable), `openjev`
+  (DiffusionGemma behind vLLM or MLX), `opendecision` (a zero-shot encoder, no GPU),
+  `local` (anything else that speaks the format, with `--decision-url`), and `laya`, which runs
+  inside the quackd process with no server and no key at all. Each row carries its own default
+  address and model id, and that is not bookkeeping: OpenJev refuses a pinned Jev version with
+  a 400, and Laya's plain name is an alias for its English checkpoint rather than its
+  decision-tuned one, so a shared default would have been wrong for both on every request.
+- **`quackd[decision]` and `quackd[laya]`.** The first installs the System One protocol client,
+  which is one wheel for every server above; the second installs the one that runs in-process
+  and pulls torch with it. Neither is in `quackd[all]`, for the same reason `quackd[jev]` never
+  was: a decision LLM generates nothing and cannot pilot a robot.
+- **A plugin group, `quackd.decision_llms`.** A module exposing `make(spec, *, url, model)` and
+  describing itself with `SUMMARY`, `MODEL`, `URL`, `KEY_ENV` and `EXTRA` is found the way an
+  adapter is found, named in `--decision-llm`'s completions and listed by `quackd doctor`,
+  without quackd having been rebuilt. A name quackd ships always wins over a plugin that took
+  it.
+- **The record says which decision LLM answered, not only which model id.** `run_start` carries
+  `decision_llm` with its name, model and address beside `decision_price`, and the summary's
+  block carries `llm` and `url`. `kev-latest` on two machines is two different servers, and a
+  transcript that recorded only the id could not tell a reader which one it had.
+- **`quackd doctor` lists every preset** with its extra, its key variable, its model and where
+  it listens, so "could this run here?" is answerable without starting a task. It does not
+  probe any of them, the way it does not probe a cloud vendor.
+
+### Changed
+
+- **Breaking. `--provider` and `--model` are one flag, `--llm VENDOR[:MODEL]`** (short `-l`).
+  `QUACKD_MODEL` is `QUACKD_LLM` and now holds a whole spec. `quackd list-models` takes
+  `--llm`, and `quackd robot add` and `robot edit` take `--llm` in place of the pair, with
+  `--clear llm` where `--clear provider` and `--clear model` used to be. A refusal now names
+  where the spec came from, so a bad value in a `.env` three directories up reads differently
+  from one still on your screen.
+- **Breaking. `~/.quackd/robots.json` stores one `llm` key** instead of `provider` and `model`.
+  A file written by 0.11 or earlier is folded on read (`provider` alone, both together, or a
+  bare model id whose vendor is inferred), and the next write stores the new shape, so nothing
+  needs migrating by hand. `quackd robot show --json` emits `llm` where it emitted the pair.
+- **Breaking. There is no longer any way to mix a vendor from one place with a model from
+  another.** A robot registered against OpenAI and run with `--llm gemini` gets Gemini's
+  default, full stop. The guard that used to carry a model across vendors, and the refusals it
+  produced, are both gone: a spec carries both halves.
+- **Breaking. `--jev off|shadow|on` is `--decision-llm`, `--decision-url` and
+  `--decision-mode`.** A script passing `--jev` gets Typer's "no such option". `QUACKD_JEV` is
+  `QUACKD_DECISION_LLM` plus `QUACKD_DECISION_MODE`, `QUACKD_JEV_PRICE` is
+  `QUACKD_DECISION_PRICE`, and `QUACKD_LIVE_JEV` is `QUACKD_LIVE_DECISION`. None of the old
+  variables is read and none of them warns, so grep your `.env` files and your CI for
+  `QUACKD_JEV`. `TYPESAFE_BASE_URL` is no longer read by quackd at all, because an address is
+  now `--decision-url` and belongs to every row rather than to one vendor; the SDK still reads
+  it for the hosted row, whose address is the SDK's own. `TYPESAFE_DEFAULT_MODEL` is still
+  honoured, for `jev` alone, as the fallback when the spec names no model, but the spec is the
+  way to say it: `--decision-llm jev:jev-latest` is a choice the record can show somebody
+  made.
+- **Breaking. `quackd[jev]` is `quackd[decision]`.**
+- **Breaking. The record.** The transcript kinds `jev` and `jev_shadow` are `decision` and
+  `decision_shadow`; `jev_choice`, `jev_confidence`, `jev_gate`, `jev_latency_s` and
+  `jev_cost_usd` are `decision_*`; `run_start.jev_price` is `decision_price`; the `jev` block in
+  `summary.json` is `decision`; `verb_start.source` says `decision`; and a stepper-authored tool
+  call's id starts `decision-`. Anything parsing these has to change today. On screen the gutter
+  says `decide`, `decide?` and `decide=`, and a verb it chose says `from decision`.
+- **Breaking. `quackd/agent/jev.py` is the package `quackd/agent/decision/`**, `RunConfig.jev`
+  is `RunConfig.decision` with `RunConfig.decision_llm` and `RunConfig.decision_price` beside
+  it, `RunResult.jev_calls` is `decision_calls`, and `JevMode` is `DecisionMode`. The component
+  is still called a stepper, because that is what quackd's half of this is.
+- **A server you run is costed at nothing, explicitly.** Not `None`, which quackd reserves for
+  "there is a rate and nobody here knows it", but the self-hosted `$0` the rest of quackd
+  already prices a local model at. Jev is the only preset with a published rate.
+  `QUACKD_DECISION_PRICE` is how you say otherwise for a paid endpoint behind `local`.
+- **A decision LLM's address is redacted where the run records it.** It can carry a password or
+  a credential-shaped query parameter and it can arrive from `QUACKD_DECISION_URL`, which no
+  amount of argv redaction reaches, so it is written through the same redaction `--base-url`
+  already gets, at the one place that holds it.
+- **`docs/jev.md` is `docs/decision-llms.md`.** The 0.11.0 README on PyPI links to the old path
+  and will 404 there until the next release replaces that README.
+
+### Removed
+
+- **`--jev`, `QUACKD_JEV`, `QUACKD_JEV_PRICE`, `QUACKD_LIVE_JEV`, the `live_jev` pytest marker
+  and the `quackd[jev]` extra**, with no alias and no warning, for the reasons above.
+- **`--provider`, `--model`, `QUACKD_MODEL`, and `list-models --provider`/`-p`.**
+
 ## [0.11.0] — 2026-09-22
 
 A run records when it started, when it ended, where its seconds went and what it cost, and you
