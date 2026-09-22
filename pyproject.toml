@@ -184,6 +184,9 @@ packages = ["quackd"]
 [tool.hatch.build.targets.wheel.force-include]
 "ducks" = "quackd/ducks"
 
+# `deploy/` is deliberately absent from both. The Jetson image installs from `uv.lock`, and
+# the lockfile ships to nobody, so the only build context that recipe can honestly have is a
+# git checkout (docs/jetson.md).
 # `bridge/` is the daemon that runs on an Open Duck Mini v2's Raspberry Pi. It ships in the
 # sdist and the repository, never in the wheel: quackd must not import it, and a Pi copies
 # the one file it needs rather than installing quackd's whole dependency tree.

@@ -247,14 +247,18 @@ still shows you the shape of the log.
 ## Real robots
 
 **Does the robot need a powerful onboard computer?** No. quackd's own process, the part
-that calls the LLM and runs the detector, never runs on the robot itself — you run
+that calls the LLM and runs the detector, never has to run on the robot itself: you run
 `quackd run` on a laptop or a server, a network hop away, and it talks to the robot (or the
 simulator) from there. The Open Duck Mini's official target, a Raspberry Pi Zero 2 W, only
 ever runs its existing 50 Hz walk policy plus two small daemons that do run on the Pi, a
 bridge and a camera server, and neither does any perception or inference of its own: just
 enough to swap the gamepad for a socket and to serve a JPEG ([`bridge/open_duck/`](../bridge/open_duck/README.md)). The Microduck's onboard
 computer works the same way, through `robotd`. Nothing here needs an NPU or a bigger board
-to keep up, because nothing model-shaped runs on the robot's own board in the first place.
+to keep up, because nothing model-shaped *has to* run on the robot's own board.
+When the robot's own computer is big enough, that server can be it. A ToddlerBot carries a
+Jetson, and quackd and a local model both fit beside its daemon on that board. They stay
+three separate processes with the same boundaries between them, and the network hop
+becomes loopback ([jetson.md](jetson.md)).
 
 **Does quackd use TOF or another depth sensor for obstacle avoidance?** Not yet. The only
 sensing input today is a single colour camera: an HSV threshold (or optionally YOLO) gives

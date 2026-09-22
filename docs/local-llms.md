@@ -34,6 +34,9 @@ for naming something the catalogue has not heard of.
 `quackd doctor` probes all four default addresses and prints which servers are up and what
 they serve.
 
+The server and quackd can share one small board. An NVIDIA Jetson is the case this project
+has written up, the model on the GPU and quackd on the CPU beside it, in [jetson.md](jetson.md).
+
 > [!NOTE]
 > **A decision LLM is not one of these, and this is the page where that is easiest to get
 > wrong.** A decision LLM answers typed questions about a state and generates no text at all,

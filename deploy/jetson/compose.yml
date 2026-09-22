@@ -1,0 +1,81 @@
+# quackd and a local model on one NVIDIA Jetson. See docs/jetson.md.
+#
+#   mkdir -p runs ~/.quackd                       # Docker would create these owned by root
+#   docker compose --profile ollama up -d         # skip this if you installed Ollama natively
+#   docker compose exec ollama ollama pull qwen3:4b
+#   docker compose run --rm quackd doctor
+#   docker compose run --rm quackd run find-and-kick --robot microduck:sim2d
+#
+# Two services that are not the same kind of thing, and the file says so with profiles. Ollama
+# is a server: it stays up, it owns the GPU, and it comes back after a reboot. `quackd run` is
+# a command: it does one task, declares a verdict and exits. Nothing here starts on its own,
+# because `docker compose up -d` with no profile starts neither.
+#
+# Only one Ollama. The official installer writes its own systemd unit listening on the same
+# port, so a board set up the native way must not also start this service. There is deliberately
+# no depends_on, so `compose run quackd` cannot start a second one by accident.
+
+name: quackd-jetson
+
+services:
+  ollama:
+    profiles: ["ollama"]
+    # The arm64 build of the official image carries the JetPack CUDA runners, so this is the
+    # same Ollama a native install gives you. VERSION SENSITIVE: 0.34.3 was the current
+    # release on 2026-09-22 and no Jetson here has run it, so check it before you trust it.
+    image: ollama/ollama:0.34.3
+    # `runtime: nvidia`, not `deploy.resources.reservations.devices`. The second form is what
+    # the Compose documentation shows for a desktop GPU and it is repeatedly reported not to
+    # expose the Tegra integrated GPU. This needs the NVIDIA container runtime registered in
+    # /etc/docker/daemon.json, which `quackd doctor` checks when you run it on the board
+    # itself (not in the quackd container, which carries no docker CLI to ask).
+    runtime: nvidia
+    network_mode: host
+    environment:
+      # The image's own default is 0.0.0.0, and under host networking that is every interface
+      # this board has. A model server with no authentication belongs on loopback; reach it
+      # from a laptop with `ssh -L 11434:127.0.0.1:11434`, the way SECURITY.md says to reach
+      # a robot's bridge.
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_MODELS: /models
+    volumes:
+      - ollama-models:/models
+    restart: unless-stopped
+
+  quackd:
+    profiles: ["run"]
+    build:
+      context: ../..
+      dockerfile: deploy/jetson/Dockerfile
+    image: quackd-jetson:local
+    # A command, not a service. `unless-stopped` here would re-run the task every time it
+    # finished and again at every boot, with nobody near the power switch: `bridge/open_duck`'s
+    # unit sets `Restart=no` for the same reason and says so at greater length.
+    restart: "no"
+    # Host networking is what makes the preset addresses true: `--llm ollama` means
+    # http://localhost:11434/v1, and a robot daemon on this same board is 127.0.0.1 as well.
+    network_mode: host
+    # `docker compose stop` sends SIGTERM, which quackd does not handle. SIGINT is the one it
+    # does: the first one aborts the run, which cancels the verb in flight and sends the robot
+    # a stop. On a body that is mid verb that is the difference between stopping and dropping.
+    stop_signal: SIGINT
+    stop_grace_period: 20s
+    # JetPack's first user. Runs written from inside the container are then yours to read and
+    # delete without sudo. Change both halves if your account is not 1000.
+    user: "1000:1000"
+    environment:
+      # quackd keeps the registry, what each robot remembers and its asset cache under
+      # ~/.quackd, and that has to land in the mount below rather than in a layer.
+      HOME: /work
+      QUACKD_LLM: ${QUACKD_LLM:-ollama:qwen3:4b}
+    env_file:
+      # Optional, and optional needs the long form (Compose 2.24 and newer). Most people on a
+      # Jetson are running a local model and need no key at all.
+      - path: .env
+        required: false
+    volumes:
+      - ./runs:/work/runs
+      - ~/.quackd:/work/.quackd
+
+volumes:
+  ollama-models:

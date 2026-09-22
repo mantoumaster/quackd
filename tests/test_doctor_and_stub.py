@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import io
 import json
+import platform
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -187,6 +190,314 @@ def test_the_progress_callback_names_the_slow_questions() -> None:
     doctor.collect(progress=said.append)
     assert any("probing ollama" in line for line in said)
     assert any("extras" in line for line in said)
+
+
+# ── the board underneath, when somebody runs this on a Jetson ───────────────────────────
+#
+# Every one of these builds a board out of files in a tmp_path, because the thing being tested
+# is the reading and not the hardware. The one fact no fixture can supply is whether a real
+# Orin's files look like these; `docs/jetson.md` says so and says what to send back.
+
+NUL = chr(0)
+TAB = chr(9)
+
+_REAL_RUN_QUIET = doctor._run_quiet
+"""Captured before `_no_board` replaces it. Two tests below are about that function rather
+than about a board, and without this they would assert against the stub and pass whatever it
+did."""
+
+ORIN_NANO = "NVIDIA Jetson Orin Nano Developer Kit"
+COMPATIBLE = NUL.join(("nvidia,p3768-0000+p3767-0005", "nvidia,p3767-0005", "nvidia,tegra234"))
+RELEASE_36_4_3 = (
+    "# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64, "
+    "DATE: Wed Jan  8 01:51:37 UTC 2025"
+)
+MEMINFO = "MemTotal:        7650336 kB\nMemAvailable:    5123456 kB\nSwapTotal:       1017852 kB\n"
+NL = chr(10)
+
+
+def _swap_line(*fields: str) -> str:
+    return TAB.join(fields) + NL
+
+
+SWAPS_HEADER = _swap_line("Filename", "", "", "", "Type", "", "Size", "", "Used", "", "Priority")
+ZRAM_SWAPS = SWAPS_HEADER + _swap_line("/dev/zram0", "partition", "1017852", "0", "5")
+NVME_SWAPS = SWAPS_HEADER + _swap_line("/ssd/16GB.swap", "file", "16777212", "0", "-2")
+NO_SWAPS = SWAPS_HEADER
+
+
+def _write(root: Path, rel: str, text: str) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _tegra_tree(
+    root: Path,
+    *,
+    release: str | None = RELEASE_36_4_3,
+    swaps: str = ZRAM_SWAPS,
+    gpu_node: bool = True,
+    device_tree: bool = True,
+) -> Path:
+    """A board, as files. The NUL terminators are real: `/proc/device-tree/*` are the device
+    tree's own bytes, and the first version of this reader put one in a Rich cell."""
+    if device_tree:
+        _write(root, "proc/device-tree/model", ORIN_NANO + NUL)
+        _write(root, "proc/device-tree/compatible", COMPATIBLE + NUL)
+    if release is not None:
+        _write(root, "etc/nv_tegra_release", release)
+    _write(root, "proc/meminfo", MEMINFO)
+    _write(root, "proc/swaps", swaps)
+    if gpu_node:
+        (root / "dev/nvgpu/igpu0").mkdir(parents=True)
+    return root
+
+
+@pytest.fixture(autouse=True)
+def _no_board(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No test in this file may depend on what the machine running it is.
+
+    Without this the suite reads a different report on a Jetson than on a laptop, and the one
+    place that would show up is somebody else's machine."""
+    monkeypatch.setattr(doctor, "_HOST_ROOT", tmp_path / "not-a-board")
+    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: None)
+
+
+@pytest.fixture
+def fake_tegra(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    root = _tegra_tree(tmp_path / "board")
+    monkeypatch.setattr(doctor, "_HOST_ROOT", root)
+    return root
+
+
+def test_a_machine_that_is_not_a_tegra_says_nothing_about_one() -> None:
+    report = doctor.collect()
+    assert report.jetson is None
+    assert report.to_dict()["jetson"] is None
+    buf = io.StringIO()
+    doctor.render(Console(file=buf, width=200), report)
+    assert "Jetson" not in buf.getvalue()
+
+
+def test_a_tegra_tree_is_read_field_by_field(tmp_path: Path) -> None:
+    got = doctor._jetson(_tegra_tree(tmp_path))
+    assert got is not None
+    assert got.board == ORIN_NANO, "the NUL terminator is stripped, not carried into a cell"
+    assert (got.l4t, got.jetpack) == ("36.4.3", "6.2")
+    assert got.mem_total_bytes == 7650336 * 1024
+    assert got.mem_available_bytes == 5123456 * 1024
+    assert got.swap_total_bytes == 1017852 * 1024
+    assert got.swap_devices == ["/dev/zram0"] and got.swap_only_zram is True
+    assert got.gpu_device == "/dev/nvgpu/igpu0"
+    assert got.power_mode is None and got.docker_default_runtime is None
+
+
+def test_a_swapfile_on_the_ssd_is_not_zram(tmp_path: Path) -> None:
+    """The warning is about zram specifically, and a board that was set up properly must not
+    read as one that was not."""
+    got = doctor._jetson(_tegra_tree(tmp_path, swaps=NVME_SWAPS))
+    assert got is not None and got.swap_only_zram is False
+    assert got.swap_devices == ["/ssd/16GB.swap"]
+    none = doctor._jetson(_tegra_tree(tmp_path / "b", swaps=NO_SWAPS))
+    assert none is not None and none.swap_total_bytes == 0 and none.swap_only_zram is False
+
+
+def test_a_release_file_it_cannot_parse_is_still_a_tegra(tmp_path: Path) -> None:
+    got = doctor._jetson(_tegra_tree(tmp_path, release="something nobody has seen"))
+    assert got is not None, "the device tree still said Tegra"
+    assert got.l4t is None and got.jetpack is None
+
+
+def test_the_two_ways_l4t_can_be_unknown_read_differently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A file that is not there and a file it cannot read are different facts about the
+
+    board, and the renderer used to assert the first for both. One of them means a
+    container; the other means a board this build has not met."""
+    missing = doctor._jetson(_tegra_tree(tmp_path / "a", release=None))
+    unreadable = doctor._jetson(_tegra_tree(tmp_path / "b", release="not a release line"))
+    assert missing is not None and unreadable is not None
+    assert missing.release_seen is False and unreadable.release_seen is True
+    assert missing.l4t is None and unreadable.l4t is None
+
+    monkeypatch.setattr(doctor, "_HOST_ROOT", tmp_path / "b")
+    buf = io.StringIO()
+    doctor.render(Console(file=buf, width=200), doctor.collect())
+    assert "is here and its first line is not one this build knows" in buf.getvalue()
+
+
+def test_a_container_on_a_jetson_is_a_board_with_no_l4t(tmp_path: Path) -> None:
+    """The case the section is most useful in. `/proc/device-tree` is the host's and is visible
+    inside a container; `/etc/nv_tegra_release` is a file in the host's root filesystem and a
+    plain Python image has none, so reporting the image's userspace as the board's would be
+    the one wrong answer available here."""
+    got = doctor._jetson(_tegra_tree(tmp_path, release=None))
+    assert got is not None and got.board == ORIN_NANO
+    assert got.l4t is None
+
+
+def test_only_a_tegra_answers_at_all(tmp_path: Path) -> None:
+    (tmp_path / "proc").mkdir()
+    (tmp_path / "proc" / "device-tree").mkdir()
+    _write(tmp_path, "proc/device-tree/compatible", "raspberrypi,4-model-b" + NUL + "brcm,bcm2711")
+    assert doctor._jetson(tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    ("l4t", "jetpack"),
+    [
+        ("36.4.3", "6.2"),
+        ("36.4.4", "6.2.1"),
+        ("36.5.0", "6.2.2"),
+        ("36.4", "6.1"),
+        ("36.3.0", "6.0"),
+        ("39.2.1", "7.2.1"),
+        ("35.4.1", "5.x"),
+        ("36.9.9", "6.x"),
+        ("99.1", None),
+    ],
+)
+def test_the_jetpack_table_names_exact_releases_and_the_major_for_the_rest(
+    l4t: str, jetpack: str | None
+) -> None:
+    """`36.4` and `36.4.0` are the same release written two ways, and NVIDIA writes both.
+
+    The major-only fallback is deliberate: L4T 35.1 was JetPack 5.0.2 and 35.2.1 was 5.1, so a
+    guessed minor would be wrong about a board somebody owns."""
+    assert doctor._jetpack_for(l4t) == jetpack
+
+
+def test_the_quiet_runner_answers_none_for_anything_that_did_not_work() -> None:
+    """It is the first subprocess in this file, and doctor is what people run when something is
+    already wrong: a probe that raises there is worse than a probe that says nothing."""
+    assert _REAL_RUN_QUIET(["quackd-no-such-binary-anywhere", "-q"]) is None
+    assert _REAL_RUN_QUIET([sys.executable, "-c", "raise SystemExit(3)"]) is None
+    assert _REAL_RUN_QUIET([sys.executable, "-c", "print('hello')"]).strip() == "hello"
+
+
+def test_the_quiet_runner_gives_up_rather_than_hanging() -> None:
+    """Against a 30 second sleep, so returning at all is the assertion.
+
+    The bound is generous rather than tight because this machine may be building a
+    container next to the suite, and a flaky timing test is worse than a loose one. The
+    second case is the only thing pinning the 3.0 second default the code actually ships."""
+    started = time.monotonic()
+    assert _REAL_RUN_QUIET([sys.executable, "-c", "import time; time.sleep(30)"], 1.0) is None
+    assert time.monotonic() - started < 10, "the timeout did not fire"
+
+    started = time.monotonic()
+    assert _REAL_RUN_QUIET([sys.executable, "-c", "import time; time.sleep(30)"]) is None
+    assert time.monotonic() - started < 15, "the default timeout is not the 3.0 s claimed"
+
+
+def test_a_power_mode_line_with_no_colon_is_none_rather_than_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`split(":", 1)[1]` raised IndexError here, on a machine already having a bad day."""
+    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: "NV Power Mode" + NL)
+    got = doctor._jetson(_tegra_tree(tmp_path))
+    assert got is not None and got.power_mode is None
+
+
+def test_the_subprocess_answers_are_parsed_and_an_absent_binary_is_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    answers = {
+        "nvpmodel": "NV Fan Mode:quiet\nNV Power Mode: MAXN_SUPER\n2\n",
+        "docker": "nvidia\n",
+    }
+    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: answers.get(argv[0]))
+    got = doctor._jetson(_tegra_tree(tmp_path))
+    assert got is not None
+    assert got.power_mode == "MAXN_SUPER"
+    assert got.docker_default_runtime == "nvidia"
+
+
+def test_the_jetson_section_warns_about_zram_and_a_runtime_that_is_not_nvidia(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(doctor, "_HOST_ROOT", _tegra_tree(tmp_path, gpu_node=False))
+    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: "runc\n")
+    buf = io.StringIO()
+    doctor.render(Console(file=buf, width=200), doctor.collect())
+    out = buf.getvalue()
+    for needle in (
+        "Jetson",
+        ORIN_NANO,
+        "36.4.3 (JetPack 6.2)",
+        "shared with the GPU",
+        "all zram",
+        "quackd never asks for one",
+        "--runtime nvidia",
+    ):
+        assert needle in out, needle
+
+
+def test_a_container_with_no_docker_says_so_rather_than_dropping_the_row(
+    fake_tegra: Path,
+) -> None:
+    """The row people are sent here to read, in the container the quickstart runs.
+
+    The image carries no docker CLI and mounts no socket, so the answer is None, and the
+    renderer used to drop the row entirely. Three documents tell a reader to check this
+    setting with this command, so silence there is the one unacceptable answer."""
+    buf = io.StringIO()
+    doctor.render(Console(file=buf, width=200), doctor.collect())
+    out = buf.getvalue()
+    assert "docker default runtime" in out
+    assert "no docker here, which is what a container sees" in out
+
+
+def test_the_jetson_section_survives_a_codepage_that_cannot_carry_it(
+    monkeypatch: pytest.MonkeyPatch, fake_tegra: Path
+) -> None:
+    """The same bar the rest of this command clears, on the section most likely to be pasted
+    into an issue by somebody whose terminal is not UTF-8."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    raw = io.BytesIO()
+    console = Console(file=io.TextIOWrapper(raw, encoding="cp1252", errors="strict"), width=120)
+    doctor.render(console, doctor.collect())
+    console.file.flush()
+    out = raw.getvalue().decode("cp1252")
+    assert out.isascii()
+    assert "Jetson" in out and ORIN_NANO in out
+
+
+def test_doctor_json_carries_the_board(fake_tegra: Path) -> None:
+    result = CliRunner().invoke(app, ["doctor", "--json"])
+    assert result.exit_code == 0, result.output
+    jetson = json.loads(result.output)["jetson"]
+    assert jetson["board"] == ORIN_NANO
+    assert jetson["l4t"] == "36.4.3" and jetson["jetpack"] == "6.2"
+    assert jetson["swap_only_zram"] is True
+
+
+def test_nothing_a_jetson_reports_can_change_the_verdict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The whole section is informational. quackd is CPU Python here exactly as it is on a
+    laptop, so a board with no swap, no GPU node and the wrong docker runtime is a board this
+    command has advice for, not a machine that cannot run anything."""
+    monkeypatch.setattr(doctor, "_HOST_ROOT", _tegra_tree(tmp_path, swaps=NO_SWAPS, gpu_node=False))
+    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: "runc\n")
+    report = doctor.collect()
+    assert report.jetson is not None
+    assert report.ok is True
+    buf = io.StringIO()
+    Console(file=buf, width=200).print(doctor.verdict(report))
+    assert "SUCCESS" in buf.getvalue()
+
+
+def test_the_header_names_the_architecture() -> None:
+    """`Linux 5.15.148-tegra` and `Linux 5.15.148-generic` are two different machines, and the
+    difference that matters for a wheel is the one the header did not carry."""
+    report = doctor.collect()
+    assert report.platform.split()[-1] == platform.machine()
+    buf = io.StringIO()
+    doctor.render(Console(file=buf, width=200), report)
+    assert platform.machine() in buf.getvalue()
 
 
 # ── what the probe does to a real arm: park it, and look through every camera ───────────
