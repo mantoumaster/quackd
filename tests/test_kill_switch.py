@@ -30,6 +30,20 @@ def switch() -> tuple[KillSwitch, list[str]]:
     return ks, said
 
 
+def waited(timeout_s: float) -> float:
+    """The least a wait of `timeout_s` may measure here, which is not `timeout_s`.
+
+    asyncio fires a timer as soon as the loop's clock is within one resolution tick of the
+    deadline, and that tick is `time.get_clock_info("monotonic").resolution`: about 15.6 ms on
+    Windows and a fraction of a microsecond on Linux. So a 50 ms wait legitimately returns
+    after 34 ms on one runner and after very nearly 50 ms on the next, and a floor typed as a
+    constant is a floor that passes on the machine it was written on. This one is the
+    platform's own answer, and the gap it leaves is still three orders of magnitude wider than
+    a wait that was satisfied at once, which is the only thing these tests are telling apart.
+    """
+    return timeout_s - time.get_clock_info("monotonic").resolution
+
+
 async def feed(ks: KillSwitch, keys: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the whole of the key thread's loop over `keys`, in a thread as it really runs, and
     then let the event loop run the callbacks it pushed across. `_watch_keys` returns at the
@@ -111,7 +125,7 @@ async def test_a_press_from_before_the_wait_does_not_satisfy_it() -> None:
     ks.entered.set()
     started = time.perf_counter()
     assert await ks.wait_for_enter(timeout_s=0.05) is False
-    assert time.perf_counter() - started >= 0.04, "a stale Enter ended the wait"
+    assert time.perf_counter() - started >= waited(0.05), "a stale Enter ended the wait"
     assert not ks.entered.is_set()
 
 
@@ -122,7 +136,7 @@ async def test_the_wait_ends_on_its_timeout() -> None:
     started = time.perf_counter()
     assert await ks.wait_for_enter(timeout_s=0.05) is False
     elapsed = time.perf_counter() - started
-    assert 0.04 <= elapsed < 0.9, elapsed
+    assert waited(0.05) <= elapsed < 0.9, elapsed
 
 
 async def test_until_abort_ends_the_wait_on_a_ctrl_c() -> None:
@@ -152,7 +166,7 @@ async def test_the_hand_back_wait_ignores_a_stale_abort_but_not_a_fresh_press() 
     ks.pressed.set()  # and the press that set it, equally stale
     started = time.perf_counter()
     assert await ks.wait_for_enter(timeout_s=0.05, until_abort=False) is False
-    assert time.perf_counter() - started >= 0.04, "a stale abort ended the hand-back wait"
+    assert time.perf_counter() - started >= waited(0.05), "a stale abort ended the hand-back wait"
 
     # the same switch, with the abort still set: a fresh press is what gets out of it
     asyncio.get_running_loop().call_later(0.01, ks._fire, "Ctrl-C")
