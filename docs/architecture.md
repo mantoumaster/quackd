@@ -274,15 +274,19 @@ always has all of it.
 
 All of this was the *trace* until 0.11, and the record outgrew the word: it holds every prompt,
 gate and intent, the robot's own movement, the three clocks and what the model cost.
-`quackd trace`, `--trace/--no-trace`, `--trace-prompt/--no-trace-prompt` and the
-`QUACKD_TRACE*` variables all still work, each printing one yellow line naming what it is
-called now, and all of them go in 0.12: one release of grace and then gone, which is how the
-flag `--robot` replaced was retired over 0.4 and 0.5
-([ADR-0017](adr/0017-robot-adapters-and-manifest.md)). A run directory recorded before the
+The old subcommand, the two old flag pairs and the three old variable names had one
+release of grace, each printing one yellow line naming what it is called now, and 0.12 removed
+them, which is how the flag `--robot` replaced was retired over 0.4 and 0.5
+([ADR-0017](adr/0017-robot-adapters-and-manifest.md)). An old flag or subcommand is refused the
+way any unknown one is. An old variable name is a quieter failure and is answered rather than
+dropped: a name still set in a shell or a `.env` is ignored and named in one yellow line before
+the header, the line an old model variable gets, because a name that simply stopped being read
+would switch the log back on for the one reader who had deliberately turned it off
+([ADR-0042](adr/0042-the-log-is-the-whole-screen.md)). A run directory recorded before the
 rename replays unchanged, because the reader takes `trace_dropped` as well as `log_dropped`.
-The one spelling that is gone outright is the MCP result key: a model learns that name from the
-tool description on every call, and carrying both would cost it a second copy of up to thirty
-lines every time it used a tool ([mcp.md](mcp.md)).
+The MCP result key is the one that changed outright, with no release of grace: a model learns
+that name from the tool description on every call, and carrying both would cost it a second
+copy of up to thirty lines every time it used a tool ([mcp.md](mcp.md)).
 
 ### Time and money
 

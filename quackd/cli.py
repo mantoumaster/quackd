@@ -73,18 +73,6 @@ app = typer.Typer(
 )
 
 
-_OLD_SPELLINGS = {
-    "--trace": "--log",
-    "--no-trace": "--no-log",
-    "--trace-prompt": "--log-prompt",
-    "--no-trace-prompt": "--no-log-prompt",
-    "trace": "log",
-}
-"""What a reader typed, and what it is called now. `trace` is the subcommand; the rest are
-flags. Read off `sys.argv` rather than off the parsed value, because Click hands both
-spellings of an option to the same parameter and by then they are indistinguishable."""
-
-
 _DEPRECATIONS: list[str] = []
 """Every deprecation line this process printed, in order, kept for the saved terminal.
 
@@ -98,7 +86,7 @@ def _deprecated(msg: str) -> None:
     """One yellow line on stderr, the shape ADR-0017 used to retire a flag over a release.
 
     `soft_wrap` because the sentence is an instruction a script may grep for and the longest
-    of them is 100 characters, which a default 80-column stderr would fold in the middle of
+    of them is 99 characters, which a default 80-column stderr would fold in the middle of
     the new spelling."""
     _DEPRECATIONS.append(msg)
     ui.err_console.print(
@@ -107,38 +95,31 @@ def _deprecated(msg: str) -> None:
 
 
 def _warn_old_spellings() -> None:
-    """Say it once per process, for each old spelling actually used.
+    """Say it once per process, for each name this release stopped reading and finds set.
 
-    The trace became the log in 0.11 because the record outgrew the name: it holds the
-    robot's movement, the run's clocks, what the model cost and, now, the whole terminal
-    session. Both spellings work until 0.12.
+    Only variables are left here. A flag or a subcommand that is gone fails loudly: Click
+    refuses it, names it, and nothing runs. A variable that is gone goes quiet, and the quiet
+    is the failure. `QUACKD_MODEL` is the kind of line that sits in a `.env` for a year;
+    unread, it does not stop the run, it lets the run bill a model nobody chose.
+    `QUACKD_TRACE=0` is the same line with the opposite sign: unread, it switches the log back
+    on for the one reader who had deliberately turned it off, which is why 0.11 went on
+    reading it for a release. 0.12 stops, as promised, and says so instead.
+
+    Read here rather than where each value used to be, so a `.env` is told about every old
+    line in it and not only the one this run would have consulted: 0.11 could warn about a
+    name only on a run that read it, and said so.
 
     The kept lines are cleared first. One process is one command when a person runs quackd,
     but this module is also imported and driven twice in a row by tests, by a wrapper and by
     `quackd.cli.app(...)`, and a second run whose saved terminal opened with the first run's
     deprecations would be a header describing a command nobody typed."""
     _DEPRECATIONS.clear()
-    args = sys.argv[1:]
-    # The subcommand is the first argument that is not an option, so `quackd --no-color trace`
-    # is somebody using the old spelling and is told so, while `--run-name trace` and a run
-    # called `trace` are not and must not be. Every option the root callback takes is a flag,
-    # so no option here can swallow the word and make it look like a subcommand.
-    seen = {arg for arg in args if arg.startswith("--") and arg in _OLD_SPELLINGS}
-    if next((arg for arg in args if not arg.startswith("-")), None) == "trace":
-        seen.add("trace")
-    for old in sorted(seen):
-        new = _OLD_SPELLINGS[old]
-        what = "command" if old == "trace" else "flag"
-        _deprecated(
-            f"the {what} `{old}` is now `{new}`; the old spelling still works and goes in 0.12"
-        )
-    # A variable rather than a flag, and the reason it gets a line of its own is that a flag
-    # that is gone fails loudly while a variable that is gone goes quiet. `QUACKD_MODEL` is
-    # the kind of line that sits in a `.env` for a year; unread, it does not stop the run, it
-    # lets the run bill a model nobody chose.
     for gone, now in (
         ("QUACKD_MODEL", "QUACKD_LLM=vendor:model"),
         ("QUACKD_JEV", "QUACKD_DECISION_LLM"),
+        ("QUACKD_TRACE", "QUACKD_LOG"),
+        ("QUACKD_TRACE_THINKING", "QUACKD_LOG_THINKING"),
+        ("QUACKD_TRACE_PROMPT", "QUACKD_LOG_PROMPT"),
     ):
         if os.environ.get(gone):
             _deprecated(f"{gone} is not read any more and this run ignores it; set {now} instead")
@@ -2316,32 +2297,26 @@ _VERBOSE = typer.Option(
 _LOG = typer.Option(
     None,
     "--log/--no-log",
-    "--trace/--no-trace",
     help="Narrate the run on stderr as it happens: the prompt, each observation, what the "
     "model thought and answered, every executor decision, every intent sent to the robot, "
     "every result, tokens and timings. On by default; QUACKD_LOG=0 turns it off too. This "
-    "is about what you WATCH: the run directory gets its log either way. "
-    "`--trace/--no-trace` is the old spelling and goes in 0.12.",
+    "is about what you WATCH: the run directory gets its log either way.",
     rich_help_panel="Output",
 )
 _LOG_MCP = typer.Option(
     None,
     "--log/--no-log",
-    "--trace/--no-trace",
     help="Carry a log of what happened on every tool result, and the uncapped version on "
     "stderr: the verb, every gate that fired, every intent sent to the robot, every result "
     "and the budget. Over MCP the pilot is the client, so its own reasoning is not quackd's "
-    "to show. On by default; QUACKD_LOG=0 turns it off too. `--trace/--no-trace` is the old "
-    "spelling and goes in 0.12.",
+    "to show. On by default; QUACKD_LOG=0 turns it off too.",
     rich_help_panel="Output",
 )
 _LOG_PROMPT = typer.Option(
     None,
     "--log-prompt/--no-log-prompt",
-    "--trace-prompt/--no-trace-prompt",
     help="Print the system prompt once at the start of the log. On by default; "
-    "QUACKD_LOG_PROMPT=0 turns it off too. It is in the transcript either way. "
-    "`--trace-prompt/--no-trace-prompt` is the old spelling and goes in 0.12.",
+    "QUACKD_LOG_PROMPT=0 turns it off too. It is in the transcript either way.",
     rich_help_panel="Output",
 )
 
@@ -2605,7 +2580,6 @@ _LOG_RUN = typer.Argument(
 )
 
 
-@app.command("trace", hidden=True, rich_help_panel="Run a duck")
 @app.command("log", rich_help_panel="Run a duck")
 def log_cmd(
     run: str | None = _LOG_RUN,

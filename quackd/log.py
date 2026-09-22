@@ -21,7 +21,6 @@ import contextlib
 import contextvars
 import os
 import re
-import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -47,50 +46,11 @@ Sink = Callable[[LogEvent], None]
 
 _OFF = ("0", "false", "no", "off")
 
-_RENAMED = {
-    "QUACKD_LOG": "QUACKD_TRACE",
-    "QUACKD_LOG_THINKING": "QUACKD_TRACE_THINKING",
-    "QUACKD_LOG_PROMPT": "QUACKD_TRACE_PROMPT",
-}
-"""The name now, and the name until 0.11. Both are read until 0.12."""
-
-_warned: set[str] = set()
-
-
-def _setting(name: str) -> str | None:
-    """`QUACKD_LOG*` if it is set, else the `QUACKD_TRACE*` it replaced, with one line saying
-    so the first time a process falls back.
-
-    The old name is honoured rather than ignored because these live in a `.env` file people
-    wrote months ago, and silently switching the log back on for them would be the worse
-    half of a rename.
-
-    The warning goes through `ui.err_console` where there is one, so that it lands in the
-    run's saved terminal like everything else a run says. Every caller is inside a command
-    body, which is after the consoles are built, but the import is done here and guarded
-    anyway: this module is imported long before `ui` is configured, and a warning that
-    raised on its way out would take the run with it."""
-    value = os.environ.get(name)
-    if value is not None:
-        return value
-    old = _RENAMED[name]
-    value = os.environ.get(old)
-    if value is not None and old not in _warned:
-        _warned.add(old)
-        line = f"{old} is now {name}; the old name still works and goes in 0.12"
-        try:
-            from quackd import ui
-
-            ui.err_console.print(line, style=ui.STYLES["warn"], markup=False, soft_wrap=True)
-        except Exception:
-            sys.stderr.write(line + "\n")
-    return value
-
 
 def log_enabled_default() -> bool:
     """On unless `QUACKD_LOG` says otherwise. An empty value is on, so `QUACKD_LOG=` in a
     shell or a `.env` file switches nothing off by accident."""
-    return (_setting("QUACKD_LOG") or "1").strip().lower() not in _OFF
+    return (os.environ.get("QUACKD_LOG") or "1").strip().lower() not in _OFF
 
 
 def parse_thinking_limit(raw: str | None) -> int | None:
@@ -108,14 +68,14 @@ def parse_thinking_limit(raw: str | None) -> int | None:
 def thinking_limit_default() -> int | None:
     """How much of the model's thinking the console shows per turn: `QUACKD_LOG_THINKING` in
     characters, `all` for everything, `0` for none. The transcript always has all of it."""
-    return parse_thinking_limit(_setting("QUACKD_LOG_THINKING"))
+    return parse_thinking_limit(os.environ.get("QUACKD_LOG_THINKING"))
 
 
 def prompt_shown_default() -> bool:
     """Whether the console prints the system prompt once at the start: `QUACKD_LOG_PROMPT`.
     It is forty to seventy lines, worth reading once and tiresome on the fiftieth run of an
     afternoon, and it is in the transcript either way."""
-    return (_setting("QUACKD_LOG_PROMPT") or "1").strip().lower() not in _OFF
+    return (os.environ.get("QUACKD_LOG_PROMPT") or "1").strip().lower() not in _OFF
 
 
 class EventLog:

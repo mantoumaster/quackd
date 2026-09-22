@@ -177,11 +177,13 @@ what that call cost, every executor gate that fired, every intent that went to t
 steering loop's burst collapsed into one line with its parameter ranges), and the result.
 `--no-log` or `QUACKD_LOG=0` decides what you *watch* and nothing else: the narration stops,
 the run still writes its log, and `runs/<ts>/transcript.jsonl` has all of it either way,
-uncapped. It was the trace until 0.11, so `quackd trace`, `--trace/--no-trace` and
-`QUACKD_TRACE*` still work for one release, each printing one line on stderr naming what it
-is called now, and go in 0.12. The MCP result key is the one that changed outright, because a
-model learns the name from the tool description on every call and carrying both would cost
-every call a second copy of the same thirty lines. Details and the event list:
+uncapped. It was the trace until 0.11. The old subcommand, the old flags and the old variable
+names had one release of grace and 0.12 removed them: a script that still types one is refused
+and told so, and a `.env` that still sets one is ignored and told so, which matters because a
+name that quietly stopped being read would switch the log back on for whoever had turned it
+off. The MCP result key is the one that changed outright, because a model learns the name from
+the tool description on every call and carrying both would cost every call a second copy of the
+same thirty lines. Details and the event list:
 [architecture.md](architecture.md#log), [ADR-0029](adr/0029-tracing.md).
 
 **Can I read a run after it finished?** Yes. `quackd log` replays the newest run under

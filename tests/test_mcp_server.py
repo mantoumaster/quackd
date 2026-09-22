@@ -406,10 +406,11 @@ async def test_cap_lines_at_the_real_defaults_through_a_long_call(caplog: Any) -
 
 
 async def test_the_result_key_is_log_and_the_old_spelling_is_nowhere_beside_it() -> None:
-    """This key was `trace` until 0.11. The flags and the environment variables keep their old
-    spelling for a release because a person types those; the wire is read by a model that was
+    """This key was `trace` until 0.11, and it is the one that changed outright rather than
+    carrying both spellings for a release. The flags and the variables got that release of
+    grace because a person types those and can be told; the wire is read by a model that was
     handed the payload, so a second key would be two names for one list with nothing to say
-    which one to read."""
+    which to read. The flags have one spelling again since 0.12."""
     async with connected() as (client, _session, _transport):
         await _cleared(client)
         result = _data(

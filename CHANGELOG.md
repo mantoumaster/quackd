@@ -213,6 +213,27 @@ the reading of it is.
 
 ### Removed
 
+- **`quackd trace`, `--trace/--no-trace`, `--trace-prompt/--no-trace-prompt`, `QUACKD_TRACE`,
+  `QUACKD_TRACE_THINKING` and `QUACKD_TRACE_PROMPT`**, the spellings 0.11 kept alive for one
+  release beside `quackd log`, `--log/--no-log`, `--log-prompt/--no-log-prompt`, `QUACKD_LOG`,
+  `QUACKD_LOG_THINKING` and `QUACKD_LOG_PROMPT`, along with the `sys.argv` scan in
+  `quackd/cli.py` and the environment fallback in `quackd/log.py` that existed only to carry
+  them. 0.11 said in twelve files, from the flags' own help text to the warning line itself,
+  that they would go here, which is the promise 0.4 made about `--transport` and 0.5 kept. The
+  subcommand and the flags are refused the way any unknown one is, naming what they are, with
+  exit code 2 and no run directory written. The three variables are not simply dropped, and
+  that asymmetry is the point: a flag that is gone fails loudly because Click refuses it, while
+  a variable that is gone says nothing at all, and `QUACKD_TRACE=0` going unread would switch
+  the log back on for the one reader who had deliberately turned it off. So a run that finds
+  one set prints `QUACKD_TRACE is not read any more and this run ignores it; set QUACKD_LOG
+  instead`, the line this release gives `QUACKD_MODEL`, and carries on. It is read where the
+  command line is rather than where the value used to be consulted, so a `.env` hears about
+  every old line in it on any one run rather than only the name that run would have read,
+  which is the limit 0.11 described and asked you to treat as a floor. The line is replayed
+  into the top of `terminal.txt` where the flag warnings used to be. Not removed:
+  `trace_dropped` is still read out of a `summary.json`, because a run directory outlives the
+  release that wrote it and 0.11 scoped this to what you type on a command line or set in a
+  shell.
 - **`--jev`, `QUACKD_JEV`, `QUACKD_JEV_PRICE`, `QUACKD_LIVE_JEV`, the `live_jev` pytest marker
   and the `quackd[jev]` extra**, with no alias and no warning, for the reasons above.
 - **`--provider`, `--model`, `QUACKD_MODEL`, and `list-models --provider`/`-p`.**

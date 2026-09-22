@@ -562,27 +562,66 @@ def test_no_living_document_quotes_an_exact_test_count() -> None:
             pytest.fail(f"{path.name} quotes {claim!r}; say 'the whole suite' and let CI count")
 
 
-def test_no_document_still_promises_a_removal_that_happened() -> None:
-    """0.4 said `--transport` and the duck_* tools go in 0.5. They did, so nothing should
-    still be promising it, and nothing should still be offering them.
+#: What 0.4 and 0.11 each kept alive for one release and the release after removed. A living
+#: document may not spell any of them, and neither may the source that prints to a terminal.
+#: The history files keep them all: that is what a changelog and an ADR are for.
+_REMOVED_SPELLINGS = ("--transport", "--trace", "--no-trace", "quackd trace")
 
-    A promise about a release that has NOT happened is a different thing and is allowed: 0.11
-    renamed the trace to the log and says the old spellings go in 0.12, which is exactly the
-    shape of the promise 0.4 made and 0.5 kept. What this guards against is the stale half,
-    a document still describing a removal that is already behind us."""
+#: The same, for names that are read rather than typed. Checked in every source file but
+#: `quackd/cli.py`, whose warner has to spell one in order to say it is not read any more;
+#: that it really is not read is `tests/test_cli_log.py`'s to prove.
+_REMOVED_ENV_NAMES = ("QUACKD_TRACE",)
+
+#: How each release phrased its promise. Once the removal has happened, a document still
+#: making the promise is describing a version of quackd that no longer exists. "gone in 0.12"
+#: is here because the README said it that way and none of the others would have caught it.
+_KEPT_PROMISES = (
+    "go away in 0.5",
+    "gone in 0.5",
+    "are removed in 0.5",
+    "goes in 0.12",
+    "go in 0.12",
+    "gone in 0.12",
+    "until 0.12",
+    "removed in 0.12",
+    "stop working in 0.12",
+    "stop being read in 0.12",
+)
+
+
+def test_no_document_still_promises_a_removal_that_happened() -> None:
+    """0.4 said `--transport` and the duck_* tools go in 0.5, and 0.11 said `quackd trace`,
+    the two `--trace` flag pairs and the three `QUACKD_TRACE*` variables go in 0.12. Both
+    releases kept their promise, so nothing should still be making either one, and nothing
+    should still be offering what went.
+
+    A promise about a release that has NOT happened is a different thing and is allowed. What
+    this guards against is the stale half: a document still describing a removal that is
+    already behind us, which is how a reader ends up typing a spelling that stopped working
+    two releases ago because the page they read still offered it.
+
+    `--no-trace` is a needle of its own, because it does not contain `--trace`."""
     from quackd.mcp_server import TOOL_NAMES
 
     assert not [n for n in TOOL_NAMES if n.startswith("duck_")]
     # a table title and a TransportError still told users to pass it, and no doc test could
-    # see a Python string, so the same rule now covers the source that prints to a terminal
+    # see a Python string, so the same rule now covers the source that prints to a terminal.
+    # `"trace"` was how the retired subcommand was registered; nothing else quotes the word.
     for src in sorted((REPO / "quackd").rglob("*.py")):
-        assert "--transport" not in src.read_text(encoding="utf-8"), (
-            f"quackd/{src.relative_to(REPO / 'quackd').as_posix()} still offers --transport"
-        )
-    for path in _living_docs():
+        text = src.read_text(encoding="utf-8")
+        where = f"quackd/{src.relative_to(REPO / 'quackd').as_posix()}"
+        for spelling in (*_REMOVED_SPELLINGS, '"trace"'):
+            assert spelling not in text, f"{where} still offers {spelling}"
+        if src.name != "cli.py":
+            for name in _REMOVED_ENV_NAMES:
+                assert name not in text, f"{where} still reads {name}"
+    # `.env.example` is not a `*.md` and so not a living document by the glob, and it is the
+    # one file whose whole job is to list the names a reader may set.
+    for path in [*_living_docs(), REPO / ".env.example"]:
         text = _prose(path.read_text(encoding="utf-8"))
-        assert "--transport" not in text, f"{path.name} still documents --transport"
-        for promise in ("go away in 0.5", "gone in 0.5", "are removed in 0.5"):
+        for spelling in (*_REMOVED_SPELLINGS, *_REMOVED_ENV_NAMES):
+            assert spelling not in text, f"{path.name} still documents {spelling}"
+        for promise in _KEPT_PROMISES:
             assert promise not in text, f"{path.name} still promises {promise!r}, which happened"
 
 
