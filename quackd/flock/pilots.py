@@ -92,8 +92,10 @@ class SpecEntry:
 
     name: str
     spec: RobotSpec
-    provider: str | None = None
-    model: str | None = None
+    llm: str | None = None
+    """The pilot it would fly under, in the shape `--llm` takes. Always None here, and the
+    field exists so a roster of these reads the same way a roster of registered robots does:
+    the run asks every member what pilot it remembers, and this one remembers nothing."""
 
     @property
     def robot_spec(self) -> RobotSpec:

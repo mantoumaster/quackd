@@ -1,9 +1,11 @@
 """The models quackd will let you pick, one curated list per cloud vendor.
 
-`--model` used to take any string and hand it straight to the vendor, so a typo, a model retired
-last spring and a model belonging to a different vendor all failed the same way: at the first
-call, in the vendor's words, after the run had already started. Three of the four defaults quackd
-shipped were wrong by the time anyone checked them, which is what a field nobody validates does.
+The model half of `--llm` -- the `gpt-5.6-sol` in `--llm openai:gpt-5.6-sol`, back when it was a
+`--model` flag of its own -- used to take any string and hand it straight to the vendor, so a
+typo, a model retired last spring and a model belonging to a different vendor all failed the same
+way: at the first call, in the vendor's words, after the run had already started. Three of the
+four defaults quackd shipped were wrong by the time anyone checked them, which is what a field
+nobody validates does.
 
 So the list lives here instead, and a user picks from it: on the CLI, in shell completion, in the
 browser demo, and in `quackd list-models`. When a vendor ships a model it is added here and
@@ -22,8 +24,9 @@ Image, audio, video, embedding and OCR models are not here. Open-weight models a
 vendor serves them on its own API rather than only publishing the weights, and so are models a
 vendor hosts but did not train, because what matters is that the vendor answers for them.
 
-The local presets are deliberately absent. They serve whatever you pulled, so `--model` stays free
-text there and quackd asks the server what it has (ADR-0014).
+The local presets are deliberately absent. They serve whatever you pulled, so the model half of
+`--llm` stays free text there (`--llm ollama:llama3:8b`) and quackd asks the server what it has
+when none is named (ADR-0014).
 
 Nothing here may import a vendor SDK, pydantic, or anything else heavy: `quackd --help` imports
 this module, and so does every press of TAB.
@@ -128,8 +131,8 @@ class ModelSpec:
 # ── the catalogue ───────────────────────────────────────────────────────────────────────
 #
 # Insertion order is display order, and THE FIRST ENTRY OF EACH VENDOR IS ITS DEFAULT: the model
-# `--model` means when it is left off. Writing the default as a separate field would spell the
-# same id twice and let the two drift.
+# a bare `--llm openai` means, with no `:id` after the vendor. Writing the default as a separate
+# field would spell the same id twice and let the two drift.
 #
 # `price=` is USD per million tokens, read off the vendor's own pricing page on `PRICES_CHECKED`
 # and typed from that page rather than from anybody's recollection. Four rules hold across every
@@ -557,11 +560,23 @@ CATALOGUE: dict[str, tuple[ModelSpec, ...]] = {
 CLOUD_NAMES: tuple[str, ...] = tuple(CATALOGUE)
 
 #: Servers that speak OpenAI's API, usually on your own machine. They serve whatever you pulled,
-#: so they have no catalogue and `--model` stays free text there (ADR-0014). `local.PRESETS` holds
-#: the addresses, and a test pins the two to the same set.
+#: so they have no catalogue and the model half of `--llm` stays free text there (ADR-0014).
+#: `local.PRESETS` holds the addresses, and a test pins the two to the same set.
 LOCAL_NAMES: tuple[str, ...] = ("local", "ollama", "vllm", "llamacpp", "lmstudio")
 
 PROVIDER_NAMES: tuple[str, ...] = ("fake", *CLOUD_NAMES, *LOCAL_NAMES)
+
+DEFAULT_LLM = "fake"
+"""The pilot when nothing names one: no key, no network, a rule that plays the starters.
+
+A registered robot may name its own and `QUACKD_LLM` may name another, and `--llm` beats both.
+It lives here rather than next to the CLI flag because this module is the import-light one:
+`quackd --help` and every press of TAB read it, and neither should pay for pydantic to learn
+what the default pilot is."""
+
+LLM_ENV = "QUACKD_LLM"
+"""The variable `--llm` falls back to, holding a whole spec (`anthropic:claude-opus-5`) rather
+than the bare model id the old `QUACKD_MODEL` held. One flag, one variable, one spelling."""
 
 
 def models_for(provider: str) -> tuple[ModelSpec, ...]:
@@ -578,7 +593,7 @@ def model_ids(provider: str) -> tuple[str, ...]:
 
 
 def default_model_for(provider: str) -> str | None:
-    """The model `--model` means when it is left off, or None where quackd does not choose one."""
+    """The model a bare `--llm <vendor>` means, or None where quackd does not choose one."""
     models = models_for(provider)
     return models[0].id if models else None
 
@@ -594,7 +609,9 @@ def vendor_of(model_id: str) -> str | None:
     """Which vendor lists this id, if any.
 
     Ids are unique across the catalogue (a test holds them to it), so this is what turns "unknown
-    model" into "that is a grok model, pass --provider grok", which is the mistake worth catching.
+    model" into "that is a grok model, pass --llm grok:grok-4.6", which is the mistake worth
+    catching. It is also what lets `--llm grok-4.6` work with no vendor at all: a bare id names
+    exactly one vendor, so there is nothing to disambiguate.
     """
     for provider, models in CATALOGUE.items():
         if any(m.id == model_id for m in models):

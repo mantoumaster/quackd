@@ -609,7 +609,7 @@ class FakeProvider:
         if vision is not None:
             # A scripted pilot reads features and looks at nothing, so this changes no
             # decision it makes. What it changes is whether the loop builds the pictures at
-            # all, which is the whole of `--image` and every frame path, and `--provider fake`
+            # all, which is the whole of `--image` and every frame path, and `--llm fake`
             # is the only way to exercise either without a key and a vendor.
             self.supports_vision = vision
 

@@ -156,13 +156,45 @@ class RobotEntry(BaseModel):
     rest_pose: dict[str, float] | None = None
     """Where this arm rests, read off the arm by `quackd robot rest-pose`. A run starts from
     it and returns to it before torque is released. None for every body quackd does not park."""
-    provider: str | None = None
-    """The provider a run uses for this robot when `--provider` is absent."""
-    model: str | None = None
-    """Its model id. `--model` beats this, this beats `QUACKD_MODEL`."""
+    llm: str | None = None
+    """The pilot a run uses for this robot when `--llm` is absent, in the same shape `--llm`
+    takes: a vendor on its own (`anthropic`), or a vendor and a model id
+    (`anthropic:claude-opus-4-5`). `--llm` on the line beats this, and this beats
+    `QUACKD_LLM`. Stored canonically, so a bare listed model id is written back with its
+    vendor in front: `--llm claude-opus-4-5` lands here as `anthropic:claude-opus-4-5`."""
     note: str | None = None
     added: str = Field(default_factory=_now)
     updated: str = Field(default_factory=_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_legacy_llm(cls, data: Any) -> Any:
+        """`provider` and `model` were two keys until 0.11, and one key since.
+
+        `robots.json` is user data that nobody re-saves on upgrade: the file a person wrote
+        eighteen months ago is still the file on disk, so the old pair is folded into `llm`
+        here. `mode="before"` is the only place that can work, because it runs ahead of field
+        validation and ahead of `extra="forbid"` refusing a key this model no longer has.
+        `{"provider": "anthropic", "model": "claude-opus-4-5"}` reads as
+        `llm="anthropic:claude-opus-4-5"`, and the next write of that robot -- a
+        `quackd robot edit`, or anything else that saves the file -- stores the new shape.
+
+        A file carrying both the new `llm` key and an old one keeps its old key, so
+        `extra="forbid"` names it and the command stops. That file says two different things
+        about which pilot this robot uses, and guessing which half the person meant is worse
+        than refusing and letting them delete the line they did not want."""
+        if not isinstance(data, dict) or data.get("llm") is not None:
+            return data
+        if "provider" not in data and "model" not in data:
+            return data
+        folded = dict(data)
+        provider = folded.pop("provider", None)
+        model = folded.pop("model", None)
+        if provider and model:
+            folded["llm"] = f"{provider}:{model}"
+        else:
+            folded["llm"] = provider or model or None
+        return folded
 
     @field_validator("spec")
     @classmethod
@@ -228,17 +260,34 @@ class RobotEntry(BaseModel):
         """Every camera this robot was registered with, primary first."""
         return camera_urls(self.camera_url)
 
-    @field_validator("provider")
+    @field_validator("llm")
     @classmethod
-    def _provider(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        from quackd.agent.providers.catalogue import PROVIDER_NAMES
+    def _llm(cls, value: str | None) -> str | None:
+        """Strict at the door, lenient on the shelf.
 
-        folded = value.strip().lower()
-        if folded not in PROVIDER_NAMES:
-            raise ValueError(f"unknown provider {value!r}; one of {', '.join(PROVIDER_NAMES)}")
-        return folded
+        The vendor has to be one quackd knows, because a stored `anthropc:...` is a robot that
+        can never run and the file should say so. The model id is deliberately *not* checked
+        against the catalogue (`check_model=False`): `quackd robot add --llm ...` checks it
+        fully, which is where the typo is actually made, and the catalogue moves under a file
+        that does not. One entry naming a model the vendor has since retired would, with a
+        strict read here, make every `quackd robot` command refuse -- including the
+        `quackd robot edit` that would fix it, because `update_robot` reads every entry before
+        it writes one. So the shelf keeps loading, and it is the run that names that robot
+        which stops, saying which id it could not find."""
+        if value is None or not str(value).strip():
+            return None
+        # imported here rather than at module scope, deliberately: the provider catalogue is a
+        # large import and `quackd robot list` has no reason to pay for it
+        from quackd.agent.providers.base import ProviderError
+        from quackd.agent.providers.factory import parse_llm
+
+        try:
+            vendor, model = parse_llm(str(value), source="llm", check_model=False)
+        except ProviderError as e:
+            # re-raised as a ValueError so pydantic folds it into the one-line message that
+            # names which robot in the file is wrong; the wording stays the provider's own
+            raise ValueError(str(e)) from e
+        return f"{vendor}:{model}" if model else vendor
 
     @property
     def adapter(self) -> str:
@@ -292,8 +341,7 @@ class RobotEntry(BaseModel):
             "camera_url": self.camera_url,
             "rest_pose": dict(self.rest_pose) if self.rest_pose else None,
             "token_set": self.token is not None,
-            "provider": self.provider,
-            "model": self.model,
+            "llm": self.llm,
             "note": self.note,
             "added": self.added,
             "updated": self.updated,
@@ -357,12 +405,10 @@ class Resolved:
         return f"{self.entry.name} ({self.spec.key})" if self.entry is not None else self.spec.key
 
     @property
-    def provider(self) -> str | None:
-        return self.entry.provider if self.entry is not None else None
-
-    @property
-    def model(self) -> str | None:
-        return self.entry.model if self.entry is not None else None
+    def llm(self) -> str | None:
+        """The pilot this robot was registered with, `vendor` or `vendor:model`, or None for
+        a bare spec: nothing was registered, so there is nothing to have recorded."""
+        return self.entry.llm if self.entry is not None else None
 
     def adapter_kwargs(
         self,

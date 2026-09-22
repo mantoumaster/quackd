@@ -290,7 +290,7 @@ def _classify(e: Exception) -> ProviderError:
     if name == "PermissionDeniedError":
         return ProviderError("anthropic: this key lacks permission for the requested model")
     if name == "NotFoundError":
-        return ProviderError("anthropic: model not found — check --model / QUACKD_MODEL")
+        return ProviderError("anthropic: model not found — check --llm / QUACKD_LLM")
     if name == "RateLimitError":
         retry = getattr(getattr(e, "response", None), "headers", {}).get("retry-after", "?")
         return ProviderError(f"anthropic: rate limited (retry-after {retry}s)")

@@ -136,8 +136,8 @@ class LocalProvider(OpenAIProvider):
         )
         if not url:
             raise ProviderError(
-                "provider 'local' needs the server address: --base-url http://host:port/v1 "
-                "(or QUACKD_BASE_URL). Or use a preset: ollama, vllm, llamacpp, lmstudio."
+                "--llm local needs the server address: --base-url http://host:port/v1 "
+                "(or QUACKD_BASE_URL). Or use a preset: --llm ollama, vllm, llamacpp, lmstudio."
             )
         choice = tool_choice or os.environ.get("QUACKD_TOOL_CHOICE") or "auto"
         if vision is None:
@@ -166,14 +166,14 @@ class LocalProvider(OpenAIProvider):
         except Exception as e:
             raise ProviderError(
                 f"{self.name}: cannot list models at {self.base_url} ({type(e).__name__}: {e}). "
-                "Is the server running? Pass --model to skip discovery."
+                "Is the server running? Pass --llm <preset>:<model> to skip discovery."
             ) from e
         ids = [str(getattr(m, "id", "")) for m in (getattr(page, "data", None) or [])]
         ids = [i for i in ids if i]
         if not ids:
             raise ProviderError(
                 f"{self.name}: the server at {self.base_url} lists no models. "
-                "Load one (e.g. `ollama pull qwen3:8b`) or pass --model."
+                "Load one (e.g. `ollama pull qwen3:8b`) or pass --llm <preset>:<model>."
             )
         self.model = ids[0]
         return self.model

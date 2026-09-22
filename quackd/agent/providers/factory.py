@@ -1,11 +1,17 @@
-"""`--provider <name>` and `--model <id>` to an `LLMProvider`, importing vendor SDKs only when
-asked for.
+"""`--llm <vendor>[:<model>]` to an `LLMProvider`, importing vendor SDKs only when asked for.
 
 Kept separate from `__init__` so importing `quackd.agent.providers` never touches a vendor
 package, and so `quackd doctor` can ask "which providers could run here?" cheaply.
 
+`make_provider` reads no environment variable at all. `resolve_llm` is the single place that
+knows the order of precedence (a flag beats a registered robot beats `QUACKD_LLM` beats the
+default), and it hands the factory an answer that is already decided, along with the phrase
+naming where that answer came from. When the factory also consulted the environment, two callers
+passing identical arguments could get different pilots, and the error a bad id raised could not
+say which of the two the reader needed to fix.
+
 The model names themselves live one module further out, in `catalogue`, which imports nothing at
-all: the CLI reads it to build `--model`'s completions and its help, and must not pay for pydantic
+all: the CLI reads it to build `--llm`'s completions and its help, and must not pay for pydantic
 to do that.
 """
 
@@ -18,6 +24,8 @@ from typing import Any
 from quackd.agent.providers.base import LLMProvider, ProviderError
 from quackd.agent.providers.catalogue import CATALOGUE as CATALOGUE
 from quackd.agent.providers.catalogue import CLOUD_NAMES as CLOUD_NAMES
+from quackd.agent.providers.catalogue import DEFAULT_LLM as DEFAULT_LLM
+from quackd.agent.providers.catalogue import LLM_ENV as LLM_ENV
 from quackd.agent.providers.catalogue import LOCAL_NAMES as LOCAL_NAMES
 from quackd.agent.providers.catalogue import PROVIDER_NAMES as PROVIDER_NAMES
 from quackd.agent.providers.catalogue import default_model_for as default_model_for
@@ -89,15 +97,6 @@ OPENAI_COMPATIBLE = {
 }
 
 
-def default_model(provider: str) -> str | None:
-    """What this provider would use with no `--model`, `QUACKD_MODEL` included and unchecked.
-
-    `resolve_model` is what decides whether that answer is allowed. This is the raw wish, which is
-    what `quackd doctor` wants to show even when the wish is wrong.
-    """
-    return os.environ.get("QUACKD_MODEL") or DEFAULT_MODELS.get(provider)
-
-
 def _unknown_model(provider: str, model: str, source: str) -> str:
     """Why an id was refused, and what to pass instead.
 
@@ -110,17 +109,17 @@ def _unknown_model(provider: str, model: str, source: str) -> str:
     listed = ", ".join(f"{i} (default)" if i == default else i for i in ids)
     elsewhere = vendor_of(model)
     whose = (
-        f" ({model!r} is a {elsewhere} model: pass --provider {elsewhere})"
+        f" ({model!r} is a {elsewhere} model: --llm {elsewhere}:{model})"
         if elsewhere and elsewhere != provider
         else ""
     )
     return (
         f"{provider}: unknown model {model!r} from {source}{whose}. "
-        f"Valid ids: {listed}. See `quackd list-models --provider {provider}`."
+        f"Valid ids: {listed}. See `quackd list-models --llm {provider}`."
     )
 
 
-def resolve_model(provider: str, model: str | None, *, source: str = "--model") -> str | None:
+def resolve_model(provider: str, model: str | None, *, source: str = "--llm") -> str | None:
     """The id this provider will be given, or a `ProviderError` saying why not.
 
     Cloud vendors take an id from the catalogue and nothing else, so a retired id, a typo and
@@ -135,6 +134,99 @@ def resolve_model(provider: str, model: str | None, *, source: str = "--model") 
     if find_model(provider, model) is not None:
         return model
     raise ProviderError(_unknown_model(provider, model, source))
+
+
+def _unknown_llm(spec: str, head: str, source: str, *, bare: bool) -> str:
+    """Why a vendor name was refused, and both shapes of the flag that would have worked.
+
+    Two mistakes land here and they want different words. `--llm hal:gpt-4o` is a typo in the
+    vendor half, so the message names the whole spec back: that is what shows the reader which
+    half of it quackd could not read. `--llm hal9000` might instead have been meant as a bare
+    model id, which is a form that does work (`--llm claude-opus-5`), so that case also says the
+    catalogue was searched and came back empty, rather than leaving the reader to wonder whether
+    bare ids are allowed at all.
+    """
+    where = f" in {spec!r}" if spec != head else ""
+    searched = ", and no vendor here lists a model of that name" if bare else ""
+    example = default_model_for("anthropic")
+    return (
+        f"unknown provider {head!r}{where} from {source}{searched}. "
+        f"Pass a vendor, or a vendor and a model: --llm anthropic, --llm anthropic:{example}. "
+        f"Vendors: {', '.join(PROVIDER_NAMES)}."
+    )
+
+
+def parse_llm(
+    spec: str | None, *, source: str = "--llm", check_model: bool = True
+) -> tuple[str, str | None]:
+    """`--llm` as the (vendor, model) pair the factory takes, or a `ProviderError` saying why not.
+
+    One flag now carries what `--provider` and `--model` used to carry between them, because the
+    two were never really independent: a model id means nothing without its vendor, and every
+    refusal had to name both anyway. `--llm anthropic` is that vendor's default model,
+    `--llm anthropic:claude-sonnet-5` names one, and no `--llm` at all is `fake`.
+
+    The split is at the FIRST colon and no other, because Ollama's own tags contain one:
+    `--llm ollama:llama3:8b` is the preset `ollama` serving the model `llama3:8b`, where a split
+    on the last colon would have asked it for `llama3`. The vendor half is lowercased, so
+    `--llm OpenAI` works; the model half is not, because vendors ship ids like `Qwen/Qwen3-8B`
+    and a folded copy of one is a 404.
+
+    A spec with no colon that is not a vendor gets one more chance. Catalogue ids are unique
+    across vendors (`vendor_of`, and a test that holds them to it), so `--llm claude-opus-5`
+    can infer `anthropic` on its own and spare the reader remembering which house builds what.
+
+    Pass `check_model=False` to learn only which vendor was named, without the catalogue lookup:
+    shell completion has to answer while the id after the colon is still half typed.
+    """
+    if spec is None or not spec.strip():
+        return DEFAULT_LLM, None
+    text = spec.strip()
+    head, colon, tail = text.partition(":")
+    head = head.strip()
+    vendor = head.lower()
+    model = tail.strip() or None
+    if vendor in PROVIDER_NAMES:
+        # A colon with nothing after it is not a mistake. Shell completion offers `openai:` as a
+        # prefix, and a reader who presses enter on it means the vendor's default, not an error.
+        if model is not None and check_model:
+            resolve_model(vendor, model, source=source)
+        return vendor, model
+    if not colon:
+        inferred = vendor_of(head)
+        if inferred is not None:
+            return inferred, head
+    raise ProviderError(_unknown_llm(text, head, source, bare=not colon))
+
+
+def resolve_llm(
+    flag: str | None, stored: str | None = None, *, robot: str | None = None
+) -> tuple[str, str | None, str]:
+    """Which pilot to fly, from the three places one can be named, and which place named it.
+
+    The order is the one every other quackd setting uses: what the reader has just typed beats
+    what a registered robot remembers, which beats the environment, which beats `fake`. The
+    source phrase travels back with the answer so a bad value is refused in the reader's own
+    terms. "unknown provider 'hal' from robot duck-a (robots.json)" sends them to a line in a
+    file they may have written months ago, while the same text from `--llm` sends them to the
+    command still on their screen, and the two are a very different hunt.
+
+    Blank counts as absent at every level: `QUACKD_LLM=` in a `.env` is how a shell says "unset",
+    and reading that as a vendor named "" would stop the run instead of falling through to the
+    next place.
+    """
+    where = f"robot {robot} (robots.json)" if robot else "robots.json"
+    candidates: tuple[tuple[str | None, str], ...] = (
+        (flag, "--llm"),
+        (stored, where),
+        (os.environ.get(LLM_ENV), LLM_ENV),
+    )
+    for value, source in candidates:
+        if value is None or not value.strip():
+            continue
+        vendor, model = parse_llm(value, source=source)
+        return vendor, model, source
+    return DEFAULT_LLM, None, "default"
 
 
 def _extra_body(text: str | None) -> dict[str, Any] | None:
@@ -152,6 +244,7 @@ def make_provider(
     name: str,
     *,
     model: str | None = None,
+    source: str = "--llm",
     duck_name: str | None = None,
     goal: str | None = None,
     base_url: str | None = None,
@@ -162,20 +255,21 @@ def make_provider(
     name = name.lower()
     # Before the branches, so a typo is refused the same way whichever provider was named,
     # `fake` included. Anthropic and Gemini ignore the value as they ignore `--base-url`,
-    # but ignoring a field is not the same as swallowing a mistake, and `--provider fake`
+    # but ignoring a field is not the same as swallowing a mistake, and `--llm fake`
     # is then the cheapest way to find out whether a shell mangled the quoting.
     body = _extra_body(extra_body)
     if name == "fake":
         from quackd.agent.providers.fake import FakeProvider
 
-        # The scripted pilot has no model to pick, so `--model` is not refused here, it is ignored.
-        # `--vision` it does take: it looks at nothing either way, and it is the only pilot
-        # that can carry a picture through the whole loop with no key and no vendor.
+        # The scripted pilot has no model to pick, so `--llm fake:anything` is not refused here,
+        # the model half is ignored. `--vision` it does take: it looks at nothing either way, and
+        # it is the only pilot that can carry a picture through the whole loop with no key and no
+        # vendor.
         return FakeProvider.for_duck(duck_name or "", goal=goal, vision=vision)
-    # Named before it is resolved, so the error can say where a wrong id came from: a flag the
-    # reader has just typed and a line in a `.env` they have forgotten want different answers.
-    source = "--model" if model else "QUACKD_MODEL"
-    model = resolve_model(name, model or os.environ.get("QUACKD_MODEL") or None, source=source)
+    # No environment is read here: `resolve_llm` has already settled what was asked for, and
+    # `source` says where it was asked, so a wrong id names the flag the reader has just typed
+    # or the line in `robots.json` they had forgotten, rather than guessing between them.
+    model = resolve_model(name, model or None, source=source)
     if name == "anthropic":
         from quackd.agent.providers.anthropic import AnthropicProvider
 
