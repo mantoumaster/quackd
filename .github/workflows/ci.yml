@@ -79,7 +79,7 @@ jobs:
           assert len(rows) == 7, rows
           assert not any(r["adapter_installed"] for r in rows), rows
           PY
-          ! ./bare/bin/quackd run hello-world --provider fake 2>err.txt
+          ! ./bare/bin/quackd run hello-world --llm fake 2>err.txt
           grep -q "no robot adapter is installed" err.txt
       - name: One adapter installed is one adapter usable
         shell: bash
