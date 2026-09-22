@@ -92,8 +92,10 @@ ADR-0041, by writing the thing down once at the top.
   depends on knowing.** `QUACKD_TRACE=0` beside `QUACKD_TRACE_PROMPT=0` warns about the first
   and says nothing about the second. Turning the log off means no `ConsoleLog` is built, so the
   prompt setting is never consulted, and a name nobody reads cannot announce that it was
-  renamed. All three are named on a run with the log on and the same file is told about one of
-  them on a run with it off. Reading all three eagerly to warn about them would mean reading
+  renamed. A flag does the same thing one level up: `--log` and `--no-log` answer the question
+  `QUACKD_LOG` would have answered, so a run passing either never reads it and is never told
+  that name moved. All three are named on a run that has the log on and passed no flag, and the
+  same file is told about one of them on a run with the log off. Reading all three eagerly to warn about them would mean reading
   settings the run has no use for, which is a worse thing to own than a warning that arrives
   when the setting first matters. Somebody who switched the log off in a `.env` a year ago is
   therefore told about exactly one of their old names before 0.12 removes the others.

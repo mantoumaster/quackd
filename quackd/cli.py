@@ -116,10 +116,12 @@ def _warn_old_spellings() -> None:
     deprecations would be a header describing a command nobody typed."""
     _DEPRECATIONS.clear()
     args = sys.argv[1:]
-    # The subcommand is the first argument and nowhere else, so `--run-name trace` and a run
-    # called `trace` are not somebody using the old spelling and must not be told they are.
+    # The subcommand is the first argument that is not an option, so `quackd --no-color trace`
+    # is somebody using the old spelling and is told so, while `--run-name trace` and a run
+    # called `trace` are not and must not be. Every option the root callback takes is a flag,
+    # so no option here can swallow the word and make it look like a subcommand.
     seen = {arg for arg in args if arg.startswith("--") and arg in _OLD_SPELLINGS}
-    if args and args[0] == "trace":
+    if next((arg for arg in args if not arg.startswith("-")), None) == "trace":
         seen.add("trace")
     for old in sorted(seen):
         new = _OLD_SPELLINGS[old]
@@ -1429,9 +1431,9 @@ def _run_impl(
         "fake",
         None,
     ):
-        # One dim line, in the style of the dropped-events warning: a run that could not be
-        # costed should say why and how to fix it, once, rather than leaving a reader to
-        # wonder whether the number is missing or zero.
+        # One line, in the style of the dropped-events warning above and in the same yellow:
+        # a run that could not be costed should say why and how to fix it, once, rather than
+        # leaving a reader to wonder whether the number is missing or zero.
         ui.err_console.print(
             f"cost: quackd has no published rate for {result.summary.get('provider')} "
             f"{result.summary.get('model')}; pass --price in=N,out=N to compute one",
@@ -2548,10 +2550,11 @@ def log_cmd(
         counters=counters,
         run_dir=run_dir,
         gif_path=gif if (gif := run_dir / "run.gif").exists() else None,
-        # `trace_dropped` until 0.11: a run directory recorded before the rename
-        # still replays, and its counter still reaches the panel.
-        # through `_number` like every other counter here: this is the path an old run
-        # directory takes, and those are hand-edited, truncated and copied between machines
+        # `trace_dropped` is still read, so a run directory recorded before the rename
+        # replays and its counter still reaches the panel. The value goes through `_number`
+        # because this is the path an old run directory takes, and those are hand-edited,
+        # truncated and copied between machines, so the field cannot be trusted to hold a
+        # number at all.
         log_dropped=int(_number(end.get("log_dropped") or end.get("trace_dropped") or 0) or 0),
     )
 

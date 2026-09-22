@@ -76,7 +76,7 @@ async def plan_flock_task(
     event_log: EventLog | None = None,
     price: str | None = None,
 ) -> tuple[FlockTask, dict[str, Wedge], Usage, int, bool, float | None]:
-    """Returns (task, wedges, usage, llm_calls, fallback_used). Wedges are split over the
+    """Returns (task, wedges, usage, llm_calls, fallback_used, spent). Wedges are split over the
     members that can move (`wedge_members`); a member with no wedge sweeps its whole range.
 
     `event_log` narrates the one model call this run makes, as the same `llm_request`/`llm` pair

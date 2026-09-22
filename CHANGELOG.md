@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] — 2026-09-22
 
 A run records when it started, when it ended, where its seconds went and what it cost, and you
 can give it a name. Until now the only absolute time a run had was the name of its directory,
@@ -16,14 +16,23 @@ log` reprints them from a run recorded weeks ago.
 
 What is measured and what is arithmetic is worth separating once, plainly, because the rest of
 this is money. Measured: `wall_s`, `connect_s` and `llm_latency_s` come off a clock in this
-process, and the token counts are the vendor's own, returned beside the answer. Arithmetic:
-every `cost_usd` in this release is those counts multiplied by a rate a person read off the
-vendor's own pricing page on 2026-09-21 and typed into `quackd/agent/providers/catalogue.py`.
+process, and the token counts are the vendor's own, returned beside the answer. One count is
+not, and it is the exception that proves the rule: where TypeSafe's stepper answers without a
+usage, quackd estimates the count from the request it sent, and says `usage_estimated` wherever
+that number goes. Arithmetic: every `cost_usd` in this release is a count multiplied by a rate,
+and the rates a person read off a vendor's own pricing page on 2026-09-21 are in
+`quackd/agent/providers/catalogue.py`, with the stepper's own in `quackd/agent/jev.py` because
+there is one model behind that flag rather than a table. The rest are not read off anything:
+`--price` and `QUACKD_PRICE` are yours, and a local model and the fake provider cost nothing per
+token by construction.
+
 quackd has never seen an invoice, and not one figure here has been reconciled against a bill. It
 knows nothing about your discount, your committed tier, your free credits or a minimum charge,
 and it cannot know that a rate moved this morning: a price read by hand is wrong from the day the
 vendor edits the page until the day somebody reads it again, and wrong silently. So every price
-is recorded with where it came from and the date it was checked, every run keeps the rate it was
+is recorded with where it came from, and with the date quackd read it where quackd is the one
+that read it: a rate you handed in carries no date, because stamping it with quackd's check date
+would be quackd vouching for a number it has never seen. Every run keeps the rate it was
 actually costed at, and `--price` is there for the moment quackd's number and your bill disagree.
 
 Reading those pricing pages caught two counting bugs quackd has been shipping. Google reports
@@ -41,19 +50,26 @@ holds every intent the robot was sent, every gate the executor closed, the clock
 above, and from this release what was on your terminal while all of it happened. `quackd trace`
 is `quackd log`, `--trace/--no-trace` is `--log/--no-log`, `--trace-prompt/--no-trace-prompt` is
 `--log-prompt/--no-log-prompt`, `QUACKD_TRACE`, `QUACKD_TRACE_THINKING` and `QUACKD_TRACE_PROMPT`
-are `QUACKD_LOG`, `QUACKD_LOG_THINKING` and `QUACKD_LOG_PROMPT`, and `quackd/trace.py` is
-`quackd/log.py` with its classes renamed after it. Every one of those old spellings still works
-for this release, printing one line on stderr saying what it is called now, and every one
-of them goes in 0.12, which is the same single release of grace `--transport` got in 0.4 before
-0.5 removed it. Two things do not get that grace and are the two to change today: an MCP client
-that reads `trace` off a tool result must read `log`, and anything that reads `trace_dropped` out
-of a summary should read `log_dropped`. quackd's own replay takes either spelling, so a run
-directory recorded before this release still replays; nothing here writes the old one any more.
+are `QUACKD_LOG`, `QUACKD_LOG_THINKING` and `QUACKD_LOG_PROMPT`. Every one of those spellings,
+which is everything you type on a command line or set in a shell, still works for this release,
+printing one line on stderr saying what it is called now, and every one of them goes in 0.12,
+which is the same single release of grace `--transport` got in 0.4 before 0.5 removed it. Three
+things do not get that grace and are the three to change today. An MCP client that reads `trace`
+off a tool result must read `log`. Anything that reads `trace_dropped` out of a summary should
+read `log_dropped`. And `quackd/trace.py` is `quackd/log.py` with its classes renamed after it,
+with no module left behind at the old path, so `import quackd.trace` raises rather than warning:
+a name you import is not a spelling anybody can be told about at runtime. quackd's own replay
+takes either spelling of the dropped counter, so a run directory recorded before this release
+still replays; nothing here writes the old one any more.
 
 What you watched is kept as well. Every run directory gets a `terminal.txt`: the screen as plain
-text with no colour codes in it, opening with the command that started the run and the version
-that ran it, and carrying the questions you were asked with the answers you typed, which the
-terminal echoed and nothing in quackd ever printed. Control characters are taken out on the way
+text with no colour codes in it, opening with two lines: the command that started the run, and
+then the version that ran it with the UTC time it opened and the directory it ran in. It carries
+the questions you were asked and what you answered, and neither of those reached the file the
+way the rest of the screen did. The question is written straight to the terminal rather than
+through either of quackd's consoles, and your keystrokes are echoed by the terminal itself, so
+the tee sees neither half. quackd writes the exchange into the file itself instead, which is
+why it is there at all. Control characters are taken out on the way
 in, every C0 code except tab and newline, and DEL, so a goal, a downloaded `.duck` body, a model
 or a robot that puts an escape sequence in its text cannot drive the terminal of whoever reads
 the file with `cat`. It is the screen and not the record, so `--no-log` empties most of it
@@ -68,7 +84,9 @@ parameter, so `https://rok:hunter2@gw/v1?api_key=sk-live` is recorded as
 `https://rok:***@gw/v1?api_key=***`. `--extra-body` has its credential-named keys replaced where
 the run records the object, which is the only place a body set through `QUACKD_EXTRA_BODY` could
 ever be caught, and not where it records your command line: a key typed inside that JSON on the
-command line is in the record in the clear. Nothing else on that screen is redacted.
+command line is in the record in the clear. Nothing else on that screen is redacted, and that
+includes the working directory on the header's second line: it is the absolute path as it was,
+so a run started from a home directory puts your account name in the file.
 
 ### Added
 
@@ -133,9 +151,12 @@ command line is in the record in the clear. Nothing else on that screen is redac
   the same thing for a shell that runs many and `QUACKD_JEV_PRICE` the same for the stepper, and
   an override beats everything, including the zero the fake provider would otherwise report,
   because a rehearsal you want costed is a reason to pass a rate. Every price written into a
-  record says where it came from, which is `--price`, `QUACKD_PRICE`, `catalogue` with the date
-  that page was read, `published`, `fake` or `self-hosted`, so any figure can be traced back to
-  the rate that produced it. A local model is `self-hosted` and costs nothing per token by
+  record says where it came from, which is `--price`, `QUACKD_PRICE`, `QUACKD_JEV_PRICE`,
+  `catalogue`, `published`, `fake` or `self-hosted`, so any figure can be traced back to the
+  rate that produced it. The two quackd read off a vendor's page, `catalogue` and `published`,
+  carry the date they were read on; the other five carry no date, because a rate somebody
+  handed in is theirs to vouch for and stamping it with quackd's own check date would be quackd
+  vouching for it instead. A local model is `self-hosted` and costs nothing per token by
   construction, which is a different claim from a vendor charging nothing and is labelled as one.
 
 - **A run can be named: `--run-name` on `quackd run` and `quackd record`, and a pass in `quackd
@@ -155,36 +176,58 @@ command line is in the record in the clear. Nothing else on that screen is redac
   before anything connects, *--run-name '!!!' has no ASCII letters or digits in it, so there is
   nothing to name the directory after*, rather than quietly becoming something else, because a
   hundred directories that all say `run` is the problem the flag was reached for. Accents fold
-  rather than drop, so `Café 1` and `Cafe 1` land in the same place. Both flock runners take a
-  name too and put it in their summary, and both take `--price` and apply it to every member at
-  the one rate.
+  rather than drop, so `Café 1` and `Cafe 1` land in the same place. A name adds up to 65
+  characters to every path inside the run, frames included, so on a Windows box without long
+  paths enabled a long enough one is how a `--run-name` used to become a bare traceback out of
+  the standard library. It now names the path it could not make, counts the characters in that
+  path once resolved, which is the length the filesystem actually refused and not the shorter
+  relative one you typed, and says that a shorter `--run-name` or a shorter `--runs-dir` will
+  fit, because the length is the whole diagnosis and nothing else in the message hints at it.
+  Both are `quackd run` options and both reach a flock: a `--flock N` simulator flock and a
+  stored flock of pilots each take the name into their own summary and cost every member at
+  the one rate. `quackd record` takes `--run-name` and not `--price`: a recording is still
+  costed at whatever rate the catalogue or `QUACKD_PRICE` gives it, and the one thing it cannot
+  be handed is a rate on the command line.
 
 - **`terminal.txt`, the session as plain text, in every run directory.** The transcript says what
   quackd did and this says what you saw while it did it: the header, the narration, the warnings,
-  the questions and your answers, the verdict, in the order they appeared and with no escape
-  codes in them, so it greps and diffs like any other file. It opens with the command that
-  started the run and the version that ran it. Nothing is written until there is a run directory,
-  so what quackd refuses before it makes one still leaves nothing behind: a bad `--price`, a
-  `--run-name` with nothing to slug, a `.duck` that does not parse. A run that gets a directory
-  and then fails to reach its robot has always left one, and now it has the screen in it too.
-  `--no-log` takes the narration out of the file as it takes it off the screen, because this is
-  the screen; `transcript.jsonl` is unaffected and still not optional. A flock keeps one at the
-  run root rather than one per member, because there was one terminal however many robots were
-  narrating into it. If the file cannot be written the run does not notice: the capture disables
-  itself and the terminal never pays for it.
+  the questions and your answers, the verdict, in the order they appeared and with no escape codes
+  in them, so it greps and diffs like any other file. It opens with the command that started the
+  run, then the version, the UTC time the capture opened and the directory it ran in. That time is
+  its own reading of the clock, taken before the run directory exists and truncated to the second
+  rather than rounded, so it never names a later second than the `started_at` in `summary.json`,
+  which stays the one to quote. The answers in it are quackd's account of what you said rather than
+  a copy of your keystrokes: where the kill switch is reading the terminal it writes down what you
+  typed, and where it is not, `typer.confirm` has already reduced the answer to a yes or a no and
+  the file says `y` or `n`. Nothing is written until there is a run directory, so what quackd
+  refuses before it makes one still leaves nothing behind: a bad `--price`, a `--run-name` with
+  nothing to slug, a `.duck` that does not parse. A run that gets a directory and then fails to
+  reach its robot has always left one, and now it has the screen in it too. `--no-log` takes the
+  narration out of the file as it takes it off the screen, because this is the screen;
+  `transcript.jsonl` is unaffected and still not optional. A flock keeps one at the run root rather
+  than one per member, because there was one terminal however many robots were narrating into it. If
+  the file cannot be opened at all the run does not notice: the capture disables itself and the
+  terminal never pays for it. If it breaks after it was opened, which is the case that matters, the
+  file does not just stop: it ends with the reason it stopped, and the screen says `terminal.txt is
+  not the whole session` and names it. A truncated record that declares itself is recoverable, and
+  one that does not is a wrong answer to the only question the file exists to answer.
 
-- **The command and the version are in the record: `command` and `version` in `run_start` and in
-  `summary.json`.** `command` is the argv as a list with `argv[0]` replaced by the literal
+- **The command and the version are in the record: `command` and `version` in `run_start`, `run_end`
+  and `summary.json`.** `command` is the argv as a list with `argv[0]` replaced by the literal
   `quackd`, so it says what was run rather than which interpreter path ran it, and the values of
   `--api-key` and `--token` are `***` in both spellings a shell allows, `--api-key sk-…` and
-  `--api-key=sk-…`. The flag itself stays, because *that* a key was passed is usually what a
-  reader is checking, and a trailing `--api-key` with nothing after it is left as it was typed.
-  Redaction is by flag name and nothing else: a secret passed some other way is not found by
-  this, and the rest of `terminal.txt` is not redacted at all.
+  `--api-key=sk-…`. The flag itself stays, because *that* a key was passed is usually what a reader
+  is checking, and a trailing `--api-key` with nothing after it is left as it was typed. Redaction
+  is by flag name and nothing else: a secret passed some other way is not found by this, and the
+  rest of `terminal.txt` is not redacted at all.
 
 - **A `prompt` event, for the questions a person was actually asked.** `{what, question, answer}`
   with `what` one of `confirm`, `decide`, `acknowledge` or `hand_off`: the confirm gate, the
-  feasibility verdict, an acknowledgement, and each half of a `--by-hand` handover. What an
+  feasibility verdict, an acknowledgement, and each half of a `--by-hand` handover. The confirm
+  gate's question changed shape to be worth quoting: it was built from a raw dict and read
+  `run kick({'force': 0.5})?`, and it is `run kick(force=0.5)?` now, through the same formatter
+  the log line uses, because the record has to quote the question in the words it was put in
+  and those words should be the ones a person would write. What an
   answer *caused* was already recorded by whoever acted on it; this is the exchange itself, in
   the words it was put in, which nothing held before. It is written only where somebody was
   really there, so a `--yes` run and a flock member's standing answers produce no `prompt` rows
@@ -203,6 +246,22 @@ command line is in the record in the clear. Nothing else on that screen is redac
   before any member has written into it. The CLI passes the terminal capture; anyone embedding a
   flock now has one hook for *the directory this run will fill*, which previously could only be
   learned from the result after the run was over.
+
+- **The arm from a chat is a second half of the first-run page rather than an appendix to it.**
+  [docs/lerobot-first-run.md](docs/lerobot-first-run.md) walked the terminal path in fifteen
+  steps and then closed with a twenty-eight-line appendix for MCP, which is a pointer rather
+  than a path somebody can follow. It is two parts now that share the steps which set the arm
+  up, and Part 2 is fifteen of its own, M00 to M14, one for each of Part 1's: both clients
+  configured, what each of the nine tools answers, what every refusal means,
+  and which moments move the arm without anybody asking for it. The README's quickstart offers
+  the two paths rather than the one. Every result quoted in Part 2 was captured against
+  `lerobot:mock` and is labelled as the mock where it is quoted, because no MCP session has
+  driven a real arm yet, and that is said on the page rather than left to be worked out. An
+  adversarial pass over the draft corrected six things about what the arm does, three of them
+  blocking, and the worst of those told a reader that `stop` brakes a moving arm. It does not:
+  the verb never sets the executor's abort, so a `move_joints` already running is not cancelled
+  and keeps re-sending its own goal until it finishes. [docs/safety.md](docs/safety.md)
+  grew *Who the record says was asked*, for the `prompt` event below.
 
 - **[ADR-0041](docs/adr/0041-the-record-says-when-it-ran-and-what-it-cost.md)**, on why a run
   records money at all, what the record is and is not evidence of, and where the arithmetic
@@ -234,7 +293,22 @@ command line is in the record in the clear. Nothing else on that screen is redac
   `ConsoleTrace` and `LineTrace` are `ConsoleLog` and `LineLog`, `Tracer` is `EventLog` and the
   attribute holding one is `.event_log`, `trace_enabled_default` is `log_enabled_default`,
   `intent_trace_line` is `intent_log_line`, `MCP_TRACE_MAX_LINES` is `MCP_LOG_MAX_LINES`, and
-  `RunConfig.trace`, the live view, is `RunConfig.view`. `import quackd.trace` raises. Two names
+  `RunConfig.trace`, the live view, is `RunConfig.view`. `import quackd.trace` raises.
+  If you embed quackd rather than calling it, the signatures moved with the module and they are
+  the half a rename does not announce: `build_server` and `build_fleet_server` take `log=` where
+  they took `trace=`; `run_flock`, `run_pilot_flock` and `FlockMember` take `view=`;
+  `TraceFactory` is `ViewFactory`; `FlockCoordinator.trace` and `AgentLoop.tracer` are both
+  `.event_log`; `Executor.traced_transport()` is `logged_transport()`; `RunResult.trace_dropped`
+  and `FlockResult.trace_dropped` are `log_dropped`; and `plan_flock_task` returns six values
+  rather than five, the new one being what the planner's own call spent. Every one of those
+  parameters is keyword only, so the call raises `TypeError` and names the argument rather than
+  quietly doing nothing. One of them can fail quietly and is the reason this list is here:
+  `run_flock` and `run_pilot_flock` have taken a `log=` of their own since long before this
+  rename, which is the `--verbose` callback. Renaming `trace=` to `log=` on those two by hand,
+  the way the rest of this release reads, hands the view to that callback and leaves the run
+  with no live view at all. `run_pilot_flock` types its `log` as a `Callable[[str], None]`, so
+  a type checker says something; `run_flock` types it `Any`, so nothing does, and that call
+  fails silently at runtime by quietly doing nothing. On both the new name is `view=`. Two names
   deliberately did not move: `RunConfig.log` and `Executor.log` are still the `--verbose`
   callback they have always been, and `member_log` is still the record kind a flock member's free
   text lands in, because both are contracts that predate this rename and neither is the event
@@ -251,13 +325,25 @@ command line is in the record in the clear. Nothing else on that screen is redac
   Anthropic's `input_tokens` now adds its two cache buckets, because that vendor is the one that
   reports the three disjoint, and its `reasoning_tokens` comes from the thinking count in
   `output_tokens_details` rather than from a field that was never there. OpenAI's two parsers and
-  the local providers are unchanged, and deliberately so: those prompt counts already contain the
-  cached part, and all that is new for them is that the cached slice is now named beside the
-  total instead of being invisible inside it.
+  the local providers report the same totals they always did, deliberately so, because those
+  prompt counts already contain the cached part. What is new for them is that the cached slice is
+  named beside the total instead of being invisible inside it, and on OpenAI that is not
+  cosmetic: `cost_usd` takes the cached tokens out of the prompt and bills them at the cache
+  rate, which on most of this vendor's models is about a tenth of the full one, and that vendor
+  caches without being asked. From the second turn of a run most of the prompt is that slice, so
+  the figure is well under the prompt times the input rate, and it is right rather than
+  generous. This is where it differs from the Anthropic correction above, which is a no-op
+  until something sets `cache_control`.
 
-- **The verdict panel and `quackd log` print the same counters, through one function.** They
-  were two lists that had already drifted, and both gained a time counter and a cost counter:
-  `steps 4 - llm calls 6 - tokens 10421+96 - time 0.4 s (model 0.0 s) - cost $0.0327`. The time
+- **A solo run's verdict panel and `quackd log` print the same counters, through one function.**
+  They were two lists that had already drifted, and both gained a time counter and a cost
+  counter:
+  `steps 4 · llm calls 6 · tokens 10421+96 · time 0.4 s (model 0.0 s) · cost $0.0327`,
+  with the separator falling back to a hyphen on a stream that cannot carry the dot. A flock
+  counts different things and is only partly in: each of the two runners builds its own list
+  live, a coordinator naming its kicker and its auctions and a pilot flock naming how many
+  members succeeded, but on replay only a coordinator is recognised, by the `kicker` in its
+  summary, and a pilot flock is read back through this one function like a solo run. The time
   counter carries the split and not only the total, because on the one hardware run this project
   has, 62.1 of 78.8 seconds were spent waiting on the model, and that ratio is the most useful
   thing a run measures about itself; the stepper's seconds join it when one ran. The cost counter
@@ -265,9 +351,11 @@ command line is in the record in the clear. Nothing else on that screen is redac
   wears a `~` when the stepper's half was estimated. Every field is optional on purpose: a
   transcript recorded before this change has no `wall_s`, no `cost_usd` and no `jev` block, and
   replays with exactly the three counters it has always had rather than with `time None`. The one
-  thing that is new on screen and not in the record is a single dim line under the verdict when a
-  run could not be costed, naming the model and the flag that would fix it, because a missing
-  number should say it is missing rather than leave a reader deciding whether it means zero.
+  thing that is new on screen and not in the record is a single yellow line on stderr under the
+  verdict when a run could not be costed, naming the model and the flag that would fix it,
+  because a missing number should say it is missing rather than leave a reader deciding whether
+  it means zero. `--provider fake` never draws it: that provider reports a rate of its own, of
+  zero, and a rehearsal is not a model quackd has no price for.
 
 - **The stepper's summary block grew `usage`, `cost_usd`, `cost_estimated` and `price`**, so the
   `jev` block answers what it cost as well as what it decided, and its own log line carries the
@@ -297,9 +385,107 @@ command line is in the record in the clear. Nothing else on that screen is redac
   `serve-mcp` lands in the host's log for that server. Read the warnings as a floor and not a
   list: a name only warns on a run that reads it, so `QUACKD_TRACE=0` beside
   `QUACKD_TRACE_PROMPT=0` tells you about the first and says nothing about the second, because
-  switching the log off means the prompt setting is never consulted. A run with the log on names
-  all three. Grep your `.env` files and CI for `QUACKD_TRACE` rather than waiting to be told;
-  they stop being read in 0.12.
+  switching the log off means the prompt setting is never consulted. A flag has the same effect
+  one level up: `--log` and `--no-log` answer the question `QUACKD_LOG` would have answered, so
+  a run that passes either never consults it and is never told that name has moved. The run that
+  names all three is the one that passes no flag and has the log on by default. Grep your `.env`
+  files and CI for `QUACKD_TRACE` rather than waiting to be told; they stop being read in 0.12.
+
+### Fixed
+
+- **A grasp that landed between two polls was called a failed pick.** The LeRobot `pick` verb
+  runs a policy and watches `holding` while it runs. It read that flag on the one poll that
+  could not yet know the answer: the policy had gone idle, the gripper had not finished
+  closing, and the verb declared failure on a grasp that was about to succeed. Worse than the
+  wrong answer is what follows it, because `place` refuses on a precondition that says nothing
+  is held, so the arm is holding the object and quackd will not put it down. It waits one
+  settle now, `PICK_SETTLE_S`, which is the same five ticks the stall detector already used,
+  and reads the flag once more before calling it a failure. It surfaced as a macOS job going
+  red on one run and it is fixed as the hardware bug it is rather than as a flaky test, and
+  like everything else this repository says about that arm, it has been exercised against the
+  mock and against a fake arm and never against a real one.
+
+- **`quackd log` on a flock printed one member's counters as though they were the flock's.**
+  A flock replays every member in turn, reading `ducks/<member>/transcript.jsonl` in sorted
+  order, so the `run_end` still in hand at the end belonged to the last of them to have
+  recorded one.
+  Its wall clock, its tokens and its bill are that one robot's rather than the run's, and
+  because the order is the member's name rather than the clock's it was the same wrong member
+  every time rather than a different one per replay. The flock's own `summary.json` sits in the
+  run directory above those, and is what the counters are about, so it is read whenever there
+  is more than one member transcript. A single-robot run is unchanged.
+
+- **The loop read the clock twice for one model call and disagreed with itself about it.** The
+  `llm` event and the record the shadow comparison reads each called `perf_counter()` for
+  themselves, a few statements apart, so the same call was written down as two slightly
+  different durations and the later one was always the longer. The call is timed once now and
+  both read that one number, as does the new running total. The difference was small and the
+  arithmetic this release builds on top of it is not, which is why it is fixed rather than
+  noted.
+
+- **The deprecation notice for `quackd trace` was silent for the scripts it was written for.**
+  It was printed when `trace` was the very first word on the command line and never otherwise,
+  so `quackd --no-color trace <run>` ran the retired spelling and said nothing at all. That is
+  precisely the shape of an automated caller, which is the one audience a deprecation cannot
+  afford to miss: nobody is reading its output, and it breaks in 0.12. The subcommand is read
+  as the first argument that is not an option now. A run that happens to be called `trace` is
+  still not somebody typing the old spelling, because `quackd log trace` has `log` in that
+  position, and neither is `--run-name trace`. Found by this release's own audit of the
+  paragraph above, which promised a line that was not always printed.
+
+- **A mangled comment shipped in `quackd log`'s replay path.** The sentence explaining why the
+  dropped-events counter is read through `_number` lost its opening clause in the rename, so
+  what landed on `main` began mid-sentence. Comment only; no behaviour depended on it.
+
+### Known limitations
+
+- **Not one figure in this release has been checked against a bill.** Every rate was read off a
+  vendor's pricing page by a person on 2026-09-21 and typed into a table, and a rate read by
+  hand is wrong from the moment the vendor edits the page until somebody reads it again, and
+  wrong silently. quackd knows nothing about your discount, your committed tier, your free
+  credits or a minimum charge. Three of the 115 catalogued models carry no rate at all, the
+  whole of Cohere's Command A family including that vendor's own default, because Cohere sell
+  those by the hour rather than by the token; a run on one prints `cost unpriced` and records
+  `cost_usd: null`. The Anthropic cache arithmetic corrected here changes no number today,
+  because nothing in quackd sets `cache_control` yet: it is arithmetic waiting for the day
+  something does. Treat a `cost_usd` as what quackd's table says the call should have cost, and
+  `--price` as what to reach for when it disagrees with your invoice.
+
+- **Six of the seven bodies have still never run on hardware, and the one that has was running
+  0.9 at the time.**
+  Unchanged since 0.10, and the pick fix in this release is the newest thing on the list of
+  what no arm has exercised: it is tested against the mock and a fake arm, which is the
+  standing every `lerobot:real` behaviour has. The day one of these stops a real grasp being
+  called a failure is the day somebody reports that it did.
+
+- **`terminal.txt` is most of the screen and not all of it, and it is redacted by name only.** It
+  holds what went through quackd's two consoles, which is the narration, the warnings and the
+  verdict, plus the handful of lines written straight into the capture because they never went
+  through either console: the questions you were asked, which go out to the terminal raw, and the
+  answers you typed, which the terminal echoed for itself. It does not hold the live status region,
+  which is drawn and erased rather than printed; it does not hold a traceback, because a crash
+  closes the file on a line naming the exception and `sys.excepthook` draws the trace after that;
+  and it holds nothing written to the underlying file descriptor rather than through one of those
+  two consoles, which is where anything a native library prints for itself would go. A session under
+  `serve-mcp` writes none at all, because it has no run directory. On redaction, the rule is a list
+  of names: two flags whose values are replaced outright, three URL-taking flags that keep their
+  host and path and lose their password and any credential-named query parameter, and the same name
+  list applied to the recorded `--extra-body` object. A credential under a name that is not on that
+  list is kept, and so is a key typed inside the JSON of `--extra-body` on the command line, which
+  is recorded as it was typed. Read the file before you paste a run directory into an issue.
+
+- **The stepper has still never made a real call in this repository.** Unchanged since 0.10.
+  Everything `--jev` reports about money is arithmetic over measured inputs: TypeSafe's own
+  published rate, quackd's measured request size, and an estimate from that size wherever their
+  API reports no usage at all, which is flagged as estimated everywhere it surfaces. The flag is
+  off by default and says as much itself when it is switched on.
+
+- **No pilot flock has been driven by a real model, or by a real robot.** Unchanged since 0.9.
+
+- **Every old `trace` spelling in this release is on its last one.** The subcommand, the two
+  flag pairs and the three environment variables all still work and all print one line saying
+  what they are called now. They stop working in 0.12. The MCP result key is already gone, and
+  that is the one to change today.
 
 ## [0.10.0] — 2026-09-19
 
@@ -3505,7 +3691,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/rokbenko/quackd/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rokbenko/quackd/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rokbenko/quackd/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rokbenko/quackd/compare/v0.7.0...v0.8.0

@@ -610,6 +610,33 @@ def test_a_run_named_trace_is_not_somebody_typing_the_old_spelling(
     assert "SUCCESS" in result.stdout, "and the run it names is the one that came back"
 
 
+def test_a_root_option_before_the_old_subcommand_does_not_hide_the_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The subcommand is the first argument that is not an option, not `argv[1]`.
+
+    A script that says `quackd --no-color trace <run>` is exactly the script this notice is
+    written for: it is automated, nobody is reading its output for fun, and it breaks in 0.12.
+    Reading only `argv[1]` told that script nothing at all, which is the one audience a
+    deprecation cannot afford to be silent for."""
+    run_dir = _run(tmp_path)
+    where = ["--runs-dir", str(tmp_path)]
+
+    _typed(monkeypatch, "--no-color", "trace", run_dir.name)
+    old = runner.invoke(app, ["--no-color", "trace", run_dir.name, *where], env=WIDE)
+    assert old.exit_code == 0, old.output
+    assert _deprecations(old.stderr) == [
+        "the command `trace` is now `log`; the old spelling still works and goes in 0.12"
+    ]
+
+    # and the guard in the other direction still holds: a root option in front of the NEW
+    # spelling says nothing at all
+    _typed(monkeypatch, "--no-color", "log", run_dir.name)
+    new = runner.invoke(app, ["--no-color", "log", run_dir.name, *where], env=WIDE)
+    assert new.exit_code == 0, new.output
+    assert _deprecations(new.stderr) == []
+
+
 def test_an_old_flag_beside_that_value_still_says_its_one_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

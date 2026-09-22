@@ -63,6 +63,13 @@ flip that backend's row, and not before.
   the stepper is a net loss unless Jev answers in under 1.24 seconds. The floors are TypeSafe's
   own published numbers and have never been tuned against quackd data.
 
+- ⬜ **No `cost_usd` quackd reports has been checked against an invoice.** Every rate in
+  `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand on
+  2026-09-21, and a rate read by hand is wrong from the day the vendor edits the page until
+  somebody reads it again. What would close this is one run on a metered account, reconciled
+  against that account's own billing page, on any vendor. Until then `--price` is the answer to
+  a disagreement and the catalogue is a table rather than a bill.
+
 - ⬜ **One local model has refused tasks on feasibility grounds; no frontier model has, and
   nobody has watched an `uncertain` over MCP.** Qwen3-32B-AWQ on vLLM, driving
   `microduck:sim2d`, answered this gate 54 times before the check in #24 and 54 times after.
@@ -207,7 +214,9 @@ this, and the per-release detail is in [CHANGELOG.md](CHANGELOG.md).
    version and they are released together, so none of them may drift.
 3. Read the release note against the code before it ships. Every release so far has found
    claims that had gone stale between writing and tagging.
-4. Annotated tag, pushed with `main`.
+4. Annotated tag on the merge commit, pushed once `main`'s own run is green. Pushing the
+   tag re-runs the same workflow on the same commit, which is informational: a red run
+   behind a tag that is already public is the thing this ordering avoids.
 5. `uv build --all-packages --out-dir dist`: eight wheels and eight sdists. GitHub Release on
    `main` with all sixteen attached.
 6. Publish to PyPI **core first**, because every adapter depends on it and a resolver that
