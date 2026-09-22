@@ -9,8 +9,11 @@ that names the vendor now names the format. `--jev off|shadow|on` is `--decision
 plus `QUACKD_DECISION_MODE`; the two transcript kinds `jev` and `jev_shadow` are `decision` and
 `decision_shadow`; `Source`'s fourth word is `decision`, so the log says `from decision`; the
 summary block is `decision`; and `quackd/agent/jev.py` is the package `quackd/agent/decision/`.
-Read "TypeSafe's own published numbers" about the floors as true of Jev and inherited
-unmeasured by every other one. The reasoning below is unchanged, which is why this is an
+Read "TypeSafe's own published numbers" about the floors as true of two of the four and not
+of all of them: their confidence page publishes 0.5 and 0.9, which are the brake and the
+confirm-gated floors here, while the read floor at 0.60 and the motion floor at 0.85 are
+quackd's own, set between those two. All four are shaped around Jev and inherited unmeasured
+by every other one. The reasoning below is unchanged, which is why this is an
 amendment and not a replacement: what turns are a choice, what an answer must clear before it
 moves a servo, and what a stepper is never allowed to do are quackd's half and do not move with
 the vendor.

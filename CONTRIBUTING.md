@@ -249,13 +249,35 @@ apply to it.
 **And a decision LLM is usually a row rather than a module.** They share a wire format,
 `POST /v1/systemone`, rather than a vendor, so one that speaks it is one `DecisionSpec` in
 `quackd/agent/decision/catalogue.py` (name, summary, install line, default url, default model
-id, key variable if it wants one, price if anybody publishes one) and one section on the page.
-No new file, no new client, no new flag: `systemone.py` already talks to it and `--decision-url`
-already moves it off the port its row expects. The two shapes that are not a row: one with a
-Python API of its own rather than a server, which is a plugin announcing itself under the
-`quackd.decision_llms` entry point group and carrying its own `make(spec, *, url, model)`, the
-way a third party's robot adapter announces itself; and a change to what the stepper *asks*,
-which is `stepper.py` and belongs to none of them.
+id, key variable if it wants one, price if anybody publishes one), one page under
+`docs/decision-llms/`, and one row in the table in [docs/decision-llms.md](docs/decision-llms.md).
+No new file under `quackd/`, no new client, no new flag: `systemone.py` already talks to it and
+`--decision-url` already moves it off the port its row expects. The two shapes that are not a
+row: one with a Python API of its own rather than a server, which is a plugin announcing itself
+under the `quackd.decision_llms` entry point group and carrying its own
+`make(spec, *, url, model)`, the way a third party's robot adapter announces itself; and a
+change to what the stepper *asks*, which is `stepper.py` and belongs to none of them.
+
+Four things a row needs, and a test reads the first three:
+
+1. **The row itself**, in `PRESETS`, in the position `quackd doctor` should print it.
+2. **`docs/decision-llms/<name>.md`**, copied in shape from an existing page
+   ([`local.md`](docs/decision-llms/local.md) is the smallest): a `## The row`
+   table quoting every
+   field verbatim, a `## VERIFIED` section naming what you read and on what date, a
+   `## UNVERIFIED, and what quackd does about each` table, and the line **Nothing here has
+   ever answered a real robot.** until somebody has. `tests/test_docs.py` reads the address,
+   the model id, the key variable, the install line and the extra back off that page and
+   compares them with the row, because a page nobody checks is a page that describes an older release.
+3. **Its row in the hub's table**, in `PRESET_NAMES` order, with the **Page** column linking
+   the page and the install line quoted verbatim.
+4. **A line in `CHANGELOG.md`** under `## [Unreleased]`. No test reads this one: the
+   changelog is excluded from the living-document checks on purpose, because it records what
+   was true at a release rather than what is true now.
+
+What a row does not need is a benchmark. Nobody has run any of these against a robot, so a page
+that says what it read and what it is assuming is worth more than one that quotes a number
+nobody here can reproduce.
 
 ## Add an adapter
 
