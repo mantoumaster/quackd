@@ -93,7 +93,7 @@ def test_there_are_transcripts_to_check() -> None:
 def test_a_published_transcript_is_a_whole_run(path: Path) -> None:
     """JSONL, one record a line, opening on `run_start` and closing on `run_end`.
 
-    A file cut short still renders in `quackd trace` (`test_trace_of_a_cut_transcript_says_so`),
+    A file cut short still renders in `quackd log` (`test_log_of_a_cut_transcript_says_so`),
     which is right for a run that died and wrong for a file published as evidence: the totals
     every table quotes live in the last record."""
     rows = _rows(path)

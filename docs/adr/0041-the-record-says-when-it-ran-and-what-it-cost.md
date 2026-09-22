@@ -107,7 +107,7 @@ the directory name is what somebody types back into `quackd trace`.
   `price` and, only where a stepper ran, `jev_price`, and `run_end` gained its clocks and its
   money on top of every key it already had. Each new console field renders only when it is
   present, so a transcript written last week replays byte for byte, which
-  `tests/golden/trace_lines.json` freezes rather than trusts.
+  `tests/golden/log_lines.json` freezes rather than trusts.
 
 - **One summary shape, printed by one function on both surfaces.** `RunResult.summary` is the
   exact dict written to `summary.json`, and `cli.run_counters` builds the counter line from it

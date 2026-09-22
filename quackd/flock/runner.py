@@ -15,10 +15,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from quackd import __version__
 from quackd.adapters.base import AdapterError
 from quackd.adapters.factory import RobotSpec, describe, parse_robot_spec
 from quackd.agent.providers.base import LLMProvider, Usage
 from quackd.agent.transcript import new_run_dir, run_label
+from quackd.command import command_line
 from quackd.duckfile.schema import DuckFile, FlockSection
 from quackd.flock.auction import AuctionPolicy
 from quackd.flock.bus import Bus, InProcessBus
@@ -27,10 +29,10 @@ from quackd.flock.member import FlockMember
 from quackd.flock.messages import FlockMessage
 from quackd.flock.planner import plan_flock_task
 from quackd.flock.transcript import FlockTranscript
+from quackd.log import EventLog, Sink
 from quackd.perception.color_blob import ColorBlobDetector
 from quackd.sim2d.clock import FlockClock
 from quackd.sim2d.world import World
-from quackd.trace import Sink, Tracer
 from quackd.transport.sim2d import make_flock
 
 DEFAULT_MEMBER = "microduck:sim2d"
@@ -38,12 +40,12 @@ DEFAULT_MEMBER = "microduck:sim2d"
 BusFactory = Callable[[Callable[[FlockMessage], None]], Bus]
 """`bus_factory(tap) -> Bus`: the seam for `MqttBus`; the in-process bus is the default."""
 
-TraceFactory = Callable[[str], "Sink | None"]
-"""`trace(name) -> Sink | None`: a view per member, by member name, and one more for
-`FLOCK_TRACE`: the flock's own events (the planner's call, the coordinator's story). Return a
+ViewFactory = Callable[[str], "Sink | None"]
+"""`view(name) -> Sink | None`: a view per member, by member name, and one more for
+`FLOCK_LOG`: the flock's own events (the planner's call, the coordinator's story). Return a
 distinct sink per name, or two members' intent bursts fold into one line."""
 
-FLOCK_TRACE = "flock"
+FLOCK_LOG = "flock"
 
 
 @dataclass
@@ -62,7 +64,7 @@ class FlockResult:
     spotter: str | None = None
     assignments: dict[str, str] = field(default_factory=dict)
     verdicts: list[dict[str, Any]] = field(default_factory=list)
-    trace_dropped: int = 0
+    log_dropped: int = 0
     """Events a view raised on and never showed. The transcripts have them all."""
 
     @property
@@ -150,7 +152,8 @@ async def run_flock(
     log: Any = lambda *_: None,
     robots: dict[str, str] | None = None,
     bus_factory: BusFactory | None = None,
-    trace: TraceFactory | None = None,
+    view: ViewFactory | None = None,
+    on_run_dir: Callable[[Path], None] | None = None,
     run_name: str | None = None,
     price: str | None = None,
 ) -> FlockResult:
@@ -170,6 +173,11 @@ async def run_flock(
 
     stem = duck.name if duck.name.startswith("flock") else f"flock-{duck.name}"
     run_dir = new_run_dir(runs_dir, stem, run_label(run_name) if run_name else None)
+    if on_run_dir is not None:
+        # The first moment there is somewhere to write: the CLI's terminal capture
+        # has been buffering since before this call and moves into the directory
+        # here, before any member opens a file of its own.
+        on_run_dir(run_dir)
     world, clock, adapters = make_sim_flock(specs, seed=seed, live=live)
     transcript = FlockTranscript(run_dir, now=clock.now)
     bus: Bus = (
@@ -179,13 +187,13 @@ async def run_flock(
     if callable(start_bus):
         start_bus()  # inside the event loop, so remote deliveries are marshalled onto it
 
-    def view(name: str) -> Sink | None:
-        return trace(name) if trace is not None else None
+    def member_view(name: str) -> Sink | None:
+        return view(name) if view is not None else None
 
-    flock_views = [v] if (v := view(FLOCK_TRACE)) is not None else []
+    flock_views = [v] if (v := member_view(FLOCK_LOG)) is not None else []
     # the planner's call is recorded here because nothing else records it: there is no
     # per-member transcript it belongs to, so flock.jsonl is its paper trail
-    planner_trace = Tracer(record=transcript.sink, observers=flock_views)
+    planner_log = EventLog(record=transcript.sink, observers=flock_views)
 
     task_id = uuid.uuid4().hex[:8]
     task, wedges, usage, llm_calls, fallback, planner_cost = await plan_flock_task(
@@ -195,7 +203,7 @@ async def run_flock(
         task_id,
         log=log,
         wedge_members=mobile or members,
-        trace=planner_trace,
+        event_log=planner_log,
         price=price,
     )
     frame_hints = flock.frame_hints == "on" or (
@@ -239,12 +247,12 @@ async def run_flock(
             task,
             hb_period_s=flock.safety.per_duck_heartbeat_s,
             dry_run=dry_run,
-            trace=view(name),
+            view=member_view(name),
         )
 
     # no record: every one of the coordinator's kinds is already in flock.jsonl under its
     # own name, written the line before each `_event`
-    story = Tracer(observers=flock_views)
+    story = EventLog(observers=flock_views)
     coordinator = FlockCoordinator(
         task=task,
         members=flock_members,
@@ -255,7 +263,7 @@ async def run_flock(
         policy=policy,
         success_moved_m=task.success_moved_m,
         log=log,
-        trace=story,
+        event_log=story,
     )
     if on_recorder is not None:
         on_recorder(adapters[ordered[0]], coordinator)
@@ -295,10 +303,10 @@ async def run_flock(
         }
         for name, m in flock_members.items()
     }
-    trace_dropped = (
-        planner_trace.dropped
+    log_dropped = (
+        planner_log.dropped
         + story.dropped
-        + sum(m.tracer.dropped for m in flock_members.values())
+        + sum(m.event_log.dropped for m in flock_members.values())
     )
     summary = {
         "duck": duck.name,
@@ -306,6 +314,11 @@ async def run_flock(
         "reason": reason,
         "flock": {"members": ordered, "method": flock.allocation.method},
         "run_name": run_name,
+        # What was asked for, beside what happened. A flock root writes no `run_start`,
+        # so without this the argv would be in the terminal file and nowhere a reader
+        # can parse, and on a deterministic flock in no record at all.
+        "command": command_line(),
+        "version": __version__,
         "robots": {name: spec.key for name, spec in specs.items()},
         "roles": {name: role.model_dump() for name, role in (flock.roles or {}).items()},
         "assignments": coordinator.assignments,
@@ -332,7 +345,7 @@ async def run_flock(
         "seed": seed,
         "transport": "sim2d",
         "dry_run": dry_run,
-        "trace_dropped": trace_dropped,
+        "log_dropped": log_dropped,
     }
     transcript.write("flock_end", **{k: v for k, v in summary.items() if k != "per_duck"})
     transcript.write_summary(summary)
@@ -355,5 +368,5 @@ async def run_flock(
         spotter=coordinator.spotter,
         assignments=dict(coordinator.assignments),
         verdicts=list(coordinator.verdicts),
-        trace_dropped=trace_dropped,
+        log_dropped=log_dropped,
     )

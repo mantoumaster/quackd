@@ -521,7 +521,7 @@ label and a task naming one of them would be ambiguous in exactly the way a labe
 prevent. Both refusals are worth knowing before you write a task around the flag. A
 pilot that does not take images is refused rather than handed the words without the picture,
 because a model told to draw what is in a picture it never received will improvise something
-and the only trace of why would be a line in a transcript nobody reads twice:
+and the only sign of why would be a line in a transcript nobody reads twice:
 
 ```
 ✗ error: fake scripted:goal does not take images, so it cannot be given 1 picture
@@ -767,7 +767,7 @@ The order below is the whole of the feature, and none of it is a step you can sk
    folding to its rest pose with a pencil still in the jaws drives that pencil into the bench,
    and the person who put it there is the one who should take it out. That wait is bounded at
    **120 seconds**, since a run has to end even when the room is empty.
-7. **Then the fold.** Enter sends `gripper(open=true)` through the traced transport, so it is
+7. **Then the fold.** Enter sends `gripper(open=true)` through the logged transport, so it is
    in the record like every other intent, and then the rest move folds the arm and torque drops
    at the fold exactly as it would have without the flag.
 

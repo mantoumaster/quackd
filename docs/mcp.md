@@ -41,9 +41,9 @@ first member, else the first Microduck, else the first declared.
 | `robot_list` | Every robot this server fronts: name, adapter, backend, vendor, model, embodiment, mobility, manifest id and digest, its `datasheet` as data and as one paragraph of `datasheet_text`, loaded contract, health, and which one is the default. Call this first. |
 | `robot_list_verbs(robot?)` | That robot's verbs from its own manifest: params, safety class, `canonical` name and `aliases`, whether it is `core`, whether it is `before_verdict` (it looks, speaks or brakes, so it runs before the pilot has judged the task), and whether its current contract allows it. |
 | `robot_assess_task(robot?, verdict, reason, limits_consulted?, estimates?, needs?)` | Your verdict on whether that body can do the task, judged against the datasheet in its `robot_list` row: `feasible`, `infeasible` or `uncertain`. Required before the first verb that moves the body, and `robot_run_verb` refuses anything that does until you answer (the `verdict` gate). An `infeasible` answer names, in `could`, the robots here whose datasheets meet what the task needs, so it can be handed over. `uncertain` stays pending: there is no terminal to ask on, so ask the person you are chatting with and answer again. Answering again replaces the earlier verdict, which is how an `uncertain` is cleared once you have asked, and is also why an `infeasible` here is not the end of the session the way it is the end of a `quackd run`. A `feasible` whose `needs` that robot's own datasheet does not meet, or does not publish, is refused before it is recorded and names the need (a minimum of zero and an unpublished terrain asked as `indoor_flat` are the two exceptions), which is the check a bid is already held to at the coordinator: answer `infeasible` if that need decides the task, `uncertain` if a person could know the figure, or correct a need you asked more of than the task turns on. Moves nothing and costs no step. |
-| `robot_run_verb(robot?, verb, params?)` | Run any verb through that robot's executor (`search_scan`, `go_to` or its alias `walk_to`, `kick`, `gaze`, `express`, …). Refusals come back as `ok: false`, and a verb the manifest does not list is a refusal too. The result carries a `trace` list of what happened behind it (see below). |
-| `robot_observe(robot?)` | The `observe` verb through the executor (it counts against the budget), returning the camera frame as a PNG image, a one-line detection summary, and the trace as a final text block. A robot with several cameras returns one image per camera, each preceded by a `camera <name>:` line, and the detection summary is the primary camera's alone, because a bearing measured through one lens means nothing through another. A camera that gave nothing this step costs its own picture and nothing else. |
-| `robot_say(robot?, text)` | The `say` verb, with a `trace` like `robot_run_verb`. No robot here has text to speech, so it degrades: one of seven tones on a Microduck, one of the duck's own sounds on an Open Duck. A robot without a `sound` intent refuses with `ok: false`. |
+| `robot_run_verb(robot?, verb, params?)` | Run any verb through that robot's executor (`search_scan`, `go_to` or its alias `walk_to`, `kick`, `gaze`, `express`, …). Refusals come back as `ok: false`, and a verb the manifest does not list is a refusal too. The result carries a `log` list of what happened behind it (see below). |
+| `robot_observe(robot?)` | The `observe` verb through the executor (it counts against the budget), returning the camera frame as a PNG image, a one-line detection summary, and the log as a final text block. A robot with several cameras returns one image per camera, each preceded by a `camera <name>:` line, and the detection summary is the primary camera's alone, because a bearing measured through one lens means nothing through another. A camera that gave nothing this step costs its own picture and nothing else. |
+| `robot_say(robot?, text)` | The `say` verb, with a `log` like `robot_run_verb`. No robot here has text to speech, so it degrades: one of seven tones on a Microduck, one of the duck's own sounds on an Open Duck. A robot without a `sound` intent refuses with `ok: false`. |
 | `robot_load_duckfile(robot?, path)` | Adopt a `.duck` contract on one robot: its `requires` (or, for `duck: 0`, its allowlist) is checked against that robot's manifest first, then allowlist and budgets are enforced for that robot only; the body is returned as instructions. Flock ducks are refused. |
 | `robot_recall(robot?)` | What that robot remembers from earlier sessions and runs: the notes a pilot saved and how its recent runs ended ([memory.md](memory.md)). Costs no step; the server's instructions ask the model to call it early. |
 | `robot_remember(robot?, text, tags?)` | Keep one short fact for future sessions on that robot. Moves nothing, costs no step; the same sentence twice updates the old note. Off with `--no-memory`. |
@@ -70,16 +70,24 @@ a referee this process does not run, and a pilot flock needs one model per robot
 the one model driving this session. Run either with `quackd run` instead
 ([flock.md](flock.md)).
 
-## What the trace shows
+## What the log shows
 
-Every call to `robot_run_verb`, `robot_observe`, `robot_say` and `robot_assess_task` comes back with a `trace`:
+Every call to `robot_run_verb`, `robot_observe`, `robot_say` and `robot_assess_task` comes back with a `log`:
 a short list of plain lines saying what happened behind it, whether or not the call ever
 reached the executor. A call the session refused still says why it was refused.
-`robot_observe` returns the same thing as a final text block, because that tool answers with
-content rather than a dict. The five tools that never touch a robot carry none, because there
-is nothing behind the scenes to show.
+`robot_observe` appends the same thing as a final text block headed `log:`, because that tool
+answers with content rather than a dict. The five tools that never touch a robot carry none,
+because there is nothing behind the scenes to show.
 
-Every trace opens with a `tool` line and closes with a `done` line. Those are the call's own
+That key was called `trace` until 0.11, and it is the one place the old spelling is gone
+outright rather than carried beside the new one for a release. A person who types `--no-trace`
+gets a yellow line naming the new flag, and the command still runs. A model gets no such line:
+it learns the key from the tool description on every call, which is the only place it could be
+told, and a result carrying both spellings would hand it a second copy of up to thirty lines
+every time it used a tool, paid for in context on each one. The flags keep both spellings
+until 0.12.
+
+Every log opens with a `tool` line and closes with a `done` line. Those are the call's own
 envelope, recorded as `tool_call` and `tool_result`: what the client asked for, and what it
 cost in seconds and budget.
 
@@ -87,10 +95,10 @@ cost in seconds and budget.
 tool    robot_run_verb verb='go_to', params={'target': 'ball'} on duck
 verb    go_to(target='ball') from mcp
 ->      look(x=1, y=0, z=0)
-->      move x24 over 2.4 s (vx 0.1..0.2, vy 0, wz 0..0.88)
+->      move x47 over 4.6 s (vx 0.05..0.2, vy 0, wz 0..1)
 ->      stop
-<-      go_to ok: reached the ball: ~0.25 m away, bearing +0° (2.6 s sim, 0.2 s wall, 26 intents)
-done    ok in 2.6 s sim, 0.2 s wall budget: step 2/40, llm calls 0/40, 0.1/5 min
+<-      go_to ok: reached the ball: ~0.24 m away, bearing +0° (4.8 s sim, 0.2 s wall, 49 intents)
+done    ok in 4.8 s sim, 0.2 s wall budget: step 2/40, llm calls 0/40, 0.2/5 min
 ```
 
 A `gate` line appears whenever a rule fires, and says which one: `gate allowlist: refused
@@ -120,9 +128,13 @@ that call ends, so two calls at once stay two readable blocks rather than an int
 Anything belonging to no call, such as the heartbeat noticing the link is gone, is written
 the moment it happens. Stderr is
 `%APPDATA%\Claude\logs\mcp-server-quackd.log` on Windows and `~/Library/Logs/Claude/` on
-macOS. Turn it all off with `--no-trace`, or with `QUACKD_TRACE=0` in the server's
+macOS. Turn it all off with `--no-log`, or with `QUACKD_LOG=0` in the server's
 environment, which is the switch to reach for in a desktop config because it needs no change
-to the command line.
+to the command line. That drops the `log` key from the four results that carry one and the
+blocks from stderr, leaving the executor's own two lines per verb, the call and what came
+back. Under `quackd run` the same flag only decides what you watch, because the run directory
+gets its log either way; an MCP session writes no run directory, so here there is no copy
+kept anywhere else.
 
 ## Claude Code
 
@@ -181,13 +193,13 @@ Edit `claude_desktop_config.json` — Settings → Developer → *Edit Config*:
     "quackd": {
       "command": "uvx",
       "args": ["--from", "quackd[microduck]", "quackd", "serve-mcp", "--robot", "microduck:sim2d"],
-      "env": {"QUACKD_TRACE": "1"}
+      "env": {"QUACKD_LOG": "1"}
     }
   }
 }
 ```
 
-(`QUACKD_TRACE` is `1` by default and is shown here because `env` is where you would set it
+(`QUACKD_LOG` is `1` by default and is shown here because `env` is where you would set it
 to `0`. quackd reads a `.env` from the folder it is run in and from beside its own install,
 and a desktop-spawned server has no shell and is started in whichever directory the client
 chose, which is usually not yours. So `env` here is the reliable way to set anything for this
@@ -232,7 +244,7 @@ quackd serve-mcp --yes                               # allow confirm-gated verbs
 quackd serve-mcp --robot microduck:jsonrpc --address tcp://127.0.0.1:9870   # real robot, experimental
 quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock             # a flock: robot_* tools, one executor each
 quackd serve-mcp --flock kitchen                                            # the same, from a stored flock
-quackd serve-mcp --no-trace                          # stop every result carrying a trace of what happened
+quackd serve-mcp --no-log                            # no result carries a log of what happened
 quackd serve-mcp --robot open_duck:sim2d                                     # a buildable duck, no hardware needed
 ```
 

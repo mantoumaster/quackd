@@ -25,7 +25,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     and force the exit. `faulthandler_timeout` watches a test; nothing watches the shutdown
     after the last one, and that is where a `zmq.Context` left unclosed by a failing test
     was garbage collected into a `term()` that waits forever, which held three macOS jobs
-    for six hours with no trace of what they were doing. This names the frame.
+    for six hours without ever saying what they were doing. This names the frame.
 
     Unconfigure rather than sessionfinish, and a flush first: the failure report is printed
     inside sessionfinish, and `_exit` flushes nothing, so arming the timer any earlier
@@ -76,13 +76,13 @@ def _asset_cache_in_tmp(
 
 
 @pytest.fixture(autouse=True)
-def _trace_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The trace is on by default and goes to stderr, which CliRunner folds into `output`,
+def _log_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The log is on by default and goes to stderr, which CliRunner folds into `output`,
     so every CLI and acceptance test would carry pages of it in its failure message and its
     substring assertions would match by accident. Off for the suite; the tests that prove
-    the default is on set `QUACKD_TRACE` to an empty string themselves (an empty value is
+    the default is on set `QUACKD_LOG` to an empty string themselves (an empty value is
     on, and unlike `delenv` it also shields them from a developer's own `.env`)."""
-    monkeypatch.setenv("QUACKD_TRACE", "0")
+    monkeypatch.setenv("QUACKD_LOG", "0")
 
 
 @pytest.fixture(autouse=True)

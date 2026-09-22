@@ -120,7 +120,7 @@ async def take_hold_if_any(transport: Any) -> HandResult:
 
 
 async def go_to_rest_if_any(transport: Any) -> RestResult:
-    """The rest move on anything: an adapter, a bare transport, a traced wrapper.
+    """The rest move on anything: an adapter, a bare transport, a logged wrapper.
 
     A transport with no `go_to_rest` is a body quackd does not park, which is most of
     them, so this costs a `getattr` rather than a method on every mock in the suite."""

@@ -574,7 +574,7 @@ gripper and press Enter, and the gripper opens before the arm folds up. Leave it
 the arm folds up with the gripper shut
 ```
 
-[Section 08](#08-the-first-task) puts a whole run's trace around those three lines.
+[Section 08](#08-the-first-task) puts a whole run's log around those three lines.
 
 **Read the middle line rather than skimming it.** Those are the angles the arm reported after
 torque came back on, not the angles you thought you left. quackd compares them against what it
@@ -722,15 +722,16 @@ the pose you set rather than the fold, which is the whole point of the flag, and
 07](#or-start-from-a-pose-you-set-by-hand) rather than an empty hand.
 
 Every run writes `runs/<timestamp>-<name>/` with the full transcript, every frame quackd
-captured and a summary. `quackd trace` replays any of it afterwards, and the summary now says
-when the run started and ended, how much of it was spent waiting on the model, and what the
-model calls cost.
+captured, a summary, and `terminal.txt`, which is everything that was on the terminal during
+the run as plain text, opening with the command that started it. `quackd log` replays any of
+it afterwards, and the summary now says when the run started and ended, how much of it was
+spent waiting on the model, and what the model calls cost.
 
 > [!TIP]
 > **Name your runs if you are doing more than a few.** `--run-name "example 1"` puts the name
 > on the directory, so the afternoon reads back as
 > `runs/20260915-145349-goal-example-1/` instead of thirty timestamps you would have had to
-> write down at the time. `quackd trace example-1` then finds that run by the name you gave it,
+> write down at the time. `quackd log example-1` then finds that run by the name you gave it,
 > and prefers an exact match over a newer directory that merely contains the text, so
 > `example-1` does not hand you `example-19`.
 
@@ -971,7 +972,7 @@ the arm's side that is an ordinary teardown and nothing about it is slower for b
 **Inside the end-of-run hand-back**, where quackd is asking you to take whatever is in the
 gripper, a second Ctrl-C means skip the gripper rather than abandon the run. The jaws stay
 where they are, the arm still parks at its rest pose, the transport still closes properly, and
-the trace says `the gripper was left as it is, and the arm still folds up`. That is a
+the log says `the gripper was left as it is, and the arm still folds up`. That is a
 deliberate exception to the rule in the paragraph above, and it exists because the first
 version was not one: a second Ctrl-C there raised straight through the whole teardown, which
 skipped the rest move, the close, the run's own end record and the summary, and left an
@@ -1074,7 +1075,7 @@ sketch.png:` in front of the image itself and ahead of any camera frame in the s
 Nothing trims it out of the history afterwards, which is the difference that matters: only the
 last two exchanges keep their camera frame, and a task picture is still in front of the model
 on the last step of a long run. The system prompt gains a section naming which pictures came
-with the task and saying, in as many words, that they are not what the robot can see. The trace
+with the task and saying, in as many words, that they are not what the robot can see. The log
 counts them in the request line, so you can tell at a glance that they are still going:
 
 ```
@@ -1099,7 +1100,7 @@ the vendor does take them, and a local model needs --vision
 ```
 
 Silently dropping them is the failure this refusal is here to prevent. A model handed "draw
-what is in the picture" with no picture improvises something plausible, and the only trace of
+what is in the picture" with no picture improvises something plausible, and the only sign of
 why would be a drawing that has nothing to do with your sketch. The same rule covers the
 pilots this page has already met. `--provider fake` never takes images, so the scripted pilot
 needs `--vision` before it will accept one, and it still does nothing with it. A local model
@@ -1379,7 +1380,7 @@ releases torque and the arm drops from wherever that goal left it, which in this
 definition not its rest pose, so take its weight first and keep your fingers out of the jaws.
 
 **Nothing run-shaped is written to disk.** No `runs/` directory, no `transcript.jsonl`, no
-`frames/`. The record of an MCP session is the chat itself, the server's own log on stderr, and
+`frames/`, no `terminal.txt`. The record of an MCP session is the chat itself, the server's own log on stderr, and
 whatever the model chose to keep with `robot_remember`, which appends one line per note to
 `~/.quackd/memory/<name>.jsonl` ([memory.md](memory.md)).
 
@@ -1639,14 +1640,14 @@ Edit Config opens it:
     "arm": {
       "command": "D:\\Development\\lerobot-test\\.venv\\Scripts\\quackd.exe",
       "args": ["serve-mcp", "--robot", "arm-01"],
-      "env": {"QUACKD_TRACE": "1"}
+      "env": {"QUACKD_LOG": "1"}
     }
   }
 }
 ```
 
 Then restart Claude Desktop completely, not just the window. The server appears under
-Connectors, Manage connectors. `QUACKD_TRACE` is `1` already and is shown here because `env`
+Connectors, Manage connectors. `QUACKD_LOG` is `1` already and is shown here because `env`
 is where you would set it to `0`: a desktop-spawned server has no shell and starts in a
 directory you did not choose, so `env` is the reliable way to give it a variable, and a `.env`
 file may or may not be found. That same missing shell is why the command is an absolute path.
@@ -1997,7 +1998,7 @@ shoulder_pan 0, shoulder_lift -90, elbow_flex 90, wrist_flex 0, wrist_roll 0, gr
 ```
 
 Yours will be your own arm's, and the temperature is the number worth writing down, for the
-reason [section 06](#06-first-contact) gives. The trace comes back with it:
+reason [section 06](#06-first-contact) gives. The log comes back with it:
 
 ```
 tool    robot_run_verb verb='report_state', params={} on arm-01
@@ -2021,7 +2022,7 @@ verb 'move_joints' is not in this duck's allowlist (report_state, stop)
 
 That is the contract doing its job rather than something broken. It arrives as a result with
 `ok: false` rather than as an error, so the model reads it, knows why, and carries on. The
-trace says it twice, once as `gate    allowlist: refused` and once as the result, and ends
+log says it twice, once as `gate    allowlist: refused` and once as the result, and ends
 `done    FAIL in 0.0 s`. A refusal at the allowlist gate costs no step, which is why the `done`
 line still reads `step 1/12`.
 
@@ -2050,14 +2051,20 @@ moves to get there, and moves again when you quit the client. Claude Code writes
 one JSON object per line, each wrapping the text as `{"error":"Server stderr: ..."}`, which is
 the client's framing rather than a sign anything went wrong. Claude Desktop writes
 `%APPDATA%\Claude\logs\mcp-server-<name>.log`, and `~/Library/Logs/Claude/` on macOS.
-`--no-trace`, or `QUACKD_TRACE=0` in the environment, turns the trace off.
+`--no-log`, or `QUACKD_LOG=0` in the environment, turns the log off, both these stderr lines
+and the block that rides back on `robot_run_verb`, `robot_observe`, `robot_say` and
+`robot_assess_task`. Those four are the ones that carry it; the other five never reach the
+arm, so there is nothing behind them to show and nothing to drop. On a `quackd run` that flag
+decides only what you watch, because the run directory gets its log either way. Here there is
+no run directory, so it is the whole record, which is the note below.
 
 > [!IMPORTANT]
 > This is the one place where MCP gives you less than the terminal. `quackd run` writes
-> `runs/<timestamp>-<name>/` with the transcript, every frame it captured and a summary, and
-> `quackd trace` replays it later. An MCP session writes none of that: no `runs/` directory, no
-> `transcript.jsonl`, no `frames/`, no episode kept at the end. The record is the chat, the
-> stderr log above, and whatever `robot_remember` kept. If you want it, keep the chat.
+> `runs/<timestamp>-<name>/` with the transcript, every frame it captured, a summary and the
+> terminal it printed to, and `quackd log` replays it later. An MCP session writes none of
+> that: no `runs/` directory, no `transcript.jsonl`, no `frames/`, no `terminal.txt`, no
+> episode kept at the end. The record is the chat, the stderr log above, and whatever
+> `robot_remember` kept. If you want it, keep the chat.
 
 <br>
 
@@ -2108,9 +2115,9 @@ see. On a real SO-101 that is the only way to ask on purpose, because the static
 `quackd run` validates a task against cannot know you plugged a webcam in, so `observe` cannot be
 in the allowlist there at all.
 
-What comes back from a one-camera arm with the trace on is three content blocks rather than one,
+What comes back from a one-camera arm with the log on is three content blocks rather than one,
 `text, image, text`. A text summary, the frame itself as an image block carrying
-`mime_type=image/png`, and the trace as a final text block. A second camera names each picture and
+`mime_type=image/png`, and the log as a final text block. A second camera names each picture and
 adds a block per lens, and a step where no frame arrived is one text block with no image in it. A
 rehearsal is not one of those cases: `observe` is read-only, so `--dry-run` really opens the
 camera and really hands the picture back, the same way `report_state` really reads the servos.
@@ -2121,7 +2128,7 @@ arm-01 camera: ball at bearing 30° left ~0.58 m
 ```
 
 ```
-trace:
+log:
 tool    robot_observe  on arm-01
 verb    observe() from mcp
 <-      observe ok: frame captured; ball at bearing 30° left ~0.58 m (0.0 s, 0 intents)
@@ -2225,7 +2232,7 @@ for the move. The tool answers as though it had worked:
 [dry-run] move_joints not sent
 ```
 
-The trace that comes back with the call, and the server's stderr log, carry the whole of it:
+The log that comes back with the call, and the server's own stderr, carry the whole of it:
 
 ```
 tool    robot_run_verb verb='move_joints', params={'positions': {'wrist_roll': 10}, 'duration_s': 2} on arm-01
@@ -2369,7 +2376,7 @@ and say so in an issue.
 
 **2. One joint, small, in the middle of its range.** Ask for
 `robot_run_verb(verb="move_joints", params={"positions": {"wrist_roll": 10}, "duration_s": 2})`.
-The chat gets one line, `moved wrist_roll=10`, and the call's trace has the whole of it:
+The chat gets one line, `moved wrist_roll=10`, and the call's log has the whole of it:
 
 ```
 tool    robot_run_verb verb='move_joints', params={'positions': {'wrist_roll': 10}, 'duration_s': 2} on arm-01
@@ -2400,7 +2407,7 @@ answers, which is the clearest reason there is to be driving this arm from a cli
 `-100..100` is the mock's range, and a real arm's comes off the calibration file you wrote in
 [section M05](#m05-find-the-port-then-calibrate). Use any body joint except `wrist_roll`: upstream
 records a full turn for that one rather than anything you swept, so nothing you can name is outside
-it. The trace shows what the chat does not, which is that a refused goal is followed by a `stop`.
+it. The log shows what the chat does not, which is that a refused goal is followed by a `stop`.
 Its middle three lines:
 
 ```
@@ -2526,7 +2533,7 @@ robot list in the chat and read two lines of the answer, captured against the mo
 is still shut without `--yes`, and on the mock arm `pick` is the verb behind it, which
 [M11](#m11-prove-the-safety-net) ends on. `null` also takes the success test away, and there is no
 `declare_success` tool over MCP in any case, so the wave ends with the model saying it waved.
-Nothing checks that, and the only record of what ran is the chat and the server's stderr trace
+Nothing checks that, and the only record of what ran is the chat and the server's stderr log
 that [M08](#m08-the-first-session) locates.
 
 **What it costs is a budget you did not choose.** A bare session runs on 40 verb steps and five
@@ -2604,7 +2611,7 @@ Part 1's [13. When it will not work](#13-when-it-will-not-work) is still the tab
 anything the arm itself says, because the arm does not know which pilot it has. What changes
 is where those sentences arrive. A wrong port, a goal outside the calibrated range, a stall,
 a camera that gave no frame: over MCP each of those comes back inside a result's `summary`,
-in more detail in the `trace` block under it, and in the server's stderr log. None of it
+in more detail in the `log` block under it, and in the server's stderr log. None of it
 prints on a terminal you are watching. So read that table there when the arm is the thing
 that complained, and read this one here, which is only the failures belonging to the client,
 the server and the session.
@@ -2625,7 +2632,7 @@ the server and the session.
 | a flock `.duck` refused as not available over MCP | an MCP session is one pilot, and a flock needs a coordinator this process does not run | run that file with `quackd run` from a terminal, which is what the refusal tells you |
 | `file not found (also not a bundled starter duck)` for a file that is plainly there | a relative path resolved against the server's working directory, which you did not choose | pass an absolute path. Bundled names like `lerobot-lookout` resolve by name and need none |
 | tools, verbs or a camera that do not match what you changed a minute ago | a running server keeps the tools and the contract it started with | restart it: `/mcp` in Claude Code, or a new session. In Desktop, restart the app |
-| a summary you cannot act on | the trace in a result is capped at thirty lines, and the whole block goes to stderr | read the server's log, which is the last paragraph here |
+| a summary you cannot act on | the log in a result is capped at thirty lines, and the whole block goes to stderr | read the server's log, which is the last paragraph here |
 
 **The budget row is the one that will bite tomorrow.** Without a loaded `.duck`, a session's
 allowlist holds every verb that is not `dangerous`, and the session runs on a default budget
@@ -2683,13 +2690,13 @@ one JSON object per line. The server's lines are the objects with an `error` key
 connection, the capabilities it negotiated and the teardown. Every object carries a
 `timestamp`, a `sessionId` and a `cwd` as well, so grep the file for `Server stderr` rather
 than reading it top to bottom. The word `error` there is the client's name for the stream
-rather than a verdict on the line, so an ordinary trace block reads back as a run of those
+rather than a verdict on the line, so an ordinary log block reads back as a run of those
 objects, and the only escaping an ordinary line shows is the `\r\n` at the end of it. Claude
 Desktop writes `%APPDATA%\Claude\logs\mcp-server-<name>.log` on Windows and
-`~/Library/Logs/Claude/` on macOS, as plain text. Either one holds the uncapped trace, the
+`~/Library/Logs/Claude/` on macOS, as plain text. Either one holds the uncapped log, the
 heartbeat's own lines, and the reason a session refused to start, which is the one failure
-the chat cannot show you because no tool ever appeared. `--no-trace`, or `QUACKD_TRACE=0` in
-the config's `env` block, turns the trace off and leaves everything else.
+the chat cannot show you because no tool ever appeared. `--no-log`, or `QUACKD_LOG=0` in
+the config's `env` block, turns the log off and leaves everything else.
 
 > [!IMPORTANT]
 > Nothing quoted in this section came from a real arm. No MCP session has yet driven one, so
@@ -2706,12 +2713,13 @@ or a plain issue with the chat pasted into it. A report that says it did not wor
 much as one that says it did, and this half of the page is the half with the least behind it.
 
 **What you attach is different here.** An MCP session writes nothing run shaped: no `runs/`
-directory, no `transcript.jsonl`, no `frames/`. Four things stand in for that.
+directory, no `transcript.jsonl`, no `frames/`, no `terminal.txt`. Four things stand in for
+that.
 
 - **The chat itself.** Every tool call and every result is in it, which is the whole record of
   what the pilot asked for and what the executor answered. Copy it from the first `robot_` call
   to the end.
-- **The server's stderr log**, which is where the trace went. Claude Code keeps it under
+- **The server's stderr log**, which is where the uncapped log went. Claude Code keeps it under
   `%LOCALAPPDATA%\claude-cli-nodejs\Cache\<cwd slug>\mcp-logs-<server name>\`, one JSON object
   per line. Claude Desktop keeps `%APPDATA%\Claude\logs\mcp-server-<name>.log`, and
   `~/Library/Logs/Claude/` on macOS. [M13](#m13-when-it-will-not-work) has the longer version.

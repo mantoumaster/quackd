@@ -202,7 +202,7 @@ def _executor(
     transport = MockTransport()
     events: list[dict[str, object]] = []
 
-    class _Tracer:
+    class _EventLog:
         def emit(self, kind: str, **data: object) -> None:
             events.append({"kind": kind, **data})
 
@@ -210,7 +210,7 @@ def _executor(
         registry=registry if registry is not None else default_registry(),  # type: ignore[arg-type]
         transport=transport,
         manifest=microduck_manifest("mock"),
-        trace=_Tracer(),  # type: ignore[arg-type]
+        event_log=_EventLog(),  # type: ignore[arg-type]
         **over,  # type: ignore[arg-type]
     )
     return executor, transport, events

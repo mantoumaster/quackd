@@ -1,4 +1,4 @@
-"""Every line the plain trace renderer can draw, as named cases.
+"""Every line the plain log renderer can draw, as named cases.
 
 The MCP tool result is made of these exact strings (`docs/mcp.md`) and a model reads them on
 every call, so the terminal view may be redrawn but `render_lines` may not move under it.
@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from quackd.trace import TraceEvent, call_lines, intent_line, render_lines
+from quackd.log import LogEvent, call_lines, intent_line, render_lines
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -21,11 +21,11 @@ MULTILINE = "planner: it can see the ball\nbearing +12 deg, 0.8 m away\nnext: go
 LONG_THINKING = "the ball is behind me, so I turn. " * 90
 
 
-def _e(kind: str, t: float, **data: Any) -> TraceEvent:
-    return TraceEvent(kind, t, data)
+def _e(kind: str, t: float, **data: Any) -> LogEvent:
+    return LogEvent(kind, t, data)
 
 
-def events() -> list[tuple[str, TraceEvent]]:
+def events() -> list[tuple[str, LogEvent]]:
     """(name, event) for every branch of the renderer, the ones that draw nothing included."""
     return [
         # ── run_start: an adapter or a bare transport, and its four optional lines ──
@@ -324,6 +324,21 @@ def events() -> list[tuple[str, TraceEvent]]:
         (
             "gate_fired",
             _e("gate", 0.6, gate="abort_when", outcome="fired", reason="battery < 10%"),
+        ),
+        # ── prompt: the question a person was put, and what they said ──
+        (
+            "prompt_yes",
+            _e("prompt", 0.65, what="confirm", question="run kick(power=0.5)?", answer=True),
+        ),
+        (
+            "prompt_no",
+            _e(
+                "prompt",
+                0.65,
+                what="acknowledge",
+                question="this robot cannot see a fall,\nso you are the only safety left",
+                answer=False,
+            ),
         ),
         # ── intent, one at a time ──
         (
@@ -648,7 +663,7 @@ def golden() -> dict[str, Any]:
     records = [json.loads(line) for line in raw if line.strip()]
     out["transcript_example"] = call_lines(
         [
-            TraceEvent(
+            LogEvent(
                 str(r.get("kind", "")),
                 float(r.get("t") or 0.0),
                 {k: v for k, v in r.items() if k not in ("t", "kind")},

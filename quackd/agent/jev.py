@@ -104,7 +104,7 @@ FLOORS: dict[str, float] = {
 class Call:
     """One concrete tool call the stepper may author, and the words it is offered in.
 
-    `label` is what Jev chooses between and what the trace prints, so it has to read like
+    `label` is what Jev chooses between and what the log prints, so it has to read like
     something a person would say out loud: `gripper(open=false)`, not a schema fragment."""
 
     name: str

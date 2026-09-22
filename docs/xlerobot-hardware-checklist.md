@@ -78,3 +78,16 @@ script that ignores it.
 Whether the turn direction and the arm units were right, whether the deadman behaved as
 described, and anything that made the cart move in a way this page did not predict. The
 adapter page's "How to help" says where that goes.
+
+Attach `runs/<timestamp>-<name>/terminal.txt` from whichever `quackd run` you did. It is the
+whole session as plain text, opening with the command that started it and the version that ran
+it, so it is usually the one file that answers what happened. Send `transcript.jsonl` beside it
+when the question is about one record rather than the session. The steps you drove from an MCP
+client have neither, because a session writes nothing run shaped, and there the record is the
+chat itself.
+
+Read that first line before you paste it. The values of `--api-key` and `--token` are replaced
+there, and so is a password or a credential-named query parameter in `--base-url`, `--address`
+and `--camera-url`. A query parameter named for something else survives, so the
+`?swap_colour=0` from step 12 comes back as you typed it. Nothing else on the screen is
+([SECURITY.md](../SECURITY.md)).

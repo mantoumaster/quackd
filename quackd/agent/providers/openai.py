@@ -258,7 +258,7 @@ def parse_responses(response: Any) -> ProviderTurn:
             cache_write_tokens=int(getattr(input_details, "cache_write_tokens", 0) or 0),
         ),
         # No finish_reason here. `status` is "completed" or "incomplete", and the loop only
-        # reads this for the trace, so say the same words the other parser would.
+        # reads this for the log, so say the same words the other parser would.
         stop_reason="tool_calls" if tool_calls else getattr(response, "status", None),
         raw=None,
         thinking="\n".join(thoughts) or None,

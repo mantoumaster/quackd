@@ -476,7 +476,7 @@ recorded
     Nothing asks you about the gripper on this path, because the run never reached the pilot.
     The fold drives the five body joints and never the gripper, so whatever you closed the jaws
     on folds up with the arm: take it out before you press Ctrl-C rather than after. The run is
-    recorded as an abort like any other, with one `hand` line in its trace saying the arm was
+    recorded as an abort like any other, with one `hand` line in its log saying the arm was
     released and nothing after it saying anybody took it.
 
 ## The gripper, and only then a policy
@@ -497,8 +497,20 @@ recorded
 ## What to report
 
 [Open a LeRobot hardware report](https://github.com/rokbenko/quackd/issues/new?template=lerobot-hardware-report.yml),
-which asks for exactly the list below, or a plain issue with the transcript and `quackd
-doctor` output. A report that says it did not work is worth as much as one that says it did.
+which asks for exactly the list below, or a plain issue with `quackd doctor` output and
+`runs/<timestamp>-<name>/terminal.txt` from the run. That file is the whole session as plain
+text, opening with the command that started it and the version that ran it, so it is usually
+the one that answers what happened. Send `transcript.jsonl` beside it when the question is
+about one record rather than the session, such as what `report_state` read back off the joint
+that moved. The steps you drove from an MCP client have neither, because a session writes
+nothing run shaped, and [M14 of the first run](lerobot-first-run.md#m14-what-to-report) lists
+the four things that stand in for it there. A report that says it did not work is worth as much
+as one that says it did.
+
+The command line at the top of that file has the values of `--api-key` and `--token` replaced,
+and a password or a credential-named query parameter taken out of `--base-url`, `--address`
+and `--camera-url`. Nothing else on the screen is, so read it before you paste it
+([SECURITY.md](../SECURITY.md)).
 
 **Four things one afternoon on one bench did not answer**, and which still need a real arm:
 

@@ -12,7 +12,7 @@ can give it a name. Until now the only absolute time a run had was the name of i
 which is the local clock at second precision and gone the moment anybody renames the folder, and
 the nearest thing to a cost was a token count, which is not a cost: it is one of the two numbers
 a cost is made of. `summary.json` carries both halves now, per call and per run, and `quackd
-trace` reprints them from a run recorded weeks ago.
+log` reprints them from a run recorded weeks ago.
 
 What is measured and what is arithmetic is worth separating once, plainly, because the rest of
 this is money. Measured: `wall_s`, `connect_s` and `llm_latency_s` come off a clock in this
@@ -36,6 +36,40 @@ that stops being a no-op the day something does. The loop had a smaller one of t
 reading `perf_counter` twice on a model turn and disagreeing with itself about how long the call
 took. It times a call once now, and the record and the running total read that one number.
 
+The trace is the log, and it is now the whole screen as well. The record outgrew the word: it
+holds every intent the robot was sent, every gate the executor closed, the clocks and the money
+above, and from this release what was on your terminal while all of it happened. `quackd trace`
+is `quackd log`, `--trace/--no-trace` is `--log/--no-log`, `--trace-prompt/--no-trace-prompt` is
+`--log-prompt/--no-log-prompt`, `QUACKD_TRACE`, `QUACKD_TRACE_THINKING` and `QUACKD_TRACE_PROMPT`
+are `QUACKD_LOG`, `QUACKD_LOG_THINKING` and `QUACKD_LOG_PROMPT`, and `quackd/trace.py` is
+`quackd/log.py` with its classes renamed after it. Every one of those old spellings still works
+for this release, printing one line on stderr saying what it is called now, and every one
+of them goes in 0.12, which is the same single release of grace `--transport` got in 0.4 before
+0.5 removed it. Two things do not get that grace and are the two to change today: an MCP client
+that reads `trace` off a tool result must read `log`, and anything that reads `trace_dropped` out
+of a summary should read `log_dropped`. quackd's own replay takes either spelling, so a run
+directory recorded before this release still replays; nothing here writes the old one any more.
+
+What you watched is kept as well. Every run directory gets a `terminal.txt`: the screen as plain
+text with no colour codes in it, opening with the command that started the run and the version
+that ran it, and carrying the questions you were asked with the answers you typed, which the
+terminal echoed and nothing in quackd ever printed. Control characters are taken out on the way
+in, every C0 code except tab and newline, and DEL, so a goal, a downloaded `.duck` body, a model
+or a robot that puts an escape sequence in its text cannot drive the terminal of whoever reads
+the file with `cat`. It is the screen and not the record, so `--no-log` empties most of it
+exactly as it empties the terminal, and `transcript.jsonl` is written either way as always, with
+every one of those characters still in it and JSON-escaped, so nothing is lost by dropping them
+from the file a person reads.
+
+Before you paste a run directory into an issue, know what is now in it. The command line at the
+top has the values of `--api-key` and `--token` replaced by `***`. `--base-url`, `--address` and
+`--camera-url` keep their host and path and lose their password and any credential-named query
+parameter, so `https://rok:hunter2@gw/v1?api_key=sk-live` is recorded as
+`https://rok:***@gw/v1?api_key=***`. `--extra-body` has its credential-named keys replaced where
+the run records the object, which is the only place a body set through `QUACKD_EXTRA_BODY` could
+ever be caught, and not where it records your command line: a key typed inside that JSON on the
+command line is in the record in the clear. Nothing else on that screen is redacted.
+
 ### Added
 
 - **Timing in the record: `started_at`, `ended_at`, `wall_s`, `connect_s` and `llm_latency_s`.**
@@ -51,17 +85,17 @@ took. It times a call once now, and the record and the running total read that o
   clock or slept through part of a run. `elapsed_s` keeps exactly the meaning it had, which is
   the budget clock: it starts later than the record does, it restarts after a `--by-hand`
   handover, and it runs on the transport's own clock, so on a simulator it is the simulator's.
-  The two are far apart and that is not a bug. The example run below recorded `elapsed_s` 7.8
-  against a `wall_s` of 0.219, because 7.8 seconds of simulated duck happened in a fifth of a
-  second of laptop.
+  The two are far apart and that is not a bug. The example run below recorded `elapsed_s` 11.9
+  against a `wall_s` of 0.359, because 11.9 seconds of simulated duck happened in about a third
+  of a second of laptop.
   Reading one as the other is the mistake this record invites, so they are named apart and said
   apart here.
 
 - **Cost in the record: `cost_usd` on every model call and on the run.** The `llm` line prints
   what that call cost and what the run has spent so far, `summary.json` keeps the total and the
   rate it was computed at, and the verdict counts it:
-  `tokens  in=1784 out=16 (run total in=10730 out=96 $0.0336) latency=0.0 s cost=$0.0056`. The
-  rates are USD per million tokens off each vendor's own pricing page, read on 2026-09-21, and
+  `tokens  in=1734 out=16 (run total in=10421 out=96 $0.0327) latency=0.0 s cost=$0.0054 stop=tool_use`.
+  The rates are USD per million tokens off each vendor's own pricing page, read on 2026-09-21, and
   112 of the 115 models in the catalogue carry one. The three that do not are Cohere's
   `command-a-plus-05-2026`, `command-a-03-2025` and `command-a-reasoning-08-2025`, which is the
   whole Command A family and includes that vendor's own default: Cohere publish per-token rates
@@ -105,18 +139,18 @@ took. It times a call once now, and the record and the running total read that o
   construction, which is a different claim from a vendor charging nothing and is labelled as one.
 
 - **A run can be named: `--run-name` on `quackd run` and `quackd record`, and a pass in `quackd
-  trace` that resolves one.** This is for the person running a hundred examples on one arm in an
+  log` that resolves one.** This is for the person running a hundred examples on one arm in an
   afternoon, who ends the day with a hundred directories named after the second they started and
   no way to tell which was which without opening them. `--run-name "Example 1"` slugs to
   `example-1` and goes into the directory name after the duck and before the collision counter,
   `runs/20260921-160009-find-and-kick-example-1/`, and the text as you typed it is kept in
   `run_start`, `run_end` and the replay header, which grew a `run name` row beside new `started`
-  and `price` rows. `quackd trace example-1` then finds it: an exact label match is tried ahead
+  and `price` rows. `quackd log example-1` then finds it: an exact label match is tried ahead
   of both the timestamp prefix and the loose substring, so `example-1` resolves to the run you
   called `Example 1` even when `example-19` was recorded later, and a run you called `20260921`
   is reachable by that name rather than being answered by whichever run's timestamp starts the
   same way. The label is matched against what follows the stamp and only where a duck name
-  precedes it, so `quackd trace find-and-kick` still means the newest run of that duck rather
+  precedes it, so `quackd log find-and-kick` still means the newest run of that duck rather
   than the one that happens to have gone unnamed. A name with nothing ASCII in it is refused
   before anything connects, *--run-name '!!!' has no ASCII letters or digits in it, so there is
   nothing to name the directory after*, rather than quietly becoming something else, because a
@@ -125,11 +159,86 @@ took. It times a call once now, and the record and the running total read that o
   name too and put it in their summary, and both take `--price` and apply it to every member at
   the one rate.
 
+- **`terminal.txt`, the session as plain text, in every run directory.** The transcript says what
+  quackd did and this says what you saw while it did it: the header, the narration, the warnings,
+  the questions and your answers, the verdict, in the order they appeared and with no escape
+  codes in them, so it greps and diffs like any other file. It opens with the command that
+  started the run and the version that ran it. Nothing is written until there is a run directory,
+  so what quackd refuses before it makes one still leaves nothing behind: a bad `--price`, a
+  `--run-name` with nothing to slug, a `.duck` that does not parse. A run that gets a directory
+  and then fails to reach its robot has always left one, and now it has the screen in it too.
+  `--no-log` takes the narration out of the file as it takes it off the screen, because this is
+  the screen; `transcript.jsonl` is unaffected and still not optional. A flock keeps one at the
+  run root rather than one per member, because there was one terminal however many robots were
+  narrating into it. If the file cannot be written the run does not notice: the capture disables
+  itself and the terminal never pays for it.
+
+- **The command and the version are in the record: `command` and `version` in `run_start` and in
+  `summary.json`.** `command` is the argv as a list with `argv[0]` replaced by the literal
+  `quackd`, so it says what was run rather than which interpreter path ran it, and the values of
+  `--api-key` and `--token` are `***` in both spellings a shell allows, `--api-key sk-…` and
+  `--api-key=sk-…`. The flag itself stays, because *that* a key was passed is usually what a
+  reader is checking, and a trailing `--api-key` with nothing after it is left as it was typed.
+  Redaction is by flag name and nothing else: a secret passed some other way is not found by
+  this, and the rest of `terminal.txt` is not redacted at all.
+
+- **A `prompt` event, for the questions a person was actually asked.** `{what, question, answer}`
+  with `what` one of `confirm`, `decide`, `acknowledge` or `hand_off`: the confirm gate, the
+  feasibility verdict, an acknowledgement, and each half of a `--by-hand` handover. What an
+  answer *caused* was already recorded by whoever acted on it; this is the exchange itself, in
+  the words it was put in, which nothing held before. It is written only where somebody was
+  really there, so a `--yes` run and a flock member's standing answers produce no `prompt` rows
+  at all. A record claiming a human authorised a verb when no human was asked would be worse than
+  no record. A run with no terminal under it counts as nobody being there, and that is the part
+  to read if you script quackd: `yes | quackd run` and `quackd run < answers.txt` reach the same
+  prompt, `input()` reads the pipe, and the confirm gate opens on that answer exactly as it
+  always has. Only the testimony changed. There is no `prompt` row, and the gate's own `reason`
+  stopped saying `a human said yes` on a run nobody was watching: it reads
+  `the confirm gate was allowed` or `the confirm gate was denied`. If you parse gate reasons,
+  those two strings are new. A job with no stdin at all is unchanged in every way: the prompt
+  raises, and the gate denies and says which exception it raised on.
+
+- **`on_run_dir` on both flock runners.** `run_pilot_flock` and `run_flock` take
+  `on_run_dir: Callable[[Path], None] | None`, called the moment their run directory exists and
+  before any member has written into it. The CLI passes the terminal capture; anyone embedding a
+  flock now has one hook for *the directory this run will fill*, which previously could only be
+  learned from the result after the run was over.
+
 - **[ADR-0041](docs/adr/0041-the-record-says-when-it-ran-and-what-it-cost.md)**, on why a run
   records money at all, what the record is and is not evidence of, and where the arithmetic
   stops.
 
+- **[ADR-0042](docs/adr/0042-the-log-is-the-whole-screen.md)**, on why the trace became the log,
+  the name collision that rename had to route around, why the terminal is teed rather than
+  recorded, and which spellings were kept for a release and which one was not.
+
 ### Changed
+
+- **Breaking. The MCP tool result key `trace` is now `log`, and there is no second spelling.**
+  `robot_run_verb`, `robot_observe`, `robot_say` and `robot_assess_task` come back with `log`, a
+  list of at most thirty lines, and `robot_observe` appends the same thing as a text block headed
+  `log:`. Change `result["trace"]` to `result["log"]`; a client that used `.get("trace")` will
+  otherwise show an empty log and say nothing about it. This is the one place the old name is
+  gone outright rather than kept for a release, because the reader there is a model, it learns
+  the key from the tool description on every session and there is no yellow line it would ever
+  see. Carrying both would spend a second copy of up to thirty lines of context on every call
+  that touched a robot.
+
+- **Breaking. `trace_dropped` is `log_dropped`, in `summary.json` and in `run_end`.** If you parse
+  a summary, read `log_dropped` and fall back to `trace_dropped` for the runs you already have.
+  That is what quackd's own replay does, which is why a run directory recorded before this
+  release still replays with its counters intact, and nothing in quackd writes the old name now.
+
+- **Breaking. `quackd/trace.py` is `quackd/log.py`, and its classes were renamed with it.**
+  `TraceEvent` is `LogEvent`, `TraceLine` is `LogLine`, `TracedTransport` is `LoggedTransport`,
+  `ConsoleTrace` and `LineTrace` are `ConsoleLog` and `LineLog`, `Tracer` is `EventLog` and the
+  attribute holding one is `.event_log`, `trace_enabled_default` is `log_enabled_default`,
+  `intent_trace_line` is `intent_log_line`, `MCP_TRACE_MAX_LINES` is `MCP_LOG_MAX_LINES`, and
+  `RunConfig.trace`, the live view, is `RunConfig.view`. `import quackd.trace` raises. Two names
+  deliberately did not move: `RunConfig.log` and `Executor.log` are still the `--verbose`
+  callback they have always been, and `member_log` is still the record kind a flock member's free
+  text lands in, because both are contracts that predate this rename and neither is the event
+  stream.
 
 - **The `Usage` convention is written down, and two vendors' numbers move to match it.**
   `input_tokens` is the whole prompt, cached parts included; `cache_read_tokens` and
@@ -146,9 +255,9 @@ took. It times a call once now, and the record and the running total read that o
   cached part, and all that is new for them is that the cached slice is now named beside the
   total instead of being invisible inside it.
 
-- **The verdict panel and `quackd trace` print the same counters, through one function.** They
+- **The verdict panel and `quackd log` print the same counters, through one function.** They
   were two lists that had already drifted, and both gained a time counter and a cost counter:
-  `steps 4 - llm calls 6 - tokens 10730+96 - time 0.2 s (model 0.0 s) - cost $0.0336`. The time
+  `steps 4 - llm calls 6 - tokens 10421+96 - time 0.4 s (model 0.0 s) - cost $0.0327`. The time
   counter carries the split and not only the total, because on the one hardware run this project
   has, 62.1 of 78.8 seconds were spent waiting on the model, and that ratio is the most useful
   thing a run measures about itself; the stepper's seconds join it when one ran. The cost counter
@@ -161,13 +270,36 @@ took. It times a call once now, and the record and the running total read that o
   number should say it is missing rather than leave a reader deciding whether it means zero.
 
 - **The stepper's summary block grew `usage`, `cost_usd`, `cost_estimated` and `price`**, so the
-  `jev` block answers what it cost as well as what it decided, and its own trace line carries the
+  `jev` block answers what it cost as well as what it decided, and its own log line carries the
   tokens and the money inside the parenthesis it already had:
   `jev     gripper(open=false) 0.93 >= 0.85 (0.11 s, 527 tok $0.000022)`. The shadow event carries
   `llm_cost_usd` and `jev_cost_usd` side by side, which is the comparison shadow mode exists to
   make and the one that was previously left for a reader to do by hand out of two other records.
   `run_start` carries the stepper's rate too, so a run costed against `QUACKD_JEV_PRICE` says so
   in the file rather than in somebody's shell history.
+
+### Deprecated
+
+- **`quackd trace` is `quackd log`.** The old subcommand still runs, hidden from `--help`, and
+  prints one yellow line on stderr naming the new spelling. It is removed in 0.12.
+
+- **`--trace/--no-trace` and `--trace-prompt/--no-trace-prompt` are `--log/--no-log` and
+  `--log-prompt/--no-log-prompt`.** Both spellings are on the same option, so a script that passes
+  the old one keeps working this release and gets one yellow line per spelling per process. That
+  line goes to stderr while the flags are being read, which is before the run's capture opens, so
+  a script that greps its own stderr sees it, and the run replays it into the top of
+  `terminal.txt` where it was on the screen. Removed in 0.12.
+
+- **`QUACKD_TRACE`, `QUACKD_TRACE_THINKING` and `QUACKD_TRACE_PROMPT` are `QUACKD_LOG`,
+  `QUACKD_LOG_THINKING` and `QUACKD_LOG_PROMPT`.** The old variable is read only when the new one
+  is unset, so a shell or a `.env` that sets both is answered by the new name and the old one is
+  ignored. Falling back to an old name writes one line to stderr, once per process, which under
+  `serve-mcp` lands in the host's log for that server. Read the warnings as a floor and not a
+  list: a name only warns on a run that reads it, so `QUACKD_TRACE=0` beside
+  `QUACKD_TRACE_PROMPT=0` tells you about the first and says nothing about the second, because
+  switching the log off means the prompt setting is never consulted. A run with the log on names
+  all three. Grep your `.env` files and CI for `QUACKD_TRACE` rather than waiting to be told;
+  they stop being read in 0.12.
 
 ## [0.10.0] — 2026-09-19
 

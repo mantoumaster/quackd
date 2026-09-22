@@ -210,8 +210,8 @@ step 1/12, llm calls 1/12, 1 by the stepper, 0.0/3 min ------------------------
 
 Four things in that are worth reading twice.
 
-- **`from jev`** on the verb line. Who chose a verb is on the record, in the transcript and in
-  the trace, for every call.
+- **`from jev`** on the verb line. Who chose a verb is on the record, in the transcript and on
+  the terminal, for every call.
 - **`0.97 >= 0.60`** is the confidence against the floor for that class of verb. A read answers
   to a lower floor than a move; see [How a turn is decided](#how-a-turn-is-decided).
 - **`escalate, to the model`** on the second turn. The stepper wanted the gripper, but no
@@ -236,7 +236,7 @@ on an Open Duck Mini.
 
 A body whose verbs are all numbers — a cart driving to a pose, an arm moving joints — escalates
 every turn and the stepper costs it one question a step and nothing else. That is expected, not
-broken, and the trace says `not_offered` for it without a request being made at all.
+broken, and the log says `not_offered` for it without a request being made at all.
 
 ## How much faster, and how much cheaper
 
@@ -444,7 +444,7 @@ Four of these are structural rather than enforced, which is the stronger kind.
 ## What the record says
 
 Two new kinds in `transcript.jsonl`, both described in
-[architecture.md](architecture.md#transcript).
+[architecture.md](architecture.md#transcript-format).
 
 `jev`, one per turn the stepper was asked, **identical in both modes** so the rows can be read
 against each other: the labels it was offered, the one it chose, the whole probability
@@ -474,16 +474,22 @@ hardware, and it records the per-call token figures the hero run never kept.
 ```bash
 # the grip loop on the mock arm: every turn is a choice, and no arm is needed
 quackd run arm-grip-check --robot lerobot:mock \
-  --provider openai --jev shadow --runs-dir runs/bench --no-trace
+  --provider openai --jev shadow --runs-dir runs/bench --no-log
 
 # the same run with no stepper, as the baseline to read it against
 quackd run arm-grip-check --robot lerobot:mock \
-  --provider openai --runs-dir runs/bench --no-trace
+  --provider openai --runs-dir runs/bench --no-log
 
 # the README's wave, shadowed: the counter-case, on the arm that ran it
 quackd run --goal "Wave to the camera with an extended arm" --robot arm-01 \
   --max-steps 10 --jev shadow --runs-dir runs/bench
 ```
+
+`--no-log` on the first two is about what you watch rather than what is kept. It stops the run
+narrating itself on stderr, which is what you want when the point is the rows rather than the
+watching, and it shortens `terminal.txt` in the run directory the same way, because that file
+is the screen. `transcript.jsonl` and `summary.json` are written in full either way, and every
+figure below is read from one of those two.
 
 Then, per run directory:
 
@@ -497,7 +503,7 @@ Then, per run directory:
 | **What a stepper turn cost** | `usage` and `cost_usd`, with `usage_estimated` for whether that token count came from TypeSafe or from quackd's own arithmetic | every `{"kind":"jev"}` |
 | **What the model cost** | `latency_s`, `usage`, `cost_usd` | every `{"kind":"llm"}` |
 | **The two bills, on one turn** | `llm_cost_usd` beside `jev_cost_usd`: the ratio the section above could only reach by hand, now on the record for the turn that produced it | every `{"kind":"jev_shadow"}` |
-| **The rollup** | `steps`, `llm_calls`, `elapsed_s`, `wall_s`, `usage`, `cost_usd`, `jev` | `summary.json` |
+| **The rollup** | `steps`, `llm_calls`, `elapsed_s`, `wall_s`, `usage`, `cost_usd`, `jev`, and `command` and `version` beside them, so a bench directory says which flags and which quackd produced the row rather than leaving it to your notes | `summary.json` |
 | **The stepper's rollup** | `usage`, `cost_usd`, `cost_estimated`, and `price`, which is the rate that run was actually costed at rather than whatever the rate is when you read it back | the `jev` block of `summary.json` |
 
 **quackd prices a stepper turn now, and marks the ones it had to guess at.** TypeSafe publish
@@ -511,7 +517,7 @@ rate is TypeSafe's and published. The token count under it is measured only wher
 reports one: where it does not, quackd estimates the request as the state plus the questions at
 four characters to the token, and flags the estimate three times over, with `usage_estimated`
 on the turn, `cost_estimated` on the run's `jev` block, and a `~` in front of both the tokens
-and the money on the trace line and in front of the run's cost on the verdict panel.
+and the money on the log line and in front of the run's cost on the verdict panel.
 
 That path is not a hypothetical. The SDK types both counts on `SystemOneResponse.usage` as
 `int | None`, documented as "when the API did not report it", and a call that raised after its

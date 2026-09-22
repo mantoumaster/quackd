@@ -549,13 +549,13 @@ def _seen(detections: list[dict[str, Any]]) -> str:
 
 
 def _scripted_thinking(obs: Observation, step: int, call: ToolCall) -> str:
-    """The one line the scripted pilot puts on the trace's `think` row.
+    """The one line the scripted pilot puts on the log's `think` row.
 
     It is not reasoning and must never be mistaken for it, hence the bracketed `[scripted]`
     prefix: it is the rule reporting the two inputs it actually branched on — what the camera
     saw and how the last verb ended — and the verb that fell out. Without it every keyless
     run (which is every runnable example in the README, and every recorded asset) shows a
-    trace whose thinking line is permanently blank, so the headline feature cannot be
+    log whose thinking line is permanently blank, so the headline feature cannot be
     demonstrated at all without an API key.
 
     Double quotes are stripped on the way out. `tests/test_cli.py` greps the raw transcript

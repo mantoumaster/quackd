@@ -27,7 +27,7 @@ from typing import Any, Protocol
 
 from quackd.sim2d.world import DT
 
-log = logging.getLogger("quackd.sim2d")
+logger = logging.getLogger("quackd.sim2d")
 
 
 class SteppableWorld(Protocol):
@@ -185,7 +185,7 @@ class FlockClock:
                         # Logged as well as collected: `hook_errors` is read by almost
                         # nobody, so a recorder that could not render used to fail silently
                         # and surface much later as "no frames recorded".
-                        log.warning(
+                        logger.warning(
                             "tick hook %s raised and was removed: %r",
                             getattr(hook, "__qualname__", hook),
                             e,

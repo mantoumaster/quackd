@@ -8,7 +8,7 @@ go and find. This module is that arithmetic, in one place, with three rules it d
   `cost_usd: null` and the verdict panel says `cost unpriced`. Printing `$0.00` for a frontier
   model is the one failure mode here that costs somebody real money.
 - **The rate used is written into the run.** `run_start` and `summary.json` carry it, so
-  `quackd trace` prices a run at what it cost on the day rather than at whatever the catalogue
+  `quackd log` prices a run at what it cost on the day rather than at whatever the catalogue
   says months later, and a rate that turns out to have been wrong is visible rather than
   silently reapplied to every old run.
 - **Where a rate is missing but tokens are not, the estimate goes UP.** An unpublished cache

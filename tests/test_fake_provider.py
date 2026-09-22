@@ -1,4 +1,4 @@
-"""What the scripted pilot puts on the trace's `think` line.
+"""What the scripted pilot puts on the log's `think` line.
 
 Every runnable example in the README uses `--provider fake`, so this line is the only
 thinking most readers ever see. It has to be honest about being a rule, and it has to be
@@ -121,7 +121,7 @@ async def test_scripted_thinking_never_contains_a_double_quote_or_stands_alone(
     """Three invariants the rest of the suite leans on. The quote matters most:
     `tests/test_cli.py` greps the raw transcript for `"kick"` and `"name": "kick"` to prove
     the duck kicked, and a quoted verb name in the thinking would make that pass vacuously.
-    The prefix keeps the line from ever reading as a model's own words, and the trace prints
+    The prefix keeps the line from ever reading as a model's own words, and the log prints
     one `think` row per turn, so it stays a single line."""
     turn = await provider.step(SYSTEM, [Exchange(observation=observation)], [])
 
@@ -134,7 +134,7 @@ async def test_scripted_thinking_never_contains_a_double_quote_or_stands_alone(
 
 async def test_the_scripted_pilot_has_no_text_and_no_reasoning_tokens() -> None:
     """A rule says nothing to the human and spends nothing thinking. Inventing either would
-    make the trace's token line lie about what a keyless run costs."""
+    make the log's token line lie about what a keyless run costs."""
     history = [Exchange(observation=_observation(detections=[_ball()]))]
     turn = await FakeProvider.for_duck("find-and-kick").step(SYSTEM, history, [])
 

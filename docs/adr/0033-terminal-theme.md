@@ -1,6 +1,8 @@
 # ADR-0033: The terminal has a house style, and a way out of it
 
-**Status:** accepted · **Date:** 2026-09-12 · Numbered 0033 on 2026-09-13, because two branches that merged the same day had both taken 0031 · Amends [ADR-0029](0029-tracing.md) (its "lines are ASCII first" rule becomes "the MCP lines are ASCII; a terminal asks its own stream") · Extends [ADR-0001](0001-language.md) (`typer` + `rich` were always the CLI stack; this is what they are used for) · Documented in [architecture.md](../architecture.md#trace)
+**Status:** accepted, amended · **Date:** 2026-09-12 · Numbered 0033 on 2026-09-13, because two branches that merged the same day had both taken 0031 · Amends [ADR-0029](0029-tracing.md) (its "lines are ASCII first" rule becomes "the MCP lines are ASCII; a terminal asks its own stream") · Extends [ADR-0001](0001-language.md) (`typer` + `rich` were always the CLI stack; this is what they are used for) · Documented in [architecture.md](../architecture.md#trace)
+
+**Amended 2026-09-21 by [ADR-0042](0042-the-log-is-the-whole-screen.md):** the trace this ADR draws is now the log, and `quackd trace` below is `quackd log`; the old spelling works for one release and goes in 0.12. The consoles do one thing more: `make_console` returns a `ui.TeeConsole`, so everything printed through `ui.console` and `ui.err_console` is copied into the run directory's `terminal.txt` with no colour and no control characters in it, and the glyph half this ADR picks off the stream is what that copy shows too. The house style is unchanged, and so is the split between the two surfaces. One rule below settled something for the new work instead of changing: `prompt` was already the label of the system prompt block, so the line a person's answer gets is `asked`.
 
 ## Context
 
@@ -42,7 +44,7 @@ Four things were wrong rather than merely inconsistent.
   ` deg` rather than `?`.
 - **The terminal trace is a different surface from the MCP trace.** `render_lines` and its
   padded `->` / `<-` columns are a contract with a model and are frozen, byte for byte, by
-  `tests/golden/trace_lines.json`. The terminal renders the same `TraceLine`s its own way:
+  `tests/golden/log_lines.json`. The terminal renders the same `LogLine`s its own way:
   a glyph in a gutter, a word in the label column, a rule per step, the system prompt as a
   block. This is the amendment to ADR-0029: *the reader that cannot do better still gets
   ASCII, and it is now the stream that says so rather than the renderer assuming it.*

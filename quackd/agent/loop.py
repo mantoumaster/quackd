@@ -18,6 +18,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from PIL import Image
 from pydantic import ValidationError
 
+from quackd import __version__
 from quackd.adapters.base import (
     AdapterError,
     HandResult,
@@ -54,7 +55,9 @@ from quackd.agent.providers.base import (
 from quackd.agent.providers.catalogue import Price
 from quackd.agent.providers.pricing import cost_usd, resolve_price
 from quackd.agent.transcript import Transcript, new_run_dir, png_bytes, run_label
+from quackd.command import command_line, redacted_body
 from quackd.duckfile.schema import DuckFile
+from quackd.log import EventLog, Sink, a_person_was_asked, fmt_params
 from quackd.memory import RobotMemory
 from quackd.perception import detector_for
 from quackd.perception.base import Detection, Detector
@@ -71,7 +74,6 @@ from quackd.safety import (
     VerdictRequired,
     deny_all,
 )
-from quackd.trace import Sink, Tracer, fmt_params
 from quackd.transport.base import (
     Ack,
     CameraFrame,
@@ -124,7 +126,7 @@ class HandOff(Protocol):
     when. An MCP session and a test have nobody there and pass None."""
 
     def say(self, text: str) -> None:
-        """Print this whatever the trace is doing: somebody has to read it to act on it."""
+        """Print this whatever the log is doing: somebody has to read it to act on it."""
         ...
 
     async def wait(
@@ -180,8 +182,8 @@ class RunConfig:
     """Asked when the pilot says it is not sure this body can do the task, so a person makes
     the call. None means nobody is there (MCP, tests), and the pilot is told to decide itself
     rather than being cleared by default."""
-    trace: Sink | None = None
-    """Where to show the run as it happens (the CLI passes a `ConsoleTrace`). The transcript
+    view: Sink | None = None
+    """Where to show the run as it happens (the CLI passes a `ConsoleLog`). The transcript
     gets every event whether this is set or not; this is a second reader of the same stream."""
     link: FlockLinkLike | None = None
     """This pilot's end of a flock bus. None is a solo run: no `tell` tool, no flock section
@@ -222,7 +224,7 @@ class RunResult:
     run_dir: Path
     final_state: dict[str, Any] = field(default_factory=dict)
     gif_path: Path | None = None
-    trace_dropped: int = 0
+    log_dropped: int = 0
     """Events a view raised on and never showed. The transcript has them all."""
     jev_calls: int = 0
     """Turns the discrete stepper answered. 0 on every run that did not ask for one."""
@@ -272,9 +274,9 @@ class AgentLoop:
         )
         self.transcript = Transcript(self.run_dir)
         # the transcript is the record, so its failure is the run's; a console is an observer
-        self.tracer = Tracer(
+        self.event_log = EventLog(
             record=self.transcript.sink,
-            observers=[cfg.trace] if cfg.trace is not None else [],
+            observers=[cfg.view] if cfg.view is not None else [],
         )
         self.budget = Budget(self.fm.budgets, now=cfg.transport.now)
         self.registry = cfg.registry or default_registry()
@@ -290,14 +292,14 @@ class AgentLoop:
             # every camera a verb captures, not just the one that steers: with one camera this
             # writes exactly the frame and the record `on_frame` wrote before there were two
             on_frames=self._on_frames,
-            trace=self.tracer,
+            event_log=self.event_log,
         )
         self.heartbeat = Heartbeat(
             cfg.transport,
             self.executor.abort,
             period_s=cfg.heartbeat_period_s,
             log=cfg.log,
-            trace=self.tracer,
+            event_log=self.event_log,
         )
         # the pilot is handed an `assess_task` tool, so the executor holds it to the answer
         self.executor.require_verdict = True
@@ -338,7 +340,7 @@ class AgentLoop:
     # ── narration ───────────────────────────────────────────────────────────────────
 
     def _emit(self, kind: str, **data: Any) -> None:
-        self.tracer.emit(kind, **data)
+        self.event_log.emit(kind, **data)
 
     def _abort_reason(self) -> str:
         """Why the abort flag is set, in the words the run should end with.
@@ -353,10 +355,25 @@ class AgentLoop:
             or "kill switch"
         )
 
+    def _ask_recorded(self, what: str, question: str, answer: bool, asker: Any) -> None:
+        """Record a question a PERSON was put, and what they said.
+
+        Only a person: `--yes` and a flock wire in callables that answer without asking, and a
+        record claiming a question was put to somebody who was never there is worse than no
+        record. The CLI marks the ones that reach a terminal with `asks_a_person`.
+
+        The consequence of the answer is already written down elsewhere (`gate.answer` for a
+        confirm, `assess.human` for a verdict, the `hand_off` stages for an arm). This is the
+        exchange itself, which nothing held."""
+        if not a_person_was_asked(asker):
+            return
+        self._emit("prompt", what=what, question=question, answer=answer)
+
     def _note(self, text: str) -> None:
-        """`log` is a contract (tests and the CLI's --verbose read it); the trace observes it."""
+        """`log` is a contract (tests and the CLI's --verbose read it); the run's log
+        observes it."""
         self.cfg.log(text)
-        self.tracer.emit("note", text=text)
+        self.event_log.emit("note", text=text)
 
     # ── frames ──────────────────────────────────────────────────────────────────────
 
@@ -470,7 +487,9 @@ class AgentLoop:
         self._emit("hand_off", stage="released", how=released.how, reason=released.reason)
         if not released.ok:
             raise Aborted(f"the arm was not handed over: {released.reason}")
-        if not await hand.wait(self.PLACE_IT):
+        placed = await hand.wait(self.PLACE_IT)
+        self._ask_recorded("hand_off", self.PLACE_IT, placed, hand)
+        if not placed:
             # The invitation said "put whatever it needs in the gripper", so from the moment it
             # is answered the jaws may be holding something whatever happens next, and the
             # teardown owes them the chance to take it out before the arm folds on it.
@@ -520,16 +539,17 @@ class AgentLoop:
             self._emit("hand_off", stage="skipped", reason="interrupted while waiting")
             self._note("the gripper was left as it is, and the arm still folds up")
             return
+        self._ask_recorded("hand_off", self.HAND_IT_BACK, unloaded, hand)
         if not unloaded:
             self._emit("hand_off", stage="skipped", reason="nobody answered")
             self._note("nobody unloaded the gripper, so it stays shut and the arm folds up")
             return
-        # through the traced transport, so the record has the intent like every other one.
+        # through the logged transport, so the record has the intent like every other one.
         # Not through the executor: its abort is set on every run a person ended, and this runs
         # on exactly those.
         ack: Any = None
         try:
-            ack = await self.executor.traced_transport().send_intent(Intent.gripper(open=True))
+            ack = await self.executor.logged_transport().send_intent(Intent.gripper(open=True))
         except Exception as e:
             ack = Ack(accepted=False, reason=f"{type(e).__name__}: {e}")
         # The arm's backend answers a refusal rather than raising it, so a suppressed exception
@@ -669,6 +689,7 @@ class AgentLoop:
                 # confirm gate reads it
                 answer = False
             verdict.human = "go" if answer else "no_go"
+            self._ask_recorded("decide", verdict.question(), answer, self.cfg.decide)
         if verdict.verdict == "feasible":
             # The coordinator already holds another robot's bid to its datasheet, and nothing
             # held a pilot's verdict about its OWN body to its own sheet, so a `needs` naming
@@ -676,7 +697,7 @@ class AgentLoop:
             # Qwen3-32B: a 45 minute patrol came back feasible six times out of six, twice
             # with `needs: {"endurance_min": 45}` recorded beside it, on a body whose
             # endurance nobody published. Refused rather than warned, the same way a verdict
-            # carrying `human` is refused: a warning in the trace stops nothing.
+            # carrying `human` is refused: a warning in the log stops nothing.
             objection = own_sheet_objection(verdict.needs, self.executor.manifest)
             if objection is not None:
                 # and the gate shuts. A refusal that left an earlier `feasible` standing
@@ -845,10 +866,16 @@ class AgentLoop:
             first_state = await cfg.transport.get_state()
             if (warning := self._fall_blind_warning(registry, allow, first_state)) is not None:
                 self._note(warning)
-                if cfg.acknowledge is not None and not cfg.acknowledge(warning):
-                    raise Aborted(
-                        "nobody confirmed they were watching a robot that cannot see a fall"
-                    )
+                if cfg.acknowledge is not None:
+                    watching = bool(cfg.acknowledge(warning))
+                    # The one question whose answer was nowhere in the record: a yes left no
+                    # mark at all, so a run on a robot that cannot see a fall could not be
+                    # told from one nobody was watching.
+                    self._ask_recorded("acknowledge", warning, watching, cfg.acknowledge)
+                    if not watching:
+                        raise Aborted(
+                            "nobody confirmed they were watching a robot that cannot see a fall"
+                        )
             tools = registry.tool_schemas(allow) + META_TOOLS
             if cfg.link is not None:
                 tools = [*tools, TELL]
@@ -898,7 +925,11 @@ class AgentLoop:
                 # Fields a passthrough added to every request (#12). A run whose model was told not
                 # to think reads very differently from one that was, and the transcript is the only
                 # place a reader can tell which they are holding.
-                extra_body=getattr(cfg.provider, "extra_body", None),
+                # Credential-shaped keys taken out on the way in. `--extra-body` is
+                # documented as a field the vendor wants and quackd never reads, and an
+                # `authorization` header is the canonical such field; it also arrives
+                # from `QUACKD_EXTRA_BODY`, which no amount of argv redaction can reach.
+                extra_body=redacted_body(getattr(cfg.provider, "extra_body", None)),
                 transport=backend_name(cfg.transport),
                 adapter=adapter_name(cfg.transport),
                 robot=manifest.model_dump(mode="json") if manifest is not None else None,
@@ -914,6 +945,12 @@ class AgentLoop:
                 # until now, at second precision on the local clock, and stopped being
                 # evidence the moment anybody renamed the folder or copied it off the machine.
                 run_name=cfg.run_name,
+                # What was asked for, and by what. Every flag is half the story of a run
+                # (which robot, which model, which budget, whether it was a dry run), and
+                # reading a transcript a month later used to mean guessing at them. The
+                # values of `--api-key` and `--token` never appear (`quackd.command`).
+                command=command_line(),
+                version=__version__,
                 started_at=self.transcript.started_at_iso,
                 # The rate this run is costed at, written down rather than looked up later, so
                 # a replay prices it at what it cost on the day rather than at whatever the
@@ -1056,7 +1093,7 @@ class AgentLoop:
                         raise
                     # One reading of the clock and one costing, used by all three records
                     # below. They each called `perf_counter()` for themselves before, so the
-                    # shadow record and the trace disagreed about the same call by however
+                    # shadow record and the log disagreed about the same call by however
                     # long the lines between them took.
                     latency_s = round(time.perf_counter() - llm_started, 3)
                     self.llm_latency_s += latency_s
@@ -1205,7 +1242,7 @@ class AgentLoop:
                     last_result = await self.executor.run_verb(
                         call.name,
                         call.arguments,
-                        # who chose it, so the trace says `from jev` and the transcript
+                        # who chose it, so the log says `from jev` and the transcript
                         # records a verb the model never saw as the stepper's own
                         source="jev" if stepper_call is not None else "agent",
                     )
@@ -1264,7 +1301,7 @@ class AgentLoop:
             await self.heartbeat.stop()
             with contextlib.suppress(Exception):
                 # the run's last intent, narrated like every other one
-                await self.executor.traced_transport().stop()
+                await self.executor.logged_transport().stop()
             if self._handed_over:
                 # between the stop, which is holding the arm where the run left it, and the
                 # rest move, which folds it: the one moment where opening the gripper is
@@ -1290,6 +1327,8 @@ class AgentLoop:
             summary = {
                 "duck": self.fm.name,
                 "run_name": cfg.run_name,
+                "command": command_line(),
+                "version": __version__,
                 "outcome": outcome,
                 "reason": reason,
                 "steps": self.budget.steps,
@@ -1321,7 +1360,7 @@ class AgentLoop:
                 "final_state": final_state,
                 # what a view could not show. The record has every one of them; a console
                 # that swallowed a hundred events used to leave no sign anywhere.
-                "trace_dropped": self.tracer.dropped,
+                "log_dropped": self.event_log.dropped,
                 # only when there was one, so every summary written before the stepper
                 # existed, and every run that does not ask for one, stays byte for byte
                 # what it was
@@ -1360,7 +1399,7 @@ class AgentLoop:
             usage=self.usage,
             run_dir=self.run_dir,
             final_state=final_state,
-            trace_dropped=self.tracer.dropped,
+            log_dropped=self.event_log.dropped,
             jev_calls=self.budget.stepper_calls,
             summary=summary,
         )

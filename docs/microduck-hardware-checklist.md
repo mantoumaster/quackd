@@ -32,7 +32,7 @@ step 1 with nothing to connect with.
 The first run fetches the model and the policies into `~/.quackd/cache`, so do that before you
 are standing next to somebody else's robot rather than on their Wi-Fi.
 
-What it rehearses is the pilot, your provider, each task's allowlist, and reading a run's trace
+What it rehearses is the pilot, your provider, each task's allowlist, and reading a run's log
 while it happens. It touches nothing below: no socket, no `hello` handshake, no `robot.health`,
 no camera transport and no deadman. Four skills there are quackd's own stand-ins rather than the
 robot's, and say so in `state.extras.assumptions`: `kick` and `grab` use the cartoon's contact
@@ -177,9 +177,16 @@ out of your simulator's.
 ## 10. Tell everyone
 
 `microduck:jsonrpc` is 🧪 in [`docs/adapter-status.md`](adapter-status.md) because nobody has
-done this. What flips it is a `quackd doctor` output and the first lines of a
-`transcript.jsonl`, in an issue. The memory file is an index of what you tried, not evidence —
-the transcript is the artefact.
+done this. What flips it is a `quackd doctor` output and `runs/<timestamp>-<name>/terminal.txt`,
+in an issue: that file is the whole session as plain text, opening with the command that
+started it and the version that ran it, so it is usually the one that answers what happened.
+Send `transcript.jsonl` beside it when the question is about one record rather than the
+session, which is what step 3 has you open it for. The memory file is an index of what you
+tried, not evidence.
+
+Read that first line before you paste it. The values of `--api-key` and `--token` are replaced
+there, and so is a password or a credential-named query parameter in `--base-url`, `--address`
+and `--camera-url`. Nothing else on the screen is ([SECURITY.md](../SECURITY.md)).
 
 What is most worth writing down, because it is what nobody can check without a duck:
 

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 __all__ = ["detector_for"]
 
-log = logging.getLogger("quackd.perception")
+logger = logging.getLogger("quackd.perception")
 
 #: Backends whose camera really is the one the default geometry assumes.
 _SIMULATED = ("sim2d", "mujoco", "mock")
@@ -61,7 +61,7 @@ def detector_for(
     # A real lens, and nobody said which. The geometry still works — the target is in the
     # right direction — but the numbers are the wrong size, and saying so beats a confident
     # measurement nobody can act on.
-    log.warning(
+    logger.warning(
         "no camera field of view given for a %s camera, so detections use the simulator's "
         "%.0f degrees. Distances will be out by tens of percent: pass --fov-deg (a Pi Camera "
         "Module 2 is about 62) once you know yours.",

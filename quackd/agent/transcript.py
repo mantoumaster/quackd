@@ -23,7 +23,7 @@ from quackd.agent.providers.base import NamedPng
 from quackd.transport.base import CameraFrame
 
 if TYPE_CHECKING:
-    from quackd.trace import TraceEvent
+    from quackd.log import LogEvent
 
 
 def run_label(text: str) -> str:
@@ -31,7 +31,7 @@ def run_label(text: str) -> str:
 
     The same slug every other name in quackd already is (`registry._NAME_RE`,
     `adapters.factory._NAME_RE`, `memory.robot_slug`), because a run directory is typed back
-    into `quackd trace` and pasted into a shell, and a space or a colon in it is a quoting
+    into `quackd log` and pasted into a shell, and a space or a colon in it is a quoting
     problem on two operating systems rather than one.
 
     This raises where `robot_slug` falls back to a default, and the difference is the whole
@@ -60,7 +60,7 @@ def new_run_dir(
     """`runs/20260915-145349-goal-example-1/`: when, what, and what you called it.
 
     `label` is `--run-name`, already slugged, and it goes last so the timestamp prefix and the
-    duck name in the middle both still resolve in `quackd trace`. The collision counter goes
+    duck name in the middle both still resolve in `quackd log`. The collision counter goes
     after it for the same reason: two runs named the same thing in the same second read as
     `-example-1` and `-example-1-1`, and the suffix is still the last thing in the name.
     """
@@ -159,10 +159,10 @@ class Transcript:
             .replace("+00:00", "Z")
         )
 
-    def sink(self, event: TraceEvent) -> None:
-        """The transcript as a `Tracer` record: the event's kind and payload, on the
+    def sink(self, event: LogEvent) -> None:
+        """The transcript as a `EventLog` record: the event's kind and payload, on the
         transcript's own clock, so a `frame` written directly and an `observation` that came
-        through the tracer never disagree about the time."""
+        through the event_log never disagree about the time."""
         self.write(event.kind, **event.data)
 
     def save_frame(self, img: Image.Image, caption: str = "") -> Path:
@@ -239,7 +239,7 @@ class Transcript:
     def read(path: Path, *, lenient: bool = False) -> list[dict[str, Any]]:
         """Every record in the file. `lenient` skips the unparsable ones and counts them under
         the key `_skipped` on the last record: a run killed mid-write leaves a half line, and
-        `quackd trace` should show the run that happened rather than a JSON error."""
+        `quackd log` should show the run that happened rather than a JSON error."""
         records: list[dict[str, Any]] = []
         skipped = 0
         with path.open(encoding="utf-8") as fh:

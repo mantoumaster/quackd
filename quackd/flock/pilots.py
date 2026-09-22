@@ -30,20 +30,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from quackd import __version__
 from quackd.adapters.base import go_to_rest_if_any
 from quackd.adapters.factory import RobotSpec, describe, make_adapter
 from quackd.adapters.manifest import RobotManifest
 from quackd.agent.loop import AgentLoop, Outcome, RunConfig, RunResult
 from quackd.agent.providers.base import LLMProvider, Usage
 from quackd.agent.transcript import new_run_dir, run_label
+from quackd.command import command_line
 from quackd.duckfile.schema import DuckFile, DuckFrontmatter
 from quackd.flock.bus import Bus, InProcessBus
-from quackd.flock.runner import FLOCK_TRACE, BusFactory, TraceFactory
+from quackd.flock.runner import FLOCK_LOG, BusFactory, ViewFactory
 from quackd.flock.talk import FLOCK_SRC, Peer, make_links, notice
 from quackd.flock.transcript import FlockTranscript
+from quackd.log import EventLog, Sink
 from quackd.memory import RobotMemory
 from quackd.safety import allow_all, deny_all
-from quackd.trace import Sink, Tracer
 from quackd.verbs.aliases import canonical
 
 MIN_MEMBERS = 2
@@ -127,7 +129,7 @@ class PilotFlockResult:
     cost_usd: float | None = None
     """What the whole flock cost, or None the moment one member could not be priced: a flock
     bill quietly missing a robot is worse than no flock bill."""
-    trace_dropped: int = 0
+    log_dropped: int = 0
     gif_path: Path | None = None
 
     @property
@@ -198,7 +200,8 @@ async def run_pilot_flock(
     fov_deg: float | None = None,
     log: Callable[[str], None] = lambda _m: None,
     bus_factory: BusFactory | None = None,
-    trace: TraceFactory | None = None,
+    view: ViewFactory | None = None,
+    on_run_dir: Callable[[Path], None] | None = None,
     abort: asyncio.Event | None = None,
     flock_name: str | None = None,
     run_name: str | None = None,
@@ -236,6 +239,11 @@ async def run_pilot_flock(
 
     stem = duck.name if duck.name.startswith("flock") else f"flock-{duck.name}"
     run_dir = new_run_dir(runs_dir, stem, run_label(run_name) if run_name else None)
+    if on_run_dir is not None:
+        # The first moment there is somewhere to write: the CLI's terminal capture
+        # has been buffering since before this call and moves into the directory
+        # here, before any member opens a file of its own.
+        on_run_dir(run_dir)
     wall0 = time.perf_counter()
 
     def now() -> float:
@@ -259,11 +267,11 @@ async def run_pilot_flock(
     peers = {name: Peer(name, roster[name].robot_spec.key, manifests[name]) for name in members}
     links = make_links(members, peers, bus=bus, task_id=task_id, now=now)
 
-    def view(name: str) -> Sink | None:
-        return trace(name) if trace is not None else None
+    def member_view(name: str) -> Sink | None:
+        return view(name) if view is not None else None
 
     # no record: every TALK is already in flock.jsonl through the tap, under its own name
-    story = Tracer(observers=[v] if (v := view(FLOCK_TRACE)) is not None else [])
+    story = EventLog(observers=[v] if (v := member_view(FLOCK_LOG)) is not None else [])
 
     loops: dict[str, AgentLoop] = {}
     for name in members:
@@ -286,7 +294,7 @@ async def run_pilot_flock(
                 memory=(memories or {}).get(name),
                 fov_deg=fov_deg,
                 log=lambda m, who=name: log(f"{who}: {m}"),
-                trace=view(name),
+                view=member_view(name),
                 link=links[name],
                 # every member is priced the same way, because `--price` is one rate for the
                 # run rather than one per robot: a flock of the same model on three bodies
@@ -348,7 +356,7 @@ async def run_pilot_flock(
             llm_calls=loop.budget.llm_calls,
             usage=loop.usage,
             run_dir=loop.run_dir,
-            trace_dropped=loop.tracer.dropped,
+            log_dropped=loop.event_log.dropped,
             # The loop's own teardown built this before it re-raised, so a member that died
             # still reports the wall clock, the model seconds and the bill it had already
             # measured. Without it a flock of fully priced models read `cost_usd: null` on
@@ -476,7 +484,7 @@ def _finish(
     talks: Mapping[str, int],
     bus: Bus,
     transcript: FlockTranscript,
-    story: Tracer,
+    story: EventLog,
     loops: Mapping[str, AgentLoop],
     run_dir: Path,
     wall_elapsed_s: float,
@@ -505,7 +513,7 @@ def _finish(
             "model": providers[name].model,
             "robot": roster[name].robot_spec.key,
             "run_dir": f"ducks/{name}",
-            "trace_dropped": results[name].trace_dropped,
+            "log_dropped": results[name].log_dropped,
         }
         for name in members
     }
@@ -517,13 +525,18 @@ def _finish(
     costs: list[float | None] = [results[name].summary.get("cost_usd") for name in members]
     total_cost = None if any(c is None for c in costs) else round(sum(c or 0.0 for c in costs), 6)
     backends = {roster[name].robot_spec.backend for name in members}
-    trace_dropped = story.dropped + sum(loops[name].tracer.dropped for name in members)
+    log_dropped = story.dropped + sum(loops[name].event_log.dropped for name in members)
     summary: dict[str, Any] = {
         "duck": duck.name,
         "outcome": outcome,
         "reason": reason,
         "flock": {"members": list(members), "method": "pilots", "name": flock_name},
         "run_name": run_name,
+        # What was asked for, beside what happened. A flock root writes no `run_start`,
+        # so without this the argv would be in the terminal file and nowhere a reader
+        # can parse, and on a deterministic flock in no record at all.
+        "command": command_line(),
+        "version": __version__,
         "robots": {name: roster[name].robot_spec.key for name in members},
         "messages": talks["members"],
         "notices": talks["notices"],
@@ -536,7 +549,7 @@ def _finish(
         "seed": seed,
         "transport": backends.pop() if len(backends) == 1 else "mixed",
         "dry_run": dry_run,
-        "trace_dropped": trace_dropped,
+        "log_dropped": log_dropped,
         "per_member": per_member,
     }
     transcript.write("flock_end", **{k: v for k, v in summary.items() if k != "per_member"})
@@ -557,7 +570,7 @@ def _finish(
         llm_calls=int(summary["llm_calls"]),
         wall_elapsed_s=wall_elapsed_s,
         cost_usd=total_cost,
-        trace_dropped=trace_dropped,
+        log_dropped=log_dropped,
     )
 
 

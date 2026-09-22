@@ -188,10 +188,12 @@ nothing in your `allow` list. Skip it for a smoke test, the way `hello-world` do
    one.
 6. Mention it in `docs/architecture.md`, the README verb table (a test checks every
    registry name is backticked there) and `CHANGELOG.md` (Unreleased).
-7. Nothing extra is needed for the trace: every intent your verb sends is already an event,
+7. Nothing extra is needed for the log: every intent your verb sends is already an event,
    and `ctx.log(...)` is already a `note`. If you emit a new event *kind*, add a row for it
    to the table in `docs/architecture.md`, because a test reads the kinds out of the code
-   and fails when the docs do not name one.
+   and fails when the docs do not name one. Then decide whether it draws a line in
+   `render_events` (`quackd/log.py`), which three kinds deliberately do not: a kind nothing
+   draws is in `transcript.jsonl` and on no screen, so it is in no `terminal.txt` either.
 
 Renaming a verb is not a rename: add the new name and keep the old one in
 `quackd/verbs/aliases.py`, the only file that may spell an alias.
@@ -218,10 +220,10 @@ answers one goes in `PROVIDERS` with its base URL, its key link and the `tool_ch
 docs allow. A test holds that pair to exactly the vendors `PROVIDERS` leaves out, so neither
 half can be skipped quietly.
 
-Four things the tracing depends on, none of them optional:
+Four things the log depends on, none of them optional:
 
 1. Fill `ProviderTurn.thinking` with the model's own reasoning when the API returns it, and
-   `Usage.reasoning_tokens` with what it charged for. The trace shows the first and the
+   `Usage.reasoning_tokens` with what it charged for. The log shows the first and the
    transcript keeps all of it; a provider that drops them makes the run unarguable.
 2. Degrade with exactly one retry. If the API refuses a request because it does not support
    thinking, turn thinking off, remember that, and retry once. Match the specific complaint,
@@ -349,5 +351,17 @@ together, it is too long.
 
 ## Reporting bugs and proposing verbs
 
-Use the issue templates. `quackd doctor` output and the relevant `transcript.jsonl` lines
-turn a vague bug into a fixable one.
+Use the issue templates. The attachment that turns a vague bug into a fixable one is
+`terminal.txt` from the run directory: it is the whole session as plain text and it opens
+with the command that started the run and the version that ran it, so it usually answers
+what happened on its own. `quackd doctor` output says what your machine has, and
+`transcript.jsonl` is worth sending beside it when the question is about one record rather
+than the session, because the screen summarises an event and that file keeps every field of
+it.
+
+> [!WARNING]
+> Read that first line before you paste it. The values of `--api-key` and `--token` are
+> replaced with `***` there, and so is a password or a credential-named query parameter in
+> `--base-url`, `--address` and `--camera-url`. Nothing else on that screen is redacted: a
+> secret you gave any other name, or passed as the value of any other flag, is in the file
+> as you typed it ([SECURITY.md](SECURITY.md)).
