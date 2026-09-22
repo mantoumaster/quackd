@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import faulthandler
+import re
 import sys
 from pathlib import Path
 
@@ -144,3 +145,30 @@ def _colour_env(monkeypatch: pytest.MonkeyPatch) -> None:
     FORCE_COLOR must not reach the suite either."""
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+
+def help_text(argv: list[str]) -> str:
+    """Help text with its styling taken off, flattened to one line of words.
+
+    On GitHub Actions Typer forces coloured help: `typer.rich_utils` reads GITHUB_ACTIONS when
+    it is imported, which is before any fixture can say otherwise. Rich then styles a name in
+    pieces, so a phrase reaches a substring check as several spans with escape sequences
+    between them, and an assertion about the words fails for a reason that has nothing to do
+    with the words.
+
+    The panel borders come off for the same reason: Rich draws each row of an options table
+    inside a box, so a help sentence long enough to wrap picks up a border character in the
+    middle of itself. Both spellings of the border, because Rich substitutes the ASCII box on
+    a legacy Windows console and the test suite runs on three operating systems.
+
+    It lives here rather than in one test module because it was duplicated into a second
+    module without the stripping, and that reached main as a red CI on five runners.
+    """
+    from typer.testing import CliRunner
+
+    from quackd.cli import app
+
+    out = CliRunner().invoke(app, argv, env={"COLUMNS": "200"}).output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    rows = [re.sub(r"^[\u2502|]\s?|\s?[\u2502|]$", "", line) for line in plain.splitlines()]
+    return " ".join(" ".join(rows).split())

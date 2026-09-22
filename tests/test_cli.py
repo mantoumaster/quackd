@@ -19,6 +19,7 @@ from quackd.agent.providers.factory import CLOUD_NAMES, default_model_for, model
 from quackd.cli import EXIT_INFEASIBLE, app
 
 from .conftest import DUCKS
+from .conftest import help_text as _help
 
 runner = CliRunner()
 
@@ -835,24 +836,6 @@ def test_no_color_reaches_the_help_typer_renders_for_itself() -> None:
 
     CliRunner().invoke(app, ["--no-color", "run", "--help"])
     assert os.environ.get("NO_COLOR") == "1"
-
-
-def _help(argv: list[str]) -> str:
-    """Help text with its styling taken off.
-
-    On GitHub Actions Typer forces coloured help: it reads GITHUB_ACTIONS when `rich_utils`
-    is imported, which is before any fixture can say otherwise. Rich then styles an option
-    name in pieces, so `--no-color` reaches a substring check as three spans with escape
-    sequences between them. What this test is about is the words, not the colour.
-
-    The panel borders come off for the same reason. Rich draws each row of an options
-    table inside a box, so a help sentence long enough to wrap picks up a border
-    character in the middle of itself, and an assertion on a phrase then fails for a
-    reason that has nothing to do with the phrase. One flag alias re-wraps the rest."""
-    out = CliRunner().invoke(app, argv, env={"COLUMNS": "200"}).output
-    plain = re.sub(r"\[[0-9;]*m", "", out)
-    rows = [re.sub(r"^[│|]\s?|\s?[│|]$", "", line) for line in plain.splitlines()]
-    return " ".join(" ".join(rows).split())
 
 
 @pytest.mark.parametrize(
