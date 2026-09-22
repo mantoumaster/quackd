@@ -75,14 +75,14 @@ def test_readme_promises() -> None:
         "dr-eureka",
         "github.com/pollen-robotics/microduck_rl",
         "--goal",
-        "--provider fake",
+        "--llm fake",
         "biped",
         "pronounced",
         "One CLI for all your robots",
         "flock-hello",
         "quackd flock create",
         "Non goals for now",
-        "--provider ollama",
+        "--llm ollama",
         "quackd list-models",
         "docs/local-llms.md",
         "| Local models (",
@@ -96,7 +96,7 @@ def test_readme_promises() -> None:
     # every vendor, from the code rather than a list here, so a vendor cannot be added to quackd
     # and left out of the one table that tells anyone it exists
     for name in CLOUD_NAMES:
-        assert f"--provider {name}" in README, f"the README never shows --provider {name}"
+        assert f"--llm {name}" in README, f"the README never shows --llm {name}"
         assert f"`{KEY_ENV[name]}`" in README, f"the README never names {KEY_ENV[name]}"
     assert "quadruped" not in README.lower()
     for hype in ("revolutionary", "world's first", "fully autonomous", "swarm intelligence"):
@@ -128,10 +128,10 @@ def test_the_catalogue_is_documented_where_it_is_configured() -> None:
     for path, needles in (
         ("README.md", ("quackd list-models", "catalogue")),
         ("docs/faq.md", ("quackd list-models", "catalogue")),
-        (".env.example", ("QUACKD_MODEL", "list-models")),
+        (".env.example", ("QUACKD_LLM", "list-models")),
         ("docs/local-llms.md", ("catalogue",)),
         # the one place the answer is that there is no answer, which is worth saying out loud
-        ("docs/mcp.md", ("selects no model", "QUACKD_MODEL")),
+        ("docs/mcp.md", ("selects no model", "QUACKD_LLM")),
     ):
         text = (REPO / path).read_text(encoding="utf-8")
         for needle in needles:
@@ -309,8 +309,8 @@ def test_the_price_of_a_run_is_documented_where_it_is_configured() -> None:
     A rate is the one knob here somebody only goes looking for after a bill, so it has to be
     findable from the page they are already on: the README's usage table for the flag, the
     architecture page for the order the three sources are tried in, `.env.example` for the
-    variable, and jev.md for the stepper's own rate, which is a separate variable because it
-    prices a separate vendor's tokens.
+    variable, and decision-llms.md for the stepper's own rate, which is a separate variable
+    because it prices a separate vendor's tokens.
 
     The `.env.example` needles carry their `=` on purpose. `QUACKD_PRICE` is also spelled in
     the prose above the stepper's variable ("the same syntax as QUACKD_PRICE above"), so a
@@ -318,10 +318,43 @@ def test_the_price_of_a_run_is_documented_where_it_is_configured() -> None:
     for path, needles in (
         ("README.md", ("--price", "--run-name")),
         ("docs/architecture.md", ("QUACKD_PRICE", "--price", "--run-name")),
-        ("docs/jev.md", ("QUACKD_JEV_PRICE",)),
-        (".env.example", ("QUACKD_PRICE=", "QUACKD_JEV_PRICE=")),
+        ("docs/decision-llms.md", ("QUACKD_DECISION_PRICE",)),
+        (".env.example", ("QUACKD_PRICE=", "QUACKD_DECISION_PRICE=")),
         # where somebody lands who has already been surprised by a figure, or by its absence
         ("docs/faq.md", ("--price", "--run-name", "unpriced")),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+
+
+def test_the_decision_llm_is_documented_where_it_is_configured() -> None:
+    """The same rule again, for the three flags and the three variables that decide whether a
+    discrete stepper answers a turn before the model is ever called.
+
+    There are many decision LLMs now rather than one, so the names a reader has to be able to
+    find are not a vendor's: they are `--decision-llm` and `--decision-mode` on the front page,
+    because that is where somebody decides whether to read any further, and on the page itself
+    the address for a server quackd has never heard of, the two extras that install the two
+    ways of reaching one, and the entry point group a third party publishes into.
+
+    `TYPESAFE_API_KEY=` carries its `=` because the key is also named in the prose around it,
+    and a key nobody can set is a hosted model nobody can run."""
+    for path, needles in (
+        ("README.md", ("--decision-llm", "--decision-mode")),
+        (
+            "docs/decision-llms.md",
+            ("--decision-url", "quackd[decision]", "quackd[laya]", "quackd.decision_llms"),
+        ),
+        (
+            ".env.example",
+            (
+                "QUACKD_DECISION_LLM",
+                "QUACKD_DECISION_MODE",
+                "QUACKD_DECISION_URL",
+                "TYPESAFE_API_KEY=",
+            ),
+        ),
     ):
         text = (REPO / path).read_text(encoding="utf-8")
         for needle in needles:

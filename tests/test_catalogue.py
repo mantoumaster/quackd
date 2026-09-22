@@ -28,8 +28,10 @@ from quackd.agent.providers.base import (
 )
 from quackd.agent.providers.factory import (
     CLOUD_NAMES,
+    DEFAULT_LLM,
     EXTRA_FOR,
     KEY_ENV,
+    LLM_ENV,
     LOCAL_NAMES,
     OPENAI_COMPATIBLE,
     PROVIDER_NAMES,
@@ -38,6 +40,8 @@ from quackd.agent.providers.factory import (
     make_provider,
     model_ids,
     models_for,
+    parse_llm,
+    resolve_llm,
     resolve_model,
     vendor_of,
 )
@@ -99,7 +103,7 @@ def test_every_cloud_provider_has_models_and_the_first_one_is_its_default() -> N
     assert set(cat.CATALOGUE) == set(CLOUD_NAMES)
     for name in CLOUD_NAMES:
         ids = model_ids(name)
-        assert ids, f"{name} has an empty catalogue, so --model could never be satisfied"
+        assert ids, f"{name} has an empty catalogue, so --llm {name}:MODEL could never be met"
         assert default_model_for(name) == ids[0]
         assert default_model_for(name) in ids
 
@@ -112,7 +116,11 @@ def test_nothing_without_a_catalogue_claims_a_default() -> None:
 
 
 def test_model_ids_are_unique_across_every_vendor() -> None:
-    """What makes "that is a grok model, pass --provider grok" possible, and truthful."""
+    """What makes "that is a grok model, pass --llm grok:grok-4.6" possible, and truthful.
+
+    It is also what lets a bare id name its own vendor: `--llm claude-opus-5` can only infer
+    `anthropic` because no second vendor lists that id, and the day one does, this test is
+    what says so rather than a reader getting quietly sent to the wrong house."""
     seen: dict[str, str] = {}
     for name in CLOUD_NAMES:
         for model_id in model_ids(name):
@@ -179,7 +187,7 @@ def test_another_vendors_id_says_whose_it_is() -> None:
     """The mistake that looks like no mistake: a real id, at the wrong vendor. Telling the reader
     only that it is unknown would send them hunting for a typo that is not there."""
     message = _refusal("openai", "grok-4.6")
-    assert "is a grok model" in message and "--provider grok" in message
+    assert "is a grok model" in message and "--llm grok:grok-4.6" in message
     # and an id belonging to nobody says nothing about vendors, because there is nothing to say
     assert "is a" not in _refusal("openai", "gpt-nope").split("Valid ids")[0].replace(
         "is a model", ""
@@ -187,9 +195,14 @@ def test_another_vendors_id_says_whose_it_is() -> None:
 
 
 def test_the_refusal_names_where_the_id_came_from() -> None:
-    assert "--model" in str(_refusal("openai", "nope"))
-    with pytest.raises(ProviderError, match="QUACKD_MODEL"):
-        resolve_model("openai", "nope", source="QUACKD_MODEL")
+    """Three places can name a model and the hunt for each is a different hunt, so the refusal
+    carries the source with it. The default is `--llm`, because that is where a reader who has
+    just typed something wrong almost always typed it."""
+    assert "--llm" in str(_refusal("openai", "nope"))
+    with pytest.raises(ProviderError, match=LLM_ENV):
+        resolve_model("openai", "nope", source=LLM_ENV)
+    with pytest.raises(ProviderError, match=r"robot duck-a \(robots.json\)"):
+        resolve_model("openai", "nope", source="robot duck-a (robots.json)")
 
 
 def test_no_model_means_the_default_and_local_presets_are_left_alone() -> None:
@@ -207,6 +220,85 @@ def test_an_unknown_provider_is_not_this_functions_business() -> None:
     assert resolve_model("hal", "whatever") == "whatever"
 
 
+# ── one flag, parsed ────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("anthropic", ("anthropic", None)),
+        ("anthropic:claude-opus-5", ("anthropic", "claude-opus-5")),
+        ("claude-opus-5", ("anthropic", "claude-opus-5")),
+        ("grok-4.6", ("grok", "grok-4.6")),
+        ("ollama:llama3:8b", ("ollama", "llama3:8b")),
+        ("openai:", ("openai", None)),
+        ("fake", ("fake", None)),
+        ("  OpenAI  ", ("openai", None)),
+        (None, (DEFAULT_LLM, None)),
+        ("", (DEFAULT_LLM, None)),
+        ("   ", (DEFAULT_LLM, None)),
+    ],
+    ids=[
+        "a-bare-vendor",
+        "a-vendor-and-a-model",
+        "a-bare-listed-id-infers-its-vendor",
+        "and-so-does-another-vendors",
+        "the-split-is-at-the-first-colon",
+        "a-trailing-colon-is-the-default",
+        "the-scripted-pilot",
+        "a-vendor-is-folded-and-trimmed",
+        "nothing-at-all",
+        "an-empty-string",
+        "blank-counts-as-absent",
+    ],
+)
+def test_every_shape_the_one_flag_takes(spec: str | None, expected: tuple[str, str | None]) -> None:
+    """The whole grammar of `--llm` in one table, because it is a grammar now rather than two
+    independent strings.
+
+    `ollama:llama3:8b` is the row that is easy to get wrong and expensive to get wrong quietly:
+    Ollama's own tags carry a colon, so a split on the last one would ask the server for
+    `llama3` and get a different model than the reader named, with nothing anywhere saying so.
+    """
+    assert parse_llm(spec) == expected
+
+
+def test_a_bare_word_that_is_neither_a_vendor_nor_a_model_is_refused() -> None:
+    """And says the catalogue was searched, because a bare model id IS a legal spec: without
+    that sentence the reader cannot tell whether they mistyped or whether bare ids are simply
+    not allowed."""
+    with pytest.raises(ProviderError) as e:
+        parse_llm("hal9000")
+    message = str(e.value)
+    assert "unknown provider 'hal9000'" in message
+    assert "no vendor here lists a model of that name" in message
+    example = default_model_for("anthropic")
+    assert "--llm anthropic," in message and f"--llm anthropic:{example}" in message
+
+
+def test_a_bad_vendor_before_a_colon_names_the_whole_spec_back() -> None:
+    """`hal:gpt-4o` cannot have been meant as a bare id, so the catalogue is not mentioned. What
+    the reader needs instead is the spec quoted back, showing which half was unreadable."""
+    with pytest.raises(ProviderError) as e:
+        parse_llm("hal:gpt-4o")
+    message = str(e.value)
+    assert "unknown provider 'hal'" in message and "'hal:gpt-4o'" in message
+    assert "no vendor here lists" not in message
+
+
+def test_the_model_half_is_checked_against_the_vendor_that_was_named() -> None:
+    with pytest.raises(ProviderError) as e:
+        parse_llm("openai:grok-4.6")
+    assert "is a grok model" in str(e.value)
+
+
+def test_completion_can_ask_which_vendor_without_paying_for_the_lookup() -> None:
+    """Shell completion has to answer while the id after the colon is still half typed, so a
+    half-finished id must not be refused on the way to naming its vendor."""
+    assert parse_llm("openai:gpt-5.6-so", check_model=False) == ("openai", "gpt-5.6-so")
+    assert parse_llm("openai:grok-4.6", check_model=False) == ("openai", "grok-4.6")
+
+
 # ── the factory refuses before it spends anything ───────────────────────────────────────
 
 
@@ -218,16 +310,73 @@ def test_a_bad_model_is_refused_before_the_key_is_read(monkeypatch: pytest.Monke
         make_provider("openai", model="gpt-nope")
 
 
-def test_a_pinned_model_from_the_wrong_vendor_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUACKD_MODEL", "claude-opus-5")
+def test_a_pinned_spec_from_the_wrong_vendor_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The environment is read in exactly one place now, so this is a question for `resolve_llm`.
+
+    It used to be a question for the factory, which read `QUACKD_MODEL` itself. That meant two
+    callers passing identical arguments could get different pilots depending on a shell, and a
+    refusal could not say which of the two the reader needed to fix. One reader, one answer.
+    """
+    monkeypatch.setenv(LLM_ENV, "openai:claude-opus-5")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(ProviderError) as e:
-        make_provider("openai")
-    assert "QUACKD_MODEL" in str(e.value) and "anthropic" in str(e.value)
+        resolve_llm(None)
+    assert LLM_ENV in str(e.value) and "anthropic" in str(e.value)
+
+
+def test_the_factory_reads_no_environment_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A variable that would stop `resolve_llm` dead must not reach into a call that names its
+    own pilot. `make_provider` is handed an answer that is already decided."""
+    monkeypatch.setenv(LLM_ENV, "openai:claude-opus-5")
+    assert make_provider("fake", duck_name="hello-world").name == "fake"
+
+
+@pytest.mark.parametrize(
+    ("flag", "stored", "env", "expected", "source"),
+    [
+        ("gemini", "openai:gpt-5.6-sol", "anthropic", ("gemini", None), "--llm"),
+        (None, "openai:gpt-5.6-sol", "anthropic", ("openai", "gpt-5.6-sol"), "robot duck-a"),
+        (None, None, "anthropic:claude-opus-5", ("anthropic", "claude-opus-5"), LLM_ENV),
+        (None, None, None, (DEFAULT_LLM, None), "default"),
+        # blank is how a shell and a `.env` both say "unset", so it falls through rather than
+        # being read as a vendor named ""
+        (" ", " ", " ", (DEFAULT_LLM, None), "default"),
+    ],
+    ids=["the-flag-wins", "then-the-robot", "then-the-environment", "then-fake", "blank-is-absent"],
+)
+def test_where_a_pilot_may_be_named_and_which_place_wins(
+    flag: str | None,
+    stored: str | None,
+    env: str | None,
+    expected: tuple[str, str | None],
+    source: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the reader has just typed beats what a robot remembers, which beats the environment,
+    which beats `fake`. The source travels back with the answer because "unknown provider 'hal'
+    from robot duck-a (robots.json)" and the same words from `--llm` send the reader on very
+    different hunts: one to a file they wrote months ago, one to the line still on screen."""
+    if env is None:
+        monkeypatch.delenv(LLM_ENV, raising=False)
+    else:
+        monkeypatch.setenv(LLM_ENV, env)
+    vendor, model, where = resolve_llm(flag, stored, robot="duck-a")
+    assert (vendor, model) == expected
+    assert where.startswith(source), where
+
+
+def test_the_source_phrase_says_which_robot_when_one_was_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flock resolves a pilot per member, so "robots.json" on its own would leave the reader
+    to work out which of four entries is the broken one."""
+    monkeypatch.delenv(LLM_ENV, raising=False)
+    assert resolve_llm(None, "anthropic", robot="duck-a")[2] == "robot duck-a (robots.json)"
+    assert resolve_llm(None, "anthropic")[2] == "robots.json"
 
 
 def test_the_scripted_pilot_ignores_a_model_rather_than_refusing_it() -> None:
-    """`--provider fake` has no model to pick, and failing a demo over an unused flag is rude."""
+    """`--llm fake` has no model to pick, and failing a demo over an unused half is rude."""
     assert make_provider("fake", model="gpt-nope", duck_name="hello-world").name == "fake"
 
 

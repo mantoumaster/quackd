@@ -139,13 +139,17 @@ def events() -> list[tuple[str, LogEvent]]:
                 stop_reason="tool_use",
             ),
         ),
-        # ── jev: the discrete stepper's own turn, taken and declined ──
+        # ── decision: the discrete stepper's own turn, taken and declined ──
         (
-            "jev_taken",
+            # `llm` is the name of the decision LLM that answered, which the record carries and
+            # the line does not print. It is here so that a renderer which started printing it
+            # would have to change this file to do it.
+            "decision_taken",
             _e(
-                "jev",
+                "decision",
                 0.3,
                 mode="on",
+                llm="jev",
                 model="jev-1.13.0",
                 latency_s=0.213,
                 gate="taken",
@@ -157,9 +161,9 @@ def events() -> list[tuple[str, LogEvent]]:
             ),
         ),
         (
-            "jev_below_floor",
+            "decision_below_floor",
             _e(
-                "jev",
+                "decision",
                 0.3,
                 mode="on",
                 latency_s=0.44,
@@ -170,21 +174,22 @@ def events() -> list[tuple[str, LogEvent]]:
                 probabilities={"place": 0.62, "gripper(open=true)": 0.30},
             ),
         ),
-        ("jev_escalate", _e("jev", 0.3, mode="on", latency_s=0.19, gate="escalate")),
-        ("jev_done", _e("jev", 0.3, mode="on", latency_s=0.2, gate="done", done=0.91)),
+        ("decision_escalate", _e("decision", 0.3, mode="on", latency_s=0.19, gate="escalate")),
+        ("decision_done", _e("decision", 0.3, mode="on", latency_s=0.2, gate="done", done=0.91)),
         (
-            "jev_error",
-            _e("jev", 0.3, mode="shadow", latency_s=1.0, error="TypeSafeAPITimeoutError"),
+            "decision_error",
+            _e("decision", 0.3, mode="shadow", latency_s=1.0, error="TypeSafeAPITimeoutError"),
         ),
-        # ── jev: what the question cost, measured and guessed ──
+        # ── decision: what the question cost, measured and guessed ──
         (
             # The whole argument for a stepper is the ratio between this and the model call it
             # stands in for, so the figure rides in the same parenthesis as the seconds.
-            "jev_billed",
+            "decision_billed",
             _e(
-                "jev",
+                "decision",
                 0.3,
                 mode="on",
+                llm="jev",
                 model="jev-1.13.0",
                 latency_s=0.11,
                 gate="taken",
@@ -198,13 +203,13 @@ def events() -> list[tuple[str, LogEvent]]:
             ),
         ),
         (
-            # TypeSafe reported no input count, so the stepper divided the characters it had
-            # sent by four and marked BOTH numbers `~`. The tilde is the only thing telling a
-            # reader this is a guess, which is exactly the kind of mark that vanishes in a
-            # refactor nobody notices, so it is frozen here.
-            "jev_billed_estimated",
+            # The decision LLM reported no input count, so the stepper divided the characters
+            # it had sent by four and marked BOTH numbers `~`. The tilde is the only thing
+            # telling a reader this is a guess, which is exactly the kind of mark that vanishes
+            # in a refactor nobody notices, so it is frozen here.
+            "decision_billed_estimated",
             _e(
-                "jev",
+                "decision",
                 0.3,
                 mode="on",
                 latency_s=0.44,
@@ -219,12 +224,12 @@ def events() -> list[tuple[str, LogEvent]]:
             ),
         ),
         (
-            # The request went out and then the call raised, which TypeSafe still bills, so the
-            # estimate rides in the `after ...` of the error line rather than being dropped on
-            # the floor with the answer.
-            "jev_error_billed",
+            # The request went out and then the call raised, which a hosted decision LLM still
+            # bills, so the estimate rides in the `after ...` of the error line rather than
+            # being dropped on the floor with the answer.
+            "decision_error_billed",
             _e(
-                "jev",
+                "decision",
                 0.3,
                 mode="shadow",
                 latency_s=1.0,
@@ -235,26 +240,26 @@ def events() -> list[tuple[str, LogEvent]]:
             ),
         ),
         (
-            "jev_shadow_agree",
+            "decision_shadow_agree",
             _e(
-                "jev_shadow",
+                "decision_shadow",
                 0.4,
-                jev_choice="report_state",
-                jev_confidence=0.88,
-                jev_latency_s=0.2,
+                decision_choice="report_state",
+                decision_confidence=0.88,
+                decision_latency_s=0.2,
                 model_verb="report_state",
                 agree=True,
                 llm_latency_s=8.2,
             ),
         ),
         (
-            "jev_shadow_differ",
+            "decision_shadow_differ",
             _e(
-                "jev_shadow",
+                "decision_shadow",
                 0.4,
-                jev_choice="stop",
-                jev_confidence=0.71,
-                jev_latency_s=0.3,
+                decision_choice="stop",
+                decision_confidence=0.71,
+                decision_latency_s=0.3,
                 model_verb="move_joints",
                 agree=False,
                 llm_latency_s=6.9,
@@ -279,6 +284,12 @@ def events() -> list[tuple[str, LogEvent]]:
             _e("verb_start", 0.5, name="walk_to", params={"target": "ball"}, nested=True),
         ),
         ("verb_start_mcp", _e("verb_start", 0.5, name="quack", params={}, source="mcp")),
+        # The stepper chose this verb itself and the model never saw the turn, which is the one
+        # thing a reader of the log has to be able to tell from a verb the pilot asked for.
+        (
+            "verb_start_decision",
+            _e("verb_start", 0.5, name="report_state", params={}, source="decision"),
+        ),
         # ── gate: every outcome word, and every optional field it can carry ──
         (
             "gate_refused",

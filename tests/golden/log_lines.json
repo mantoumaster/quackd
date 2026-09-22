@@ -137,79 +137,79 @@
    "dim"
   ]
  ],
- "jev_taken": [
+ "decision_taken": [
   [
-   "jev     gripper(open=false) 0.93 >= 0.85 (0.21 s)",
+   "decide  gripper(open=false) 0.93 >= 0.85 (0.21 s)",
    "bold"
   ],
   [
-   "jev?    place 0.04, stop 0.02",
+   "decide? place 0.04, stop 0.02",
    "dim"
   ]
  ],
- "jev_below_floor": [
+ "decision_below_floor": [
   [
-   "jev     place 0.62 < 0.85, to the model (0.44 s)",
+   "decide  place 0.62 < 0.85, to the model (0.44 s)",
    "yellow"
   ],
   [
-   "jev?    gripper(open=true) 0.30",
+   "decide? gripper(open=true) 0.30",
    "dim"
   ]
  ],
- "jev_escalate": [
+ "decision_escalate": [
   [
-   "jev     escalate, to the model (0.19 s)",
+   "decide  escalate, to the model (0.19 s)",
    "dim"
   ]
  ],
- "jev_done": [
+ "decision_done": [
   [
-   "jev     done, to the model (0.20 s)",
+   "decide  done, to the model (0.20 s)",
    "dim"
   ]
  ],
- "jev_error": [
+ "decision_error": [
   [
-   "jev     ERROR TypeSafeAPITimeoutError after 1.00 s, so the model takes this turn",
+   "decide  ERROR TypeSafeAPITimeoutError after 1.00 s, so the model takes this turn",
    "red"
   ]
  ],
- "jev_billed": [
+ "decision_billed": [
   [
-   "jev     gripper(open=false) 0.93 >= 0.85 (0.11 s, 527 tok $0.000022)",
+   "decide  gripper(open=false) 0.93 >= 0.85 (0.11 s, 527 tok $0.000022)",
    "bold"
   ],
   [
-   "jev?    stop 0.04",
+   "decide? stop 0.04",
    "dim"
   ]
  ],
- "jev_billed_estimated": [
+ "decision_billed_estimated": [
   [
-   "jev     place 0.62 < 0.85, to the model (0.44 s, ~612 tok ~$0.000026)",
+   "decide  place 0.62 < 0.85, to the model (0.44 s, ~612 tok ~$0.000026)",
    "yellow"
   ],
   [
-   "jev?    gripper(open=true) 0.30",
+   "decide? gripper(open=true) 0.30",
    "dim"
   ]
  ],
- "jev_error_billed": [
+ "decision_error_billed": [
   [
-   "jev     ERROR TypeSafeAPITimeoutError after 1.00 s, ~640 tok ~$0.000027, so the model takes this turn",
+   "decide  ERROR TypeSafeAPITimeoutError after 1.00 s, ~640 tok ~$0.000027, so the model takes this turn",
    "red"
   ]
  ],
- "jev_shadow_agree": [
+ "decision_shadow_agree": [
   [
-   "jev=    report_state 0.88 vs model report_state: agrees (0.20 s against 8.2 s)",
+   "decide= report_state 0.88 vs model report_state: agrees (0.20 s against 8.2 s)",
    "cyan"
   ]
  ],
- "jev_shadow_differ": [
+ "decision_shadow_differ": [
   [
-   "jev=    stop 0.71 vs model move_joints: differs (0.30 s against 6.9 s)",
+   "decide= stop 0.71 vs model move_joints: differs (0.30 s against 6.9 s)",
    "yellow"
   ]
  ],
@@ -240,6 +240,12 @@
  "verb_start_mcp": [
   [
    "verb    quack() from mcp",
+   "bold"
+  ]
+ ],
+ "verb_start_decision": [
+  [
+   "verb    report_state() from decision",
    "bold"
   ]
  ],
@@ -720,25 +726,26 @@
   "tokens  in=1631 out=16 cached=1024 cache_write=512 (run total in=9812 out=96 $0.0309) latency=0.0 s cost=$0.0028 stop=tool_use",
   "tool    kick(leg='right')",
   "tokens  in=1631 out=16 cached=1024 (run total in=9812 out=96) latency=0.0 s stop=tool_use",
-  "jev     gripper(open=false) 0.93 >= 0.85 (0.21 s)",
-  "jev?    place 0.04, stop 0.02",
-  "jev     place 0.62 < 0.85, to the model (0.44 s)",
-  "jev?    gripper(open=true) 0.30",
-  "jev     escalate, to the model (0.19 s)",
-  "jev     done, to the model (0.20 s)",
-  "jev     ERROR TypeSafeAPITimeoutError after 1.00 s, so the model takes this turn",
-  "jev     gripper(open=false) 0.93 >= 0.85 (0.11 s, 527 tok $0.000022)",
-  "jev?    stop 0.04",
-  "jev     place 0.62 < 0.85, to the model (0.44 s, ~612 tok ~$0.000026)",
-  "jev?    gripper(open=true) 0.30",
-  "jev     ERROR TypeSafeAPITimeoutError after 1.00 s, ~640 tok ~$0.000027, so the model takes this turn",
-  "jev=    report_state 0.88 vs model report_state: agrees (0.20 s against 8.2 s)",
-  "jev=    stop 0.71 vs model move_joints: differs (0.30 s against 6.9 s)",
+  "decide  gripper(open=false) 0.93 >= 0.85 (0.21 s)",
+  "decide? place 0.04, stop 0.02",
+  "decide  place 0.62 < 0.85, to the model (0.44 s)",
+  "decide? gripper(open=true) 0.30",
+  "decide  escalate, to the model (0.19 s)",
+  "decide  done, to the model (0.20 s)",
+  "decide  ERROR TypeSafeAPITimeoutError after 1.00 s, so the model takes this turn",
+  "decide  gripper(open=false) 0.93 >= 0.85 (0.11 s, 527 tok $0.000022)",
+  "decide? stop 0.04",
+  "decide  place 0.62 < 0.85, to the model (0.44 s, ~612 tok ~$0.000026)",
+  "decide? gripper(open=true) 0.30",
+  "decide  ERROR TypeSafeAPITimeoutError after 1.00 s, ~640 tok ~$0.000027, so the model takes this turn",
+  "decide= report_state 0.88 vs model report_state: agrees (0.20 s against 8.2 s)",
+  "decide= stop 0.71 vs model move_joints: differs (0.30 s against 6.9 s)",
   "enforce no tool call: re-prompting once",
   "enforce no tool call: re-prompting once (You must call exactly one tool.)",
   "verb    go_to(target='ball')",
   "verb      walk_to(target='ball') [nested]",
   "verb    quack() from mcp",
+  "verb    report_state() from decision",
   "gate    allowlist: refused not allowed here",
   "gate    confirm: denied",
   "gate    confirm: allowed",

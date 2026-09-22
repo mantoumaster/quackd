@@ -33,8 +33,15 @@ def test_both_shell_spellings_of_a_secret_are_hidden(flag: str) -> None:
     [
         # A whole line, with the flag still readable next to the hidden value.
         (
-            ["run", "ducks/fetch.duck", "--api-key", "sk-live-1234", "--model", "claude-opus-5"],
-            ["run", "ducks/fetch.duck", "--api-key", HIDDEN, "--model", "claude-opus-5"],
+            [
+                "run",
+                "ducks/fetch.duck",
+                "--api-key",
+                "sk-live-1234",
+                "--llm",
+                "anthropic:claude-opus-5",
+            ],
+            ["run", "ducks/fetch.duck", "--api-key", HIDDEN, "--llm", "anthropic:claude-opus-5"],
         ),
         # Both flags on one line, one spelling each.
         (
@@ -42,7 +49,7 @@ def test_both_shell_spellings_of_a_secret_are_hidden(flag: str) -> None:
             ["run", "--api-key", HIDDEN, f"--token={HIDDEN}"],
         ),
         # A value that merely looks like a flag is a value, and is hidden like one.
-        (["--api-key", "--model"], ["--api-key", HIDDEN]),
+        (["--api-key", "--llm"], ["--api-key", HIDDEN]),
         # An unrelated argument that carries an `=` is not a secret and is not touched.
         (["--goal=go=home", "--budget=12"], ["--goal=go=home", "--budget=12"]),
         # Nothing to hide leaves the line exactly as it was.
@@ -249,7 +256,7 @@ def test_a_url_that_does_not_parse_is_returned_as_it_was_typed() -> None:
     assert redacted_url(typed) == typed
 
 
-@pytest.mark.parametrize("flag", ["--goal", "--task-name", "--model"])
+@pytest.mark.parametrize("flag", ["--goal", "--task-name", "--llm"])
 def test_a_url_on_a_flag_that_is_not_a_url_flag_is_not_touched(flag: str) -> None:
     """Redaction goes by the flag a value followed and never by how the value looks. A task
     can legitimately name a URL, and a guess at value shapes would eat it."""

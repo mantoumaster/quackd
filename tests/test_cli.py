@@ -49,7 +49,7 @@ def _log_run(tmp_path: Path, monkeypatch, *flags: str, env: str | None = "") -> 
         monkeypatch,
         "run",
         "hello-world",
-        "--provider",
+        "--llm",
         "fake",
         "--robot",
         "microduck:mock",
@@ -66,7 +66,7 @@ def _log_record(tmp_path: Path, monkeypatch, *flags: str, env: str | None = "") 
         monkeypatch,
         "record",
         "hello-world",
-        "--provider",
+        "--llm",
         "fake",
         *flags,
         env=env,
@@ -210,7 +210,7 @@ def test_the_outcome_line_prints_the_models_reason_verbatim(tmp_path: Path, monk
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",
@@ -295,7 +295,7 @@ def test_run_hello_world_on_mock(tmp_path: Path) -> None:
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",
@@ -323,7 +323,7 @@ def test_missing_extra_hint_survives_rich_markup(tmp_path: Path, monkeypatch) ->
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "anthropic",
             "--robot",
             "microduck:mock",
@@ -342,7 +342,7 @@ def test_run_goal_builds_an_ad_hoc_duck(tmp_path: Path) -> None:
             "run",
             "--goal",
             "say hello and stop",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",
@@ -365,7 +365,7 @@ def test_goal_picks_a_matching_scripted_strategy(tmp_path: Path) -> None:
             "run",
             "--goal",
             "find the ball and kick it",
-            "--provider",
+            "--llm",
             "fake",
             "--seed",
             "4",
@@ -405,7 +405,7 @@ def _run_hello(tmp_path: Path, *flags: str) -> object:
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--runs-dir",
             str(tmp_path),
@@ -445,7 +445,7 @@ def test_a_second_camera_url_is_refused_by_a_one_camera_body_before_anything_run
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",
@@ -532,12 +532,19 @@ def test_validate_against_a_robot(tmp_path: Path) -> None:
 
 
 def test_run_unknown_provider_is_a_clean_error(tmp_path: Path) -> None:
+    """One flag now carries the vendor and the model, so the refusal has to teach both shapes.
+
+    A reader who typed `--llm hal9000` cannot tell from the flag alone whether the half they
+    got wrong was a vendor name or a model id, because `--llm` takes either. Printing both
+    forms back -- `--llm anthropic` and `--llm anthropic:<id>` -- is what turns "that was
+    refused" into "type this instead", and it costs one line of a message already on screen.
+    """
     result = runner.invoke(
         app,
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "hal9000",
             "--robot",
             "microduck:mock",
@@ -546,7 +553,10 @@ def test_run_unknown_provider_is_a_clean_error(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 1
-    assert "unknown provider" in result.output
+    flat = " ".join(result.output.split())
+    assert "unknown provider" in flat
+    assert "--llm anthropic," in flat, "the bare-vendor form"
+    assert f"--llm anthropic:{default_model_for('anthropic')}" in flat, "the vendor:model form"
 
 
 def test_run_refuses_a_model_outside_the_catalogue(
@@ -564,10 +574,8 @@ def test_run_refuses_a_model_outside_the_catalogue(
         [
             "run",
             "hello-world",
-            "--provider",
-            "openai",
-            "--model",
-            "gpt-nope",
+            "--llm",
+            "openai:gpt-nope",
             "--robot",
             "microduck:mock",
             "--runs-dir",
@@ -584,15 +592,16 @@ def test_run_refuses_a_model_outside_the_catalogue(
 
 
 def test_run_names_the_vendor_when_the_model_belongs_to_another_one(tmp_path: Path) -> None:
+    """The commonest mistake, and the one that looks least like a mistake: a real model id
+    under the wrong vendor. The answer has to be the whole spec the reader should retype, not
+    just the vendor's name, because the spec is now one word on the line."""
     result = runner.invoke(
         app,
         [
             "run",
             "hello-world",
-            "--provider",
-            "openai",
-            "--model",
-            "grok-4.6",
+            "--llm",
+            "openai:grok-4.6",
             "--robot",
             "microduck:mock",
             "--runs-dir",
@@ -600,7 +609,7 @@ def test_run_names_the_vendor_when_the_model_belongs_to_another_one(tmp_path: Pa
         ],
     )
     assert result.exit_code == 1
-    assert "--provider grok" in " ".join(result.output.split())
+    assert "--llm grok:grok-4.6" in " ".join(result.output.split())
 
 
 @pytest.fixture
@@ -619,43 +628,73 @@ def test_list_models_prints_every_vendor_and_marks_the_defaults(_wide: None) -> 
         assert default_model_for(name) in flat, name
     assert "default" in flat
     assert "no catalogue" in flat, "the local presets must say why they are not in the table"
-    assert "ignored" in flat, "fake must say that --model does nothing"
+    assert "ignored" in flat, "fake must say that a model after the colon does nothing"
 
 
 def test_list_models_can_be_asked_about_one_vendor(_wide: None) -> None:
-    result = runner.invoke(app, ["list-models", "--provider", "openai"])
+    """`-l` is the short flag now: `-p` went with `--provider`, and the pair of them is one
+    flag on every other command, so this command spells it the same way."""
+    result = runner.invoke(app, ["list-models", "--llm", "openai"])
     assert result.exit_code == 0, result.output
     flat = " ".join(result.output.split())
     assert "claude-opus-5" not in flat, "asking for one vendor printed another"
     assert "gpt-5.6-sol" in flat
-    local = runner.invoke(app, ["list-models", "--provider", "ollama"])
+    assert " ".join(runner.invoke(app, ["list-models", "-l", "openai"]).output.split()) == flat
+    local = runner.invoke(app, ["list-models", "--llm", "ollama"])
     assert local.exit_code == 0 and "first entry" in " ".join(local.output.split())
-    bad = runner.invoke(app, ["list-models", "--provider", "nope"])
+    bad = runner.invoke(app, ["list-models", "--llm", "nope"])
     assert bad.exit_code == 1 and "unknown provider" in bad.output
 
 
-def test_list_models_says_where_a_pinned_model_belongs(
+def test_list_models_says_what_the_environment_pins(
     _wide: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("QUACKD_MODEL", "grok-4.6")
+    """QUACKD_LLM holds a whole spec now, so the note under the table has to read it the way
+    `--llm` does: a bare id infers its vendor and the note names the pair it resolved to, and
+    a spec that cannot be read at all is reported as refused rather than quietly ignored.
+    A variable in a `.env` nobody has opened in months is exactly the kind of setting whose
+    failure has to be printed where the reader is already looking."""
+    monkeypatch.setenv("QUACKD_LLM", "grok-4.6")
     flat = " ".join(runner.invoke(app, ["list-models"]).output.split())
-    assert "QUACKD_MODEL=grok-4.6 is a grok model" in flat
-    monkeypatch.setenv("QUACKD_MODEL", "not-a-model")
+    assert "QUACKD_LLM=grok-4.6 pins grok:grok-4.6" in flat
+    monkeypatch.setenv("QUACKD_LLM", "not-a-model")
     flat = " ".join(runner.invoke(app, ["list-models"]).output.split())
-    assert "not a model any vendor here lists" in flat
+    assert "QUACKD_LLM=not-a-model is refused" in flat
+    assert "unknown provider" in flat
 
 
-def test_model_completion_follows_the_provider_already_on_the_line() -> None:
-    """Shell completion for `--model` depends on `--provider`, which Click has already parsed."""
-    from quackd.cli import _complete_model
+def test_llm_completion_offers_vendors_first_and_then_that_vendors_ids() -> None:
+    """One flag means completion has to answer two questions with the same keystroke.
 
-    openai = _complete_model(SimpleNamespace(params={"provider": "openai"}), "gpt-5.6")
-    assert [i for i, _ in openai] == [m for m in model_ids("openai") if m.startswith("gpt-5.6")]
-    assert all(label for _, label in openai), "completion offers a label beside each id"
-    assert _complete_model(SimpleNamespace(params={"provider": "grok"}), "gpt") == []
-    # `fake` and the local presets have nothing to offer, and that is the default provider
-    assert _complete_model(SimpleNamespace(params={}), "") == []
-    assert _complete_model(SimpleNamespace(params={"provider": "ollama"}), "") == []
+    Before the colon the answer is the sixteen vendor names, twice over: bare, so one TAB
+    takes the default model, and with a trailing colon so a second TAB carries on into the
+    list. The hundred-odd model ids must stay out of that first offer, because a bare TAB
+    that prints a hundred lines is a TAB nobody presses twice.
+
+    After the colon the offer narrows to that vendor's own ids, which is why `grok:gpt`
+    offers nothing at all: `--llm grok:gpt-5.6-sol` would be refused by the parser, and
+    completion that offered it would be arguing with the command it is meant to help type.
+    """
+    from quackd.cli import _complete_llm
+
+    ctx = SimpleNamespace(params={})
+    empty = _complete_llm(ctx, "")
+    names = [i for i, _ in empty]
+    assert set(CLOUD_NAMES) <= set(names) and "fake" in names
+    assert "anthropic:" in names, "a second TAB has to carry on into the model list"
+    assert "fake:" not in names, "the scripted pilot has no model to pick"
+    assert not set(model_ids("openai")) & set(names), "a bare TAB must not print every id"
+    assert all(label for _, label in empty), "completion offers a half-line beside each entry"
+
+    openai = _complete_llm(ctx, "openai:gpt")
+    assert [i for i, _ in openai] == [
+        f"openai:{m}" for m in model_ids("openai") if m.startswith("gpt")
+    ]
+    assert _complete_llm(ctx, "grok:gpt") == [], "another vendor's prefix offers nothing"
+
+    bare = [i for i, _ in _complete_llm(ctx, "claude-op")]
+    assert bare == [m for m in model_ids("anthropic") if m.startswith("claude-op")]
+    assert bare, "a bare id is a legal spec, so it has to complete on its own"
 
 
 def test_run_refuses_a_duck_the_robot_cannot_do(tmp_path: Path) -> None:
@@ -666,7 +705,7 @@ def test_run_refuses_a_duck_the_robot_cannot_do(tmp_path: Path) -> None:
         [
             "run",
             "find-and-kick",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "open_duck:mock",
@@ -690,7 +729,7 @@ def test_run_still_starts_when_the_duck_fits(tmp_path: Path) -> None:
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",
@@ -711,7 +750,7 @@ def test_a_camera_robot_that_is_not_the_simulator_still_gets_a_detector(tmp_path
         [
             "run",
             "open-duck-scout",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "open_duck:mock",
@@ -865,7 +904,7 @@ def test_extra_body_reaches_every_provider_a_run_builds(
 
     monkeypatch.setattr("quackd.agent.providers.factory.make_provider", recorder)
     result = runner.invoke(
-        app, [*argv, "--provider", "fake", "--runs-dir", str(tmp_path / "r"), "--extra-body", body]
+        app, [*argv, "--llm", "fake", "--runs-dir", str(tmp_path / "r"), "--extra-body", body]
     )
     assert result.exit_code == 0, result.output
     assert seen, "no provider was built"
@@ -886,7 +925,7 @@ def test_a_bad_extra_body_stops_before_anything_connects(
     common = [
         "run",
         "hello-world",
-        "--provider",
+        "--llm",
         "vllm",
         "--robot",
         "microduck:mock",
@@ -913,11 +952,16 @@ def test_the_help_groups_the_flags_and_keeps_the_brackets_of_an_extra() -> None:
     assert "quackd[live]" in out, "an extra a reader is meant to type must survive"
     for group in ("Task", "Model", "Robot", "Output", "Memory"):
         assert group in out, group
+    # Two flags became one, and half a rename is worse than either shape on its own: a help
+    # page still offering `--provider` sends the reader to a flag the parser will refuse.
+    assert "--llm" in out, "the one pilot flag has to be in the help"
+    assert "--provider" not in out, "the old vendor flag is gone, help included"
+    assert "--model " not in out, "the old model flag is gone, help included"
     root = _help(["--help"])
     assert "--no-color" in root
     for group in ("Inspect", "Run a duck", "Serve", "LAN", "Memory"):
         assert group in root, group
-    assert "quackd run find-and-kick --provider fake" in root, "the epilog offers a first command"
+    assert "quackd run find-and-kick --llm fake" in root, "the epilog offers a first command"
     # the same markup trap, one level up: the core installs no robot, so the first command the
     # epilog offers has to carry the extra that makes it work, and Rich would eat the brackets
     assert "quackd[microduck]" in root, "the epilog's install line lost its extra to markup"
@@ -994,7 +1038,7 @@ def test_an_infeasible_run_exits_3_and_says_what_could(
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",
@@ -1114,7 +1158,7 @@ def _picture_run(tmp_path: Path, *flags: str, robot: str | None = "microduck:moc
     argv = [
         "run",
         "hello-world",
-        "--provider",
+        "--llm",
         "fake",
         "--runs-dir",
         str(tmp_path),
@@ -1246,7 +1290,7 @@ def _by_hand_run(tmp_path: Path, *flags: str, duck: str = "hello-world") -> Any:
         [
             "run",
             duck,
-            "--provider",
+            "--llm",
             "fake",
             "--runs-dir",
             str(tmp_path),
@@ -1315,7 +1359,7 @@ def test_by_hand_needs_a_rest_pose_to_let_go_at(
         [
             "run",
             "lerobot-lookout",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "arm-01",
@@ -1352,7 +1396,7 @@ def test_by_hand_with_no_terminal_to_ask_on_is_refused(tmp_path: Path) -> None:
         [
             "run",
             "lerobot-lookout",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "arm-01",
@@ -1401,7 +1445,7 @@ def test_by_hand_hands_the_arm_over_and_asks_for_it_back(
         [
             "run",
             "lerobot-lookout",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "arm-01",
@@ -1445,7 +1489,7 @@ def _verdict_run(tmp_path: Path, *flags: str) -> Any:
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",
@@ -1581,7 +1625,7 @@ def _typed_run(
     args = [
         "run",
         duck,
-        "--provider",
+        "--llm",
         "fake",
         "--robot",
         "microduck:mock",
@@ -1645,7 +1689,7 @@ def test_a_run_writes_down_the_terminal_it_showed_you(
     assert "\x1b" in result.output, "nothing is proved about the file if the screen is plain"
     text = _terminal(tmp_path)
     lines = text.splitlines()
-    assert lines[0].startswith("$ quackd run hello-world --provider fake"), lines[0]
+    assert lines[0].startswith("$ quackd run hello-world --llm fake"), lines[0]
     assert lines[1].startswith(f"quackd {__version__}, started "), lines[1]
     assert re.search(r"started \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ,", lines[1]), lines[1]
     assert "microduck:mock" in text, "the header panel"

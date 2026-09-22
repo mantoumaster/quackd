@@ -45,8 +45,7 @@ def test_a_robot_survives_the_process_with_every_field(tmp_path: Path) -> None:
             address="tcp://10.0.0.5:9871",
             token="s3cret",
             camera_url="http://10.0.0.5:9872/snapshot.jpg",
-            provider="anthropic",
-            model="claude-opus-5",
+            llm="anthropic:claude-opus-5",
             note="the cream one",
         )
     )
@@ -54,11 +53,12 @@ def test_a_robot_survives_the_process_with_every_field(tmp_path: Path) -> None:
     assert again.spec == "microduck:mock"
     assert again.address == "tcp://10.0.0.5:9871"
     assert again.token == "s3cret"
-    assert again.provider == "anthropic"
+    assert again.llm == "anthropic:claude-opus-5"
     assert again.note == "the cream one"
     stored = json.loads((tmp_path / "robots.json").read_text(encoding="utf-8"))
     assert stored["version"] == 1
     assert "name" not in stored["robots"]["duck-a"], "the key is the name; storing it twice drifts"
+    assert stored["robots"]["duck-a"]["llm"] == "anthropic:claude-opus-5"
 
 
 def test_a_write_leaves_no_temporary_file_behind(tmp_path: Path) -> None:
@@ -147,7 +147,112 @@ def test_a_hand_edited_bad_spec_names_the_robot_it_belongs_to(tmp_path: Path) ->
 
 def test_an_unknown_provider_is_refused_by_name() -> None:
     with pytest.raises(ValidationError, match="unknown provider"):
-        _entry(provider="hal9000")
+        _entry(llm="hal9000")
+
+
+@pytest.mark.parametrize(
+    ("legacy", "folded"),
+    [
+        ({"provider": "openai"}, "openai"),
+        ({"provider": "openai", "model": "gpt-4o"}, "openai:gpt-4o"),
+        ({"model": "claude-opus-5"}, "anthropic:claude-opus-5"),
+        ({"provider": None, "model": None}, None),
+        ({"provider": "openai", "model": None}, "openai"),
+    ],
+    ids=["a-vendor-alone", "a-vendor-and-a-model", "a-model-alone", "neither", "a-null-model"],
+)
+def test_a_file_written_before_the_two_flags_became_one_still_reads(
+    legacy: dict[str, str | None], folded: str | None
+) -> None:
+    """`robots.json` is user data nobody re-saves on upgrade.
+
+    The file a person wrote for 0.10 is still the file on disk under 0.11, and `extra="forbid"`
+    would otherwise refuse the whole entry over a key that used to be correct. The fold runs
+    before field validation, so `{"model": "claude-opus-5"}` with no vendor at all comes back
+    canonicalised the same way a bare `--llm claude-opus-5` does.
+    """
+    entry = RobotEntry.model_validate({"name": "duck-a", "spec": "microduck:mock", **legacy})
+    assert entry.llm == folded
+
+
+def test_the_old_keys_are_gone_from_the_file_after_the_next_write(tmp_path: Path) -> None:
+    """Reading the old shape is a kindness; writing it back would keep the file in two minds.
+    One `quackd robot edit` -- or anything else that saves -- and the entry is the new shape."""
+    (tmp_path / "robots.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "robots": {
+                    "duck-a": {"spec": "microduck:mock", "provider": "openai", "model": "gpt-4o"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    reg = Registry(tmp_path)
+    assert reg.robot("duck-a").llm == "openai:gpt-4o"
+    reg.update_robot("duck-a", {"note": "the cream one"})
+    stored = json.loads((tmp_path / "robots.json").read_text(encoding="utf-8"))["robots"]["duck-a"]
+    assert stored["llm"] == "openai:gpt-4o"
+    assert "provider" not in stored and "model" not in stored
+
+
+def test_a_file_that_says_it_both_ways_is_refused(tmp_path: Path) -> None:
+    """An entry carrying `llm` and an old `provider` says two different things about which
+    pilot this robot flies, and guessing which half the person meant is worse than stopping:
+    the fix is one line deleted, and only they know which line."""
+    (tmp_path / "robots.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "robots": {
+                    "duck-a": {"spec": "microduck:mock", "llm": "openai", "provider": "anthropic"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RegistryError, match="provider"):
+        Registry(tmp_path).robots()
+
+
+@pytest.mark.parametrize(
+    ("given", "stored"),
+    [
+        ("claude-opus-5", "anthropic:claude-opus-5"),
+        ("OpenAI:gpt-4o", "openai:gpt-4o"),
+        ("  anthropic  ", "anthropic"),
+        ("ollama:llama3:8b", "ollama:llama3:8b"),
+    ],
+    ids=["a-bare-id-gains-its-vendor", "a-vendor-is-folded", "trimmed", "a-tag-keeps-its-colon"],
+)
+def test_the_pilot_is_stored_in_one_spelling(given: str, stored: str) -> None:
+    """Two entries meaning the same pilot must not read as two different pilots, so the shelf
+    keeps one spelling: the vendor lowercased and in front, the model half left exactly as the
+    vendor ships it (`Qwen/Qwen3-8B` folded is a 404), and an Ollama tag's own colon intact."""
+    assert _entry(llm=given).llm == stored
+
+
+def test_a_model_the_catalogue_no_longer_lists_still_comes_off_the_shelf(tmp_path: Path) -> None:
+    """Strict at the door, lenient on the shelf, and this is the lenient half.
+
+    The catalogue moves under a file that does not: a vendor retires an id and every entry
+    naming it is suddenly invalid. A strict read here would make every `quackd robot` command
+    refuse, including the `quackd robot edit` that would fix the entry, because `update_robot`
+    reads every robot in the file before it writes one. So the shelf keeps loading. It is the
+    run naming that robot that stops, and `test_cli_robot.py` is where that half is held.
+    """
+    (tmp_path / "robots.json").write_text(
+        json.dumps(
+            {"version": 1, "robots": {"duck-a": {"spec": "microduck:mock", "llm": "openai:gpt-5"}}}
+        ),
+        encoding="utf-8",
+    )
+    reg = Registry(tmp_path)
+    assert reg.robot("duck-a").llm == "openai:gpt-5"
+    assert reg.robot("duck-a").public()["llm"] == "openai:gpt-5"
+    # and the entry is still editable, which is the whole point of not refusing the read
+    assert reg.update_robot("duck-a", {"note": "retire me"}).llm == "openai:gpt-5"
 
 
 # ── robots ──────────────────────────────────────────────────────────────────────────────
@@ -180,8 +285,8 @@ def test_update_rejects_a_bad_value_without_writing_it(tmp_path: Path) -> None:
     reg = Registry(tmp_path)
     reg.add_robot(_entry())
     with pytest.raises(RegistryError, match="unknown provider"):
-        reg.update_robot("duck-a", {"provider": "hal9000"})
-    assert reg.robot("duck-a").provider is None
+        reg.update_robot("duck-a", {"llm": "hal9000"})
+    assert reg.robot("duck-a").llm is None
 
 
 def test_the_memory_key_is_the_name_registered_and_the_spec_otherwise(tmp_path: Path) -> None:

@@ -91,7 +91,7 @@ def test_an_empty_registry_says_how_to_fill_it(tmp_path: Path) -> None:
         (["robot", "add", "Duck-A", "microduck:mock"], "not a valid robot name"),
         (["robot", "add", "duck-a", "bogus:nope"], "unknown adapter 'bogus'"),
         (["robot", "add", "duck-a", "microduck:bogus"], "unknown backend 'bogus'"),
-        (["robot", "add", "duck-a", "microduck:mock", "--provider", "hal"], "unknown provider"),
+        (["robot", "add", "duck-a", "microduck:mock", "--llm", "hal"], "unknown provider"),
         (["robot", "show", "ghost"], "no robot called 'ghost'"),
         (["robot", "edit", "ghost", "--note", "x"], "no robot called 'ghost'"),
         (["robot", "remove", "ghost", "--yes"], "no robot called 'ghost'"),
@@ -412,7 +412,7 @@ def test_a_run_by_name_says_the_name_and_keys_its_memory_by_it(tmp_path: Path) -
             "hello-world",
             "--robot",
             "duck-a",
-            "--provider",
+            "--llm",
             "fake",
             "--runs-dir",
             str(tmp_path / "runs"),
@@ -431,7 +431,15 @@ def test_a_run_by_name_says_the_name_and_keys_its_memory_by_it(tmp_path: Path) -
 def test_a_run_by_name_takes_the_robots_own_pilot_unless_a_flag_says_otherwise(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed(tmp_path, provider="openai", model="gpt-5")
+    """Three places can name a pilot, and one spec now carries both halves of the answer.
+
+    That last part is what changed the behaviour here rather than only the spelling. A vendor
+    and a model used to be two independent flags, so `--model gemini-9` against a robot stored
+    as OpenAI meant OpenAI serving a Gemini id -- a combination nobody typed on purpose and
+    the parser could not see. One spec cannot be half overridden: `--llm gemini` is Gemini's
+    default, full stop, and the stored `gpt-4o` goes with the vendor it was stored against.
+    """
+    _seed(tmp_path, llm="openai:gpt-4o")
     seen: list[tuple[str, str | None]] = []
     real = __import__("quackd.agent.providers.factory", fromlist=["make_provider"]).make_provider
 
@@ -452,14 +460,65 @@ def test_a_run_by_name_takes_the_robots_own_pilot_unless_a_flag_says_otherwise(
         str(tmp_path / "m"),
         *_reg(tmp_path),
     ]
+    monkeypatch.delenv("QUACKD_LLM", raising=False)
     assert runner.invoke(app, common).exit_code == 0
-    assert seen[-1] == ("openai", "gpt-5")
-    # a stored model belongs to the vendor it was stored against: carrying `gpt-5` into
-    # Gemini's catalogue would be refused with a message blaming a `--model` nobody typed
-    assert runner.invoke(app, [*common, "--provider", "gemini"]).exit_code == 0
-    assert seen[-1] == ("gemini", None)
-    assert runner.invoke(app, [*common, "--model", "gemini-9"]).exit_code == 0
-    assert seen[-1] == ("openai", "gemini-9"), "an explicit --model is always taken as typed"
+    assert seen[-1] == ("openai", "gpt-4o")
+    assert runner.invoke(app, [*common, "--llm", "gemini"]).exit_code == 0
+    assert seen[-1] == ("gemini", None), "a bare vendor on the line is that vendor's default"
+    assert runner.invoke(app, [*common, "--llm", "claude-opus-5"]).exit_code == 0
+    assert seen[-1] == ("anthropic", "claude-opus-5"), "a bare id brings its own vendor"
+    # the robot was registered by a person who meant it; a variable in their shell was not
+    monkeypatch.setenv("QUACKD_LLM", "gemini")
+    assert runner.invoke(app, common).exit_code == 0
+    assert seen[-1] == ("openai", "gpt-4o"), "the environment does not beat the robot"
+
+
+def test_a_run_by_name_is_refused_when_the_robots_own_model_is_no_longer_listed(
+    tmp_path: Path,
+) -> None:
+    """The other half of "strict at the door, lenient on the shelf".
+
+    `robots.json` still loads with a retired id, because refusing the read would take
+    `quackd robot edit` down with it. The run is where it stops, and the refusal has to say
+    which robot and which file: nothing on the command line is wrong, so a reader told only
+    "unknown model" would search the line they just typed and find nothing to fix.
+    """
+    _seed(tmp_path, llm="openai:gpt-5")
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "hello-world",
+            "--robot",
+            "duck-a",
+            "--runs-dir",
+            str(tmp_path / "r"),
+            "--no-gif",
+            "--memory-dir",
+            str(tmp_path / "m"),
+            *_reg(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1
+    flat = " ".join(result.output.split())
+    assert "unknown model 'gpt-5'" in flat
+    assert "robot duck-a (robots.json)" in flat
+    assert "Traceback" not in result.output
+
+
+def test_a_pilot_the_catalogue_would_refuse_is_not_registered_at_all(tmp_path: Path) -> None:
+    """The shelf is lenient about model ids and `robot add` is not, because the door is where
+    the typo is actually made. A robot registered against `openai:grok-4.6` would look fine in
+    `quackd robot list` and fail only on the day somebody ran it."""
+    result = runner.invoke(
+        app,
+        ["robot", "add", "duck-a", "microduck:mock", "--llm", "openai:grok-4.6", *_reg(tmp_path)],
+    )
+    assert result.exit_code == 1
+    flat = " ".join(result.output.split())
+    assert "grok-4.6" in flat and "--llm grok:grok-4.6" in flat
+    assert "Traceback" not in result.output
+    assert not (tmp_path / "robots.json").exists(), "a refused add wrote the robot anyway"
 
 
 def test_a_run_by_name_reaches_the_address_it_was_registered_with(
@@ -482,7 +541,7 @@ def test_a_run_by_name_reaches_the_address_it_was_registered_with(
             "hello-world",
             "--robot",
             "duck-a",
-            "--provider",
+            "--llm",
             "fake",
             "--no-gif",
             "--runs-dir",
@@ -517,7 +576,7 @@ def test_a_flag_on_the_line_beats_the_stored_address(
             "hello-world",
             "--robot",
             "duck-a",
-            "--provider",
+            "--llm",
             "fake",
             "--no-gif",
             "--address",
