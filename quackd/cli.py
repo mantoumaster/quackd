@@ -1368,8 +1368,10 @@ def _run_impl(
             decision_price = resolve_decision_price(chosen)
     if decision == "on":
         # Nobody has run a stepper against a robot, so every speed and cost figure in
-        # `docs/decision-llms.md` is arithmetic from published numbers rather than a result,
-        # and the confidence floors are Jev's own, inherited unmeasured by every other one.
+        # `docs/decision-llms.md` is arithmetic from published numbers rather than a result.
+        # Two of the four confidence floors are the 0.5 and 0.9 TypeSafe publish and two are
+        # quackd's own, and all four were shaped around Jev and are inherited unmeasured by
+        # every other row.
         # Refusing the flag over that would be the wrong shape of gate, because the executor
         # binds a stepper-authored call exactly as it binds the model's. Saying it once, where
         # the person switching it on is looking, is the right size of one.
@@ -1377,8 +1379,9 @@ def _run_impl(
             _warn_line(
                 "--decision-mode on has not been measured against a real robot: no latency, no "
                 "agreement rate, and the figures in docs/decision-llms.md are estimates for "
-                "Jev and nothing at all for anything else. The confidence floors are Jev's "
-                "published numbers. --decision-mode shadow records both and changes nothing "
+                "Jev and nothing at all for anything else. Two of the four confidence floors "
+                "are published by TypeSafe and two are quackd's own, all four shaped around "
+                "Jev. --decision-mode shadow records both and changes nothing "
                 "about the run."
             ),
             soft_wrap=True,

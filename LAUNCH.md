@@ -6,8 +6,10 @@ that the duck is no longer the point. 0.5's was that one of the robots is one yo
 walking. 0.9's was that you register the robots you own, name a flock of them, hand the
 flock a goal, and every robot gets its own LLM pilot, talking to the others. 0.10's was that
 a real arm ran it, `uv pip install quackd` now installs no robot at all and you choose the
-body, and the arm no longer falls over when the run ends. **0.11's is that a run says when
-it ran and what it cost, the trace is the log, and the log is the whole screen.**
+body, and the arm no longer falls over when the run ends. 0.11's was that a run says when
+it ran and what it cost, the trace is the log, and the log is the whole screen. **0.12's is
+that a decision LLM is a row of data rather than a vendor, the pilot is one flag, and the
+trace spellings are gone.**
 
 **The one sentence:** One CLI for all your robots. Connect them, command them, and let them
 work together, each with an LLM for a brain.

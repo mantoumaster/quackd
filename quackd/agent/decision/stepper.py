@@ -649,7 +649,17 @@ class Stepper:
         absolute one never binds: five steps against a limit of eight is a stepper that can
         own the entire run. Half the budget is the floor under that, and it is halves rather
         than some tuned fraction because the property worth keeping is simple enough to say
-        out loud -- the model gets at least as many turns as the stepper does."""
+        out loud -- on a budget of two steps or more, a stepper cannot answer the whole run.
+
+        One step is the exception, and the floor of 1 below is what makes it one: a budget of
+        1 gives a limit of 1, the counter starts at 0, and 0 is under the limit, so the single
+        turn of that run can be the stepper's with the model never consulted. A one-turn run
+        is not a run this gate was written for, and `max_steps=1` is reachable from the flag,
+        so it is said here rather than left to be discovered.
+
+        Not parity either, and it would be easy to read it that way. A streak ends by handing
+        exactly one turn to the model, after which the count starts again, so the shape is a
+        run of stepper turns and then a model turn rather than one each."""
         if self.max_steps <= 0:
             return MAX_IN_A_ROW
         return max(1, min(MAX_IN_A_ROW, self.max_steps // 2))

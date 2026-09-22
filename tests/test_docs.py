@@ -1169,6 +1169,27 @@ _FLOORS_ARE_NOT_ALL_PUBLISHED = (
 #: checker that cannot tell a citation from a claim would forbid the fix along with the bug.
 
 
+def _one_line(text: str, *, seams: bool = False) -> str:
+    """A file as one lowercase line, with nothing broken by where it happened to wrap.
+
+    Two things hide a sentence from a substring check, and both are ordinary formatting rather
+    than evasion. Python splits a long message across adjacent string literals, so a warning
+    reading `"... floors are Jev\'s " "published numbers."` carries a quote, a newline and an
+    indent in the middle of its own sentence; that is exactly how the line `--decision-mode
+    on` prints kept the old floor credit through a correction that was looking for it, with
+    the file in scope. And markdown wraps prose at the column, so any sentence long enough
+    falls across two lines and stops matching.
+
+    Literal seams are joined only where `seams` says so, which is for Python sources: in
+    markdown, two quotes with a space between them are two quotes and nothing is being
+    concatenated. Then all whitespace collapses, which is what makes "this sentence does not
+    appear" a claim about the sentence rather than about how somebody typed it.
+    """
+    if seams:
+        text = re.sub(r'"\s*\n\s*"', "", text)
+    return " ".join(text.split()).lower()
+
+
 def test_no_living_document_credits_all_four_confidence_floors_to_typesafe() -> None:
     """Two of the four are quackd's own, and the docs have said otherwise twice.
 
@@ -1184,8 +1205,12 @@ def test_no_living_document_credits_all_four_confidence_floors_to_typesafe() -> 
     live document, so the text above the ADR's first heading is what is read back, with
     quoted spans removed: both notes work by quoting the sentence they are overturning.
     """
+    # Every source file, not just the stepper's. The one live site this correction missed was
+    # the warning `--decision-mode on` prints, in `quackd/cli.py`, which said the forbidden
+    # sentence word for word while the guard read markdown and one module. A string a person
+    # reads on their own terminal is the most live site there is.
     sources = [
-        REPO / "quackd" / "agent" / "decision" / "stepper.py",
+        *sorted((REPO / "quackd").rglob("*.py")),
         REPO / "docs" / "adr" / "0040-a-discrete-stepper-in-front-of-the-model.md",
         REPO / "docs" / "adr" / "0043-decision-llms-are-a-wire-format-and-a-data-row.md",
     ]
@@ -1195,7 +1220,7 @@ def test_no_living_document_credits_all_four_confidence_floors_to_typesafe() -> 
             # the metadata line and the amendment notes, which stop at the first section,
             # and not the sentences they quote in order to overturn them
             text = re.sub(r'"[^"]*"', "", text.split("\n## ", 1)[0])
-        text = text.lower()
+        text = _one_line(text, seams=path.suffix == ".py")
         for wrong in _FLOORS_ARE_NOT_ALL_PUBLISHED:
             assert wrong not in text, (
                 f"{path.relative_to(REPO)} says {wrong!r}, but TypeSafe publish only 0.5 and "
