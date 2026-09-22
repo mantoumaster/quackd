@@ -55,22 +55,26 @@ shapes of the same verb is not that. The widest verb quackd ships is six (`gripp
 two-armed body: three sides times open or shut), so this is headroom rather than a limit."""
 
 # The confidence a Choice must clear before the stepper acts on it, by what the verb does.
-# Every number here is one TypeSafe publishes, and the citation is the point: quackd is not in
-# a position to invent thresholds for somebody else's model, and their own confidence page says
-# the right values are domain-specific and have to be tuned on your own data. They are Jev's
-# numbers and every other decision LLM inherits them unmeasured, which is what
-# `--decision-mode shadow` is for: it records what would have happened at each of these, on
-# whichever one you named, and that is how they get moved.
+# TypeSafe's confidence page publishes exactly two numbers, 0.5 and 0.9, and both are here.
+# The other two are quackd's, set between them, and saying so is the point: their own page
+# says the right values are domain-specific and have to be tuned on your own data, so a
+# number nobody published is a number nobody has calibrated either. All four are Jev-shaped
+# and every other decision LLM inherits them unmeasured, which is what `--decision-mode
+# shadow` is for: it records what would have happened at each of these, on whichever one you
+# named, and that is how they get moved.
 FLOORS: dict[str, float] = {
     # `stop`, and deliberately the lowest floor in the system. Below 0.5 is "genuinely unsure"
     # in TypeSafe's own words, and 0.5 is exactly where an unsure stepper should still be
     # allowed to reach for the brake: a wrong `stop` costs one step, and a wrong anything-else
     # costs a move nobody chose.
     "brake": 0.50,
-    # Sends no intent: reads state or a camera. TypeSafe's universal floor for a cheap action.
+    # Sends no intent: reads state or a camera. quackd's number, not theirs, set just above
+    # the 0.5 they call genuinely unsure, because a read that is wrong costs a wasted turn.
     "read": 0.60,
-    # Everything that sends an intent. Their high-stakes number. Not 0.9: their 0.9 is paired
-    # with "proceed with confirmation", and quackd expresses confirmation separately, below.
+    # Everything that sends an intent. quackd's number too, set below the 0.9 they pair with
+    # "proceed with confirmation", because quackd expresses confirmation separately, below.
+    # Nothing published sits between their two, so this one is an appetite for risk rather
+    # than a calibration, and `--decision-mode shadow` is how it earns a better value.
     "motion": 0.85,
     # A verb the manifest or the `.duck` gated on a human. Literally their ">0.9, high stakes,
     # proceed with confirmation" — and quackd's own confirm gate still runs on top of it, so a
@@ -689,11 +693,12 @@ class Stepper:
         """What this turn asked for and what it cost, measured wherever the backend said so.
 
         TypeSafe's SDK types both token counts `int | None`, "when the API did not report it";
-        a model running in this process reports no count at all; and a call that raised reports
-        nothing either. All three fall back to the arithmetic `docs/decision-llms.md` does by
-        hand -- the state plus the questions, four characters to the token -- and all three say
-        which they are, because an estimate a reader cannot tell from a measurement is worse
-        than no number at all.
+        several of the self-hosted rows report a character heuristic rather than a count; and a
+        call that raised reports nothing. Those fall back to the arithmetic
+        `docs/decision-llms.md` does by hand -- the state plus the questions, four characters
+        to the token -- and say which they are, because an estimate a reader cannot tell from a
+        measurement is worse than no number at all. Laya is the one backend whose count is a
+        real tokeniser figure, so its turns go through measured.
 
         Output is counted and, at every rate quackd ships, costs nothing: TypeSafe charge per
         input token and do not charge for output, and a server you run charges for neither. So

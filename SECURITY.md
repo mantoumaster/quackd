@@ -35,9 +35,10 @@ a daemon that walks a ToddlerBot.
 Also in scope:
 
 - API keys leaking into transcripts, GIFs, logs, run directories, or a robot's memory file.
-  `TYPESAFE_API_KEY`, which the optional discrete stepper reads for the `jev` preset, is one of
-  these. It is the only decision LLM quackd names that wants a key at all: every other one is a
-  server you run yourself or a checkpoint in this process, and quackd hands those a placeholder
+  `TYPESAFE_API_KEY`, which the optional discrete stepper reads for the `jev` preset
+  ([docs/decision-llms/jev.md](docs/decision-llms/jev.md)), is one of these. It is the only
+  decision LLM quackd names that wants a key at all: every other one is a server you run
+  yourself or a checkpoint in this process, and quackd hands those a placeholder
   in the key field rather than whatever hosted key happens to be sitting in the same `.env`.
 - **The command line, which the run record now holds.** A solo run writes down what it was
   started with, in three places: `command` in the transcript's `run_start`, `command` in
@@ -69,9 +70,14 @@ Also in scope:
   thing, once a turn: the task's goal, the robot's own description of itself and its last few
   results. Where that goes is the part that differs, and it is worth knowing which of the three
   you chose. `jev` is a third party's hosted API, so a run that names it sends that state over
-  the network to TypeSafe. `kev`, `von`, `openjev`, `opendecision` and `local` are servers you
-  run, so it goes wherever `--decision-url` points, which is a port on your own machine unless
-  you moved it. `laya` runs inside this process, so nothing leaves it at all. None of them is
+  the network to TypeSafe ([docs/decision-llms/jev.md](docs/decision-llms/jev.md)). Every
+  other server row, `local` included, is a server you run, so it goes wherever
+  `--decision-url` points, which is a port on your own machine unless you moved it. What each
+  one binds and whether anything authenticates it is on its own page, and the two are not the
+  same answer: [kev](docs/decision-llms/kev.md) binds `127.0.0.1` and authenticates nothing,
+  while [von](docs/decision-llms/von.md) binds every interface unless you pass `--host`, which
+  is why the catalogue's own command passes it. `laya` runs inside this process, so nothing
+  leaves it at all ([docs/decision-llms/laya.md](docs/decision-llms/laya.md)). None of them is
   ever sent a camera frame, a system prompt or an API key. How much was sent is on the
   record, as `state_chars` and `state_tokens_est` on each `decision` event, and which fields
   were dropped to fit is there as `trimmed`; the text itself is not, so a reader auditing what

@@ -6,8 +6,10 @@ than an HTTP call. Everything quackd asks of a decision LLM it asks of this one 
 questions that go to a hosted API go to this unchanged, because Laya's own `predict` takes the
 same `{"type": ..., "instructions": ..., "criteria": ...}` mapping the wire format does.
 
-What it does not return is a token count, so every turn it answers is costed at the
-self-hosted rate and marked estimated -- which is the truth: it billed you in electricity.
+What it returns beside the answers is a real token count, `int(attention_mask.sum())` for
+the input and a hardcoded zero for the output, so a turn it answers is recorded measured
+rather than estimated. It still costs nothing, because a checkpoint in this process is
+charged at the self-hosted rate: it billed you in electricity.
 
 Imported only when a run has named it. `torch` is not something `quackd --help` may pay for.
 """

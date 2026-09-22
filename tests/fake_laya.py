@@ -7,8 +7,11 @@ imported it would be testing a download.
 
 What it stands in for is the shape rather than the answer: `Router(...)` takes its keywords and
 remembers them, `predict(state, questions, model=...)` records what it was asked and hands back
-whatever the test scripted, and the return is a plain mapping with an `answers` key and no
-`usage` at all -- which is exactly the case quackd has to cost by estimate.
+whatever the test scripted, and the return is a plain mapping in the shape `laya.agent` really
+builds -- a hardcoded `model`, the `answers`, a `usage` carrying a real input count and a
+hardcoded zero output, and the `routing` block `Router.predict` adds. That count is the reason
+this row is costed measured rather than estimated, so a fake without it would have the suite
+proving the wrong branch.
 """
 
 from __future__ import annotations
@@ -34,12 +37,17 @@ class FakeRouter:
         raises: Exception | None = None,
         routing: dict[str, Any] | None = None,
         rejects: tuple[str, ...] = (),
+        input_tokens: int = 128,
     ) -> None:
         self.answers = answers or {}
         self.script = list(script or [])
         self.raises = raises
         """Raised by `predict`, for the turn that has to become a gate rather than a crash."""
         self.routing = routing or {"model": "typed-decisions", "reason": "asked for"}
+        self.input_tokens = input_tokens
+        """What `usage.input_tokens` reports. Laya counts the tokens it actually read, so
+        a positive number here is what puts a turn on quackd's measured path; a test wanting
+        the estimated path passes 0, which `_usage` reads as a field never filled in."""
         self.rejects = rejects
         """Constructor keywords this pretend Laya has never heard of, so a test can play the
         older package the real loader falls back for."""
@@ -66,14 +74,30 @@ class FakeRouter:
         if self.raises is not None:
             raise self.raises
         answers = self.script.pop(0) if self.script else self.answers
-        # No `usage`: Laya reports no token count, which is what makes every turn it answers
-        # an estimated one.
-        return {"answers": dict(answers), "routing": dict(self.routing)}
+        # The real shape: `laya/agent.py` hardcodes the model string, counts the input with
+        # `int(attention_mask.sum())` and hardcodes the output at zero, and `Router.predict`
+        # adds `routing` on top. A fake without `usage` had quackd's estimate path under test
+        # and its measured path untested, which is backwards for this backend.
+        return {
+            "model": "laya-rl-agent",
+            "answers": dict(answers),
+            "usage": {"input_tokens": self.input_tokens, "output_tokens": 0},
+            "routing": dict(self.routing),
+        }
 
 
 def answer_choice(label: str, confidence: float = 0.99) -> dict[str, Any]:
-    """One choice answer as Laya spells it: a mapping, and no `probabilities`."""
-    return {"choice": label, "confidence": confidence}
+    """One choice answer as Laya spells it: a mapping, `probabilities` included.
+
+    `agent.py` emits a probability per option on a choice, which is what gives these turns
+    the `decide?` runner-up line in the log. A noul carries none, and does not.
+    """
+    rest = round((1.0 - confidence) or 0.0, 4)
+    return {
+        "choice": label,
+        "confidence": confidence,
+        "probabilities": {label: confidence, "_other": rest},
+    }
 
 
 def answer_noul(p: float) -> dict[str, Any]:

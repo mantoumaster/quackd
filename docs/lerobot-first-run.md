@@ -290,12 +290,12 @@ few keywords in a goal.
 > There is a third thing you can put in the loop and it is not a pilot. `--decision-llm` adds an
 > optional non-generative stepper in front of whichever model you picked, for the turns whose
 > answer is a choice among calls this arm already has. It is off unless you name one, it needs
-> `quackd[decision]` (or `quackd[laya]`) and, for the hosted `jev`, a key of its own, and it
-> never authors a joint angle. Leave it off for this whole page: the
+> `quackd[decision]` (or `quackd[laya]`) and, for the hosted [`jev`](decision-llms/jev.md), a
+> key of its own, and it never authors a joint angle. Leave it off until the arm has waved: the
 > first run is about proving the arm, the port and the camera, and one more moving part between
-> you and the arm is the opposite of what a first run wants. Once the arm has waved,
-> [decision-llms.md](decision-llms.md) is where they live, and
-> `--decision-llm jev --decision-mode shadow` is the way to look at one without changing a run.
+> you and the arm is the opposite of what a first run wants.
+> [Section 15](#15-optional-put-a-decision-llm-in-front-of-the-model) is how to add one
+> afterwards, and [decision-llms.md](decision-llms.md) is where they live, one page each.
 
 <br>
 
@@ -1262,12 +1262,147 @@ most of that page is a description rather than a record.
 
 <br>
 
+### 15. Optional: put a decision LLM in front of the model
+
+Last on purpose, and optional on purpose. Everything above is about proving one arm, one port,
+one camera and one rest pose, and a first run wants fewer moving parts between you and the
+servos rather than more. Once section 12 has waved, this is the one thing on the page worth
+adding, and it changes nothing you have already established: the executor, the contract, the
+allowlist, the confirm gates and the rest pose all behave exactly as they did.
+
+A **decision LLM** is not a second pilot. It generates no text at all: you hand it a state and a
+typed question, and it hands back which option and how confident it is. So it can answer *which
+verb now* on the turns where the answer is one of the calls this arm already has, and it can
+never author a joint angle, because there is nowhere in its answer for a number to come from.
+Every pose, every sentence and the feasibility verdict stay with the model you chose in section
+03. The full argument is on [decision-llms.md](decision-llms.md); this section is the arm.
+
+#### Install one
+
+Two extras, and neither is part of `quackd[all]`, because a stepper nobody asked for should not
+arrive with everything else:
+
+```bash
+uv pip install "quackd[decision]"   # every decision LLM that is a server, hosted or your own
+uv pip install "quackd[laya]"       # the one that loads into this process instead (pulls torch)
+```
+
+`quackd doctor` then prints a row per decision LLM with the extra, the key it wants and where it
+listens, the same way it does for pilots. On a machine with neither extra every row says
+`missing`, which is the expected state and not a problem.
+
+#### Shadow first, on this arm
+
+**Do not start with `--decision-mode on`.** Start with `shadow`, which asks a decision LLM every
+turn, writes down what it would have chosen beside what the model actually chose, and lets
+nothing it says reach the arm:
+
+```bash
+quackd run lerobot-lookout --robot arm-01 --llm openai \
+  --decision-llm jev --decision-mode shadow
+```
+
+The run is byte for byte the run it would have been without the flag. What you get extra is a
+`decide=` line per turn in the log and a `decision_shadow` record per turn in the transcript,
+each carrying what the decision LLM chose, how confident it was, how long it took, and what the
+model chose on the same reading:
+
+```
+·  decide= report_state 0.97 vs model assess_task: differs (0.00 s against 0.0 s)
+·  decide= report_state 0.97 vs model report_state: agrees (0.00 s against 0.0 s)
+```
+
+Those two are real lines, from `lerobot-lookout` on the mock arm with a fake standing in for
+the server, which is why both clocks read zero: nothing was asked over a network and the
+scripted pilot answered instantly. On your arm with a real pilot the second number is seconds
+and the first is what you came to find out. Note the second line: agreeing is the common case,
+and the first line differing on `assess_task` is the stepper being offered a verb it is not
+allowed to author.
+
+That is the whole point of shadow mode on a real arm. Nobody has run any of these against
+hardware, so the two numbers that decide whether it is worth switching on, the agreement rate
+and the latency, do not exist yet for any body. A `lerobot-lookout` run moves nothing, so it is
+the cheapest place there is to produce them.
+
+#### Then, if you want it, on
+
+```bash
+quackd run lerobot-lookout --robot arm-01 --llm openai --decision-llm jev
+```
+
+Naming a decision LLM makes the mode `on`, so that is one flag rather than two. Now a turn it is
+confident enough about is executed from its answer, and the log says where the verb came from:
+
+```
+   decide  report_state 0.97 >= 0.60 (0.00 s, ~821 tok ~$0.000034)
+▶  verb    report_state() from decision
+   decide  repeat, to the model (0.00 s, ~916 tok ~$0.000038)
+```
+
+Real lines again, from the same mock arm and the same fake, so read the numbers the way that
+makes them true. The `~` in front of the tokens and the cost is quackd saying it counted them
+itself, at four characters to the token, because nothing came back with a count of its own. A
+hosted decision LLM that does report one prints the figures bare. The `0.00 s` is the fake
+answering instantly rather than anything measured.
+
+`from decision` is the attribution that matters when you read a transcript later: who chose a
+verb is on the record rather than inferred. The third line is a gate doing its job, the one that
+refuses to let a stepper answer the same verb twice running. A turn it is not confident enough
+about, or one whose answer is a number, goes to the model exactly as before.
+
+> [!WARNING]
+> **The confidence floors were shaped around Jev, and this arm has never tested any of them.**
+> A verb that sends an intent has to clear 0.85 and one the `.duck` gated on a person has to
+> clear 0.90. The 0.90 is TypeSafe's own number, their "high stakes, proceed with
+> confirmation"; the 0.85 is quackd's, set below it because quackd asks the person separately.
+> Every other decision LLM computes confidence by a different formula again, so the same 0.87
+> does not mean the same thing across rows. This is why shadow comes first, and why
+> `--decision-mode on` prints a warning saying so every time you use it.
+
+#### Which of this arm's verbs it may answer
+
+Not a judgement call and not a list anybody maintains: it is computed from each tool's own JSON
+schema. A verb whose every parameter is a closed set, an enum, a `const` or a boolean, is a
+choice. One with a number, a free string, an object or an array in it is not, and never becomes
+one. On this arm that means `report_state`, `stop`, `place`, `gripper(open=true|false)` and,
+where a camera is configured, `observe`. `move_joints` is not, because its `positions` is a
+free-form map of joint names to degrees, and neither is `pick`, which takes a number too.
+[Which of this arm's verbs are a choice](adapters/lerobot.md#which-of-this-arms-verbs-are-a-choice)
+is the per-verb table.
+
+#### Which one to point it at
+
+Seven are named, and [the table](decision-llms.md#the-ones-quackd-names) links a page each with
+its install line, its address, what was read from its source and what quackd assumes about it.
+For a first look from this page:
+
+- [`jev`](decision-llms/jev.md) is hosted, wants `TYPESAFE_API_KEY`, and is the only one with a
+  published rate, so it is the one that costs a fraction of a cent rather than a GPU.
+- [`laya`](decision-llms/laya.md) needs no server and no key at all, so it is the one to try if
+  you would rather nothing left the machine. It downloads its weights on first use.
+- [`kev`](decision-llms/kev.md), [`von`](decision-llms/von.md),
+  [`openjev`](decision-llms/openjev.md) and [`opendecision`](decision-llms/opendecision.md) are
+  servers you start yourself, and `--decision-url` points quackd at one on any address.
+
+If the extra or the key is missing the run says so once, before it connects to the arm, and
+carries on without a stepper. The arm is driven either way, because the model is the pilot
+either way.
+
+<br>
+
 ## Part 2: from Claude, over MCP
 
 Everything above is the command line. This is the same arm, the same executor and the same
 contract, reached from a chat instead. `quackd serve-mcp` hands Claude Code or Claude Desktop
 nine `robot_*` tools over a local pipe, and the model you are chatting with picks the verbs.
 quackd chooses no model here and reads no key of yours.
+
+> [!NOTE]
+> Part 1's [section 15](#15-optional-put-a-decision-llm-in-front-of-the-model) has no mirror
+> here, and that is structural rather than an omission. `--decision-llm` puts a stepper in front
+> of the model inside quackd's own loop, and over MCP there is no such loop: the model is the
+> client, so the deciding happens in Claude and quackd hands out tools and enforces the
+> contract. The flag and its two companions belong to `quackd run` ([mcp.md](mcp.md)).
 
 The steps below are numbered `M00` to `M14` and they mirror Part 1's `00` to `14`, so if you
 have just walked the terminal path you will recognise every one of them. Where a step is the

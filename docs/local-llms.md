@@ -37,10 +37,11 @@ they serve.
 > [!NOTE]
 > **A decision LLM is not one of these, and this is the page where that is easiest to get
 > wrong.** A decision LLM answers typed questions about a state and generates no text at all,
-> so it cannot pilot a robot: `--llm` does not take one, and naming `jev`, `kev`, `von`,
-> `openjev`, `opendecision` or `laya` there is refused as an unknown provider. Several of them
-> are servers you run on your own machine, exactly like the four presets above, and they are
-> still not the same kind of thing: a System One server speaks `POST /v1/systemone` rather than
+> so it cannot pilot a robot: `--llm` does not take one, and naming one there, `--llm kev`
+> say, is refused as an unknown provider. Several of them are servers you run on your own
+> machine, exactly like the four presets above, and each one has a page of its own under
+> [the hub's table](decision-llms.md#the-ones-quackd-names). They are still not the same kind
+> of thing: a System One server speaks `POST /v1/systemone` rather than
 > OpenAI's Chat Completions, so `--base-url` is not how you reach one. `--decision-url` is, and
 > `--decision-llm` names which one. It sits in front of whichever provider you did pick, for
 > the turns whose answer is a choice rather than a number, and it is off unless you name one:
