@@ -157,7 +157,8 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 5. **Record.** Every step above is a `LogEvent`, and `transcript.jsonl` is the sink that
    never turns off (every kind it writes is in the table below); `frames/` as the run goes and
    `images/` once at the top of it; `summary.json` at the end; `terminal.txt`, everything that
-   was on the terminal during the run as plain text, opening with the command that started it;
+   was on the terminal during the run as plain text, opening with the command that started it
+   and the version that ran it;
    `run.gif` from the recorder in either simulator. The directory all of that lands in says
    when, which task, and what you called it: `runs/20260921-155444-find-and-kick-example-1`
    is `--run-name "Example 1"`, slugged. The label goes after the task name and before the

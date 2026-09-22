@@ -1,6 +1,11 @@
 # ADR-0041: The record says when it ran and what it cost
 
-**Status:** accepted · **Date:** 2026-09-21 · Extends [ADR-0029](0029-tracing.md) (one event stream, and what it records) and [ADR-0031](0031-model-catalogue.md) (the catalogue is where model data lives) · Amends [ADR-0040](0040-a-discrete-stepper-in-front-of-the-model.md) (the stepper's summary block, and its consequence that the speed and cost figures in `docs/jev.md` are an estimate) · Implemented in `quackd/agent/providers/pricing.py`, with changes in the loop, the stepper and both console views
+**Status:** accepted, amended · **Date:** 2026-09-21 · Extends [ADR-0029](0029-tracing.md) (one event stream, and what it records) and [ADR-0031](0031-model-catalogue.md) (the catalogue is where model data lives) · Amends [ADR-0040](0040-a-discrete-stepper-in-front-of-the-model.md) (the stepper's summary block, and its consequence that the speed and cost figures in `docs/jev.md` are an estimate) · Implemented in `quackd/agent/providers/pricing.py`, with changes in the loop, the stepper and both console views
+
+**Amended 2026-09-22 by [ADR-0042](0042-the-log-is-the-whole-screen.md):** `quackd trace` below
+is `quackd log`. The old spelling still runs, hidden from `--help`, prints one yellow line
+naming the new one, and goes in 0.12. The record this ADR adds to is the log from that release
+on, and it carries the terminal session as well. Nothing else in this ADR changes.
 
 ## Context
 

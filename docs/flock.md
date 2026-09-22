@@ -186,7 +186,7 @@ runs/<timestamp>-flock-hello/
   summary.json         # outcome, reason, run_name, per_member rollup, messages, usage,
                        # cost_usd, wall_elapsed_s
   terminal.txt         # everything that was on the terminal, as plain text, opening with
-                       # the command that started it
+                       # the command that started it and the version that ran it
   ducks/duck/          # a full solo-style transcript.jsonl and frames/ per robot
   ducks/arm/
   ducks/cart/
@@ -425,7 +425,7 @@ runs/<timestamp>-flock-kick/
                        # rollup; with roles also robots, roles, assignments, spotter, verdicts
   run.gif              # world view | the claimant's own camera, with phase captions
   terminal.txt         # everything that was on the terminal, as plain text, opening with
-                       # the command that started it
+                       # the command that started it and the version that ran it
   ducks/duck-0/        # per robot transcript.jsonl and frames/ (no summary.json on purpose)
 ```
 
