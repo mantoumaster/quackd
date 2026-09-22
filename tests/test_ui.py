@@ -465,13 +465,17 @@ def test_a_run_that_never_got_a_directory_leaves_nothing_behind(tmp_path: Path) 
 def test_the_file_wears_the_glyphs_the_screen_wore(tmp_path: Path) -> None:
     """The sink's `encoding` is set to the source console's on every forward, and that is the
     whole of how this works: Rich reads `ascii_only` off that attribute and nothing else. A
-    run redirected on a Windows codepage draws an ASCII box, and so does its saved terminal."""
-    for encoding, corner, mark, ascii_only in (
-        ("cp1252", "+", "+", True),
-        ("utf-8", "┌", "✓", False),
-    ):
+    run redirected on a Windows codepage draws an ASCII box, and so does its saved terminal.
+
+    The file is compared against the screen rather than against a box drawn here, because
+    which box a screen gets is the operating system's answer and not this test's: Rich swaps
+    the rounded corners for square ones on a legacy Windows console, so a corner written into
+    the assertion passes on the machine it was written on and fails on the other two. What is
+    being claimed is that the two agree, so that is what is asserted."""
+    for encoding, mark, ascii_only in (("cp1252", "+", True), ("utf-8", "✓", False)):
+        raw = io.BytesIO()
         console = ui.TeeConsole(
-            file=io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors="replace"),
+            file=io.TextIOWrapper(raw, encoding=encoding, errors="replace"),
             width=70,
             theme=ui.THEME,
             highlight=False,
@@ -482,9 +486,15 @@ def test_the_file_wears_the_glyphs_the_screen_wore(tmp_path: Path) -> None:
         capture = ui.begin_capture()
         capture.attach(run_dir)
         console.print(ui.verdict("success", "kicked it"))
+        console.file.flush()
         capture.close()
         out = saved(run_dir)
-        assert out.startswith(corner), encoding
+        screen = raw.getvalue().decode(encoding, "replace")
+        # the corner each of them drew, which is the glyph claim. Not the whole line: the
+        # capture resolves its own width from the console it was opened against, so the two
+        # boxes are the same drawing at two widths.
+        assert out.splitlines()[0][0] == screen.splitlines()[0][0], encoding
+        assert set(out.splitlines()[0]) == set(screen.splitlines()[0]), encoding
         assert f"{mark} SUCCESS" in out, encoding
         assert out.isascii() is ascii_only, encoding
 

@@ -11,6 +11,8 @@ from typer.testing import CliRunner
 
 from quackd.cli import app
 
+from .conftest import help_text
+
 runner = CliRunner()
 
 
@@ -495,9 +497,7 @@ def _terminal(tmp_path: Path) -> list[str]:
 def test_the_help_offers_log_and_keeps_trace_hidden() -> None:
     """A spelling kept alive for one release must not also still be taught. `trace` answers
     for anyone who types it and appears nowhere, so nobody learns the name that goes next."""
-    result = runner.invoke(app, ["--help"], env=WIDE)
-    assert result.exit_code == 0, result.output
-    flat = " ".join(result.output.split())
+    flat = help_text(["--help"])
     assert "log Replay a finished run" in flat
     assert "trace" not in flat, flat
 
