@@ -7,6 +7,8 @@ be absent from the manifest, from the registry, from `.duck` validation and from
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -308,7 +310,7 @@ def test_the_bring_up_task_does_not_require_the_dangerous_flag() -> None:
     assert not [v for v in lookout.frontmatter.requires if not headless.provides(v)]
 
 
-async def test_a_fall_blind_robot_asks_the_human_once_before_it_walks() -> None:
+async def test_a_fall_blind_robot_asks_the_human_once_before_it_walks(tmp_path: Path) -> None:
     """Not a precondition. On the bridge backend `fall_detection` is a constant False — the
     IMU has one owner and it is upstream's loop — so refusing per verb would refuse every
     locomotion verb forever and decommission the robot. Ask the person in the room once,
@@ -337,6 +339,10 @@ async def test_a_fall_blind_robot_asks_the_human_once_before_it_walks() -> None:
                 duck=duck,
                 provider=FakeProvider(),
                 transport=adapter,
+                # the loop makes its run directory in __init__, before this run gets anywhere
+                # near aborting, and `runs_dir` defaults to a relative `runs` against the
+                # working directory, which under pytest is the checkout
+                runs_dir=tmp_path,
                 acknowledge=lambda why: (asked.append(why), False)[1],
             )
         ).run()
