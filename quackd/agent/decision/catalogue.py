@@ -106,7 +106,11 @@ PRESETS: dict[str, DecisionSpec] = {
         backend=SYSTEM_ONE,
         summary="Kev, self-hosted: Qwen3.5 with a decision head, on your own GPU",
         install=(
-            "git clone https://github.com/jaredpalmer/kev && uv sync --extra serve && "
+            # `cd kev` and not only the clone: without it `uv sync` runs in whatever
+            # directory the reader was standing in, which is the one mistake a copied
+            # command should not be able to make.
+            "git clone https://github.com/jaredpalmer/kev && cd kev && "
+            "uv sync --extra serve && "
             "KEV_DTYPE=bf16 uv run --extra serve python -m kev.serve "
             "--run jaredpalmer/kev-4b --port 8009"
         ),
@@ -119,8 +123,11 @@ PRESETS: dict[str, DecisionSpec] = {
     "von": DecisionSpec(
         name="von",
         backend=SYSTEM_ONE,
-        summary="Von, self-hosted: a 395M encoder that answers in about 18 ms, CPU included",
-        install="pip install von-sdk && von serve --port 8000",
+        summary="Von, self-hosted: a 395M encoder, about 18 ms on a GPU, runs on CPU too",
+        # `--host 127.0.0.1` because its own default is `0.0.0.0`, which is every
+        # interface on the machine, and it authenticates nothing unless `VON_API_KEY`
+        # is set. A command a reader copies should not open a port to the network.
+        install="pip install von-sdk && von serve --host 127.0.0.1 --port 8000",
         url="http://127.0.0.1:8000",
         model="von-latest",
     ),
@@ -129,8 +136,15 @@ PRESETS: dict[str, DecisionSpec] = {
         backend=SYSTEM_ONE,
         summary="OpenJev, self-hosted: DiffusionGemma behind vLLM, or MLX on Apple silicon",
         install=(
-            "docker run -d --gpus all -p 127.0.0.1:8080:8080 razorback16/openjev:0.3.0 "
-            "(or OPENJEV_BACKEND=mlx python -m openjev)"
+            # Its own README's command, verbatim, and nothing but the command: a reader
+            # copies this cell. `--ipc=host` because vLLM needs the shared memory, and the
+            # mount because the weights are about 18 GB: without it every restart of the
+            # container downloads them again. On Apple silicon it is
+            # `OPENJEV_BACKEND=mlx python -m openjev` instead, which the page says and this
+            # line deliberately does not, because the two are alternatives rather than one
+            # command.
+            "docker run -d --gpus all --ipc=host -p 127.0.0.1:8080:8080 "
+            "-v ~/.cache/huggingface:/root/.cache/huggingface razorback16/openjev:0.3.0"
         ),
         url="http://127.0.0.1:8080",
         # Its accepted set is closed -- `openjev-latest`, `openjev-0.1`, `jev-latest`,
@@ -161,7 +175,10 @@ PRESETS: dict[str, DecisionSpec] = {
         name="laya",
         backend=IN_PROCESS,
         summary="Laya, in this process: an encoder off Hugging Face, no server and no key",
-        install="uv pip install quackd[laya]  (pulls torch; weights download on first use)",
+        # Quoted, because `[laya]` unquoted is a glob in zsh and the shell eats it before
+        # pip sees it. What it pulls (torch) and when it downloads its weights (first use)
+        # is on the page: this line is the command and nothing else.
+        install='uv pip install "quackd[laya]"',
         # Its own name for the decision-tuned checkpoint. Not `laya`, which is an alias for
         # the plain English one: the names that reach a servo are worth being exact about.
         # `multilingual` is the other, and `--decision-llm laya:multilingual` asks for it.
