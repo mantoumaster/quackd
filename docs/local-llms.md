@@ -62,6 +62,11 @@ ollama serve                  # usually already running as a service
 quackd run find-and-kick --llm ollama:qwen3:8b
 ```
 
+On a Jetson, install it with the official script rather than a tarball: the script reads
+`/etc/nv_tegra_release` and fetches the JetPack build, and the generic arm64 one carries no
+Tegra CUDA, so the board answers off its CPU and nothing tells you. `ollama ps` names the
+processor a loaded model is on, which is where you find out.
+
 **llama.cpp**
 
 ```bash

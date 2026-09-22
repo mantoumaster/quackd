@@ -330,11 +330,14 @@ your own board.
 
 - The image builds for `linux/arm64` and quackd runs inside it, including a whole
   `find-and-kick` task on the scripted pilot. That was done under emulation on the machine
-  that wrote this page, and it is the first time quackd itself has run on aarch64 Linux:
-  the contributor transcripts in [local-llms.md](local-llms.md) put an aarch64 model server
-  behind a quackd that was running on something else.
-- `.github/workflows/jetson-image.yml` repeats that on a native arm64 runner with no GPU,
-  on every change to these files, so it stays true rather than having been true once.
+  that wrote this page. It is the first aarch64 Linux run of quackd this repository
+  records, which is a smaller claim than a first: where the transcripts in
+  [local-llms.md](local-llms.md) say anything they put an aarch64 model server behind a
+  quackd running on something else, and the largest contributor measurement on that same
+  board publishes no transcripts at all, so where quackd ran for it is not checkable.
+- `.github/workflows/jetson-image.yml` is set up to repeat that on a native arm64 runner
+  with no GPU on every change to these files, so it stays true rather than having been true
+  once. It has not run yet, because this branch is where those files first exist.
 - The compose file, the extras, and the version table above are held against the code by
   `tests/test_deploy_jetson.py`.
 - The JetPack table and the model download sizes were read from NVIDIA's and Ollama's own

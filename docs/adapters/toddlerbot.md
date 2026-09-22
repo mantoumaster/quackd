@@ -165,6 +165,12 @@ The daemon also reads the loaded checkpoint's own `command_range` at startup and
 velocity envelope it was really trained on, which is what quackd's `limits` narrow to. An
 envelope with nothing left on any axis is treated as no locomotion at all.
 
+**The board it runs on can hold the whole loop.** This robot carries a Jetson, which is a
+computer rather than a body, so the daemon, a model server and quackd between them can be three
+processes on that one board talking over `127.0.0.1` ([jetson.md](../jetson.md)). Nobody has
+measured what a model server saturating that board does to the fifty hertz loop beside it, and
+on this body a starved loop is a fall.
+
 ## The contract job, and what a green one means
 
 `.github/workflows/toddlerbot-contract.yml` runs nightly and on demand, and it is the only

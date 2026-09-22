@@ -62,6 +62,7 @@ third of that is the seeded acceptance sweeps, which CI holds at 10 of 10 by set
 | `quackd/adapters/` | what every adapter shares: `base.py` (the `RobotAdapter` protocol and its helpers), `manifest.py`, `catalogue.py` (the seven quackd publishes, as strings), `factory.py` (`--robot` to a body) |
 | `adapters/<name>/` | one robot, one distribution: `pyproject.toml`, `README.md`, and the code in `src/quackd_<name>/` |
 | `bridge/<name>/` | the daemon that runs on the robot itself (`open_duck`, `alohamini`, `toddlerbot`), which never imports quackd |
+| `deploy/jetson/` | a Dockerfile and a compose file for running quackd beside a local model server on an NVIDIA Jetson. Not a robot side and imported by nothing: it is the same wheel a laptop installs, on an arm64 image with no CUDA in it. In neither the wheel nor the sdist, so the image is only ever built from a checkout |
 | `ducks/`, `docs/`, `tests/`, `web/`, `scripts/` | the starter task files, the documentation, the whole suite, the browser demo, `set_version.py` |
 
 A robot's code is imported as `quackd_<name>`, never as `quackd.adapters.<name>`. The 2D
@@ -87,6 +88,22 @@ Raspberry Pi), it ships in the sdist and never in the wheel, and it stays testab
 hardware through its `--fake` mode and a pure core the tests drive directly. The
 ToddlerBot daemon is the largest of the three, because it owns that robot's control
 loop rather than feeding one, so it carries the most of its own safety machinery.
+
+Touching `deploy/jetson/`? That is the container, and it is published nowhere: people build it
+from a checkout, which is what [docs/jetson.md](docs/jetson.md) tells them to do.
+`tests/test_deploy_jetson.py` runs in the ordinary suite with nothing extra installed: it reads
+`compose.yml` and asserts the shape that file argues for, and it holds the JetPack table on the
+page against `_JETPACK_FOR_L4T` in `quackd/doctor.py`, so editing one of those two and not the
+other fails locally. The build is the half pytest cannot see. Do it yourself with `docker buildx
+build --platform linux/arm64 -f deploy/jetson/Dockerfile -t quackd-jetson .` if you have buildx
+and qemu. `.github/workflows/jetson-image.yml` is written to do it on a native arm64 runner and
+then run `doctor` and a whole task inside the image, and it has not run yet. That job is
+deliberately off the required path, so a red run blocks no merge and somebody has to go and
+read it. The image installs nothing from apt on purpose, which is why a dependency that one day
+wants a system library shows up as the `import cv2` step failing there rather than on somebody's
+board. Nothing here has been run on a Jetson, so what you change is checked against files and
+against `uv.lock` and never against the board it is named after
+([ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
 
 Touching `web/`? That is the browser demo, and the only quackd code that is not Python: plain
 JavaScript modules, no build step, nothing to install. Run it with the server in the directory

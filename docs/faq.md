@@ -471,6 +471,13 @@ not exist on that robot. Those seven are each their own package, and an adapter 
 publishes is found exactly the same way, through the `quackd.adapters` entry point group, with
 no pull request to this repository. Writing one: [adapters.md](adapters.md).
 
+**Is a Jetson one of the seven?** No, and it is not an eighth. A Jetson is a computer, not a
+body: it has no manifest and no verbs, `quackd list-adapters` will never show it, there is no
+`--robot jetson:...`, and there is nothing to install for it. quackd runs there the way it runs
+on your laptop, and the GPU on that board belongs to a local model server it reaches over
+loopback, which is the arrangement *Does the robot need a powerful onboard computer?* above
+describes ([ADR-0044](adr/0044-a-jetson-is-a-host-not-a-body.md)).
+
 **Why does `validate` say "requires kick, but arm-01 (lerobot-so101) does not provide
 it"?** Because it is true. A `.duck` lists what it needs (`requires`, or for a `duck: 0`
 file its whole allowlist) and an arm has no legs. Either pick a body that has the verb,

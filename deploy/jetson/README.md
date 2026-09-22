@@ -42,8 +42,8 @@ so `compose run quackd` cannot start a second one by accident.
 ## Status
 
 Nothing here has been run on a Jetson by this project. The image was built for arm64 and run under emulation on the
-machine that wrote it, and `.github/workflows/jetson-image.yml` repeats that on a native
-arm64 Linux runner with no GPU. Between them they prove the image builds and that quackd
-runs inside it on aarch64, and they prove nothing at all about Ollama, the NVIDIA
-container runtime, or what the board does with a model loaded. If you run it on yours,
+machine that wrote it. `.github/workflows/jetson-image.yml` is set up to repeat that on a
+native arm64 Linux runner with no GPU and has not run yet. The emulated build proves the
+image builds and that quackd runs inside it on aarch64, and it proves nothing at all about
+Ollama, the NVIDIA container runtime, or what the board does with a model loaded. If you run it on yours,
 [`docs/jetson.md`](../../docs/jetson.md) says what to send.

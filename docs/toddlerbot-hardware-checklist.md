@@ -7,6 +7,11 @@ This robot is not a duck. It weighs about 3 kg, it cannot get up if it falls, an
 own shutdown path disables torque with no lowering and no ramp. Read
 [adapters/toddlerbot.md](adapters/toddlerbot.md) before you start.
 
+Drive it from your laptop the first time. The Jetson on the robot's back can hold the daemon, a
+model server and quackd all at once ([jetson.md](jetson.md)), and a model server saturating that
+board is exactly the load that can starve the fifty hertz loop. Bring the robot up with nothing
+else running on it, and try the crowded board once these steps have passed.
+
 ## Before you power anything
 
 1. **Put it on the safety stand.** Upstream ships an aluminium extrusion frame for exactly
@@ -56,7 +61,13 @@ script that ignores it.
 11. **Pull the network cable mid-move.** The daemon's deadman should slew the robot to the
     safe pose and hold it there. It must not go limp and it must not freeze mid-pose. This is
     the single most important thing to confirm, because on this body silence means hold
-    forever and quackd's daemon is the only thing that makes it mean anything else.
+    forever and quackd's daemon is the only thing that makes it mean anything else. If quackd
+    is on the robot's own board instead, there is no cable to pull: `kill -STOP` its
+    process, which stops the keepalives without closing the socket. **Do not resume it.**
+    `bot.keepalive` feeds the deadman on its own and the daemon clears the trip on the first
+    one it sees, so a `kill -CONT` hands the body straight back to the verb that was in
+    flight, while your hands are on it. Kill that process outright and start a fresh run
+    once the robot has settled.
 12. **Send the daemon `SIGTERM`.** It should settle to the safe pose first and only then
     release. Upstream's own exit path does not do this, which is why the daemon exists.
 
