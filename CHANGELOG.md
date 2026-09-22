@@ -30,9 +30,10 @@ moves a servo, and the rule that a stepper may never record a verdict, declare a
 end a run. That is quackd's half and it does not move with the vendor
 ([ADR-0043](docs/adr/0043-decision-llms-are-a-wire-format-and-a-data-row.md)).
 
-Two honest notes, because the rest of this is a robot. The confidence floors are Jev's
-published numbers, and every other preset inherits them unmeasured, each computing confidence
-by its own formula. And nothing here has been run against a real robot: the client is tested
+Two honest notes, because the rest of this is a robot. Two of the four confidence floors are
+numbers TypeSafe publish and two are quackd's own, all four shaped around Jev, and every
+other preset inherits every one of them unmeasured while computing confidence by its own
+formula. And nothing here has been run against a real robot: the client is tested
 against a stub. `--decision-mode shadow` asks a decision LLM every turn, records what it would
 have chosen beside what the model did, and changes nothing about the run. It is how that
 changes, and `--decision-mode on` says so, loudly, every time you use it.
@@ -50,7 +51,8 @@ the reading of it is.
 ### Added
 
 - **Six decision LLMs beside Jev, as rows of data rather than modules.** `kev` (Qwen3.5 with a
-  decision head, your own GPU), `von` (a 395M encoder, about 18 ms, CPU viable), `openjev`
+  decision head, your own GPU), `von` (a 395M encoder, about 18 ms on a GPU, CPU viable),
+  `openjev`
   (DiffusionGemma behind vLLM or MLX), `opendecision` (a zero-shot encoder, no GPU),
   `local` (anything else that speaks the format, with `--decision-url`), and `laya`, which runs
   inside the quackd process with no server and no key at all. Each row carries its own default
@@ -159,6 +161,83 @@ the reading of it is.
   already gets, at the one place that holds it.
 - **`docs/jev.md` is `docs/decision-llms.md`.** The 0.11.0 README on PyPI links to the old path
   and will 404 there until the next release replaces that README.
+- **One page per decision LLM, under `docs/decision-llms/`.** The hub keeps everything that does
+  not change with the vendor, the argument, the SO-101 worked example, the arithmetic, how a
+  turn is decided and the presets table, and that table now links a page per row. The seven
+  per-preset sections moved out to `docs/decision-llms/<name>.md`, one each in the shape of the
+  robot pages under `docs/adapters/`: the catalogue row it has to agree with, what was read
+  from that project's README and source on 2026-09-22 and where, what quackd assumes about it
+  and what it does about each assumption, and the line **Nothing here has ever answered a real
+  robot.** until one of them has. A test reads every row back off its page, so a table cell and a catalogue field
+  cannot drift apart again. The hub's own path did not move, so nothing that links it, the PyPI
+  README included, had to change.
+- **`docs/lerobot-first-run.md` says how to add one to a real arm.** A new final section walks
+  the optional path in order: the two extras, `--decision-mode shadow` on `lerobot-lookout`
+  first with the line it prints, then `on` and what `from decision` means in the log, which of
+  that arm's verbs are answerable and why `move_joints` is not, and which of the seven to point
+  it at. It is last and marked optional because a first run wants fewer moving parts, not more.
+- **Install lines a reader can paste.** The `kev` row lost `cd kev` between the clone
+  and `uv sync`, so the sync ran in whatever directory you were standing in; the `openjev` row
+  dropped `--ipc=host` and the Hugging Face cache mount its own README carries, so every restart
+  of that container downloaded about 18 GB again. Both rows now quote the project's own command,
+  and the hub's table quotes the row rather than a shortened copy of it.
+
+### Fixed
+
+- **Three install lines a reader could not paste.** `kev` lost the `cd kev` between its clone
+  and its `uv sync`, so a copied command synced whatever directory you were standing in.
+  `openjev` was missing the `--ipc=host` vLLM needs and the Hugging Face cache mount, without
+  which every container restart downloads about 18 GB again, and it carried its MLX
+  alternative inside the same string, so the whole cell was not a command. `laya` carried its
+  own parenthetical the same way and left `quackd[laya]` unquoted, which zsh eats as a glob
+  before pip sees it. Each row now holds one command and nothing else, and the note that used
+  to be wedged into it is on the page.
+- **`von serve` was handed to readers with its own default bind.** Its `--host` defaults to
+  `0.0.0.0`, which is every interface on the machine, and it authenticates nothing unless
+  `VON_API_KEY` is set. The row now says `--host 127.0.0.1`, which is where its page already
+  told you to put it.
+- **The confidence floors were credited to TypeSafe, and two of the four are quackd's own.**
+  Their confidence page publishes 0.5 and 0.9, and both are here as the brake and the
+  confirm-gated floors. The read floor at 0.60 and the motion floor at 0.85 are quackd's,
+  set between those two, and nothing published sits there. Every live site now says which is
+  which: the `FLOORS` comment in `stepper.py`, the floors table and both warnings in
+  `docs/decision-llms.md`, all seven decision LLM pages, two README rows, the changelog's own
+  honest-notes paragraph, the first-run guide and the amendment notes on ADR-0040 and
+  ADR-0043. A test forbids the old phrasings, because this one was written once and then
+  copied, and it survived a first correction that only caught half the copies. A number
+  nobody published is a number nobody has calibrated either.
+- **A docs guard that could not fail.** The test asserting every decision LLM page has a
+  `VERIFIED` section was satisfied by the word `UNVERIFIED`, so only one of the pair was ever
+  really checked. Both are matched as headings now, and the honesty line is matched literally
+  rather than by the word *never*, which turns up in ordinary prose.
+- **Laya reports a token count, and quackd said it did not.** `laya/agent.py` returns
+  `usage.input_tokens` as `int(attention_mask.sum())`, a real count of what the model read,
+  so its turns are billed measured and print without the `~`. The module docstring, the page
+  and `tests/fake_laya.py` all said the opposite, which left the fake standing in for a shape
+  Laya never produces and the suite exercising the estimate path for the one backend that
+  does not take it. The fake now returns the real shape, probabilities on a choice included,
+  and a test reads the count back.
+- **Von accepts a model id, ignores it, and deliberately does not hand it back.** Its engine
+  overwrites whatever was asked for with `von-1.1.0` before the backend sees it, on purpose,
+  so a run's record and the server's answer name two different strings. The page had said
+  first that the id was neither routed nor echoed, then that it was echoed; it is the former.
+  The same re-read retired a second backend, a 512-token truncation and a `--backend` flag
+  that upstream no longer has, and corrected its CORS credentials, its `transformers` floor
+  and its weights repository.
+- **Every number a page attributes now survives a re-read.** Kev's latency figures had been
+  replaced upstream (149 ms and 721 ms through MLX on an M5, not 329 ms and 779 ms), which
+  also reversed the page's conclusion that the 4B does not fit inside the one-second budget.
+  Its state constants were renamed, its probability rounding is four decimal places rather
+  than two, and every line-number citation on every page is gone in favour of the file and
+  the symbol, because the numbers had already drifted on a page dated the same day.
+- **Three smaller claims that were not true.** `DecisionMissingKey` refuses the stepper, not
+  the run, and the run carries on without it. The SO-101 section of the first-run guide
+  listed gaze verbs the arm does not have and omitted two it does. `local.md` claimed a live
+  round-trip that only runs behind an opt-in environment variable.
+- **Two pasted log blocks that could not have come from a run.** The first-run guide's
+  decision blocks used the ASCII gutter on a page that uses the Unicode one, and printed
+  token counts bare where quackd prints a `~` for a figure it estimated itself. Both are
+  output from real runs now, re-rendered through the same renderer the CLI uses.
 
 ### Removed
 
@@ -2017,6 +2096,63 @@ model or by a robot, and the two nightly jobs that watch upstream have been red 
   rather than `quackd[live]`, because Rich had read the extra as markup and eaten it. Same
   for `quackd[microduck-camera]` and `quackd[lan]`.
 
+### Fixed
+
+- **Three install lines a reader could not paste.** `kev` lost the `cd kev` between its clone
+  and its `uv sync`, so a copied command synced whatever directory you were standing in.
+  `openjev` was missing the `--ipc=host` vLLM needs and the Hugging Face cache mount, without
+  which every container restart downloads about 18 GB again, and it carried its MLX
+  alternative inside the same string, so the whole cell was not a command. `laya` carried its
+  own parenthetical the same way and left `quackd[laya]` unquoted, which zsh eats as a glob
+  before pip sees it. Each row now holds one command and nothing else, and the note that used
+  to be wedged into it is on the page.
+- **`von serve` was handed to readers with its own default bind.** Its `--host` defaults to
+  `0.0.0.0`, which is every interface on the machine, and it authenticates nothing unless
+  `VON_API_KEY` is set. The row now says `--host 127.0.0.1`, which is where its page already
+  told you to put it.
+- **The confidence floors were credited to TypeSafe, and two of the four are quackd's own.**
+  Their confidence page publishes 0.5 and 0.9, and both are here as the brake and the
+  confirm-gated floors. The read floor at 0.60 and the motion floor at 0.85 are quackd's,
+  set between those two, and nothing published sits there. Every live site now says which is
+  which: the `FLOORS` comment in `stepper.py`, the floors table and both warnings in
+  `docs/decision-llms.md`, all seven decision LLM pages, two README rows, the changelog's own
+  honest-notes paragraph, the first-run guide and the amendment notes on ADR-0040 and
+  ADR-0043. A test forbids the old phrasings, because this one was written once and then
+  copied, and it survived a first correction that only caught half the copies. A number
+  nobody published is a number nobody has calibrated either.
+- **A docs guard that could not fail.** The test asserting every decision LLM page has a
+  `VERIFIED` section was satisfied by the word `UNVERIFIED`, so only one of the pair was ever
+  really checked. Both are matched as headings now, and the honesty line is matched literally
+  rather than by the word *never*, which turns up in ordinary prose.
+- **Laya reports a token count, and quackd said it did not.** `laya/agent.py` returns
+  `usage.input_tokens` as `int(attention_mask.sum())`, a real count of what the model read,
+  so its turns are billed measured and print without the `~`. The module docstring, the page
+  and `tests/fake_laya.py` all said the opposite, which left the fake standing in for a shape
+  Laya never produces and the suite exercising the estimate path for the one backend that
+  does not take it. The fake now returns the real shape, probabilities on a choice included,
+  and a test reads the count back.
+- **Von accepts a model id, ignores it, and deliberately does not hand it back.** Its engine
+  overwrites whatever was asked for with `von-1.1.0` before the backend sees it, on purpose,
+  so a run's record and the server's answer name two different strings. The page had said
+  first that the id was neither routed nor echoed, then that it was echoed; it is the former.
+  The same re-read retired a second backend, a 512-token truncation and a `--backend` flag
+  that upstream no longer has, and corrected its CORS credentials, its `transformers` floor
+  and its weights repository.
+- **Every number a page attributes now survives a re-read.** Kev's latency figures had been
+  replaced upstream (149 ms and 721 ms through MLX on an M5, not 329 ms and 779 ms), which
+  also reversed the page's conclusion that the 4B does not fit inside the one-second budget.
+  Its state constants were renamed, its probability rounding is four decimal places rather
+  than two, and every line-number citation on every page is gone in favour of the file and
+  the symbol, because the numbers had already drifted on a page dated the same day.
+- **Three smaller claims that were not true.** `DecisionMissingKey` refuses the stepper, not
+  the run, and the run carries on without it. The SO-101 section of the first-run guide
+  listed gaze verbs the arm does not have and omitted two it does. `local.md` claimed a live
+  round-trip that only runs behind an opt-in environment variable.
+- **Two pasted log blocks that could not have come from a run.** The first-run guide's
+  decision blocks used the ASCII gutter on a page that uses the Unicode one, and printed
+  token counts bare where quackd prints a `~` for a figure it estimated itself. Both are
+  output from real runs now, re-rendered through the same renderer the CLI uses.
+
 ### Removed
 
 - **Breaking. The Reachy Mini adapter.** `--robot reachy_mini:{sim2d,mock,sdk}`, `quackd[reachy]`,
@@ -3518,6 +3654,63 @@ Still nothing has run on a duck. What is new is that everything except the duck 
   robot actually reported: its capabilities, which verbs it does and does not have, and
   whether its control loop is healthy. It is the only way to see that difference before a
   run does.
+
+### Fixed
+
+- **Three install lines a reader could not paste.** `kev` lost the `cd kev` between its clone
+  and its `uv sync`, so a copied command synced whatever directory you were standing in.
+  `openjev` was missing the `--ipc=host` vLLM needs and the Hugging Face cache mount, without
+  which every container restart downloads about 18 GB again, and it carried its MLX
+  alternative inside the same string, so the whole cell was not a command. `laya` carried its
+  own parenthetical the same way and left `quackd[laya]` unquoted, which zsh eats as a glob
+  before pip sees it. Each row now holds one command and nothing else, and the note that used
+  to be wedged into it is on the page.
+- **`von serve` was handed to readers with its own default bind.** Its `--host` defaults to
+  `0.0.0.0`, which is every interface on the machine, and it authenticates nothing unless
+  `VON_API_KEY` is set. The row now says `--host 127.0.0.1`, which is where its page already
+  told you to put it.
+- **The confidence floors were credited to TypeSafe, and two of the four are quackd's own.**
+  Their confidence page publishes 0.5 and 0.9, and both are here as the brake and the
+  confirm-gated floors. The read floor at 0.60 and the motion floor at 0.85 are quackd's,
+  set between those two, and nothing published sits there. Every live site now says which is
+  which: the `FLOORS` comment in `stepper.py`, the floors table and both warnings in
+  `docs/decision-llms.md`, all seven decision LLM pages, two README rows, the changelog's own
+  honest-notes paragraph, the first-run guide and the amendment notes on ADR-0040 and
+  ADR-0043. A test forbids the old phrasings, because this one was written once and then
+  copied, and it survived a first correction that only caught half the copies. A number
+  nobody published is a number nobody has calibrated either.
+- **A docs guard that could not fail.** The test asserting every decision LLM page has a
+  `VERIFIED` section was satisfied by the word `UNVERIFIED`, so only one of the pair was ever
+  really checked. Both are matched as headings now, and the honesty line is matched literally
+  rather than by the word *never*, which turns up in ordinary prose.
+- **Laya reports a token count, and quackd said it did not.** `laya/agent.py` returns
+  `usage.input_tokens` as `int(attention_mask.sum())`, a real count of what the model read,
+  so its turns are billed measured and print without the `~`. The module docstring, the page
+  and `tests/fake_laya.py` all said the opposite, which left the fake standing in for a shape
+  Laya never produces and the suite exercising the estimate path for the one backend that
+  does not take it. The fake now returns the real shape, probabilities on a choice included,
+  and a test reads the count back.
+- **Von accepts a model id, ignores it, and deliberately does not hand it back.** Its engine
+  overwrites whatever was asked for with `von-1.1.0` before the backend sees it, on purpose,
+  so a run's record and the server's answer name two different strings. The page had said
+  first that the id was neither routed nor echoed, then that it was echoed; it is the former.
+  The same re-read retired a second backend, a 512-token truncation and a `--backend` flag
+  that upstream no longer has, and corrected its CORS credentials, its `transformers` floor
+  and its weights repository.
+- **Every number a page attributes now survives a re-read.** Kev's latency figures had been
+  replaced upstream (149 ms and 721 ms through MLX on an M5, not 329 ms and 779 ms), which
+  also reversed the page's conclusion that the 4B does not fit inside the one-second budget.
+  Its state constants were renamed, its probability rounding is four decimal places rather
+  than two, and every line-number citation on every page is gone in favour of the file and
+  the symbol, because the numbers had already drifted on a page dated the same day.
+- **Three smaller claims that were not true.** `DecisionMissingKey` refuses the stepper, not
+  the run, and the run carries on without it. The SO-101 section of the first-run guide
+  listed gaze verbs the arm does not have and omitted two it does. `local.md` claimed a live
+  round-trip that only runs behind an opt-in environment variable.
+- **Two pasted log blocks that could not have come from a run.** The first-run guide's
+  decision blocks used the ASCII gutter on a page that uses the Unicode one, and printed
+  token counts bare where quackd prints a `~` for a figure it estimated itself. Both are
+  output from real runs now, re-rendered through the same renderer the CLI uses.
 
 ### Removed
 

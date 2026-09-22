@@ -1,6 +1,20 @@
 # ADR-0043: Decision LLMs are a wire format and a data row, not a vendor
 
-**Status:** accepted · **Date:** 2026-09-22 · Extends [ADR-0040](0040-a-discrete-stepper-in-front-of-the-model.md) (the stepper, its floors and its gates, all unchanged) and borrows the discovery pattern from [ADR-0037](0037-adapters-are-their-own-packages.md) (adapters announce themselves through an entry point group) · Amends [ADR-0040](0040-a-discrete-stepper-in-front-of-the-model.md) and [ADR-0041](0041-the-record-says-when-it-ran-and-what-it-cost.md) (their Jev-specific spellings) · Retires `--jev` outright, with none of the release of grace [ADR-0042](0042-the-log-is-the-whole-screen.md) gave the trace spellings · Also merges `--provider` and `--model` into `--llm`, amending [ADR-0031](0031-model-catalogue.md) · Implemented in `quackd/agent/decision/` (was `quackd/agent/jev.py`) ([page](../decision-llms.md))
+**Status:** accepted, amended · **Date:** 2026-09-22 · Extends [ADR-0040](0040-a-discrete-stepper-in-front-of-the-model.md) (the stepper, its floors and its gates, all unchanged) and borrows the discovery pattern from [ADR-0037](0037-adapters-are-their-own-packages.md) (adapters announce themselves through an entry point group) · Amends [ADR-0040](0040-a-discrete-stepper-in-front-of-the-model.md) and [ADR-0041](0041-the-record-says-when-it-ran-and-what-it-cost.md) (their Jev-specific spellings) · Retires `--jev` outright, with none of the release of grace [ADR-0042](0042-the-log-is-the-whole-screen.md) gave the trace spellings · Also merges `--provider` and `--model` into `--llm`, amending [ADR-0031](0031-model-catalogue.md) · Implemented in `quackd/agent/decision/` (was `quackd/agent/jev.py`) ([page](../decision-llms.md))
+
+**Amended 2026-09-22:** "a section on the page" under Consequences is a page now. Each preset
+has `docs/decision-llms/<name>.md`, in the shape of the adapter pages, with a VERIFIED and an
+UNVERIFIED section and a status line that stays until one has answered a real robot, and the
+hub's table links it. `docs/decision-llms.md` itself did not move, so nothing that links it
+had to.
+
+Two sentences below are wrong on their facts and the decisions above them are not. Read
+"it reports no token count at all" about `laya` as its opposite: `laya/agent.py` returns
+`usage.input_tokens` as a real tokeniser count, so it is the one row billed measured, and it
+is priced at the self-hosted rate because of where it runs rather than because of what it
+counts. And read "the floors are Jev's numbers" as true of two of the four: TypeSafe publish
+0.5 and 0.9, which are the brake and the confirm gate, while the 0.60 read floor and the
+0.85 motion floor are quackd's own, set between them. Nothing else in this ADR changes.
 
 ## Context
 

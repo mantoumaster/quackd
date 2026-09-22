@@ -533,9 +533,10 @@ every step of this checklist: a first run is about proving the arm, and one more
 between you and it is the opposite of what that wants. Afterwards,
 `--decision-llm jev --decision-mode shadow` changes nothing about a run and records what the
 decision LLM would have chosen on each turn beside what the model actually chose.
-Two numbers come out of it that exist nowhere yet, for `jev` and for every other name on that
-page alike: how long one takes to answer a real arm's state, and how often it agrees with the
-model on one. The task
+Two numbers come out of it that exist nowhere yet, for [`jev`](decision-llms/jev.md) and for
+every other decision LLM quackd names alike: how long one takes to answer a real arm's state,
+and how often it agrees with the model on one. Each one's page asks for exactly those two
+under *How to help*. The task
 built for it is `arm-grip-check`, which also happens to be the one that asks the holding-band
 question above ([decision-llms.md](decision-llms.md)).
 
