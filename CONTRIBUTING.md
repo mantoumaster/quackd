@@ -130,7 +130,7 @@ registrar and a synchronous fake MQTT broker, no sockets. Keep it that way, and 
 1. Copy a starter from [`ducks/`](ducks/) and edit the frontmatter + body.
    Spec: [docs/duck-spec.md](docs/duck-spec.md).
 2. `uv run quackd validate ducks/your-duck.duck` — it must pass.
-3. Run it at least once: `uv run quackd run ducks/your-duck.duck --provider fake`
+3. Run it at least once: `uv run quackd run ducks/your-duck.duck --llm fake`
    (the scripted pilot only knows the starters, so for a new duck use a real provider if
    you have a key, or add a strategy to `quackd/agent/providers/fake.py`).
 4. Open a PR. In the description say what it does, which providers you tried, and what
@@ -237,13 +237,25 @@ Four things the log depends on, none of them optional:
    that is a string, a tool call with no name: all of it is `ProviderError`, and the test
    for it belongs in `tests/test_providers.py`.
 
-**A stepper is not a provider, and must not be added as one.** `quackd/agent/jev.py` is an
-optional model that answers typed questions about a state and generates no text at all
-([docs/jev.md](docs/jev.md)). It cannot pilot a robot, so it is deliberately absent from
-`CATALOGUE`, from `PROVIDER_NAMES` and from `--provider`, it has its own section in `quackd
-doctor` rather than a row in the providers table, and its extra is not part of `quackd[all]`.
-If you are adding something that answers a question rather than writing an answer, none of the
-six entries above apply to it.
+**A stepper is not a provider, and must not be added as one.** `quackd/agent/decision/` holds
+the optional models that answer typed questions about a state and generate no text at all
+([docs/decision-llms.md](docs/decision-llms.md)). None of them can pilot a robot, so they are
+deliberately absent from `CATALOGUE`, from `PROVIDER_NAMES` and from `--llm`, they have their
+own section in `quackd doctor` rather than rows in the providers table, and their extras,
+`quackd[decision]` and `quackd[laya]`, are not part of `quackd[all]`. If you are adding
+something that answers a question rather than writing an answer, none of the six entries above
+apply to it.
+
+**And a decision LLM is usually a row rather than a module.** They share a wire format,
+`POST /v1/systemone`, rather than a vendor, so one that speaks it is one `DecisionSpec` in
+`quackd/agent/decision/catalogue.py` (name, summary, install line, default url, default model
+id, key variable if it wants one, price if anybody publishes one) and one section on the page.
+No new file, no new client, no new flag: `systemone.py` already talks to it and `--decision-url`
+already moves it off the port its row expects. The two shapes that are not a row: one with a
+Python API of its own rather than a server, which is a plugin announcing itself under the
+`quackd.decision_llms` entry point group and carrying its own `make(spec, *, url, model)`, the
+way a third party's robot adapter announces itself; and a change to what the stepper *asks*,
+which is `stepper.py` and belongs to none of them.
 
 ## Add an adapter
 
@@ -327,7 +339,7 @@ This section is written to its own rules, as the worked example.
 
 **No dashes.** No em dash, no en dash, no hyphen standing in for a comma or a colon or an
 aside, and no hyphen bullets. A hyphen belongs only inside something that genuinely has one:
-`google-genai`, `gemini-3.8-flash`, `--provider`, a branch name, an identifier. Everything
+`google-genai`, `gemini-3.8-flash`, `--decision-llm`, a branch name, an identifier. Everything
 else is a real sentence, or a colon, or a full stop. Prose here leans on em dashes heavily
 and a reply must not, so the weight goes onto the colon and onto the short flat sentence
 after a long one instead. This is the fastest way for a reply to look machine written, and

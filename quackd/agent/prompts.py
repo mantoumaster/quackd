@@ -638,7 +638,7 @@ def build_observation_text(
         lines.append("Messages from your flock (newest last):")
         lines.extend(inbox_lines(inbox, inbox_for))
     if stepped:
-        # Turns the discrete stepper answered while the model was not asked (`--jev on`).
+        # Turns the discrete stepper answered while the model was not asked (`--decision-mode on`).
         # None of it is in the model's history, because none of it is anything the model
         # said, so this line is the whole of what it knows about that time. It has to say
         # who chose them: a pilot that thinks it closed the gripper itself will not think

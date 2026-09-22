@@ -33,7 +33,7 @@ def _run_output(tmp_path: Path, *flags: str) -> str:
         [
             "run",
             "find-and-kick",
-            "--provider",
+            "--llm",
             "fake",
             "--seed",
             "3",
@@ -95,11 +95,11 @@ def test_log_replays_a_finished_run(tmp_path: Path) -> None:
     assert "SUCCESS" in out and "llm calls" in out
 
 
-def test_a_summary_from_before_the_stepper_was_priced_gains_no_cost_counter(
+def test_a_decision_block_with_no_cost_key_gains_no_cost_counter(
     tmp_path: Path,
 ) -> None:
-    """Every `--jev` run recorded before this change already wrote a `jev` block, so gating the
-    cost counter on that block gave those records a fourth counter reading `cost unpriced`
+    """Every stepper run recorded before this change already wrote its own block, so gating
+    the cost counter on that block gave those records a fourth counter reading `cost unpriced`
     that they never had and that says nothing true about them: nobody tried to price them.
     The gate is a cost key, and a stepper block without one is a run from before there were
     any."""
@@ -115,8 +115,9 @@ def test_a_summary_from_before_the_stepper_was_priced_gains_no_cost_counter(
                 "llm_calls": 4,
                 "elapsed_s": 31.2,
                 "usage": {"input_tokens": 9000, "output_tokens": 120},
-                "jev": {
+                "decision": {
                     "mode": "on",
+                    "llm": "jev",
                     "model": "jev-1.13.0",
                     "asked": 6,
                     "taken": 4,
@@ -273,7 +274,7 @@ def test_log_on_a_flock_run_names_every_member(tmp_path: Path) -> None:
         [
             "run",
             "flock-kick",
-            "--provider",
+            "--llm",
             "fake",
             "--seed",
             "3",
@@ -443,7 +444,7 @@ def _narration(
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",
@@ -470,7 +471,7 @@ def _narrow_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *flags: str) ->
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--robot",
             "microduck:mock",

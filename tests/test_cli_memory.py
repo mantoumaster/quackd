@@ -76,7 +76,7 @@ def test_clear_forgets_and_show_survives_it(tmp_path: Path) -> None:
 
 def test_a_run_writes_an_episode_and_the_next_run_is_told(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
-    common = ["run", "hello-world", "--provider", "fake", "--runs-dir", str(runs)]
+    common = ["run", "hello-world", "--llm", "fake", "--runs-dir", str(runs)]
     first = runner.invoke(app, [*common, *_mem(tmp_path)])
     assert first.exit_code == 0, first.output
     assert "0 notes, 0 earlier runs" in first.output
@@ -93,7 +93,7 @@ def test_no_memory_writes_nothing_at_all(tmp_path: Path) -> None:
         [
             "run",
             "hello-world",
-            "--provider",
+            "--llm",
             "fake",
             "--runs-dir",
             str(runs),

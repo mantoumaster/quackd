@@ -26,7 +26,7 @@ def _reg(tmp_path: Path) -> list[str]:
 
 def _run_args(tmp_path: Path) -> list[str]:
     return [
-        "--provider",
+        "--llm",
         "fake",
         "--no-gif",
         "--no-log",
@@ -92,7 +92,7 @@ def test_a_stored_flock_of_simulated_ducks_runs_the_coordinator(tmp_path: Path) 
 
 
 def test_the_demo_duck_runs_with_no_registry_and_no_key(tmp_path: Path) -> None:
-    """`quackd run flock-hello --provider fake` has to work in a fresh checkout."""
+    """`quackd run flock-hello --llm fake` has to work in a fresh checkout."""
     result = runner.invoke(app, ["run", "flock-hello", *_run_args(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "members 2/2 succeeded" in result.output
@@ -310,7 +310,7 @@ def test_record_takes_a_count_and_not_a_stored_flock(tmp_path: Path) -> None:
             "flock-kick",
             "--flock",
             "pair",
-            "--provider",
+            "--llm",
             "fake",
             "--runs-dir",
             str(tmp_path / "runs"),

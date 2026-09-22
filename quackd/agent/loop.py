@@ -30,7 +30,9 @@ from quackd.adapters.base import (
     take_hold_if_any,
 )
 from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
-from quackd.agent.jev import Advice, JevMode, Stepper
+from quackd.agent.decision.base import DecisionLLM
+from quackd.agent.decision.catalogue import DecisionMode
+from quackd.agent.decision.stepper import Advice, Stepper
 from quackd.agent.prompts import (
     ASSESS_TASK_NAME,
     DECLARE_NAMES,
@@ -55,7 +57,7 @@ from quackd.agent.providers.base import (
 from quackd.agent.providers.catalogue import Price
 from quackd.agent.providers.pricing import cost_usd, resolve_price
 from quackd.agent.transcript import Transcript, new_run_dir, png_bytes, run_label
-from quackd.command import command_line, redacted_body
+from quackd.command import command_line, redacted_body, redacted_url
 from quackd.duckfile.schema import DuckFile
 from quackd.log import EventLog, Sink, a_person_was_asked, fmt_params
 from quackd.memory import RobotMemory
@@ -188,14 +190,35 @@ class RunConfig:
     link: FlockLinkLike | None = None
     """This pilot's end of a flock bus. None is a solo run: no `tell` tool, no flock section
     in the prompt, and no inbox in any observation."""
-    jev: JevMode = "off"
-    """Whether TypeSafe's Jev answers the turns that are a choice (`quackd run --jev`).
+    decision: DecisionMode = "off"
+    """How much a decision LLM may do with the turns that are a choice (`--decision-mode`).
 
     `off` is every run made before there was a flag for it and every run that does not ask for
-    one, and on that path no `Stepper` is built and `typesafe_sdk` is never imported. `shadow`
-    asks it every turn, records the answer beside the model's, and changes nothing. `on` lets
-    it take the turns it is confident about; every pose and every sentence is still the
-    model's (`docs/jev.md`)."""
+    one, and on that path no `Stepper` is built and no vendor SDK is imported. `shadow` asks it
+    every turn, records the answer beside the model's, and changes nothing. `on` lets it take
+    the turns it is confident about; every pose and every sentence is still the model's
+    (`docs/decision-llms.md`).
+
+    *Which* decision LLM answers is a separate field, `decision_llm` below, chosen with
+    `--decision-llm`: this one is only how much authority whichever one it is gets. The two are
+    apart because they change for different reasons -- you swap Jev for a Kev server you run
+    yourself without touching how far you trust it, and you promote a run from `shadow` to `on`
+    without changing who answers."""
+    decision_llm: DecisionLLM | None = None
+    """Which decision LLM answers, already built and ready to be asked.
+
+    The CLI builds it before the robot connects (`quackd.agent.decision.factory`), because a
+    missing extra or a missing API key is a typo to be told about while nothing is powered up,
+    not a `DecisionError` raised with an arm halfway through a reach. Required whenever
+    `decision` is not `off`; None on every other run, and then nothing here imports a backend."""
+    decision_price: Price | None = None
+    """What one question to that decision LLM is costed at, resolved by the same factory.
+
+    Written into `run_start` and into the `decision` block of `summary.json`, so a replay
+    prices the run at what it cost on the day rather than at whatever the catalogue says months
+    later. Never None when a decision LLM runs: the factory always resolves a rate, falling
+    back to a self-hosted zero for a server you run yourself, because a missing number in the
+    record reads as free when it means unknown."""
     summary_file: bool = True
     """Whether to write `summary.json` beside the transcript. False for a flock member, whose
     rollup belongs in the flock's own summary and whose directory must not read as a solo run
@@ -226,7 +249,7 @@ class RunResult:
     gif_path: Path | None = None
     log_dropped: int = 0
     """Events a view raised on and never showed. The transcript has them all."""
-    jev_calls: int = 0
+    decision_calls: int = 0
     """Turns the discrete stepper answered. 0 on every run that did not ask for one."""
     summary: dict[str, Any] = field(default_factory=dict)
     """The dict written to `summary.json`, verbatim, and the payload of `run_end`.
@@ -887,20 +910,30 @@ class AgentLoop:
             # path below that existed before there was a flag. Built here because its whole
             # vocabulary is the allowlist's discrete calls, and `allow` is not final until the
             # verbs this robot turned out not to have have been dropped from it, just above.
-            stepper = (
-                Stepper.build(
-                    mode=cfg.jev,
+            stepper: Stepper | None = None
+            if cfg.decision != "off":
+                # A mode with nobody to answer it is a caller that asked for a decision LLM and
+                # never built one, which is a bug in the CLI rather than a run to start quietly
+                # with every choice going to the model anyway.
+                if cfg.decision_llm is None or cfg.decision_price is None:
+                    raise ValueError(
+                        f"decision={cfg.decision!r} needs both decision_llm and decision_price: "
+                        "build them with `quackd.agent.decision.factory` before the run starts"
+                    )
+                stepper = Stepper.build(
+                    mode=cfg.decision,
+                    llm=cfg.decision_llm,
+                    price=cfg.decision_price,
                     registry=registry,
                     allow=allow,
                     goal=self.duck.body,
                     success=self.fm.success,
+                    gated=self.fm.verbs.confirm,
+                    max_steps=self.budget.limits.max_steps,
                     body=manifest.summary()
                     if manifest is not None
                     else backend_name(cfg.transport),
                 )
-                if cfg.jev != "off"
-                else None
-            )
             system = build_system_prompt(
                 self.duck,
                 [registry.view(n) for n in allow],
@@ -957,9 +990,21 @@ class AgentLoop:
                 # catalogue says months from now (`providers.pricing`). `null` is a model
                 # quackd has no rate for, and says so rather than implying a free one.
                 price=self.price.record() if self.price is not None else None,
+                # Which decision LLM answered the choices, and at what rate, for the same
+                # reason: a transcript that recorded only `jev-1.13.0` could not tell a
+                # reader whether that was TypeSafe's API or a server on the bench. The url is
+                # redacted here rather than left to argv redaction, because it can arrive from
+                # `QUACKD_DECISION_URL`, which never appears in argv for redaction to reach.
                 **(
-                    {"jev_price": stepper.price.record()}
-                    if stepper is not None and stepper.price is not None
+                    {
+                        "decision_price": stepper.price.record(),
+                        "decision_llm": {
+                            "name": stepper.name,
+                            "model": stepper.model,
+                            "url": redacted_url(stepper.url) if stepper.url is not None else None,
+                        },
+                    }
+                    if stepper is not None
                     else {}
                 ),
             )
@@ -1033,8 +1078,8 @@ class AgentLoop:
                         stepped=self.stepped,
                         notes=memory_text,
                     )
-                    self._emit("jev", step=self.budget.steps, **advice.event())
-                    if cfg.jev == "on":
+                    self._emit("decision", step=self.budget.steps, **advice.event())
+                    if cfg.decision == "on":
                         stepper_call = advice.call
 
                 call: ToolCall
@@ -1159,11 +1204,11 @@ class AgentLoop:
                     self.history[-1].decision = Decision(
                         tool_call=call, text=turn.text, raw=turn.raw
                     )
-                    if advice is not None and cfg.jev == "shadow":
+                    if advice is not None and cfg.decision == "shadow":
                         # Shadow mode's whole point: what the stepper would have done, beside
                         # what the model did, on the same reading, in one record.
                         self._emit(
-                            "jev_shadow",
+                            "decision_shadow",
                             step=self.budget.steps,
                             **stepper.shadow_event(advice, call, last_llm),  # type: ignore[union-attr]
                         )
@@ -1242,9 +1287,9 @@ class AgentLoop:
                     last_result = await self.executor.run_verb(
                         call.name,
                         call.arguments,
-                        # who chose it, so the log says `from jev` and the transcript
+                        # who chose it, so the log says `from decision` and the transcript
                         # records a verb the model never saw as the stepper's own
-                        source="jev" if stepper_call is not None else "agent",
+                        source="decision" if stepper_call is not None else "agent",
                     )
                 except VerdictRequired as e:
                     last_result = VerbResult.fail(f"{e}: call `{ASSESS_TASK_NAME}`")
@@ -1364,7 +1409,7 @@ class AgentLoop:
                 # only when there was one, so every summary written before the stepper
                 # existed, and every run that does not ask for one, stays byte for byte
                 # what it was
-                **({"jev": stepper.summary()} if stepper is not None else {}),
+                **({"decision": stepper.summary()} if stepper is not None else {}),
             }
             # the only unguarded statements in this teardown used to be these three, so a
             # disk that filled at `run_end` skipped summary.json, leaked the file handle,
@@ -1400,7 +1445,7 @@ class AgentLoop:
             run_dir=self.run_dir,
             final_state=final_state,
             log_dropped=self.event_log.dropped,
-            jev_calls=self.budget.stepper_calls,
+            decision_calls=self.budget.stepper_calls,
             summary=summary,
         )
 

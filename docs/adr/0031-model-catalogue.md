@@ -1,9 +1,16 @@
 # ADR-0031: A curated model catalogue instead of free-text model ids
 
-**Status:** accepted · **Date:** 2026-09-12 · Amends [ADR-0010](0010-providers.md) (the four
+**Status:** accepted, amended · **Date:** 2026-09-12 · Amends [ADR-0010](0010-providers.md) (the four
 default ids in its table are what the first release shipped and three were never verified; `--model` for a cloud
 vendor is now an id from a list rather than free text; the provider matrix gains seven
 OpenAI-compatible vendors; MCP mode selects no model at all)
+
+**Amended 2026-09-22 by [ADR-0043](0043-decision-llms-are-a-wire-format-and-a-data-row.md):** `--provider` and `--model` are one flag now, `--llm
+VENDOR[:MODEL]`, and `QUACKD_MODEL` is `QUACKD_LLM` holding a whole spec. Where this page says
+`--model X` read `--llm VENDOR:X`, and where it says `--provider X` read `--llm X`; a bare
+catalogue id infers its vendor, and shell completion follows what was typed before the colon
+rather than a second flag. What the catalogue holds, what it refuses and when it refuses it are
+unchanged.
 
 ## Context
 

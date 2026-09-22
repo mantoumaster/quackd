@@ -153,9 +153,12 @@ motor. `quackd[lerobot]` asks for `lerobot[feetech]` for exactly that reason.
 
 ### 03. Choose your pilot
 
-quackd never ships a model. You bring one, and the choice is a flag. Eleven cloud vendors
-have a `--provider` name, five local presets cover the common self-hosted servers, and
-`fake` is a scripted pilot that needs no key and is not a model at all.
+quackd never ships a model. You bring one, and the choice is one flag, `--llm VENDOR[:MODEL]`.
+Eleven cloud vendors have a name you can pass it, five local presets cover the common
+self-hosted servers, and `fake` is a scripted pilot that needs no key and is not a model at
+all. The vendor on its own means that vendor's default model, `--llm openai:gpt-6-astra` names
+one, and a catalogue id unique to its vendor needs no vendor in front of it, so
+`--llm gpt-6-astra` is the same run.
 
 `quackd doctor` prints a row per provider with the extra, the key it found and the model it
 would use, and `quackd list-models` prints every model id quackd knows for every vendor.
@@ -166,12 +169,14 @@ Put the key in the environment or in a `.env` file, then name the provider. The 
 per vendor is in [`.env.example`](../.env.example) and in `quackd doctor`.
 
 ```bash
-quackd run lerobot-lookout --robot lerobot:real --address COM5 --provider openai
+quackd run lerobot-lookout --robot lerobot:real --address COM5 --llm openai
 ```
 
 > [!NOTE]
-> The provider for Claude is spelled `anthropic`. There is no `--provider claude`, and an
-> unknown name is refused before anything connects, with the full list in the message.
+> The vendor for Claude is spelled `anthropic`. There is no `--llm claude`, although
+> `--llm claude-opus-5` works, because a model id unique to its vendor names that vendor on its
+> own. An unknown name is refused before anything connects, and the message says both shapes
+> that would have worked and lists every vendor.
 
 #### Where the key goes
 
@@ -231,7 +236,7 @@ wire format. Start your server, then name the preset:
 
 ```bash
 ollama pull qwen3:8b
-quackd run lerobot-lookout --robot lerobot:real --address COM5 --provider ollama --model qwen3:8b
+quackd run lerobot-lookout --robot lerobot:real --address COM5 --llm ollama:qwen3:8b
 ```
 
 The other presets are `vllm`, `llamacpp`, `lmstudio`, and `local` for anything else, which
@@ -255,11 +260,11 @@ Whether the camera frame reaches the model at all is a per-provider default:
 | A cloud vendor, default model | Yes, on every step, for most vendors |
 | A cloud model marked `no frames` | No. The text detections go instead, silently |
 | Any local preset | **No by default.** `--vision` turns it on |
-| `--provider fake` | Never. It is a rule, not a model |
+| `--llm fake` | Never. It is a rule, not a model |
 
 `quackd list-models` prints `no frames` in the notes column for the models that do not take
 images, and it is worth reading before you promise yourself the arm will see anything. One
-vendor's own default model is marked that way, so a bare `--provider glm` run never sees the
+vendor's own default model is marked that way, so a bare `--llm glm` run never sees the
 webcam.
 
 `--vision` and `--no-vision` override all of it in both directions. A local pilot that is
@@ -267,7 +272,7 @@ meant to look at you needs `--vision` **and** a vision-capable model loaded in t
 
 #### The scripted pilot, and its one job
 
-`--provider fake` is the default and needs no key, no extra and no network. It is not a
+`--llm fake` is the default and needs no key, no extra and no network. It is not a
 model: it is a small set of rules that picks its script from the task file's name, or from a
 few keywords in a goal.
 
@@ -275,21 +280,22 @@ few keywords in a goal.
 > `fake` cannot do the wave, and it will not tell you so. A goal it does not recognise falls
 > through to a generic script whose only two moves are `quack` and `search_scan`, and it
 > checks the allowlist before reaching for either. An arm has neither, so it goes straight to
-> declaring success: `--goal "wave to me" --provider fake` ends with every joint exactly
+> declaring success: `--goal "wave to me" --llm fake` ends with every joint exactly
 > where it started, and exits 0, with no refusal printed to warn you. Worse, a goal containing
 > the word *person* selects the patrol script, which reaches for verbs this body does not
 > have and gets refused one at a time. Use `fake` to prove the wiring in section 08, and a
 > real model for anything that has to think.
 
 > [!NOTE]
-> There is a third thing you can put in the loop and it is not a pilot. `--jev` adds an optional
-> non-generative stepper in front of whichever model you picked, for the turns whose answer is a
-> choice among calls this arm already has. It is off by default, it needs `quackd[jev]` and a
-> key of its own, and it never authors a joint angle. Leave it off for this whole page: the
+> There is a third thing you can put in the loop and it is not a pilot. `--decision-llm` adds an
+> optional non-generative stepper in front of whichever model you picked, for the turns whose
+> answer is a choice among calls this arm already has. It is off unless you name one, it needs
+> `quackd[decision]` (or `quackd[laya]`) and, for the hosted `jev`, a key of its own, and it
+> never authors a joint angle. Leave it off for this whole page: the
 > first run is about proving the arm, the port and the camera, and one more moving part between
 > you and the arm is the opposite of what a first run wants. Once the arm has waved,
-> [jev.md](jev.md) is where it lives, and `--jev shadow` is the way to look at it without
-> changing a run.
+> [decision-llms.md](decision-llms.md) is where they live, and
+> `--decision-llm jev --decision-mode shadow` is the way to look at one without changing a run.
 
 <br>
 
@@ -387,7 +393,7 @@ the next section needs a name to keep a pose under. Register it with the same id
 calibrated:
 
 ```bash
-quackd robot add arm-01 lerobot:real --address COM5 --provider openai
+quackd robot add arm-01 lerobot:real --address COM5 --llm openai
 ```
 
 ```
@@ -395,8 +401,8 @@ quackd robot add arm-01 lerobot:real --address COM5 --provider openai
   quackd run <duck> --robot arm-01
 ```
 
-`--provider` is whichever pilot you settled on in section 03, and it becomes this robot's
-default, so a run that names no provider uses it. The registry file is `~/.quackd/robots.json`
+`--llm` is whichever pilot you settled on in section 03, and it becomes this robot's default,
+so a run that names no pilot of its own uses it. The registry file is `~/.quackd/robots.json`
 and `quackd robot show arm-01` prints everything in it.
 
 > [!IMPORTANT]
@@ -537,7 +543,7 @@ anything into the gripper at all, because nobody is there to hand it over.
 hands, and quackd holds it there:
 
 ```bash
-quackd run --goal "draw a small circle" --robot arm-01 --provider openai --by-hand
+quackd run --goal "draw a small circle" --robot arm-01 --llm openai --by-hand
 ```
 
 What happens, in order, and the order is the whole of the feature:
@@ -656,11 +662,11 @@ rather than releasing an arm into an empty room and waiting for an Enter that is
 
 `lerobot-lookout` ships with quackd, moves no joint, and asks only for `report_state`. It is
 the first thing to point at an arm nobody has driven, and it is the first thing that ran on
-the bench arm on 2026-09-15, both with a real pilot and once with `--provider fake`. The
+the bench arm on 2026-09-15, both with a real pilot and once with `--llm fake`. The
 scripted pilot is enough here, because there is nothing to improvise:
 
 ```bash
-quackd run lerobot-lookout --robot arm-01 --provider fake
+quackd run lerobot-lookout --robot arm-01 --llm fake
 ```
 
 Expect one sentence naming where the joints are, whether torque is on, and whether anything
@@ -688,7 +694,7 @@ finished, so the only thing under test is the hand-off itself, and a mistake cos
 re-fold rather than a collision.
 
 ```bash
-quackd run lerobot-lookout --robot arm-01 --provider fake --by-hand
+quackd run lerobot-lookout --robot arm-01 --llm fake --by-hand
 ```
 
 The whole of it, on the mock arm, with the arm placed at `shoulder_lift` -20, `elbow_flex` 40,
@@ -841,7 +847,7 @@ leaves the arm exactly where it found it.
 Rehearse the goal you actually intend to give it:
 
 ```bash
-quackd run --goal "wave to me" --robot arm-01 --provider openai --max-steps 6 --dry-run
+quackd run --goal "wave to me" --robot arm-01 --llm openai --max-steps 6 --dry-run
 ```
 
 Every verb that would move a joint is printed and skipped. This is what that looks like,
@@ -908,7 +914,7 @@ recorded before the pilot is given control, and returns to it at the end.
 
 ```bash
 quackd run --goal "open the gripper fully, then close it on nothing, then stop" \
-  --robot arm-01 --provider openai --max-steps 4
+  --robot arm-01 --llm openai --max-steps 4
 ```
 
 quackd assumes 100 is open and 0 is closed, and that is an assumption about how your arm was
@@ -921,7 +927,7 @@ quackd believes about holding something rests on it.
 
 ```bash
 quackd run --goal "roll the wrist ten degrees and stop" --robot arm-01 \
-  --provider openai --max-steps 3
+  --llm openai --max-steps 3
 ```
 
 It should take about a fifth of a second and stop. The arm moves at five degrees per action
@@ -932,7 +938,7 @@ lowers that if it looks fast in the room.
 
 ```bash
 quackd run --goal "move shoulder_pan to 170 degrees" --robot arm-01 \
-  --provider openai --max-steps 3
+  --llm openai --max-steps 3
 ```
 
 It should be refused with the real range in the reason, and nothing should reach the arm.
@@ -990,7 +996,7 @@ third press lands somewhere without that guard and still quits at once.
 Stand where the camera can see you, and ask:
 
 ```bash
-quackd run --goal "wave to me" --robot arm-01 --fov-deg 62 --provider openai --max-steps 12
+quackd run --goal "wave to me" --robot arm-01 --fov-deg 62 --llm openai --max-steps 12
 ```
 
 `62` there is an example, not a default: it is the figure for one common camera module. Use
@@ -1016,7 +1022,7 @@ quackd run --goal "If you can see a person in the camera, greet them: move wrist
 shoulder_pan and elbow_flex back and forth a few times, no more than about 20 degrees from \
 where each one is now, in several small moves rather than one big one. Keep any wrist_roll \
 move especially small. Do not touch the gripper. Then return to the start and stop." \
-  --robot arm-01 --provider openai --max-steps 12
+  --robot arm-01 --llm openai --max-steps 12
 ```
 
 quackd's own ceilings hold underneath whatever the model decides. It cannot put a joint
@@ -1066,7 +1072,7 @@ hands the task a file instead:
 
 ```bash
 quackd run --goal "draw what is in the picture" --robot arm-01 \
-  --provider openai --image sketch.png
+  --llm openai --image sketch.png
 ```
 
 The flag repeats, so several pictures can come with one task. **What the pilot receives** is
@@ -1102,7 +1108,7 @@ the vendor does take them, and a local model needs --vision
 Silently dropping them is the failure this refusal is here to prevent. A model handed "draw
 what is in the picture" with no picture improvises something plausible, and the only sign of
 why would be a drawing that has nothing to do with your sketch. The same rule covers the
-pilots this page has already met. `--provider fake` never takes images, so the scripted pilot
+pilots this page has already met. `--llm fake` never takes images, so the scripted pilot
 needs `--vision` before it will accept one, and it still does nothing with it. A local model
 needs `--vision`, or `QUACKD_VISION=1` in the environment, and it needs an actual
 vision-capable model loaded in the server behind that flag. A cloud model marked `no frames`
@@ -1112,7 +1118,7 @@ Both starts take a picture, and the second is the one this flag was written for:
 
 ```bash
 quackd run --goal "draw what is in the picture on the paper in front of you" \
-  --robot arm-01 --provider openai --image sketch.png --by-hand
+  --robot arm-01 --llm openai --image sketch.png --by-hand
 ```
 
 Started from the rest pose, the model has the sketch and an empty gripper, and the first
@@ -1285,8 +1291,8 @@ model gets a turn, and a session that cannot reach it refuses to open.
 
 **The model in your client is the pilot.** Your client spawns `quackd serve-mcp` as a
 subprocess and talks to it over stdio, so the thinking happens in the session you are already
-sitting in. quackd chooses no model here and reads no API key. There is no `--provider`, no
-`--model`, and `quackd list-models` has nothing to say about an MCP session, because all three
+sitting in. quackd chooses no model here and reads no API key. There is no `--llm`,
+and `quackd list-models` has nothing to say about an MCP session, because both
 belong to the commands that bring a model of their own. [Choosing a pilot](#03-choose-your-pilot)
 is a decision you do not make in this part. You made it when you opened Claude Code or Claude
 Desktop.
@@ -1674,8 +1680,8 @@ File modified: C:\Users\<you>\.claude.json [project: D:\Development\quackd]
 > the verdict gate again.
 
 > [!NOTE]
-> `--provider`, `--model` and `quackd list-models` play no part here. They belong to `quackd
-> run`, and `serve-mcp` takes none of them. The consequence is worth spelling out: whichever
+> `--llm` and `quackd list-models` play no part here. They belong to `quackd
+> run`, and `serve-mcp` takes neither. The consequence is worth spelling out: whichever
 > model you are chatting with is flying the arm, and a model that cannot accept images cannot
 > use the frame `robot_observe` hands back. [Section M09](#m09-add-the-camera) is where that
 > matters.
@@ -1769,7 +1775,7 @@ as above, and those are the same id. Register as `lab-arm` and this probe still 
 refusing or reading some other arm's travel, while the MCP server you are about to configure
 reads `lab-arm`.
 
-**`--provider` is optional on `quackd robot add` here, and an MCP session ignores it.** The
+**`--llm` is optional on `quackd robot add` here, and an MCP session ignores it.** The
 registry's stored pilot only matters to `quackd run`. In MCP mode quackd picks no model and reads
 no key: the model you are chatting with is the pilot, and nothing in the registry has a say in
 that.

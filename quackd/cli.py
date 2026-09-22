@@ -1,6 +1,6 @@
 """The command line is the product's front door.
 
-`uvx --from "quackd[microduck]" quackd run find-and-kick --provider anthropic --robot
+`uvx --from "quackd[microduck]" quackd run find-and-kick --llm anthropic --robot
 microduck:sim2d` is the north-star demo; every command here exists to make that line, and the
 debugging around it, boring. The `--from` is there because the core ships no robot and the
 demo needs one. Commands are thin: they parse, load `.env`, wire objects together, hand off.
@@ -29,8 +29,11 @@ from rich.text import Text
 from quackd import __version__, ui
 from quackd.agent.providers.catalogue import (
     CLOUD_NAMES,
+    DEFAULT_LLM,
+    LLM_ENV,
     LOCAL_NAMES,
     PROVIDER_NAMES,
+    default_model_for,
     models_for,
     vendor_of,
 )
@@ -64,8 +67,8 @@ app = typer.Typer(
         # the backslash is Rich's escape: an unescaped [microduck] is a style tag, and Typer
         # renders this epilog as markup, so it would print the install line without the extra
         # that makes it work
-        r"uv pip install 'quackd\[microduck]' && quackd run find-and-kick --provider fake" + "\n\n"
-        "quackd run --goal 'walk in a square' --provider anthropic --robot microduck:mujoco"
+        r"uv pip install 'quackd\[microduck]' && quackd run find-and-kick --llm fake" + "\n\n"
+        "quackd run --goal 'walk in a square' --llm anthropic --robot microduck:mujoco"
     ),
 )
 
@@ -129,6 +132,16 @@ def _warn_old_spellings() -> None:
         _deprecated(
             f"the {what} `{old}` is now `{new}`; the old spelling still works and goes in 0.12"
         )
+    # A variable rather than a flag, and the reason it gets a line of its own is that a flag
+    # that is gone fails loudly while a variable that is gone goes quiet. `QUACKD_MODEL` is
+    # the kind of line that sits in a `.env` for a year; unread, it does not stop the run, it
+    # lets the run bill a model nobody chose.
+    for gone, now in (
+        ("QUACKD_MODEL", "QUACKD_LLM=vendor:model"),
+        ("QUACKD_JEV", "QUACKD_DECISION_LLM"),
+    ):
+        if os.environ.get(gone):
+            _deprecated(f"{gone} is not read any more and this run ignores it; set {now} instead")
 
 
 def _terminal_header() -> list[str]:
@@ -328,30 +341,30 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
         spent = []
         if (llm := _number(end.get("llm_latency_s"))) is not None:
             spent.append(f"model {fmt_duration(llm)}")
-        if (jev := _number((end.get("jev") or {}).get("latency_s"))) is not None:
-            spent.append(f"stepper {fmt_duration(jev)}")
+        if (stepper := _number((end.get("decision") or {}).get("latency_s"))) is not None:
+            spent.append(f"stepper {fmt_duration(stepper)}")
         where = f" ({', '.join(spent)})" if spent else ""
         counters.append(f"time {fmt_duration(wall)}{where}")
-    jev_block = end.get("jev") or {}
-    jev_cost = _number(jev_block.get("cost_usd"))
-    # On a cost KEY, not on the presence of a stepper block. Every `--jev` run recorded before
-    # this change already wrote a `jev` block, and gating on that gave those records a fourth
+    decision_block = end.get("decision") or {}
+    decision_cost = _number(decision_block.get("cost_usd"))
+    # On a cost KEY, not on the presence of a stepper block. A stepper block recorded before
+    # the costing existed carries no `cost_usd`, and gating on the block gave those records a
     # counter reading `cost unpriced` that they never had and that says nothing true about
     # them: nobody tried to price them.
-    if "cost_usd" in end or jev_cost is not None:
+    if "cost_usd" in end or decision_cost is not None:
         model_cost = _number(end.get("cost_usd")) if end.get("cost_usd") is not None else None
-        estimated = bool(jev_block.get("cost_estimated")) and bool(jev_cost)
+        estimated = bool(decision_block.get("cost_estimated")) and bool(decision_cost)
         if model_cost is None:
             # A model quackd has no rate for must never read as a free one, and the two
             # halves are reported separately rather than summed away: "unpriced" plus a
             # stepper figure is the truth, and a bare "unpriced" would throw away the half
             # that IS known.
             unpriced = "cost unpriced"
-            if jev_cost:
-                unpriced += f" (stepper {'~' if estimated else ''}{fmt_usd(jev_cost)})"
+            if decision_cost:
+                unpriced += f" (stepper {'~' if estimated else ''}{fmt_usd(decision_cost)})"
             counters.append(unpriced)
         else:
-            total = model_cost + (jev_cost or 0.0)
+            total = model_cost + (decision_cost or 0.0)
             counters.append(f"cost {'~' if estimated else ''}{fmt_usd(total)}")
     return counters
 
@@ -655,22 +668,81 @@ def list_adapters_cmd(as_json: bool = _JSON) -> None:
     ui.console.print(ui.adapters_table(rows))
 
 
+def _vendor_hint(vendor: str) -> str:
+    """The half-line beside a vendor in shell completion: what taking it bare would mean."""
+    if vendor == "fake":
+        return "scripted, no key and no network"
+    default = default_model_for(vendor)
+    return f"the default, {default}" if default else "the first model the server serves"
+
+
+def _complete_llm(ctx: typer.Context, incomplete: str) -> list[tuple[str, str]]:
+    """`--llm` in the shell: vendors before the colon, that vendor's ids after it.
+
+    Reads the catalogue and nothing else. Every press of TAB runs this, and the factory next
+    door imports pydantic, so completion that reached for it would make the shell pay for a
+    validator in order to spell a model id.
+
+    A vendor is offered twice, bare and with a colon, so one TAB takes its default model and a
+    second carries on into its list. After a colon the ids offered are that vendor's own, which
+    is why `--llm grok:gpt` offers nothing: it would be refused, and offering it would be
+    completion arguing with the parser. A bare id completes too, both because `--llm
+    claude-opus-5` is a legal spec on its own and because bash breaks its words at the colon and
+    hands this only the half after it.
+    """
+    head, colon, prefix = incomplete.partition(":")
+    vendor = head.strip().lower()
+    if colon:
+        return [
+            (f"{vendor}:{m.id}", m.label) for m in models_for(vendor) if m.id.startswith(prefix)
+        ]
+    found = [(v, _vendor_hint(v)) for v in PROVIDER_NAMES if v.startswith(vendor)]
+    found += [
+        (f"{v}:", "then a model id") for v in PROVIDER_NAMES if v != "fake" and v.startswith(vendor)
+    ]
+    if head:
+        # Only once something is typed: a bare TAB should offer the sixteen vendors, not the
+        # hundred-odd ids underneath them.
+        found += [
+            (m.id, f"{v}: {m.label}")
+            for v in CLOUD_NAMES
+            for m in models_for(v)
+            if m.id.startswith(head)
+        ]
+    return found
+
+
 # ── list-models ───────────────────────────────────────────────────────────────────────────
 
 
 @app.command("list-models", rich_help_panel="Inspect")
 def list_models_cmd(
-    provider: str | None = typer.Option(
-        None, "--provider", "-p", help="One vendor only. Omitted: every vendor."
+    llm: str | None = typer.Option(
+        None,
+        "--llm",
+        "-l",
+        help="One vendor only, e.g. --llm openai. A whole spec or a model id is read for its "
+        "vendor, so --llm claude-opus-5 lists anthropic. Omitted: every vendor.",
+        autocompletion=_complete_llm,
     ),
     as_json: bool = _JSON,
 ) -> None:
-    """List the model ids each cloud provider accepts for --model, and which is the default."""
-    if provider is not None:
-        provider = provider.lower()
-        if provider not in PROVIDER_NAMES:
+    """List the model ids each cloud vendor accepts after the colon in --llm VENDOR:MODEL."""
+    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.factory import parse_llm
+
+    provider = None
+    if llm is not None:
+        # A spec, a bare vendor or a bare id: whichever it is, what this command wants out of
+        # it is the vendor, so it is read the same way `--llm` itself is read. Folded once and
+        # used for both lookups: folding it for the vendor test and not for the catalogue one
+        # refused `--llm CLAUDE-OPUS-5` while quoting back a string that works, which reads as
+        # quackd disagreeing with itself about its own shift key.
+        head = llm.split(":", 1)[0].strip().lower()
+        provider = head if head in PROVIDER_NAMES else vendor_of(head)
+        if provider is None:
             _fail(
-                f"unknown provider {provider!r}",
+                f"unknown provider {head!r}",
                 hint=f"one of: {', '.join(PROVIDER_NAMES)}",
             )
             return
@@ -695,9 +767,9 @@ def list_models_cmd(
         return
 
     if rows:
-        table = ui.table("models (--model, QUACKD_MODEL)")
+        table = ui.table("models (--llm VENDOR:MODEL, QUACKD_LLM)")
         table.add_column("provider", style=ui.STYLES["key"], no_wrap=True)
-        # An id is meant to be copied into `--model`, so it may wrap but must never be elided:
+        # An id is meant to be copied in after the colon, so it may wrap but never elide:
         # Rich's default would put an ellipsis through the middle of the one column that has to
         # survive an 80 column pipe intact.
         table.add_column("id", style=ui.STYLES["key"], overflow="fold")
@@ -728,15 +800,18 @@ def list_models_cmd(
     notes: list[str] = []
     if provider is None or provider in LOCAL_NAMES:
         notes.append(
-            f"{', '.join(LOCAL_NAMES)}: no catalogue. `--model` takes any id the server serves, "
-            "and without one quackd takes the first entry of /v1/models."
+            f"{', '.join(LOCAL_NAMES)}: no catalogue. `--llm PRESET:MODEL` takes any id the "
+            "server serves, and without one quackd takes the first entry of /v1/models."
         )
     if provider is None or provider == "fake":
-        notes.append("fake: scripted, and `--model` is ignored.")
-    if pinned := os.environ.get("QUACKD_MODEL"):
-        whose = vendor_of(pinned)
-        where = f"a {whose} model" if whose else "not a model any vendor here lists"
-        notes.append(f"QUACKD_MODEL={pinned} is {where}.")
+        notes.append("fake: scripted, and a model after the colon is ignored.")
+    if pinned := os.environ.get(LLM_ENV):
+        try:
+            vendor, model_id = parse_llm(pinned, source=LLM_ENV)
+            named = f"{vendor}:{model_id}" if model_id else f"{vendor}, its default model"
+            notes.append(f"{LLM_ENV}={pinned} pins {named}.")
+        except ProviderError as e:
+            notes.append(f"{LLM_ENV}={pinned} is refused: {e}")
     for note in notes:
         ui.console.print(Text(note, style=ui.STYLES["muted"]), soft_wrap=True)
 
@@ -865,18 +940,6 @@ that is what the pipe asked for and it is what quackd has always done; what must
 the record then testifying that a person cleared it."""
 
 
-def _entry_model(resolved: Any, provider: str | None) -> str | None:
-    """A registered robot's model, but only for the provider it was registered against.
-
-    `--provider openai` on a robot registered `anthropic` + `claude-opus-5` must not carry the
-    Claude id into OpenAI's catalogue, where it is refused with a message blaming `--model`."""
-    if resolved.model is None:
-        return None
-    if provider and resolved.provider and provider.lower() != resolved.provider:
-        return None
-    return str(resolved.model)
-
-
 def _parse_flock_flag(flock: str | None, registry_dir: str | None) -> tuple[int | None, Any]:
     """`--flock` is either a count of simulated ducks or the name of a stored flock.
 
@@ -901,8 +964,7 @@ def _parse_flock_flag(flock: str | None, registry_dir: str | None) -> tuple[int 
 def _run_impl(
     duckfile: str | None,
     goal: str | None,
-    provider: str | None,
-    model: str | None,
+    llm: str | None,
     seed: int | None,
     dry_run: bool,
     max_steps: int | None,
@@ -922,7 +984,9 @@ def _run_impl(
     extra_body: str | None = None,
     flock: str | None = None,
     *,
-    jev: str | None = None,
+    decision_llm: str | None = None,
+    decision_url: str | None = None,
+    decision_mode: str | None = None,
     images: Sequence[str] = (),
     by_hand: bool = False,
     robot: str | None = None,
@@ -937,11 +1001,19 @@ def _run_impl(
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
+    from quackd.agent.decision.base import DecisionError
+    from quackd.agent.decision.factory import PRICE_ENV as DECISION_PRICE_ENV
+    from quackd.agent.decision.factory import (
+        decision_llm_is_available,
+        make_decision_llm,
+        parse_decision_llm,
+        resolve_decision_mode,
+        resolve_decision_price,
+    )
     from quackd.agent.images import TaskImageError, load_task_images
-    from quackd.agent.jev import jev_is_available, resolve_jev_mode
     from quackd.agent.loop import RunConfig, run_duck
     from quackd.agent.providers.base import ProviderError
-    from quackd.agent.providers.factory import make_provider
+    from quackd.agent.providers.factory import make_provider, resolve_llm
     from quackd.agent.providers.pricing import parse_price as _parse_price
     from quackd.agent.transcript import run_label
     from quackd.duckfile.parser import DuckParseError, duck_from_goal, load_duck
@@ -967,7 +1039,19 @@ def _run_impl(
     # Both before anything is built, connected to or written down: a name that cannot be a
     # directory and a price nobody can parse are typing mistakes, and a typing mistake should
     # cost you one sentence rather than a robot moving and a run directory to clean up after.
-    checks = ((run_name, run_label), (price, lambda t: _parse_price(t, source="--price")))
+    # `QUACKD_DECISION_PRICE` is here rather than beside the stepper for the same reason as
+    # the other two: it has no flag of its own, so an unparseable line in a `.env` would
+    # otherwise surface as a traceback out of the first turn that needed a rate.
+    checks = (
+        (run_name, run_label),
+        (price, lambda t: _parse_price(t, source="--price")),
+        (
+            # `or None` because a blank variable is a shell saying unset, which is how the
+            # suite clears it and how a `.env` line with nothing after the `=` reads.
+            os.environ.get(DECISION_PRICE_ENV) or None,
+            lambda t: _parse_price(t, source=DECISION_PRICE_ENV),
+        ),
+    )
     for text, check in checks:
         if text is None:
             continue
@@ -1087,22 +1171,31 @@ def _run_impl(
             )
             return
     # Resolved here rather than beside the solo run below, because both flock branches return
-    # before that point: `--jev maybe` on a flock used to run the robots anyway, and `--jev on`
-    # used to be accepted and silently do nothing.
+    # before that point: `--decision-mode maybe` on a flock used to run the robots anyway, and
+    # a mode that was spelled right used to be accepted and silently do nothing.
     try:
-        jev_mode = resolve_jev_mode(jev)
-    except ValueError as e:
+        named_decision = parse_decision_llm(decision_llm)
+        decision = resolve_decision_mode(
+            decision_mode,
+            named=named_decision is not None,
+            # Said on the line rather than merely absent. `--decision-llm off` is how one
+            # command opts out of a `QUACKD_DECISION_LLM` in a `.env`, and refusing it because
+            # the same `.env` also set a mode would answer "I do not want this" with a demand
+            # to name one.
+            refused=(decision_llm or "").strip().lower() == "off",
+        )
+    except DecisionError as e:
         _fail(str(e))
         return
     if flock_n is not None or roster is not None or duck.frontmatter.flock is not None:
-        if jev_mode != "off":
+        if decision != "off" and named_decision is not None:
             # One loop per member, each with its own executor and budget, and the stepper is
             # built per loop. Wiring it through a flock is a thing to do deliberately with a
             # measurement in hand, not a thing to leave half done and unsaid.
             ui.console.print(
                 _warn_line(
-                    f"--jev {jev_mode} does not apply to a flock: every member is piloted by "
-                    "its model, as before"
+                    f"--decision-llm {named_decision[0].name} does not apply to a flock: "
+                    "every member is piloted by its model, as before"
                 ),
                 soft_wrap=True,
             )
@@ -1150,8 +1243,7 @@ def _run_impl(
             _run_pilots_impl(
                 duck,
                 roster,
-                provider=provider,
-                model=model,
+                llm=llm,
                 seed=seed,
                 dry_run=dry_run,
                 runs_dir=runs_dir,
@@ -1194,11 +1286,10 @@ def _run_impl(
                 return
         _run_flock_impl(
             duck,
-            provider=provider,
+            llm=llm,
             specs=specs,
             members=list(roster) if roster is not None else None,
             flock_name=flock_name,
-            model=model,
             seed=seed,
             dry_run=dry_run,
             runs_dir=runs_dir,
@@ -1221,10 +1312,17 @@ def _run_impl(
         )
         return
     try:
-        # a registered robot may name the pilot that drives it; a flag on the line still wins
-        llm = make_provider(
-            provider or here.provider or DEFAULT_PROVIDER,
-            model=model or _entry_model(here, provider),
+        # a registered robot may name the pilot that drives it; a flag on the line still wins,
+        # and `QUACKD_LLM` sits behind both. One spec carries the vendor and the model
+        # together, so there is no longer any way for half an answer to come from each place:
+        # `--llm gemini` on a robot registered against OpenAI is Gemini's default, full stop.
+        vendor, model_id, llm_source = resolve_llm(
+            llm, here.llm, robot=here.entry.name if here.entry is not None else None
+        )
+        pilot = make_provider(
+            vendor,
+            model=model_id,
+            source=llm_source,
             duck_name=duck.name,
             goal=goal,
             base_url=base_url,
@@ -1262,38 +1360,54 @@ def _run_impl(
                 ),
             )
             return
-    # A mode nobody defined is a typo and stops the run. A mode that is spelled right and
-    # cannot run is a different thing: the stepper is an optimisation, the model is the pilot
-    # either way, and a script that always passes `--jev on` should still drive the robot on a
-    # machine that has no key. So it says so once, loudly, and carries on without it. Said
-    # before the robot is connected, so nothing is energised while it is read.
-    if jev_mode != "off":
-        available, why = jev_is_available()
+    # A name or a mode nobody defined is a typo and stopped the run above. One that is
+    # spelled right and cannot run here is a different thing: the stepper is an optimisation,
+    # the model is the pilot either way, and a script that always names a decision LLM should
+    # still drive the robot on a machine that has not installed it. So it says so once,
+    # loudly, and carries on without it. Said before the robot is connected, so nothing is
+    # energised while it is read.
+    decision_pilot = None
+    decision_price = None
+    if decision != "off" and named_decision is not None:
+        # `chosen` rather than `spec`, which in this function is the robot's.
+        chosen, decision_model = named_decision
+        available, why = decision_llm_is_available(chosen)
         if not available:
             ui.console.print(
-                _warn_line(f"--jev {jev_mode} asked for, running without it: {why}"), soft_wrap=True
+                _warn_line(f"--decision-llm {chosen.name} asked for, running without it: {why}"),
+                soft_wrap=True,
             )
-            jev_mode = "off"
-    if jev_mode == "on":
-        # Nobody has run the stepper against a robot, so every speed and cost figure in
-        # `docs/jev.md` is arithmetic from TypeSafe's published numbers rather than a result.
+            decision = "off"
+        else:
+            try:
+                decision_pilot = make_decision_llm(chosen, model=decision_model, url=decision_url)
+            except DecisionError as e:
+                _fail(str(e))
+                return
+            decision_price = resolve_decision_price(chosen)
+    if decision == "on":
+        # Nobody has run a stepper against a robot, so every speed and cost figure in
+        # `docs/decision-llms.md` is arithmetic from published numbers rather than a result,
+        # and the confidence floors are Jev's own, inherited unmeasured by every other one.
         # Refusing the flag over that would be the wrong shape of gate, because the executor
         # binds a stepper-authored call exactly as it binds the model's. Saying it once, where
         # the person switching it on is looking, is the right size of one.
         ui.console.print(
             _warn_line(
-                "--jev on has not been measured against a real robot: no latency, no agreement "
-                "rate, and the speed and cost figures in docs/jev.md are estimates. --jev "
-                "shadow records both and changes nothing about the run."
+                "--decision-mode on has not been measured against a real robot: no latency, no "
+                "agreement rate, and the figures in docs/decision-llms.md are estimates for "
+                "Jev and nothing at all for anything else. The confidence floors are Jev's "
+                "published numbers. --decision-mode shadow records both and changes nothing "
+                "about the run."
             ),
             soft_wrap=True,
         )
-    if task_images and not llm.supports_vision:
+    if task_images and not pilot.supports_vision:
         # Refused rather than dropped. A pilot that cannot see would be handed "draw what is
         # in the picture" with no picture, improvise something, and the only sign of why would
         # be a note in a transcript nobody reads twice.
         _fail(
-            f"{llm.name} {llm.model} does not take images, so it cannot be given "
+            f"{pilot.name} {pilot.model} does not take images, so it cannot be given "
             f"{_plural(len(task_images), 'picture')}",
             hint="quackd list-models marks the models that take no frames; --vision overrides "
             "it where the vendor does take them, and a local model needs --vision",
@@ -1350,7 +1464,7 @@ def _run_impl(
         robot_memory = RobotMemory(here.memory_key, memory_dir)
     cfg = RunConfig(
         duck=duck,
-        provider=llm,
+        provider=pilot,
         transport=duck_transport,
         detector=detector,
         dry_run=dry_run,
@@ -1368,13 +1482,15 @@ def _run_impl(
         view=fan_out(console_log, status.sink),
         task_images=task_images,
         hand_off=hand_off,
-        jev=jev_mode,
+        decision=decision,
+        decision_llm=decision_pilot,
+        decision_price=decision_price,
     )
     ui.console.print(
         ui.run_header(
             duck.name,
             _header_rows(
-                provider=llm, robot=here.label, seed=seed, dry_run=dry_run, memory=robot_memory
+                provider=pilot, robot=here.label, seed=seed, dry_run=dry_run, memory=robot_memory
             ),
             hint="Ctrl-C or q stops the duck. Press it twice to quit at once.",
         )
@@ -1501,8 +1617,7 @@ def _run_pilots_impl(
     duck: Any,
     roster: Any,
     *,
-    provider: str | None,
-    model: str | None,
+    llm: str | None,
     seed: int | None,
     dry_run: bool,
     runs_dir: str,
@@ -1526,7 +1641,7 @@ def _run_pilots_impl(
 ) -> None:
     """A pilot per body, all at once. The other flock is `_run_flock_impl`."""
     from quackd.agent.providers.base import ProviderError
-    from quackd.agent.providers.factory import make_provider
+    from quackd.agent.providers.factory import make_provider, resolve_llm
     from quackd.agent.providers.pricing import fmt_usd
     from quackd.flock.pilots import run_pilot_flock
     from quackd.log import fmt_duration, log_enabled_default
@@ -1539,10 +1654,13 @@ def _run_pilots_impl(
         _fail("a pilot flock cannot prompt y/N per member: empty verbs.confirm or pass --yes")
         return
     try:
-        providers = {
-            name: make_provider(
-                provider or entry.provider or DEFAULT_PROVIDER,
-                model=model or _entry_model(entry, provider),
+        providers = {}
+        for name, entry in roster.items():
+            vendor, model_id, llm_source = resolve_llm(llm, entry.llm, robot=name)
+            providers[name] = make_provider(
+                vendor,
+                model=model_id,
+                source=llm_source,
                 duck_name=duck.name,
                 goal=goal,
                 base_url=base_url,
@@ -1550,8 +1668,6 @@ def _run_pilots_impl(
                 vision=vision,
                 extra_body=extra_body,
             )
-            for name, entry in roster.items()
-        }
     except (ProviderError, ImportError) as e:
         _fail(str(e))
         return
@@ -1705,11 +1821,10 @@ def _pilot_header_rows(
 def _run_flock_impl(
     duck: Any,
     *,
-    provider: str | None,
+    llm: str | None,
     specs: list[Any],
     members: list[str] | None = None,
     flock_name: str | None = None,
-    model: str | None,
     seed: int | None,
     dry_run: bool,
     runs_dir: str,
@@ -1731,7 +1846,7 @@ def _run_flock_impl(
     price: str | None = None,
 ) -> None:
     from quackd.agent.providers.base import ProviderError
-    from quackd.agent.providers.factory import make_provider
+    from quackd.agent.providers.factory import make_provider, resolve_llm
     from quackd.flock.runner import FLOCK_LOG, run_flock
     from quackd.log import (
         ConsoleLog,
@@ -1770,9 +1885,11 @@ def _run_flock_impl(
         )
     robots = {spec.name: spec.key for spec in specs if spec.name} or None
     try:
-        llm = make_provider(
-            provider or DEFAULT_PROVIDER,
-            model=model,
+        vendor, model_id, llm_source = resolve_llm(llm)
+        pilot = make_provider(
+            vendor,
+            model=model_id,
+            source=llm_source,
             duck_name=duck.name,
             goal=goal,
             base_url=base_url,
@@ -1859,7 +1976,7 @@ def _run_flock_impl(
         coordinator.on_event = on_event
 
     rows: list[tuple[str, Any]] = [
-        ("provider", f"{llm.name} ({llm.model or 'the first model it serves'})"),
+        ("provider", f"{pilot.name} ({pilot.model or 'the first model it serves'})"),
         (
             "flock",
             (f"{flock_name}: " if flock_name else "")
@@ -1877,7 +1994,7 @@ def _run_flock_impl(
             result = asyncio.run(
                 run_flock(
                     duck,
-                    provider=llm,
+                    provider=pilot,
                     seed=seed if seed is not None else 0,
                     runs_dir=runs_dir,
                     n_override=n_override,
@@ -1982,30 +2099,18 @@ _MEMORY_DIR = typer.Option(
 )
 
 
-def _complete_model(ctx: typer.Context, incomplete: str) -> list[tuple[str, str]]:
-    """Model ids for the `--provider` already on the line, for shell completion.
-
-    Click parses what is left of the cursor before calling this, so the provider is in
-    `ctx.params` by the time `--model` is being completed. It has to be left of the cursor to
-    count: `--model <TAB> --provider grok` cannot know, and offers the default's ids instead.
-    A provider with no catalogue (`fake`, the local presets) offers nothing, which is correct
-    rather than empty: only the server it points at knows what it serves."""
-    # folded, because `make_provider` and `list-models` both fold: `--provider GROK` runs, and
-    # completion that went silent on it would read as a vendor with no models rather than a
-    # shift key.
-    provider = str(ctx.params.get("provider") or "fake").lower()
-    return [(m.id, m.label) for m in models_for(provider) if m.id.startswith(incomplete)]
-
-
-DEFAULT_PROVIDER = "fake"
-"""The pilot when nothing else names one: no key, no network, a rule that plays the starters.
-A registered robot may name its own, and `--provider` beats that."""
-
-_PROVIDER = typer.Option(
+_LLM = typer.Option(
     None,
-    "--provider",
-    "-p",
-    help=" · ".join(PROVIDER_NAMES) + f"  (default: {DEFAULT_PROVIDER}, or the robot's own)",
+    "--llm",
+    "-l",
+    help="Who pilots the robot, as VENDOR[:MODEL]. `anthropic` runs that vendor's default and "
+    "`openai:gpt-5.6-sol` names one; a model id unique to its vendor is enough on its own, so "
+    "`claude-opus-5` works. `ollama:qwen3:8b` is a local server (the split is at the first "
+    "colon, so a tag keeps its own), `local` needs --base-url, and `fake` is a scripted pilot "
+    "with no key and no network. Vendors: " + " · ".join(PROVIDER_NAMES) + ". `quackd "
+    f"list-models` prints every id. Default: the robot's own, then {LLM_ENV}, then "
+    f"{DEFAULT_LLM}.",
+    autocompletion=_complete_llm,
     rich_help_panel="Model",
 )
 _BASEURL = typer.Option(
@@ -2035,15 +2140,61 @@ _VISION = typer.Option(
     help="Send camera frames to the model (default: on for cloud, off for local).",
     rich_help_panel="Model",
 )
-_JEV = typer.Option(
+
+
+def _complete_decision_llm(ctx: typer.Context, incomplete: str) -> list[tuple[str, str]]:
+    """`--decision-llm` in the shell. The same shape as `--llm`: a name, then its own model.
+
+    The names come from the table plus whatever is installed here, so a plugin a reader
+    installed this morning completes without quackd having been rebuilt for it."""
+    from quackd.agent.decision.catalogue import PRESETS
+    from quackd.agent.decision.factory import preset_names
+
+    head, colon, _prefix = incomplete.partition(":")
+    name = head.strip().lower()
+    if colon:
+        spec = PRESETS.get(name)
+        return [(f"{name}:{spec.model}", spec.summary)] if spec and spec.model else []
+    return [
+        (n, PRESETS[n].summary if n in PRESETS else "installed here")
+        for n in preset_names()
+        if n.startswith(name)
+    ]
+
+
+_DECISION_LLM = typer.Option(
     None,
-    "--jev",
-    help="EXPERIMENTAL: put a discrete stepper in front of the model. `off` (the default) is "
-    "quackd as it has always been. `on` lets TypeSafe's Jev answer the turns whose answer is a "
-    "choice among calls this body can make, a read, the brake, a gripper, a gaze, and hands "
-    "everything else to the model, including every pose and every sentence. `shadow` asks it "
-    "every turn, records what it would have chosen beside what the model did, and changes "
-    r"nothing. Needs quackd\[jev] and TYPESAFE_API_KEY. QUACKD_JEV does the same.",
+    "--decision-llm",
+    help="EXPERIMENTAL: put a discrete stepper in front of the model, as NAME[:MODEL]. A "
+    "decision LLM generates no text at all: it answers the turns whose answer is a choice "
+    "among calls this body can make, a read, the brake, a gripper, a gaze, and hands "
+    "everything else to the model, including every pose and every sentence. `jev` is "
+    "TypeSafe's, hosted; `kev`, `von`, `openjev` and `opendecision` are open ones you run "
+    "yourself; `laya` runs inside this process; `local` is any other server, with "
+    "--decision-url. Needs "
+    r"quackd\[decision] (or quackd\[laya])"
+    " and whatever key the one you name asks for, which for every one you run yourself is "
+    "none. Off unless you name one. QUACKD_DECISION_LLM does the same.",
+    autocompletion=_complete_decision_llm,
+    rich_help_panel="Model",
+)
+_DECISION_URL = typer.Option(
+    None,
+    "--decision-url",
+    help="Where your own System One server listens, e.g. http://localhost:8009 — no path, "
+    "because the client adds /v1/systemone itself. Required by --decision-llm local, and the "
+    "way to move any other one off the port its row expects. QUACKD_DECISION_URL does the "
+    "same.",
+    rich_help_panel="Model",
+)
+_DECISION_MODE = typer.Option(
+    None,
+    "--decision-mode",
+    help="What the decision LLM's answer is allowed to do. `on`, the default once you have "
+    "named one, lets it take the turns it is confident enough about. `shadow` asks it every "
+    "turn, records what it would have chosen beside what the model did, and changes nothing "
+    "about the run: it is how you find out whether to trust one before you do. `off` is quackd "
+    "as it has always been. QUACKD_DECISION_MODE does the same.",
     rich_help_panel="Model",
 )
 _ROBOT = typer.Option(
@@ -2097,15 +2248,6 @@ _YES = typer.Option(
     "-y",
     help="Auto-confirm gated verbs (careful on hardware).",
     rich_help_panel="Task",
-)
-_MODEL = typer.Option(
-    None,
-    "--model",
-    "-m",
-    help="A model id from the provider's catalogue (`quackd list-models`). Omitted: that "
-    "vendor's default. Local presets take any id the server serves.",
-    autocompletion=_complete_model,
-    rich_help_panel="Model",
 )
 _LIVE = typer.Option(
     False,
@@ -2210,10 +2352,9 @@ def run(
     goal: str | None = _GOAL,
     image: list[str] = _IMAGE,
     by_hand: bool = _BY_HAND,
-    provider: str | None = _PROVIDER,
+    llm: str | None = _LLM,
     robot: str | None = _ROBOT,
     robots: str | None = _ROBOTS,
-    model: str | None = _MODEL,
     seed: int | None = _SEED,
     dry_run: bool = _DRY,
     max_steps: int | None = _MAXSTEPS,
@@ -2236,7 +2377,9 @@ def run(
     api_key: str | None = _APIKEY,
     vision: bool | None = _VISION,
     extra_body: str | None = _EXTRA_BODY,
-    jev: str | None = _JEV,
+    decision_llm: str | None = _DECISION_LLM,
+    decision_url: str | None = _DECISION_URL,
+    decision_mode: str | None = _DECISION_MODE,
     flock: str | None = _FLOCK,
     run_name: str | None = _RUN_NAME,
     price: str | None = _PRICE,
@@ -2251,8 +2394,7 @@ def run(
         _run_impl(
             duckfile,
             goal,
-            provider,
-            model,
+            llm,
             seed,
             dry_run,
             max_steps,
@@ -2270,7 +2412,9 @@ def run(
             api_key=api_key,
             vision=vision,
             extra_body=extra_body,
-            jev=jev,
+            decision_llm=decision_llm,
+            decision_url=decision_url,
+            decision_mode=decision_mode,
             flock=flock,
             robot=robot,
             robots=robots,
@@ -2290,8 +2434,7 @@ def run(
 def record(
     duckfile: str | None = _DUCK_ARG,
     goal: str | None = _GOAL,
-    provider: str | None = _PROVIDER,
-    model: str | None = _MODEL,
+    llm: str | None = _LLM,
     seed: int | None = typer.Option(0, "--seed"),
     max_steps: int | None = _MAXSTEPS,
     runs_dir: str = _RUNS,
@@ -2323,8 +2466,7 @@ def record(
         _run_impl(
             duckfile,
             goal,
-            provider,
-            model=model,
+            llm,
             seed=seed,
             dry_run=False,
             max_steps=max_steps,
@@ -2346,8 +2488,8 @@ def record(
             robot="microduck:sim2d",
             # Pinned off, not merely absent. `record` makes the recordings in this repository and
             # has to be reproducible without a network call, and leaving this to default meant
-            # `QUACKD_JEV` in somebody's environment quietly switched a stepper on for it.
-            jev="off",
+            # `QUACKD_DECISION_LLM` in somebody's environment quietly switched one on.
+            decision_mode="off",
             log_on=log,
             log_prompt=log_prompt,
             run_name=run_name,
@@ -2747,11 +2889,7 @@ def _entry_rows(entry: Any, *, flocks: list[str]) -> list[tuple[str, Any]]:
     except Exception as e:  # an adapter whose extra is missing still has a name
         body = Text(str(e), style=ui.STYLES["muted"])
     dash = Text("-", style=ui.STYLES["muted"])
-    pilot = (
-        Text(" ".join(p for p in (entry.provider, entry.model) if p))
-        if entry.provider or entry.model
-        else dash
-    )
+    pilot = Text(entry.llm) if entry.llm else dash
     return [
         ("name", Text(entry.name, style=ui.STYLES["key"])),
         ("robot", Text(entry.key, style=ui.STYLES["accent"])),
@@ -2794,18 +2932,13 @@ def robot_add(
     address: str | None = _ADDR,
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
-    provider: str | None = typer.Option(
+    llm: str | None = typer.Option(
         None,
-        "--provider",
-        "-p",
-        help="The provider a run uses for this robot when --provider is absent.",
-        rich_help_panel="Model",
-    ),
-    model: str | None = typer.Option(
-        None,
-        "--model",
-        "-m",
-        help="Its model id. --model on the run beats this, and this beats QUACKD_MODEL.",
+        "--llm",
+        "-l",
+        help="The pilot a run uses for this robot when --llm is absent, as VENDOR[:MODEL]. "
+        "--llm on the run beats this, and this beats QUACKD_LLM.",
+        autocompletion=_complete_llm,
         rich_help_panel="Model",
     ),
     note: str | None = typer.Option(None, "--note", help="One line for people: which one is it."),
@@ -2813,21 +2946,28 @@ def robot_add(
 ) -> None:
     """Register a robot under a name, with how to reach it."""
     from quackd.adapters.base import AdapterError
+    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.factory import parse_llm
     from quackd.registry import RegistryError, RobotEntry
 
     try:
+        # Checked against the catalogue here and nowhere else. The shelf is deliberately
+        # lenient -- an id a later catalogue retires must not make every `quackd robot`
+        # command refuse, including the edit that would fix it -- so the door is the one
+        # place a typo can still be caught while the person who made it is looking at it.
+        if llm is not None:
+            parse_llm(llm, source="--llm")
         entry = RobotEntry(
             name=name,
             spec=spec,
             address=address,
             camera_url=list(camera_url) or None,
             token=token,
-            provider=provider,
-            model=model,
+            llm=llm,
             note=note,
         )
         _registry(registry_dir).add_robot(entry)
-    except (RegistryError, AdapterError, ValidationError) as e:
+    except (RegistryError, AdapterError, ValidationError, ProviderError) as e:
         _registry_fail(_one_line(e))
         return
     where = f" at {entry.address}" if entry.address else ""
@@ -2890,7 +3030,7 @@ def robot_list(
     # 80-column terminal a probe's refusal needs every character it can get
     cells: dict[str, list[Any]] = {
         "address": [Text(e.address or "") for e in entries.values()],
-        "pilot": [Text(" ".join(p for p in (e.provider, e.model) if p)) for e in entries.values()],
+        "pilot": [Text(e.llm or "") for e in entries.values()],
         "flocks": [Text(", ".join(holders[n])) for n in entries],
         "note": [Text(e.note or "") for e in entries.values()],
     }
@@ -2979,7 +3119,7 @@ def robot_show(
     ui.console.print(ui.kv_grid(rows))
 
 
-_CLEARABLE = ("address", "token", "camera-url", "rest-pose", "provider", "model", "note")
+_CLEARABLE = ("address", "token", "camera-url", "rest-pose", "llm", "note")
 
 
 @robot_app.command("edit")
@@ -2989,18 +3129,12 @@ def robot_edit(
     address: str | None = _ADDR,
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
-    provider: str | None = typer.Option(
+    llm: str | None = typer.Option(
         None,
-        "--provider",
-        "-p",
-        help="The provider a run uses for this robot when --provider is absent.",
-        rich_help_panel="Model",
-    ),
-    model: str | None = typer.Option(
-        None,
-        "--model",
-        "-m",
-        help="Its model id, used with the provider above.",
+        "--llm",
+        "-l",
+        help="The pilot, as VENDOR[:MODEL]. Replaces whatever was stored.",
+        autocompletion=_complete_llm,
         rich_help_panel="Model",
     ),
     note: str | None = typer.Option(None, "--note", help="One line for people."),
@@ -3013,6 +3147,8 @@ def robot_edit(
 ) -> None:
     """Change what a registered robot is or where it is."""
     from quackd.adapters.base import AdapterError
+    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.factory import parse_llm
     from quackd.registry import RegistryError
 
     given: dict[str, Any] = {
@@ -3022,10 +3158,15 @@ def robot_edit(
         # cameras are today, which is the rule --address and --token already follow
         "camera_url": list(camera_url) or None,
         "token": token,
-        "provider": provider,
-        "model": model,
+        "llm": llm,
         "note": note,
     }
+    if llm is not None and not llm.strip():
+        # An empty value is not a pilot, and silently taking it as "forget the one you had"
+        # loses a setting and reports success. `--clear llm` is the way to say that, and it is
+        # a word rather than an absence.
+        _fail("--llm needs a pilot: quackd robot edit NAME --clear llm forgets the stored one")
+        return
     changes: dict[str, Any] = {k: v for k, v in given.items() if v is not None}
     for field in clear:
         key = field.strip().lower().replace("-", "_")
@@ -3040,8 +3181,12 @@ def robot_edit(
         _fail("nothing to change: give a field to set, or --clear FIELD")
         return
     try:
+        # The same gate `robot add` puts on the door, for the same reason: a spec typed here
+        # is typed by a person who is looking at the answer.
+        if llm is not None:
+            parse_llm(llm, source="--llm")
         _registry(registry_dir).update_robot(name, changes)
-    except (RegistryError, AdapterError, ValidationError) as e:
+    except (RegistryError, AdapterError, ValidationError, ProviderError) as e:
         _registry_fail(_one_line(e))
         return
     touched = ", ".join(sorted(key.replace("_", "-") for key in changes))

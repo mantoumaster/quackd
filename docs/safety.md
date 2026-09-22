@@ -12,8 +12,9 @@ A biped falls in 0.3 s; an LLM answers in 3 s. Everything here follows from that
 | Session | quackd `Heartbeat` + `KillSwitch` | A dead transport or a worried human ends in a `stop` intent. In a flock one kill switch reaches every member's executor, so Ctrl-C stops every body rather than the one in front. |
 
 > [!NOTE]
-> **The optional discrete stepper changes none of this.** With `--jev on`
-> ([jev.md](jev.md)) some turns are answered by a classifier instead of the model, and every
+> **The optional discrete stepper changes none of this.** With `--decision-mode on`
+> ([decision-llms.md](decision-llms.md)) some turns are answered by a decision LLM instead of
+> the model, whichever one `--decision-llm` named and wherever it runs, and every
 > one of those calls goes through the same `Executor.run_verb` as every other, so the
 > allowlist, the budgets, the confirm gates, the preconditions and the body's own safety
 > authority bind it exactly as they bind the model. Two things about it are structural rather

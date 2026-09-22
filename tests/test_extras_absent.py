@@ -22,10 +22,12 @@ HEAVY = (
     "paho",
     "mujoco",
     "onnxruntime",
-    # The discrete stepper's SDK. It is off by default, so a default install must import the
-    # module that knows about it, build a run config and refuse `--jev on` politely, all
-    # without `typesafe_sdk` being anywhere on the machine.
+    # The two clients a decision LLM can be reached through: the System One SDK for a server,
+    # hosted or your own, and the in-process encoder. Both are off by default, so a default
+    # install must import the modules that know about them, build a run config and refuse
+    # `--decision-mode on` politely, with neither of these anywhere on the machine.
     "typesafe_sdk",
+    "laya",
 )
 
 SCRIPT = f"""
@@ -40,12 +42,17 @@ import quackd.lan.announce
 import quackd.lan.discover
 import quackd.flock.mqtt_bus
 import quackd.registry
-import quackd.agent.jev
+import quackd.agent.decision
+import quackd.agent.decision.stepper
+import quackd.agent.decision.factory
 import quackd.agent.loop
-from quackd.agent.jev import jev_is_available, resolve_jev_mode
-assert resolve_jev_mode(None) == "off"
-ok, why = jev_is_available()
-assert not ok and "quackd[jev]" in why, why
+from quackd.agent.decision.catalogue import PRESETS
+from quackd.agent.decision.factory import decision_llm_is_available, resolve_decision_mode
+assert resolve_decision_mode(None, named=False) == "off"
+ok, why = decision_llm_is_available(PRESETS["jev"])
+assert not ok and "quackd[decision]" in why, why
+ok, why = decision_llm_is_available(PRESETS["laya"])
+assert not ok and "quackd[laya]" in why, why
 from quackd.adapters.factory import BACKENDS, RobotSpec, describe, list_adapters, make_adapter
 rows = list_adapters()
 assert [r["name"] for r in rows] == [
@@ -87,8 +94,21 @@ def test_everything_imports_without_any_extra() -> None:
 def test_the_default_path_did_not_import_a_heavy_module() -> None:
     import quackd.flock.mqtt_bus  # noqa: F401
 
-    for name in ("torch", "lerobot", "roslibpy", "typesafe_sdk"):
+    for name in ("torch", "lerobot", "roslibpy", "typesafe_sdk", "laya"):
         assert name not in sys.modules, f"{name} was imported on the default path"
+
+
+def test_naming_the_decision_llms_costs_nothing_to_import() -> None:
+    """`quackd.cli` reads the preset table for `--help` and for `doctor`, and the table is
+    data: names, one-line summaries, urls and rates, with not an import of a client in it.
+
+    Both clients weigh what `torch` weighs -- `laya` pulls it directly -- so importing either
+    one to print a help line would put several seconds on the front of every single command,
+    including the ones that never go near a decision LLM."""
+    import quackd.cli  # noqa: F401
+
+    for name in ("typesafe_sdk", "laya"):
+        assert name not in sys.modules, f"{name} was imported just by loading the CLI"
 
 
 def test_a_machine_with_no_adapter_installed_still_works_and_says_what_to_install() -> None:

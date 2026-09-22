@@ -20,7 +20,7 @@ in a page, and it does one thing neither Python simulator does: the sentence box
 keyboard drive the same duck at the same time.
 
 **How do I run the physics simulator, and what does it download?**
-`uvx --from "quackd[mujoco]" quackd run find-and-kick --robot microduck:mujoco --provider fake`.
+`uvx --from "quackd[mujoco]" quackd run find-and-kick --robot microduck:mujoco --llm fake`.
 The first run fetches upstream's model, `robot_walk.xml` and 38 STL meshes, from `microduck_rl`
 at a pinned commit, and `alpha_walking.onnx`, `alpha_stand.onnx` and their manifest from the
 Hugging Face Hub at a pinned revision, into `~/.quackd/cache`. About 10 MB over the wire and 23
@@ -79,32 +79,33 @@ letting an OpenGL traceback out. Rendering is this backend's real cost, not phys
 
 **Is the pilot always an LLM?** By default, yes, and nothing changes unless you ask it to. A
 run's pilot is the provider you named, and every verb, every joint angle and every sentence
-comes from it. The one exception is opt-in: `--jev` puts an optional non-generative stepper in
-front of the model for the turns whose answer is a choice among calls the body already has, a
-read, the brake, a gripper, a gaze. It is off by default, it needs its own extra and its own
-key, it authors no number and no sentence, and it cannot end a run or record a feasibility
-verdict. It is also not a provider and `--provider` does not take it.
+comes from it. The one exception is opt-in: `--decision-llm` puts an optional non-generative
+stepper in front of the model for the turns whose answer is a choice among calls the body
+already has, a read, the brake, a gripper, a gaze. It is off unless you name one, it needs its
+own extra and, for the hosted one, its own key, it authors no number and no sentence, and it
+cannot end a run or record a feasibility verdict. It is also not a provider and `--llm` does not take one.
 
-**And it is not a second LLM.** That distinction is the whole reason it is allowed near a robot. A language model generates tokens, so asking it for a verb means asking it to write one, and it could just as easily write a joint angle. Jev generates nothing: it scores the options you hand it against a state and returns which one, with a probability for each. There is no text in the answer, so there is nowhere for an invented verb or an improvised angle to come from. TypeSafe put it as *"LLMs produce words for people. Jev produces typed decisions"*. [jev.md](jev.md) says what it does, what it deliberately cannot, and roughly what it saves.
+**And it is not a second LLM.** That distinction is the whole reason it is allowed near a robot. A language model generates tokens, so asking it for a verb means asking it to write one, and it could just as easily write a joint angle. A decision LLM generates nothing: it scores the options you hand it against a state and returns which one, with a probability for each. There is no text in the answer, so there is nowhere for an invented verb or an improvised angle to come from. TypeSafe, whose Jev was the first of them and gave the wire format its name, put it as *"LLMs produce words for people. Jev produces typed decisions"*, and the same holds for the open ones that speak that format: `kev`, `von`, `openjev`, `opendecision`, the in-process `laya`, and anything else you point `--decision-url` at. [decision-llms.md](decision-llms.md) says what they do, what they deliberately cannot, and roughly what they save.
 
-**Does `uvx quackd run … --provider anthropic` work with no extras?** No, and it now takes
+**Does `uvx quackd run … --llm anthropic` work with no extras?** No, and it now takes
 two of them rather than one: the default install is light on purpose, so a bare `uvx quackd`
 has no vendor SDK and no robot either. Name the brain and the body together:
-`uvx --from "quackd[anthropic,microduck]" quackd run find-and-kick --provider anthropic`, or
+`uvx --from "quackd[anthropic,microduck]" quackd run find-and-kick --llm anthropic`, or
 `uv pip install "quackd[anthropic,microduck]"`. Whichever half is missing, quackd prints the
 command that fixes it: the provider one names `quackd[anthropic]`, the robot one names
-`quackd[microduck]` and the six other adapters. `--provider fake` still needs no key and no
+`quackd[microduck]` and the six other adapters. `--llm fake` still needs no key and no
 extra for itself, but it does need a body to drive.
 
 **Which models can I pick?** Whatever the catalogue lists for the vendor you named. It is one
 hand-written table of 115 ids across eleven cloud vendors, and `quackd list-models` prints it,
-`--provider mistral` (or any other name) narrowing it to one vendor. Every row carries a status
+`--llm mistral` (or any other name) narrowing it to one vendor. Every row carries a status
 — `current`, `legacy`, `preview`, `specialised` or `open` — and a notes column that marks three
 things worth knowing before you pass an id: `default`, `Responses API` for the OpenAI models
 that refuse function tools on Chat Completions, and `no frames` for a model whose vendor does
 not document image input, which gets the detections as text instead of the camera frame unless
-`--vision` says otherwise. The default is simply the first row for that vendor, so leaving
-`--model` off is the same as passing it. Local presets are deliberately outside all of this:
+`--vision` says otherwise. The default is simply the first row for that vendor, so
+`--llm openai` is the same as naming that vendor's first id after the colon. Local presets are
+deliberately outside all of this:
 `ollama`, `vllm`, `llamacpp`, `lmstudio` and `local` take any id the server serves, or the first
 model it lists when you name none. Anthropic extras: `QUACKD_EFFORT` (default `medium`) and
 `QUACKD_ANTHROPIC_FALLBACKS=0` to disable server-side refusal fallbacks.
@@ -113,22 +114,26 @@ model it lists when you name none. Anthropic extras: `QUACKD_EFFORT` (default `m
 checks before it reads a key or opens a connection, so nothing was sent anywhere:
 
 ```
-$ quackd run hello-world --provider openai --model gpt-5 --robot microduck:mock
-✗ error: openai: unknown model 'gpt-5' from --model. Valid ids: gpt-5.6-sol (default), gpt-6-astra,
+$ quackd run hello-world --llm openai:gpt-5 --robot microduck:mock
+✗ error: openai: unknown model 'gpt-5' from --llm. Valid ids: gpt-5.6-sol (default), gpt-6-astra,
 gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.2, gpt-5.1,
 gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5.3-codex,
-chat-latest. See `quackd list-models --provider openai`.
+chat-latest. See `quackd list-models --llm openai`.
 
-$ quackd run hello-world --provider openai --model grok-4.6 --robot microduck:mock
-✗ error: openai: unknown model 'grok-4.6' from --model ('grok-4.6' is a grok model: pass --provider
-grok). Valid ids: ... See `quackd list-models --provider openai`.
+$ quackd run hello-world --llm openai:grok-4.6 --robot microduck:mock
+✗ error: openai: unknown model 'grok-4.6' from --llm ('grok-4.6' is a grok model: --llm
+grok:grok-4.6). Valid ids: gpt-5.6-sol (default), gpt-6-astra, gpt-5.6-terra, gpt-5.6-luna,
+gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.2, gpt-5.1, gpt-4.1, gpt-4.1-mini, gpt-4o,
+gpt-4o-mini, gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5.3-codex, chat-latest. See `quackd
+list-models --llm openai`.
 ```
 
 Ids are unique across the catalogue, so an id that belongs to somebody else is named as such
-rather than just refused, which is the mistake worth catching early. `QUACKD_MODEL` goes through
-the same check and gets the same refusal, with `QUACKD_MODEL` in place of `--model`, so a stale
-line in your `.env` cannot quietly start a run either. The one thing this never applies to is a
-local preset, whose `--model` is free text.
+rather than just refused, which is the mistake worth catching early, and that same uniqueness is
+why `--llm gpt-6-astra` can work out its own vendor. `QUACKD_LLM` goes through the same check
+and gets the same refusal, with `QUACKD_LLM` in place of `--llm` in the message, so a stale line
+in your `.env` cannot quietly start a run either. The one thing this never applies to is a local
+preset, whose model half is free text.
 
 **The id is in the catalogue, but the vendor refuses my key.** Check which endpoint your key
 belongs to. quackd calls each cloud vendor at one fixed base URL, and for two of them there
@@ -150,7 +155,7 @@ sets the effort on either API. The browser demo does the same on both counts, wi
 set.
 
 **Are local LLMs supported (llama.cpp, vLLM, Ollama, LM Studio)?** Yes. They all speak
-OpenAI's Chat Completions API, so `--provider ollama`, `vllm`, `llamacpp`, `lmstudio`, or
+OpenAI's Chat Completions API, so `--llm ollama`, `vllm`, `llamacpp`, `lmstudio`, or
 `local --base-url http://host:port/v1` works with no API key. Tool calling must be enabled
 on the server (`llama-server --jinja`, `vllm serve --enable-auto-tool-choice
 --tool-call-parser …`), vision is off unless you pass `--vision`, and a small model that
@@ -274,7 +279,7 @@ quackd writes itself (outcome, reason, the last few verb results). The newest tw
 and five episodes go into the next run's system prompt. It is deliberately not a memory
 *system*: no embeddings, no search, newest wins, nothing shared between bodies, and the
 executor never reads it, so a note can never widen an allowlist or lift a budget. The
-scripted pilot has no `remember` in its script, so `--provider fake` accumulates run
+scripted pilot has no `remember` in its script, so `--llm fake` accumulates run
 outcomes and never a note. [memory.md](memory.md), [ADR-0025](adr/0025-memory-between-runs.md)
 
 **Who decides the run succeeded?** The LLM, via `declare_success(reason)` — that is the
@@ -435,12 +440,12 @@ them, run it:
 quackd robot add duck microduck:mock
 quackd robot add arm lerobot:mock
 quackd flock create pair --robot duck --robot arm
-quackd run flock-hello --flock pair --provider fake
+quackd run flock-hello --flock pair --llm fake
 ```
 
 Each body gets its own LLM pilot, each pilot's prompt carries the other's datasheet, and they
 divide the task by talking. Each member keeps its own memory, and what one needs another to
-know during the run it says with `tell`. `quackd run flock-hello --provider fake` does the same
+know during the run it says with `tell`. `quackd run flock-hello --llm fake` does the same
 thing with no registry at all. The honest part: this has run on `mock` and `sim2d` bodies and on
 no hardware, N simulated members are N separate worlds with nothing checking a claimed success,
 and `tell` has been exercised by the scripted pilot and by no real model

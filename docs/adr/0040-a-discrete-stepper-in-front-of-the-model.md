@@ -1,6 +1,19 @@
 # ADR-0040: A discrete stepper in front of the model
 
-**Status:** accepted · **Date:** 2026-09-18 · Extends [ADR-0010](0010-providers.md) (what a provider is, and what quackd asks of one) and [ADR-0032](0032-datasheets-and-the-verdict.md) (the feasibility verdict and why it is prose) · Implemented in `quackd/agent/jev.py` and one hook in `quackd/agent/loop.py` ([page](../jev.md))
+**Status:** accepted, amended · **Date:** 2026-09-18 · Extends [ADR-0010](0010-providers.md) (what a provider is, and what quackd asks of one) and [ADR-0032](0032-datasheets-and-the-verdict.md) (the feasibility verdict and why it is prose) · Implemented in `quackd/agent/decision/` and one hook in `quackd/agent/loop.py` ([page](../decision-llms.md))
+
+**Amended 2026-09-22 by [ADR-0043](0043-decision-llms-are-a-wire-format-and-a-data-row.md):** Jev turned out to be the first of many, so everything below
+that names the vendor now names the format. `--jev off|shadow|on` is `--decision-llm NAME`,
+`--decision-mode off|shadow|on` and `--decision-url`; `quackd[jev]` is `quackd[decision]` (and
+`quackd[laya]` for the one that runs in this process); `QUACKD_JEV` is `QUACKD_DECISION_LLM`
+plus `QUACKD_DECISION_MODE`; the two transcript kinds `jev` and `jev_shadow` are `decision` and
+`decision_shadow`; `Source`'s fourth word is `decision`, so the log says `from decision`; the
+summary block is `decision`; and `quackd/agent/jev.py` is the package `quackd/agent/decision/`.
+Read "TypeSafe's own published numbers" about the floors as true of Jev and inherited
+unmeasured by every other one. The reasoning below is unchanged, which is why this is an
+amendment and not a replacement: what turns are a choice, what an answer must clear before it
+moves a servo, and what a stepper is never allowed to do are quackd's half and do not move with
+the vendor.
 
 ## Context
 

@@ -46,8 +46,8 @@ own shutdown path disables torque with no lowering and no ramp. Read
 There is no command that runs one verb. Either drive the daemon from an MCP client
 (`quackd serve-mcp --robot toddlerbot:bridge --address tcp://<host>:9873`, then `robot_run_verb`, which is
 what these steps assume) or give a model a goal narrow enough to reach one verb
-(`quackd run --goal "..." --robot toddlerbot:bridge --address tcp://<host>:9873 --provider anthropic
---max-steps 3`). `--provider fake` will not do: it answers a free-form goal with a fixed
+(`quackd run --goal "..." --robot toddlerbot:bridge --address tcp://<host>:9873 --llm anthropic
+--max-steps 3`). `--llm fake` will not do: it answers a free-form goal with a fixed
 script that ignores it.
 
 9. `stand`. Watch the whole slew. It should take seconds, not snap. If it snaps, stop and say

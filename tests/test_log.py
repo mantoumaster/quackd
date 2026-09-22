@@ -474,9 +474,9 @@ def test_a_tokens_line_from_before_the_money_renders_exactly_as_it_always_did() 
 def test_the_stepper_line_carries_its_tokens_and_its_fraction_of_a_cent() -> None:
     """The whole argument for a stepper is the ratio between what one of its questions costs
     and what the model call it stands in for costs, so both numbers ride in the parenthesis
-    that already holds the seconds. A `~` marks a turn TypeSafe did not count for itself and
-    quackd had to estimate from the characters it sent, and it goes on both numbers because
-    the cost is derived from the count."""
+    that already holds the seconds. A `~` marks a turn the decision LLM did not count for
+    itself and quackd had to estimate from the characters it sent, and it goes on both numbers
+    because the cost is derived from the count."""
 
     def line(**extra: Any) -> str:
         data = {
@@ -487,16 +487,17 @@ def test_the_stepper_line_carries_its_tokens_and_its_fraction_of_a_cent() -> Non
             "latency_s": 0.11,
             **extra,
         }
-        ((text, _),) = render_lines(LogEvent("jev", 0.0, data))
+        ((text, _),) = render_lines(LogEvent("decision", 0.0, data))
         return text
 
     counted = {"usage": {"input_tokens": 527, "output_tokens": 3}, "cost_usd": 0.000022}
     assert "(0.11 s, 527 tok $0.000022)" in line(**counted, usage_estimated=False)
     assert "(0.11 s, ~527 tok ~$0.000022)" in line(**counted, usage_estimated=True)
     # The gates that never reach the network owe nothing, and a `0 tok` on them would read as
-    # a question that was asked and came back empty.
-    assert line() == "jev     kick 0.93 >= 0.70 (0.11 s)"
-    assert line(gate="not_offered") == "jev     not_offered, to the model (0.11 s)"
+    # a question that was asked and came back empty. The gutter is eight columns wide
+    # (`_LABEL`), so the six letters of `decide` are followed by exactly two spaces.
+    assert line() == "decide  kick 0.93 >= 0.70 (0.11 s)"
+    assert line(gate="not_offered") == "decide  not_offered, to the model (0.11 s)"
 
 
 def test_long_thinking_is_cut_with_a_pointer_to_the_transcript() -> None:

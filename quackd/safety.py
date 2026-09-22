@@ -40,10 +40,12 @@ from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY, Verdict
 if TYPE_CHECKING:
     from quackd.adapters.manifest import RobotManifest
 
-Source = Literal["agent", "mcp", "cli", "jev"]
-"""Who asked for this verb. `jev` is the discrete stepper answering a turn the model
-never saw, and the log already prints `from <source>` for anything that is not the
-agent, so the record says who chose a verb without a renderer knowing the word."""
+Source = Literal["agent", "mcp", "cli", "decision"]
+"""Who asked for this verb. `decision` is the discrete stepper answering a turn the model
+never saw, whichever decision LLM was behind it: which one that was is recorded once for the
+run (`run_start.decision_llm`) rather than on every verb, so swapping Jev for a server you run
+yourself changes nothing here. The log already prints `from <source>` for anything that is not
+the agent, so the record says who chose a verb without a renderer knowing the word."""
 
 
 class SafetyStop(Exception):
@@ -85,7 +87,7 @@ class Budget:
     steps: int = 0
     llm_calls: int = 0
     stepper_calls: int = 0
-    """Turns the discrete stepper answered (`quackd run --jev on`).
+    """Turns the discrete stepper answered (`quackd run --decision-mode on`).
 
     Not a limit and never checked. A stepper turn runs a verb, and the verb charges a step
     like every other one, so `max_steps` already bounds it and a second number in the `.duck`

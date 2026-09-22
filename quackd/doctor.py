@@ -41,15 +41,17 @@ from quackd.adapters.factory import (
 )
 from quackd.agent.providers.base import ProviderError
 from quackd.agent.providers.factory import (
+    DEFAULT_MODELS,
     EXTRA_FOR,
     KEY_ENV,
     LOCAL_NAMES,
     PROVIDER_NAMES,
     SDK_FOR,
-    default_model,
+    parse_llm,
     resolve_model,
 )
 from quackd.agent.providers.local import PRESETS
+from quackd.command import redacted_url
 from quackd.duckfile.parser import list_bundled_ducks
 
 # The optional extras table, which is about packages rather than providers: the providers table
@@ -60,7 +62,8 @@ EXTRAS = {
     "anthropic": ("anthropic", "quackd[anthropic]"),
     "openai": ("openai", "quackd[openai] and every OpenAI-compatible vendor"),
     "gemini": ("google.genai", "quackd[gemini]"),
-    "jev (TypeSafe stepper)": ("typesafe_sdk", "quackd[jev]"),
+    "decision (System One client)": ("typesafe_sdk", "quackd[decision]"),
+    "laya (in-process decision LLM)": ("laya", "quackd[laya]"),
     "yolo": ("ultralytics", "quackd[yolo]"),
     "live": ("pygame", "quackd[live]"),
     "mujoco": ("mujoco", "quackd[mujoco]"),
@@ -73,11 +76,14 @@ EXTRAS = {
     "xlerobot": ("zmq", "quackd[xlerobot]"),
     "alohamini": ("zmq", "quackd[alohamini]"),
 }
-# Robot SDKs are looked up by distribution metadata only: importing lerobot pulls torch
-# into a diagnostics command, which is exactly what doctor is not. The Feetech SDK is the
+# Packages looked up by distribution metadata only, never imported: importing lerobot pulls
+# torch into a diagnostics command, which is exactly what doctor is not. The Feetech SDK is the
 # half of `quackd[lerobot]` that opens the serial port, and a lerobot installed without its
 # `[feetech]` extra imports cleanly and then cannot reach an arm, so doctor asks for it by name.
-_METADATA_ONLY = {"lerobot": "lerobot", "scservo_sdk": "feetech-servo-sdk"}
+# Laya is here for the same reason as lerobot rather than for its own: it is the one decision
+# LLM that runs in this process, so it carries torch too, and the decision table below prints a
+# version for every row on a machine that is only reading the table.
+_METADATA_ONLY = {"lerobot": "lerobot", "scservo_sdk": "feetech-servo-sdk", "laya": "laya"}
 
 CORE_MODULES = (
     ("pydantic", "pydantic"),
@@ -155,11 +161,15 @@ class ProviderRow:
     key_optional: bool
     """A local server does not need one; a cloud provider cannot run without it."""
     model: str
+    url: str = ""
+    """Where a self-hosted decision LLM listens, and empty for everything that has no address:
+    every provider, whose vendor owns its own, and the hosted decision LLM, whose SDK does."""
     pinned: bool = False
-    """QUACKD_MODEL chose this one, rather than the vendor's default."""
+    """The environment named this model rather than the row taking its default: QUACKD_LLM for
+    a provider, the SDK's own variable for a decision LLM that honours one."""
     refused_model: str = ""
-    """A QUACKD_MODEL this vendor does not list, which is why `model` is its default and not
-    what the environment asked for."""
+    """A QUACKD_LLM whose model half this vendor does not list, which is why `model` is the
+    vendor's default and not what the environment asked for."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -170,6 +180,7 @@ class ProviderRow:
             "key_env": self.key_env,
             "key_optional": self.key_optional,
             "model": self.model,
+            "url": self.url or None,
             "pinned": self.pinned,
             "refused_model": self.refused_model or None,
         }
@@ -322,14 +333,19 @@ class DoctorReport:
     core: list[Check] = field(default_factory=list)
     bundled_ducks: int = 0
     providers: list[ProviderRow] = field(default_factory=list)
-    steppers: list[ProviderRow] = field(default_factory=list)
-    """Not providers, and kept out of that list on purpose.
+    llm_env_error: str = ""
+    """Why QUACKD_LLM names no row of the table above, when it names none.
 
-    A stepper answers typed questions about a state and generates nothing, so it can never
-    pilot a robot and must never appear under `--provider`. The concrete reason for the
+    A vendor that does not exist stops a run before it starts, and the providers table cannot
+    show that on its own: the row it would have pinned is the row that is missing."""
+    steppers: list[ProviderRow] = field(default_factory=list)
+    """Decision LLMs. Not providers, and kept out of that list on purpose.
+
+    A decision LLM answers typed questions about a state and generates nothing, so it can
+    never pilot a robot and must never appear under `--llm`. The concrete reason for the
     separate list is `cloud_keys`, which reads `providers` to say "no key for ...": a machine
-    with no TypeSafe key is not a machine with a problem, because the stepper is off unless
-    somebody asks for it."""
+    with no TypeSafe key is not a machine with a problem, because no decision LLM runs unless
+    somebody names one."""
     servers: list[ServerRow] = field(default_factory=list)
     adapters: list[dict[str, Any]] = field(default_factory=list)
     transports: list[TransportRow] = field(default_factory=list)
@@ -368,6 +384,7 @@ class DoctorReport:
             "core": [c.to_dict() for c in self.core],
             "bundled_ducks": self.bundled_ducks,
             "providers": [p.to_dict() for p in self.providers],
+            "llm_env_error": self.llm_env_error or None,
             "steppers": [s.to_dict() for s in self.steppers],
             "servers": [s.to_dict() for s in self.servers],
             "adapters": self.adapters,
@@ -671,6 +688,20 @@ def collect(
     report.bundled_ducks = len(list_bundled_ducks())
 
     say("checking the providers")
+    # QUACKD_LLM names one vendor and, after the colon, at most one model of that vendor's, so
+    # it pins exactly one row of this table and says nothing about the other fifteen. Read once
+    # here rather than once per row: the variable it replaced was a bare model id with no
+    # vendor on it, so every row had to guess whether it was the one being talked about.
+    env_llm = os.environ.get("QUACKD_LLM", "").strip()
+    env_vendor, env_model = "", None
+    if env_llm:
+        try:
+            env_vendor, env_model = parse_llm(env_llm, source="QUACKD_LLM")
+        except ProviderError as e:
+            # A vendor nobody publishes has no row to be shown on, and the run it is about to
+            # refuse is the thing a reader came here to understand, so it is kept and printed
+            # under the table rather than dropped.
+            report.llm_env_error = str(e)
     for name in PROVIDER_NAMES:
         if name == "fake":
             report.providers.append(
@@ -678,17 +709,16 @@ def collect(
             )
             continue
         key = os.environ.get(KEY_ENV[name], "")
-        # What this provider would actually be given, not what the table used to guess. A
-        # QUACKD_MODEL meant for one vendor is refused by the others, and doctor is where a
-        # reader should find that out rather than three commands later.
+        # What this provider would actually be given, not what the table used to guess. The
+        # vendor QUACKD_LLM names can still be handed a model it does not list, and doctor is
+        # where a reader should find that out rather than three commands later.
+        wanted = env_model if name == env_vendor else None
         refused = ""
         try:
-            model = resolve_model(name, default_model(name), source="QUACKD_MODEL") or (
-                "auto (first served)"
-            )
+            model = resolve_model(name, wanted, source="QUACKD_LLM") or "auto (first served)"
         except ProviderError:
-            model = default_model(name) or "auto (first served)"
-            refused = str(os.environ.get("QUACKD_MODEL", ""))
+            model = DEFAULT_MODELS.get(name) or "auto (first served)"
+            refused = env_llm
         report.providers.append(
             ProviderRow(
                 name=name,
@@ -698,31 +728,61 @@ def collect(
                 key_env=KEY_ENV[name],
                 key_optional=name in LOCAL_NAMES,
                 model=model,
-                pinned=bool(os.environ.get("QUACKD_MODEL")) and not refused,
+                pinned=name == env_vendor and not refused,
                 refused_model=refused,
             )
         )
 
-    # Asked for whether or not anybody uses it, because "is the stepper on?" is a question
-    # a reader of this screen should be able to answer without running a task, and the answer
-    # is almost always no.
-    from quackd.agent.jev import DEFAULT_MODEL as JEV_MODEL
-    from quackd.agent.jev import EXTRA as JEV_EXTRA
-    from quackd.agent.jev import KEY_ENV as JEV_KEY
-
-    jev_key = os.environ.get(JEV_KEY, "")
-    report.steppers.append(
-        ProviderRow(
-            name="jev",
-            extra=f"quackd[{JEV_EXTRA}]",
-            version=_installed("typesafe_sdk"),
-            key=_mask(jev_key) if jev_key else "",
-            key_env=JEV_KEY,
-            key_optional=False,
-            model=os.environ.get("TYPESAFE_DEFAULT_MODEL") or JEV_MODEL,
-            pinned=bool(os.environ.get("TYPESAFE_DEFAULT_MODEL")),
-        )
+    # Asked for whether or not anybody uses one, because "which decision LLM could run here?"
+    # is a question a reader of this screen should be able to answer without starting a task,
+    # and the answer is almost always "none of them yet". Every row quackd names is printed on
+    # a machine with none of them installed: this is a catalogue and not an inventory, so the
+    # missing rows are the informative ones. Nothing here is probed over the network -- the
+    # providers table does not knock on OpenAI either, and these servers do not all publish a
+    # listing endpoint to knock on.
+    from quackd.agent.decision.catalogue import IN_PROCESS, SYSTEM_ONE
+    from quackd.agent.decision.factory import (
+        find_preset,
+        preset_names,
+        resolve_decision_model,
+        resolve_decision_url,
     )
+
+    for decision_name in preset_names():
+        spec = find_preset(decision_name)
+        decision_key = os.environ.get(spec.key_env, "") if spec.key_env else ""
+        where = resolve_decision_url(spec) or ""
+        if spec.backend == IN_PROCESS:
+            # It has no address at all, and a blank cell there reads as an address somebody
+            # forgot to set rather than one that was never wanted.
+            where = "in this process"
+        elif where:
+            # QUACKD_DECISION_URL is a URL a person typed, so it can carry a password in its
+            # userinfo the way --base-url can, and this screen is pasted into issues.
+            where = redacted_url(where)
+        elif spec.backend == SYSTEM_ONE and spec.key_env is None:
+            # `local` is the row that exists to be told an address, and `make_decision_llm`
+            # refuses it without one. The same sentence here as in that refusal, so the fix a
+            # reader copies off this screen is the one the run would have asked them for.
+            where = "unset: --decision-url or QUACKD_DECISION_URL"
+        report.steppers.append(
+            ProviderRow(
+                name=spec.name,
+                extra=f"quackd[{spec.extra}]" if spec.extra else "",
+                # A plugin was found through its own metadata, so it is installed by
+                # definition and has no import to probe: "?" is this file's word for "here,
+                # and it did not say which version".
+                version=_installed(spec.sdk) if spec.sdk else "?",
+                key=_mask(decision_key) if decision_key else "",
+                key_env=spec.key_env or "",
+                # A server you run yourself wants no key and is sent NO_KEY, so an empty cell
+                # there is not a machine with something missing.
+                key_optional=spec.key_env is None,
+                model=resolve_decision_model(spec) or "auto (the server names it)",
+                url=where,
+                pinned=bool(spec.model_env and os.environ.get(spec.model_env)),
+            )
+        )
 
     custom = os.environ.get("QUACKD_BASE_URL")
     for preset, url in {**PRESETS, **({"local": custom} if custom else {})}.items():
@@ -834,7 +894,7 @@ def _providers_table(report: DoctorReport) -> Any:
     table.add_column("provider", style=ui.STYLES["key"], no_wrap=True)
     table.add_column("extra")
     table.add_column("key")
-    # folded, not elided: a model id with an ellipsis through it cannot be pasted into --model
+    # folded, not elided: a model id with an ellipsis through it cannot be pasted into --llm
     table.add_column("default model", overflow="fold")
     for row in report.providers:
         if row.name == "fake":
@@ -856,7 +916,7 @@ def _providers_table(report: DoctorReport) -> Any:
             key = Text(f"{row.key_env} unset", style=ui.STYLES["warn"])
         if row.refused_model:
             model = Text.assemble(
-                (f"QUACKD_MODEL={row.refused_model}", ui.STYLES["warn"]),
+                (f"QUACKD_LLM={row.refused_model}", ui.STYLES["warn"]),
                 (f", which {row.name} does not list", ui.STYLES["warn"]),
             )
         else:
@@ -867,25 +927,40 @@ def _providers_table(report: DoctorReport) -> Any:
 
 def _steppers_table(report: DoctorReport) -> Any:
     """The providers table's shape, so a reader recognises it, and its own section, so nobody
-    reads a stepper as something `--provider` takes."""
+    reads a decision LLM as something `--llm` takes.
+
+    One row per decision LLM quackd names, plus whatever a plugin added, installed or not: the
+    table is here to show what this machine would have to install, so a row for something that
+    is not here yet is the one worth printing. The url column is the difference from the
+    providers table, because most of these are a server somebody runs themselves."""
     table = ui.table()
-    table.add_column("stepper", style=ui.STYLES["key"], no_wrap=True)
+    table.add_column("decision llm", style=ui.STYLES["key"], no_wrap=True)
     table.add_column("extra")
     table.add_column("key")
     table.add_column("model", overflow="fold")
+    # folded, not elided: a url with an ellipsis through it cannot be pasted into --decision-url
+    table.add_column("url", overflow="fold")
     for row in report.steppers:
         extra = (
             Text(str(row.version), style=ui.STYLES["ok"])
             if row.version
             else Text.assemble(("missing ", ui.STYLES["warn"]), (f"({row.extra})", ""))
         )
-        key: Any = (
-            ui.plain(row.key, style=ui.STYLES["ok"])
-            if row.key
-            else Text(f"{row.key_env} unset", style=ui.STYLES["muted"])
-        )
+        key: Any
+        if row.key:
+            key = ui.plain(row.key, style=ui.STYLES["ok"])
+        elif row.key_optional:
+            key = Text("none needed", style=ui.STYLES["muted"])
+        else:
+            key = Text(f"{row.key_env} unset", style=ui.STYLES["muted"])
         table.add_row(
-            Text(row.name), extra, key, Text(row.model, style=ui.STYLES["ok"] if row.pinned else "")
+            Text(row.name),
+            extra,
+            key,
+            Text(row.model, style=ui.STYLES["ok"] if row.pinned else ""),
+            # muted wherever the cell is a sentence about an address rather than an address,
+            # which is how the servers table prints a preset it was never given one for
+            Text(row.url, style="" if row.url.startswith("http") else ui.STYLES["muted"]),
         )
     return table
 
@@ -1077,13 +1152,19 @@ def render(console: Console, report: DoctorReport) -> None:
 
     _section(console, "providers (every model id: quackd list-models)")
     console.print(_providers_table(report))
+    if report.llm_env_error:
+        console.print(Text(report.llm_env_error, style=ui.STYLES["warn"]), soft_wrap=True)
 
-    _section(console, "discrete stepper (quackd run --jev; off unless you ask for it)")
+    _section(
+        console,
+        "discrete stepper: decision LLMs (quackd run --decision-llm; off unless you name one)",
+    )
     console.print(_steppers_table(report))
     console.print(
         ui.plain(
-            "It answers the turns that are a choice among calls this body can make. Every "
-            "pose, every sentence and every verdict is still the model's (docs/jev.md).",
+            "One of these answers the turns that are a choice among calls this body can make. "
+            "Every pose, every sentence and every verdict is still the model's "
+            "(docs/decision-llms.md).",
             style=ui.STYLES["muted"],
         )
     )

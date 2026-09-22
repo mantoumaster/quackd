@@ -116,7 +116,7 @@ ducks/                          + reachy-spotter.duck, reachy-spots-duck-kicks.d
 | D2 | Where the Microduck transports live | **Wrapped, not moved.** `quackd/transport/*` is untouched; `MicroduckAdapter(transport)` delegates. The only mechanical proof of zero behaviour change; keeps the UNVERIFIED containment paths and every `quackd.transport.*` import valid. The user-facing word "transport" is retired; the package is the Microduck backend layer. |
 | D3 | Alias mechanism | **Canonical storage plus `view()`.** The registry stores `move / go_to / observe`; `ALIASES` lives in `verbs/aliases.py`; `get` / `__contains__` / `unknown` resolve; `view(name)` returns the verb *as the caller named it*, so tool schemas and prompts show the `.duck`'s spelling. `Executor.allowed` returns the contract list verbatim; `is_allowed` compares canonically. Transcript `verb` events keep `name` (as called) and gain `canonical`. |
 | D4 | `quack` vs `say` | Separate verbs, no alias. `say(text: str)` is core (the Microduck implementation is quack's tone mapping); `quack(text: str \| None)` stays a Microduck extension. |
-| D5 | Bundled starter ducks | **Stay `duck: 0`** with today's spellings, so `uvx quackd run find-and-kick --provider fake`, the fake strategies, the hello-world golden and the tool names cloud models see are unchanged. For `duck: 0`, `effective_requires == verbs.allow`; that is what makes `validate find-and-kick --robot reachy_mini:mock` say `requires kick, but reachy-01 (reachy-mini) does not provide it`. Only new ducks are v1. |
+| D5 | Bundled starter ducks | **Stay `duck: 0`** with today's spellings, so `uvx quackd run find-and-kick --llm fake`, the fake strategies, the hello-world golden and the tool names cloud models see are unchanged. For `duck: 0`, `effective_requires == verbs.allow`; that is what makes `validate find-and-kick --robot reachy_mini:mock` say `requires kick, but reachy-01 (reachy-mini) does not provide it`. Only new ducks are v1. |
 | D6 | Manifest source of truth | Pydantic in `adapters/manifest.py`, `extra="forbid"`, JSON on the wire, no YAML on disk. Every adapter also exposes a **static** `describe(backend, robot_id)` (no SDK import, no socket) for `validate`, `list-verbs --robot`, `announce`; `connect()` returns the same object enriched. |
 | D7 | Manifest hash | `RobotManifest.digest()`: sha256 of canonical sorted-key JSON **excluding `id` and `backend`** (a capability fingerprint), first 16 hex. Used by the mDNS TXT `sha` and `robot_list`. |
 | D8 | Verb renames | `get_frame` to `observe`, `walk_to` to `go_to`, `walk` to `move`; aliases are permanent. |
@@ -413,7 +413,7 @@ The gate before every commit is exactly what CI runs: `uv run ruff check .`, `uv
 | Phase | Bar | Commits |
 |---|---|---|
 | 0 | this document and ADRs 0017 to 0023 | `docs(design): ...` |
-| 1 Core | entire existing suite green; find-and-kick 10 of 10; `uvx quackd run find-and-kick --provider fake` unchanged | baselines; alias table; manifest, adapter, Microduck adapter, registry from manifest; executor and loop; `.duck` v1 and validate; `--robot` and factory; ADRs |
+| 1 Core | entire existing suite green; find-and-kick 10 of 10; `uvx quackd run find-and-kick --llm fake` unchanged | baselines; alias table; manifest, adapter, Microduck adapter, registry from manifest; executor and loop; `.duck` v1 and validate; `--robot` and factory; ADRs |
 | 2 Reachy Mini | `--robot reachy_mini:{sim2d,mock}` runs `reachy-spotter` 10 of 10; sdk refuses cleanly without the extra; containment green | StationaryHead; upstream refs; adapter; starter duck; docs |
 | 3 Heterogeneous flock | `reachy-spots-duck-kicks` 10 of 10; every message in `flock.jsonl`; at most one planner call; flock-kick goldens unchanged | capability and RoleAuction; role mode and SPOT/JUDGE; runner and `--robots`; the duck; ADR |
 | 4 MCP, discovery, MQTT | `serve-mcp --robots ...` lists 14 tools; `discover` and `announce` run on fakes; the MQTT bus round-trips every kind offline | atomic drain; robot_* tools; zeroconf; MQTT; docs |
@@ -437,13 +437,13 @@ The gate before every commit is exactly what CI runs: `uv run ruff check .`, `uv
 ```bash
 uv run pytest                                                              # green, offline, no keys
 QUACKD_STRICT_SEEDS=1 uv run pytest tests/test_acceptance_sim2d.py tests/test_flock_run.py tests/test_flock_hetero_run.py tests/test_acceptance_reachy.py
-uvx quackd run find-and-kick --provider fake --seed 3                      # unchanged; 10 of 10 on seeds 0-9
-uvx quackd run reachy-spots-duck-kicks --provider fake --seed 3            # 10 of 10; flock.jsonl written; spotter= kicker=
+uvx quackd run find-and-kick --llm fake --seed 3                      # unchanged; 10 of 10 on seeds 0-9
+uvx quackd run reachy-spots-duck-kicks --llm fake --seed 3            # 10 of 10; flock.jsonl written; spotter= kicker=
 uvx quackd validate ducks/find-and-kick.duck --robot reachy_mini:mock      # exit 1: requires kick, but reachy-01 (reachy-mini) does not provide it
 uvx quackd list-adapters                                                   # microduck, reachy_mini, lerobot, rosbridge with status
 uvx quackd serve-mcp --robots duck=microduck:sim2d,reachy=reachy_mini:mock # six robot_* tools plus eight duck_* aliases
 uvx quackd doctor                                                          # adapters, extras, VERIFIED / UNVERIFIED per adapter
-uvx quackd run find-and-kick --transport sim2d --provider fake             # still works, one deprecation line
+uvx quackd run find-and-kick --transport sim2d --llm fake             # still works, one deprecation line
 ```
 
 ## 14. Only a human can do these

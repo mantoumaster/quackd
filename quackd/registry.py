@@ -112,6 +112,22 @@ class FlockNotRunnable(RegistryError):
     pass
 
 
+def _check_llm(spec: str) -> None:
+    """Refuse a pilot spec on the way into the file, in the provider's own words.
+
+    The counterpart to `RobotEntry._llm`, which reads leniently so that one bad line cannot
+    take the whole registry down. Writing is the other half of that bargain: what goes in is
+    checked against the catalogue in full, so the lenient read is a kindness to files that
+    were already there rather than a hole somebody new can fall into."""
+    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.factory import parse_llm
+
+    try:
+        parse_llm(spec, source="llm")
+    except ProviderError as e:
+        raise RegistryError(str(e)) from e
+
+
 def check_name(name: str, *, kind: str = "robot") -> str:
     """A name a person types on a command line, and never anything else it could be mistaken
     for: a number (`--flock 3` means three simulated ducks), an adapter (`--robot microduck`
@@ -156,13 +172,48 @@ class RobotEntry(BaseModel):
     rest_pose: dict[str, float] | None = None
     """Where this arm rests, read off the arm by `quackd robot rest-pose`. A run starts from
     it and returns to it before torque is released. None for every body quackd does not park."""
-    provider: str | None = None
-    """The provider a run uses for this robot when `--provider` is absent."""
-    model: str | None = None
-    """Its model id. `--model` beats this, this beats `QUACKD_MODEL`."""
+    llm: str | None = None
+    """The pilot a run uses for this robot when `--llm` is absent, in the same shape `--llm`
+    takes: a vendor on its own (`anthropic`), or a vendor and a model id
+    (`anthropic:claude-opus-4-5`). `--llm` on the line beats this, and this beats
+    `QUACKD_LLM`. Stored canonically, so a bare listed model id is written back with its
+    vendor in front: `--llm claude-opus-4-5` lands here as `anthropic:claude-opus-4-5`."""
     note: str | None = None
     added: str = Field(default_factory=_now)
     updated: str = Field(default_factory=_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_legacy_llm(cls, data: Any) -> Any:
+        """`provider` and `model` were two keys until 0.11, and one key since.
+
+        `robots.json` is user data that nobody re-saves on upgrade: the file a person wrote
+        eighteen months ago is still the file on disk, so the old pair is folded into `llm`
+        here. `mode="before"` is the only place that can work, because it runs ahead of field
+        validation and ahead of `extra="forbid"` refusing a key this model no longer has.
+        `{"provider": "anthropic", "model": "claude-opus-4-5"}` reads as
+        `llm="anthropic:claude-opus-4-5"`, and the next write of that robot -- a
+        `quackd robot edit`, or anything else that saves the file -- stores the new shape.
+
+        A file carrying both the new `llm` key and an old one keeps its old key, so
+        `extra="forbid"` names it and the command stops. That file says two different things
+        about which pilot this robot uses, and guessing which half the person meant is worse
+        than refusing and letting them delete the line they did not want."""
+        if not isinstance(data, dict) or data.get("llm") is not None:
+            return data
+        if "provider" not in data and "model" not in data:
+            return data
+        folded = dict(data)
+        provider = folded.pop("provider", None)
+        model = folded.pop("model", None)
+        # A `model` with no `provider` beside it named no pilot and must not start naming one.
+        # Under the old pair the vendor came from the flag or from the default, and the default
+        # was `fake`, which ignores a model id entirely -- so such an entry did nothing unless
+        # a `--provider` was also typed. Read as a spec it would do two things instead, both
+        # bad: `{"model": "mistral"}` would become the paid Mistral API for a run that used to
+        # cost nothing, and `{"model": "gpt-4-turbo"}` would be a vendor quackd cannot resolve.
+        folded["llm"] = f"{provider}:{model}" if provider and model else (provider or None)
+        return folded
 
     @field_validator("spec")
     @classmethod
@@ -228,17 +279,37 @@ class RobotEntry(BaseModel):
         """Every camera this robot was registered with, primary first."""
         return camera_urls(self.camera_url)
 
-    @field_validator("provider")
+    @field_validator("llm")
     @classmethod
-    def _provider(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        from quackd.agent.providers.catalogue import PROVIDER_NAMES
+    def _llm(cls, value: str | None) -> str | None:
+        """Strict at the door, lenient on the shelf, and the shelf is this.
 
-        folded = value.strip().lower()
-        if folded not in PROVIDER_NAMES:
-            raise ValueError(f"unknown provider {value!r}; one of {', '.join(PROVIDER_NAMES)}")
-        return folded
+        `quackd robot add` and `quackd robot edit` check a spec against the catalogue in full,
+        because the door is where the typo is actually made and the person who made it is
+        looking at the answer. Reading is the opposite: whatever cannot be resolved is kept
+        exactly as it was written, and the run that names that robot is what stops.
+
+        The reason is that `update_robot` reads every entry before it writes one, so anything
+        refused here is refused by `quackd robot list`, `show`, `remove` and by the very
+        `quackd robot edit` that would fix it. One bad line would take the whole file down and
+        leave no command able to mend it. That is a worse failure than a robot that refuses on
+        the day it is run, and it is reachable by ordinary means: a catalogue that retires a
+        model id, a vendor quackd drops, or a hand-edited file.
+
+        So this canonicalises what it can -- a bare listed id gains its vendor, a vendor is
+        folded to lower case -- and leaves the rest alone."""
+        if value is None or not str(value).strip():
+            return None
+        # imported here rather than at module scope, deliberately: the provider catalogue is a
+        # large import and `quackd robot list` has no reason to pay for it
+        from quackd.agent.providers.base import ProviderError
+        from quackd.agent.providers.factory import parse_llm
+
+        try:
+            vendor, model = parse_llm(str(value), source="llm", check_model=False)
+        except ProviderError:
+            return str(value).strip()
+        return f"{vendor}:{model}" if model else vendor
 
     @property
     def adapter(self) -> str:
@@ -292,8 +363,7 @@ class RobotEntry(BaseModel):
             "camera_url": self.camera_url,
             "rest_pose": dict(self.rest_pose) if self.rest_pose else None,
             "token_set": self.token is not None,
-            "provider": self.provider,
-            "model": self.model,
+            "llm": self.llm,
             "note": self.note,
             "added": self.added,
             "updated": self.updated,
@@ -357,12 +427,10 @@ class Resolved:
         return f"{self.entry.name} ({self.spec.key})" if self.entry is not None else self.spec.key
 
     @property
-    def provider(self) -> str | None:
-        return self.entry.provider if self.entry is not None else None
-
-    @property
-    def model(self) -> str | None:
-        return self.entry.model if self.entry is not None else None
+    def llm(self) -> str | None:
+        """The pilot this robot was registered with, `vendor` or `vendor:model`, or None for
+        a bare spec: nothing was registered, so there is nothing to have recorded."""
+        return self.entry.llm if self.entry is not None else None
 
     def adapter_kwargs(
         self,
@@ -477,6 +545,8 @@ class Registry:
 
     def add_robot(self, entry: RobotEntry) -> RobotEntry:
         check_name(entry.name, kind="robot")
+        if entry.llm is not None:
+            _check_llm(entry.llm)  # a pilot chosen now is a pilot that can be checked now
         entries = self.robots()
         if entry.name in entries:
             raise RegistryError(
@@ -493,6 +563,14 @@ class Registry:
         current = entries.get(name)
         if current is None:
             raise UnknownRobot(f"no robot called {name!r} is registered")
+        # The pilot being set, and only the one being set. `RobotEntry` reads a spec it cannot
+        # resolve rather than refusing it, because refusing on read would take down the whole
+        # file including this command; but a spec handed in here is one somebody is choosing
+        # now, and a choice made now can be checked now. Checking the whole entry instead
+        # would put the bricking back: editing the note on a robot whose stored pilot names a
+        # retired model would fail on the pilot.
+        if (named := changes.get("llm")) is not None:
+            _check_llm(str(named))
         data = current.model_dump()
         data.update(changes)
         data["updated"] = _now()

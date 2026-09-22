@@ -19,7 +19,7 @@ BOM and no software quackd uses. Every name quackd spells lives in
 uv pip install 'quackd[alohamini]'    # quackd's own adapter package, plus pyzmq
 
 # offline
-quackd run alohamini-lookout --robot alohamini:sim2d --provider fake
+quackd run alohamini-lookout --robot alohamini:sim2d --llm fake
 
 # a real robot, once quackd's host is running on its Raspberry Pi
 quackd run alohamini-lookout --robot alohamini:zmq --address tcp://192.168.1.50:5555

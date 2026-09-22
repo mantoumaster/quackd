@@ -159,7 +159,7 @@ def test_the_same_junk_names_the_flag_or_the_variable_it_actually_arrived_in() -
 
 
 def test_the_scripted_pilot_is_free_rather_than_unpriced() -> None:
-    """`--provider fake` calls nothing, so it costs nothing and should say `$0`. Answering
+    """`--llm fake` calls nothing, so it costs nothing and should say `$0`. Answering
     `None` there would print `cost unpriced` for every demo and every test run."""
     price = price_for("fake", "gpt-5.6-sol")
     assert price == FAKE
@@ -207,7 +207,7 @@ def test_an_explicit_override_beats_the_catalogue_and_says_where_it_came_from() 
 def test_an_override_beats_fake_so_the_whole_cost_path_runs_without_a_key() -> None:
     """Deliberate rather than an oversight: pricing a scripted run is how the arithmetic, the
     record and the verdict line get exercised end to end with no key and no bill. The real run
-    that produced `cost $0.0309` was `--provider fake --price`."""
+    that produced `cost $0.0309` was `--llm fake --price`."""
     price = resolve_price("fake", "anything", override=CARD)
     assert price is not None and price.source == "--price"
     assert price != FAKE and price.input == 3.0
@@ -311,7 +311,7 @@ def test_missing_and_negative_token_counts_are_read_as_zero() -> None:
 
 
 def test_the_run_that_printed_nine_cents_still_prices_at_nine_cents() -> None:
-    """The real run kept as a fixture: `run find-and-kick --provider fake --seed 3 --price
+    """The real run kept as a fixture: `run find-and-kick --llm fake --seed 3 --price
     'in=3,out=15,cache_read=0.3,cache_write=3.75'` spent 9812 prompt tokens and 96 generated
     ones, recorded `cost_usd` 0.030876, and printed `cost $0.0309` on its verdict line. Both
     halves are here so a change to either the arithmetic or the formatting has to explain
@@ -372,7 +372,7 @@ def test_no_price_reads_as_unpriced_rather_than_as_zero() -> None:
 
 
 def test_a_run_that_genuinely_cost_nothing_is_a_plain_dollar_zero() -> None:
-    """`--provider fake` and a local model, which are free by what they are. Not `$0.00`: there
+    """`--llm fake` and a local model, which are free by what they are. Not `$0.00`: there
     is no column to line up with, this sits beside `steps 7` on one counter line."""
     assert fmt_usd(0) == "$0"
     assert fmt_usd(0.0) == "$0"
@@ -479,7 +479,7 @@ def test_the_three_cohere_command_a_models_are_the_only_unpriced_ones() -> None:
 
 def test_coheres_default_model_is_one_of_the_unpriced_ones() -> None:
     """Which is why no test anywhere may assert that every vendor default has a price: `quackd
-    run --provider cohere` with no `--model` reports `cost_usd: null` and says `cost unpriced`,
+    run --llm cohere` with no model half reports `cost_usd: null` and says `cost unpriced`,
     and that is the correct answer rather than a gap to be closed."""
     default = cat.default_model_for("cohere")
     assert default == "command-a-plus-05-2026"

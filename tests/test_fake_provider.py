@@ -1,6 +1,6 @@
 """What the scripted pilot puts on the log's `think` line.
 
-Every runnable example in the README uses `--provider fake`, so this line is the only
+Every runnable example in the README uses `--llm fake`, so this line is the only
 thinking most readers ever see. It has to be honest about being a rule, and it has to be
 inert: the transcript is grepped elsewhere for quoted verb names.
 """

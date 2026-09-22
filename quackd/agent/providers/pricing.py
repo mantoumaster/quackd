@@ -40,7 +40,7 @@ nothing should say `$0` rather than refuse to answer."""
 
 SELF_HOSTED = Price(0.0, 0.0, 0.0, 0.0, source="self-hosted")
 """A model on your own machine bills you in electricity, not in tokens. A paid OpenAI-compatible
-endpoint reached through `--provider local --base-url` is the exception, and `--price` or
+endpoint reached through `--llm local --base-url` is the exception, and `--price` or
 `QUACKD_PRICE` is how you say so."""
 
 _ALIASES = {"in": "input", "input": "input", "out": "output", "output": "output"}
@@ -163,9 +163,10 @@ def cost_usd(usage: Mapping[str, Any], price: Price) -> float:
 def fmt_usd(amount: float | None) -> str:
     """A dollar figure at the precision that figure deserves.
 
-    A run of a frontier model is `$0.1502` and one Jev question is `$0.000022`, and rounding the
-    second to four places would print `$0.0000`, which reads as free. Nothing here is padded to
-    a fixed width: these go in a counter line beside `steps 7`, not in a column.
+    A run of a frontier model is `$0.1502` and one decision-LLM question at Jev's published rate
+    is `$0.000022`, and rounding the second to four places would print `$0.0000`, which reads as
+    free. Nothing here is padded to a fixed width: these go in a counter line beside `steps 7`,
+    not in a column.
     """
     if amount is None:
         return "unpriced"

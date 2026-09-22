@@ -5,22 +5,25 @@ tools works: llama.cpp's `llama-server`, vLLM, Ollama, LM Studio, and any other
 OpenAI-compatible endpoint. No API key is needed.
 
 ```bash
-uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider ollama --model qwen3:8b
-uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B
-uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider llamacpp
-uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider lmstudio
-uvx --from "quackd[openai,microduck]" quackd run find-and-kick --provider local --base-url http://gpu-box:8000/v1
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --llm ollama:qwen3:8b
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --llm vllm:Qwen/Qwen3-8B
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --llm llamacpp
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --llm lmstudio
+uvx --from "quackd[openai,microduck]" quackd run find-and-kick --llm local --base-url http://gpu-box:8000/v1
 ```
 
 The `openai` extra is the `openai` Python package, which is the client for all of these. The
 `microduck` extra is there because a bare `quackd` carries no robot at all: `find-and-kick`
 means the cartoon duck, and that is the package the duck lives in.
-Leave `--model` off and quackd asks the server for its model list and takes the first one.
-`--model` here is free text: any id your server serves is accepted, because the model catalogue
-`quackd list-models` prints, and that `--model` is checked against, covers the cloud vendors
-only. A local preset is never refused for naming something the catalogue has not heard of.
+One flag carries both halves: `--llm ollama:qwen3:8b` is the preset before the first colon and
+the model after it, and a tag with a colon of its own survives that, because the split is at the
+first colon only. Leave the model half off, as in `--llm llamacpp`, and quackd asks the server
+for its model list and takes the first one. The model half is free text here: any id your server
+serves is accepted, because the model catalogue `quackd list-models` prints, and that a cloud
+vendor's id is checked against, covers the cloud vendors only. A local preset is never refused
+for naming something the catalogue has not heard of.
 
-| `--provider` | Default address | Override |
+| Preset (`--llm`) | Default address | Override |
 |---|---|---|
 | `ollama` | `http://localhost:11434/v1` | `--base-url` or `QUACKD_BASE_URL` |
 | `vllm` | `http://localhost:8000/v1` | same |
@@ -32,12 +35,16 @@ only. A local preset is never refused for naming something the catalogue has not
 they serve.
 
 > [!NOTE]
-> TypeSafe's Jev is not on this page and is not a provider. It answers typed questions
-> about a state and generates no text at all, so it cannot pilot a robot, `--provider`
-> does not take it, and it is not an OpenAI-compatible server you point `--base-url` at.
-> It is an optional stepper that sits in front of whichever provider you did pick, for the
-> turns whose answer is a choice rather than a number, and it is off unless you ask for it:
-> [jev.md](jev.md).
+> **A decision LLM is not one of these, and this is the page where that is easiest to get
+> wrong.** A decision LLM answers typed questions about a state and generates no text at all,
+> so it cannot pilot a robot: `--llm` does not take one, and naming `jev`, `kev`, `von`,
+> `openjev`, `opendecision` or `laya` there is refused as an unknown provider. Several of them
+> are servers you run on your own machine, exactly like the four presets above, and they are
+> still not the same kind of thing: a System One server speaks `POST /v1/systemone` rather than
+> OpenAI's Chat Completions, so `--base-url` is not how you reach one. `--decision-url` is, and
+> `--decision-llm` names which one. It sits in front of whichever provider you did pick, for
+> the turns whose answer is a choice rather than a number, and it is off unless you name one:
+> [decision-llms.md](decision-llms.md).
 
 ## Server setup
 
@@ -48,21 +55,21 @@ Tool calling has to be switched on in some servers. These are the flags that mat
 ```bash
 ollama pull qwen3:8b          # any model whose card says it supports tools
 ollama serve                  # usually already running as a service
-quackd run find-and-kick --provider ollama --model qwen3:8b
+quackd run find-and-kick --llm ollama:qwen3:8b
 ```
 
 **llama.cpp**
 
 ```bash
 llama-server -m model.gguf --jinja --port 8080     # --jinja enables the tool-calling chat templates
-quackd run find-and-kick --provider llamacpp
+quackd run find-and-kick --llm llamacpp
 ```
 
 **vLLM**
 
 ```bash
 vllm serve Qwen/Qwen3-8B --enable-auto-tool-choice --tool-call-parser hermes
-quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B
+quackd run find-and-kick --llm vllm:Qwen/Qwen3-8B
 ```
 
 The `--tool-call-parser` value depends on the model family (`hermes` for Qwen and Hermes
@@ -75,13 +82,15 @@ template argument rather than a sampling parameter. One reported step of `find-a
 with it off. There are two places to turn it off. On a server you run yourself, do it once at serve time:
 
 ```bash
-vllm serve Qwen/Qwen3-8B --enable-auto-tool-choice --tool-call-parser hermes \n  --reasoning-parser qwen3 --default-chat-template-kwargs '{"enable_thinking": false}'
+vllm serve Qwen/Qwen3-8B --enable-auto-tool-choice --tool-call-parser hermes \
+  --reasoning-parser qwen3 --default-chat-template-kwargs '{"enable_thinking": false}'
 ```
 
 On a server somebody else runs, or when you want it per run, send it with the request:
 
 ```bash
-quackd run find-and-kick --provider vllm --model Qwen/Qwen3-8B \n  --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'
+quackd run find-and-kick --llm vllm:Qwen/Qwen3-8B \
+  --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'
 ```
 
 That flag is a JSON string, and no single spelling of one survives every shell: the line above
@@ -99,7 +108,7 @@ without setting it, and the run then thinks out loud as though you had never wri
 **LM Studio**
 
 Developer tab → Start Server (default port 1234), load a model that supports tools, then
-`quackd run find-and-kick --provider lmstudio`.
+`quackd run find-and-kick --llm lmstudio`.
 
 ## What to expect from small models
 
@@ -143,7 +152,7 @@ parts, and a text only model is still a text only model with it on.
 
 | Setting | Values | Default for local |
 |---|---|---|
-| `--model` / `QUACKD_MODEL` | any id the server serves, checked against no catalogue | first entry of `/v1/models` |
+| `--llm PRESET:MODEL` / `QUACKD_LLM` | any id the server serves after the colon, checked against no catalogue | first entry of `/v1/models` |
 | `--base-url` / `QUACKD_BASE_URL` | `http://host:port/v1` | the preset's address |
 | `--api-key` / `LOCAL_API_KEY` | any string | `not-needed` (servers ignore it) |
 | `QUACKD_TOOL_CHOICE` | `auto`, `required`, `none` | `auto` (`none` omits the field for servers that reject it) |
@@ -168,7 +177,7 @@ OpenAI's API, and there is no per robot value in the registry.
 Add physics by asking for both extras and naming the backend:
 
 ```bash
-uvx --from "quackd[openai,mujoco]" quackd run find-and-kick --provider ollama --model qwen3:8b --robot microduck:mujoco
+uvx --from "quackd[openai,mujoco]" quackd run find-and-kick --llm ollama:qwen3:8b --robot microduck:mujoco
 ```
 
 The duck then walks on upstream's own trained policy instead of sliding around a cartoon. It

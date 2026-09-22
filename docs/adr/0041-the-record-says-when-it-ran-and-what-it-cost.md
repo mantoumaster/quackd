@@ -7,6 +7,16 @@ is `quackd log`. The old spelling still runs, hidden from `--help`, prints one y
 naming the new one, and goes in 0.12. The record this ADR adds to is the log from that release
 on, and it carries the terminal session as well. Nothing else in this ADR changes.
 
+**Amended 2026-09-22 by [ADR-0043](0043-decision-llms-are-a-wire-format-and-a-data-row.md):** the stepper's record fields were named for one vendor and are
+now named for the format. `run_start.jev_price` is `decision_price`, with a `decision_llm`
+beside it saying which one answered and where; the kinds `jev` and `jev_shadow` are `decision`
+and `decision_shadow`, and the five `jev_*` fields on the shadow record are `decision_*`; the
+summary's `jev` block is `decision` and carries `llm` and `url`; `QUACKD_JEV_PRICE` is
+`QUACKD_DECISION_PRICE`. Read "TypeSafe" in the stepper's costing below as "whichever decision
+LLM answered": a server you run reports no bill and is costed at the self-hosted `$0` the rest
+of quackd already uses for a local model, so the estimate and its `~` exist only where a
+non-zero rate does, which today is Jev alone.
+
 ## Context
 
 The one hardware run this project has is at the top of `README.md`, and the sentence that

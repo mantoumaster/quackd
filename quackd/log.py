@@ -422,7 +422,9 @@ def _rate(value: Any) -> str:
     return f"${float(value):g}"
 
 
-def _price_line(price: Mapping[str, Any] | None, jev_price: Mapping[str, Any] | None = None) -> str:
+def _price_line(
+    price: Mapping[str, Any] | None, decision_price: Mapping[str, Any] | None = None
+) -> str:
     """What the run was costed at, for the head of a replay.
 
     A sentence rather than a missing row when there is no rate, because "quackd has no price
@@ -435,8 +437,8 @@ def _price_line(price: Mapping[str, Any] | None, jev_price: Mapping[str, Any] | 
         when = f", checked {price['checked']}" if price.get("checked") else ""
         where = f" ({source}{when})" if source else ""
         text = f"{_rate(price.get('input'))}/M in, {_rate(price.get('output'))}/M out{where}"
-    if jev_price:
-        text += f", stepper {_rate(jev_price.get('input'))}/M in"
+    if decision_price:
+        text += f", stepper {_rate(decision_price.get('input'))}/M in"
     return text
 
 
@@ -628,15 +630,16 @@ def render_events(
             tokens += f" stop={d['stop_reason']}"
         out.append(LogLine("tokens", tokens, "dim"))
         return out
-    if k == "jev":
+    if k == "decision":
         # The stepper's own turn: what it chose and whether that was enough to act on. Drawn
         # whether or not it acted, because the turns it declined are the ones a reader most
         # wants to understand, and in shadow mode they are all of them.
         took = f"{float(d.get('latency_s') or 0):.2f} s"
         # A stepper question is a few hundred tokens and a fraction of a cent, and the whole
         # argument for one is the ratio between that and the model call it stands in for. Both
-        # ride in the same parenthesis as the seconds, and a `~` marks a turn TypeSafe did not
-        # count for itself. Absent on the turns that never reached the network at all.
+        # ride in the same parenthesis as the seconds, and a `~` marks a turn the decision LLM
+        # did not count for itself, which quackd then estimated from the text it sent. Absent
+        # on the turns that never reached the network at all.
         if (asked := d.get("usage")) is not None:
             mark = "~" if d.get("usage_estimated") else ""
             took += f", {mark}{asked.get('input_tokens', 0)} tok"
@@ -645,7 +648,7 @@ def render_events(
         if d.get("error"):
             return [
                 LogLine(
-                    "jev",
+                    "decide",
                     f"ERROR {d['error']} after {took}, so the model takes this turn",
                     "red",
                     mark="fail",
@@ -656,11 +659,11 @@ def render_events(
         floor = float(d.get("floor") or 0.0)
         if gate == "taken":
             chosen = LogLine(
-                "jev", f"{d.get('choice')} {confidence:.2f} >= {floor:.2f} ({took})", "bold"
+                "decide", f"{d.get('choice')} {confidence:.2f} >= {floor:.2f} ({took})", "bold"
             )
         elif gate == "below_floor":
             chosen = LogLine(
-                "jev",
+                "decide",
                 f"{d.get('choice')} {confidence:.2f} < {floor:.2f}, to the model ({took})",
                 "yellow",
                 mark="warn",
@@ -669,7 +672,7 @@ def render_events(
             # `escalate`, `done`, `need_human`, `not_offered`, `state_too_large`: nothing
             # happened and the model takes the turn, so this is dim like the request line
             # it comes just before
-            chosen = LogLine("jev", f"{gate}, to the model ({took})", "dim")
+            chosen = LogLine("decide", f"{gate}, to the model ({took})", "dim")
         stepper = [chosen]
         # The runners-up, because a 0.93 beside a 0.91 is a different decision from a 0.93
         # beside a 0.02, and the floor on its own cannot say which one you are reading.
@@ -683,19 +686,19 @@ def render_events(
         )[:3]
         if rest:
             stepper.append(
-                LogLine("jev?", ", ".join(f"{label} {v:.2f}" for v, label in rest), "dim")
+                LogLine("decide?", ", ".join(f"{label} {v:.2f}" for v, label in rest), "dim")
             )
         return stepper
-    if k == "jev_shadow":
+    if k == "decision_shadow":
         # Shadow mode's whole point in one line: what the stepper would have done beside what
         # the model did, on the same reading. The run is unchanged, so this is its only record.
         agrees = bool(d.get("agree"))
         return [
             LogLine(
-                "jev=",
-                f"{d.get('jev_choice')} {float(d.get('jev_confidence') or 0):.2f} "
+                "decide=",
+                f"{d.get('decision_choice')} {float(d.get('decision_confidence') or 0):.2f} "
                 f"vs model {d.get('model_verb')}: {'agrees' if agrees else 'differs'} "
-                f"({float(d.get('jev_latency_s') or 0):.2f} s against "
+                f"({float(d.get('decision_latency_s') or 0):.2f} s against "
                 f"{float(d.get('llm_latency_s') or 0):.1f} s)",
                 "cyan" if agrees else "yellow",
                 mark="note",
@@ -1171,7 +1174,7 @@ class ConsoleLog(LineLog):
         # before there were prices, and telling its reader it was "unpriced" would be
         # describing this release rather than their run.
         if "price" in d:
-            rows.append(("price", _price_line(d.get("price"), d.get("jev_price"))))
+            rows.append(("price", _price_line(d.get("price"), d.get("decision_price"))))
         hint = f"connected in {d['connect_s']:.2f} s" if "connect_s" in d else ""
         self._write_line(self._ui.run_header(str(d.get("duck")), rows, hint=hint))
 

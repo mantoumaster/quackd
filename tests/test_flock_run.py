@@ -343,7 +343,7 @@ async def test_both_runners_write_the_command_and_the_version_into_the_root_summ
 def test_cli_flock_run_and_guards(tmp_path: Path) -> None:
     ok = runner.invoke(
         app,
-        ["run", "flock-kick", "--provider", "fake", "--seed", "3", "--runs-dir", str(tmp_path)],
+        ["run", "flock-kick", "--llm", "fake", "--seed", "3", "--runs-dir", str(tmp_path)],
     )
     assert ok.exit_code == 0, ok.output
     assert "flock" in ok.output and "kicker " in ok.output
@@ -368,7 +368,7 @@ def test_cli_flock_flag_on_a_solo_duck(tmp_path: Path) -> None:
             "find-and-kick",
             "--flock",
             "2",
-            "--provider",
+            "--llm",
             "fake",
             "--seed",
             "1",
@@ -411,7 +411,7 @@ def test_cli_flock_log_prefixes_every_line_with_its_duck_and_tells_the_flocks_st
     args = [
         "run",
         "flock-kick",
-        "--provider",
+        "--llm",
         "fake",
         "--seed",
         "3",
@@ -457,7 +457,7 @@ def test_a_flock_run_keeps_one_terminal_txt_at_the_flock_root(
         "flock-kick",
         "--flock",
         "2",
-        "--provider",
+        "--llm",
         "fake",
         "--api-key",
         "sk-never-in-a-run-directory",

@@ -34,7 +34,11 @@ a daemon that walks a ToddlerBot.
 
 Also in scope:
 
-- API keys leaking into transcripts, GIFs, logs, run directories, or a robot's memory file. `TYPESAFE_API_KEY`, which the optional discrete stepper reads, is one of these.
+- API keys leaking into transcripts, GIFs, logs, run directories, or a robot's memory file.
+  `TYPESAFE_API_KEY`, which the optional discrete stepper reads for the `jev` preset, is one of
+  these. It is the only decision LLM quackd names that wants a key at all: every other one is a
+  server you run yourself or a checkpoint in this process, and quackd hands those a placeholder
+  in the key field rather than whatever hosted key happens to be sitting in the same `.env`.
 - **The command line, which the run record now holds.** A solo run writes down what it was
   started with, in three places: `command` in the transcript's `run_start`, `command` in
   `summary.json`, and the first line of `terminal.txt`. A flock root has no `run_start`, so
@@ -42,31 +46,41 @@ Also in scope:
   and the root `terminal.txt` opens with the same line; a pilot flock's members each keep a
   `run_start` of their own besides. The values of `--api-key` and `--token` are replaced with
   `***` everywhere that line is written, so a reader sees that a key was passed and never
-  what it was. The three flags that take a URL, `--base-url`, `--address` and `--camera-url`,
-  keep the half a reader needs and lose the half that has to be rotated: the scheme, the
-  host, the port, the path and the username stay, a password in the URL becomes `***`, and so
-  does any query parameter named like a credential (`api_key`, `token`, `sig` and the rest of
-  `SECRET_QUERY_KEYS`). `--extra-body`, and `QUACKD_EXTRA_BODY` behind it, is a JSON object a
-  vendor asked for and quackd never reads, which makes it exactly where an `authorization`
-  header ends up; it reaches the transcript's `run_start` as `extra_body`, and it is walked
-  to the bottom on the way in with every credential-named key replaced. All of that is
-  redaction **by name**, of flag names and of key names and nothing cleverer, which is worth
-  stating plainly because it decides what is safe to paste into an issue. A secret typed as
-  the value of some **other** flag is written down in full, and so is a credential a vendor
-  asked for under a name these lists do not carry. A key handed to the provider through its
-  own environment variable, which is the normal way and the right one, is in no part of the
-  record, and `QUACKD_EXTRA_BODY` is the one environment variable that reaches it at all.
-  What would be a security issue: the value of either secret flag reaching any of the places
-  above, a password or a named credential surviving a URL flag, a credential-named key
-  surviving `extra_body`, or a new flag that takes a secret and is in neither `SECRET_FLAGS`
-  nor `URL_FLAGS` (`quackd/command.py`).
-- **What the discrete stepper is sent** (`quackd run --jev`, off by default,
-  [docs/jev.md](docs/jev.md)). It is a hosted API, so a run that switches it on sends
-  the task's goal, the robot's own description of itself and its last few results to a
-  third party, once a turn. It is never sent a camera frame, a system prompt or an API
-  key, and the state it is sent is recorded in the transcript as `state_chars` and can
-  be read back in full from the `jev` events. What would be a security issue: a picture
-  or a credential reaching it, or a stepper-authored call bypassing the executor.
+  what it was. The four flags that take a URL, `--base-url`, `--address`, `--camera-url` and
+  `--decision-url`, keep the half a reader needs and lose the half that has to be rotated:
+  the scheme, the host, the port, the path and the username stay, a password in the URL
+  becomes `***`, and so does any query parameter named like a credential (`api_key`, `token`,
+  `sig` and the rest of `SECRET_QUERY_KEYS`). `--extra-body`, and `QUACKD_EXTRA_BODY` behind
+  it, is a JSON object a vendor asked for and quackd never reads, which makes it exactly
+  where an `authorization` header ends up; it reaches the transcript's `run_start` as
+  `extra_body`, and it is walked to the bottom on the way in with every credential-named key
+  replaced. All of that is redaction **by name**, of flag names and of key names and nothing
+  cleverer, which is worth stating plainly because it decides what is safe to paste into an
+  issue. A secret typed as the value of some **other** flag is written down in full, and so is
+  a credential a vendor asked for under a name these lists do not carry. A key handed to the
+  provider through its own environment variable, which is the normal way and the right one, is
+  in no part of the record, and `QUACKD_EXTRA_BODY` is the one environment variable that
+  reaches it at all. What would be a security issue: the value of either secret flag reaching
+  any of the places above, a password or a named credential surviving a URL flag, a
+  credential-named key surviving `extra_body`, or a new flag that takes a secret and is in
+  neither `SECRET_FLAGS` nor `URL_FLAGS` (`quackd/command.py`).
+- **What the discrete stepper is sent** (`quackd run --decision-llm`, off unless you name one,
+  [docs/decision-llms.md](docs/decision-llms.md)). Whichever one answers is sent the same
+  thing, once a turn: the task's goal, the robot's own description of itself and its last few
+  results. Where that goes is the part that differs, and it is worth knowing which of the three
+  you chose. `jev` is a third party's hosted API, so a run that names it sends that state over
+  the network to TypeSafe. `kev`, `von`, `openjev`, `opendecision` and `local` are servers you
+  run, so it goes wherever `--decision-url` points, which is a port on your own machine unless
+  you moved it. `laya` runs inside this process, so nothing leaves it at all. None of them is
+  ever sent a camera frame, a system prompt or an API key. How much was sent is on the
+  record, as `state_chars` and `state_tokens_est` on each `decision` event, and which fields
+  were dropped to fit is there as `trimmed`; the text itself is not, so a reader auditing what
+  left the machine is reading a size and a shape rather than the words. The address is on the record too, in `run_start.decision_llm`, with a password in it
+  or a credential-named query parameter already replaced by `***`, because that url can arrive
+  through `QUACKD_DECISION_URL` where argv redaction would never see it. What would be a
+  security issue: a picture or a credential reaching any of them, a credential surviving that
+  recorded url, a hosted key being sent to a server you run, or a stepper-authored call
+  bypassing the executor.
 - **The memory file** (`~/.quackd/memory/<adapter>-<backend>.jsonl`). It holds
   sentences a model wrote about a place it has been, it persists between runs, and it is
   read back into the next system prompt. It never leaves the machine and the executor never
