@@ -79,6 +79,15 @@ body:
         - "too slow"
         - "not tested"
   - type: dropdown
+    id: slow_move
+    attributes:
+      label: A move_joints given several seconds. Did it look like one motion, and arrive when the time was up?
+      options:
+        - "one motion, and it arrived on time"
+        - "a staircase of small steps"
+        - "it moved at the step cap whatever the time"
+        - "not tested"
+  - type: dropdown
     id: stall
     attributes:
       label: Held a joint against its goal. Was the stall caught?

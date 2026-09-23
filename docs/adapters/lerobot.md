@@ -212,7 +212,8 @@ That is the mock's static manifest. The static manifest of `lerobot:real` claims
 camera nor a policy; `connect()` adds `observe` when `--camera-url` named a camera and it
 opened, and `pick` when a policy object was injected. It also adds what cannot be known until
 the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
-the calibration file (`wrist_roll` included, where that travel is the whole turn upstream
+the calibration file, to a tenth of a degree rounded inward so that every angle it names is one
+the arm accepts (`wrist_roll` included, where that travel is the whole turn upstream
 records rather than anything swept, see Safety), `extras.calibration_file`, the path that came
 from, `extras.rest_pose_clipped` when the recorded rest pose lies past that travel
 ([A pose past the travel](#a-pose-past-the-travel)), `limits.step_deg`,
@@ -228,7 +229,7 @@ naming it in sentences nobody needs.
 | `observe` (alias `get_frame`) | core | one frame plus detections, only when a camera is configured. With several cameras it is the primary's frame, because a detection is a bearing and a bearing belongs to one lens |
 | `report_state` | core | joint positions in degrees, whether torque is on, each servo's temperature, whether something is held, and a clause for any joint that reads more than 2 degrees past its travel |
 | `stop` | core | hold: the present position becomes the goal of every body joint inside its travel. Never limp (see Safety) |
-| `move_joints(positions, duration_s)` | extension | goal angles for one or more of the six joints, re-sent at 10 Hz until the measurement arrives; a joint that stops short is a failure, and `duration_s` is the budget |
+| `move_joints(positions, duration_s)` | extension | goal angles for one or more of the six joints, walked there across `duration_s` seconds one goal a tick at 10 Hz, then re-sent until the measurement arrives; the step cap is the ceiling on speed, and a joint that stops short is a failure |
 | `gripper(open)` | extension | open or close the gripper, and report where it stopped |
 | `place` | extension | open the gripper where the arm is; needs `holding` |
 | `pick(target, max_s)` | extension, **confirm** | one skill intent; the arm's learned policy runs its own observe/act loop at its own rate until something is held or the time is up |
@@ -240,9 +241,46 @@ Joints are named, not numbered, and a `move_joints` call may name any subset of 
 ```
 
 The five body joints are degrees, centred on zero, and the gripper is `0..100` whatever the
-others are. `duration_s` is a budget rather than a speed: the arm moves at the capped step
-(5 degrees per action, re-sent ten times a second) and the verb fails if the measurement has
-not arrived when the budget runs out, with where the joint actually stopped in the reason.
+others are.
+
+`duration_s` is how long the motion should take, from 0.2 to 12 seconds, and 5 when the pilot
+names none. The arm is read once, and every tick sends a goal as far along the straight line
+from where each joint is to where it was asked to be as the time is through: halfway at half the
+time, every joint starting together and arriving together. Once the time is up the goal
+itself goes out, tick after tick, until every joint is within 5 degrees of it (5 units on the
+gripper). So "slowly" is something a pilot can ask for, and a longer time is a slower move.
+Each tick's intent still carries the `duration_s` the pilot asked for, so the record shows the
+ramp and the time it was meant to take.
+
+The step cap stays the ceiling. One action moves a joint at most 5 degrees and ten go out a
+second, so nothing moves faster than 50 degrees a second, whatever `duration_s` says. A time too
+short for the distance is neither refused nor obeyed: the goal runs ahead of the arm, LeRobot
+clips every send to one step from where the joint is, and the joint travels at the cap until it
+is there, later than asked. `QUACKD_LEROBOT_MAX_STEP_DEG` lowers the ceiling.
+
+Four exceptions, each on purpose:
+
+- **A move whose every joint is already within 5 degrees of its goal is sent whole** and
+  judged after one tick, as it always was, however long `duration_s` is. There is nothing to
+  pace.
+- **A goal outside the travel is sent whole**, so the range refusal answers before anything has
+  moved. Ramped, the arm would travel to the edge of its travel and be refused there.
+- **A joint that reads past its travel starts its ramp at the edge of it.** The servo clamps
+  every goal to the travel its calibration wrote into it, so such a joint first rises to that
+  edge at the servo's own speed, whatever quackd sends, and is paced from there. That first
+  stretch is the one part of a move `duration_s` cannot slow down: support the arm or place it
+  inside its travel if that matters ([A pose past the travel](#a-pose-past-the-travel)).
+- **`gripper` is not ramped.** It sends open or shut, which each backend maps to 100 or 0, and
+  closes at the cap. A gripper named in `move_joints` is a joint with a goal and ramps like one.
+
+Arrival and stalls are judged only once the goal itself is going out. A slow ramp moves a joint
+less per tick than the stall rule's threshold, so a stall counted during the ramp would fail
+every slow move. The price is that a joint blocked partway is found when the ramp ends rather
+than when it stopped, pushing meanwhile against a goal one step ahead of it, as it always did.
+The verb then fails naming the joint, where it stopped and its goal, and holds the arm. It
+gives the move the time asked for, or the time the cap needs if that is longer, plus 2.5
+seconds to settle, and never more than 18: the executor's own timeout for `move_joints` is 20,
+and the verb ends first so that the reason names the joint that fell short.
 
 Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
 
@@ -630,7 +668,9 @@ quackd, side by side, is [safety.md](../safety.md).
   that cannot be narrower than the whole turn cannot catch anything. Treat `wrist_roll` as
   unguarded and give it small goals.
 - **One action moves a joint at most one step.** `max_relative_target` is unset upstream;
-  quackd sets it to 5 degrees, re-sent at 10 Hz, so 50 degrees a second.
+  quackd sets it to 5 degrees, re-sent at 10 Hz, so 50 degrees a second at most. That is a
+  ceiling and not a pace: `move_joints` walks its goal across the `duration_s` it is given, and
+  only a time too short for the distance runs at the cap.
 - **No deadman.** Nothing in LeRobot's `Robot` stops an arm when the client goes quiet: read
   from the class, not assumed. quackd's `stop` re-sends the present position as the goal and
   never calls `disable_torque()`, the same principle as never sending `robot.relax` to a
@@ -820,6 +860,11 @@ arm's own calibration gives it at connect:
   stop at the end of a run hauled a folded shoulder up out of its fold this way. The joint keeps
   whatever goal its servo already holds instead. If every body joint reads past its travel,
   nothing is sent at all, and the stop is still a stop.
+- **A move out of the fold starts at the edge.** `move_joints` on a joint that reads past its
+  travel paces its ramp from the edge of the travel, not from the reading: any goal between the
+  two is, to the servo, the edge, so the joint rises to it at the servo's own speed first,
+  whatever quackd sends. Only the rest of the move is paced by `duration_s`
+  ([The manifest](#the-manifest)).
 - **A joint that stops short *inside* its travel is still a miss.** A hand, the desk or a
   tripped servo in the way keeps torque on and prints the line in
   [The torque rule](#the-torque-rule), exactly as before.
@@ -1097,7 +1142,8 @@ does not: it clamps the goal to its limit and stops there
 the recorded pose already clipped into the travel from the same calibration. Record a pose you
 are willing to have the arm driven toward from wherever a run ends.
 
-The move itself is re-sent at 10 Hz under the same 5 degree step cap as any other, on a budget
+The move itself is not paced the way `move_joints` is: it re-sends the goal at 10 Hz and runs
+at the 5 degree step cap, on a budget
 computed from how far the arm has to travel and bounded so a teardown cannot hold a run open
 for minutes. It stalls the same way a `move_joints` does, five ticks of 0.1 s in which nothing
 moved, and on a stall or a spent budget it holds where it is and reports how far short it
@@ -1189,7 +1235,7 @@ And once it is running:
 |---|---|---|
 | `move_joints: shoulder_pan=170 is outside this arm's calibrated range -100..100` | the goal is outside the travel in your calibration file | aim inside it, or recalibrate if the file does not match the arm's real travel. Nothing was sent. On `wrist_roll` this refusal will never fire, because upstream records a full turn for that joint rather than a sweep |
 | `cannot move_joints: elbow_flex reads 61°C: let the arm cool before moving it ...` | the heat gate, below the servo's own 70 °C cut-off | let it cool. A joint that trips its own protection goes slack without announcing it |
-| `move_joints: elbow_flex is at 12 with a goal of 45, and it has stopped moving` | a stall: five ticks of 0.1 s in which no watched joint moved more than half a step | something is in the way, a mechanical limit the calibration does not know about, or a tripped servo. The arm is held first. The same sentence ending `when the time ran out` means `duration_s` was too short for the capped 50 degrees a second |
+| `move_joints: elbow_flex is at 12 with a goal of 45, and it has stopped moving` | a stall: five ticks of 0.1 s in which no watched joint moved more than half a step, counted once the move's ramp has handed the servo the goal itself | something is in the way, a mechanical limit the calibration does not know about, or a tripped servo. The arm is held first. A joint blocked partway through a long `duration_s` is only called stalled when that time is up. The same sentence ending `when the time ran out` means the joint was still moving when the verb's limit came: the time asked for, or the time the step cap needs if that is longer, plus 2.5 s, and never more than 18 s. A lowered `QUACKD_LEROBOT_MAX_STEP_DEG` on a long move gets there, and so does a joint creeping under a load |
 | `the camera gave no frame: TimeoutError: ... too old` | the webcam stalled or was unplugged | only `observe` is affected, and a `pick` in flight. The arm carries on, and `report_state` starts saying `CAMERA DOWN:` with the reason, so a run that cannot call `observe` still records it |
 | `cannot move_joints: the arm's torque is off, so a goal would reach a limp servo` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so torque still off after one points at a tripped servo or the supply. On a `--by-hand` run this is also what the arm reads like between the release and the moment quackd takes hold again, which is before the first turn |
 | `cannot place: nothing is held: pick something first` | the `holding` precondition | holding is inferred from the gripper stopping short of shut, so an empty hand reads as nothing held. After a `--by-hand` start it is also what a pilot gets for the pencil you put between the jaws yourself: closing the gripper by hand sets a position and not a grip, and the pilot has to close on the object itself first |

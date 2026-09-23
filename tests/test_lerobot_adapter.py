@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib.util
+import itertools
 import logging
+import math
 import threading
 import time
 from types import SimpleNamespace
@@ -22,7 +24,7 @@ from quackd.perception.color_blob import ColorBlobDetector
 from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all, deny_all
 from quackd.transport.base import HeartbeatError, Intent, TransportError, primary_of
 from quackd.verbs.registry import registry_from_manifest
-from quackd_lerobot import JOINTS, LeRobotAdapter, lerobot_manifest, make
+from quackd_lerobot import JOINTS, LeRobotAdapter, lerobot_manifest, make, published_travel
 from quackd_lerobot.mock import GRIP_ON_OBJECT, MOCK_RANGES, REST, LeRobotMock
 from quackd_lerobot.real import (
     CONNECT_ATTEMPTS,
@@ -32,6 +34,7 @@ from quackd_lerobot.real import (
     TORQUE_RETRIES,
     LeRobotReal,
     check_port,
+    joint_ranges,
     load_policy,
     motor_in_error,
     parse_camera_url,
@@ -40,11 +43,23 @@ from quackd_lerobot.real import (
 )
 from quackd_lerobot.verbs import (
     LIMP_IN_HAND,
+    MOVE_HEADROOM_S,
+    MOVE_JOINTS_TIMEOUT_S,
+    MOVE_MAX_S,
+    MOVE_MIN_S,
+    MOVE_SETTLE_S,
+    RAMP_DECIMALS,
     REST_MAX_S,
     REST_MIN_S,
+    STALL_TICKS,
+    TICK_S,
     TOL_DEG,
     TORQUE_LEFT_ON,
+    MoveJointsParams,
     at_rest,
+    lerobot_verbs,
+    move_budget_s,
+    ramp_target,
     reachable_rest_goal,
     rest_budget_s,
     rest_goal,
@@ -347,6 +362,12 @@ class FakeArm:
         self.step = step
         self.object_in_jaws = object_in_jaws
         self.stuck = set(stuck)
+        self.obstacles: dict[str, tuple[float, float]] = {}
+        """The lowest and highest angle something in the way lets a joint reach: an obstacle
+        partway along a move, which the servo pushes against and stops at."""
+        self.trail: list[dict[str, float]] = []
+        """Where every joint was after each `send_action`, in order: how far the arm actually
+        went per send, which `actions`, what was asked for, cannot say."""
         self.connected = False
         self.dead = False
         self.send_fails = False
@@ -466,9 +487,12 @@ class FakeArm:
             if joint != "gripper" and joint in self.calibration:
                 lo, hi = self.travel(joint)
                 capped = min(hi, max(lo, capped))
+            if (room := self.obstacles.get(joint)) is not None:
+                capped = min(room[1], max(room[0], capped))
             if joint == "gripper" and self.object_in_jaws:
                 capped = max(capped, GRIP_ON_OBJECT)
             self.positions[joint] = capped
+        self.trail.append(dict(self.positions))
         return sent
 
 
@@ -507,7 +531,9 @@ async def test_real_backend_maps_intents_to_verified_names_and_never_limps() -> 
     assert manifest.limits["step_deg"] == MAX_STEP_DEG
     ex = _executor(adapter, manifest)
     assert (
-        await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}, "duration_s": 2})
+        await ex.run_verb(
+            "move_joints", {"positions": {"shoulder_pan": 10}, "duration_s": MOVE_MIN_S}
+        )
     ).ok
     assert arm.actions[-1] == {"shoulder_pan.pos": 10.0}
     closed = await ex.run_verb("gripper", {"open": False})
@@ -569,32 +595,465 @@ def test_the_step_cap_comes_from_the_environment_or_refuses(monkeypatch: Any) ->
         step_from_env()
 
 
-async def test_a_move_takes_as_many_sends_as_the_step_cap_needs() -> None:
-    """One send_action moves a joint at most the cap, so the verb re-sends and watches."""
-    arm = FakeArm(step=5.0)
-    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
-    manifest = await adapter.connect()
-    ex = _executor(adapter, manifest)
-    moved = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 30}, "duration_s": 8})
-    assert moved.ok, moved.summary
-    assert len(arm.actions) >= 5, arm.actions
-    assert arm.positions["shoulder_pan"] == pytest.approx(30.0, abs=5.0)
-    assert moved.data["goal"] == {"shoulder_pan": 30.0}
-
-
 async def test_a_joint_that_stops_moving_is_a_failure_and_not_a_success() -> None:
     """Upstream reports nothing about whether a goal was reached: an arm against an
     obstacle and an arm that arrived look identical unless somebody compares them."""
     arm = FakeArm(stuck=("shoulder_lift",))
-    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
-    manifest = await adapter.connect()
-    ex = _executor(adapter, manifest)
+    _adapter, ex, _clock = await _paced(arm)
     stalled = await ex.run_verb(
         "move_joints", {"positions": {"shoulder_lift": 40}, "duration_s": 5}
     )
     assert not stalled.ok
     assert "shoulder_lift is at 0 with a goal of 40" in stalled.summary
     assert "stopped moving" in stalled.summary
+
+
+# ── move_joints paces its motion across duration_s ──────────────────────────────────────
+
+
+class SteppedClock:
+    """Time that passes only when it is slept (`real.Clock`), so a ramp of many seconds costs
+    no wall time and every tick lands exactly one `TICK_S` after the one before it."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def now(self) -> float:
+        return self.t
+
+    async def sleep(self, seconds: float) -> None:
+        self.t += seconds
+        await asyncio.sleep(0)
+
+
+async def _paced(
+    arm: FakeArm, *, step: float = MAX_STEP_DEG
+) -> tuple[LeRobotAdapter, Executor, SteppedClock]:
+    """The real backend over `arm`, on a stepped clock, with `step` as quackd's own cap."""
+    clock = SteppedClock()
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm, max_step_deg=step, clock=clock))
+    manifest = await adapter.connect()
+    return adapter, _executor(adapter, manifest), clock
+
+
+def _sent(actions: list[dict[str, float]], joint: str) -> list[float]:
+    """Every goal one joint was sent, in order, from the arm's own `<joint>.pos` actions or the
+    mock's plain ones."""
+    return [a[k] for a in actions for k in (joint, f"{joint}.pos") if k in a]
+
+
+def _walked(sent: list[float], start: float, goal: float, duration_s: float) -> None:
+    """`sent` is a ramp from `start` to `goal` across `duration_s`, one target a tick: each the
+    straight-line share of the way the time gone says (to the tenth a target is rounded to),
+    never back, never a jump, the goal first sent once the time is up and exactly the goal from
+    then on."""
+    rounding = 0.5 * 10**-RAMP_DECIMALS + 1e-9
+    assert sent[0] == pytest.approx(start), "the ramp starts where the joint is"
+    for k, target in enumerate(sent):
+        share = min(1.0, k * TICK_S / duration_s)
+        assert target == pytest.approx(start + (goal - start) * share, abs=rounding), (k, sent)
+    steps = [b - a for a, b in itertools.pairwise(sent)]
+    assert all(s * (goal - start) >= 0 for s in steps), f"a target went backwards: {sent}"
+    per_tick = abs(goal - start) * TICK_S / duration_s
+    assert all(abs(s) <= per_tick + 2 * rounding for s in steps), f"a jump, not a ramp: {sent}"
+    first_goal = sent.index(goal)
+    assert first_goal * TICK_S == pytest.approx(duration_s, abs=TICK_S + 1e-9), (
+        f"the goal went out at {first_goal * TICK_S:.1f} s of a {duration_s} s move"
+    )
+
+
+LONG_MOVES = [
+    pytest.param({"shoulder_pan": 0.6}, {}, 4.0, id="one joint up"),
+    pytest.param({"elbow_flex": -0.7}, {"elbow_flex": 0.5}, 9.5, id="one joint down"),
+    pytest.param(
+        {"wrist_flex": -0.8, "shoulder_lift": 0.3},
+        {"shoulder_lift": -0.42},
+        6.3,
+        id="two joints, opposite ways",
+    ),
+    pytest.param({"gripper": 0.15}, {}, 3.3, id="the gripper as a joint"),
+]
+"""Goals and starting points as shares of each joint's travel from its middle (`_share_of`), so
+nothing here is an angle anybody measured, and durations of several lengths."""
+
+
+def _share_of(travel: tuple[float, float], share: float) -> float:
+    lo, hi = travel
+    middle = (lo + hi) / 2
+    return middle + share * ((hi - middle) if share > 0 else (middle - lo))
+
+
+@pytest.mark.parametrize(("goals", "starts", "duration_s"), LONG_MOVES)
+async def test_a_long_move_walks_its_goal_there_across_the_time_asked_for_on_the_arm(
+    goals: dict[str, float], starts: dict[str, float], duration_s: float
+) -> None:
+    """On the bench a model was asked to raise the arm slowly and declined, correctly: the verb
+    said `duration_s` was a budget and the arm moved at its capped speed whatever it said,
+    because every tick re-sent the final goal and LeRobot's step cap was the only pace there
+    was. Now the goal is walked from where the joint is to where it was asked to be, so the
+    joint arrives when the time is up and not a moment before."""
+    arm = _spanned()
+    for joint, share in starts.items():
+        # to the tenth the arm reports a reading in, so the ramp's start is the placed angle
+        arm.positions[joint] = round(_share_of(arm.travel(joint), share), 1)
+    _adapter, ex, clock = await _paced(arm)
+    travel = {j: (0.0, 100.0) if j == "gripper" else arm.travel(j) for j in goals}
+    goal = {j: round(_share_of(travel[j], share), 1) for j, share in goals.items()}
+    began = dict(arm.positions)
+    t0 = clock.t
+    moved = await ex.run_verb("move_joints", {"positions": goal, "duration_s": duration_s})
+    assert moved.ok, moved.summary
+    for joint, value in goal.items():
+        _walked(_sent(arm.actions, joint), began[joint], value, duration_s)
+        assert arm.positions[joint] == pytest.approx(value)
+    took = clock.t - t0
+    assert duration_s <= took <= duration_s + 3 * TICK_S, f"a {duration_s} s move took {took}"
+
+
+@pytest.mark.parametrize(("goals", "starts", "duration_s"), LONG_MOVES)
+async def test_a_long_move_walks_its_goal_there_across_the_time_asked_for_on_the_mock(
+    goals: dict[str, float], starts: dict[str, float], duration_s: float
+) -> None:
+    """The same on the mock, whose goals land at once: a rehearsal of a slow move shows the
+    ramp in its record, and every intent in that record still carries the time asked for."""
+    mock = LeRobotMock()
+    for joint, share in starts.items():
+        mock.joints[joint] = round(_share_of(MOCK_RANGES[joint], share), 1)
+    adapter = LeRobotAdapter(mock)
+    ex = _executor(adapter, await adapter.connect())
+    goal = {j: round(_share_of(MOCK_RANGES[j], share), 1) for j, share in goals.items()}
+    began = dict(mock.joints)
+    t0, sent = mock.now(), len(mock.intents)
+    moved = await ex.run_verb("move_joints", {"positions": goal, "duration_s": duration_s})
+    assert moved.ok, moved.summary
+    for joint, value in goal.items():
+        _walked(_sent(mock.actions, joint), began[joint], value, duration_s)
+    took = mock.now() - t0
+    assert duration_s <= took <= duration_s + 3 * TICK_S, f"a {duration_s} s move took {took}"
+    joint_intents = [i for i in mock.intents[sent:] if i.kind == "joint"]
+    assert joint_intents and all(i.params["duration_s"] == duration_s for i in joint_intents)
+
+
+@pytest.mark.parametrize(
+    ("step", "joint", "share", "duration_s"),
+    [
+        pytest.param(MAX_STEP_DEG, "shoulder_pan", 0.86, MOVE_MIN_S, id="the default cap"),
+        pytest.param(2.0, "elbow_flex", -0.8, 1.0, id="a lowered cap, downward"),
+        pytest.param(0.7, "wrist_flex", 0.5, 2.5, id="a small cap, a longer time"),
+    ],
+)
+async def test_a_move_asked_to_be_quicker_than_the_cap_allows_runs_at_the_cap(
+    step: float, joint: str, share: float, duration_s: float
+) -> None:
+    """The step cap stays the ceiling. A time too short for the distance is not refused and not
+    obeyed: the ramp runs ahead of the arm, LeRobot clips every send to one step from where the
+    joint is, and the joint travels one step a tick until it is there, however soon it was
+    asked to be."""
+    arm = _spanned(step=step)
+    _adapter, ex, clock = await _paced(arm, step=step)
+    goal = round(_share_of(arm.travel(joint), share), 1)
+    distance = abs(goal)
+    assert distance / duration_s * TICK_S > step, "the ramp must be quicker than the cap"
+    moved = await ex.run_verb("move_joints", {"positions": {joint: goal}, "duration_s": duration_s})
+    assert moved.ok, moved.summary
+    trail = [0.0] + [where[joint] for where in arm.trail]
+    per_send = [abs(b - a) for a, b in itertools.pairwise(trail)]
+    assert per_send[0] == 0.0, "the ramp's first target is where the joint already is"
+    assert all(moved_by <= step + 1e-9 for moved_by in per_send), per_send
+    assert all(moved_by == pytest.approx(step) for moved_by in per_send[1:-1]), per_send
+    took = clock.t
+    assert took > duration_s, "a move the cap cannot make in time ends later than asked"
+    assert took >= (distance - TOL_DEG) / step * TICK_S
+    assert took < move_budget_s(distance, duration_s, step), "it arrived, it did not run out"
+
+
+@pytest.mark.parametrize(
+    ("step", "joint", "share", "duration_s"),
+    [
+        pytest.param(0.5, "shoulder_lift", 0.25, MOVE_MAX_S, id="a small cap"),
+        pytest.param(MAX_STEP_DEG, "elbow_flex", -0.35, 8.5, id="the default cap"),
+        pytest.param(MAX_STEP_DEG, "wrist_roll", 0.12, 11.0, id="the full-turn joint"),
+    ],
+)
+async def test_a_slow_ramp_is_never_mistaken_for_a_stall(
+    step: float, joint: str, share: float, duration_s: float
+) -> None:
+    """A slow move is a fraction of a degree a tick, under the threshold the stall rule calls
+    a joint stopped. Counted during the ramp, that rule failed every slow move a few ticks in,
+    with the arm doing exactly what it was told. It counts once the ramp is over."""
+    arm = _spanned(step=step)
+    _adapter, ex, clock = await _paced(arm, step=step)
+    goal = round(_share_of(arm.travel(joint), share), 1)
+    threshold = min(0.5, step / 2)
+    per_tick = abs(goal) / duration_s * TICK_S
+    assert per_tick < threshold, "the ramp must crawl under the stall threshold"
+    moved = await ex.run_verb("move_joints", {"positions": {joint: goal}, "duration_s": duration_s})
+    assert moved.ok, moved.summary
+    assert clock.t >= duration_s
+
+
+async def test_a_slow_ramp_on_the_mock_is_never_mistaken_for_a_stall() -> None:
+    """The mock has no step cap, so its stall threshold is the full one: a slow move crawls
+    under it on every tick of the ramp, and a rehearsal must not fail what the arm would do."""
+    mock = LeRobotMock()
+    adapter = LeRobotAdapter(mock)
+    ex = _executor(adapter, await adapter.connect())
+    goal = round(_share_of(MOCK_RANGES["wrist_flex"], 0.13), 1)
+    moved = await ex.run_verb("move_joints", {"positions": {"wrist_flex": goal}, "duration_s": 9.0})
+    assert moved.ok, moved.summary
+    assert mock.joints["wrist_flex"] == goal
+
+
+@pytest.mark.parametrize(
+    ("joint", "start", "wall", "share", "duration_s"),
+    [
+        pytest.param("shoulder_lift", 0.0, 0.3, 0.7, 3.5, id="blocked on the way up"),
+        pytest.param("wrist_flex", 0.55, -0.15, -0.75, 5.5, id="blocked on the way down"),
+        pytest.param("elbow_flex", -0.2, -0.2, 0.5, 2.0, id="blocked where it starts"),
+    ],
+)
+async def test_a_joint_blocked_partway_is_a_stall_once_the_ramp_is_done_and_says_where(
+    joint: str, start: float, wall: float, share: float, duration_s: float
+) -> None:
+    """Something in the way still ends the move as a failure that names the joint, where it
+    stopped and where it was going. It is found when the ramp has handed the servo the final
+    goal and the joint does not follow for the stall rule's ticks: not before, because a ramp
+    that slow is indistinguishable from a stop until then, and not much later."""
+    arm = _spanned()
+    travel = arm.travel(joint)
+    arm.positions[joint] = round(_share_of(travel, start), 1)
+    at = round(_share_of(travel, wall), 1)
+    goal = round(_share_of(travel, share), 1)
+    arm.obstacles[joint] = (-math.inf, at) if goal > at else (at, math.inf)
+    _adapter, ex, clock = await _paced(arm)
+    stalled = await ex.run_verb(
+        "move_joints", {"positions": {joint: goal}, "duration_s": duration_s}
+    )
+    assert not stalled.ok
+    stopped = arm.positions[joint]
+    assert stopped == pytest.approx(at)
+    assert (
+        f"{joint} is at {round(stopped, 1):.0f} with a goal of {goal:.0f}, and it has stopped "
+        "moving"
+    ) in stalled.summary, stalled.summary
+    assert duration_s <= clock.t <= duration_s + (STALL_TICKS + 3) * TICK_S, clock.t
+    # and the arm was stopped where it stood, as every failed verb ends
+    assert arm.actions[-1][f"{joint}.pos"] == pytest.approx(stopped)
+
+
+@pytest.mark.parametrize(
+    ("past", "goals"),
+    [
+        pytest.param({"shoulder_lift": -17.0}, {"shoulder_lift": 0.4}, id="below the floor"),
+        pytest.param({"elbow_flex": 9.0}, {"elbow_flex": -0.2}, id="above the ceiling"),
+        pytest.param(
+            {"shoulder_lift": -23.0, "wrist_flex": 6.0},
+            {"shoulder_lift": -0.5, "wrist_flex": 0.35},
+            id="one each way at once",
+        ),
+    ],
+)
+async def test_a_joint_read_past_its_travel_starts_its_ramp_at_its_limit(
+    past: dict[str, float], goals: dict[str, float]
+) -> None:
+    """A joint folded past its travel reads past it, and the servo clamps any goal to the
+    travel, so a ramp from the reading would be a ramp whose first stretch the servo turns into
+    "go to the limit", and whose first targets the backend refuses outright. The ramp starts at
+    the limit the manifest publishes: the joint gets there at the servo's own speed, as it
+    would whatever quackd sent, and is paced from there."""
+    arm = _spanned()
+    for joint, by in past.items():
+        arm.positions[joint] = _past(arm, joint, by)
+    adapter, ex, _clock = await _paced(arm)
+    published = adapter.manifest.extras["joint_range_deg"]  # type: ignore[union-attr]
+    goal = {j: round(_share_of(arm.travel(j), share), 1) for j, share in goals.items()}
+    moved = await ex.run_verb("move_joints", {"positions": goal, "duration_s": 2.5})
+    assert moved.ok, moved.summary
+    assert all(_within_travel(arm, action) for action in arm.actions), arm.actions
+    for joint, by in past.items():
+        limit = published[joint][0 if by < 0 else 1]
+        _walked(_sent(arm.actions, joint), limit, goal[joint], 2.5)
+
+
+async def test_a_joint_on_the_mock_read_past_its_travel_starts_its_ramp_at_its_limit() -> None:
+    """The mock refuses a goal outside its travel in the arm's words, so a ramp begun at a
+    reading past the ceiling would be refused on its first tick in a rehearsal too."""
+    mock = LeRobotMock()
+    lo, hi = MOCK_RANGES["elbow_flex"]
+    mock.joints["elbow_flex"] = hi + 7.0
+    adapter = LeRobotAdapter(mock)
+    ex = _executor(adapter, await adapter.connect())
+    goal = round(_share_of((lo, hi), -0.3), 1)
+    moved = await ex.run_verb("move_joints", {"positions": {"elbow_flex": goal}, "duration_s": 1.7})
+    assert moved.ok, moved.summary
+    _walked(_sent(mock.actions, "elbow_flex"), hi, goal, 1.7)
+
+
+def test_a_ramp_ends_on_the_goal_to_the_bit_and_never_ramps_a_joint_with_no_start() -> None:
+    """`start + (goal - start) * 1.0` is not always `goal` in floating point, and a goal asked
+    for at the very edge of the travel, sent back a few ulps past it, is a goal the backend
+    refuses as outside the travel at the last tick of a move that was going fine; nor is a goal
+    that is not on the tenths the targets on the way are rounded to. So the end of a ramp is the
+    goal itself. A joint the arm did not report has no start and is sent its goal at every
+    share, rather than a ramp from nowhere."""
+    goals = [g / 100 for g in range(-9971, 9972, 373)]
+    starts = [s / 10 for s in range(-1003, 1004, 29)]
+    noisy = off_the_tenths = 0
+    for begin in starts:
+        for end in goals:
+            assert ramp_target({"j": begin}, {"j": end}, 1.0) == {"j": end}, (begin, end)
+            noisy += begin + (end - begin) * 1.0 != end
+            off_the_tenths += round(end, RAMP_DECIMALS) != end
+    assert noisy and off_the_tenths, "no pair here misses its goal, so this proves nothing"
+    goal = {"shoulder_pan": 12.5, "wrist_flex": -31.5}
+    for share in (0.0, 0.37, 0.999):
+        target = ramp_target({"shoulder_pan": -40.0}, goal, share)
+        assert target["wrist_flex"] == goal["wrist_flex"], "a joint with no start was ramped"
+        along = target["shoulder_pan"]
+        assert along == pytest.approx(-40.0 + 52.5 * share, abs=0.5 * 10**-RAMP_DECIMALS)
+        assert along == round(along, RAMP_DECIMALS), "a target on the way is sent to a tenth"
+    # and rounding never carries a target past a goal that is not on the tenths
+    near = ramp_target({"elbow_flex": 0.0}, {"elbow_flex": 84.97}, 0.9999)["elbow_flex"]
+    assert near <= 84.97
+
+
+def test_the_published_travel_never_promises_a_degree_the_backend_refuses() -> None:
+    """The manifest publishes each travel to a tenth of a degree, and rounding to nearest could
+    move an end out by up to a twentieth: a pilot asking for the edge it was shown could be
+    refused, and a ramp from a joint folded past its travel would begin a hair outside it and be
+    refused before it moved. Rounded inward, every published angle is one the backend accepts."""
+    spans = [*SPANS.values(), 143.3, 171.7, 199.9, 77.7]
+    outward = 0
+    for travel_deg in spans:
+        exact_lo, exact_hi = joint_ranges({"elbow_flex": FakeCalibration(travel_deg)})["elbow_flex"]
+        lo, hi = published_travel(exact_lo, exact_hi)
+        assert exact_lo <= lo <= exact_lo + 0.1 and exact_hi - 0.1 <= hi <= exact_hi, travel_deg
+        outward += round(exact_hi, 1) > exact_hi
+    assert outward, "no span here would have rounded outward, so this proves nothing"
+    assert published_travel(-100.0, 100.0) == [-100.0, 100.0]
+    assert published_travel(0.0, 100.0) == [0.0, 100.0]
+    # an end a hair short of a tenth: ten times it can round to the whole tenth, and the tenth
+    # it gives would then be a hair outside the float the backend compares a goal with
+    hairs = 0
+    for tenths in range(1, 1800, 7):
+        end = math.nextafter(tenths / 10, 0.0)
+        lo, hi = published_travel(-end, end)
+        assert -end <= lo and hi <= end and end - hi < 0.2, end
+        hairs += math.floor(end * 10) / 10 > end
+    assert hairs, "no end here rounds up to its tenth, so this proves nothing"
+
+
+async def test_the_edge_the_pilot_is_shown_is_an_edge_it_can_ask_for() -> None:
+    """The pilot's prompt prints the published travel, and a careful pilot asks for exactly its
+    end. Rounded to nearest, a travel could be published a twentieth of a degree wider than the
+    one the backend checks against, and then that goal was refused as outside it."""
+    arm = _spanned()
+    adapter, ex, _clock = await _paced(arm)
+    published = adapter.manifest.extras["joint_range_deg"]  # type: ignore[union-attr]
+    for joint, end in (("shoulder_lift", 0), ("elbow_flex", 1)):
+        edge = published[joint][end]
+        moved = await ex.run_verb("move_joints", {"positions": {joint: edge}, "duration_s": 1.2})
+        assert moved.ok, moved.summary
+
+
+@pytest.mark.parametrize(
+    ("joint", "off", "duration_s"),
+    [
+        pytest.param("shoulder_pan", TOL_DEG - 1.0, MOVE_MAX_S, id="just inside, the longest"),
+        pytest.param("wrist_flex", -(TOL_DEG - 2.5), 4.4, id="the other way"),
+        pytest.param("gripper", -(TOL_DEG - 0.5), MOVE_MIN_S, id="the gripper"),
+    ],
+)
+async def test_a_joint_already_where_it_was_asked_to_be_is_arrived_at_once(
+    joint: str, off: float, duration_s: float
+) -> None:
+    """A goal within the tolerance the verb calls arrived is a move already over, whatever
+    `duration_s` says: it goes out whole and the verb returns after one tick, as it always did,
+    rather than spend the whole time walking a few degrees."""
+    arm = _spanned()
+    _adapter, ex, clock = await _paced(arm)
+    goal = arm.positions[joint] + off
+    moved = await ex.run_verb("move_joints", {"positions": {joint: goal}, "duration_s": duration_s})
+    assert moved.ok, moved.summary
+    assert _sent(arm.actions, joint) == [goal] and clock.t == pytest.approx(TICK_S)
+
+
+def test_the_move_budget_always_ends_inside_the_executor_s_timeout() -> None:
+    """The budget is the time asked for, or the time the cap needs if longer, plus a settle,
+    and it has to end before the executor's own timeout does: past that the executor cancels
+    the verb and says only "timed out", where the verb would have said which joint fell short
+    and where it stopped. One constant is both numbers, so they cannot drift apart."""
+    registered = lerobot_verbs(policy=False)["move_joints"]
+    assert registered.timeout_s == MOVE_JOINTS_TIMEOUT_S
+    from_manifest = registry_from_manifest(
+        lerobot_manifest("real"), LeRobotAdapter(LeRobotMock())
+    ).get("move_joints")
+    assert from_manifest.timeout_s == MOVE_JOINTS_TIMEOUT_S
+    ceiling = MOVE_JOINTS_TIMEOUT_S - MOVE_HEADROOM_S
+    assert ceiling >= MOVE_MAX_S + MOVE_SETTLE_S, "the longest ramp must keep its settle"
+    assert MOVE_SETTLE_S >= STALL_TICKS * TICK_S, "a stall must be callable inside the settle"
+    for distance in (0.0, 3.0, 47.0, 133.0, 359.0):
+        for duration_s in (MOVE_MIN_S, 1.3, 6.8, MOVE_MAX_S):
+            for step in (None, 0.05, 0.6, MAX_STEP_DEG, 30.0):
+                budget = move_budget_s(distance, duration_s, step)
+                assert budget <= ceiling < registered.timeout_s, (distance, duration_s, step)
+                need = max(duration_s, distance / (step / TICK_S) if step else 0.0)
+                assert budget == pytest.approx(min(need + MOVE_SETTLE_S, ceiling))
+    schema = MoveJointsParams.model_json_schema()["properties"]["duration_s"]
+    assert schema["minimum"] == MOVE_MIN_S and schema["maximum"] == MOVE_MAX_S
+
+
+async def test_a_move_the_cap_cannot_finish_runs_out_of_time_inside_the_executor_s() -> None:
+    """With the step lowered far enough, the longest time and a long reach need more than the
+    executor allows. The verb stops at its own budget and says how far it got."""
+    step = 0.4
+    arm = _spanned(step=step)
+    _adapter, ex, clock = await _paced(arm, step=step)
+    goal = round(_share_of(arm.travel("shoulder_pan"), -0.86), 1)
+    late = await ex.run_verb(
+        "move_joints", {"positions": {"shoulder_pan": goal}, "duration_s": MOVE_MAX_S}
+    )
+    ceiling = MOVE_JOINTS_TIMEOUT_S - MOVE_HEADROOM_S
+    assert move_budget_s(abs(goal), MOVE_MAX_S, step) == ceiling, "the cap must need longer"
+    assert not late.ok and "when the time ran out" in late.summary, late.summary
+    assert f"with a goal of {goal:.0f}" in late.summary
+    assert ceiling <= clock.t <= ceiling + TICK_S + 1e-9, clock.t
+
+
+async def test_the_gripper_verb_sends_its_yes_or_no_and_is_never_ramped() -> None:
+    """`gripper` sends `Intent.gripper(open)`, which each backend turns into fully open or
+    fully shut and which the mock reads to decide whether it closed on something. A ramp would
+    have to make up the numbers in between, so it is left as it was."""
+    mock = LeRobotMock()
+    adapter = LeRobotAdapter(mock)
+    ex = _executor(adapter, await adapter.connect())
+    sent = len(mock.intents)
+    closed = await ex.run_verb("gripper", {"open": False})
+    assert closed.ok, closed.summary
+    kinds = {i.kind for i in mock.intents[sent:]}
+    assert kinds == {"gripper"}, kinds
+    assert all(i.params == {"open": False} for i in mock.intents[sent:])
+
+
+async def test_the_rest_move_and_the_hold_wait_on_the_backend_s_own_clock() -> None:
+    """The clock seam is honest only if every wait this backend measures against `now()` goes
+    through it. A rest move that read a test's clock and slept on the wall's would never see its
+    budget run out; so each of its ticks, and the settle `take_hold` gives a hold before reading
+    it back, is one tick on whatever clock the backend was given."""
+    clock = SteppedClock()
+    arm = FakeArm(step=MAX_STEP_DEG)
+    where_it_sits = {joint: arm.positions[joint] for joint in JOINTS if joint != "gripper"}
+    pose = where_it_sits | {"elbow_flex": where_it_sits["elbow_flex"] + 3 * MAX_STEP_DEG}
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=pose, clock=clock)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    rested = await adapter.go_to_rest()
+    assert rested.how == "arrived", rested.reason
+    assert arm.actions and clock.t == pytest.approx(len(arm.actions) * TICK_S)
+    assert (await adapter.let_go()).how == "released"
+    before = clock.t
+    assert (await adapter.take_hold()).how == "held"
+    assert clock.t - before == pytest.approx(TICK_S)
 
 
 async def test_a_goal_outside_the_calibrated_range_is_refused_with_the_range() -> None:
@@ -1182,7 +1641,10 @@ async def test_a_stalled_camera_costs_the_picture_and_not_the_run() -> None:
     assert not observed.ok and "too old" in observed.summary
     # the arm is untouched by any of it
     await adapter.heartbeat()
-    assert (await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}})).ok
+    moved = await ex.run_verb(
+        "move_joints", {"positions": {"shoulder_pan": 10}, "duration_s": MOVE_MIN_S}
+    )
+    assert moved.ok, moved.summary
 
 
 async def test_the_policy_is_handed_the_frame_under_the_cameras_own_name() -> None:
@@ -2134,7 +2596,10 @@ async def test_a_stalled_second_camera_costs_its_picture_and_nothing_else() -> N
     assert [row["name"] for row in rows] == ["top", "side"]
     assert rows[0]["ok"] and rows[0]["error"] is None and rows[0]["size"] == "64x48"
     assert not rows[1]["ok"] and "too old" in rows[1]["error"]
-    assert (await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 10}})).ok
+    moved = await ex.run_verb(
+        "move_joints", {"positions": {"shoulder_pan": 10}, "duration_s": MOVE_MIN_S}
+    )
+    assert moved.ok, moved.summary
 
 
 async def test_a_second_camera_that_will_not_open_refuses_before_the_arm_is_energised() -> None:

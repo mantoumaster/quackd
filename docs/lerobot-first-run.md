@@ -979,9 +979,12 @@ quackd run --goal "roll the wrist ten degrees and stop" --robot arm-01 \
   --llm openai --max-steps 3
 ```
 
-It should take about a fifth of a second and stop. The arm moves at five degrees per action
-re-sent ten times a second, so fifty degrees a second, and `QUACKD_LEROBOT_MAX_STEP_DEG`
-lowers that if it looks fast in the room.
+It takes as long as the model asks for in `duration_s`, which is five seconds when it names
+none, and then stops. However short the time asked for, the arm moves at most five degrees per
+action re-sent ten times a second, so fifty degrees a second and ten degrees in a fifth of a
+second, and `QUACKD_LEROBOT_MAX_STEP_DEG` lowers that if it looks fast in the room. Ten degrees
+is more than the five the verb calls arrived, so the goal is walked out a little further each
+tenth of a second rather than sent at once.
 
 **3. A goal outside the calibrated range.**
 
@@ -1243,7 +1246,7 @@ And once it is running:
 |---|---|---|
 | `is outside this arm's calibrated range` | the goal is outside the travel in your calibration file | working as intended. Aim inside it. On `wrist_roll` this can never fire |
 | `reads 61°C: let the arm cool` | the heat gate, below the servo's own 70 °C cut-off | let it cool. A joint that trips its own protection goes slack without announcing it |
-| `and it has stopped moving` | a stall: five ticks in which no watched joint moved | something is in the way, or a servo tripped. The arm is held first |
+| `and it has stopped moving` | a stall: five ticks in which no watched joint moved, counted once the move's `duration_s` is up | something is in the way, or a servo tripped. The arm is held first. A joint blocked early in a slow move is only called stalled at the end of it |
 | `the camera gave no frame` | the webcam stalled or was unplugged | the arm carries on, and `report_state` starts saying `CAMERA DOWN:` |
 | `the arm's torque is off` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so this points at a tripped servo or the supply |
 | the run ends saying the arm did not answer | the heartbeat's round trip failed | the cable, the power, or a tripped servo. The arm holds its last goal under torque. Seen once on 2026-09-15, in a dry run, and not since |
@@ -1263,7 +1266,7 @@ or a plain issue with the transcript and your `quackd doctor` output. A report t
 did not work is worth as much as one that says it did.
 
 One arm has been down this path, so some of these questions have one answer and none of them
-have two. The four that nobody has measured at all:
+have two. The five that nobody has measured at all:
 
 - **Whether the holding band is anywhere near right.** quackd calls it holding when the
   gripper is told to close, settles, and settles between 8 and 90 of 100. Nothing was held on
@@ -1272,12 +1275,17 @@ have two. The four that nobody has measured at all:
   refusal and the 70 cut-off are Feetech's documentation rather than anything measured here,
   and the bench run was too short to warm anything up.
 - **Whether a stall is caught on purpose.** Hold a joint gently against its goal and see
-  whether the verb fails with where it stopped. Nobody has deliberately tried it. The rest
-  move's own stall check did fire on 2026-09-23, by accident, when it drove a folded shoulder
-  into the servo's limit and the joint stopped there, and it said where. A verb's check, on a
-  joint held on purpose, is still untried.
+  whether the verb fails with where it stopped. It is called once the move's `duration_s` is
+  up, so on a slow move the joint pushes that long first. Nobody has deliberately tried it. The
+  rest move's own stall check did fire on 2026-09-23, by accident, when it drove a folded
+  shoulder into the servo's limit and the joint stopped there, and it said where. A verb's
+  check, on a joint held on purpose, is still untried.
 - **Whether five degrees an action felt right** in the room. One person has watched this arm
   move, and they did not write down an opinion on the speed.
+- **Whether a slow move is smooth.** `move_joints` walks its goal out a tenth of a second at a
+  time across the `duration_s` it is given, and no servo has yet been watched following a goal
+  that creeps. Say whether a move of several seconds looked like one motion or a staircase, and
+  whether it arrived when the time was up.
 
 And the two the bench answered once, where a second answer is what turns one arm's behaviour
 into something true of the SO-101:
@@ -2605,15 +2613,18 @@ The chat gets one line, `moved wrist_roll=10`, and the call's log has the whole 
 ```
 tool    robot_run_verb verb='move_joints', params={'positions': {'wrist_roll': 10}, 'duration_s': 2} on arm-01
 verb    move_joints(positions={'wrist_roll': 10}, duration_s=2) from mcp
-->      joint(positions={'wrist_roll': 10.0}, duration_s=2)
-<-      move_joints ok: moved wrist_roll=10 (0.0 s, 1 intent)
-done    ok in 0.0 s budget: step 4/40, llm calls 0/40, 0.0/5 min
+->      joint x21 over 2.0 s (positions {'wrist_roll': 0.0}/{'wrist_roll': 0.5}/{'wrist_roll': 1.0}..., duration_s 2)
+<-      move_joints ok: moved wrist_roll=10 (0.0 s, 21 intents)
+done    ok in 0.0 s budget: step 3/40, llm calls 0/40, 0.0/5 min
 ```
 
-Read the `->` line rather than the others. It is the single intent that actually reached the arm,
-and the rest are the model asking, the executor answering, and the budget after the call. The
-server's stderr carries these same lines with a `quackd-mcp INFO arm-01: ` prefix on each, as the
-heartbeat block in check 4 shows.
+Read the `->` line rather than the others. It is every intent that actually reached the arm,
+folded into one line: 21 goals across the two seconds asked for, the first three shown, each
+half a degree further along than the last, so that the wrist arrives when the time is up rather
+than as fast as the step cap allows. The rest are the model asking, the executor answering, and
+the budget after the call. The mock's move takes no time, `0.0 s`, and an arm's takes the two
+seconds. The server's stderr carries these same lines with a `quackd-mcp INFO arm-01: ` prefix
+on each, as the heartbeat block in check 4 shows.
 
 **3. A goal outside the calibrated range.** Ask for
 `robot_run_verb(verb="move_joints", params={"positions": {"shoulder_pan": 170}})`, and nothing
@@ -2684,10 +2695,11 @@ terminal running `quackd run`, and an MCP session has no terminal of its own:
   arm holds where it is rather than sagging. It answers `stopped (velocity zeroed)` on the mock.
   **It is not a mid-move brake.** Part 1's Ctrl-C is: the kill switch sets the executor's abort,
   which cancels the verb that is running. The `stop` verb sets nothing, cancels nothing, and a
-  `move_joints` already in flight re-sends its own goal ten times a second, so it overwrites the
-  hold within a tenth of a second and finishes the motion. In practice the model cannot call it
-  mid-move anyway, because it is still waiting for that `move_joints` tool call to return. `stop`
-  is what you reach for between verbs, and cutting power is what you reach for during one.
+  `move_joints` already in flight sends its next goal ten times a second, so it overwrites the
+  hold within a tenth of a second and finishes the motion, however long it was asked to take.
+  In practice the model cannot call it mid-move anyway, because it is still waiting for that
+  `move_joints` tool call to return. `stop` is what you reach for between verbs, and cutting
+  power is what you reach for during one.
 - **End the session.** A client disconnect, stdin closing, or quitting the client unwinds the
   server, which stops, parks and disconnects every robot it holds. The disconnect releases torque,
   which is LeRobot's default and quackd keeps it, so the ordinary end leaves the arm limp at the

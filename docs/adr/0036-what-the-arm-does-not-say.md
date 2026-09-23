@@ -27,6 +27,21 @@ that joint is its limit, and it drives there at full speed. The rest pose the am
 names is now driven clipped into the travel, and a joint recorded past the travel is at rest at
 its edge or anywhere beyond it.
 
+**Amended 2026-09-23, the same afternoon:** the decision below that made `duration_s` a budget
+is reversed, because a budget left the step cap as the only pace the arm had, and a model on
+the bench asked to raise the arm slowly read the verb's text correctly and declined.
+`duration_s` is now how long the motion should take: `move_joints` reads the arm once and walks
+its goal from there to the goal across that time, one target a tick, then sends the goal itself
+until the joints arrive. The step cap is unchanged and is now a ceiling rather than the speed:
+a time too short for the distance runs at the cap and ends later than asked. Arrival and stalls
+are judged once the ramp is over, since a slow ramp moves a joint less per tick than the stall
+threshold. The verb's budget is the time asked for or the time the cap needs, whichever is
+longer, plus a settle, and ends inside the executor's timeout for the verb, which is the same
+constant. A joint reading past its travel ramps from the edge of it, because the servo takes it
+there at its own speed whatever is sent. `gripper` is not ramped. The comparison of goal and
+measurement every tick, the failure that says where a joint stopped, and the tolerance all
+stand.
+
 ## Context
 
 The LeRobot adapter drives an SO-101 follower through the `Robot` interface of

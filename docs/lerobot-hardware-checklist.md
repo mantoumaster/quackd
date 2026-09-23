@@ -375,13 +375,15 @@ means, and which moments move the arm without anybody asking for it.
     nearly touching. That is one arm, built and calibrated by one person, which is why this
     step is still here.
 11. **One joint, small, in the middle of its range.** `move_joints` with
-    `{"wrist_roll": 10}`. It should take about a fifth of a second and stop. The arm moves at
-    5 degrees per action re-sent ten times a second, so 50 degrees a second, and
-    `QUACKD_LEROBOT_MAX_STEP_DEG` lowers that if it looks fast in the room. For scale, the
-    free-form goals on the bench on 2026-09-15 came out as wrist-roll waves of about plus or
-    minus 27 degrees, and as wider poses with `shoulder_lift` at -39 and `elbow_flex` between
-    24 and 30. Nobody wrote down whether 50 degrees a second looked right standing next to it,
-    which is why that question is still at the foot of this page.
+    `{"wrist_roll": 10}`. It takes the `duration_s` it is given, five seconds when none is,
+    and stops. However short that time, the arm moves at most 5 degrees per action re-sent
+    ten times a second, so 50 degrees a second, and `QUACKD_LEROBOT_MAX_STEP_DEG` lowers that
+    if it looks fast in the room. Try it once with `"duration_s": 0.2`, which for ten degrees
+    is the cap, and once with a few seconds, and check the second is visibly slower. For scale,
+    the free-form goals on the bench on 2026-09-15 came out as wrist-roll waves of about plus
+    or minus 27 degrees, and as wider poses with `shoulder_lift` at -39 and `elbow_flex`
+    between 24 and 30. Nobody wrote down whether 50 degrees a second looked right standing
+    next to it, which is why that question is still at the foot of this page.
 12. **Ask for something out of range.** A goal of 170 on a joint whose travel is about 100
     either way. It is refused with the range in the reason and nothing reaches the arm. This
     is worth doing deliberately, because LeRobot does not clamp a degrees goal and the servo
@@ -535,7 +537,7 @@ and a password or a credential-named query parameter taken out of `--base-url`, 
 and `--camera-url`. Nothing else on the screen is, so read it before you paste it
 ([SECURITY.md](../SECURITY.md)).
 
-**Four things one afternoon on one bench did not answer**, and which still need a real arm:
+**Five things one afternoon on one bench did not answer**, and which still need a real arm:
 
 - **Whether the holding band is anywhere near right.** quackd calls it holding when the
   gripper is told to close, settles, and settles between 8 and 90 of 100. Nobody has yet seen
@@ -547,11 +549,17 @@ and `--camera-url`. Nothing else on the screen is, so read it before you paste i
 - **Whether 5 degrees an action felt right.** The figure is quackd's own choice for a first
   run, not anything upstream recommends for this arm, and nobody has said whether it looked
   right standing next to the arm.
+- **Whether a slow move is smooth.** `move_joints` walks its goal out a tenth of a second at a
+  time across the `duration_s` it is given, and nothing has watched a servo follow a goal that
+  creeps. Say whether a move of several seconds looked like one motion or a staircase, and
+  whether it arrived when the time was up.
 - **Whether a stall is caught.** Hold a joint gently against its goal and see whether the verb
-  fails with where it stopped. Nobody has done this on purpose yet. It has happened once by
-  accident: on 2026-09-23 the rest move drove a folded shoulder into its servo's own limit, the
-  joint stopped there, and the rest move's stall check said where. That is the rest move's
-  check and not a verb's, so the question is answered for one and still open for the other.
+  fails with where it stopped. It is called once the move's `duration_s` is up, so on a slow
+  move the joint pushes that long first. Nobody has done this on purpose yet. It has happened
+  once by accident: on 2026-09-23 the rest move drove a folded shoulder into its servo's own
+  limit, the joint stopped there, and the rest move's stall check said where. That is the rest
+  move's check and not a verb's, so the question is answered for one and still open for the
+  other.
 
 **And one the discrete stepper brought with it**, which nobody has any answer to either.
 `--decision-llm` is off unless you name one and postdates that afternoon, so leave it off for

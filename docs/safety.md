@@ -355,6 +355,13 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
   to move.
 - **There is no e-stop and quackd cannot give it one.** Cutting the servo supply is the only
   thing that stops this arm in every case, the one where quackd itself has died included.
+- **A slow move is a long one.** `move_joints` takes the `duration_s` it is given, up to 12
+  seconds, and a joint that meets something partway is called stalled only when that time is
+  up, pushing against a goal one step ahead of it until then. Nothing moves faster than the step
+  cap, 50 degrees a second, whatever the time asked for; a joint that reads past its travel
+  first rises to the edge of it at the servo's own speed, before any pacing starts. Keep the
+  hand near the switch for the whole of a slow move, not only its start
+  ([adapters/lerobot.md](adapters/lerobot.md#the-manifest)).
 - `pick` hands the whole arm to a learned policy for up to a minute. It is confirm-gated
   for that reason. Watch it, and keep `stop` within reach.
 - `stop` holds position and never releases, and it leaves the gripper's goal alone so a

@@ -11,6 +11,13 @@ the configured step (`upstream_api.SO_ACTION_CLAMP`), so a goal takes as many se
 takes, and the same cap applies to the gripper in its own 0..100 units. And nothing reports
 whether a goal was reached, so an arm that stalled against an obstacle and an arm that
 arrived look identical unless somebody compares the goal with the position.
+
+`move_joints` also paces its travel, because the step cap is a ceiling on speed and never a
+speed anybody chose. Re-sending the final goal every tick moves every joint at the cap, which
+made "move it slowly" a request the arm could not honour, and a model on the bench read the
+verb's text correctly and declined. So the goal it sends walks from where the arm is to where it
+was asked to be across `duration_s` (`_drive`), and the cap only decides when a move asked to
+be quicker than the arm allows ends later than asked.
 """
 
 from __future__ import annotations
@@ -49,6 +56,35 @@ GRIPPER_S = 6.0
 """How long to give the gripper. The step cap applies to its 0..100 range too, so a full
 open takes 100 divided by the step, times the tick."""
 
+MOVE_MIN_S = 0.2
+MOVE_MAX_S = 12.0
+"""The shortest and the longest motion a pilot may ask `move_joints` for. The shortest is two
+ticks, the least a goal can be walked across; the longest has to leave the move its settle
+inside the executor's timeout (`MOVE_JOINTS_TIMEOUT_S`), and a test holds the two together."""
+RAMP_DECIMALS = 1
+"""A ramp's targets on the way are sent to a tenth of a degree (of a unit, on the gripper), the
+resolution the arm reports its readings in. One encoder tick of the servo is 360/4096 of a
+degree, so a finer target moves nothing further, and the record of a slow move is read by a
+person: a column of goals like 0.5000000000000002 says nothing a tenth does not."""
+MOVE_SLACK_S = 2.0
+"""Slack a move gets on top of the time its ramp and the step cap say it needs. The transport's
+clock runs on between ticks, because every send and every read is a bus transaction with its
+own latency, and a loaded joint on a P-only controller closes the last degrees of its gap more
+slowly than it crossed the rest."""
+MOVE_SETTLE_S = STALL_TICKS * TICK_S + MOVE_SLACK_S
+"""How long a move is watched after its ramp has handed the servo the final goal: long enough
+for a joint that has stopped to be called stalled (`STALL_TICKS` ticks), plus the slack."""
+MOVE_JOINTS_TIMEOUT_S = 20.0
+"""The executor's timeout for `move_joints`: past it the executor cancels the verb, stops the arm
+itself and says only that the verb timed out. The verb's own budget is computed to end before
+it (`move_budget_s`), so that a move that runs out of time is reported by the verb, with the
+joint that fell short and where it stopped. One constant for both, so they cannot drift."""
+MOVE_HEADROOM_S = 2.0
+"""How far inside `MOVE_JOINTS_TIMEOUT_S` the verb's budget must end. The budget is checked
+between ticks, and after it the verb still sends, reads and stops the arm; on a real bus each of
+those is a call with its own deadline, and all of it has to land before the executor's clock
+does."""
+
 PICK_POLL_S = 0.5
 PICK_SETTLE_S = STALL_TICKS * TICK_S
 """After the policy stops, how long to let the gripper come to rest before reading `holding`
@@ -67,11 +103,14 @@ class MoveJointsParams(BaseModel):
     )
     duration_s: float = Field(
         default=5.0,
-        ge=0.2,
-        le=12,
+        ge=MOVE_MIN_S,
+        le=MOVE_MAX_S,
         description=(
-            "How long to give the motion before giving up. The arm moves at its own capped "
-            "speed whatever this says, and the verb ends as soon as every joint has arrived."
+            "How long the motion should take, in seconds: every joint given travels from "
+            "where it is to its goal across this time, so a longer time is a slower move. The "
+            "arm never moves faster than its speed cap, so a time too short for a long move "
+            "runs at the cap and takes as long as the cap needs. The verb waits until every "
+            "joint has arrived."
         ),
     )
 
@@ -180,15 +219,119 @@ def _stall_threshold(ctx: VerbContext) -> float:
     return min(STALL_DEG, step / 2) if step > 0 else STALL_DEG
 
 
+def _travel(ctx: VerbContext) -> dict[str, Any]:
+    """Each joint's calibrated travel as the connected arm's manifest publishes it, or nothing
+    where it is not known (a manifest read before the arm answered)."""
+    return (ctx.manifest.extras.get("joint_range_deg") if ctx.manifest is not None else None) or {}
+
+
+def ramp_start(
+    goal: dict[str, float], joints: dict[str, float], travel: dict[str, Any]
+) -> dict[str, float]:
+    """Where a move's ramp begins: each goal joint's reading, clipped into its travel.
+
+    Clipped, because the servo clamps every goal it is written to the travel its calibration
+    put in it (`upstream_api.POSITION_LIMITS_CLAMP_GOALS`), while a reading is not clamped. A
+    joint folded or placed past its travel with torque off therefore reads outside it, and any
+    goal between that reading and the limit is, to the servo, the limit. The first thing such a
+    joint does under any move is rise to its limit at the servo's own speed, whatever quackd
+    sends, and quackd cannot pace that stretch. So the ramp is paced from the limit, the first
+    place quackd's goals mean what they say. It is also the only start the backend accepts: a
+    target outside the travel is refused before it reaches the bus.
+
+    A joint with no known travel starts from its reading as read. A goal joint the arm did not
+    report has no start at all and is sent its goal whole, because a ramp from an unknown place
+    is not a ramp."""
+    start: dict[str, float] = {}
+    for joint in goal:
+        if joint not in joints:
+            continue
+        reading = joints[joint]
+        span = travel.get(joint)
+        if span:
+            reading = min(float(span[1]), max(float(span[0]), reading))
+        start[joint] = reading
+    return start
+
+
+def outside_travel(goal: dict[str, float], travel: dict[str, Any]) -> list[str]:
+    """The goal joints asked for beyond the published travel, which the backend refuses."""
+    return sorted(
+        joint
+        for joint, value in goal.items()
+        if (span := travel.get(joint)) and not float(span[0]) <= value <= float(span[1])
+    )
+
+
+def ramp_target(start: dict[str, float], goal: dict[str, float], share: float) -> dict[str, float]:
+    """The goal to send `share` of the way along a ramp, for every joint of the goal.
+
+    Straight-line interpolation per joint, so every joint starts together and arrives
+    together, which is what one `duration_s` for several joints means. Each target on the way
+    is rounded to `RAMP_DECIMALS` and then held between its start and its goal, so that neither
+    the rounding nor floating point can carry it past either end. At the end of the ramp it is
+    the goal exactly, never the goal plus the rounding of `start + gap * 1.0`, because a goal
+    at the very edge of the travel must not be sent a hair past it and refused. A joint with no
+    start is sent its goal whole (`ramp_start`)."""
+    if share >= 1.0:
+        return dict(goal)
+    target: dict[str, float] = {}
+    for joint, end in goal.items():
+        begin = start.get(joint)
+        if begin is None:
+            target[joint] = end
+            continue
+        along = round(begin + (end - begin) * max(0.0, share), RAMP_DECIMALS)
+        target[joint] = min(max(begin, end), max(min(begin, end), along))
+    return target
+
+
+def move_budget_s(distance: float, duration_s: float, step_deg: float | None) -> float:
+    """How long `move_joints` watches a move before calling it out of time.
+
+    The ramp asks for `duration_s`. The step cap is the ceiling on speed: one send moves a joint
+    at most `step_deg`, one send goes out every `TICK_S`, so the furthest joint cannot cover
+    `distance` in less than `distance / (step_deg / TICK_S)`. Whichever is longer is when the
+    arm can first be there; the ramp is sent on schedule either way, and the servo simply lags
+    behind a ramp faster than it may go, then closes the rest of the gap at the cap. After that
+    the move gets `MOVE_SETTLE_S` to arrive or be called stalled.
+
+    Bounded by `MOVE_HEADROOM_S` inside `MOVE_JOINTS_TIMEOUT_S`, so the verb always ends on its
+    own verdict, with where the joint stopped, rather than on the executor's. A move the cap
+    says needs longer than that (a step lowered through `QUACKD_LEROBOT_MAX_STEP_DEG`, a long
+    reach) runs out of time and says how far it got. Where no step is known, as on the mock,
+    whose goals land at once, the cap adds nothing."""
+    cap_s = distance / (step_deg / TICK_S) if step_deg and step_deg > 0 else 0.0
+    return min(max(duration_s, cap_s) + MOVE_SETTLE_S, MOVE_JOINTS_TIMEOUT_S - MOVE_HEADROOM_S)
+
+
 async def _drive(
     ctx: VerbContext,
-    intent: Intent,
     goal: dict[str, float],
+    intent_for: Callable[[dict[str, float]], Intent],
     *,
     budget_s: float,
     tolerance: Callable[[str], float],
+    start: dict[str, float] | None = None,
+    ramp_s: float = 0.0,
 ) -> tuple[dict[str, float], DuckState | None, str, str | None]:
-    """Re-send a goal until the arm is there, stops moving, or the budget runs out.
+    """Send a goal until the arm is there, stops moving, or the budget runs out.
+
+    With a `start` and a `ramp_s`, the goal is walked there: each tick sends `intent_for` the
+    target as far from `start` toward `goal` as the time gone is through `ramp_s`
+    (`ramp_target`), and once `ramp_s` has passed it sends the goal itself until the arm
+    arrives. Without them, as for the gripper, every tick sends the goal whole, as this always
+    did. The step cap stays the ceiling throughout: LeRobot clips each send to within one step
+    of where the joint is, so a ramp faster than the cap is a ramp the servo lags behind.
+
+    Arrival and stalls are judged only once the final goal is what is being sent. Arrival,
+    because the ramp's targets are not where the pilot asked the arm to be, and a move ended
+    within tolerance of its goal while its goal was still some degrees on would leave the arm
+    that far short. Stalls, because a slow ramp legitimately moves a joint less per tick than
+    the stall threshold: several seconds for a few degrees is a fraction of a degree a tick, and
+    that is the arm doing exactly what it was asked. A joint blocked mid-ramp is therefore
+    found when the ramp ends, not before; what it pushes with meanwhile is what the step cap
+    allows, the same as it always was.
 
     Returns the last joint reading, the last state, how it ended (`arrived`, `stalled`,
     `timeout` or `refused`) and a reason when it did not arrive. A failure stops the arm
@@ -196,23 +339,28 @@ async def _drive(
     alone, so stopping mid-move never drops what is held."""
     started = ctx.transport.now()
     stall = _stall_threshold(ctx)
+    ramping = bool(start) and ramp_s > 0
     joints: dict[str, float] = {}
     previous: dict[str, float] = {}
     state: DuckState | None = None
     still = 0
-    while ctx.transport.now() - started < budget_s:
-        if (fail := await send_or_fail(ctx, intent)) is not None:
+    while (elapsed := ctx.transport.now() - started) < budget_s:
+        share = min(1.0, elapsed / ramp_s) if ramping else 1.0
+        target = ramp_target(start or {}, goal, share)
+        if (fail := await send_or_fail(ctx, intent_for(target))) is not None:
             await ctx.transport.stop()
             return joints, state, "refused", fail.summary
         await ctx.transport.sleep(TICK_S)
         state = await ctx.transport.get_state()
         joints = _joints_of(state)
+        moved = [abs(joints[k] - previous[k]) for k in previous if k in joints]
+        previous = {k: joints[k] for k in goal if k in joints}
+        if share < 1.0:
+            continue  # still on the ramp: neither arrived nor stalled yet
         error = {k: abs(joints[k] - v) for k, v in goal.items() if k in joints}
         if error and all(gap <= tolerance(joint) for joint, gap in error.items()):
             return joints, state, "arrived", None
-        moved = [abs(joints[k] - previous[k]) for k in previous if k in joints]
         still = still + 1 if moved and max(moved) <= stall else 0
-        previous = {k: joints[k] for k in goal if k in joints}
         if still >= STALL_TICKS:
             await ctx.transport.stop()
             return (
@@ -454,9 +602,7 @@ def _past_travel(ctx: VerbContext, extras: dict[str, Any], joints: dict[str, flo
 
     The travel is the connected arm's, from the manifest; where it is not known the clause
     says only that the joint reads outside it."""
-    ranges = (
-        ctx.manifest.extras.get("joint_range_deg") if ctx.manifest is not None else None
-    ) or {}
+    ranges = _travel(ctx)
     said = []
     for name in extras.get("out_of_range") or []:
         joint = str(name)
@@ -518,14 +664,43 @@ async def report_state(ctx: VerbContext, _: NoParams) -> VerbResult:
     return VerbResult.success("; ".join(parts), state=state.model_dump())
 
 
+def _joint_tolerance(joint: str) -> float:
+    return GRIPPER_TOL if joint == "gripper" else TOL_DEG
+
+
 async def move_joints(ctx: VerbContext, p: MoveJointsParams) -> VerbResult:
+    """Walk the joints given to their goals across `duration_s`, then wait for them to arrive.
+
+    The arm is read once first, for where each joint's ramp starts (`ramp_start`) and for how
+    far the furthest one has to go, which is what the budget is made of (`move_budget_s`).
+    Every tick's intent is `Intent.joint(target, duration_s)`, so the record of each send still
+    carries the time the pilot asked for.
+
+    Two moves go out whole instead of ramped. A move whose every joint already reads within
+    tolerance of its goal is, as far as this verb can judge, already there: it is sent as one
+    goal and judged after one tick, as it always was. And a move that asks for a joint beyond
+    its published travel is sent as one goal so that the backend refuses it, in its own words,
+    before anything has moved: ramped, the arm would travel to the edge of its travel first and
+    be refused there, holding a pose nobody asked for."""
     goal = dict(p.positions)
+    travel = _travel(ctx)
+    joints = _joints_of(await ctx.transport.get_state())
+    start = ramp_start(goal, joints, travel)
+    there = all(
+        joint in joints and abs(joints[joint] - value) <= _joint_tolerance(joint)
+        for joint, value in goal.items()
+    )
+    whole = there or bool(outside_travel(goal, travel))
+    distance = max((abs(goal[joint] - begin) for joint, begin in start.items()), default=0.0)
+    step = ctx.manifest.limits.get("step_deg") if ctx.manifest is not None else None
     joints, _state, _how, why = await _drive(
         ctx,
-        Intent.joint(goal, p.duration_s),
         goal,
-        budget_s=p.duration_s,
-        tolerance=lambda joint: GRIPPER_TOL if joint == "gripper" else TOL_DEG,
+        lambda target: Intent.joint(target, p.duration_s),
+        budget_s=move_budget_s(distance, p.duration_s, step),
+        tolerance=_joint_tolerance,
+        start=start,
+        ramp_s=0.0 if whole else p.duration_s,
     )
     if why is not None:
         return VerbResult.fail(f"move_joints: {why}", goal=goal, joints=joints)
@@ -540,10 +715,19 @@ async def _drive_gripper(
     ctx: VerbContext, *, open_: bool
 ) -> tuple[float | None, DuckState | None, str, str | None]:
     """The gripper is a joint like the others: the step cap moves it a few units per send,
-    and where it stops is the whole of what quackd knows about holding something."""
+    and where it stops is the whole of what quackd knows about holding something.
+
+    It is not ramped. What it sends is `Intent.gripper(open)`, a yes or a no that each backend
+    turns into its own fully open or fully shut, and that boolean is what the mock reads to
+    decide whether the jaws closed on something; a ramp would have to invent the numbers in
+    between. A gripper named in `move_joints` is a joint with a goal, and ramps like one."""
     goal = {"gripper": GRIPPER_OPEN if open_ else GRIPPER_CLOSED}
     joints, state, how, why = await _drive(
-        ctx, Intent.gripper(open_), goal, budget_s=GRIPPER_S, tolerance=lambda _: GRIPPER_TOL
+        ctx,
+        goal,
+        lambda _target: Intent.gripper(open_),
+        budget_s=GRIPPER_S,
+        tolerance=lambda _: GRIPPER_TOL,
     )
     return joints.get("gripper"), state, how, why
 
@@ -625,11 +809,11 @@ def lerobot_verbs(*, policy: bool) -> dict[str, Verb]:
         ),
         Verb(
             "move_joints",
-            "Move one or more joints to goal angles in degrees (gripper 0..100). The arm's "
-            "own controller does the motion, at a capped speed, and this waits for it.",
+            "Move one or more joints to goal angles in degrees (gripper 0..100) over "
+            "duration_s seconds, and wait for them to arrive.",
             move_joints,
             MoveJointsParams,
-            timeout_s=20,
+            timeout_s=MOVE_JOINTS_TIMEOUT_S,
             done_condition="every joint given is within a few degrees of its goal",
         ),
         Verb("gripper", "Open or close the gripper.", gripper, GripperParams, timeout_s=10),

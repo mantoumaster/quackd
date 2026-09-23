@@ -433,6 +433,33 @@ class PolicyLike(Protocol):
     def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None: ...
 
 
+class Clock(Protocol):
+    """The time this backend paces and watches the arm in: `now()` and `sleep()`, the pair a
+    transport already exposes to every verb.
+
+    A real arm has one time, the wall's (`WallClock`), and that is the default. The seam exists
+    so that a test can run a ramp of many seconds without waiting for them: every wait this
+    backend measures against `now()` goes through the same clock, the verbs' ticks, the rest
+    move's, the settle before a hold is read back and the policy's own rate, so that a clock
+    that only advances when it is slept keeps them all in step. The calls to LeRobot keep their
+    own deadlines on the wall's time, because a thread sitting on the serial bus does not care
+    what a test's clock says."""
+
+    def now(self) -> float: ...
+
+    async def sleep(self, seconds: float) -> None: ...
+
+
+class WallClock:
+    """`time.monotonic` and `asyncio.sleep`: the only time a real arm moves in."""
+
+    def now(self) -> float:
+        return time.monotonic()
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+
 class LeRobotReal:
     name = "real"
     mobility = "none"
@@ -452,8 +479,11 @@ class LeRobotReal:
         cameras: Sequence[CameraSpec] = (),
         camera_objects: Mapping[str, Any] | None = None,
         rest_pose: dict[str, float] | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self.port = address or ""
+        self.clock: Clock = clock if clock is not None else WallClock()
+        """Whose time `now()`, `sleep()` and every paced wait in here run on (`Clock`)."""
         self.robot_type = robot_type
         self.robot_id = robot_id
         self.timeout_s = timeout_s
@@ -1286,7 +1316,7 @@ class LeRobotReal:
                 if action is None:
                     break  # the policy considers the task done; the gripper says if it is
                 await self._send(action)
-                await asyncio.sleep(1.0 / POLICY_HZ)
+                await self.clock.sleep(1.0 / POLICY_HZ)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1492,7 +1522,7 @@ class LeRobotReal:
                 functools.partial(self._robot.bus.enable_torque, num_retry=TORQUE_RETRIES)
             )
             await self._send(body, clip=False)
-            await asyncio.sleep(TICK_S)
+            await self.clock.sleep(TICK_S)
             await self._probe()
         except Exception as e:
             return HandResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
@@ -1613,7 +1643,7 @@ class LeRobotReal:
                 if j not in joints or not past_reach(v, joints[j], recorded.get(j))
             }
             await self._send(send)
-            await asyncio.sleep(TICK_S)
+            await self.clock.sleep(TICK_S)
             await self._probe()
             joints = dict(self._joints)
             if at_rest(goal, joints, recorded):
@@ -1636,10 +1666,10 @@ class LeRobotReal:
         )
 
     def now(self) -> float:
-        return time.monotonic()
+        return self.clock.now()
 
     async def sleep(self, seconds: float) -> None:
-        await asyncio.sleep(seconds)
+        await self.clock.sleep(seconds)
         if self.post_sleep is not None:
             self.post_sleep()
 

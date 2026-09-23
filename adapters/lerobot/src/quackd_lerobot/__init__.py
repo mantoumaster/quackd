@@ -10,6 +10,7 @@ first driven on an arm on 2026-09-15).
 
 from __future__ import annotations
 
+import math
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
@@ -135,6 +136,31 @@ DATASHEET = Datasheet(
 )
 
 
+def published_travel(lo: float, hi: float) -> list[float]:
+    """A joint's travel as the manifest publishes it: to a tenth of a degree, rounded inward.
+
+    Inward, never to nearest, because the published figure is a promise two readers act on.
+    The pilot is told it as the travel, and asks for its ends; `move_joints` clips the start of
+    a ramp into it. The backend refuses any goal outside the travel it computed exactly, and
+    rounding to nearest can move an end outward by up to a twentieth of a degree: the pilot
+    asks for the edge it was shown and is refused, and a ramp from a joint folded past its
+    travel begins a hair outside it and is refused before it has moved. Inward, every published
+    angle is one the backend takes.
+
+    Each end is checked against the float it came from rather than trusted to the arithmetic,
+    because that float is what the backend compares a goal with: ten times a float can round
+    to a whole number the float itself lies a hair short of, and then the tenth it gives is a
+    hair outside. Such an end moves one tenth further in. A travel published a tenth narrower
+    costs nothing; one published a hair wider is the refusal this exists to prevent."""
+    low = math.ceil(lo * 10.0)
+    if low / 10.0 < lo:
+        low += 1
+    high = math.floor(hi * 10.0)
+    if high / 10.0 > hi:
+        high -= 1
+    return [low / 10.0 + 0.0, high / 10.0 + 0.0]
+
+
 def lerobot_manifest(
     backend: str,
     robot_id: str | None = None,
@@ -195,7 +221,7 @@ def lerobot_manifest(
     }
     if joint_range_deg:
         extras["joint_range_deg"] = {
-            joint: [round(lo, 1), round(hi, 1)] for joint, (lo, hi) in joint_range_deg.items()
+            joint: published_travel(lo, hi) for joint, (lo, hi) in joint_range_deg.items()
         }
     if rest_pose_clipped:
         # only when there is one: a pose inside its travel changes nothing, so the manifest of
@@ -505,6 +531,7 @@ __all__ = [
     "implementations",
     "lerobot_manifest",
     "make",
+    "published_travel",
 ]
 
 
