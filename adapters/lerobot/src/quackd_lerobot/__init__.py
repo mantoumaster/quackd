@@ -45,7 +45,14 @@ from quackd.transport.base import (
 )
 from quackd.verbs.core import CORE
 from quackd.verbs.registry import Precondition, Verb
-from quackd_lerobot.verbs import JOINTS, lerobot_conditions, lerobot_verbs
+from quackd_lerobot.verbs import (
+    JOINTS,
+    lerobot_conditions,
+    lerobot_verbs,
+    reachable_rest_goal,
+    rest_clip_note,
+    worth_saying,
+)
 
 __version__ = "0.13.0"
 """Kept in step with quackd's own version by scripts/set_version.py. It lives here rather
@@ -111,10 +118,16 @@ def lerobot_manifest(
     camera_url: str | None = None,
     camera_fov_deg: float | None = None,
     camera_names: Sequence[str] = (),
+    rest_pose_clipped: Sequence[tuple[str, float, float]] = (),
 ) -> RobotManifest:
     """The arm as data. `camera` and `policy` are what the backend found at connect: the
     static manifest of `real` claims neither, the mock has both. So are the joint ranges,
-    which come off the arm's own calibration file and are unknown until it has answered."""
+    which come off the arm's own calibration file and are unknown until it has answered.
+
+    So is `rest_pose_clipped`: each joint the recorded rest pose puts past that travel, as
+    `(joint, recorded, reachable)`. It goes in the manifest rather than the state because the
+    manifest is what a run's record opens with, and the reader of a transcript whose arm
+    parked short of its recorded fold deserves to find out why on the first line."""
     own = lerobot_verbs(policy=policy)
     verbs = [
         verb_spec(own["report_state"], core=True),
@@ -152,6 +165,13 @@ def lerobot_manifest(
     if joint_range_deg:
         extras["joint_range_deg"] = {
             joint: [round(lo, 1), round(hi, 1)] for joint, (lo, hi) in joint_range_deg.items()
+        }
+    if rest_pose_clipped:
+        # only when there is one: a pose inside its travel changes nothing, so the manifest of
+        # every such arm, its digest included, stays exactly what it was
+        extras["rest_pose_clipped"] = {
+            joint: {"recorded": round(recorded, 1), "reachable": round(reachable, 1)}
+            for joint, recorded, reachable in rest_pose_clipped
         }
     if calibration_file:
         extras["calibration_file"] = calibration_file
@@ -226,8 +246,20 @@ class LeRobotAdapter:
             camera_url=getattr(spec, "url", None),
             camera_fov_deg=getattr(spec, "fov_deg", None),
             camera_names=getattr(self.transport, "camera_keys", ()),
+            rest_pose_clipped=tuple(getattr(self.transport, "rest_clipped", ())),
         )
         return self.manifest
+
+    def rest_pose_note(self, pose: dict[str, float]) -> str | None:
+        """What recording `pose` as the rest pose would mean on this arm, or None if nothing.
+
+        `quackd robot rest-pose` asks this after reading the joints and before asking whether
+        to keep them. The clip is this adapter's, on the travel the connected backend read off
+        its own calibration, so the command neither knows the rule nor reimplements it, and the
+        sentence is the one the run and `doctor` say about the same pose."""
+        ranges = dict(getattr(self.transport, "joint_range_deg", None) or {})
+        _, clipped = reachable_rest_goal(pose, ranges)
+        return rest_clip_note(worth_saying(clipped))
 
     async def disconnect(self) -> None:
         await self.transport.close()

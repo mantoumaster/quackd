@@ -3280,6 +3280,13 @@ def robot_rest_pose(
 
     ui.console.print(Text(f"{label} is at", style=ui.STYLES["muted"]))
     ui.console.print(ui.kv_grid((j, f"{v:.1f}") for j, v in joints.items()))
+    # A fold past the travel this arm's calibration recorded is still recorded: it is where
+    # the arm rests, and a run parks at the edge of the travel and lets it settle there. But
+    # the person folding it is the one who can fix it, so they hear it now, before answering,
+    # in the words a run and `doctor` will use. The adapter owns the rule; this only asks.
+    note_for = getattr(adapter, "rest_pose_note", None)
+    if callable(note_for) and (warning := note_for(joints)):
+        ui.console.print(_warn_line(str(warning)))
     if not yes:
         if not _can_prompt():
             _fail(

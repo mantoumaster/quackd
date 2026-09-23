@@ -327,6 +327,9 @@ class AgentLoop:
         # the pilot is handed an `assess_task` tool, so the executor holds it to the answer
         self.executor.require_verdict = True
         self.history: list[Exchange] = []
+        self._rest_note_said = False
+        """Whether the rest move's note about the pose itself has been said this run. The
+        rest move runs at both ends, and the note is about the pose rather than the move."""
         self.usage = Usage()
         self.llm_latency_s = 0.0
         """Seconds this run spent waiting on the model, every call including the ones that
@@ -459,6 +462,12 @@ class AgentLoop:
             self._note(
                 "already at the rest pose" if parked.how == "already" else "at the rest pose"
             )
+            if parked.note and not self._rest_note_said:
+                # the body's own sentence about the pose it parked in, which is the same at
+                # both ends of a run: said the first time, so the record carries it once and
+                # the person reads it before the run starts rather than after it has ended
+                self._rest_note_said = True
+                self._note(parked.note)
         else:
             self._note(f"the arm did not reach its rest pose: {parked.reason}")
         return parked

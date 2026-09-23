@@ -29,9 +29,14 @@ from quackd_lerobot.verbs import (
     LIMP_IN_HAND,
     TOL_DEG,
     TORQUE_LEFT_ON,
+    Clip,
     at_rest,
+    past_reach,
+    reachable_rest_goal,
+    rest_clip_note,
     rest_goal,
     shortfall,
+    worth_saying,
 )
 
 REST = {
@@ -180,6 +185,23 @@ class LeRobotMock(MockTransport):
                 )
         return None
 
+    @property
+    def rest_reachable(self) -> dict[str, float]:
+        """The rest goal clipped into `MOCK_RANGES`, the real backend's rule on the mock's own
+        travel. `_goto` clamps a goal the way the servo does, so without this a pose recorded
+        past the travel would stall offline exactly as it did on the bench."""
+        return reachable_rest_goal(self.rest_pose or {}, self.joint_range_deg)[0]
+
+    @property
+    def rest_clipped(self) -> tuple[Clip, ...]:
+        """Every joint the recorded pose puts past `MOCK_RANGES`, as the real backend names
+        them, so the manifest of a rehearsal carries the same key as the arm's."""
+        return reachable_rest_goal(self.rest_pose or {}, self.joint_range_deg)[1]
+
+    def _outside_travel(self, joint: str, reading: float) -> bool:
+        span = self.joint_range_deg.get(joint)
+        return span is not None and not span[0] <= reading <= span[1]
+
     def _goto(self, goals: dict[str, float]) -> None:
         for joint, goal in goals.items():
             if joint in JOINTS:
@@ -246,21 +268,43 @@ class LeRobotMock(MockTransport):
 
     async def go_to_rest(self) -> RestResult:
         """The real arm's rest move, in memory: goals land at once, so it either is there
-        already, gets there in one action, or was told to fail."""
+        already, gets there in one action, or was told to fail.
+
+        The same reachable goal and the same half-line rule as the real backend, and arrival
+        is judged rather than assumed: `_goto` clamps like the servo, so a goal it could not
+        land is one this reads back and reports, the way the arm's own rest move would."""
         self.sequence.append("rest")
         if self.rest_pose is None:
             return RestResult.none("no rest pose is recorded for this arm")
-        goal = rest_goal(self.rest_pose)
+        recorded = rest_goal(self.rest_pose)
+        goal = self.rest_reachable
         if not goal:
             # the real arm's answer, for the same reason: a pose that drives nothing is a
             # reason to keep holding, not a reason to behave as though none was recorded
             return RestResult("refused", "the recorded pose names no joint this arm drives")
         if self.rest_fails is not None:
-            return RestResult("stalled", self.rest_fails)
-        if at_rest(goal, self.joints):
-            return RestResult("already", "already at the rest pose")
-        self._goto(goal)
-        return RestResult("arrived", "moved to the rest pose")
+            result = RestResult("stalled", self.rest_fails)
+        elif at_rest(goal, self.joints, recorded):
+            result = RestResult("already", "already at the rest pose")
+        else:
+            # a joint folded past its limit is left out, as on the arm: the limit is the one
+            # goal it would take, and that goal hauls it up out of its fold
+            self._goto(
+                {
+                    j: v
+                    for j, v in goal.items()
+                    if not past_reach(v, self.joints.get(j, v), recorded.get(j))
+                }
+            )
+            if at_rest(goal, self.joints, recorded):
+                result = RestResult("arrived", "moved to the rest pose")
+            else:
+                why = shortfall(goal, self.joints, recorded)
+                result = RestResult("stalled", f"{why}, and it has stopped moving")
+        if clipped := worth_saying(self.rest_clipped):
+            note = rest_clip_note(clipped) if result.reached else None
+            result = RestResult(result.how, result.reason, clipped, note)
+        return result
 
     async def let_go(self) -> HandResult:
         """Torque off for a person to place the arm, refused wherever the real one refuses."""
@@ -271,14 +315,15 @@ class LeRobotMock(MockTransport):
                 "no rest pose is recorded for this arm, so there is nowhere it is known to be "
                 "safe to let go of it: quackd robot rest-pose NAME",
             )
-        goal = rest_goal(self.rest_pose)
+        recorded = rest_goal(self.rest_pose)
+        goal = self.rest_reachable
         if not goal:
             return HandResult("refused", "the recorded pose names no joint this arm drives")
-        if not at_rest(goal, self.joints):
+        if not at_rest(goal, self.joints, recorded):
             return HandResult(
                 "refused",
-                f"the arm is not at its rest pose ({shortfall(goal, self.joints)}), and an "
-                "arm held up by torque alone falls when torque goes",
+                f"the arm is not at its rest pose ({shortfall(goal, self.joints, recorded)}), "
+                "and an arm held up by torque alone falls when torque goes",
             )
         self.torque = False
         self.in_hand = True
@@ -289,8 +334,12 @@ class LeRobotMock(MockTransport):
         self.sequence.append("take_hold")
         placed = dict(self.joints)
         # the real backend writes the present position as the goal before torque comes on and
-        # again after, and an in-memory arm is already exactly where it is told to be
-        self._goto({j: v for j, v in placed.items() if j in JOINTS})
+        # again after, and an in-memory arm is already exactly where it is told to be. A joint
+        # placed outside its travel is left out, as on the arm: `_goto` clamps like the servo,
+        # so writing it would drag it to the limit
+        self._goto(
+            {j: v for j, v in placed.items() if j in JOINTS and not self._outside_travel(j, v)}
+        )
         self.torque = True
         # torque is on, so the arm holds itself whatever else went wrong: the real backend
         # clears this here and for the same reason, before it judges the pose
@@ -310,10 +359,12 @@ class LeRobotMock(MockTransport):
         return HandResult("held", "holding the pose you set", joints=dict(self.joints))
 
     async def close(self) -> None:
-        """Torque drops only where the arm can be let go of, as it does on a real one."""
+        """Torque drops only where the arm can be let go of, as it does on a real one: at the
+        reachable rest pose or past it on a clipped joint's side, with nothing to say about it."""
         self.sequence.append("close")
         self.close_note = None
-        goal = rest_goal(self.rest_pose or {})
+        recorded = rest_goal(self.rest_pose or {})
+        goal = self.rest_reachable
         if self.in_hand:
             self.close_note = LIMP_IN_HAND.format(
                 why="it was let go of for you to place and never taken hold of again"
@@ -322,8 +373,8 @@ class LeRobotMock(MockTransport):
             self.close_note = TORQUE_LEFT_ON.format(
                 why="the recorded pose names no joint this arm drives"
             )
-        elif goal and not at_rest(goal, self.joints):
-            self.close_note = TORQUE_LEFT_ON.format(why=shortfall(goal, self.joints))
+        elif goal and not at_rest(goal, self.joints, recorded):
+            self.close_note = TORQUE_LEFT_ON.format(why=shortfall(goal, self.joints, recorded))
         else:
             self.torque = False
         await super().close()

@@ -354,7 +354,26 @@ BUS_WRITE_CALIBRATION = UpstreamRef(
     "VERIFIED",
     src(_FEETECH, 268),
     "it writes the limits and the homing offset into the motors; connect(calibrate=False) "
-    "never calls it, so quackd cannot move an arm's zero even by accident",
+    "never calls it, so quackd cannot move an arm's zero even by accident. The limits are "
+    "each motor's calibrated range_min and range_max, written into its Min_Position_Limit and "
+    "Max_Position_Limit registers (POSITION_LIMITS_CLAMP_GOALS says what the servo does with "
+    "them)",
+)
+POSITION_LIMITS_CLAMP_GOALS = UpstreamRef(
+    "write_calibration() writes Min_Position_Limit and Max_Position_Limit, and the servo "
+    "clamps Goal_Position to them",
+    "VERIFIED",
+    src(_FEETECH, 268),
+    "lines 268 to 276, the same in the installed lerobot 0.6.1: each motor's range_min and "
+    "range_max go into its own EEPROM as Min_Position_Limit and Max_Position_Limit. The "
+    "STS3215 firmware then clamps every Goal_Position write to those two registers, which no "
+    "LeRobot source says (DEGREES_NO_CLAMP bounds nothing) and an SO-101 showed on 2026-09-23: "
+    "a joint driven down from above stopped one encoder tick inside its floor, and every goal "
+    "written below the floor moved a joint folded past it up to it. A reading is not clamped: "
+    "with torque off an arm folds wherever a hand or its weight puts it, past either limit. "
+    "So quackd drives a rest pose clipped into the travel, judges a joint folded past its "
+    "limit as at rest, and never writes a goal for a joint that reads past its travel, "
+    "because the one goal the servo would take there is the limit and it hauls the joint to it",
 )
 BUS_SYNC_READ = UpstreamRef(
     "MotorsBus.sync_read(data_name, motors=None, normalize=True, num_retry=0)",
@@ -391,8 +410,11 @@ DEGREES_NO_CLAMP = UpstreamRef(
     src(_BUS, 904),
     "_unnormalize bounds the RANGE_0_100 and RANGE_M100_100 modes and does not bound "
     "DEGREES: the tick it computes is written to Goal_Position as-is. So the gripper is "
-    "clamped by LeRobot and the five body joints are not, and what the firmware does with a "
-    "tick outside Min_Position_Limit is Feetech's. quackd refuses the goal instead",
+    "clamped by LeRobot and the five body joints are not. The firmware clamps them instead, to "
+    "the Min_Position_Limit and Max_Position_Limit calibration wrote into it "
+    "(POSITION_LIMITS_CLAMP_GOALS, seen on an arm on 2026-09-23), so a goal past the travel is "
+    "one the arm silently stops short of. quackd refuses a pilot's goal there rather than let "
+    "it be quietly rewritten",
 )
 STS3215_RESOLUTION = UpstreamRef(
     "sts3215 resolution 4096",
@@ -590,7 +612,10 @@ TORQUE_ENABLE_HOLDS_PRESENT = UpstreamRef(
     "hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back "
     "to it would happen with somebody's fingers in the way. quackd writes the present "
     "position as the goal BEFORE enabling torque, writes it again after, and reads the arm "
-    "back to check it stayed: the assumption is never relied on in either direction",
+    "back to check it stayed: the assumption is never relied on in either direction. The one "
+    "exception is a joint placed past its calibrated travel, which gets no goal at all, "
+    "because the servo would clamp it to the limit (POSITION_LIMITS_CLAMP_GOALS). For that "
+    "joint this row is all there is, and the read-back is what says whether it moved",
 )
 GRIPPER_OPEN_VALUE = UpstreamRef(
     "GRIPPER_OPEN_VALUE",
@@ -643,7 +668,10 @@ JOINT_RANGES = UpstreamRef(
     "the reachable range of each joint is whatever calibration recorded, and no vendor "
     "publishes what it ought to be. quackd computes each joint's travel from the calibration "
     "file and refuses a goal outside it rather than writing a tick LeRobot will not clamp "
-    "(DEGREES_NO_CLAMP); whether that travel is the real mechanical limit is unverified",
+    "(DEGREES_NO_CLAMP) and the servo will (POSITION_LIMITS_CLAMP_GOALS). The travel is not "
+    "the mechanical limit on every arm: a calibration that never saw a joint folded all the "
+    "way leaves the fold past it, which is why a rest pose is clipped into the travel. "
+    "Whether it is the mechanical limit on any given arm is unverified",
 )
 SERIAL_PORT = UpstreamRef(
     "SERIAL_PORT",

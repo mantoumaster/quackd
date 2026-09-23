@@ -383,9 +383,13 @@ def body_lines(manifest: RobotManifest) -> list[str]:
         lines.append(f"- quackd clamps you to {clamps}.")
     if ranges:
         travel = ", ".join(f"{joint} {lo:g} to {hi:g}" for joint, (lo, hi) in ranges.items())
+        # the second sentence is the servo's rule, and it is here because a reading past the
+        # travel beside this line is otherwise a contradiction a careful pilot refuses to move on
         lines.append(
             f"- Each joint's travel in degrees, read from its own calibration, and the only "
-            f"goals quackd will send: {travel}."
+            f"goals quackd will send: {travel}. A joint can read past its travel when it was "
+            "folded or placed there with torque off, which is where a rest pose usually is; "
+            "goals are still limited to the travel."
         )
     if manifest.sensors:
         lines.append(f"- Senses: {', '.join(manifest.sensors)}.")

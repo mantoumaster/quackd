@@ -149,15 +149,26 @@ def _joints_of(state: DuckState) -> dict[str, float]:
     return {str(k): float(v) for k, v in dict(state.extras.get("joints", {})).items()}
 
 
-def shortfall(goal: dict[str, float], joints: dict[str, float]) -> str:
+def shortfall(
+    goal: dict[str, float],
+    joints: dict[str, float],
+    recorded: dict[str, float] | None = None,
+) -> str:
     """The joint furthest from where it was asked to be, in words.
 
     Public because the rest move says it too, and it reads from the transport rather
-    than through a verb."""
+    than through a verb. With the recorded rest pose beside a reachable goal, a joint that is
+    at rest by the half-line rule (`joint_at_rest`) is never the one named, however far it
+    reads from its goal: an arm folded past its travel is not short of anything, and naming
+    it would send somebody to look at the one joint that is fine."""
     behind = {k: abs(joints[k] - v) for k, v in goal.items() if k in joints}
     if not behind:
         return "the arm reported no joint positions"
-    worst = max(behind, key=lambda joint: behind[joint])
+    rec = recorded or {}
+    short = {
+        k: gap for k, gap in behind.items() if not joint_at_rest(goal[k], joints[k], rec.get(k))
+    } or behind
+    worst = max(short, key=lambda joint: short[joint])
     return f"{worst} is at {joints[worst]:.0f} with a goal of {goal[worst]:.0f}"
 
 
@@ -240,6 +251,90 @@ def rest_goal(rest_pose: dict[str, float]) -> dict[str, float]:
     return {j: float(v) for j, v in rest_pose.items() if j in JOINTS and j != "gripper"}
 
 
+Clip = tuple[str, float, float]
+"""`(joint, recorded, reachable)`: a joint of the rest pose that lies past its travel."""
+
+
+def reachable_rest_goal(
+    rest_pose: dict[str, float], ranges: dict[str, tuple[float, float]]
+) -> tuple[dict[str, float], tuple[Clip, ...]]:
+    """The rest goal the servos can actually be driven to, and the joints it had to move.
+
+    A pose is recorded off an arm that was folded by hand with torque off, and nothing stops a
+    hand folding a joint past the travel its calibration recorded. A goal is a different
+    matter. LeRobot's calibration writes each joint's travel into the servo itself as its two
+    position limits, and the servo clamps every goal it is written to them
+    (`upstream_api.POSITION_LIMITS_CLAMP_GOALS`). So a goal past the travel is never refused
+    and never reached: the servo drives to the limit and stops there, and a rest move watching
+    for the recorded angle watches a joint that will not come, stalls, and calls the arm lost.
+
+    So each body joint of `rest_goal` is clipped into its travel from `ranges`, which is what
+    `joint_ranges()` read off this arm's calibration, whichever end it is past and however
+    many joints are. A joint with no known range passes through unchanged, because there is
+    nothing to clip it to and inventing a range would be worse. The gripper is never in it,
+    for `rest_goal`'s reason.
+
+    The second value names every joint that was moved at all, as `(joint, recorded,
+    reachable)` in the pose's own order. Callers decide which of them are worth saying
+    (`worth_saying`); this one only records what happened."""
+    goal: dict[str, float] = {}
+    clipped: list[Clip] = []
+    for joint, recorded in rest_goal(rest_pose).items():
+        span = ranges.get(joint)
+        if span is None:
+            goal[joint] = recorded
+            continue
+        lo, hi = span
+        reachable = min(hi, max(lo, recorded))
+        goal[joint] = reachable
+        if reachable != recorded:
+            clipped.append((joint, recorded, reachable))
+    return goal, tuple(clipped)
+
+
+def worth_saying(clipped: tuple[Clip, ...]) -> tuple[Clip, ...]:
+    """The clipped joints a person needs to hear about: those further past their travel than
+    `TOL_DEG`. A joint clipped by less is parked inside the tolerance any reached pose is
+    allowed to miss by, so its fold and its parked angle are the same pose as far as the rest
+    move is concerned, and a sentence about it would be a sentence about nothing. The
+    half-line rule in `joint_at_rest` still applies to it."""
+    return tuple(c for c in clipped if abs(c[1] - c[2]) > TOL_DEG)
+
+
+def _listed(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def rest_clip_note(clipped: tuple[Clip, ...]) -> str | None:
+    """What a clipped rest pose means, in the numbers of this arm, or None when nothing was.
+
+    One sentence that the rest move's narrator, `doctor` and `quackd robot rest-pose` all say,
+    so a person hears the same thing wherever they first meet it. It says what happens rather
+    than what went wrong, because nothing did: the arm parks at the edge of its travel, torque
+    is released there, and the joint is free to settle toward the fold on its own. And it says
+    how to make the fold itself reachable, which is a calibration that saw the arm folded."""
+    if not clipped:
+        return None
+    if len(clipped) == 1:
+        joint, recorded, reachable = clipped[0]
+        said = (
+            f"{joint} is recorded at {recorded:.0f} in the rest pose and this calibration lets "
+            f"its servo be driven to {reachable:.0f} and no further, so it parks there"
+        )
+    else:
+        where = _listed([f"{joint} at {recorded:.0f}" for joint, recorded, _ in clipped])
+        limits = _listed([f"{reachable:.0f}" for _, _, reachable in clipped])
+        said = (
+            f"the rest pose records {where}, and this calibration lets their servos be driven "
+            f"to {limits} and no further, so each parks there"
+        )
+    return (
+        f"{said} and is let go of there, free to settle the rest of the way on its own. "
+        "Calibrate again with the arm folded (lerobot-calibrate) and record the pose again "
+        "(quackd robot rest-pose NAME) to make the fold reachable"
+    )
+
+
 TORQUE_COULD_NOT_BE_KEPT = (
     "the arm is not at its rest pose ({why}), and quackd could not keep torque on, so the "
     "arm was released where it stood: check whether it is still where you left it"
@@ -282,11 +377,56 @@ def drivable_rest_joints() -> tuple[str, ...]:
     return tuple(j for j in JOINTS if j != "gripper")
 
 
-def at_rest(goal: dict[str, float], joints: dict[str, float]) -> bool:
-    """Every joint of the goal is reported, and every one of them is close enough."""
+def joint_at_rest(goal: float, reading: float, recorded: float | None = None) -> bool:
+    """One joint of a rest pose, judged against its reachable goal.
+
+    A joint whose recorded angle is its goal, which is every joint whose fold is inside its
+    travel, is at rest within `TOL_DEG` of it, as it always was.
+
+    A joint whose recorded angle lies past its goal was clipped (`reachable_rest_goal`), and
+    for that one the rule is a half-line rather than a point: it is at rest anywhere from
+    `TOL_DEG` short of its goal out past it, on the side the recorded angle lies. Below the
+    floor that is `reading <= goal + TOL_DEG`, above the ceiling `reading >= goal - TOL_DEG`.
+    The reason is what the servo does. It clamps every goal to its travel, so past the limit
+    nothing quackd can send moves it there: the only ways a joint gets past it are settling
+    with torque off and being placed there by hand, and that is what a fold is. A joint
+    reading past its limit is therefore folded, never lost, and driving it "to rest" would
+    haul it up to the limit and hold it there against its own weight. Which side is read off
+    the sign of `recorded - goal`, so a fold past the ceiling works exactly like one past the
+    floor."""
+    if recorded is not None and recorded < goal:
+        return reading <= goal + TOL_DEG
+    if recorded is not None and recorded > goal:
+        return reading >= goal - TOL_DEG
+    return abs(reading - goal) <= TOL_DEG
+
+
+def past_reach(goal: float, reading: float, recorded: float | None) -> bool:
+    """The joint reads beyond its reachable goal, on the side its recorded angle lies.
+
+    That goal is the servo's limit, so writing it to this joint is writing a goal the servo
+    moves *away* from the fold to reach: the rest move leaves such a joint out of what it
+    sends rather than haul a folded arm up. A joint whose recorded angle is its goal is never
+    past it, and a joint exactly at its goal is not past it either: that goal moves nothing."""
+    if recorded is None:
+        return False
+    return (recorded < goal and reading < goal) or (recorded > goal and reading > goal)
+
+
+def at_rest(
+    goal: dict[str, float],
+    joints: dict[str, float],
+    recorded: dict[str, float] | None = None,
+) -> bool:
+    """Every joint of the goal is reported, and every one of them is at rest.
+
+    `goal` is the reachable goal and `recorded` the pose as it was recorded; without it every
+    joint is judged by the point rule, which is also what a pose inside its travel gets with
+    it. `joint_at_rest` is the rule. A joint the arm did not report is never at rest."""
     if not goal or any(j not in joints for j in goal):
         return False
-    return all(abs(joints[j] - v) <= TOL_DEG for j, v in goal.items())
+    rec = recorded or {}
+    return all(joint_at_rest(v, joints[j], rec.get(j)) for j, v in goal.items())
 
 
 def rest_budget_s(distance_deg: float, step_deg: float) -> float:
@@ -299,6 +439,41 @@ def rest_budget_s(distance_deg: float, step_deg: float) -> float:
 
 
 # ── the verbs ───────────────────────────────────────────────────────────────────────────
+
+
+def _past_travel(ctx: VerbContext, extras: dict[str, Any], joints: dict[str, float]) -> list[str]:
+    """One clause per joint the arm reports outside its calibrated travel.
+
+    A pilot handed a joint reading beyond the end of the travel line in its prompt has been
+    handed a contradiction, and a careful one refuses to move an arm whose state it cannot
+    explain: on the bench one did exactly that. The explanation is the servo's: its goals are
+    clamped to the travel, and its readings are not, so an arm folded or placed with torque
+    off can read past the end. The clause says that much and no more. It does not say how the
+    joint got there, because `out_of_range` carries a margin, and a joint the servo parked at
+    its limit that then sagged under its own weight qualifies too.
+
+    The travel is the connected arm's, from the manifest; where it is not known the clause
+    says only that the joint reads outside it."""
+    ranges = (
+        ctx.manifest.extras.get("joint_range_deg") if ctx.manifest is not None else None
+    ) or {}
+    said = []
+    for name in extras.get("out_of_range") or []:
+        joint = str(name)
+        reading = joints.get(joint)
+        if reading is None:
+            continue
+        span = ranges.get(joint)
+        if not span:
+            said.append(f"{joint} reads {reading:.0f}, outside its calibrated travel")
+            continue
+        lo, hi = float(span[0]), float(span[1])
+        limit = lo if reading < lo else hi
+        said.append(
+            f"{joint} reads {reading:.0f}, past the {limit:g} its servo can be driven to; "
+            "goals are still limited to its travel"
+        )
+    return said
 
 
 async def report_state(ctx: VerbContext, _: NoParams) -> VerbResult:
@@ -323,6 +498,7 @@ async def report_state(ctx: VerbContext, _: NoParams) -> VerbResult:
         heat = "no temperature reported"
     held = "holding something" if state.holding else "holding nothing"
     parts = [where or "no joints reported", torque, heat, held]
+    parts += _past_travel(ctx, extras, joints)
     # a camera earns a clause only when a read has actually failed. Not when it is merely
     # unread: `ok` is false until the first frame, and a camera that opened and has not been
     # asked yet is not news. A working one is already in every observation as detections,

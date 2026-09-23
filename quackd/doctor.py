@@ -642,6 +642,10 @@ def probe(
         add(ProbeRow("rest pose", "returned to it", "ok"))
     else:
         add(ProbeRow("rest pose", f"not reached: {parked.reason}", "fail"))
+    if parked.note:
+        # what the body has to say about the pose it parked in, which is advice and not a
+        # fault: the row above is green because the arm reached the pose it can be driven to
+        report.advisories.append(parked.note)
     if lost:
         report.advisories.append(
             f"a .duck that requires {lost[0]} will be refused on this robot, and one that "

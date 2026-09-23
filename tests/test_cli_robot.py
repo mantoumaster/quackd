@@ -146,6 +146,7 @@ def test_rest_pose_records_the_arms_own_joints_and_show_prints_them(tmp_path: Pa
     recorded = runner.invoke(app, ["robot", "rest-pose", "arm-01", "--yes", *_reg(tmp_path)])
     assert recorded.exit_code == 0, recorded.output
     assert "recorded arm-01's rest pose" in recorded.output
+    assert "lerobot-calibrate" not in recorded.output, "a pose inside the travel is not news"
     assert Registry(tmp_path).robot("arm-01").rest_pose == {
         joint: round(value, 1) for joint, value in REST.items()
     }, "the stored pose is where the arm was, rounded to a tenth of a degree"
@@ -159,6 +160,39 @@ def test_rest_pose_records_the_arms_own_joints_and_show_prints_them(tmp_path: Pa
     as_json = runner.invoke(app, ["robot", "show", "arm-01", "--json", *_reg(tmp_path)])
     assert as_json.exit_code == 0, as_json.output
     assert json.loads(as_json.output.strip())["rest_pose"]["shoulder_lift"] == -90.0
+
+
+def test_rest_pose_warns_about_a_fold_past_the_travel_and_still_records_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The person folding the arm is the one who can fix a calibration that never saw the
+    fold, so they hear it while they are standing there: which joints lie past the travel
+    this arm's calibration records, where the arm will park them, and the two commands that
+    make the fold reachable. The pose is still recorded, because it is still where the arm
+    rests, and a run parks at the edge of the travel and lets it settle there.
+
+    The travel is narrowed here rather than the arm moved, so the mock's own resting joints
+    are the fold: one past its floor and one past its ceiling, on spans of nobody's arm."""
+    from quackd_lerobot import mock as lerobot_mock
+
+    narrowed = dict(lerobot_mock.MOCK_RANGES)
+    narrowed["shoulder_lift"] = (REST["shoulder_lift"] + 23.0, 64.0)
+    narrowed["elbow_flex"] = (-58.0, REST["elbow_flex"] - 17.0)
+    monkeypatch.setattr(lerobot_mock, "MOCK_RANGES", narrowed)
+    _seed_arm(tmp_path)
+    recorded = runner.invoke(app, ["robot", "rest-pose", "arm-01", "--yes", *_reg(tmp_path)])
+    assert recorded.exit_code == 0, recorded.output
+    said = " ".join(recorded.output.split())
+    floor, ceiling = narrowed["shoulder_lift"][0], narrowed["elbow_flex"][1]
+    assert (
+        f"shoulder_lift at {REST['shoulder_lift']:.0f} and elbow_flex at {REST['elbow_flex']:.0f}"
+    ) in said, said
+    assert f"driven to {floor:.0f} and {ceiling:.0f} and no further" in said, said
+    assert "lerobot-calibrate" in said and "quackd robot rest-pose NAME" in said, said
+    assert said.index("lerobot-calibrate") < said.index("recorded arm-01's rest pose")
+    assert Registry(tmp_path).robot("arm-01").rest_pose == {
+        joint: round(value, 1) for joint, value in REST.items()
+    }, "the fold is recorded as it is, not as the arm can be driven to it"
 
 
 def test_rest_pose_asks_unless_yes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

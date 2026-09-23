@@ -1580,6 +1580,51 @@ async def test_an_arm_the_run_left_elsewhere_is_driven_home_before_the_torque_dr
     assert mock.close_note is None
 
 
+async def test_a_rest_pose_past_the_travel_is_explained_once_and_the_old_notes_stand(
+    tmp_path: Path,
+) -> None:
+    """A rest pose recorded past the arm's travel is parked at the edge of it and let go of
+    there, and the person hears why once per run, at the first rest move, in the arm's own
+    numbers. Not at both ends: the pose did not change during the run. And the three notes the
+    rest move has always said are said exactly as before, because scripts and people read
+    them."""
+    from quackd_lerobot.mock import MOCK_RANGES
+
+    floor = MOCK_RANGES["shoulder_lift"][0]
+    pose = dict(ARM_REST) | {"shoulder_lift": floor - 2 * TOL_DEG - 3.0}
+    mock = LeRobotMock(rest_pose=pose)
+    script = [ToolCall(name="declare_success", arguments={"reason": "parked twice"})]
+    result = await run_duck(
+        RunConfig(
+            duck=_arm_duck(),
+            provider=FakeProvider(script=script),
+            transport=LeRobotAdapter(mock),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    said = [note for note in notes if "lerobot-calibrate" in note]
+    assert len(said) == 1, notes
+    assert f"recorded at {pose['shoulder_lift']:.0f}" in said[0], said[0]
+    assert f"driven to {floor:.0f} and no further" in said[0], said[0]
+    rest_notes = [note for note in notes if "rest pose" in note and note not in said]
+    assert rest_notes == [
+        "moving to the rest pose",
+        "at the rest pose",
+        "moving to the rest pose",
+        "already at the rest pose",
+    ], notes
+    assert notes.index(said[0]) == notes.index("at the rest pose") + 1, "said at the start"
+    start = next(e for e in events if e["kind"] == "run_start")
+    clipped = start["robot"]["extras"]["rest_pose_clipped"]
+    assert clipped == {
+        "shoulder_lift": {"recorded": round(pose["shoulder_lift"], 1), "reachable": floor}
+    }, "the record opens with the clipped joint"
+    assert mock.torque is False and mock.close_note is None
+
+
 async def test_a_dry_run_never_moves_the_arm_to_its_rest_pose(tmp_path: Path) -> None:
     """A dry run sends nothing to the robot, and the rest move is the one thing in the teardown
     that is not narration: it is a real motion, so it is the one that has to be checked by

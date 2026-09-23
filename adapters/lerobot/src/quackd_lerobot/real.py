@@ -21,8 +21,14 @@ What this backend refuses to take on faith, because upstream cannot tell it:
 - **torque is on.** `get_observation()` reads positions only, so torque state and joint
   temperature come off the bus by register (`up.STS3215_REGISTERS`).
 - **the goal is reachable.** A degrees goal outside the calibrated range is written as-is
-  (`up.DEGREES_NO_CLAMP`), so quackd computes each joint's travel from the calibration file
-  and refuses the goal.
+  (`up.DEGREES_NO_CLAMP`) and the servo clamps it to the limits calibration wrote into it
+  (`up.POSITION_LIMITS_CLAMP_GOALS`), so it would be a goal the arm quietly stops short of.
+  quackd computes each joint's travel from the calibration file and refuses the goal.
+- **the reading is inside the travel.** The clamp is on goals and not on readings: an arm
+  folded or placed with torque off can read past its travel, and its recorded rest pose can
+  lie there. So the rest move drives to the pose clipped into the travel and judges a joint
+  past it as folded, and no hold ever writes a goal for a joint reading past it, because the
+  only goal the servo would take there hauls the joint up to the limit.
 - **the arm can be told to jump.** `max_relative_target` is `None` upstream; quackd sets it,
   so one `send_action` moves a joint at most `max_step_deg`.
 
@@ -69,10 +75,15 @@ from quackd_lerobot.verbs import (
     TOL_DEG,
     TORQUE_COULD_NOT_BE_KEPT,
     TORQUE_LEFT_ON,
+    Clip,
     at_rest,
+    past_reach,
+    reachable_rest_goal,
     rest_budget_s,
+    rest_clip_note,
     rest_goal,
     shortfall,
+    worth_saying,
 )
 
 STATUS = "LeRobot names verified at a pinned commit; one SO-101 driven on 2026-09-15"
@@ -451,6 +462,35 @@ class LeRobotReal:
     def policy_running(self) -> bool:
         return self._policy_task is not None and not self._policy_task.done()
 
+    @property
+    def rest_reachable(self) -> dict[str, float]:
+        """The rest goal this arm's servos can actually be driven to.
+
+        The recorded pose's body joints, each clipped into the travel `connect()` read off this
+        arm's calibration (`verbs.reachable_rest_goal`). `rest_pose` stays the pose as it was
+        recorded, because the half-line rule needs to know which side of its limit a clipped
+        joint was folded to. Before `connect()` no calibration has been read, so this is the
+        recorded pose unchanged; nothing drives the arm before then."""
+        return reachable_rest_goal(self.rest_pose or {}, self.joint_range_deg)[0]
+
+    @property
+    def rest_clipped(self) -> tuple[Clip, ...]:
+        """Every joint the recorded pose puts past its travel, as `(joint, recorded,
+        reachable)`. The adapter hands these to the manifest, which is how a run's record
+        learns the pose it will park in is not the pose it was recorded in."""
+        return reachable_rest_goal(self.rest_pose or {}, self.joint_range_deg)[1]
+
+    def _outside_travel(self, joint: str, reading: float) -> bool:
+        """The joint reads strictly outside the travel its calibration recorded.
+
+        Only a goal is clamped to the travel, never a reading, so this is an arm folded or
+        placed there with torque off, or one the servo parked at its limit that then sagged a
+        little past it under its own weight. Either way the one goal the servo would accept
+        for this joint is its limit, and writing that moves the joint away from where it is.
+        A joint with no known range is never outside it."""
+        span = self.joint_range_deg.get(joint)
+        return span is not None and not span[0] <= reading <= span[1]
+
     # ── plumbing ────────────────────────────────────────────────────────────────────
 
     async def _call(
@@ -656,6 +696,14 @@ class LeRobotReal:
         they are not the recorded pose, turns that default off and says so. Without a rest
         pose recorded there is nothing to check against and nothing changes.
 
+        "The recorded pose" is judged the way the rest move judges it (`verbs.at_rest`): a
+        joint recorded past its travel is at rest parked at the edge of it or anywhere beyond,
+        and is let go of there to settle the rest of the way. That release says nothing here:
+        the settle sentence travels on the rest move's result, which is said once by whoever
+        narrates it, and a `close_note` is read everywhere as torque left on. A joint stopped
+        short *inside* its travel, against a hand or the desk, is still a miss and still keeps
+        torque.
+
         An arm still limp in somebody's hands is the one case where neither of those notes is
         true, and it says so in its own words: there is no torque to keep and nothing to keep
         it from."""
@@ -707,7 +755,8 @@ class LeRobotReal:
 
     async def _not_resting(self) -> str | None:
         """Why this arm must keep its torque, or None if it may let go. Reads, never moves."""
-        goal = rest_goal(self.rest_pose or {})
+        recorded = rest_goal(self.rest_pose or {})
+        goal = self.rest_reachable
         if not goal:
             # a pose was recorded and none of it can be driven: the arm is somewhere nobody
             # chose, so it keeps holding rather than being let go there
@@ -717,9 +766,9 @@ class LeRobotReal:
         except Exception as e:
             return f"the arm did not answer: {type(e).__name__}: {e}"
         joints = dict(self._joints)
-        if at_rest(goal, joints):
+        if at_rest(goal, joints, recorded):
             return None
-        why = shortfall(goal, joints)
+        why = shortfall(goal, joints, recorded)
         if self._rest_result is not None and not self._rest_result.reached:
             return f"{why}; {self._rest_result.reason}"
         return f"{why}; nothing moved it there"
@@ -944,9 +993,11 @@ class LeRobotReal:
     async def _send(self, goals: dict[str, float], *, clip: bool = True) -> dict[str, float]:
         """One `send_action`, and what it says it actually sent (`up.SO_SEND_ACTION_RETURN`).
 
-        `clip` is off for a hold, where the goal is the position the arm is already in: an
-        arm sitting outside its recorded travel should stay there when told to stop, not be
-        walked back inside it."""
+        `clip` is off for a hold, where the goal is the position the arm is already in and a
+        clip would be a goal somewhere it is not. Every caller that passes it has already
+        left out each joint reading outside its travel (`_outside_travel`) rather than send it
+        clipped, because a clipped goal for that joint is exactly what the servo's own clamp
+        would make of an unclipped one: a goal at the limit, which hauls the joint to it."""
         action = {
             f"{joint}.pos": (self._clip(joint, float(goal)) if clip else float(goal))
             for joint, goal in goals.items()
@@ -1058,14 +1109,30 @@ class LeRobotReal:
         An arm somebody is holding is taken hold of first. Every teardown begins with a stop,
         so this is what a Ctrl-C during the hand-off wait reaches: the arm is energised where
         the person's hand has it, and the rest move that follows can then put it down. Sending
-        a goal to a limp servo instead would be a stop that stopped nothing."""
+        a goal to a limp servo instead would be a stop that stopped nothing.
+
+        A joint reading outside its calibrated travel is left out of the goal too. The servo
+        clamps every goal to its travel, so "stay where you are" written to a joint folded past
+        it arrives as "go to the limit", and the servo does that at full speed: on the bench a
+        stop at the end of a run hauled a folded shoulder up out of its fold this way, with
+        nothing in the record saying the stop had moved it. Leaving it out costs at most one
+        step of travel: every goal quackd writes is within one step of the reading it was
+        written against (`max_relative_target`), so a servo whose last goal came from quackd
+        keeps holding a goal within a step of where the joint was. A joint reading past its
+        travel is not being driven anywhere either: nothing quackd sends can take it there.
+        If that leaves nothing to send, nothing is sent and the stop is still a stop, for the
+        same reason: every servo is holding the goal it already has."""
         await self._cancel_policy()
         retaken: HandResult | None = None
         if self._in_hand:
             retaken = await self.take_hold()
         try:
             await self._probe()
-            body = {k: v for k, v in self._joints.items() if k in JOINTS and k != "gripper"}
+            body = {
+                k: v
+                for k, v in self._joints.items()
+                if k in JOINTS and k != "gripper" and not self._outside_travel(k, v)
+            }
             if body:
                 await self._send(body, clip=False)
         except Exception as e:
@@ -1075,7 +1142,8 @@ class LeRobotReal:
                 self.stop_error = f"the hold did not reach the arm: {type(e).__name__}: {e}"
             raise
         if retaken is not None and not retaken.ok and self._in_hand:
-            # the goal above went to a limp servo and moved nothing, so this is not a stop.
+            # whatever went out above went to a limp servo and moved nothing, and if every
+            # joint read past its travel nothing went out at all, so this is not a stop.
             # Only where the arm is still in a hand: a `take_hold` that refused because the
             # arm slipped did energise it, and that arm is holding itself perfectly well.
             self.stop_error = f"the arm is limp in somebody's hands: {retaken.reason}"
@@ -1131,16 +1199,21 @@ class LeRobotReal:
                 "no rest pose is recorded for this arm, so there is nowhere it is known to be "
                 "safe to let go of it: quackd robot rest-pose NAME",
             )
-        goal = rest_goal(self.rest_pose)
+        # the reachable pose and the half-line rule, as `close()` judges it: an arm folded past
+        # its travel is at its rest pose, and refusing it here would refuse `--by-hand` the one
+        # arm whose fold is the most certainly safe place to let go of it
+        recorded = rest_goal(self.rest_pose)
+        goal = self.rest_reachable
         if not goal:
             return HandResult("refused", "the recorded pose names no joint this arm drives")
         try:
             await self._cancel_policy()
             await self._probe()
-            if not at_rest(goal, self._joints):
+            if not at_rest(goal, self._joints, recorded):
                 return HandResult(
                     "refused",
-                    f"the arm is not at its rest pose ({shortfall(goal, self._joints)}), and "
+                    "the arm is not at its rest pose "
+                    f"({shortfall(goal, self._joints, recorded)}), and "
                     "an arm held up by torque alone falls when torque goes",
                 )
             await self._call(self._robot.bus.disable_torque)  # up.BUS_DISABLE_TORQUE
@@ -1175,15 +1248,23 @@ class LeRobotReal:
 
         It is written again afterwards, and read back, so the answer says whether the arm
         actually stayed where it was put rather than assuming it. A refusal here leaves torque
-        on: the arm is holding *something*, and the caller is told what moved."""
+        on: the arm is holding *something*, and the caller is told what moved.
+
+        A joint the person placed outside its calibrated travel is left out of both writes,
+        for `_hold()`'s reason: the servo clamps a goal to its travel, so writing where that
+        joint is would be writing its limit, and torque would then drive it there with the
+        person's hand on it. That is all the skip does. It avoids writing a goal the servo would
+        clamp; it does not make the joint stay put, because what the servo does with the goal
+        it already has when torque comes on is the unverified row above, and that goal may be
+        anywhere. The read-back is what finds out, and when it is that joint that moved, the
+        refusal says so."""
         if self._closed:
             return HandResult("refused", "the arm's transport is closed")
         try:
             await self._cancel_policy()
             await self._probe()
-            placed = dict(self._joints)
-            body = {j: v for j, v in placed.items() if j in JOINTS}
-            if not body:
+            placed = {j: v for j, v in self._joints.items() if j in JOINTS}
+            if not placed:
                 return HandResult("refused", "the arm reported no joint to hold")
             # The gripper IS in that goal, which is the opposite of what `_hold()` and the rest
             # move do, for the reason they leave it out. They omit it because the squeeze the
@@ -1192,8 +1273,9 @@ class LeRobotReal:
             # fingers left them with no torque behind them, and the last goal this arm was
             # written may be from another session. Writing where they are is what pins the
             # pencil; omitting it hands the servo whatever stale goal it still had.
-            # unclipped, for `_drive_to_rest`'s reason: this is where the arm physically is,
-            # and a hand-placed arm can easily sit outside the travel its calibration recorded
+            # Unclipped, because this is where the arm physically is; and a joint that reads
+            # outside its travel is not in it at all, clipped or not (`_hold()` says why).
+            body = {j: v for j, v in placed.items() if not self._outside_travel(j, v)}
             await self._send(body, clip=False)
             await self._call(self._robot.bus.enable_torque)  # up.BUS_ENABLE_TORQUE
             await self._send(body, clip=False)
@@ -1225,12 +1307,21 @@ class LeRobotReal:
         slipped = sorted(j for j, gap in moved.items() if gap > TOL_DEG)
         if slipped:
             worst = max(slipped, key=lambda j: moved[j])
-            return HandResult(
-                "refused",
+            why = (
                 f"the arm moved as torque came on ({worst} by {moved[worst]:.0f} degrees), so "
-                "it is not holding the pose you set; it is holding where it is now",
-                joints=held,
+                "it is not holding the pose you set; it is holding where it is now"
             )
+            if worst not in body and (span := self.joint_range_deg.get(worst)) is not None:
+                # the joint nobody could write a goal for is the one that moved, so the person
+                # is told which, and that the travel is why, in this arm's own numbers
+                was = placed[worst]
+                limit = span[0] if was < span[0] else span[1]
+                why += (
+                    f". {worst} was placed at {was:.0f}, past the {round(limit, 1):g} its "
+                    "calibrated travel ends at, and the servo takes no goal beyond that, so "
+                    "quackd wrote it none: place it inside the travel to have it held there"
+                )
+            return HandResult("refused", why, joints=held)
         return HandResult("held", "holding the pose you set", joints=held)
 
     async def go_to_rest(self) -> RestResult:
@@ -1239,50 +1330,80 @@ class LeRobotReal:
         Every caller is a teardown or the first moment of a run, so a wedged bus, an arm
         that stopped answering or a send that never landed are answers here rather than
         exceptions: the caller still has to disconnect, and `close()` reads the joints
-        itself before deciding whether torque may drop."""
+        itself before deciding whether torque may drop.
+
+        The goal is the reachable one (`rest_reachable`) and "there" is the half-line rule
+        (`verbs.at_rest` with the recorded pose), so an arm folded past its travel is
+        `already` at rest, and one driven down to the edge of it has `arrived`. Either way the
+        result names the joints recorded further past their travel than a reached pose may
+        miss by, and carries the one sentence a person should hear about them."""
         if self.rest_pose is None:
             return RestResult.none("no rest pose is recorded for this arm")
         if self._closed:
             return RestResult("refused", "the arm's transport is closed")
-        goal = rest_goal(self.rest_pose)
+        recorded = rest_goal(self.rest_pose)
+        goal = self.rest_reachable
         if not goal:
             # "refused", never "none": `none` means there is nothing to go to, and the run
             # would start anyway and the arm be released at the end. There is a pose here,
             # it names nothing this arm drives, and that is a reason to keep holding.
             return RestResult("refused", "the recorded pose names no joint this arm drives")
+        clipped = worth_saying(self.rest_clipped)
         try:
             await self._cancel_policy()
             await self._probe()
-            if at_rest(goal, self._joints):
+            if at_rest(goal, self._joints, recorded):
                 result = RestResult("already", "already at the rest pose")
             else:
-                result = await self._drive_to_rest(goal)
+                result = await self._drive_to_rest(goal, recorded)
         except Exception as e:
             result = RestResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
+        if clipped:
+            # a fact about the pose, whatever the move did; the sentence only where it is true,
+            # which is an arm that reached the reachable pose and is about to be let go there
+            note = rest_clip_note(clipped) if result.reached else None
+            result = RestResult(result.how, result.reason, clipped, note)
         self._rest_result = result
         return result
 
-    async def _drive_to_rest(self, goal: dict[str, float]) -> RestResult:
+    async def _drive_to_rest(
+        self, goal: dict[str, float], recorded: dict[str, float]
+    ) -> RestResult:
         """Re-send the rest goal until the arm is there, stops moving, or the time is up.
 
         This looks like `verbs._drive` and cannot be it. That one goes through the executor,
         whose abort is already set by the time a person's Ctrl-C reaches a teardown, and this
-        move has to run on exactly that path. It also sends with `clip=False`: a pose read
-        off the arm is where the arm physically was, and an arm folded to rest often sits
-        outside the travel its calibration recorded, which the range refusal would refuse."""
+        move has to run on exactly that path. It also skips the range refusal a pilot's goal
+        gets, and has no need of it: `goal` is the recorded pose already clipped into the travel
+        from the same calibration, so there is nothing for it to refuse.
+
+        Each tick sends the goal less any clipped joint that already reads past it on the side
+        it was recorded (`verbs.past_reach`). That goal is the servo's limit, and a folded joint
+        past its limit that is sent it is hauled up to it and held there against its own
+        weight, which is the opposite of resting. Such a joint is already at rest by the
+        half-line rule, so leaving it out never stops the move from arriving."""
         joints = dict(self._joints)
-        gap = max((abs(joints[j] - v) for j, v in goal.items() if j in joints), default=0.0)
-        budget_s = rest_budget_s(gap, self.max_step_deg)
+        todo = [
+            abs(joints[j] - v)
+            for j, v in goal.items()
+            if j in joints and not past_reach(v, joints[j], recorded.get(j))
+        ]
+        budget_s = rest_budget_s(max(todo, default=0.0), self.max_step_deg)
         stall = min(STALL_DEG, self.max_step_deg / 2) if self.max_step_deg > 0 else STALL_DEG
         started = self.now()
         previous: dict[str, float] = {}
         still = 0
         while self.now() - started < budget_s:
-            await self._send(goal, clip=False)
+            send = {
+                j: v
+                for j, v in goal.items()
+                if j not in joints or not past_reach(v, joints[j], recorded.get(j))
+            }
+            await self._send(send)
             await asyncio.sleep(TICK_S)
             await self._probe()
             joints = dict(self._joints)
-            if at_rest(goal, joints):
+            if at_rest(goal, joints, recorded):
                 return RestResult("arrived", "moved to the rest pose")
             moved = [abs(joints[j] - previous[j]) for j in previous if j in joints]
             still = still + 1 if moved and max(moved) <= stall else 0
@@ -1292,12 +1413,13 @@ class LeRobotReal:
                 with contextlib.suppress(Exception):
                     await self._hold()
                 return RestResult(
-                    "stalled", f"{shortfall(goal, joints)}, and it has stopped moving"
+                    "stalled", f"{shortfall(goal, joints, recorded)}, and it has stopped moving"
                 )
         with contextlib.suppress(Exception):
             await self._hold()
         return RestResult(
-            "timeout", f"{shortfall(goal, joints)} when the time ran out ({budget_s:.0f} s)"
+            "timeout",
+            f"{shortfall(goal, joints, recorded)} when the time ran out ({budget_s:.0f} s)",
         )
 
     def now(self) -> float:

@@ -564,6 +564,28 @@ def test_an_arm_already_at_its_rest_pose_says_so_rather_than_driving_it_there(
     assert report.ok is True
 
 
+def test_a_rest_pose_past_the_travel_is_advice_and_the_verdict_stays_green() -> None:
+    """The bench's first step after the fix: doctor on an arm whose recorded fold lies past
+    its calibrated travel. The arm parks at the edge of the travel, which is the pose it can
+    be driven to, so the row is the ordinary green one and torque is released. What the person
+    needs to know about the fold is advice, in the arm's own numbers, and failing the verdict
+    over it would say an arm that did everything right is broken."""
+    from quackd_lerobot.mock import MOCK_RANGES
+
+    ceiling = MOCK_RANGES["elbow_flex"][1]
+    pose = dict(AWAY_FROM_REST) | {"elbow_flex": ceiling + 12.0}
+    report = doctor.collect("lerobot:mock", address="mock://arm", rest_pose=pose)
+    row = _row(report, "rest pose")
+    assert (row.value, row.state) == ("returned to it", "ok")
+    assert report.ok is True, "parking at the reachable pose is not a fault"
+    advisories = _probe_of(report).advisories
+    said = [a for a in advisories if "lerobot-calibrate" in a]
+    assert len(said) == 1, advisories
+    assert f"elbow_flex is recorded at {pose['elbow_flex']:.0f}" in said[0], said[0]
+    assert f"driven to {ceiling:.0f} and no further" in said[0], said[0]
+    assert not any("torque was left on" in a for a in advisories), advisories
+
+
 def test_a_robot_with_no_rest_pose_recorded_says_how_to_record_one_and_still_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

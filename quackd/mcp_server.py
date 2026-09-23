@@ -297,6 +297,9 @@ class RobotSession:
         if not self.executor.dry_run and getattr(self.transport, "rest_pose", None) is not None:
             parked = await go_to_rest_if_any(self.transport)
             logger.info("%s: %s", self.name, parked.reason)
+            if parked.note:
+                # the body's sentence about the pose it parks in; said once, at the start
+                logger.info("%s: %s", self.name, parked.note)
             if not parked.reached:
                 with contextlib.suppress(Exception):
                     await self.transport.close()

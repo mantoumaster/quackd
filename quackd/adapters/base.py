@@ -49,10 +49,25 @@ class RestResult:
     """What `go_to_rest()` did, as a value rather than an exception.
 
     Every caller is a teardown or the first moment of a run, and a teardown that raised
-    would cost the body the disconnect it was in the middle of."""
+    would cost the body the disconnect it was in the middle of.
+
+    `clipped` and `note` have defaults so that a body with nothing to say about its pose
+    builds this exactly as it always did, and two results that say the same thing still
+    compare equal. Both are tuples and strings rather than dicts because the value is frozen
+    and hashable."""
 
     how: RestHow
     reason: str
+    clipped: tuple[tuple[str, float, float], ...] = ()
+    """`(joint, recorded, reachable)` for each joint the recorded pose puts past where the
+    body's own limits let it be driven, by more than a reached pose is allowed to miss by.
+    Such a joint is parked at `reachable` and let go of there. Empty for every body whose
+    pose is inside its travel, which is every body but an arm recorded folded past it."""
+    note: str | None = None
+    """One sentence for the person at the robot about the pose itself, when there is one to
+    say: what `clipped` means and how to make the pose reachable. Written by the body, which
+    knows its own calibration, and said once by whoever narrates the rest move. Never a
+    failure: a result carrying it reached the reachable pose."""
 
     @property
     def reached(self) -> bool:
