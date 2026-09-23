@@ -650,6 +650,42 @@ def test_an_arm_that_cannot_reach_its_rest_pose_fails_the_verdict_and_says_torqu
     assert "FAILURE" in said and "rest pose: not reached" in said, said
 
 
+class _ConnectedOnRetry(LeRobotMock):
+    """An arm whose connect had to be made again, reported the way the real backend reports
+    it: `connect_notes`, filled by the connect that just happened."""
+
+    def __init__(self, notes: list[str], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._retries = list(notes)
+        self.connect_notes: list[str] = []
+
+    async def connect(self) -> Any:
+        connected = await super().connect()
+        self.connect_notes = list(self._retries)
+        return connected
+
+
+def test_a_connect_the_arm_had_to_make_again_is_advice_and_the_verdict_stays_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bench, 2026-09-23: connects failed on one lost packet on the bus, and the next connect
+    went through. The real backend now tries again by itself, and a probe that connected on a
+    later attempt did connect: the row says so and the verdict stays green. What the person
+    needs is which joint the bus dropped a packet on, because one that does it every time is a
+    cable to look at, so every retry the arm reports is listed as advice, first, in its own
+    words, before the probe's other advice."""
+    said = [
+        "the bus lost a packet on elbow_flex while connecting, and connect ran again",
+        "and on wrist_roll the second time, and the next connect went through",
+    ]
+    arm = _ConnectedOnRetry(said, rest_pose=dict(REST))
+    report = _probed(monkeypatch, arm, rest_pose=dict(REST))
+    assert _row(report, "connected").value == "yes"
+    advisories = _probe_of(report).advisories
+    assert advisories[: len(said)] == said, advisories
+    assert report.ok is True, "a connect that went through on a retry is a connect"
+
+
 class _TwoEyes(LeRobotMock):
     """An arm with two cameras, answering `camera_health()` the shape the real backend does.
 

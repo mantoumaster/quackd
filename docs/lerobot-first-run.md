@@ -382,7 +382,9 @@ quackd doctor --robot lerobot:real --address COM5
 > [!CAUTION]
 > Support the arm while this starts. `configure()` runs with torque off, so connecting drops
 > it for a moment whatever else is true, and an arm folded somewhere awkward falls at that
-> moment. Support it at the end too, for now: until [section 07](#07-record-the-rest-pose)
+> moment. If the bus loses a packet while connecting, quackd prints a `connect attempt 1 of 3
+> failed on ...` warning and connects again, and each attempt drops torque for its own moment.
+> Support it at the end too, for now: until [section 07](#07-record-the-rest-pose)
 > has recorded a rest pose there is nothing for quackd to put the arm back to, so LeRobot's
 > `disconnect()` disables torque where the arm stands, a `doctor` probe included. Once a pose
 > is recorded, `doctor` returns the arm to it and leaves torque on if it cannot get there.
@@ -1227,7 +1229,9 @@ connect.
 | `adapter 'lerobot' needs an extra` | the extra is not in this environment | install it, and check `python --version` is 3.12 or newer |
 | `lerobot (feetech bus)` missing in `doctor` | LeRobot is installed without its `[feetech]` extra | reinstall `quackd[lerobot]`, which asks for `lerobot[feetech]` |
 | `--address must be the arm's serial port` | no address, or it is not port shaped | Device Manager under Ports on Windows, `/dev/ttyACM0` elsewhere |
-| `connect failed` naming a port | wrong port, or something else already owns it | close any teleoperation, recording or serial monitor, then `lerobot-find-port` |
+| `connect failed 3 times: Could not connect on port ...` | wrong port, or something else already owns it | close any teleoperation, recording or serial monitor, then `lerobot-find-port` |
+| `connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' ...`, and the run carries on | the bus lost a packet on one of the torque writes (`Lock` or `Torque_Enable`) LeRobot's connect makes to every motor. quackd closed the port without writing anything and connected again, up to three attempts, and the run's transcript keeps the line | nothing, once. Support the arm while it connects, since each attempt drops torque for a moment. A joint named run after run is a cable to reseat |
+| `connect failed 3 times, the last on <joint> (id <N>): Failed to write ...` | every attempt lost a packet, and the arm may be left with some motors holding and others limp | keep a hand under the arm, check that joint's cable and connectors and the servo supply, make sure nothing else has the port open, then run again |
 | `the arm is not calibrated` | the motors do not match a calibration | run `lerobot-calibrate` under the id quackd will use |
 | `the arm reports no calibration file` | there is no file for this id | the same fix, and check the path `doctor` prints |
 | `--camera-url ... did not open` | wrong index, or it will not open under this backend | try another index, add `?backend=msmf`, or drop a pinned size. The arm was not touched |
@@ -1948,7 +1952,9 @@ quackd doctor --robot lerobot:real --address COM5
 > [!CAUTION]
 > Support the arm while this starts. `configure()` runs with torque off, so connecting drops the
 > arm for a moment whatever else is true, and that is the moment an arm folded somewhere awkward
-> falls. Support it at the end too, for now: until [section 07](#07-record-the-rest-pose) has
+> falls. A packet the bus loses while connecting is a `connect attempt 1 of 3 failed on ...`
+> warning and another attempt, with its own moment. Over MCP the same line goes to the server's
+> log. Support it at the end too, for now: until [section 07](#07-record-the-rest-pose) has
 > recorded a rest pose there is nothing for quackd to put the arm back to, so LeRobot's
 > `disconnect()` disables torque where the arm stands, a `doctor` probe included.
 

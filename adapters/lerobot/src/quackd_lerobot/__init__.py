@@ -375,6 +375,14 @@ class LeRobotAdapter:
         return str(note) if note else None
 
     @property
+    def connect_notes(self) -> tuple[str, ...]:
+        """One sentence per connect attempt the backend had to make again, from the last
+        `connect()`. Proxied for `close_note`'s reason: the run narrates them into its
+        transcript and `doctor` lists them as advice, and both hold this adapter. The backend
+        has already logged each one while it happened; this is the record."""
+        return tuple(str(n) for n in getattr(self.transport, "connect_notes", ()) or ())
+
+    @property
     def stop_error(self) -> str | None:
         """Why the last stop did not reach the arm, when the backend knows: the core `stop`
         verb reads this and refuses to say "stopped" over a hold that never got there."""

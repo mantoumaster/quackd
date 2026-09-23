@@ -666,6 +666,30 @@ quackd, side by side, is [safety.md](../safety.md).
   inside `torque_disabled()`, so the arm is limp for the moment between the port opening and
   the configuration landing, whatever any rest pose says. Support the arm when a session
   starts, including at the start of a `doctor` probe.
+- **A packet lost while connecting is tried again, and said.** Those torque writes are a
+  `Torque_Enable` and a `Lock` per motor, off on every motor and back on one at a time, each
+  tried once (`up.CONFIGURE_TORQUE_WRITES_ONCE`), so one status packet the bus drops fails the
+  whole connect and leaves the port open behind it. On 2026-09-23 that ended three of 26 runs
+  on an SO-101 before they began, on a different motor each time, and the next connect went
+  through every time. quackd now closes the port through the bus without writing to any motor
+  (`up.BUS_DISCONNECT` with `disable_torque` False: the follower's own `disconnect()` would
+  first switch torque off on every motor again, on the bus that has just lost a packet), waits
+  half a second and connects again, up to three attempts in all. Each retry is a WARNING line
+  while it happens, a note in the run's transcript and an advice line in `doctor`, and it names
+  the joint through the bus's own motor table (`up.BUS_MOTORS`) rather than by an assumed order:
+
+  ```
+  connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' on id_=<N> with
+  '1' after 1 tries. [TxRxResult] There is no status packet! The port was closed without a
+  write to any motor, and connect runs again
+  ```
+
+  A camera opened before the arm stays open across the attempts. A connect that blew its 30
+  second deadline is never tried again, because its thread is still on the bus and a second
+  talker there is how packets get lost. Every attempt runs `configure()` again, so the limp
+  moment above happens once per attempt. When the last attempt fails too, the port is closed
+  the same way and the refusal says the arm may be left half energised
+  ([When it will not work](#when-it-will-not-work)).
 - **`pick` is confirm-gated**: a learned policy moves the whole arm. Its actions go through
   the same step cap and range check as a verb's.
 
@@ -869,7 +893,10 @@ The order below is the whole of the feature, and none of it is a step you can sk
    moment torque goes, and the person who asked for this still has their hands nowhere near it. It
    also refuses a pose that names no joint this arm drives, and an arm that still reports
    torque on after the call, which is a release that did not take rather than one to walk
-   away from.
+   away from. LeRobot tries each torque write once unless told otherwise, and one lost packet
+   there would release the motors before it and not the ones after, so the release asks for
+   the five tries LeRobot's own `disconnect()` gives the same writes, and so does the
+   take-hold in step 4.
 3. **You are told the arm is yours, and quackd waits for Enter.** There is no timeout on this
    wait. The arm is limp at a pose it holds by its own shape, so nothing is being spent by
    waiting, and somebody who has gone to find a pencil should come back to a run that is still
@@ -1143,7 +1170,9 @@ touched by anything in the first block: these all happen before or during connec
 | `doctor` shows `lerobot` green and `lerobot (feetech bus)` missing | LeRobot is installed without its `[feetech]` extra, so it imports and cannot open a serial port | `uv pip install "quackd[lerobot]"`, which asks for `lerobot[feetech]` |
 | `lerobot real: --address must be the arm's serial port` | no `--address` at all | pass the port. `--address needs --robot, so quackd knows what it is connecting to` means the opposite mistake, an address with no robot to apply it to |
 | `lerobot real: --address 'x' is not a serial port; it looks like COM5 on Windows or /dev/ttyACM0 elsewhere` | the address is not port-shaped | on Windows find it in Device Manager under Ports; on Linux it is usually `/dev/ttyACM0` |
-| `lerobot real: connect failed: ...` naming a port that cannot be opened | the port is wrong, or something else already owns it | LeRobot's own words come through, and they name `lerobot-find-port`, which is the way to be sure. The Feetech bus has one owner at a time, so close any teleoperation, recording or serial monitor still holding it, and on Linux check that your user can open the port (upstream's own line is `sudo chmod 666 /dev/ttyACM0`; the port's group, usually `dialout`, is the version that survives a reboot) |
+| `lerobot real: connect failed 3 times: Could not connect on port ...` | the port is wrong, or something else already owns it. It is tried three times like any connect failure, since a port busy for a moment is as passing as a lost packet | LeRobot's own words come through, and they name `lerobot-find-port`, which is the way to be sure. The Feetech bus has one owner at a time, so close any teleoperation, recording or serial monitor still holding it, and on Linux check that your user can open the port (upstream's own line is `sudo chmod 666 /dev/ttyACM0`; the port's group, usually `dialout`, is the version that survives a reboot). No attempt opened the port, so nothing was written to a motor and the message says nothing about torque |
+| `connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' on id_=<N> ...`, and the session carries on | the bus lost a status packet on one of the torque writes LeRobot's connect makes (`Lock` or `Torque_Enable`), and quackd closed the port without writing anything and connected again. Seen three times on 2026-09-23, each on the first connect after the power had been off | nothing, once. The same joint named session after session is a cable to reseat: the one into that servo, and its connectors |
+| `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to write ...` | every attempt failed, the last one on that servo. The torque writes may have stopped part way, so some motors can be holding and others limp, which the message says | keep a hand under the arm. Check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again. A message that names no joint says to check the arm's cables and power instead |
 | `lerobot real: the arm is not calibrated; run LeRobot's calibration first` | LeRobot read the motors back and they do not match a calibration | run `lerobot-calibrate` under the id quackd will use, and see [the id section](#the-name-you-give-the-arm-is-its-calibration-id) |
 | `lerobot real: the arm reports no calibration file, so nothing knows how far each joint travels` | there is no file for this id | the same fix, and check the path `doctor` prints |
 | `lerobot real: only so101_follower is wired` / `this robot has no motors bus` | the config is not an SO-101 follower | quackd drives this one body; an SO-100 shares the calibration directory but is not wired here |
@@ -1249,11 +1278,15 @@ If you hit one of these, or fail to, that is exactly what the
 | `the five body joints get no torque or current cap` | the caps sit inside a check for the gripper's name |
 | `configure_motors() writes Return_Delay_Time 0 and Acceleration 254` | called inside torque_disabled(), so connecting drops torque briefly |
 | `SOFollower.is_connected is the serial port plus the cameras` | |
+| `SOFollower.connect() refuses while the port is open` | `check_if_already_connected`, and `is_connected` is the port's flag. connect() opens the port first and configures last, and nothing shuts the port when configure() raises, so a retried connect has to close it first (`MotorsBus.disconnect(False)`) |
+| `configure() switches torque off and on again with no retry` | `torque_disabled()` calls `disable_torque()` and `enable_torque()` with `num_retry` 0, each a `Torque_Enable` then a `Lock` write per motor, so one lost status packet fails the whole connect with the motors in two torque states. The bench arm did this on three connects on 2026-09-23; quackd connects again, up to three attempts |
 | `SOFollower.bus is a FeetechMotorsBus` | the attribute registers are read through |
 | `no deadman: nothing stops the arm when the client goes quiet` | the class has no thread, timer or timeout; a goal stands until the next write |
-| `MotorsBus.disable_torque()` | never called on quackd's own initiative. The one call is `let_go()`, which a person asks for with `quackd run --by-hand` and which refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to decide that letting go will not drop it. No verb reaches it and no model can ask for it |
-| `MotorsBus.enable_torque()` | called by `take_hold()`, to pick up an arm a person has just placed |
-| `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling |
+| `MotorsBus.disable_torque()` | never called on quackd's own initiative. The one call is `let_go()`, which a person asks for with `quackd run --by-hand` and which refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to decide that letting go will not drop it. No verb reaches it and no model can ask for it. On a Feetech bus it writes `Torque_Enable` 0 then `Lock` 0 per motor, and quackd asks for `num_retry=5`, the count upstream's own `disconnect()` uses |
+| `MotorsBus.enable_torque()` | called by `take_hold()`, to pick up an arm a person has just placed, with `num_retry=5` as for the release. It writes `Torque_Enable` 1 **and then `Lock` 1** per motor, two writes a motor rather than one |
+| `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling, and how the port is closed between two connect attempts without a write to any motor |
+| `MotorsBus.motors: name -> Motor(id, model, norm_mode)` | the table that gives each servo its bus address; a bus error's id is turned into a joint through it, never through an assumed order |
+| `Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>` | what a single write or read that failed raises. quackd reads the id out of it to name the joint; a sync read or write names several and quackd names none |
 | `MotorsBus.is_connected is port_handler.is_open` | a port flag, not a reply: why the heartbeat reads the arm |
 | `FeetechMotorsBus.is_calibrated reads the motors back` | a missing, stale or foreign file all read as not calibrated |
 | `write_calibration() is reached only through calibrate()` | quackd cannot move an arm's zero by accident |
@@ -1296,7 +1329,7 @@ If you hit one of these, or fail to, that is exactly what the
 | Name | What quackd does |
 |---|---|
 | `POLICY_PIPELINE` | `pick` runs an injected policy object; `load_policy()` builds one from verified names and is untested. A policy's actions get the same step cap and range check as a verb's |
-| `TORQUE_ENABLE_HOLDS_PRESENT` | what a servo does with the goal it was last told when torque comes back on. `enable_torque()` writes the `Torque_Enable` register and nothing else, so whether the motor then holds where it is or drives to that stale goal is the firmware's business and is documented nowhere quackd can read. It matters because the goal last written before a hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back to it would happen with somebody's fingers in the way. `take_hold()` writes the present position as the goal **before** enabling torque, writes it again after, and reads the arm back to check it stayed, so the assumption is never relied on in either direction. The one exception is a joint placed past its calibrated travel, which gets no goal at all because the servo would clamp it to the limit (`POSITION_LIMITS_CLAMP_GOALS`). For that joint this row is all there is, and the read-back is what says whether it moved |
+| `TORQUE_ENABLE_HOLDS_PRESENT` | what a servo does with the goal it was last told when torque comes back on. `enable_torque()` writes `Torque_Enable` and then `Lock` on each motor, neither of them a goal, so whether the motor then holds where it is or drives to that stale goal is the firmware's business and is documented nowhere quackd can read. It matters because the goal last written before a hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back to it would happen with somebody's fingers in the way. `take_hold()` writes the present position as the goal **before** enabling torque, writes it again after, and reads the arm back to check it stayed, so the assumption is never relied on in either direction. The one exception is a joint placed past its calibrated travel, which gets no goal at all because the servo would clamp it to the limit (`POSITION_LIMITS_CLAMP_GOALS`). For that joint this row is all there is, and the read-back is what says whether it moved |
 | `GRIPPER_OPEN_VALUE` | 100 is assumed open; which end is open is how the arm was calibrated, and the checklist asks for it by hand |
 | `HOLDING_INFERRED` | holding is the gripper told to close, settled, and short of shut; listed in `extras.assumptions`. A gripper a person closed by hand is a position and not a grip, so an arm placed with `--by-hand` reports nothing held until the pilot closes the gripper itself |
 | `TEMPERATURE_C` | the register is read raw and treated as Celsius; the 60 °C refusal and the 70 °C cut-off are Feetech's numbers, not measured |

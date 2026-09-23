@@ -31,6 +31,10 @@ What this backend refuses to take on faith, because upstream cannot tell it:
   only goal the servo would take there hauls the joint up to the limit.
 - **the arm can be told to jump.** `max_relative_target` is `None` upstream; quackd sets it,
   so one `send_action` moves a joint at most `max_step_deg`.
+- **one lost packet is not a dead arm.** LeRobot's connect writes torque off and on again to
+  every motor, one try per write (`up.CONFIGURE_TORQUE_WRITES_ONCE`), and a Feetech bus loses
+  the odd status packet. So `connect()` closes the port without writing anything and tries
+  again, a few times, and says each time which joint the bus stopped answering for.
 
 `pick` runs an injected policy object; building one from a Hub checkpoint (`load_policy`)
 uses verified names but has never been exercised (`upstream_api.POLICY_PIPELINE`). LeRobot
@@ -42,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import logging
 import os
 import re
 import time
@@ -89,12 +94,44 @@ from quackd_lerobot.verbs import (
 STATUS = "LeRobot names verified at a pinned commit; one SO-101 driven on 2026-09-15"
 POLICY_HZ = 10.0
 
+logger = logging.getLogger("quackd.lerobot")
+"""Under `quackd`, not under this module's own name (`quackd_lerobot.real`): `quackd`'s logger is
+the one the CLI prints at WARNING (`ui.install_logging`) and the MCP server logs, so a line
+written here reaches the person at the arm while the connect is still happening."""
+
 MAX_STEP_DEG = 5.0
 """How far one `send_action` may move a joint, in degrees. At the 10 Hz a verb re-sends a
 goal that is also the top joint speed: 5 degrees a step is 50 degrees a second. The figure
 is quackd's own choice for a first run and nothing upstream recommends one for this arm;
 upstream's default is no cap at all."""
 STEP_ENV = "QUACKD_LEROBOT_MAX_STEP_DEG"
+
+CONNECT_ATTEMPTS = 3
+"""How many times `connect()` asks LeRobot to connect before it gives up.
+
+LeRobot's connect switches torque off on every motor to configure it and back on afterwards,
+one write per register per motor and no retry (`up.CONFIGURE_TORQUE_WRITES_ONCE`), so one
+status packet lost anywhere on a Feetech bus fails the whole connect. A lost packet is the bus
+being a bus rather than the arm being broken, and the next attempt normally goes through. An
+arm that fails every attempt has something a further try will not fix, a loose cable or a
+servo that stopped answering, and the person is told which joint to look at instead."""
+CONNECT_PAUSE_S = 0.5
+"""How long `connect()` waits between two attempts, with the port closed. Long enough for a
+reply still in flight to finish before the port is opened again, short enough that nobody at
+the arm notices. quackd's own figure: nothing upstream recommends one."""
+CONNECT_DEADLINE_S = 30.0
+"""How long one attempt may take before quackd stops waiting for it. A connect that has not
+come back by then is a worker thread still sitting on the serial bus, which `_call` files as a
+wedged transport, and that is never tried again: a second talker on a half-duplex bus is how
+packets get lost in the first place."""
+TORQUE_RETRIES = 5
+"""Extra tries LeRobot gives each `Torque_Enable` and `Lock` write when quackd lets go of the
+arm or takes hold of it again: the count upstream's own `disconnect()` gives its torque-off
+(`up.BUS_DISCONNECT`). LeRobot's default is none, and one lost packet there is a hand-off that
+happened to some motors and not to others."""
+MOTOR_ID = re.compile(r"\bid_=(\d+)")
+"""The motor a LeRobot bus error is about, wherever it sits in the sentence and whatever
+register and transaction result surround it (`up.BUS_WRITE_ERROR_NAMES_THE_ID`)."""
 
 ENCODER_TICKS = 4096
 """An sts3215 turn in encoder counts (`up.STS3215_RESOLUTION`); degrees use it less one."""
@@ -333,6 +370,46 @@ def joint_ranges(calibration: dict[str, Any]) -> dict[str, tuple[float, float]]:
     return ranges
 
 
+def motor_in_error(message: str, motors: Mapping[str, Any] | None) -> tuple[str, str] | None:
+    """The motor a LeRobot bus error is about, as `(label, name)`, or None when it names none.
+
+    LeRobot says which servo a failed write or read was for as `id_=<N>`, in a sentence that
+    changes with the register, the value and the transaction result around it
+    (`up.BUS_WRITE_ERROR_NAMES_THE_ID`). The id is the servo's address on the bus, which nobody
+    at the arm can see; the joint is what they can put a hand on. So the id is looked up in the
+    bus's own motor table (`up.BUS_MOTORS`), which is what gave each servo its address, rather
+    than read off the order the follower happens to list its motors in today.
+
+    `name` is the joint, and `label` is the joint with its id, `<joint> (id <N>)`, for the
+    sentence that also quotes LeRobot. An id the table does not know is still worth saying, and
+    both are then `motor <N>`. A message with no id names nothing: a sync read or write is about
+    several servos at once and a port that will not open is about none, and a guess would send
+    somebody to the wrong cable."""
+    found = MOTOR_ID.search(message)
+    if found is None:
+        return None
+    motor_id = int(found.group(1))
+    for joint, motor in dict(motors or {}).items():
+        if getattr(motor, "id", None) == motor_id:
+            return f"{joint} (id {motor_id})", str(joint)
+    return f"motor {motor_id}", f"motor {motor_id}"
+
+
+def _one_line(error: BaseException) -> str:
+    """LeRobot's own words, on one line and ending as a sentence ends. Its port error starts
+    and ends with a line break and has no full stop, and what quackd says after it is the next
+    sentence in a transcript line or a log line."""
+    text = " ".join(str(error).split()) or type(error).__name__
+    return text if text.endswith((".", "!", "?")) else f"{text}."
+
+
+def _name_of(fn: Callable[..., Any]) -> str:
+    """A LeRobot call's name for a sentence, looking through the `functools.partial` that
+    carries a keyword argument, because `_call` forwards positional arguments only."""
+    inner = getattr(fn, "func", fn)
+    return str(getattr(inner, "__name__", inner))
+
+
 @dataclass
 class _Errors:
     """Why each of the two status registers did not answer, if it did not.
@@ -387,6 +464,13 @@ class LeRobotReal:
         )
         self.camera_connect_s = CAMERA_CONNECT_S
         self.camera_close_s = CAMERA_CLOSE_S
+        self.connect_pause_s = CONNECT_PAUSE_S
+        self.connect_deadline_s = CONNECT_DEADLINE_S
+        self.connect_notes: list[str] = []
+        """One sentence per connect attempt that failed and was tried again, from the last
+        `connect()`. Logged as it happens, and kept here for whoever narrates the session (the
+        run's transcript, `doctor`'s advisories), because a retry that worked is still a bus
+        that lost a packet, and a joint that does it every session is a cable to look at."""
         # name -> camera object, in the order the urls were given. Injected in tests; built
         # in connect() otherwise.
         self._cameras: dict[str, Any] = dict(camera_objects or {})
@@ -520,7 +604,7 @@ class LeRobotReal:
             if pending is not None and not pending.done():
                 self._wedged = pending
                 self.stop_error = (
-                    f"a LeRobot call ({getattr(fn, '__name__', fn)}) has not come back; the "
+                    f"a LeRobot call ({_name_of(fn)}) has not come back; the "
                     "serial bus has one owner, so quackd refuses every call until it does"
                 )
             raise
@@ -587,16 +671,13 @@ class LeRobotReal:
 
     async def connect(self) -> None:
         self._closed = False
+        self.connect_notes = []
         if self._robot is None:
             self._robot = await asyncio.to_thread(self._build_robot)
         # the camera first, before the arm is touched: a bad index then refuses with the
         # arm never energised, never de-torqued on the way back out, and nothing to undo
         await self._connect_cameras()
-        try:
-            await self._call(self._robot.connect, False, deadline_s=30.0)  # never calibrate
-        except Exception as e:
-            await self._close_cameras()
-            raise TransportError(f"lerobot real: connect failed: {e}") from e
+        await self._connect_arm()
         if not bool(self._robot.is_calibrated):
             await self._give_up(
                 "lerobot real: the arm is not calibrated; run LeRobot's calibration first "
@@ -619,6 +700,129 @@ class LeRobotReal:
         # the follower is built with cameras={}, so its observation_features never name
         # one; the only camera here is the one quackd opened (up.SO_CAMERAS_ARE_THE_FOLLOWERS)
         await self._probe()
+
+    async def _connect_arm(self) -> None:
+        """LeRobot's connect, tried again when the bus loses a packet. Raises TransportError.
+
+        One attempt is `connect(calibrate=False)`: open the port, ping the motors, then
+        `configure()`, which switches torque off on every motor, writes its settings, and
+        switches it back on, a `Torque_Enable` and a `Lock` write per motor and each tried once
+        (`up.CONFIGURE_TORQUE_WRITES_ONCE`). One status packet lost in any of those fails the
+        attempt with the port still open, and every later `connect()` is then refused as
+        already connected (`up.SO_CONNECT_REFUSES_WHILE_OPEN`). So between attempts the port is
+        closed through the bus with `disable_torque` False (`_close_port`), which writes nothing
+        to any motor. The follower's own `disconnect()` would first switch torque off on every
+        motor again: two more writes per motor on the bus that has just lost one, each able to
+        fail the same way, and dropping the motors the failed attempt had just re-energised. The
+        next attempt's `configure()` leaves every motor's torque where any connect leaves it.
+
+        Never tried again: a call that blew its deadline, because its thread is still on the
+        wire and `_call` has wedged the transport (a retry would only be refused, and a second
+        talker on a half-duplex bus is how packets get lost), and quackd's own refusal of a
+        wedged transport. The cameras opened before this and stay open across attempts: they
+        are not on the serial bus, and reopening one costs its warmup for nothing.
+
+        Each retry is said twice over, as a WARNING while it happens and in `connect_notes`
+        for whoever narrates the session afterwards. When every attempt fails, the port is
+        closed the same way, the cameras are let go of, and the refusal carries LeRobot's own
+        words, the joint they name, that the arm may be left half energised, and what to check.
+        """
+        opened = False  # whether any attempt got the port open, and so may have written a motor
+        for attempt in range(1, CONNECT_ATTEMPTS + 1):
+            try:
+                # never calibrate: calibration is interactive (up.ROBOT_CALIBRATE)
+                await self._call(self._robot.connect, False, deadline_s=self.connect_deadline_s)
+                return
+            except (TimeoutError, TransportError) as e:
+                # Not tried again. The port is still closed on the way out where that can be
+                # done: `_call` refuses it on a wedged transport, which is the case where a
+                # thread still owns the port, and does it for a timeout LeRobot raised itself.
+                # The reason is read first: a wedge that clears in the meantime clears it too.
+                why = str(e) or self.stop_error or type(e).__name__
+                await self._close_port()
+                await self._close_cameras()
+                raise TransportError(f"lerobot real: connect failed: {why}") from e
+            except Exception as e:
+                port_was_open = self._port_open()
+                opened = opened or port_was_open
+                where = motor_in_error(
+                    str(e), getattr(getattr(self._robot, "bus", None), "motors", None)
+                )
+                await self._close_port()
+                if attempt == CONNECT_ATTEMPTS:
+                    await self._close_cameras()
+                    raise TransportError(self._connect_refusal(e, where, opened=opened)) from e
+                then = (
+                    "The port was closed without a write to any motor"
+                    if port_was_open
+                    else "The port never opened, so nothing reached a motor"
+                )
+                note = (
+                    f"connect attempt {attempt} of {CONNECT_ATTEMPTS} failed"
+                    + (f" on {where[0]}" if where else "")
+                    + f": {_one_line(e)} {then}, and connect runs again"
+                )
+                self.connect_notes.append(note)
+                logger.warning("%s", note)
+                await asyncio.sleep(self.connect_pause_s)
+
+    def _connect_refusal(
+        self, error: Exception, where: tuple[str, str] | None, *, opened: bool
+    ) -> str:
+        """What the person at the arm reads when every connect attempt failed.
+
+        LeRobot's words first, because they are the evidence. Then the state the arm may be in:
+        an attempt that got the port open may have stopped anywhere in `configure()`'s torque
+        writes, which go off on every motor and back on one motor at a time, so the motors
+        before the failed write can be holding and the ones after it limp. Nothing quackd can
+        write fixes that on a bus that will not answer, so it is said instead, and it is only
+        said when a port was opened: an attempt that never opened one wrote nothing. Then
+        what to look at: the cable of the joint LeRobot named, where it named one, and whatever
+        else might be holding the port, because the bus has one owner at a time."""
+        head = f"lerobot real: connect failed {CONNECT_ATTEMPTS} times"
+        said = [f"{head}, the last on {where[0]}" if where else head]
+        said[0] += f": {_one_line(error)}"
+        if opened:
+            said.append(
+                "Connecting switches torque off on every motor and back on one motor at a "
+                "time, so some motors may be left with torque on and others off: keep a hand "
+                "under the arm, because the ones that are off hold nothing up."
+            )
+        look = f"{where[1]}'s cable and connectors" if where else "the arm's cables and power"
+        said.append(
+            f"Check {look}, and that nothing else has {self.port or 'the port'} open (a "
+            "teleoperation, a recording or a serial monitor), then connect again."
+        )
+        return " ".join(said)
+
+    def _port_open(self) -> bool:
+        """Whether the serial port is open, off the port's own flag (`up.BUS_IS_CONNECTED`).
+
+        Read after an attempt failed, to know whether it can have written to a motor. LeRobot
+        opens the port before it writes anything, and nothing in its connect closes it again
+        on the way out of a failure, so a closed port is an attempt that never reached the
+        servos. A flag and not a transaction, so not under `_call`. Unknown reads as open,
+        which costs at most a warning that was not needed."""
+        try:
+            return bool(self._robot.bus.is_connected)
+        except Exception:
+            return True
+
+    async def _close_port(self) -> None:
+        """Close the serial port and write nothing to any motor. Never raises.
+
+        `MotorsBus.disconnect(disable_torque=False)` (`up.BUS_DISCONNECT`): its torque-off is
+        inside `if disable_torque`, so this is the port's close and nothing else. It refuses a
+        port that is already shut (`check_if_not_connected`), which is an attempt that never
+        opened one, and a shut port is what this was going to leave anyway. Through `_call`,
+        because a close is still a call on the serial handle, and a keyword through `partial`,
+        because `_call` forwards positional arguments only."""
+        bus = getattr(self._robot, "bus", None)
+        if bus is None:
+            return
+        close = functools.partial(bus.disconnect, disable_torque=False)
+        with contextlib.suppress(Exception):
+            await self._call(close, deadline_s=5.0)
 
     async def _camera_call(self, fn: Callable[..., Any], *args: Any, timeout_s: float) -> Any:
         """A camera call: its own thread and its own deadline, and never the serial lock.
@@ -1216,7 +1420,12 @@ class LeRobotReal:
                     f"({shortfall(goal, self._joints, recorded)}), and "
                     "an arm held up by torque alone falls when torque goes",
                 )
-            await self._call(self._robot.bus.disable_torque)  # up.BUS_DISABLE_TORQUE
+            # up.BUS_DISABLE_TORQUE, with the retries upstream's own disconnect gives the same
+            # writes: without them one lost packet releases the motors before it and not the
+            # ones after, and the person is told the arm is theirs while part of it still holds
+            await self._call(
+                functools.partial(self._robot.bus.disable_torque, num_retry=TORQUE_RETRIES)
+            )
             # Believed the moment the call returns, and before anything is read back. The
             # confirming probe can fail on its own, and treating that as "no release happened"
             # is the reading that ends with `close()` telling somebody holding a limp arm that
@@ -1277,7 +1486,11 @@ class LeRobotReal:
             # outside its travel is not in it at all, clipped or not (`_hold()` says why).
             body = {j: v for j, v in placed.items() if not self._outside_travel(j, v)}
             await self._send(body, clip=False)
-            await self._call(self._robot.bus.enable_torque)  # up.BUS_ENABLE_TORQUE
+            # up.BUS_ENABLE_TORQUE, retried like the release: one lost packet here refuses the
+            # hold with the joints before it energised and the rest still limp in a hand
+            await self._call(
+                functools.partial(self._robot.bus.enable_torque, num_retry=TORQUE_RETRIES)
+            )
             await self._send(body, clip=False)
             await asyncio.sleep(TICK_S)
             await self._probe()

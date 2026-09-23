@@ -318,13 +318,20 @@ BUS_DISABLE_TORQUE = UpstreamRef(
     "NEVER called on quackd's own initiative. The one call is `let_go()`, which a person asks "
     "for with `quackd run --by-hand` and which refuses anywhere but the arm's recorded rest "
     "pose, the same condition `close()` uses to decide that letting go will not drop it. No "
-    "verb reaches it and no model can ask for it",
+    "verb reaches it and no model can ask for it. On a Feetech bus it writes Torque_Enable 0 "
+    "and then Lock 0 to each motor in turn (feetech.py lines 291 to 294), each write tried "
+    "num_retry + 1 times; num_retry defaults to 0 and quackd passes 5, the count upstream's "
+    "own disconnect() gives the same call (motors_bus.py line 559)",
 )
 BUS_ENABLE_TORQUE = UpstreamRef(
     "MotorsBus.enable_torque()",
     "VERIFIED",
     src(_BUS, 113),
-    "called by `take_hold()`, to pick up an arm a person has just placed",
+    "called by `take_hold()`, to pick up an arm a person has just placed, with num_retry=5 "
+    "as for the release. On a Feetech bus it writes Torque_Enable 1 and then Lock 1 to each "
+    "motor in turn (feetech.py lines 302 to 305, the same in the installed lerobot 0.6.1): "
+    "two writes a motor, not one, and connect() makes this same call with no retry at all "
+    "(CONFIGURE_TORQUE_WRITES_ONCE)",
 )
 BUS_DISCONNECT = UpstreamRef(
     "MotorsBus.disconnect(disable_torque=True)",
@@ -332,7 +339,60 @@ BUS_DISCONNECT = UpstreamRef(
     src(_BUS, 82),
     "the disable_torque call is inside `if disable_torque`, so False closes the port and "
     "leaves every motor holding the goal it was last written: what an arm that missed its "
-    "rest pose gets instead of falling",
+    "rest pose gets instead of falling. The same call closes the port between two connect "
+    "attempts (CONFIGURE_TORQUE_WRITES_ONCE), because the follower's own disconnect() would "
+    "first switch torque off on every motor, five tries a write, on a bus that has just lost "
+    "a packet. The concrete method is at lines 546 to 562 in lerobot 0.6.1 (torque off at "
+    "559, only under the flag; closePort at 561) and is check_if_not_connected, so it raises "
+    "on a port that never opened, which quackd ignores: that port is already shut",
+)
+BUS_MOTORS = UpstreamRef(
+    "MotorsBus.motors: name -> Motor(id, model, norm_mode)",
+    "VERIFIED",
+    src(_BUS, 185),
+    "the table the bus addresses every servo through (kept at line 73), which the SO follower "
+    "fills at so_follower.py lines 53 to 60. quackd reads a Motor's id to name the joint a bus "
+    "error is about, and looks it up there rather than assume the order SO_MOTORS lists, "
+    "because the table is what gave each servo its address",
+)
+BUS_WRITE_ERROR_NAMES_THE_ID = UpstreamRef(
+    "Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>",
+    "VERIFIED",
+    src(_BUS, 1096),
+    "the message MotorsBus.write() raises: a ConnectionError ending in the transaction's "
+    "[TxRxResult] text when no good status packet came back (line 1121), a RuntimeError ending "
+    "in the servo's own status text when one reported an error (line 1123). read() names its "
+    "motor the same way, on id_=<N> (line 1020). The id is the servo's bus address, and quackd "
+    "names the joint through BUS_MOTORS. sync_read and sync_write say ids= and ids_values=, "
+    "several servos at once, and quackd names no joint for those. Read in lerobot 0.6.1",
+)
+SO_CONNECT_REFUSES_WHILE_OPEN = UpstreamRef(
+    "SOFollower.connect() refuses while the port is open",
+    "VERIFIED",
+    src(_SO, 91),
+    "it is check_if_already_connected (utils/decorators.py lines 34 to 41), which raises "
+    "DeviceAlreadyConnectedError while is_connected is True, and is_connected is the bus's "
+    "port flag and every camera's (SO_IS_CONNECTED; quackd's follower has no camera). connect() "
+    "opens the port first (line 98) and configures last (line 108), and nothing closes the "
+    "port when configure() raises, so after one failed connect every later connect() is "
+    "refused until the port is shut. MotorsBus.connect() carries the same decorator "
+    "(motors_bus.py line 513). quackd closes the port with MotorsBus.disconnect(False) between "
+    "attempts (BUS_DISCONNECT). Read in lerobot 0.6.1, the same lines at the pin",
+)
+CONFIGURE_TORQUE_WRITES_ONCE = UpstreamRef(
+    "configure() switches torque off and on again with no retry",
+    "VERIFIED",
+    src(_BUS, 676),
+    "SOFollower.configure() (so_follower.py line 159) runs inside torque_disabled(), which "
+    "calls disable_torque() on the way in and enable_torque() in its finally (lines 687 and "
+    "691), both with num_retry left at 0. Each writes Torque_Enable and then Lock to one motor "
+    "after another (feetech.py lines 291 to 305), and each write is one transaction that raises "
+    "when its status packet does not come back (lines 1111 to 1121). So one lost packet fails "
+    "the whole connect, with the port left open and the motors before that write in one torque "
+    "state and the rest in the other. On 2026-09-23 an SO-101 failed three connects this way, "
+    "each on a Lock write to a different motor, and the next connect went through each time. "
+    "quackd tries again (CONNECT_ATTEMPTS in real.py) instead of giving up on the first packet, "
+    "and says which joint each failure named. Read in lerobot 0.6.1, the same lines at the pin",
 )
 BUS_IS_CONNECTED = UpstreamRef(
     "MotorsBus.is_connected is port_handler.is_open",
@@ -606,7 +666,8 @@ TORQUE_ENABLE_HOLDS_PRESENT = UpstreamRef(
     "UNVERIFIED",
     src(_BUS, 113),
     "what a servo does with its goal when torque is switched back on. `enable_torque()` "
-    "writes the Torque_Enable register and nothing else, so whether the motor then holds "
+    "writes Torque_Enable and then Lock on each motor (feetech.py lines 302 to 305 at 0.6.1), "
+    "neither of them a goal, so whether the motor then holds "
     "where it is or drives to the goal it was last written is the firmware's business and is "
     "documented nowhere quackd can read. It matters because the goal last written before a "
     "hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back "

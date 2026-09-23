@@ -902,6 +902,12 @@ class AgentLoop:
         # arm energised, away from any pose anybody chose, and nothing said about it.
         try:
             connect_s = round(time.perf_counter() - connect_started, 3)
+            # What the body had to do to get connected, in its own words: a connect it tried
+            # again after the bus lost a packet (the LeRobot arm's `connect_notes`). The body
+            # logged each one as it happened; this is what puts them in the run's record, so a
+            # joint whose cable drops a packet every session shows up across transcripts.
+            for note in getattr(cfg.transport, "connect_notes", ()) or ():
+                self._note(str(note))
             manifest = connected if isinstance(connected, RobotManifest) else None
             if manifest is not None:
                 # a v2 task file corrects the body's own sheet for the build in front of it, and it

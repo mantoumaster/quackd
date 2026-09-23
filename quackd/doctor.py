@@ -504,7 +504,7 @@ def probe(
     from quackd.transport.base import DEFAULT_CAMERA_NAME, TransportError, frames_of
 
     async def go() -> tuple[
-        Any, Any, dict[str, Any] | None, dict[str, Any], RestResult, str | None
+        Any, Any, dict[str, Any] | None, dict[str, Any], RestResult, str | None, list[str]
     ]:
         adapter = make_adapter(
             parse_robot_spec(spec),
@@ -514,6 +514,9 @@ def probe(
             rest_pose=rest_pose,
         )
         live = await adapter.connect()
+        # the connect attempts a body had to make again, read here and not after the close:
+        # the list belongs to the connect that just happened
+        retried = [str(n) for n in getattr(adapter, "connect_notes", ()) or ()]
         transport = getattr(adapter, "transport", None)
         # What the robot says about its own guarantees, rather than what quackd's static
         # description claims on its behalf. This is the checklist's go/no-go gate, so a
@@ -564,13 +567,14 @@ def probe(
             # read from; the finally below is left as the safety net for the exception path.
             await adapter.disconnect()
             closed = True
-            return live, health, camera, told, parked, getattr(transport, "close_note", None)
+            note = getattr(transport, "close_note", None)
+            return live, health, camera, told, parked, note, retried
         finally:
             if not closed:
                 await adapter.disconnect()
 
     try:
-        live, health, camera, told, parked, note = asyncio.run(go())
+        live, health, camera, told, parked, note, retried = asyncio.run(go())
     except (TransportError, OSError) as e:
         return ProbeReport(address=address, ok=False, error=f"{spec} at {address}: {e}")
 
@@ -642,6 +646,11 @@ def probe(
         add(ProbeRow("rest pose", "returned to it", "ok"))
     else:
         add(ProbeRow("rest pose", f"not reached: {parked.reason}", "fail"))
+    # A connect that went through on a later attempt is a pass with something to say, in the
+    # order it happened: the bus lost a packet, the arm connected anyway, and the joint the
+    # body named is the cable to look at if it keeps happening. Not a failure: the connected
+    # row above is true.
+    report.advisories.extend(retried)
     if parked.note:
         # what the body has to say about the pose it parked in, which is advice and not a
         # fault: the row above is green because the arm reached the pose it can be driven to

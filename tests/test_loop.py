@@ -1669,6 +1669,54 @@ async def test_a_rest_pose_past_the_travel_is_explained_once_and_the_old_notes_s
     assert mock.torque is False and mock.close_note is None
 
 
+class _ConnectedOnRetry(LeRobotMock):
+    """A mock arm whose connect had to be made again, reported the way the real backend
+    reports it: a `connect_notes` list, filled by the connect that just happened."""
+
+    def __init__(self, notes: Sequence[str], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._retries = list(notes)
+        self.connect_notes: list[str] = []
+
+    async def connect(self) -> Any:
+        connected = await super().connect()
+        self.connect_notes = list(self._retries)
+        return connected
+
+
+async def test_a_connect_the_body_had_to_make_again_is_in_the_run_s_record(
+    tmp_path: Path,
+) -> None:
+    """Bench, 2026-09-23: runs of the arm ended at connect on one lost packet, before the run
+    had a record to put anything in. The real backend now closes the port and tries again, and
+    logs each retry as it happens, but a log line lives on a terminal and is gone with it. So the
+    run puts every retry the body reports into its transcript, in the body's own words, in
+    order, before anything else the run says about the arm: a joint whose cable loses a packet
+    every session then shows up across the records rather than in nobody's scrollback. The
+    loop reads the list off whatever it connected to, so it knows nothing about LeRobot."""
+    said = [
+        "the bus lost a packet on wrist_flex while connecting, and connect ran again",
+        "and again on the gripper, and the third connect went through",
+    ]
+    mock = _ConnectedOnRetry(said, rest_pose=ARM_REST)
+    script = [ToolCall(name="declare_success", arguments={"reason": "connected on a retry"})]
+    result = await run_duck(
+        RunConfig(
+            duck=_arm_duck(),
+            provider=FakeProvider(script=script),
+            transport=LeRobotAdapter(mock),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert notes[: len(said)] == said, notes
+    kinds = [e["kind"] for e in events]
+    first = next(i for i, e in enumerate(events) if e.get("text") == said[0])
+    assert first < kinds.index("run_start"), "said before the run it happened ahead of"
+
+
 async def test_a_dry_run_never_moves_the_arm_to_its_rest_pose(tmp_path: Path) -> None:
     """A dry run sends nothing to the robot, and the rest move is the one thing in the teardown
     that is not narration: it is a real motion, so it is the one that has to be checked by
