@@ -1,7 +1,9 @@
 """Kimi as the duck's brain, over Moonshot's OpenAI-compatible endpoint.
 
-Moonshot's tool-calling guide shows the tool round trip without documenting which `tool_choice`
-values it accepts, so quackd sends `auto`, the one value that cannot be refused, and not
+Moonshot's Tool Choice guide documents `auto`, `none`, `required` and a named function, and
+says a named function is refused whenever thinking is on. Its Model Parameter Reference says
+`required` works on K3 alone, and that thinking is always on for K3 and K2.7 Code and on by
+default for K2.6. So quackd sends `auto`, the one value no Kimi model refuses, and not
 `parallel_tool_calls`. Moonshot says the model may return several calls at once, which the loop
 already handles by taking the first.
 """

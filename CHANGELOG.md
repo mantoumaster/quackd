@@ -45,6 +45,100 @@ above everything else it says.
   beside it is a
   promise that somebody ran it on the hardware it is named after, and nothing here has
   been run on a Jetson by this project.
+- **A turn a refusal fallback answered says which model answered it.** Server-side fallbacks
+  are on by default for Claude: a turn the requested model declines is re-run on another one
+  inside the same call. Nothing recorded that. The `llm` line the agent loop writes to
+  `transcript.jsonl`, in a solo run and in each member of a pilot flock, now carries
+  `served_by`, the model that took the turn, on exactly the turns a fallback took and on no
+  others, and the log prints it at the end of that turn's tokens line. A coordinator flock's
+  one planner call does not record it yet. The cost beside it is still priced at the rate of
+  the model that was asked for.
+
+### Changed
+
+- **A bare `--llm anthropic` runs Claude Opus 5.5, and a bare `--llm openai` runs GPT-6 Sol.**
+  Both shipped on 2026-09-22. Anthropic's models overview says to start with Opus 5.5 and
+  files Opus 5 under legacy, and OpenAI's models page lists GPT-6 Sol with Astra and Luna as
+  its flagships. Each costs less than the default it replaces, Opus 5.5 at $4/$20 a million
+  tokens against $5/$25, and GPT-6 Sol at $2/$10 against $4/$20. Naming the old default
+  explicitly still works: `claude-opus-5` is a `legacy` row and `gpt-5.6-sol` a `current` one.
+  A bare `--llm grok` runs Grok 4.7 for the same reason, at the price Grok 4.6 had
+  ([ADR-0031](docs/adr/0031-model-catalogue.md), amended).
+- **The catalogue was read again against all eleven vendors' own pages, on 2026-09-23.** Nine
+  ids are new: `claude-opus-5-5`, `gpt-6-sol`, `gpt-6-luna`, `gemini-3.1-pro-preview-customtools`,
+  `grok-4.7`, `zai-glm-5-3` on Mistral, `north-mini-code-1-0` on Cohere, `qwen-max` and
+  `glm-5.3-flashx`. Claude Opus 5,
+  Gemini 3.7 and 3.6 Flash and DeepSeek V4 Pro move from `current` to `legacy`, each on its
+  vendor's own grouping, and Leanstral takes images. `PRICES_CHECKED`, which every
+  `run_start` records, is 2026-09-23.
+- **Breaking, for anyone who names one of them: seven ids leave the catalogue.** The three
+  Gemini 2.5 models, because since 2026-09-18 Google is "limiting access to the 2.5 models to
+  users who have actively used them in the past", and a model a new user cannot call does
+  not belong in the list; `grok-4.20-multi-agent-0309`, because xAI's own guide says it takes no
+  client-side function tools and does not answer on Chat Completions; and `qwen3-max`,
+  `qwen3-coder-plus` and `qwen3-coder-next`, which Alibaba retire on 2026-10-10. A run that
+  names one is refused before it starts, with the list of what the vendor does take, and
+  `--llm gemini:gemini-2.5-flash` on a key that still has access is refused too.
+- **A cache write is charged at the input rate wherever the vendor sells no cache write.**
+  OpenAI's models before GPT-5.6, every Mistral model and both DeepSeek models carried a cache
+  write rate of `0`, which would have made any token written to a cache free. None of those
+  vendors has a write rate: they bill the tokens that fill a cache at the ordinary input rate,
+  which is what `None` charges. No run so far is affected, because none of those vendors
+  reports a written token, and the rule is now written beside the others in `catalogue.py`.
+- **Meta is asked for one call per turn.** Meta's tool-calling page documents
+  `parallel_tool_calls` and defaults it to allowing several calls at once. quackd now sends it
+  as `false`, as it already did for OpenAI, Grok and Mistral, where it had sent nothing. The
+  loop took the first call when several came, so what changes is that the others are no
+  longer generated and paid for.
+
+### Fixed
+
+- **Claude Fable 5.1 answered every quackd turn with a 400 since 0.9, and Claude Opus 5.5
+  would have too.** Two things, both in Anthropic's documentation. Both models refuse a
+  forced tool call, `tool_choice: type "tool" and "any" are not supported for this model.`,
+  and quackd asked every Claude model for its one call per turn that way. And both bind each
+  replayed thinking block to everything before it, while quackd drops the camera frames of
+  older turns from every request, which edits an earlier message from the third call on and
+  makes that replayed block a 400 for accounts created on or after 2026-08-31. The catalogue
+  now marks both models. They are asked with `auto`, still one call per turn, and they ask the
+  API to drop a replayed block whose history changed rather than refuse the request, behind
+  Anthropic's `thinking-binding-controls-2026-08-01` beta, while the loop trims their old
+  frames every eight exchanges rather than on every call and leaves out the blocks each trim
+  invalidates from that call on, so they keep the reasoning they produced since the last one.
+  Any other Claude model that answers the forced-call 400 is moved to `auto` after it and
+  stays there. The browser demo sent the same forced call from its own Anthropic client and
+  does the same now; it replays no thinking blocks, so the second fix is the CLI's alone. What
+  `auto` changes is that a turn can come back as prose with no call in it: the CLI re-prompts
+  once and then ends the run, as it always has for a turn like that, and the browser demo ends
+  the run at once, as it does for every vendor it can only ask.
+- **Claude Haiku 4.5, Sonnet 4.5 and Opus 4.5 failed their first call on every run.** They
+  take only the older extended thinking, and answer quackd's adaptive request with
+  `adaptive thinking is not supported on this model`. The retry that exists for exactly those
+  models matched a sentence opening with the word `thinking`, and this one does not, so it
+  never fired. It matches the sentence Anthropic's errors page gives now, and those three go
+  on without thinking text after one refused call.
+- **Claude Haiku 4.5 and Sonnet 4.5 were sent an effort they do not take.** Anthropic's effort
+  page lists every model that takes `output_config.effort`, and those two are not on it.
+  The catalogue marks them (`effort=False`) and they are sent none. There is no 400 reader
+  behind this one, because the page does not say what the API answers.
+- **DeepSeek was asked in a form it refuses.** DeepSeek thinks by default. Its request
+  reference says "`required` and named tool choices are not supported in thinking mode; the
+  API returns a `400` error", and its thinking-mode guide adds that a request carrying tools
+  must send every earlier turn's reasoning back or be a 400 too, which quackd never did.
+  quackd sent `required`. It now turns thinking off, in the CLI and in the browser demo, and
+  asks with `required` as it did before, which non-thinking mode accepts. `--extra-body` can
+  still turn thinking on, and brings both refusals back with it.
+- **Catalogue comments the vendors' own pages contradicted, and one missed price.** Gemini
+  3.5 Flash-Lite was recorded with no cached-input rate, when Google publishes $0.03 in the
+  paid column beside a free tier's "Not available", so a cached prompt on it was charged at the
+  full input rate: an overstatement, never an understatement. The GLM block said only the `v`
+  models take images, the DeepSeek block named the wrong retired aliases, the Kimi block gave
+  its discontinuations one date when there were three, and the Mistral block described
+  Leanstral as a model Mistral did not train. The docstrings of `kimi.py` and `meta.py` said
+  those vendors document no `tool_choice` values, and both now do. And four places said
+  Mistral answers OpenAI's `required` with a 400, which Mistral's own spec, listing
+  `required` beside `any`, does not support; quackd still sends `any`, the value its guide
+  documents.
 
 ## [0.12.0] — 2026-09-23
 

@@ -107,14 +107,21 @@ to proxy it through. Every call is billed to you.
 
 - **Anthropic** needs the `anthropic-dangerous-direct-browser-access: true` header, which
   the page sends. That header is exactly what its name says: your key is in a web page.
+  Claude Opus 5.5, the default, and Claude Fable 5.1 answer a forced tool call with a 400,
+  so the page asks them with `auto`, as the catalogue marks them, and moves any other Claude
+  model there too if it answers the same way. A turn that comes back in prose rather than a
+  call then ends the run, as it does for every vendor the page can only ask.
 - **Gemini** and **OpenAI** work with their normal browser CORS.
 - **Grok, Mistral, DeepSeek, Cohere, Qwen, Kimi and Meta** are all OpenAI-shaped, so each is
   the OpenAI client again with a different base URL, and each answered a CORS preflight from
-  this page's origins when it was measured. What differs between them is one field. Mistral
-  spells "you must call a tool" as `any` rather than `required`, Cohere documents no
-  `tool_choice` at all and so can only be asked rather than told, and Qwen, Kimi and Meta take
-  `auto`. Those values are copied from the provider classes in `quackd/agent/providers/`, so
-  the page and the CLI send the same body to the same vendor.
+  this page's origins when it was measured. What differs between them is how each is told to
+  call a tool. Mistral spells "you must call a tool" as `any` rather than `required`, Cohere
+  documents no `tool_choice` at all and so can only be asked rather than told, and Qwen, Kimi
+  and Meta take `auto`. DeepSeek is asked with `required` and with its thinking turned off,
+  because thinking mode refuses `required`. Those `tool_choice` values and DeepSeek's thinking
+  switch are copied from the provider classes in `quackd/agent/providers/`. The page sends no
+  `parallel_tool_calls`, which the CLI sends as false to OpenAI, Grok, Mistral and Meta, so a
+  turn may come back with several calls, and the page takes the first.
 - **GLM is not offered here, and is on the CLI.** See below.
 - **Some OpenAI reasoning models** refuse function tools on `/v1/chat/completions` and
   name `/v1/responses` in the 400. Every verb here is a function tool, so the page reads

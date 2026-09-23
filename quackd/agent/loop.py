@@ -790,14 +790,51 @@ class AgentLoop:
         pictures of a body with one, which is the cost of the second view and is what the
         arm's page says it costs."""
         n = self.cfg.keep_images_for_last_n
+        # A model that binds each replayed thinking block to everything before it (Claude Opus
+        # 5.5, Fable 5.1) is trimmed in steps rather than on every call, because a trim that
+        # takes a frame away edits the older messages and so invalidates the blocks produced
+        # while that frame was still sent. From the trim call on, those blocks are left out,
+        # which Anthropic allows for a leading run of them, so the blocks after them form an
+        # unbroken run that stays valid until the next trim. The latest assistant message is
+        # the one exception: its blocks may not be filtered, so on a trim call the API is asked
+        # to drop them instead (`drop_block`). Every other provider has a period of 1, which is
+        # a trim every call and nothing left out.
+        period = max(1, int(getattr(self.cfg.provider, "frame_trim_period", 1) or 1))
+        cut = max(0, len(self.history) - n)
+        cut -= cut % period
+        forget = getattr(self.cfg.provider, "without_thinking", None) if period > 1 else None
+        stale = self._last_invalidated(cut, n, period) if forget is not None else -1
+        latest = max(
+            (i for i, ex in enumerate(self.history) if ex.decision is not None), default=-1
+        )
         out: list[Exchange] = []
         for i, ex in enumerate(self.history):
-            if ex.observation.images and i < len(self.history) - n:
+            if forget is not None and i <= stale and i != latest and ex.decision is not None:
+                ex = ex.model_copy(update={"decision": forget(ex.decision)})
+            if ex.observation.images and i < cut:
                 ex = ex.model_copy(
                     update={"observation": ex.observation.model_copy(update={"images": []})}
                 )
             out.append(ex)
         return out
+
+    def _last_invalidated(self, cut: int, n: int, period: int) -> int:
+        """The last exchange whose thinking block a trim at `cut` invalidated, or -1 for none.
+
+        Exchange `j` was decided on the call that appended it, when the trim stood at `c`, so
+        its block was bound to every frame from `c` up to and including its own. It is
+        invalid once one of those frames is no longer sent. A trim that took nothing away, as
+        on a run with `--no-vision` or a body with no camera, invalidates nothing, and the
+        whole run is replayed as it was produced."""
+        last = -1
+        for j, ex in enumerate(self.history):
+            if ex.decision is None:
+                continue  # a prose turn, its re-prompt or the one pending: no block of its own
+            c = max(0, j + 1 - n)
+            c -= c % period
+            if any(self.history[k].observation.images for k in range(c, min(cut, j + 1))):
+                last = j
+        return last
 
     # ── the loop ────────────────────────────────────────────────────────────────────
 
@@ -1167,6 +1204,9 @@ class AgentLoop:
                         llm_calls=self.budget.llm_calls,
                         cost_usd=turn_cost,
                         cost_usd_total=self.cost_usd,
+                        # only when a server-side fallback answered, so every turn the model
+                        # asked for took, and every transcript from before this, reads as it did
+                        **({"served_by": turn.served_by} if turn.served_by else {}),
                     )
                     self.budget.check_time()
 

@@ -471,6 +471,29 @@ def test_a_tokens_line_from_before_the_money_renders_exactly_as_it_always_did() 
     )
 
 
+def test_a_turn_a_fallback_answered_says_which_model_did_at_the_end_of_its_tokens_line() -> None:
+    """The one field that changes what the rest of the line means: the cost on it was priced at
+    the rate of the model asked for, and a different model answered."""
+    event = LogEvent(
+        "llm",
+        0.0,
+        {
+            "step": 2,
+            "tool_calls": [{"name": "go_to", "arguments": {"target": "ball"}}],
+            "usage": {"input_tokens": 1200, "output_tokens": 40},
+            "usage_total": {"input_tokens": 5000, "output_tokens": 130},
+            "latency_s": 1.25,
+            "stop_reason": "tool_use",
+            "served_by": "claude-opus-4-8",
+        },
+    )
+    tokens = [text for text, _ in render_lines(event)][-1]
+    assert tokens == (
+        "tokens  in=1200 out=40 (run total in=5000 out=130) latency=1.2 s stop=tool_use"
+        " served_by=claude-opus-4-8"
+    )
+
+
 def test_the_stepper_line_carries_its_tokens_and_its_fraction_of_a_cent() -> None:
     """The whole argument for a stepper is the ratio between what one of its questions costs
     and what the model call it stands in for costs, so both numbers ride in the parenthesis

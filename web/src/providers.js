@@ -88,7 +88,8 @@ export const PROVIDERS = {
     keyPlaceholder: "your Mistral key",
     keyUrl: "https://console.mistral.ai/api-keys",
     baseUrl: "https://api.mistral.ai/v1",
-    // `required` is a 400 here. Mistral's word for the same thing is `any`.
+    // Mistral's guide documents `any` as its word for forcing a call; its spec lists
+    // `required` as well, so this is its documented value rather than the only one.
     toolChoice: "any",
     needsKey: true,
   },
@@ -98,6 +99,10 @@ export const PROVIDERS = {
     keyUrl: "https://platform.deepseek.com/api_keys",
     baseUrl: "https://api.deepseek.com",
     toolChoice: "required",
+    // DeepSeek thinks by default, and thinking mode refuses `required` and wants every earlier
+    // turn's reasoning sent back, which this page never keeps. So thinking goes off, the way
+    // `quackd/agent/providers/deepseek.py` turns it off for the CLI.
+    extraBody: { thinking: { type: "disabled" } },
     needsKey: true,
   },
   cohere: {
@@ -201,8 +206,29 @@ export function wantsTheResponsesApi(status, detail) {
   return text.includes("function tools") && text.includes("responses");
 }
 
-/** Anthropic: one tool call is asked for with tool_choice, and thinking is left off. */
+/**
+ * Is this the 400 a Claude model answers a forced tool call with?
+ *
+ * Claude Opus 5.5 and Claude Fable 5.1 refuse `tool_choice` `any`, in a sentence that opens
+ * with the parameter and says the type is not supported. Both halves are matched, because a
+ * 400 about a tool the request never declared also opens with `tool_choice`, and asking again
+ * with `auto` would not fix that one. This is `_refuses_forced_tools` in
+ * `quackd/agent/providers/anthropic.py`, in JavaScript.
+ */
+export function refusesForcedTools(status, detail) {
+  if (status !== 400) return false;
+  const text = String(detail);
+  return /^\s*tool_choice\b/.test(text) && text.includes("not supported");
+}
+
+/** Anthropic: one tool call per turn, forced where the model accepts that and allowed where
+ *  it does not. The page sends no `thinking` parameter, which on Claude Opus 5 and later means
+ *  the model's own default, adaptive, rather than none. */
 function anthropic({ key, model }) {
+  // Held across steps like the OpenAI client's `api`. The catalogue marks the models known to
+  // refuse a forced call so they never pay a failed request to say so; a model it does not
+  // mark is asked once, and the 400 moves it to `auto` for the rest of the run.
+  let forced = CATALOGUE.anthropic?.entries.find((entry) => entry.id === model)?.forced_tools !== false;
   return {
     name: "anthropic",
     model,
@@ -220,30 +246,43 @@ function anthropic({ key, model }) {
         });
       }
       messages.push({ role: "user", content: observation });
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        signal,   // an aborted run must not keep a request alive, or keep billing for it
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
-          // Anthropic blocks browser calls unless the caller says it meant it. It did.
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 1024,
-          system,
-          messages,
-          tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })),
-          tool_choice: { type: "any", disable_parallel_tool_use: true },
-        }),
-      });
-      if (!response.ok) throw new ProviderError(`Anthropic said ${response.status}: ${await readError(response)}`);
-      const body = await response.json();
-      const call = (body.content ?? []).find((block) => block.type === "tool_use");
-      if (!call) throw new ProviderError("Claude answered without calling a tool");
-      return oneCall(call.name, call.input);
+      // At most two passes: the only `continue` moves a forced call to `auto`, and the guard
+      // that reaches it cannot fire once `forced` is false, so a model that refuses `auto` as
+      // well is thrown rather than asked forever.
+      for (;;) {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          signal,   // an aborted run must not keep a request alive, or keep billing for it
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            // Anthropic blocks browser calls unless the caller says it meant it. It did.
+            "anthropic-dangerous-direct-browser-access": "true",
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 1024,
+            system,
+            messages,
+            tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })),
+            tool_choice: { type: forced ? "any" : "auto", disable_parallel_tool_use: true },
+          }),
+        });
+        if (response.ok) {
+          const body = await response.json();
+          const call = (body.content ?? []).find((block) => block.type === "tool_use");
+          if (!call) throw new ProviderError("Claude answered without calling a tool");
+          return oneCall(call.name, call.input);
+        }
+        // Read once. A Response body cannot be consumed twice, and both uses below need it.
+        const detail = await readError(response);
+        if (forced && refusesForcedTools(response.status, detail)) {
+          forced = false;
+          continue;
+        }
+        throw new ProviderError(`Anthropic said ${response.status}: ${detail}`);
+      }
     },
   };
 }
@@ -256,7 +295,7 @@ function anthropic({ key, model }) {
  * path: the run moves to Responses and stays. Staying is the point. Retrying chat each turn
  * would pay a failed call per step against the visitor's own key.
  */
-function openaiCompatible({ key, model, baseUrl, label, toolChoice = "required", api: startApi }) {
+function openaiCompatible({ key, model, baseUrl, label, toolChoice = "required", api: startApi, extraBody = null }) {
   const root = baseUrl.replace(/\/$/, "");
   // "chat" or "responses". Held across steps, so a model that has refused chat once is never
   // asked again for the life of this provider, which is the life of the run. It starts at
@@ -266,7 +305,12 @@ function openaiCompatible({ key, model, baseUrl, label, toolChoice = "required",
 
   // `null` means the vendor documents no `tool_choice` at all, and an unknown field is a 400
   // on some gateways, so the key is left out of the body rather than sent as null.
-  const insist = (body) => (toolChoice === null ? body : { ...body, tool_choice: toolChoice });
+  // A vendor's own extra fields go underneath what quackd sends, so none of them can replace
+  // the model, the turns or the tools.
+  const insist = (body) => {
+    const merged = extraBody ? { ...extraBody, ...body } : body;
+    return toolChoice === null ? merged : { ...merged, tool_choice: toolChoice };
+  };
 
   // A replayed call and its result have to quote the same handle. It is invented here rather
   // than echoed from the vendor, and both renderers key it off the turn index, so the pair
@@ -464,6 +508,7 @@ export function makeProvider({ provider, key, model, baseUrl, api }) {
       label: spec.label,
       toolChoice: spec.toolChoice,
       api: startsOn,
+      extraBody: spec.extraBody ?? null,
     });
   }
   return openaiCompatible({

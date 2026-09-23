@@ -11,7 +11,13 @@ from typing import Any
 
 import pytest
 
-from quackd.agent.providers.anthropic import AnthropicProvider
+from quackd.agent.providers.anthropic import (
+    ADAPTIVE_REFUSED,
+    BINDING_BETA,
+    BINDING_TRIM_PERIOD,
+    FALLBACK_BETA,
+    AnthropicProvider,
+)
 from quackd.agent.providers.anthropic import render_messages as a_messages
 from quackd.agent.providers.base import (
     Decision,
@@ -21,7 +27,7 @@ from quackd.agent.providers.base import (
     ProviderError,
     ToolCall,
 )
-from quackd.agent.providers.catalogue import default_model_for, find_model
+from quackd.agent.providers.catalogue import default_model_for, find_model, models_for
 from quackd.agent.providers.factory import make_provider
 from quackd.agent.providers.gemini import (
     UNSUPPORTED_SCHEMA_KEYS,
@@ -127,9 +133,13 @@ def data_url(png: bytes) -> str:
 
 
 class FakeAnthropic:
-    def __init__(self, response: Any, *, beta_ok: bool = True) -> None:
+    """`beta_ok=False` is an SDK that predates the keyword `predates` names on the beta
+    endpoint, and refuses it the way Python does, only when it is passed."""
+
+    def __init__(self, response: Any, *, beta_ok: bool = True, predates: str = "fallbacks") -> None:
         self.kwargs: dict[str, Any] = {}
         self.beta_used = False
+        self.beta_calls = 0
         self._response = response
 
         async def plain(**kwargs: Any) -> Any:
@@ -137,8 +147,9 @@ class FakeAnthropic:
             return self._response
 
         async def beta(**kwargs: Any) -> Any:
-            if not beta_ok:
-                raise TypeError("unexpected keyword argument 'fallbacks'")
+            self.beta_calls += 1
+            if not beta_ok and predates in kwargs:
+                raise TypeError(f"create() got an unexpected keyword argument '{predates}'")
             self.beta_used = True
             self.kwargs = kwargs
             return self._response
@@ -257,7 +268,7 @@ async def test_anthropic_falls_back_to_plain_endpoint_on_old_sdk() -> None:
     client = FakeAnthropic(
         anthropic_response(NS(type="tool_use", id="1", name="walk", input={})), beta_ok=False
     )
-    p = AnthropicProvider(client=client)
+    p = AnthropicProvider(model="claude-opus-5", client=client)
     await p.step("S", history()[:1], TOOLS)
     assert not client.beta_used and p.fallbacks is False
     assert "fallbacks" not in client.kwargs
@@ -661,7 +672,7 @@ def test_extra_body_lets_you_override_what_quackd_sends() -> None:
 
 
 async def test_openai_bad_json_arguments_do_not_crash() -> None:
-    p = OpenAIProvider(client=FakeOpenAI(openai_response("walk", "{not json")))
+    p = OpenAIProvider(model=UNHINTED, client=FakeOpenAI(openai_response("walk", "{not json")))
     turn = await p.step("S", history()[:1], TOOLS)
     assert "_unparsed" in turn.tool_calls[0].arguments
 
@@ -933,7 +944,7 @@ async def test_anthropic_retries_once_without_thinking_on_an_older_model() -> No
         return anthropic_response(tool_use_block())
 
     client = NS(messages=NS(create=create), beta=NS(messages=NS(create=create)))
-    p = AnthropicProvider(client=client, fallbacks=False)
+    p = AnthropicProvider(model="claude-opus-4-5", client=client, fallbacks=False)
     turn = await p.step("S", history()[:1], TOOLS)
     assert [tc.name for tc in turn.tool_calls] == ["walk"]
     assert len(calls) == 2 and "thinking" in calls[0] and "thinking" not in calls[1]
@@ -993,7 +1004,7 @@ async def test_the_real_sdk_message_shape_still_matches_a_top_level_thinking_com
         return anthropic_response(tool_use_block())
 
     client = NS(messages=NS(create=create), beta=NS(messages=NS(create=create)))
-    p = AnthropicProvider(client=client, fallbacks=False)
+    p = AnthropicProvider(model="claude-opus-4-5", client=client, fallbacks=False)
     turn = await p.step("S", history()[:1], TOOLS)
     assert [tc.name for tc in turn.tool_calls] == ["walk"]
     assert len(calls) == 2 and p.thinking_display is None
@@ -1026,6 +1037,337 @@ def test_anthropic_thinking_display_is_configurable(monkeypatch: pytest.MonkeyPa
     assert AnthropicProvider(client=FakeAnthropic(None)).thinking_display == "omitted"
 
 
+# ── a Claude model that will not be forced to call a tool ───────────────────────────────
+
+#: The sentence the API answers a forced call with on Claude Opus 5.5 and Claude Fable 5.1,
+#: copied from Anthropic's Opus 5.5 migration guide on 2026-09-23. Quoted rather than
+#: paraphrased, because `_refuses_forced_tools` matches on its words.
+REFUSES_FORCED = 'tool_choice: type "tool" and "any" are not supported for this model.'
+
+
+@pytest.mark.parametrize("spec", models_for("anthropic"), ids=lambda m: m.id)
+async def test_each_claude_row_is_asked_the_way_the_catalogue_says(spec: Any) -> None:
+    """A row the catalogue marks is asked with `auto` from its first turn, and pays no failed
+    call to be told; every other row is still made to call a tool. One call per turn both ways."""
+    client = FakeAnthropic(anthropic_response(tool_use_block()))
+    await AnthropicProvider(model=spec.id, client=client).step("S", history()[:1], TOOLS)
+    expected = "any" if spec.forced_tools else "auto"
+    assert client.kwargs["tool_choice"] == {"type": expected, "disable_parallel_tool_use": True}
+
+
+def test_the_claude_models_that_refuse_a_forced_call_are_marked() -> None:
+    """Both are documented by the vendor, and one of them is the default: left unmarked, every
+    bare `--llm anthropic` run would open on a failed call."""
+    assert default_model_for("anthropic") == "claude-opus-5-5"
+    for model_id in ("claude-opus-5-5", "claude-fable-5-1"):
+        spec = find_model("anthropic", model_id)
+        assert spec is not None and spec.forced_tools is False, model_id
+
+
+@pytest.mark.parametrize("spec", models_for("anthropic"), ids=lambda m: m.id)
+async def test_effort_goes_only_to_the_claude_rows_that_take_it(spec: Any) -> None:
+    """Haiku 4.5 and Sonnet 4.5 are not on Anthropic's list of models that take
+    `output_config.effort`, and quackd sent it to them on every call."""
+    client = FakeAnthropic(anthropic_response(tool_use_block()))
+    await AnthropicProvider(model=spec.id, client=client, effort="medium").step(
+        "S", history()[:1], TOOLS
+    )
+    assert ("output_config" in client.kwargs) is spec.effort
+    assert {"claude-haiku-4-5", "claude-sonnet-4-5"} == {
+        m.id for m in models_for("anthropic") if not m.effort
+    }
+
+
+async def test_the_sentence_the_4_5_models_send_about_thinking_is_read_as_a_refusal() -> None:
+    """Anthropic's errors page gives it word for word, and it opens with "adaptive". The
+    anchored match written for the older wording never saw it, so the one retry that exists for
+    exactly these models did not fire and their first call failed on every run."""
+    client, calls = _recording(
+        lambda kw: "adaptive thinking is not supported on this model" if "thinking" in kw else None
+    )
+    p = AnthropicProvider(model="claude-haiku-4-5", client=client, fallbacks=False)
+    turn = await p.step("S", history()[:1], TOOLS)
+    assert [tc.name for tc in turn.tool_calls] == ["walk"]
+    assert len(calls) == 2 and "thinking" not in calls[1]
+    assert p.thinking_display is None
+
+
+def test_the_claude_models_that_bind_their_thinking_are_trimmed_in_steps() -> None:
+    """Opus 5.5 and Fable 5.1 refuse a replayed thinking block once anything before it has
+    changed, and the loop's frame trim changes earlier messages from the third call on. Those
+    two, and only those, ask the loop to trim in steps rather than every call."""
+    marked = {m.id for m in models_for("anthropic") if m.binds_thinking}
+    assert marked == {"claude-opus-5-5", "claude-fable-5-1"}
+    for spec in models_for("anthropic"):
+        p = AnthropicProvider(model=spec.id, client=FakeAnthropic(None))
+        assert p.binds_thinking is spec.binds_thinking, spec.id
+        assert p.frame_trim_period == (BINDING_TRIM_PERIOD if spec.binds_thinking else 1)
+    unknown = AnthropicProvider(model="claude-not-in-this-build", client=FakeAnthropic(None))
+    assert unknown.frame_trim_period == 1
+
+
+@pytest.mark.parametrize("fallbacks", [True, False], ids=["fallbacks", "no-fallbacks"])
+async def test_a_binding_model_asks_for_a_stale_block_to_be_dropped_not_refused(
+    fallbacks: bool,
+) -> None:
+    """Each step of the trim invalidates the blocks replayed after it. `drop_block` has the API
+    discard those rather than answer the request with a 400, and it only exists behind its own
+    beta, so a binding model goes to the beta endpoint even with fallbacks off."""
+    client = FakeAnthropic(anthropic_response(tool_use_block()))
+    p = AnthropicProvider(model="claude-opus-5-5", client=client, fallbacks=fallbacks)
+    await p.step("S", history()[:1], TOOLS)
+    assert client.beta_used
+    kw = client.kwargs
+    assert kw["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+    expected = [FALLBACK_BETA, BINDING_BETA] if fallbacks else [BINDING_BETA]
+    assert kw["betas"] == expected
+    assert ("fallbacks" in kw) is fallbacks
+
+    plain = FakeAnthropic(anthropic_response(tool_use_block()))
+    await AnthropicProvider(model="claude-opus-5", client=plain, fallbacks=fallbacks).step(
+        "S", history()[:1], TOOLS
+    )
+    assert "block_binding" not in plain.kwargs["thinking"]
+    assert BINDING_BETA not in plain.kwargs.get("betas", [])
+
+
+async def test_a_binding_model_whose_thinking_is_refused_is_told_not_quietly_unbound() -> None:
+    """Opus 5.5 and Fable 5.1 think whether they are asked to or not, so asking again without
+    `thinking` would keep the bound blocks and lose only `block_binding`, and the first trim of
+    an old frame would be a 400 nine turns later. The refusal is raised as it came, once, and
+    the other models keep their retry."""
+    client, calls = _recording(lambda kw: ADAPTIVE_REFUSED if "thinking" in kw else None)
+    p = AnthropicProvider(model="claude-opus-5-5", client=client, fallbacks=False)
+    with pytest.raises(ProviderError, match="adaptive thinking is not supported"):
+        await p.step("S", history()[:1], TOOLS)
+    assert len(calls) == 1 and p.binds_thinking is True
+
+    client, calls = _recording(lambda kw: ADAPTIVE_REFUSED if "thinking" in kw else None)
+    q = AnthropicProvider(model="claude-opus-4-5", client=client, fallbacks=False)
+    await q.step("S", history()[:1], TOOLS)
+    assert len(calls) == 2 and "thinking" not in calls[1]
+
+
+async def test_a_binding_model_asks_to_bind_even_with_no_thinking_display() -> None:
+    """`QUACKD_THINKING_DISPLAY=` sends no display, and the model thinks anyway; the field that
+    keeps a stale block from being a 400 has to go out regardless."""
+    client = FakeAnthropic(anthropic_response(tool_use_block()))
+    p = AnthropicProvider(model="claude-opus-5-5", client=client, thinking_display="")
+    await p.step("S", history()[:1], TOOLS)
+    assert client.kwargs["thinking"] == {
+        "type": "adaptive",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    }
+
+
+def test_leaving_a_turn_s_thinking_out_keeps_everything_else_it_said() -> None:
+    """What the loop hands a binding model for a turn a trim invalidated: the same turn with
+    both kinds of thinking block gone, and the call and the text where they were, in order.
+    A turn with no block list to filter, as a provider other than this one records, passes
+    through as it came."""
+    p = AnthropicProvider(model="claude-opus-5-5", client=FakeAnthropic(None))
+    call = ToolCall(id="t1", name="walk", arguments={"vx": 0.1})
+    raw = [
+        {"type": "thinking", "thinking": "the bench is left", "signature": "s1"},
+        {"type": "redacted_thinking", "data": "opaque"},
+        {"type": "text", "text": "walking"},
+        {"type": "tool_use", "id": "t1", "name": "walk", "input": {"vx": 0.1}},
+    ]
+    turn = Decision(tool_call=call, text="walking", raw=raw)
+    kept = p.without_thinking(turn)
+    assert kept.raw == raw[2:] and kept.tool_call == call and kept.text == "walking"
+    assert turn.raw == raw and len(raw) == 4, "the run's own history was edited"
+    for other in (None, {"content": raw}):
+        assert p.without_thinking(Decision(tool_call=call, raw=other)).raw == other
+
+
+async def test_an_sdk_too_old_for_fallbacks_keeps_the_binding_beta() -> None:
+    """An SDK that predates `fallbacks` still sends betas. A binding model keeps its own, and
+    with it `block_binding`: without them the first trim of an old frame is a 400."""
+    client = FakeAnthropic(anthropic_response(tool_use_block()), beta_ok=False)
+    p = AnthropicProvider(model="claude-opus-5-5", client=client)
+    await p.step("S", history()[:1], TOOLS)
+    assert client.beta_used and client.kwargs["betas"] == [BINDING_BETA]
+    assert "fallbacks" not in client.kwargs
+    assert client.kwargs["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+    assert p.binds_thinking is True and p.fallbacks is False
+    await p.step("S", history()[:1], TOOLS)
+    assert client.beta_calls == 3, "the second turn paid a failed call"
+
+
+async def test_a_type_error_naming_fallbacks_once_they_are_off_is_raised_not_retried() -> None:
+    """The fallbacks retry switches fallbacks off before it asks again, and that is the only
+    thing that ends it: a TypeError that still names them after that came from somewhere else,
+    and asking again would ask forever."""
+    beta_calls: list[dict[str, Any]] = []
+
+    async def beta(**kwargs: Any) -> Any:
+        beta_calls.append(kwargs)
+        raise TypeError("fallbacks: 'NoneType' object is not iterable")
+
+    async def plain(**_: Any) -> Any:
+        raise AssertionError("a binding model reached the plain endpoint")
+
+    client = NS(messages=NS(create=plain), beta=NS(messages=NS(create=beta)))
+    p = AnthropicProvider(model="claude-opus-5-5", client=client)
+    with pytest.raises(ProviderError, match="TypeError"):
+        await p.step("S", history()[:1], TOOLS)
+    assert len(beta_calls) == 2, "asked again more than once"
+    assert "fallbacks" in beta_calls[0] and "fallbacks" not in beta_calls[1]
+
+
+async def test_an_sdk_too_old_for_betas_refuses_a_binding_model_up_front() -> None:
+    """Without betas there is no `block_binding`, and a binding model's first trim of an old
+    frame would be a 400 nine turns in. It is said on the first call instead."""
+    client = FakeAnthropic(anthropic_response(tool_use_block()), beta_ok=False, predates="betas")
+    p = AnthropicProvider(model="claude-opus-5-5", client=client)
+    with pytest.raises(ProviderError, match="sends no betas"):
+        await p.step("S", history()[:1], TOOLS)
+    assert client.kwargs == {}, "nothing reached the plain endpoint"
+
+    plain = FakeAnthropic(anthropic_response(tool_use_block()), beta_ok=False, predates="betas")
+    q = AnthropicProvider(model="claude-opus-5", client=plain)
+    await q.step("S", history()[:1], TOOLS)
+    assert not plain.beta_used and "fallbacks" not in plain.kwargs and q.fallbacks is False
+
+
+async def test_deepseek_turns_thinking_off_and_insists_on_its_one_call() -> None:
+    """Thinking mode refuses `required` and wants every earlier turn's reasoning sent back, and
+    it is DeepSeek's default. With thinking off the forced call is accepted again."""
+    from quackd.agent.providers.deepseek import DeepSeekProvider
+
+    client = FakeOpenAI(openai_response("walk", "{}"))
+    await DeepSeekProvider(model="deepseek-flash", client=client).step("S", history(), TOOLS)
+    assert client.kwargs["tool_choice"] == "required"
+    assert client.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "parallel_tool_calls" not in client.kwargs
+
+
+async def test_a_deepseek_extra_body_goes_over_the_thinking_default_not_instead_of_it() -> None:
+    from quackd.agent.providers.deepseek import DeepSeekProvider
+
+    client = FakeOpenAI(openai_response("walk", "{}"))
+    p = DeepSeekProvider(model="deepseek-flash", client=client, extra_body={"top_p": 0.5})
+    await p.step("S", history()[:1], TOOLS)
+    assert client.kwargs["extra_body"] == {"thinking": {"type": "disabled"}, "top_p": 0.5}
+    p = DeepSeekProvider(
+        model="deepseek-flash", client=client, extra_body={"thinking": {"type": "enabled"}}
+    )
+    await p.step("S", history()[:1], TOOLS)
+    assert client.kwargs["extra_body"] == {"thinking": {"type": "enabled"}}, (
+        "an explicit --extra-body is the caller's to set, refusals and all"
+    )
+
+
+async def test_meta_is_asked_for_one_call_per_turn() -> None:
+    """Meta documents `parallel_tool_calls` and defaults it to allowing several."""
+    from quackd.agent.providers.meta import MetaProvider
+
+    client = FakeOpenAI(openai_response("walk", "{}"))
+    await MetaProvider(model="muse-spark-1.3", client=client).step("S", history()[:1], TOOLS)
+    assert client.kwargs["parallel_tool_calls"] is False
+    assert client.kwargs["tool_choice"] == "auto"
+
+
+def _recording(fail_when: Callable[[dict[str, Any]], str | None]) -> tuple[Any, list[Any]]:
+    """A client that records every request and raises the 400 `fail_when` names, if any."""
+    calls: list[dict[str, Any]] = []
+
+    async def create(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        complaint = fail_when(kwargs)
+        if complaint:
+            raise sdk_bad_request(complaint)
+        return anthropic_response(tool_use_block())
+
+    return NS(messages=NS(create=create), beta=NS(messages=NS(create=create))), calls
+
+
+async def test_a_refused_forced_call_is_asked_again_with_auto_and_stays_asked() -> None:
+    """A model the catalogue does not mark learns it from the 400, once, for the whole run."""
+    client, calls = _recording(
+        lambda kw: REFUSES_FORCED if kw["tool_choice"]["type"] == "any" else None
+    )
+    p = AnthropicProvider(model="claude-a-model-this-build-has-not-heard-of", client=client)
+    turn = await p.step("S", history()[:1], TOOLS)
+    assert [tc.name for tc in turn.tool_calls] == ["walk"]
+    assert [c["tool_choice"]["type"] for c in calls] == ["any", "auto"]
+    assert p.forced_tools is False
+    assert "thinking" in calls[1], "the other repair fired on a complaint that was not its own"
+    await p.step("S", history()[:1], TOOLS)
+    assert [c["tool_choice"]["type"] for c in calls] == ["any", "auto", "auto"]
+
+
+async def test_a_tool_choice_complaint_auto_cannot_fix_is_raised_after_one_request() -> None:
+    """It opens with the parameter too, and says nothing about the type being unsupported."""
+    client, calls = _recording(
+        lambda kw: "tool_choice.name: Input should be the name of a tool the request declares"
+    )
+    p = AnthropicProvider(model="claude-opus-5", client=client)
+    with pytest.raises(ProviderError, match="bad request"):
+        await p.step("S", history()[:1], TOOLS)
+    assert len(calls) == 1 and p.forced_tools is True
+
+
+async def test_a_model_that_refuses_auto_as_well_ends_the_turn_rather_than_looping() -> None:
+    client, calls = _recording(lambda kw: REFUSES_FORCED)
+    p = AnthropicProvider(model="claude-opus-5", client=client, fallbacks=False)
+    with pytest.raises(ProviderError, match="not supported"):
+        await p.step("S", history()[:1], TOOLS)
+    assert [c["tool_choice"]["type"] for c in calls] == ["any", "auto"]
+
+
+async def test_both_repairs_can_happen_on_one_turn_and_each_happens_once() -> None:
+    """An old model refuses `thinking` and a new one refuses a forced call; nothing ships that
+    does both, and the retry must still end rather than go round again."""
+
+    def complaint(kw: dict[str, Any]) -> str | None:
+        if "thinking" in kw:
+            return "thinking: Extra inputs are not permitted"
+        return REFUSES_FORCED if kw["tool_choice"]["type"] == "any" else None
+
+    client, calls = _recording(complaint)
+    p = AnthropicProvider(model="claude-opus-5", client=client, fallbacks=False)
+    turn = await p.step("S", history()[:1], TOOLS)
+    assert [tc.name for tc in turn.tool_calls] == ["walk"]
+    assert len(calls) == 3
+    assert "thinking" not in calls[2] and calls[2]["tool_choice"]["type"] == "auto"
+
+
+# ── which model answered, when a refusal fallback took the turn ─────────────────────────
+
+
+def _answered(*kinds: str, model: str, as_dicts: bool = False) -> Any:
+    entries = [{"type": k} if as_dicts else NS(type=k) for k in kinds]
+    usage = NS(input_tokens=10, output_tokens=5, iterations=entries)
+    response = anthropic_response(tool_use_block(), usage=usage)
+    response.model = model
+    return response
+
+
+@pytest.mark.parametrize("as_dicts", [False, True], ids=["objects", "dicts"])
+async def test_a_turn_a_fallback_answered_names_the_model_that_answered_it(as_dicts: bool) -> None:
+    client = FakeAnthropic(
+        _answered("message", "fallback_message", model="claude-opus-4-8", as_dicts=as_dicts)
+    )
+    turn = await AnthropicProvider(model="claude-opus-5-5", client=client).step(
+        "S", history()[:1], TOOLS
+    )
+    assert turn.served_by == "claude-opus-4-8"
+
+
+async def test_a_turn_the_model_asked_for_took_names_nobody_even_when_the_id_differs() -> None:
+    """An alias comes back as its dated snapshot, which is the same model and no fallback."""
+    client = FakeAnthropic(_answered("message", model="claude-haiku-4-5-20251001"))
+    turn = await AnthropicProvider(model="claude-haiku-4-5", client=client).step(
+        "S", history()[:1], TOOLS
+    )
+    assert turn.served_by is None
+    plain = FakeAnthropic(anthropic_response(tool_use_block()))  # an SDK that reports neither
+    turn = await AnthropicProvider(client=plain).step("S", history()[:1], TOOLS)
+    assert turn.served_by is None
+
+
 @pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
 async def test_openai_reads_reasoning_from_either_field(field: str) -> None:
     """DeepSeek, vLLM, llama.cpp, LM Studio and xAI answer with `reasoning_content`; Ollama's
@@ -1033,20 +1375,24 @@ async def test_openai_reads_reasoning_from_either_field(field: str) -> None:
     response = openai_response("walk", "{}")
     setattr(response.choices[0].message, field, "  I should walk  ")
     response.usage.completion_tokens_details = NS(reasoning_tokens=44)
-    turn = await OpenAIProvider(client=FakeOpenAI(response)).step("S", history()[:1], TOOLS)
+    turn = await OpenAIProvider(model=UNHINTED, client=FakeOpenAI(response)).step(
+        "S", history()[:1], TOOLS
+    )
     assert turn.thinking == "I should walk" and turn.usage.reasoning_tokens == 44
 
 
 async def test_openai_without_reasoning_reports_none() -> None:
     client = FakeOpenAI(openai_response("walk", "{}"))
-    turn = await OpenAIProvider(client=client).step("S", history()[:1], TOOLS)
+    turn = await OpenAIProvider(model=UNHINTED, client=client).step("S", history()[:1], TOOLS)
     assert turn.thinking is None and turn.usage.reasoning_tokens == 0
 
 
 async def test_openai_ignores_a_non_string_reasoning_field() -> None:
     response = openai_response("walk", "{}")
     response.choices[0].message.reasoning = {"summary": "an object, not text"}
-    turn = await OpenAIProvider(client=FakeOpenAI(response)).step("S", history()[:1], TOOLS)
+    turn = await OpenAIProvider(model=UNHINTED, client=FakeOpenAI(response)).step(
+        "S", history()[:1], TOOLS
+    )
     assert turn.thinking is None
 
 
@@ -1141,7 +1487,8 @@ def test_gemini_thoughts_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> N
     "build",
     [
         pytest.param(
-            lambda: OpenAIProvider(client=FakeOpenAI(NS(choices=[], usage=None))), id="openai"
+            lambda: OpenAIProvider(model=UNHINTED, client=FakeOpenAI(NS(choices=[], usage=None))),
+            id="openai",
         ),
         pytest.param(
             lambda: AnthropicProvider(
@@ -1264,7 +1611,9 @@ async def test_openai_chat_keeps_the_prompt_total_and_names_its_cached_slices() 
     """
     response = openai_response("walk", "{}")
     response.usage.prompt_tokens_details = NS(cached_tokens=40, cache_write_tokens=8)
-    turn = await OpenAIProvider(client=FakeOpenAI(response)).step("S", history()[:1], TOOLS)
+    turn = await OpenAIProvider(model=UNHINTED, client=FakeOpenAI(response)).step(
+        "S", history()[:1], TOOLS
+    )
     assert turn.usage.input_tokens == 50, "unchanged: the cached part was always inside it"
     assert turn.usage.cache_read_tokens == 40 and turn.usage.cache_write_tokens == 8
 
@@ -1319,7 +1668,10 @@ async def test_gemini_bills_the_thoughts_beside_the_answer_and_names_its_cached_
             id="anthropic",
         ),
         pytest.param(
-            lambda: OpenAIProvider(client=FakeOpenAI(openai_response("walk", "{}"))), id="openai"
+            lambda: OpenAIProvider(
+                model=UNHINTED, client=FakeOpenAI(openai_response("walk", "{}"))
+            ),
+            id="openai",
         ),
         pytest.param(
             lambda: OpenAIProvider(

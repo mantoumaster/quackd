@@ -55,21 +55,31 @@ GONE = {
     "gpt-5",  # shutdown announced for 2026-12-11
     "grok-4",  # retired 2026-05-15, and silently answered as grok-4.3 after
     "gemini-2.0-flash",  # shut down
-    "deepseek-chat",  # retired alias
-    "kimi-k2.5",  # discontinued 2026-05-25
+    "deepseek-chat",  # stopped answering after 2026-07-24
+    "kimi-k2.5",  # discontinued 2026-08-31, and answers 404
     "mistral-medium-2604",  # never an id: Mistral moved to name-major-minor
     "command-a-vision-07-2025",  # live, but its page says tool use is not supported
-    "glm-4.5v",  # the one GLM vision model with no function calling
+    "glm-4.5v",  # a GLM vision model with no function calling
     "claude-mythos-5-1",  # invitation only
     "gpt-5.6-cyber",  # its own approval programme
+    # the 2026-09-23 refresh
+    "gemini-2.5-pro",  # since 2026-09-18 only callable by users who have used it before
+    "gemini-2.5-flash",  # the same
+    "gemini-2.5-flash-lite",  # the same
+    "grok-4.20-multi-agent-0309",  # takes no client-side function tools, no Chat Completions
+    "qwen3-max",  # retires 2026-10-10
+    "qwen3-coder-plus",  # retires 2026-10-10
+    "qwen3-coder-next",  # retires 2026-10-10
 }
 
 
 #: What each vendor accepts for "you must call a tool", from its own documentation. Not a
-#: preference: Mistral 400s on OpenAI's `required` and spells it `any`, Z.ai documents `auto` as
-#: the only value it takes, and Cohere's compatibility endpoint documents no such parameter, so
-#: the field is omitted. Pinned here because the browser's copy of this table is only checked
-#: against the vendors the page can reach, and GLM is not one of them.
+#: preference: Mistral's guide documents `any` (its spec lists `required` too), Z.ai documents
+#: `auto` as the only value it takes, DeepSeek is asked with `required` and with thinking off,
+#: because thinking mode refuses it, and Cohere's compatibility endpoint documents no such
+#: parameter, so the field is omitted.
+#: Pinned here because the browser's copy of this table is only checked against the vendors the
+#: page can reach, and GLM is not one of them.
 TOOL_CHOICE = {
     "grok": "required",
     "mistral": "any",
@@ -149,6 +159,31 @@ def test_only_openai_names_an_api_and_only_ever_responses() -> None:
     assert any(m.api == "responses" for m in models_for("openai")), (
         "no OpenAI model is marked responses, so the hint is dead code and the tests for it lie"
     )
+
+
+def test_only_anthropic_marks_a_model_that_refuses_a_forced_call() -> None:
+    """Every other vendor's `tool_choice` is decided per vendor (TOOL_CHOICE below, and the
+    provider classes), so the per-model flag is Anthropic's alone and a row elsewhere setting it
+    would be read by nothing."""
+    for name in CLOUD_NAMES:
+        for m in models_for(name):
+            if name != "anthropic":
+                assert m.forced_tools is True, f"{m.id} sets forced_tools and {name} never reads it"
+    assert any(not m.forced_tools for m in models_for("anthropic")), (
+        "no Claude row is marked, so the flag is dead code and the tests for it lie"
+    )
+
+
+def test_only_anthropic_marks_a_model_by_how_it_takes_effort_or_thinking() -> None:
+    """`effort` and `binds_thinking` are Anthropic's alone, like `forced_tools`: every other
+    vendor's request is shaped by its provider class, and a row elsewhere setting either would
+    be read by nothing."""
+    for name in CLOUD_NAMES:
+        if name == "anthropic":
+            continue
+        for m in models_for(name):
+            assert m.effort is True, f"{m.id} sets effort and {name} never reads it"
+            assert m.binds_thinking is False, f"{m.id} sets binds_thinking and {name} ignores it"
 
 
 def test_no_retired_id_has_crept_back() -> None:

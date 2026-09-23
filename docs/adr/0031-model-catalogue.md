@@ -12,6 +12,24 @@ catalogue id infers its vendor, and shell completion follows what was typed befo
 rather than a second flag. What the catalogue holds, what it refuses and when it refuses it are
 unchanged.
 
+**Amended 2026-09-23:** three defaults moved, and a row can now say how the model has to be
+asked. Anthropic and OpenAI both shipped on 2026-09-22: `--llm anthropic` runs `claude-opus-5-5`
+rather than `claude-opus-5`, because Anthropic's models overview now says to start with it and
+files Opus 5 under legacy, and `--llm openai` runs `gpt-6-sol` rather than `gpt-5.6-sol`, at half
+the price, because OpenAI's models page lists it with Astra and Luna as its flagships. `--llm
+grok` runs `grok-4.7`, which xAI's model chooser names alone. The rule below is unchanged and is
+why each was one edit per vendor: the first entry is the default. What is new is three Anthropic
+flags on `ModelSpec`. Claude Opus 5.5, like Claude Fable 5.1 before it, answers a forced tool call
+with a 400, so a default nobody had marked would have opened every bare `--llm anthropic` run on
+a failed request: a row with `forced_tools=False` is asked with `auto` instead, one call per turn
+still, and the provider reads the same 400 for any model the table does not mark, which is the
+bargain `api` already makes for OpenAI's Responses models. Both also bind every replayed thinking
+block to all that came before it, so a row with `binds_thinking=True` has its old camera frames
+trimmed every eight exchanges rather than on every call: from each trim on the loop leaves out
+the blocks it invalidated, and the API is asked to drop the latest turn's, which may not be left
+out, rather than refuse the request. And a row with `effort=False` is sent no effort. The whole
+table was read again against all eleven vendors' pages on 2026-09-23.
+
 ## Context
 
 `--model` took any string and handed it to the vendor. A typo, an id retired last spring and an id

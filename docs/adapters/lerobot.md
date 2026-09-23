@@ -390,9 +390,11 @@ refusal, because the frames would still arrive and look right.
 > owner report rather than something measured here: the 2026-09-15 bench ran one webcam.
 
 **The cost is pictures.** Each request carries the images from the last two exchanges, so two
-cameras is four pictures per request where one camera is two, and that is what you pay in
-tokens on every step of every run. It is worth it for a wrist view plus an overhead view. It
-is not worth it for two views of the same thing.
+cameras is four pictures per request where one camera is two, and that is what you pay in tokens
+on every step of every run. On Claude Opus 5.5 and Fable 5.1, whose old frames are trimmed every
+eight exchanges rather than on every one, it is up to eighteen where one camera is nine. It is
+worth it for a wrist view plus an overhead view. It is not worth it for two views of the same
+thing.
 
 > [!NOTE]
 > A local server, or a particular model behind one, may accept only one image per message.
