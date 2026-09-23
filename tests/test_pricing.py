@@ -5,7 +5,7 @@ of a transcript did the arithmetic by hand against a rate card they had to go an
 `quackd/agent/providers/pricing.py` is that arithmetic and this file holds it to the three rules
 it promises, because each of them fails silently and expensively when it breaks:
 
-- **An unknown rate is `None`, never zero.** Three Cohere models genuinely have no published
+- **An unknown rate is `None`, never zero.** Four Cohere models genuinely have no published
   per-token rate, and one of them is Cohere's default. Printing `$0.00` for a frontier model is
   the failure here that costs somebody real money, so the tests below assert the `None` rather
   than tolerate it.
@@ -462,18 +462,22 @@ def test_the_date_the_rates_were_checked_is_a_real_date() -> None:
     assert checked.year >= 2025
 
 
-def test_the_three_cohere_command_a_models_are_the_only_unpriced_ones() -> None:
-    """The case `None` was built for, rather than three rows somebody forgot.
+def test_four_cohere_models_are_the_only_unpriced_ones() -> None:
+    """The case `None` was built for, rather than four rows somebody forgot.
 
-    Cohere sell Command A, A+ and A Reasoning as dedicated instances by the hour and publish no
-    per-token rate for any of them, which cannot honestly be turned into one. Everything else in
-    the catalogue is priced off its vendor's own page, so this list is the exception and stating
-    it here is what stops a future edit quietly filling the gap with a zero."""
+    Cohere sell Command A, A+, A Reasoning and North Mini Code as dedicated instances by the
+    hour and publish no per-token rate for any of them, which cannot honestly be turned into
+    one. The pricing page shows A+ and North as "Free", $0 against "API key" with no key type
+    named, and its own FAQ bills production-key calls pay as you go at a rate it does not
+    state. Everything else in the catalogue is priced off its vendor's own page, so
+    this list is the exception and stating it here is what stops a future edit quietly filling
+    the gap with a zero."""
     unpriced = {m.id for name in cat.CLOUD_NAMES for m in cat.models_for(name) if m.price is None}
     assert unpriced == {
         "command-a-plus-05-2026",
         "command-a-03-2025",
         "command-a-reasoning-08-2025",
+        "north-mini-code-1-0",
     }
 
 

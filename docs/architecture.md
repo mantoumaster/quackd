@@ -138,13 +138,14 @@ with a deterministic referee on one lockstep clock ([flock.md](flock.md)).
 2. **Think.** The provider gets: the system prompt (contract in prose + the `.duck` body),
    the vendor-neutral history (`Exchange` = observation + decision), and the tool list
    (allowed verbs' JSON schemas + `assess_task` / `declare_success` / `declare_failure`, plus
-   `tell` in a pilot flock, plus `remember` when
-   memory is on). With memory on the prompt also carries what this robot remembers from
-   earlier runs. Only the last two observations keep their images, which is two pictures per
-   request on a body with one camera and four on a body with two. A task picture is not one of
-   those: it rides on the first observation and only that one, and the trim never takes it, so
-   the thing the task is about is still in front of the model at the last step. The provider
-   must return one tool call.
+   `tell` in a pilot flock, plus `remember` when memory is on). With memory on the prompt also
+   carries what this robot remembers from earlier runs. Only the last two observations keep
+   their images, which is two pictures per request on a body with one camera and four on a body
+   with two, and up to nine observations on Claude Opus 5.5 and Fable 5.1, whose old frames are
+   trimmed every eight exchanges rather than on every one. A task picture is not one of those:
+   it rides on the first observation and only that one, and the trim never takes it, so the
+   thing the task is about is still in front of the model at the last step. The provider must
+   return one tool call.
 
    With `--decision-llm` the optional discrete stepper is asked first, and only ever offered
    the calls the executor would run *this* turn: the ones the allowlist permits, whose
@@ -201,7 +202,7 @@ One JSON object per line: `{"t": seconds, "kind": ..., ...}`.
 | `run_start` | contract, system prompt, tool names, robot manifest, the names of the pictures the task came with (`images`, empty on a run given none), any `extra_body` sent with every request, with its credential-named keys already replaced by `***`, how long connecting took (`connect_s`), what the run was called (`run_name`, the text as it was typed rather than the slug the directory got), the command that started it (`command`, as a list, with the value of `--api-key` and `--token` replaced by `***` and a URL flag's password and credential-named query parameters with it, see [SECURITY.md](../SECURITY.md)) and the version that ran it (`version`), when `t = 0` was (`started_at`, the one absolute time in the whole file: every other record's wall time is that plus its own `t`), and the rate this run is being costed at (`price`, with `decision_price` beside it when a stepper ran and `decision_llm` saying which one answered, as `{name, model, url}` with the url's password and credential-named query parameters replaced by `***`, because a record that said only `jev-1.13.0` could not tell a reader whether that was TypeSafe's API or a server on the bench), written down here rather than looked up at replay so a run is always priced at what it cost on the day |
 | `observation` | what the model was shown this turn, and how long gathering it took |
 | `llm_request` | how many messages went out, how many still carry an image (`with_image`), how many camera frames that is (`images`, which differs from `with_image` only on a body with several cameras), and separately how many pictures came with the task rather than from a camera (`task_pictures`, counted on its own and never inside `images`, and the same number every step of a run that was given any), whether this is the re-prompt |
-| `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total, `input_tokens` being the whole prompt with `cache_read_tokens` and `cache_write_tokens` the slices of it that were billed at cache rates rather than additions to it), stop_reason, latency, and what this call cost beside what the run has spent so far (`cost_usd` and `cost_usd_total`, both null on a run quackd has no rate for, because a frontier model recorded as zero reads as a free one), or `error` when the call failed |
+| `llm` | text, `thinking`, tool_calls, usage (this turn and the run's total, `input_tokens` being the whole prompt with `cache_read_tokens` and `cache_write_tokens` the slices of it that were billed at cache rates rather than additions to it), stop_reason, latency, and what this call cost beside what the run has spent so far (`cost_usd` and `cost_usd_total`, both null on a run quackd has no rate for, because a frontier model recorded as zero reads as a free one), `served_by` only on a turn a server-side refusal fallback re-ran on another model (Claude), naming the model that answered, or `error` when the call failed |
 | `enforce` | zero tool calls (re-prompt) or several (first only) |
 | `decision` | one per turn the optional discrete stepper was asked, in both of its modes and with the same fields in each, so a `--decision-mode on` row and a `--decision-mode shadow` row can be read against each other: the labels it was offered, the one it chose, the whole probability distribution, its confidence, the floor that applied and which gate fired (`taken` · `below_floor` · `escalate` · `repeat` · `handover` · `unreadable` · `done` · `need_human` · `not_offered` · `state_too_large` · `error`), the two Noul values, how long it took, how large the state was and which fields were trimmed to fit, and what the question itself cost: `usage` (the tokens it spent), `usage_estimated` (true where the server reported no count of its own and quackd fell back to the state plus the questions at four characters to the token, because an estimate a reader cannot tell from a measurement is worse than no number at all) and `cost_usd` at whatever rate that decision LLM was resolved to, which for every server you run yourself is the self-hosted `$0`. Those three are absent on a turn that never reached the network at all, which is every `not_offered` and `state_too_large` gate and a call that failed before the request went out, because a machine with no client installed owes nobody anything ([decision-llms.md](decision-llms.md)) |
 | `decision_shadow` | only on `--decision-mode shadow`, after that step's `llm` record: what the stepper would have chosen beside what the model actually chose on the same reading (`decision_choice`, `decision_confidence`, `decision_gate`), whether they agree (on the whole call, since `gripper(open=true)` and `gripper(open=false)` are opposite instructions that share a name, with `same_verb` recording the coarser comparison beside it), whether the stepper cleared its floor (`would_have_acted`), and what each of them cost in seconds and in dollars (`llm_latency_s` with `llm_usage` and `llm_cost_usd` for the model, `decision_latency_s` and `decision_cost_usd` for the stepper), which is the ratio the whole mode exists to measure and the one [decision-llms.md](decision-llms.md) could previously only reach by arithmetic. Either of those two figures can be null, the model's where nobody publishes a rate for it and the stepper's where the turn never reached the network. A shadow run changes nothing, so this is the only mark it leaves |
@@ -351,9 +352,9 @@ yourself, because a machine of your own bills you in electricity rather than in 
 `--decision-llm local` is the case that needs it ([decision-llms.md](decision-llms.md)).
 
 > [!NOTE]
-> A rate quackd does not have records `null` and prints `cost unpriced`, never `0`. Three of
-> the catalogue's 115 models are unpriced today, all of them Cohere's Command A family, for
-> which Cohere publish no per-token rate at all. A model that is genuinely free is a rate of
+> A rate quackd does not have records `null` and prints `cost unpriced`, never `0`. Four of
+> the catalogue's 117 models are unpriced today, all of them Cohere's, the Command A family and
+> North Mini Code, for which Cohere publish no per-token rate at all. A model that is genuinely free is a rate of
 > zero and prints `$0`, which is a different claim from "nobody knows". Where a rate is missing
 > but the tokens are not, the estimate goes up rather than down: an unpublished cache rate is
 > billed at the full input rate, because a bill that is too low is the one that gets believed.

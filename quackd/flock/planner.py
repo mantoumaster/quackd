@@ -5,8 +5,10 @@ its own provider, which is the whole difference between the two kinds.)
 
 Wedges are ALWAYS computed deterministically (an equal partition of the circle over the
 sorted member names — the model does not get to draw geometry). A real provider gets one
-forced `plan_flock_task` call to tune the task knobs; anything invalid falls back to the
-deterministic defaults with a logged `planner_fallback`. The fake provider makes zero
+`plan_flock_task` call to tune the task knobs, asked for with whatever `tool_choice` that
+provider sends every call, so forced where it can force one and only asked for where it cannot;
+anything invalid or missing falls back to the deterministic defaults with a logged
+`planner_fallback`. The fake provider makes zero
 calls. `summary.json` records `llm_calls` (0 or 1).
 """
 

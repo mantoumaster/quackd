@@ -543,6 +543,110 @@ console.log(JSON.stringify({
     )
 
 
+#: The 400 a Claude model answers a forced tool call with, quoted because both Anthropic
+#: clients match on its words. tests/test_providers.py holds the same text for the Python half.
+REFUSES_FORCED = 'tool_choice: type "tool" and "any" are not supported for this model.'
+
+
+def test_the_browser_asks_claude_for_a_call_the_way_the_model_will_accept() -> None:
+    """Claude Opus 5.5 is the page's Anthropic default, and it answers `tool_choice` `any` with
+    a 400. The page used to force a call on every Claude model, so a visitor who picked
+    Anthropic and pressed Run got that 400 as the whole transcript.
+
+    Three things: the catalogue's mark reaches the page and the default is asked with `auto`
+    from its first turn; a model the catalogue does not mark learns it from the 400 once and
+    stays moved; and a `tool_choice` complaint that `auto` cannot fix still surfaces, after one
+    request rather than two.
+    """
+    got = _drive_providers(
+        _FIXTURES
+        + f"const REFUSES_FORCED = {json.dumps(REFUSES_FORCED)};\n"
+        + """
+const { makeProvider } = await import(MODULE);
+const reply = (status, body) => new Response(JSON.stringify(body), { status });
+const ok = { content: [{ type: "tool_use", id: "x", name: "walk", input: { vx: 0.2 } }] };
+
+const sent = [];
+globalThis.fetch = async (url, init) => {
+  sent.push(JSON.parse(init.body));
+  return reply(200, ok);
+};
+const marked = makeProvider({ provider: "anthropic", key: "sk-test" });
+const markedCall = await marked.step({ system: "SYS", history: [], observation: "obs", tools });
+
+const learned = [];
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  learned.push(body.tool_choice.type);
+  if (body.tool_choice.type === "any") return reply(400, { error: { message: REFUSES_FORCED } });
+  return reply(200, ok);
+};
+const unmarked = makeProvider({
+  provider: "anthropic", key: "sk-test", model: "claude-not-in-this-build",
+});
+await unmarked.step({ system: "SYS", history: [], observation: "obs", tools });
+await unmarked.step({ system: "SYS", history, observation: "obs three", tools });
+
+const probe = [];
+globalThis.fetch = async (url, init) => {
+  probe.push(JSON.parse(init.body).tool_choice.type);
+  return reply(400, { error: { message: "tool_choice.name: Input should be a declared tool" } });
+};
+const q = makeProvider({ provider: "anthropic", key: "sk-test", model: "claude-opus-5" });
+let unrelated = "it did not throw";
+try {
+  await q.step({ system: "SYS", history: [], observation: "obs", tools });
+} catch (error) {
+  unrelated = error.message;
+}
+
+console.log(JSON.stringify({
+  model: sent[0].model, choice: sent[0].tool_choice, markedCall, learned, probe, unrelated,
+}));
+"""
+    )
+
+    assert got["model"] == "claude-opus-5-5", "the page's Anthropic default is not the CLI's"
+    assert got["choice"] == {"type": "auto", "disable_parallel_tool_use": True}, (
+        f"the default was asked with {got['choice']}, which it answers with a 400"
+    )
+    assert got["markedCall"] == {"name": "walk", "arguments": {"vx": 0.2}}
+    assert got["learned"] == ["any", "auto", "auto"], (
+        f"an unmarked model was asked {got['learned']}: it must be forced once, move to auto, "
+        f"and stay moved, or every turn pays a failed call against the visitor's own key"
+    )
+    assert got["probe"] == ["any"] and "Anthropic said 400" in got["unrelated"], (
+        f"a tool_choice complaint auto cannot fix was retried or swallowed: {got}"
+    )
+
+
+def test_the_browser_asks_deepseek_with_thinking_off_and_its_call_insisted_on() -> None:
+    """DeepSeek thinks by default, and thinking mode refuses `required` and wants every earlier
+    turn's reasoning sent back, which this page never keeps. So the page turns thinking off the
+    way `deepseek.py` does, and a vendor's extra fields sit under quackd's own, never over."""
+    got = _drive_providers(
+        _FIXTURES
+        + """
+const { makeProvider } = await import(MODULE);
+let sent = null;
+globalThis.fetch = async (url, init) => {
+  sent = JSON.parse(init.body);
+  return new Response(JSON.stringify({
+    choices: [{ message: { tool_calls: [
+      { id: "c1", type: "function", function: { name: "walk", arguments: "{}" } },
+    ] } }],
+  }), { status: 200 });
+};
+const p = makeProvider({ provider: "deepseek", key: "sk-test", model: "deepseek-flash" });
+await p.step({ system: "SYS", history, observation: "obs three", tools });
+console.log(JSON.stringify(sent));
+"""
+    )
+    assert got["thinking"] == {"type": "disabled"}
+    assert got["tool_choice"] == "required"
+    assert got["model"] == "deepseek-flash" and got["messages"][0]["content"] == "SYS"
+
+
 def test_the_browser_still_sends_the_chat_shapes_on_the_path_almost_everyone_uses() -> None:
     """The default path, which the Responses work rewrote and nothing guarded.
 
@@ -746,8 +850,8 @@ console.log(JSON.stringify(ids.map((id) => startingApi("openai", id))));
 def test_the_browser_asks_each_vendor_for_a_tool_call_the_way_python_does() -> None:
     """`tool_choice` is not one word shared by eleven vendors.
 
-    Mistral spells it `any` and 400s on OpenAI's `required`; Cohere's compatibility endpoint
-    documents no such parameter at all and the field is omitted; Z.ai supports only `auto`. The
+    Mistral's guide documents `any`; Cohere's compatibility endpoint documents no such
+    parameter at all and the field is omitted; Z.ai supports only `auto`. The
     page and the CLI each hold a copy of that table, and a copy that drifts is a vendor that
     starts refusing tool calls in one of the two places only.
     """

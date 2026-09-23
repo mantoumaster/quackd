@@ -390,7 +390,9 @@ runs in `sim2d`; on hardware they are off.
 ## What the LLM does, and does not do
 
 At most **one** model call per run: the planner may tune task parameters (target label,
-approach distance, scan step, timeout) through a single forced tool call. Numeric
+approach distance, scan step, timeout) through a single tool call, asked for the way that
+vendor's provider asks for every call: forced where it can force one, and only asked for where
+the vendor or the model refuses a forced call. Numeric
 parameters are clamped into the schema's ranges, an invalid field is dropped on its own
 (the valid ones survive), and a missing or broken call falls back to deterministic
 defaults, logged. With `--llm fake` even that call is skipped and the plan is a pure

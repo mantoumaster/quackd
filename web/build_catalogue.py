@@ -70,6 +70,7 @@ def render() -> str:
                     "status": spec.status,
                     "vision": spec.vision,
                     "api": spec.api,
+                    "forced_tools": spec.forced_tools,
                 }
                 for spec in CATALOGUE[vendor]
             ],

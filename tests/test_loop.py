@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace as NS
 from typing import Any
 
 import pytest
@@ -612,6 +614,41 @@ async def test_thinking_on_the_reprompt_turn_is_recorded(
     )
     enforce = next(e for e in events if e["kind"] == "enforce")
     assert enforce["text"] == "You must call exactly one tool. Choose now."
+
+
+async def test_a_turn_a_fallback_answered_is_recorded_with_the_model_that_answered(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """A server-side refusal fallback re-runs a declined turn on another model and the provider
+    says which. The record keeps it on that turn and only that turn, so every other `llm` line,
+    and every transcript written before the field existed, reads exactly as it did."""
+
+    class FellBack:
+        name, model, supports_vision = "stub", "asked-for", False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def step(self, system: str, history: Any, tools: Any) -> ProviderTurn:
+            self.calls += 1
+            if self.calls == 1:
+                return ProviderTurn(
+                    tool_calls=[ToolCall(name="quack", arguments={"text": "hi"})],
+                    served_by="answered-instead",
+                )
+            return ProviderTurn(
+                tool_calls=[ToolCall(name="declare_success", arguments={"reason": "quacked"})]
+            )
+
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck, provider=FellBack(), transport=MockTransport(), runs_dir=tmp_path
+        )
+    )
+    assert result.outcome == "success"
+    llm = [e for e in Transcript.read(result.run_dir / "transcript.jsonl") if e["kind"] == "llm"]
+    assert llm[0]["served_by"] == "answered-instead" and llm[0]["model"] == "asked-for"
+    assert "served_by" not in llm[1]
 
 
 async def test_a_composite_is_logged_as_nested_pairs_with_the_parents_tally(
@@ -1850,6 +1887,184 @@ async def test_only_the_last_n_exchanges_keep_their_images(
     events = Transcript.read(result.run_dir / "transcript.jsonl")
     requests = [e for e in events if e["kind"] == "llm_request"]
     assert requests[-1]["with_image"] == keep and requests[-1]["images"] == 2 * keep
+
+
+async def test_a_provider_that_binds_its_thinking_is_trimmed_in_steps_not_every_call(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Claude Opus 5.5 and Fable 5.1 refuse a replayed thinking block once any message before it
+    has changed, and trimming an old frame is exactly such a change. For a provider with a trim
+    period, the frames are cut back only every `period` exchanges: between cuts each request is
+    the one before it with the new exchange appended, and a request never carries more than
+    `keep + period - 1` exchanges' frames, which is what keeps it under the API's size limit."""
+    keep, period, calls = 2, 4, 11
+
+    class Binding(SeeingProvider):
+        frame_trim_period = period
+
+    hello_duck.frontmatter.budgets = Budgets()
+    provider = Binding(
+        *[ToolCall(name="quack", arguments={"text": "hi"})] * (calls - 1),
+        ToolCall(name="declare_success", arguments={"reason": "done"}),
+    )
+    result = await AgentLoop(
+        RunConfig(
+            duck=hello_duck,
+            provider=provider,
+            transport=TwoCameraDuck(),
+            runs_dir=tmp_path,
+            keep_images_for_last_n=keep,
+        )
+    ).run()
+    assert result.outcome == "success", result.reason
+    assert len(provider.requests) == calls
+    cuts = []
+    for request in provider.requests:
+        seen = [bool(views) for views in request]
+        cut = seen.index(True)
+        assert not any(seen[:cut]) and all(seen[cut:]), request
+        assert len(request) - cut <= keep + period - 1, "more frames than the step allows"
+        cuts.append(cut)
+    assert cuts == [max(0, len(r) - keep) // period * period for r in provider.requests]
+    for before, after, cut_before, cut_after in zip(
+        provider.requests, provider.requests[1:], cuts, cuts[1:], strict=False
+    ):
+        if cut_after == cut_before:
+            assert after[: len(before)] == before, "an earlier exchange changed between cuts"
+    assert len(set(cuts)) >= 3, "the run was too short to see the cut move twice"
+
+
+class DarkeningDuck(TwoCameraDuck):
+    """A body whose cameras go dark after its first four observations, as an unplugged cable
+    would. The first trim takes frames away and the second finds none left to take."""
+
+    def __init__(self, lit: frozenset[int] = frozenset({1, 2, 3, 4})) -> None:
+        super().__init__()
+        self.asked = 0
+        self.lit = lit
+
+    async def get_frames(self) -> list[CameraFrame]:
+        self.asked += 1
+        return await super().get_frames() if self.asked in self.lit else []
+
+
+@pytest.mark.parametrize("body", ["two-cameras", "no-vision", "goes-dark", "lit-prose-turn"])
+async def test_a_binding_model_is_never_sent_a_thinking_block_a_trim_invalidated(
+    body: str, hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """Through the real Claude provider. A block is bound to every message before it, so it is
+    valid exactly while those messages are sent as they were on the call that produced it, and
+    a trim that takes a frame away from one of them invalidates it. Anthropic's `drop_block`
+    drops the first failing block and every one after it, so a stale block left in the history
+    would cost the model all of its reasoning from then on. The loop leaves out the leading run
+    that ends at the last invalid block, from the trim call on: the latest assistant message is
+    never touched, a block once left out never comes back, and a trim that took no frame away,
+    as with `--no-vision`, leaves nothing out. `lit-prose-turn` is a body whose only frame
+    arrives on a turn the model answers in prose, trimmed on the very call that re-prompts it:
+    a prose turn has no block of its own, no block was ever bound to that frame, and nothing
+    may be left out for it."""
+    from quackd.agent.providers.anthropic import AnthropicProvider
+
+    calls, keep, period = (12, 1, 2) if body == "lit-prose-turn" else (12, 2, 4)
+    sent: list[list[dict[str, Any]]] = []
+    prose_at: list[int] = []
+
+    def block(**fields: Any) -> Any:
+        return NS(model_dump=lambda: dict(fields), **fields)
+
+    def pictured(content: Any) -> bool:
+        """An image anywhere in it, a tool result's content included."""
+        if isinstance(content, dict):
+            return content.get("type") == "image" or pictured(content.get("content"))
+        return isinstance(content, list) and any(pictured(b) for b in content)
+
+    async def create(**kwargs: Any) -> Any:
+        sent.append(copy.deepcopy(kwargs["messages"]))
+        k = len(sent)
+        thought = block(type="thinking", thinking=f"turn {k}", signature=f"sig{k}")
+        lit = pictured(kwargs["messages"][-1]["content"])
+        if body == "lit-prose-turn" and not prose_at and lit:
+            prose_at.append(k)
+            return NS(
+                content=[thought, block(type="text", text="I see the bench.")],
+                stop_reason="end_turn",
+                usage=NS(input_tokens=10, output_tokens=5),
+                stop_details=None,
+                model="claude-opus-5-5",
+            )
+        name, args = ("declare_success", {"reason": "done"}) if k == calls else ("quack", {})
+        return NS(
+            content=[thought, block(type="tool_use", id=f"t{k}", name=name, input=args)],
+            stop_reason="tool_use",
+            usage=NS(input_tokens=10, output_tokens=5),
+            stop_details=None,
+            model="claude-opus-5-5",
+        )
+
+    client = NS(messages=NS(create=create), beta=NS(messages=NS(create=create)))
+    provider = AnthropicProvider(model="claude-opus-5-5", client=client, vision=body != "no-vision")
+    provider.frame_trim_period = period
+    transport = {
+        "goes-dark": lambda: DarkeningDuck(),
+        "lit-prose-turn": lambda: DarkeningDuck(lit=frozenset({2})),
+    }.get(body, TwoCameraDuck)()
+    hello_duck.frontmatter.budgets = Budgets()
+    result = await AgentLoop(
+        RunConfig(
+            duck=hello_duck,
+            provider=provider,
+            transport=transport,
+            runs_dir=tmp_path,
+            keep_images_for_last_n=keep,
+        )
+    ).run()
+    assert result.outcome == "success", result.reason
+    assert len(sent) == calls
+    assert bool(prose_at) is (body == "lit-prose-turn"), "the prose turn never came"
+
+    def unthought(messages: list[dict[str, Any]]) -> list[Any]:
+        return [
+            [b for b in m["content"] if b.get("type") != "thinking"]
+            if m["role"] == "assistant"
+            else m["content"]
+            for m in messages
+        ]
+
+    def produced_by(message: dict[str, Any]) -> int:
+        (use,) = [b for b in message["content"] if b.get("type") == "tool_use"]
+        return int(use["id"][1:])
+
+    left_out: set[int] = set()
+    kept_valid_late = False
+    for n, messages in enumerate(sent, start=1):
+        at = [i for i, m in enumerate(messages) if m["role"] == "assistant"]
+        made = [produced_by(messages[i]) for i in at]
+        thinks = [any(b.get("type") == "thinking" for b in messages[i]["content"]) for i in at]
+        # each block was produced over the whole of the request that asked for it
+        valid = [
+            unthought(messages[:i]) == unthought(sent[k - 1]) for i, k in zip(at, made, strict=True)
+        ]
+        last_invalid = max((i for i, ok in enumerate(valid) if not ok), default=-1)
+        latest = len(at) - 1
+        expected = [i > last_invalid or i == latest for i in range(len(at))]
+        assert thinks == expected, f"call {n}: valid {valid}, thinking replayed on {thinks}"
+        replayed = {k for k, t in zip(made, thinks, strict=True) if t}
+        assert not (left_out & replayed), "a block came back"
+        left_out |= set(made) - replayed
+        kept_valid_late |= any(t and 0 < i < latest for i, t in enumerate(thinks))
+        if at:
+            assert messages[at[-1]]["content"][0] == {
+                "type": "thinking",
+                "thinking": f"turn {made[-1]}",
+                "signature": f"sig{made[-1]}",
+            }, "the latest assistant message's blocks were touched"
+    if body == "no-vision":
+        assert not any(pictured(r) for r in sent), "a frame was sent"
+    if body in ("no-vision", "lit-prose-turn"):
+        assert not left_out, "a block went for nothing"
+    else:
+        assert left_out, "the run was too short to see a trim leave anything out"
+        assert kept_valid_late, "no block produced after a trim was ever replayed"
 
 
 # ── the pictures that came with the task ────────────────────────────────────────────────

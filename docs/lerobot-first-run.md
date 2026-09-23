@@ -824,8 +824,10 @@ reports nothing seen, because a bearing read off a different lens would point so
 
 > [!NOTE]
 > Two cameras is twice the pictures, and the bill is larger than that. The last two exchanges
-> keep their images, so two cameras means four pictures in every request rather than two. Add
-> the second one because you need the view, not because it is there.
+> keep their images, so two cameras means four pictures in every request rather than two, and up
+> to eighteen on Claude Opus 5.5 and Fable 5.1, whose old frames are trimmed every eight
+> exchanges rather than on every one. Add the second one because you need the view, not because
+> it is there.
 
 > [!WARNING]
 > A local server, or the model inside it, may accept only one image per message. If a server
@@ -1035,8 +1037,9 @@ your hands still have to be out of it.
 This is the honest part, and it differs by pilot.
 
 **A model that takes images** receives the webcam frame on every step and can simply look and
-decide. Only the last two exchanges keep their image, so it cannot compare a frame from six
-steps ago, but it can see you now.
+decide. Only the last few exchanges keep their image, two on most models and up to nine on
+Claude Opus 5.5 and Fable 5.1, so it cannot compare a frame from a dozen steps ago, but it can
+see you now.
 
 Aiming is the part that went wrong on the bench, and it is worth learning from. The webcam was
 framed on the gripper, which cropped the raised arm out of the picture, so the model checked
@@ -1075,14 +1078,15 @@ quackd run --goal "draw what is in the picture" --robot arm-01 \
   --llm openai --image sketch.png
 ```
 
-The flag repeats, so several pictures can come with one task. **What the pilot receives** is
-the picture attached to its first observation and to no other, labelled `task picture
-sketch.png:` in front of the image itself and ahead of any camera frame in the same message.
-Nothing trims it out of the history afterwards, which is the difference that matters: only the
-last two exchanges keep their camera frame, and a task picture is still in front of the model
-on the last step of a long run. The system prompt gains a section naming which pictures came
-with the task and saying, in as many words, that they are not what the robot can see. The log
-counts them in the request line, so you can tell at a glance that they are still going:
+The flag repeats, so several pictures can come with one task. **What the pilot receives** is the
+picture attached to its first observation and to no other, labelled `task picture sketch.png:`
+in front of the image itself and ahead of any camera frame in the same message. Nothing trims it
+out of the history afterwards, which is the difference that matters: only the last two exchanges
+keep their camera frame, or up to nine on Claude Opus 5.5 and Fable 5.1, and a task picture is
+still in front of the model on the last step of a long run. The system prompt gains a section
+naming which pictures came with the task and saying, in as many words, that they are not what
+the robot can see. The log counts them in the request line, so you can tell at a glance that
+they are still going:
 
 ```
 llm>    step 0: 1 messages (1 with image, 1 task picture) to fake scripted:goal

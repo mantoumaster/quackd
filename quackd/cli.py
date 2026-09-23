@@ -2088,8 +2088,8 @@ _LLM = typer.Option(
     "--llm",
     "-l",
     help="Who pilots the robot, as VENDOR[:MODEL]. `anthropic` runs that vendor's default and "
-    "`openai:gpt-5.6-sol` names one; a model id unique to its vendor is enough on its own, so "
-    "`claude-opus-5` works. `ollama:qwen3:8b` is a local server (the split is at the first "
+    "`openai:gpt-6-sol` names one; a model id unique to its vendor is enough on its own, so "
+    "`claude-opus-5-5` works. `ollama:qwen3:8b` is a local server (the split is at the first "
     "colon, so a tag keeps its own), `local` needs --base-url, and `fake` is a scripted pilot "
     "with no key and no network. Vendors: " + " · ".join(PROVIDER_NAMES) + ". `quackd "
     f"list-models` prints every id. Default: the robot's own, then {LLM_ENV}, then "

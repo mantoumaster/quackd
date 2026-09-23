@@ -71,8 +71,9 @@ class Usage(BaseModel):
     run recorded before there was a field for it."""
     cache_write_tokens: int = 0
     """The part of `input_tokens` written INTO a prompt cache, billed at the write rate where
-    the vendor has one. Anthropic is the one that charges for it; elsewhere caching happens by
-    itself and costs nothing to create, so this stays 0."""
+    the vendor has one. Anthropic charges for it when a request marks a cache, which quackd
+    never does, and OpenAI on GPT-5.6 and later and Kimi on K3 charge for the cache they write by
+    themselves. Elsewhere a cache costs nothing to create and this stays 0."""
 
     def __add__(self, other: Usage) -> Usage:
         return Usage(
@@ -228,6 +229,14 @@ class ProviderTurn(BaseModel):
         description="What the model reasoned before answering, as the vendor shows it: a "
         "summary on Claude, the reasoning field of an OpenAI-compatible server, Gemini's "
         "thought parts. None when the provider returned nothing of the kind.",
+    )
+    served_by: str | None = Field(
+        default=None,
+        description="The model that took the turn, where that is not the one asked for: a "
+        "server-side refusal fallback on Claude re-runs a declined turn on another model and "
+        "says so in the response. What that model returned may itself be a refusal, which "
+        "`stop_reason` says. None when the model asked for took the turn, or when the vendor "
+        "does not say.",
     )
 
 

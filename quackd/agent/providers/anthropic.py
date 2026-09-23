@@ -1,15 +1,22 @@
 """Claude as the duck's brain, via the official `anthropic` SDK (optional extra).
 
-Written against `anthropic` 1.x: adaptive thinking is the model's default on Claude Opus 5,
-and the request asks for `display: "summarized"` because the default display leaves every
-thinking block's text empty, which would make the log's "what it thought" a blank line.
+Written against `anthropic` 1.x: adaptive thinking is the model's default on Claude Opus 5 and
+later, and the request asks for `display: "summarized"` because the default display leaves
+every thinking block's text empty, which would make the log's "what it thought" a blank line.
 `display` changes what is shown, never what is thought or billed. A model that rejects the
 `thinking` parameter (one older than Claude 4.6) gets one retry without it, and the run goes
-on without thinking text. `tool_choice={"type": "any", "disable_parallel_tool_use": True}`
-guarantees exactly one tool call per turn, images ride as base64 PNG blocks, and the
-assistant's raw content blocks (including thinking) are replayed verbatim on the next turn.
-Server-side refusal fallbacks are on by default and drop out automatically if the installed
-SDK predates them.
+on without thinking text. `output_config.effort` is sent to every model that takes it, which is
+every row but Haiku 4.5 and Sonnet 4.5 (`ModelSpec.effort`).
+
+`tool_choice={"type": "any", "disable_parallel_tool_use": True}` guarantees exactly one tool
+call per turn on every model that accepts a forced call. Claude
+Opus 5.5 and Claude Fable 5.1 do not, and answer one with a 400, so the catalogue marks them
+(`ModelSpec.forced_tools`) and they are asked with `auto` instead, still one call per turn; a
+model the catalogue does not mark gets one retry with `auto` when it says the same thing, and
+keeps it. Images ride as base64 PNG blocks, and the assistant's raw content blocks (including
+thinking) are replayed verbatim on the next turn. Server-side refusal fallbacks are on by
+default and drop out automatically if the installed SDK predates them; a turn one of them took
+records the model that answered it (`ProviderTurn.served_by`).
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ import re
 from typing import Any
 
 from quackd.agent.providers.base import (
+    Decision,
     Exchange,
     ProviderError,
     ProviderNotInstalled,
@@ -28,9 +36,22 @@ from quackd.agent.providers.base import (
     Usage,
     picture_parts,
 )
-from quackd.agent.providers.catalogue import default_model_for
+from quackd.agent.providers.catalogue import default_model_for, find_model
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+#: What lets a request ask the API to drop a replayed thinking block whose history changed,
+#: rather than refuse the request (`thinking.block_binding.prefix_mismatch_behavior`).
+BINDING_BETA = "thinking-binding-controls-2026-08-01"
+
+#: How many exchanges the loop lets pass between two trims of old camera frames, for a model
+#: that binds its thinking blocks. A trim that takes a frame away edits an earlier message and
+#: so invalidates the blocks produced while that frame was still sent. From the trim call on the
+#: loop leaves those out, all but the latest turn's, which may not be left out and which
+#: `drop_block` has the API discard instead, so the blocks produced since the trim stay valid
+#: until the next one. Eight keeps a request to at most nine exchanges' frames with the default
+#: window of two, against two for every other model.
+BINDING_TRIM_PERIOD = 8
 
 
 def _image_block(png: bytes) -> dict[str, Any]:
@@ -92,6 +113,32 @@ def _block_to_dict(block: Any) -> dict[str, Any]:
     return {"type": getattr(block, "type", "text"), "text": str(block)}
 
 
+def _tool_choice(*, forced: bool) -> dict[str, Any]:
+    """One call per turn either way: `any` insists on it, `auto` only allows it, and
+    `disable_parallel_tool_use` works with both."""
+    return {"type": "any" if forced else "auto", "disable_parallel_tool_use": True}
+
+
+def _served_by(response: Any) -> str | None:
+    """The model that answered, when a server-side fallback re-ran the turn on another one.
+
+    `usage.iterations` carries one `fallback_message` entry per model a declined turn was
+    handed to, and it is there on a sticky turn too, where the fallback model answered from
+    the start and the content carries no `fallback` block to say so. `response.model` is then
+    the model that served it. A turn with no such entry was answered by the model asked for,
+    and `response.model` is not compared with the request at all, because an alias such as
+    `claude-haiku-4-5` comes back as its dated snapshot and would read as a different model."""
+    usage = getattr(response, "usage", None)
+    iterations = getattr(usage, "iterations", None) or []
+    kinds = [
+        it.get("type") if isinstance(it, dict) else getattr(it, "type", None) for it in iterations
+    ]
+    if "fallback_message" not in kinds:
+        return None
+    model = getattr(response, "model", None)
+    return model if isinstance(model, str) and model else None
+
+
 def parse_response(response: Any) -> ProviderTurn:
     tool_calls: list[ToolCall] = []
     texts: list[str] = []
@@ -146,6 +193,7 @@ def parse_response(response: Any) -> ProviderTurn:
         stop_reason=stop_reason,
         raw=[_block_to_dict(b) for b in response.content],
         thinking="\n\n".join(thoughts) or None,
+        served_by=_served_by(response),
     )
 
 
@@ -162,17 +210,41 @@ def _api_message(e: Exception) -> str:
     return str(getattr(e, "message", None) or e)
 
 
-def _rejects_thinking(e: Exception) -> bool:
-    """A 400 about the top-level `thinking` parameter: a model too old for adaptive thinking.
+#: What Claude 4.5 and earlier answer `thinking: {"type": "adaptive"}` with, word for word from
+#: Anthropic's API errors page (read 2026-09-23). It opens with "adaptive" rather than with the
+#: parameter's name, so the anchored match below never saw it, and Haiku 4.5, Sonnet 4.5 and
+#: Opus 4.5 failed their first call on every run instead of going on without thinking.
+ADAPTIVE_REFUSED = "adaptive thinking is not supported on this model"
 
-    The match is anchored because a 400 about a *replayed* thinking block names a path
-    (`messages.3.content.0.thinking.signature: Invalid signature`) rather than the parameter.
-    Treating that as "this model has no thinking" would retry the identical request — the
-    messages are what it objected to — fail again, and leave thinking off for the whole run.
+
+def _rejects_thinking(e: Exception) -> bool:
+    """A 400 refusing the top-level `thinking` parameter: a model too old for adaptive thinking.
+
+    Two shapes, both about the parameter itself. One opens with its name (`thinking: Extra
+    inputs are not permitted`), and that match is anchored because a 400 about a *replayed*
+    thinking block names a path (`messages.3.content.0.thinking.signature: Invalid
+    signature`) rather than the parameter. Treating that as "this model has no thinking" would
+    retry the identical request — the messages are what it objected to — fail again, and leave
+    thinking off for the whole run. The other is the sentence the 4.5 models actually send,
+    matched as a whole sentence rather than on a word, for the same reason.
     """
     if type(e).__name__ != "BadRequestError":
         return False
-    return re.match(r"\s*thinking\b", _api_message(e)) is not None
+    message = _api_message(e)
+    return re.match(r"\s*thinking\b", message) is not None or ADAPTIVE_REFUSED in message
+
+
+def _refuses_forced_tools(e: Exception) -> bool:
+    """A 400 refusing `tool_choice` `any`: a model that will not be made to call a tool.
+
+    Anchored at the parameter the way `_rejects_thinking` is, and it has to say the type is
+    not supported as well. A 400 about a tool the request does not declare also opens with
+    `tool_choice`, and asking again with `auto` would not fix that one: it would only hide it
+    behind a second request."""
+    if type(e).__name__ != "BadRequestError":
+        return False
+    message = _api_message(e)
+    return re.match(r"\s*tool_choice\b", message) is not None and "not supported" in message
 
 
 class AnthropicProvider:
@@ -192,6 +264,19 @@ class AnthropicProvider:
     ) -> None:
         # No model means whatever the catalogue lists first for this vendor.
         self.model = model or default_model_for(self.name) or ""
+        spec = find_model(self.name, self.model)
+        #: Whether this model accepts a forced tool call. The catalogue says so up front for
+        #: the models it knows refuse one, and `step` learns it from the 400 for the rest.
+        self.forced_tools = spec.forced_tools if spec is not None else True
+        #: Whether this model takes `output_config.effort` at all. Only the catalogue says so:
+        #: Anthropic's effort page lists the models that take it and prints no error for the rest.
+        self.sends_effort = spec.effort if spec is not None else True
+        #: A model that binds each replayed thinking block to everything before it
+        #: (`ModelSpec.binds_thinking`). It is asked to have a block whose history changed
+        #: dropped rather than refused, and the loop reads `frame_trim_period` to trim its old
+        #: camera frames in steps instead of on every call.
+        self.binds_thinking = spec.binds_thinking if spec is not None else False
+        self.frame_trim_period = BINDING_TRIM_PERIOD if self.binds_thinking else 1
         # `--no-vision` has to reach every vendor, not most of them: the catalogue promises
         # the flag overrides it in both directions, and a reader who declined the frames must
         # not be billed for them anyway. The catalogue's own per-model flag is not consulted
@@ -228,29 +313,97 @@ class AnthropicProvider:
             "system": system,
             "messages": render_messages(history),
             "tools": render_tools(tools),
-            "tool_choice": {"type": "any", "disable_parallel_tool_use": True},
+            "tool_choice": _tool_choice(forced=self.forced_tools),
         }
-        if self.effort:
+        if self.effort and self.sends_effort:
             params["output_config"] = {"effort": self.effort}
-        if self.thinking_display:
-            params["thinking"] = {"type": "adaptive", "display": self.thinking_display}
+        if self.thinking_display or self.binds_thinking:
+            thinking: dict[str, Any] = {"type": "adaptive"}
+            if self.thinking_display:
+                thinking["display"] = self.thinking_display
+            if self.binds_thinking:
+                # The loop leaves out the blocks a trim of an old frame invalidates, all but the
+                # latest turn's, which may not be left out; this has the API discard that one
+                # instead of answering the whole request with a 400.
+                thinking["block_binding"] = {"prefix_mismatch_behavior": "drop_block"}
+            params["thinking"] = thinking
         return params
 
+    def without_thinking(self, decision: Decision) -> Decision:
+        """The same turn with its thinking and redacted thinking blocks left out.
+
+        The loop calls this for a model that binds its thinking (`frame_trim_period` above 1),
+        on the turns whose blocks a trim of old frames invalidated. Anthropic allows leaving out
+        a leading run of thinking blocks, oldest first, and never the latest assistant
+        message's, which the loop does not pass here. The tool call and any text stay."""
+        if not isinstance(decision.raw, list):
+            return decision
+        kept = [
+            b
+            for b in decision.raw
+            if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+        ]
+        return decision.model_copy(update={"raw": kept})
+
     async def _create(self, params: dict[str, Any]) -> Any:
-        if self.fallbacks:
+        betas = [FALLBACK_BETA] if self.fallbacks else []
+        if self.binds_thinking:
+            betas.append(BINDING_BETA)
+        if betas:
+            extra: dict[str, Any] = {"fallbacks": "default"} if self.fallbacks else {}
             try:
-                return await self.client.beta.messages.create(
-                    **params, betas=[FALLBACK_BETA], fallbacks="default"
-                )
+                return await self.client.beta.messages.create(**params, betas=betas, **extra)
             except TypeError as e:
                 # Only a TypeError naming one of the two keywords means "this SDK predates
-                # server-side fallbacks". Any other one comes from inside the request (a
+                # the beta endpoint's arguments". Any other one comes from inside the request (a
                 # serialisation bug, a stub) and swallowing it would silently drop fallbacks
                 # for the rest of the run and hide the real failure behind a second request.
-                if "betas" not in str(e) and "fallbacks" not in str(e):
+                if "betas" in str(e):
+                    if self.binds_thinking:
+                        # `block_binding` without its header is a 400 of its own, and without
+                        # it the first trim of an old frame is one: better said now than there
+                        raise ProviderError(
+                            f"anthropic: {self.model} binds its thinking to everything before "
+                            "it, and this anthropic SDK sends no betas, so quackd cannot ask "
+                            "for a block an old frame's trim invalidated to be dropped. "
+                            "Upgrade the anthropic package, or pick a model that does not."
+                        ) from e
+                    # the plain endpoint from now on
+                    self.fallbacks = False
+                elif "fallbacks" in str(e) and self.fallbacks:
+                    # An SDK that predates `fallbacks` alone still sends betas, and a binding
+                    # model keeps its own: the beta endpoint without fallbacks from now on.
+                    self.fallbacks = False
+                    return await self._create(params)
+                else:
                     raise
-                self.fallbacks = False  # use the plain endpoint from now on
         return await self.client.messages.create(**params)
+
+    async def _create_repairing(self, params: dict[str, Any]) -> Any:
+        """The request, repaired at most once for each of the two things a model refuses.
+
+        A model that predates adaptive thinking refuses the `thinking` parameter: it is asked
+        again without it, and every later turn goes without it too. The run loses the thinking
+        text, not itself. A model that will not be forced to call a tool refuses `tool_choice`
+        `any`: it is asked again with `auto`, and every later turn asks that way too. Each
+        repair switches off the flag that guards it, so neither can fire twice and this cannot
+        loop: a refusal that was already repaired once, or any other error, is raised as it
+        came."""
+        while True:
+            try:
+                return await self._create(params)
+            except Exception as e:
+                if self.thinking_display and not self.binds_thinking and _rejects_thinking(e):
+                    # Not for a model that binds its thinking: it thinks whether it is asked to
+                    # or not, so going without the field would only take `block_binding` with
+                    # it and make the first trim of an old frame a 400. It gets the refusal.
+                    self.thinking_display = None
+                    params.pop("thinking", None)
+                elif self.forced_tools and _refuses_forced_tools(e):
+                    self.forced_tools = False
+                    params["tool_choice"] = _tool_choice(forced=False)
+                else:
+                    raise
 
     async def step(
         self, system: str, history: list[Exchange], tools: list[dict[str, Any]]
@@ -261,18 +414,7 @@ class AnthropicProvider:
         # blocks or usage fields are not the shape it expects would otherwise escape the
         # provider as a raw traceback — the CLI only catches TransportError and ProviderError.
         try:
-            try:
-                response = await self._create(params)
-            except Exception as e:
-                if not (self.thinking_display and _rejects_thinking(e)):
-                    raise
-                # a model that predates adaptive thinking: one retry without the parameter,
-                # and every later turn goes without it too. The run loses the thinking text,
-                # not itself.
-                self.thinking_display = None
-                params.pop("thinking", None)
-                response = await self._create(params)
-            return parse_response(response)
+            return parse_response(await self._create_repairing(params))
         except ProviderError:
             raise
         except Exception as e:

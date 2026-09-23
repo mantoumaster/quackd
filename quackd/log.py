@@ -588,6 +588,11 @@ def render_events(
             tokens += f" cost={fmt_usd(d['cost_usd'])}"
         if d.get("stop_reason"):
             tokens += f" stop={d['stop_reason']}"
+        # A refusal fallback re-ran the turn on another model. It is the one fact on this line
+        # that changes what the rest of it means: the cost beside it was priced at the rate of
+        # the model asked for, not of the one that answered.
+        if d.get("served_by"):
+            tokens += f" served_by={d['served_by']}"
         out.append(LogLine("tokens", tokens, "dim"))
         return out
     if k == "decision":

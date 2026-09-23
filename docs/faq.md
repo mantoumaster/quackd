@@ -97,7 +97,7 @@ command that fixes it: the provider one names `quackd[anthropic]`, the robot one
 extra for itself, but it does need a body to drive.
 
 **Which models can I pick?** Whatever the catalogue lists for the vendor you named. It is one
-hand-written table of 115 ids across eleven cloud vendors, and `quackd list-models` prints it,
+hand-written table of 117 ids across eleven cloud vendors, and `quackd list-models` prints it,
 `--llm mistral` (or any other name) narrowing it to one vendor. Every row carries a status
 — `current`, `legacy`, `preview`, `specialised` or `open` — and a notes column that marks three
 things worth knowing before you pass an id: `default`, `Responses API` for the OpenAI models
@@ -115,17 +115,17 @@ checks before it reads a key or opens a connection, so nothing was sent anywhere
 
 ```
 $ quackd run hello-world --llm openai:gpt-5 --robot microduck:mock
-✗ error: openai: unknown model 'gpt-5' from --llm. Valid ids: gpt-5.6-sol (default), gpt-6-astra,
-gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.2, gpt-5.1,
-gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5.3-codex,
-chat-latest. See `quackd list-models --llm openai`.
+✗ error: openai: unknown model 'gpt-5' from --llm. Valid ids: gpt-6-sol (default), gpt-6-astra,
+gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano,
+gpt-5.2, gpt-5.1, gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, gpt-5.5-pro, gpt-5.4-pro,
+gpt-5.2-pro, gpt-5.3-codex, chat-latest. See `quackd list-models --llm openai`.
 
 $ quackd run hello-world --llm openai:grok-4.6 --robot microduck:mock
 ✗ error: openai: unknown model 'grok-4.6' from --llm ('grok-4.6' is a grok model: --llm
-grok:grok-4.6). Valid ids: gpt-5.6-sol (default), gpt-6-astra, gpt-5.6-terra, gpt-5.6-luna,
-gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.2, gpt-5.1, gpt-4.1, gpt-4.1-mini, gpt-4o,
-gpt-4o-mini, gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5.3-codex, chat-latest. See `quackd
-list-models --llm openai`.
+grok:grok-4.6). Valid ids: gpt-6-sol (default), gpt-6-astra, gpt-6-luna, gpt-5.6-sol,
+gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.2, gpt-5.1,
+gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5.3-codex,
+chat-latest. See `quackd list-models --llm openai`.
 ```
 
 Ids are unique across the catalogue, so an id that belongs to somebody else is named as such
@@ -164,9 +164,10 @@ body goes in with `--extra-body`, which is how Qwen3 is told not to think on vLL
 
 ## Seeing what happened
 
-**How does the LLM "see"?** Providers with vision get the duck-cam PNG for the last two
-turns; every provider gets a text line like `ball at bearing 12° left, ~0.80 m` from the
-detector. Composite verbs steer on detections at 10 Hz and never wait for the model.
+**How does the LLM "see"?** Providers with vision get the duck-cam PNG for the last two turns,
+or up to the last nine on Claude Opus 5.5 and Fable 5.1; every provider gets a text line like
+`ball at bearing 12° left, ~0.80 m` from the detector. Composite verbs steer on detections at
+10 Hz and never wait for the model.
 
 **How do I see what the model was told, what it thought, and what it sent the robot?**
 You already do: the log is on by default. `quackd run` narrates the whole run to stderr as
@@ -313,7 +314,7 @@ text.
 tokens (mostly the system prompt and one image) and a short tool call. quackd works the
 dollars out itself rather than leaving you to multiply a token count by a rate you looked up:
 the catalogue carries a price per model in USD per million tokens, read off that vendor's own
-pricing page and dated with the day it was read, and 112 of the 115 ids have one. So every
+pricing page and dated with the day it was read, and 113 of the 117 ids have one. So every
 `llm` record in `transcript.jsonl` carries `cost_usd` for that call and `cost_usd_total` for
 the run so far, `summary.json` carries the run's `cost_usd` beside its `usage` and the exact
 rate it was charged at, and the counters under the verdict print the total:
@@ -327,8 +328,9 @@ cache rate the vendor does not publish is charged at the full input rate, becaus
 you act on should overstate rather than understate. A model quackd has no published rate for
 records `cost_usd: null` and prints `cost unpriced` instead of a zero, since a number that
 could not be computed must never read as a number that came out to nothing, and the run says
-so once on stderr with the flag that fixes it. That is three ids today, Cohere's Command A
-family, for which Cohere publish no per-token rate at all. Your own rate goes in with
+so once on stderr with the flag that fixes it. That is four ids today, all of them Cohere's,
+the Command A family and North Mini Code, for which Cohere publish no per-token rate at all.
+Your own rate goes in with
 `--price in=3,out=15[,cache_read=0.3,cache_write=3.75]` for one run, or `QUACKD_PRICE` for a
 shell full of them: a negotiated rate, a paid endpoint behind a local preset, or an id the
 catalogue has never heard of. The `fake` pilot and every local preset are priced at zero
