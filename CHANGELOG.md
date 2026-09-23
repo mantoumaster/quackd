@@ -40,8 +40,9 @@ above everything else it says.
   measurement on that same board publishes none. It was done under emulation on the
   machine that wrote it. `jetson-image.yml` is set up to repeat it on a native arm64
   runner, running `import cv2`, `quackd doctor --json` and a whole `find-and-kick` task
-  inside the result, and it has not run yet, because this release is where those files
-  first exist. It publishes nothing, because an image with a pull command beside it is a
+  inside the result. It first ran on 2026-09-23, on the commit that merged these files, and
+  was green on all four steps. It publishes nothing, because an image with a pull command
+  beside it is a
   promise that somebody ran it on the hardware it is named after, and nothing here has
   been run on a Jetson by this project.
 

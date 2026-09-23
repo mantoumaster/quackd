@@ -6,9 +6,9 @@ the ones the body cannot carry. Put both on the board and a goal in plain langua
 leaves the room. That is the whole reason this page exists.
 
 Nothing here has been run on a Jetson by this project. It is written from NVIDIA's own
-documentation, and the image is built for arm64 and run under emulation on the machine
-that wrote it. The [Status](#status) section at the end says exactly what that does and does not
-prove, and what to send back if you run it on yours.
+documentation, and the image is built and run on arm64 both under emulation and on a native
+runner with no GPU attached. The [Status](#status) section at the end says exactly what that
+does and does not prove, and what to send back if you run it on yours.
 
 > [!NOTE]
 > A Jetson is not a robot. It never appears in `quackd list-adapters`, there is no
@@ -362,7 +362,8 @@ your own board.
   board publishes no transcripts at all, so where quackd ran for it is not checkable.
 - `.github/workflows/jetson-image.yml` is set up to repeat that on a native arm64 runner
   with no GPU on every change to these files, so it stays true rather than having been true
-  once. It has not run yet, because this branch is where those files first exist.
+  once. It first ran on 2026-09-23, on the commit that merged these files, and was green:
+  the build, `import cv2`, the `doctor --json` assertions and the task.
 - The compose file, the extras, and the version table above are held against the code by
   `tests/test_deploy_jetson.py`.
 - The JetPack table and the model download sizes were read from NVIDIA's and Ollama's own

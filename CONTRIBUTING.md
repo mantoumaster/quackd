@@ -97,7 +97,8 @@ page against `_JETPACK_FOR_L4T` in `quackd/doctor.py`, so editing one of those t
 other fails locally. The build is the half pytest cannot see. Do it yourself with `docker buildx
 build --platform linux/arm64 -f deploy/jetson/Dockerfile -t quackd-jetson .` if you have buildx
 and qemu. `.github/workflows/jetson-image.yml` is written to do it on a native arm64 runner and
-then run `doctor` and a whole task inside the image, and it has not run yet. That job is
+then run `doctor` and a whole task inside the image, which it first did green on
+2026-09-23. That job is
 deliberately off the required path, so a red run blocks no merge and somebody has to go and
 read it. The image installs nothing from apt on purpose, which is why a dependency that one day
 wants a system library shows up as the `import cv2` step failing there rather than on somebody's

@@ -68,7 +68,7 @@ exactly the case worth reporting well.
 
 **Nothing is published.** No image is pushed to a registry. `.github/workflows/jetson-image.yml`
 is set up to build for `linux/arm64` on a native arm64 runner and then run quackd inside the
-result, and to stop there. It has not run yet. An image with a pull command beside it is a promise that somebody ran it on the
+result, and to stop there. It first ran green on 2026-09-23. An image with a pull command beside it is a promise that somebody ran it on the
 hardware it is named after, and nobody has.
 
 ## Why not
@@ -105,8 +105,8 @@ transcript instead, the way [local-llms.md](../local-llms.md) does.
   available on exactly one of the seven bodies today.
 - **Nothing here has been run on a Jetson.** The image was built for arm64 and run under
   emulation on the machine that wrote this. CI is set up to repeat that on a native arm64
-  runner with no GPU and has not run yet. The emulated build proves quackd runs on aarch64
-  Linux and proves nothing about Ollama, about the NVIDIA container runtime, or about whether
-  a model server and a fifty hertz control loop can share one board without the loop
-  suffering. That last one is a humanoid
+  runner with no GPU, and it first ran green on 2026-09-23. Between them they prove quackd
+  runs on aarch64 Linux and prove nothing about Ollama, about the NVIDIA container runtime,
+  or about whether a model server and a fifty hertz control loop can share one board
+  without the loop suffering. That last one is a humanoid
   falling over if it is wrong, and it is the first thing a person with a board should measure.

@@ -70,8 +70,8 @@ flip that backend's row, and not before.
 
 - ⬜ **Nobody has run quackd on a Jetson.** [docs/jetson.md](docs/jetson.md) and
   [`deploy/jetson/`](deploy/jetson/README.md) were written from NVIDIA's own documentation on
-  a Windows laptop, and the image was built for arm64 and run under emulation there. CI has a
-  job to repeat that on a native arm64 runner with no GPU and has not run it yet. What the
+  a Windows laptop, and the image was built for arm64 and run under emulation there, then
+  built and run again on a native arm64 runner with no GPU, green on 2026-09-23. What
   emulated build is worth is not the board: it proves quackd runs on aarch64 Linux, and
   nothing else. Unmeasured is everything that makes a Jetson one: Ollama on the
   Orin GPU, the NVIDIA container runtime, what the doctor section reads off real files, how
