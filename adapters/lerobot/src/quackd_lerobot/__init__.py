@@ -271,8 +271,10 @@ class LeRobotAdapter:
     supports_hand_off = True
     """A person can be handed this body: quackd takes torque off at its recorded rest pose,
     waits while they place it, and holds whatever pose they left it in (`quackd run
-    --by-hand`). Declared rather than inferred, because the run refuses the flag outright on a
-    body that does not offer it rather than connecting and finding out."""
+    --by-hand`), and a person holding it can have its torque taken off wherever it stands
+    (`quackd robot release`, and the offer at the end of a run whose rest move missed).
+    Declared rather than inferred, because the run and the command refuse outright on a body
+    that does not offer it rather than connecting and finding out."""
     supports_rest_pose = True
     """This body is driven to a recorded pose before torque is released. The registry's
     `rest-pose` command asks for exactly this, because a body with joints that quackd does
@@ -345,7 +347,12 @@ class LeRobotAdapter:
     async def go_to_rest(self) -> RestResult:
         return await go_to_rest_if_any(self.transport)
 
-    async def let_go(self) -> HandResult:
+    async def let_go(self, *, anywhere: bool = False) -> HandResult:
+        """Torque off, for a person at the arm. `anywhere` is the transport's own keyword and
+        is passed only when set, for `let_go_if_any`'s reason: without it the arm is released
+        at its rest pose or refused, which is `--by-hand`'s rule and stays the default."""
+        if anywhere:
+            return await let_go_if_any(self.transport, anywhere=True)
         return await let_go_if_any(self.transport)
 
     async def take_hold(self) -> HandResult:
@@ -497,6 +504,11 @@ def make(
     rest_pose: dict[str, float] | None = None,
 ) -> LeRobotAdapter:
     _check_rest_pose(rest_pose)
+    # The name the arm was asked for by, before the default fills it in: the registered name
+    # for every robot built from the registry, which is the only place a rest pose comes from.
+    # The close note names it in the commands it gives a person, and says NAME where there
+    # is none rather than the default id, which is not necessarily what anybody registered.
+    registered_name = robot_id
     if backend == "mock":
         from quackd_lerobot.mock import LeRobotMock
 
@@ -504,7 +516,9 @@ def make(
         # rather than dropped: only the real arm opens more than one, and a task rehearsed
         # against the mock should fail here rather than at the bench
         one_camera_url(camera_url, spec="lerobot:mock")
-        return LeRobotAdapter(LeRobotMock(rest_pose=rest_pose), robot_id=robot_id)
+        return LeRobotAdapter(
+            LeRobotMock(rest_pose=rest_pose, registered_name=registered_name), robot_id=robot_id
+        )
     if backend == "real":
         from quackd_lerobot.real import LeRobotReal, parse_camera_urls, step_from_env
 
@@ -515,6 +529,7 @@ def make(
                 max_step_deg=step_from_env(),
                 cameras=parse_camera_urls(camera_urls(camera_url)),
                 rest_pose=rest_pose,
+                registered_name=registered_name,
             ),
             robot_id=robot_id,
         )

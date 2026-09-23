@@ -777,6 +777,15 @@ def render_events(
             text += " (" + ", ".join(f"{j} {float(v):.0f}" for j, v in sorted(joints.items())) + ")"
         colour = "yellow" if stage in ("released", "skipped") else "cyan"
         return [LogLine("hand", text, colour, mark="note")]
+    if k == "release":
+        # the end-of-run offer to a person holding an arm that missed its rest pose: said in
+        # yellow either way, because both endings leave somebody something to do with the arm
+        stage = str(d.get("stage", ""))
+        reason = str(d.get("reason", ""))
+        text = f"{stage}: {reason}" if reason else stage
+        if d.get("how") == "refused":
+            text += " (the arm refused)"
+        return [LogLine("release", text, "yellow", mark="note")]
     if k == "note":
         return [LogLine("note", str(d.get("text", "")), "dim", multiline=True, mark="note")]
     if (caption := flock_caption(k, d)) is not None:

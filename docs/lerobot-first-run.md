@@ -518,7 +518,7 @@ as meaning a different pose too.
 |---|---|
 | The start of a run | the arm is driven to the pose before the pilot is given control, so what a model improvises from is the same arm every time. A run that cannot get there aborts before a single LLM call is made |
 | The end of a run | between the `stop` and the disconnect, on every exit path there is: success, failure, infeasible, out of budget, an abort, an error, and Ctrl-C |
-| Torque, at the end | released only where the arm is known to have reached the pose. Where it has not, quackd turns LeRobot's disconnect flag off, leaves the arm holding itself up, and says so in one line |
+| Torque, at the end | released only where the arm is known to have reached the pose. Where it has not, a run at a terminal first offers to release it into your hands, which is Enter while you hold it. Otherwise quackd turns LeRobot's disconnect flag off, leaves the arm holding itself up, and says so in one line that names `quackd robot release arm-01` |
 | A fold past the travel | the arm is driven to the edge of the travel instead, which counts as reaching the pose, and torque is released there. A joint already folded past the edge is at rest where it is and is sent nothing. The run says once which joint is free to settle the rest of the way, `doctor` prints the same sentence under its table with the `rest pose` row green, and an MCP session logs it |
 | `--dry-run` | nothing. A dry run never moves the arm, at either end, so unless the arm happens to be at the pose already it is let go of with torque on |
 | `quackd doctor` | a probe returns the arm to the pose too, and prints a `rest pose` row: `at it already`, `returned to it`, `not reached: ...`, or `none recorded (quackd robot rest-pose <name>)` |
@@ -527,19 +527,55 @@ as meaning a different pose too.
 
 Said plainly, because it is a change in behaviour rather than an addition: a probe or a dry
 run on an arm that is away from its recorded rest pose now leaves torque **on**, where it used
-to drop it. The arm stays up instead of falling, and it stays energised until you cut power or
-run something that can put it down.
+to drop it. The arm stays up instead of falling, and it stays energised until you release it
+while you hold it, run something that can put it down, or cut its power.
 
 The line when it could not get there reads:
 
 ```
 the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the
-arm and cut its power, or run again
+arm and run quackd robot release arm-01, or run quackd doctor --robot arm-01 to park it, or
+cut its power
 ```
 
 Something is in the way, or a servo tripped. A fold past the calibrated travel is no longer
 one of the reasons, since the edge of the travel counts as there. The arm is still energised
-and still holding itself up, so hold it and cut power rather than walking away from it.
+and still holding itself up, so do not walk away from it, and you do not have to reach for the
+power switch either. A run at a terminal asks you first, just before that line: hold the arm
+and press Enter, and it lets go into your hands. If you missed that, or the arm was left up by
+a dry run or an MCP session, hold it and run:
+
+```bash
+quackd robot release arm-01
+```
+
+It says what is about to happen before it touches anything, asks, and only then connects and
+lets go wherever the arm stands. Captured on the mock arm, with `y` typed at the question:
+
+```
+⚠ connecting takes torque off every motor for a moment, because LeRobot configures them with it
+off, and the release then lets the arm fall from wherever it is: hold it now, and keep hold of it
+until it is down
+release torque on arm-01? [y/N]: y
+arm-01 (lerobot:mock) is at
+shoulder_pan   0.0
+shoulder_lift  -90.0
+elbow_flex     90.0
+wrist_flex     0.0
+wrist_roll     0.0
+gripper        100.0
+✓ torque reads off on every joint of arm-01
+⚠ the arm is limp and in your hands (torque was taken off where it stood, because you asked for
+it): put it down before you let go of it, because nothing is holding it up
+```
+
+Keep holding it until it is down: the warning's first half is true of a real arm, whose
+connect takes torque off every motor for a moment, and the mock only prints it. The command
+exits 1 unless every motor read torque off, and names the ones that did not. `quackd doctor
+--robot arm-01` is the other way out: it tries the rest move again from wherever the arm now is
+and lets go at the pose if it gets there. The power switch is for when neither of them can
+reach the arm. What each outcome means is in
+[adapters/lerobot.md](adapters/lerobot.md#releasing-it-where-it-stands).
 
 Two details worth knowing before they surprise you:
 
@@ -596,9 +632,10 @@ quackd run --goal "draw a small circle" --robot arm-01 --llm openai --by-hand
 What happens, in order, and the order is the whole of the feature:
 
 1. **The arm drives to its recorded rest pose**, exactly as any other run does.
-2. **quackd takes torque off, there and nowhere else.** This is the only call in quackd that
-   de-energises a robot, and it refuses anywhere but the recorded pose, because an arm held up
-   by torque alone falls the moment torque goes and your hands are not on it yet.
+2. **quackd takes torque off, there and nowhere else.** This is the one call in quackd that
+   de-energises a robot, and through this door it refuses anywhere but the recorded pose,
+   because an arm held up by torque alone falls the moment torque goes and your hands are not
+   on it yet. `quackd robot release` is its other door, and it asks you to hold the arm first.
 3. **It tells you the arm is yours, and waits.** There is no clock on this wait. The arm is
    resting on itself at the pose you watched it hold when you recorded it, so it can sit there
    while you go and find the pencil.
@@ -1251,7 +1288,8 @@ And once it is running:
 | `the arm's torque is off` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so this points at a tripped servo or the supply |
 | the run ends saying the arm did not answer | the heartbeat's round trip failed | the cable, the power, or a tripped servo. The arm holds its last goal under torque. Seen once on 2026-09-15, in a dry run, and not since |
 | the arm sags when the run ends | no rest pose is recorded, so torque drops where the arm stands | `quackd robot rest-pose arm-01`, with the arm folded by hand first |
-| `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose` | hold the arm, cut its power, clear whatever stopped it, and run again. It stays energised until you do. If you calibrated again since you recorded the pose, record it again: the old angles name a different shape now |
+| `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose`, and at a terminal it offered to release the arm first | hold the arm and run `quackd robot release arm-01`, which lets it go into your hands, then clear whatever stopped it and run again. `quackd doctor --robot arm-01` tries the fold again instead, and the power switch is for when neither can reach the arm. It stays energised until you do one of them. If you calibrated again since you recorded the pose, record it again: the old angles name a different shape now |
+| `torque still reads on for <joints>: cut the power` | `quackd robot release` sent the release and those motors kept their torque | hold the arm and cut its power, or run the command again. The motors not named are limp |
 | `... is recorded at ... in the rest pose and this calibration lets its servo be driven to ... and no further` | the fold you recorded lies past the travel your calibration recorded. The arm parks at the edge of the travel and is let go of there, and the run carries on | nothing needs doing today. To make the fold itself reachable, calibrate again with every joint taken all the way into it, then record the pose again |
 
 [adapters/lerobot.md](adapters/lerobot.md) has the full table, including the failures SO-101
@@ -2076,7 +2114,7 @@ The arm is left where it stood, on the mock still `shoulder_pan` 45, and its tor
 [M10](#m10-rehearse-with---dry-run) keeping its promise rather than a fault:
 
 ```
-quackd-mcp WARNING arm-01: the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall: hold the arm and cut its power, or run again
+quackd-mcp WARNING arm-01: the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall: hold the arm and run quackd robot release arm-01, or run quackd doctor --robot arm-01 to park it, or cut its power
 ```
 
 **When the arm cannot reach the pose, the session never starts.** The server raises before it
@@ -2088,7 +2126,7 @@ stalls names the joint and both numbers, in the form `shoulder_lift is at -50 wi
 `when the time ran out` and the seconds:
 
 ```
-arm-01: the arm did not reach its rest pose: shoulder_lift stopped 40 deg short. the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall: hold the arm and cut its power, or run again
+arm-01: the arm did not reach its rest pose: shoulder_lift stopped 40 deg short. the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall: hold the arm and run quackd robot release arm-01, or run quackd doctor --robot arm-01 to park it, or cut its power
 ```
 
 The same warning reaches the server's stderr, under one line carrying the mock's scripted
@@ -2100,7 +2138,8 @@ the process raised and exited before the handshake, so the client has nothing to
 no sentence of quackd's to show you. The reason is in the stderr log, at the path
 [M08](#m08-the-first-session) gives for your client and
 [M13](#m13-when-it-will-not-work) repeats. Then, in this order: hold the arm, because it is
-energised and holding itself up, cut its power, clear whatever stopped the fold, and start again.
+energised and holding itself up, run `quackd robot release arm-01` at a terminal (the server has
+exited, so the port is free) or cut its power, clear whatever stopped the fold, and start again.
 
 > [!CAUTION]
 > A session that ends any way but cleanly leaves an energised arm. Torque comes off only where
@@ -2111,7 +2150,10 @@ energised and holding itself up, cut its power, clear whatever stopped the fold,
 > and nothing is holding the arm up, so read that line before you trust the rest of this. A hard
 > kill, a dry run away from the pose and a failed park all end with servos under load, and
 > nothing in the chat says so. There is no Ctrl-C kill switch here the way there is in
-> `quackd run`, so the power switch is the one that always works.
+> `quackd run`, so the power switch is the one that always works. Once the session has ended
+> and the port is free, `quackd robot release arm-01` at a terminal lets a held arm go without
+> it. No MCP tool can: taking torque off is a command a person types, never a call a model makes.
+
 
 **Three things here were captured against the mock arm and in the test suite.** The park at
 both ends, the refusal and the dry run's missing parks: the mock transport records them and
@@ -2487,7 +2529,8 @@ all the same, `step 1/40`, so a rehearsal costs the same budget a real session d
 > and then the server says so on its way out. At the rest pose, or on a server started against
 > an arm with no rest pose recorded at all, the close releases torque where the arm stands and
 > says nothing. [M07](#m07-record-the-rest-pose) has that line and what to do about it, which is
-> to hold the arm and cut its power rather than walk away from it.
+> to hold the arm and run `quackd robot release arm-01` at a terminal once the session has
+> ended, or cut its power, rather than walk away from it.
 
 **The feasibility gate is the thing most likely to surprise you here.** A verb that moves the
 body is refused until `robot_assess_task` has recorded a verdict the gate accepts, which means
@@ -2860,7 +2903,7 @@ the server and the session.
 | the server listed as pending approval | it came from a project `.mcp.json`, and nobody has approved it in a session yet | run `claude` in that directory and approve it there. You are asked once per project, not once per session |
 | the server will not start, and the log says the command was not found | the path is wrong, or a desktop app cannot see your shell `PATH` | give the absolute path from [M02](#m02-install-quackd). A desktop client has no shell and starts in a directory you did not choose |
 | `adapter 'lerobot' needs an extra` | the client launched a different environment from the one you installed into | check the command is your venv's own `quackd`, and that the same venv's `python --version` is 3.12 or newer |
-| the session refuses to start, and the log says `the arm did not reach its rest pose` | it could not get home, so not one tool was ever offered | hold the arm, cut its power, clear whatever stopped it, then start the session again. The refusal carries the closing note, which says whether torque was left on or the arm is limp in your hands ([M07](#m07-record-the-rest-pose)) |
+| the session refuses to start, and the log says `the arm did not reach its rest pose` | it could not get home, so not one tool was ever offered | hold the arm and run `quackd robot release arm-01` at a terminal, or cut its power, then clear whatever stopped it and start the session again. The refusal carries the closing note, which says whether torque was left on or the arm is limp in your hands ([M07](#m07-record-the-rest-pose)) |
 | a verb refused with `no feasibility verdict has been recorded for this task yet` | the verdict gate, shut until the model answers for this body | ask it to call `robot_assess_task` first ([M10](#m10-rehearse-with---dry-run)) |
 | the same verb refused with `the verdict is uncertain and nobody has cleared it` | uncertain does not clear anything that moves the body, and there is no terminal here to ask on | answer the model in the chat, and let it record again on its own responsibility ([M10](#m10-rehearse-with---dry-run)) |
 | `verb 'move_joints' is not in this duck's allowlist` | the loaded contract does not allow it, which is the contract doing its job | widen the `.duck` and load it again, or ask for a verb it does allow ([M08](#m08-the-first-session)) |

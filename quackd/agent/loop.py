@@ -165,6 +165,17 @@ class RunConfig:
     while they put it where they want it, holds whatever pose they left, and hands it back the
     same way at the end. Only a body whose adapter declares `supports_hand_off` is offered
     this, and the CLI refuses the flag before connecting where it is not."""
+    person: HandOff | None = None
+    """Somebody at a terminal, for the one question any run may put at its very end: the rest
+    move missed, torque is being kept on an arm holding itself up, and would they like it
+    released while they hold it (`AgentLoop.RELEASE_OFFER`).
+
+    Separate from `hand_off` on purpose, and never a way to read "this is a by-hand run": the
+    loop takes `hand_off is not None` to mean exactly that, and a run with a person at the
+    keyboard is not a run whose arm is to be handed over. The CLI sets it whenever it can
+    prompt and the run is not a dry one, to the same object as `hand_off` when there is one.
+    None is an MCP session, a flock member, a test and a terminal-less run, and those keep
+    torque on at a missed rest pose exactly as they always have."""
     task_images: Sequence[NamedPng] = ()
     """Pictures handed to the task by `quackd run --image`, already PNG and already sized
     (`quackd.agent.images`). They ride on the first observation and are never trimmed, so a
@@ -389,8 +400,8 @@ class AgentLoop:
         record. The CLI marks the ones that reach a terminal with `asks_a_person`.
 
         The consequence of the answer is already written down elsewhere (`gate.answer` for a
-        confirm, `assess.human` for a verdict, the `hand_off` stages for an arm). This is the
-        exchange itself, which nothing held."""
+        confirm, `assess.human` for a verdict, the `hand_off` stages for an arm, the `release`
+        stages for the end-of-run offer). This is the exchange itself, which nothing held."""
         if not a_person_was_asked(asker):
             return
         self._emit("prompt", what=what, question=question, answer=answer)
@@ -499,6 +510,23 @@ class AgentLoop:
     the cost of waiting is an energised arm and the cost of not waiting is a jam. Bounded
     because a run must still end when the room is empty."""
 
+    RELEASE_OFFER = (
+        "the arm did not reach its rest pose ({why}), so it is holding itself up. Hold it and "
+        "press Enter to release torque now. Leave it, and after {seconds:.0f} s it stays that "
+        "way"
+    )
+    """Put to a person at the end of a run whose rest move missed, before the close keeps
+    torque on. Without it the only ways to take torque off such an arm were `quackd robot
+    release` in another terminal and the power switch, and on the bench of 2026-09-23 every
+    run that got to its end finished at the switch. It asks the person to hold the arm first,
+    because the release lets it fall from wherever it stands."""
+
+    RELEASE_OFFER_S = 60.0
+    """How long the offer waits for Enter. Bounded for `HAND_BACK_S`'s reason, a run must end
+    when the room is empty, and shorter than it, because what the wait costs is an arm holding
+    itself up against a pose it could not reach, and nothing is lost by not answering: the arm
+    is left exactly as a run without the offer leaves it."""
+
     async def _hand_over(self) -> bool:
         """Let go of the arm, wait for somebody to place it, then hold what they left.
 
@@ -593,6 +621,65 @@ class AgentLoop:
             self._note(f"the gripper did not open: {ack.reason}; take what is in it by hand")
             return
         self._emit("hand_off", stage="unloaded", reason="opening the gripper")
+
+    async def _offer_release(self, parked: RestResult | None) -> None:
+        """Offer the person at the terminal torque off, when the run's last rest move missed.
+
+        This sits between the teardown's rest move and the close. When the move reached the
+        pose there is nothing to offer, because the close lets go there anyway; when it missed,
+        the close keeps torque on and the arm stands holding itself up at whatever pose it
+        stopped in, which is right for an empty room and a dead end for a person standing next
+        to it. So a person, and only a person (`cfg.person`: never MCP, never a flock member,
+        never a dry run, which moved nothing), is told to hold the arm and asked for Enter.
+
+        Enter releases through `let_go_if_any(..., anywhere=True)`, the transport's own second
+        door, and the close then says the arm is limp in their hands. Anything else leaves the
+        arm exactly as a run without the offer would: a wait that ran out, no key thread to
+        read one, and a Ctrl-C. The wait watches a fresh key press rather than the abort flag
+        (`until_abort=False`), for `_hand_back`'s reason: the flag is already set on every run a
+        person ended, which are the runs most likely to have missed their fold. And a second
+        Ctrl-C landing on it is caught here for the same reason too: it means "skip this and
+        finish", and the close, `run_end` and the summary still have to happen. Nothing here
+        raises."""
+        person = self.cfg.person
+        if person is None or self.cfg.dry_run or parked is None:
+            return
+        if not parked.recorded or parked.reached:
+            return
+        offer = self.RELEASE_OFFER.format(why=parked.reason, seconds=self.RELEASE_OFFER_S)
+        try:
+            agreed = await person.wait(offer, timeout_s=self.RELEASE_OFFER_S, until_abort=False)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            self._emit("release", stage="kept", reason="interrupted while waiting")
+            self._note("torque stays on, and the arm holds itself up where it stopped")
+            return
+        self._ask_recorded("release", offer, agreed, person)
+        if not agreed:
+            self._emit("release", stage="kept", reason="nobody pressed Enter")
+            self._note("nobody pressed Enter, so torque stays on and the arm holds itself up")
+            return
+        released = await let_go_if_any(self.cfg.transport, anywhere=True)
+        self._emit(
+            "release",
+            stage="released",
+            how=released.how,
+            reason=released.reason,
+            joints=released.joints,
+            torque_on=list(released.torque_on) if released.torque_on is not None else None,
+        )
+        # Said to the person rather than only logged, like the offer itself: they are holding
+        # the arm and act on this line, and a run with its log off prints no note at all. The
+        # close's own line follows in the log where there is one.
+        if released.ok:
+            person.say(
+                f"{released.reason}: the arm is in your hands, so put it down before you let "
+                "go of it"
+            )
+        else:
+            self._note(f"torque was not released: {released.reason}")
+            person.say(
+                f"torque was not released ({released.reason}): the arm is still holding itself up"
+            )
 
     async def _observe(
         self,
@@ -1423,11 +1510,16 @@ class AgentLoop:
                 # neither fighting a verb nor happening after the arm has already folded up
                 with contextlib.suppress(Exception):
                     await self._hand_back()
+            folded: RestResult | None = None
             with contextlib.suppress(Exception):
                 # after the stop and before the close: the stop holds the arm where it is,
                 # and the close is what releases torque, so this is the only window in which
                 # putting it down changes whether it falls
-                await self._rest()
+                folded = await self._rest()
+            with contextlib.suppress(Exception):
+                # and where it could not be put down, the person at the terminal may take
+                # torque off while they hold it, before the close keeps it on
+                await self._offer_release(folded)
             final_state: dict[str, Any] = {}
             with contextlib.suppress(Exception):
                 final_state = (await cfg.transport.get_state()).model_dump()

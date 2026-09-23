@@ -612,11 +612,14 @@ def test_an_arm_that_arrived_and_was_still_held_at_the_close_fails_the_verdict_t
 
     A person runs `doctor` to be told whether they can walk away. Saying yes over a note that
     says the arm is still powered is the one answer this command must never give."""
+    from quackd_lerobot.verbs import torque_left_on
+
     arm = LeRobotMock(rest_pose=dict(REST))
 
     async def arrive_then_drift() -> None:
         arm.sequence.append("close")
-        arm.close_note = "the arm is not at its rest pose (it stopped answering), so torque was left on and it will not fall: hold the arm and cut its power, or run again"  # noqa: E501
+        # the arm's own sentence rather than a copy of it, so the fake says what the arm does
+        arm.close_note = torque_left_on("it stopped answering", None)
 
     monkeypatch.setattr(arm, "close", arrive_then_drift)
     report = _probed(monkeypatch, arm, rest_pose=dict(REST))

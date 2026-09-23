@@ -15,6 +15,26 @@ still unverified, and the read-back still catches it: when it is the joint that 
 refusal says it was placed past its travel and gives the numbers. The stop that picks an arm up
 out of a hand skips such a joint for the same reason.
 
+**Amended again 2026-09-23, by `quackd robot release`:** the rest pose is no longer the only
+place quackd releases an arm. A person at the arm can now ask for its torque by name, wherever
+it stands, because on the bench that day every run that got to its end kept torque on at a
+pose it could not reach and finished at the power switch. `let_go(anywhere=True)` skips the two
+refusals about the pose and nothing else: the joints are read first, the release is read back
+off every motor, and the arm is in somebody's hands afterwards, so the close says
+`LIMP_IN_HAND`. Two things open it, and both are a person at a terminal. `quackd robot release
+NAME` warns that connecting takes torque off for a moment and that the release lets the arm
+fall, asks, and only then connects. A run whose last rest move missed offers the same before its
+close, Enter within `AgentLoop.RELEASE_OFFER_S` (60 s), and only where the CLI could prompt
+(`RunConfig.person`, which is not `hand_off`): never on a dry run, over MCP or in a flock. The
+first decision below stands for `--by-hand`, which still releases at the rest pose and nowhere
+else, because there the release comes before anybody's hands are on the arm, and here the hands
+come first. The last decision stands whole: no verb, no MCP tool, and not on the `RobotAdapter`
+protocol. One reading moved with it, in both doors. A release is `released` from the moment it
+is sent, so a release call that raised part way through its motors now leaves the arm in a hand
+instead of reporting it released in nobody's, and a read that failed *before* the release now
+refuses instead of reporting a release that never went out. `HandResult.torque_on` names the
+motors that still read on, so nobody is told torque reads off over a joint that kept it.
+
 ## Context
 
 Every run of an SO-101 has started the same way since the arm had an adapter: quackd drives it

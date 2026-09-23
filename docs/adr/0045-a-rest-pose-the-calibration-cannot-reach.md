@@ -1,8 +1,20 @@
 # ADR-0045: A rest pose the calibration cannot reach
 
-**Status:** accepted · **Date:** 2026-09-23 · Extends [ADR-0036](0036-what-the-arm-does-not-say.md) (the range refusal, and `stop` as a hold of the five body joints) and [ADR-0039](0039-an-arm-placed-by-hand.md) (the one place quackd lets go, on the condition `close()` trusts) · Implemented in `adapters/lerobot/` (`verbs.py`, `real.py`, `mock.py`), `quackd/adapters/base.py`, `quackd/agent/loop.py` and `quackd/doctor.py` ([page](../adapters/lerobot.md#a-pose-past-the-travel), [first run](../lerobot-first-run.md#07-record-the-rest-pose))
+**Status:** accepted, amended · **Date:** 2026-09-23 · Extends [ADR-0036](0036-what-the-arm-does-not-say.md) (the range refusal, and `stop` as a hold of the five body joints) and [ADR-0039](0039-an-arm-placed-by-hand.md) (the one place quackd lets go, on the condition `close()` trusts) · Implemented in `adapters/lerobot/` (`verbs.py`, `real.py`, `mock.py`), `quackd/adapters/base.py`, `quackd/agent/loop.py` and `quackd/doctor.py` ([page](../adapters/lerobot.md#a-pose-past-the-travel), [first run](../lerobot-first-run.md#07-record-the-rest-pose))
+
+**Amended 2026-09-23, by `quackd robot release`:** the reachable rest pose is no longer the only
+place quackd releases an arm. A person at the arm can ask for its torque by name, wherever it
+stands: `quackd robot release NAME`, or Enter at the offer a run makes at its terminal when its
+last rest move missed, which is the genuine miss this ADR keeps torque on for. The decision
+below is unchanged for everything quackd does on its own initiative. A genuine miss still keeps
+torque on, and taking it off is now a person's call, made after being told to hold the arm,
+where before the only call left to them was the power switch. The line a genuine miss ends on,
+`TORQUE_LEFT_ON`, names the ways out with the name the arm was registered under: hold the arm
+and run `quackd robot release`, or run `quackd doctor --robot` to try the rest move again, or cut
+its power. [ADR-0039](0039-an-arm-placed-by-hand.md)'s second amendment has the rest.
 
 ## Context
+
 
 The rest pose was written after the bench of 2026-09-15, where the arm fell at the end of every
 run, and it met an arm for the first time on 2026-09-23: the same SO-101, `arm-01`, on lerobot

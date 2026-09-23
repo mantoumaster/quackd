@@ -257,19 +257,32 @@ refuses and falls over, and nothing there can be hurt. When you do reach the rob
 `--dry-run` every time, then a `.duck` whose `allow` list is the smallest thing that could work,
 then widen it. **You are responsible for your robot.**
 
-**There is now one place where quackd takes torque off a robot, and only a person can ask for
-it.** `quackd run --by-hand` releases a LeRobot arm at the start of a run so you can lift it,
-put whatever the task needs into the gripper, and set the pose the run begins from. Every word
-of that is a limit. Only that arm: the flag is refused on the other six bodies by name. Only at
-the pose recorded with `quackd robot rest-pose`, because an arm held up by torque alone falls
-the instant torque goes, so the arm refuses to be let go of anywhere else and a run on an arm
-with no pose recorded is refused before it starts. Only when a person typed the flag at a
-terminal, which is also checked before anything moves. And never by anything else: releasing is
-not a verb, it is in no `allow` list, and it is deliberately not on the `RobotAdapter` protocol,
-so there is nothing for a model or an MCP client to call. When you press Enter, quackd writes
-the pose you left the arm in as the goal *before* it re-enables torque, writes it again, reads
-it back, and ends the run rather than starting it if a joint moved more than five degrees while
-your hand was still on it.
+**There are two places where quackd takes torque off a robot, and only a person can ask for
+either.** The first is `quackd run --by-hand`, which releases a LeRobot arm at the start of a
+run so you can lift it, put whatever the task needs into the gripper, and set the pose the run
+begins from. Every word of that is a limit. Only that arm: the flag is refused on the other six
+bodies by name. Only at the pose recorded with `quackd robot rest-pose`, because an arm held up
+by torque alone falls the instant torque goes, so the arm refuses to be let go of anywhere else
+and a run on an arm with no pose recorded is refused before it starts. Only when a person typed
+the flag at a terminal, which is also checked before anything moves. And never by anything else:
+releasing is not a verb, it is in no `allow` list, and it is deliberately not on the
+`RobotAdapter` protocol, so there is nothing for a model or an MCP client to call. When you
+press Enter, quackd writes the pose you left the arm in as the goal *before* it re-enables
+torque, writes it again, reads it back, and ends the run rather than starting it if a joint
+moved more than five degrees while your hand was still on it.
+
+The second is for an arm left holding itself up, and it releases the arm wherever it stands,
+because the person asking is holding it. `quackd robot release NAME` says that connecting takes
+torque off for a moment and that the release lets the arm fall, asks, and only then connects,
+releases, reads torque back off every motor and says what it read. And a run whose rest move
+missed, with you at its terminal, offers the same thing before it closes: hold the arm and press
+Enter, or leave it for 60 seconds and torque stays on as it always did. The limits are the first
+door's, less the pose. Only the arm. Only when a person asks: the command asks at a terminal
+unless `--yes` says you are already holding the arm, and refuses with neither, and the offer is
+never made on a dry run, over MCP or in a flock. And never a verb or a tool. On 2026-09-23 the
+power switch was the only other way to put down an arm a run had left energised, and every run
+that got to its end that afternoon finished there
+([adapters/lerobot.md](adapters/lerobot.md#the-torque-rule)).
 
 **If a run ends while the arm is still limp in your hands, quackd picks it up before it folds
 it.** That state takes a Ctrl-C during the wait, a heartbeat that died, or a `take_hold` the arm
@@ -401,13 +414,19 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
   LeRobot's flag off for that one case, leaves the arm holding itself up, and prints one line:
 
   ```
-  the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut its power, or run again
+  the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and run quackd robot release NAME, or run quackd doctor --robot NAME to park it, or cut its power
   ```
 
   The brackets name the joint furthest from where it was asked to be, what it reads, and why
   nothing put it there. That is a joint stopped short *inside* its travel: one parked at the
-  edge of its travel, or folded past it, has reached the pose. Do what the line says. The arm
-  is energised, the run is over, and nothing is going to put it down on its own.
+  edge of its travel, or folded past it, has reached the pose. `NAME` is the name the arm was
+  registered under wherever quackd knows it, and stays `NAME` where it does not, which is a
+  `doctor` probe. Do one of the three things the line says. The arm is energised, the run is
+  over, and nothing is going to put it down on its own. Holding it and running
+  `quackd robot release` lets it go into your hands; `quackd doctor --robot` tries the rest move
+  again from wherever it now is and lets go at the pose if it gets there; the power switch
+  works when neither of those can reach the arm. A run at a terminal offers the first of them
+  itself, before the line is printed.
 - **A probe and a dry run now leave torque on where they used to drop it.** A dry run never
   moves the arm and `quackd robot list --probe` never moves it either, so on an arm away from
   its recorded rest pose both end with torque on: the dry run prints the line above, and the
@@ -419,7 +438,7 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
   shielded from a `KeyboardInterrupt`, so the process exits with `disconnect()` never called,
   torque never disabled, and the arm holding wherever the move had got to. That is the safe
   direction and it is not a clean exit: the port closes with the arm still energised, so hold
-  the arm and cut its power.
+  the arm and run `quackd robot release <name>`, or cut its power.
 - A good first contract is the shipped `lerobot-lookout`, which moves no joint. The order to
   bring one up in, nothing moving until step 10:
   [lerobot-hardware-checklist.md](lerobot-hardware-checklist.md).

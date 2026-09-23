@@ -384,10 +384,36 @@ would take minutes, and an arm nobody is watching must not hold a run open that 
 
 TORQUE_LEFT_ON = (
     "the arm is not at its rest pose ({why}), so torque was left on and it will not fall: "
-    "hold the arm and cut its power, or run again"
+    "hold the arm and run quackd robot release {name}, or run quackd doctor --robot {name} to "
+    "park it, or cut its power"
 )
 """Said once, by whichever caller closed the arm. The transport records it and prints
-nothing itself: a library that writes to a terminal has picked one, and quackd has four."""
+nothing itself: a library that writes to a terminal has picked one, and quackd has four.
+
+It names the three ways out, because an arm left holding itself up stays that way until
+somebody does one of them, and the power switch was the only one it used to name: on the
+bench of 2026-09-23 every run that got to its end finished there. `quackd robot release` takes
+torque off where the arm stands while a person holds it; `quackd doctor --robot` connects,
+tries the rest move again from wherever the arm now is, and lets go at the pose if it gets
+there. Both are said with the name the arm was registered under, through `torque_left_on`,
+because a command with the wrong name in it is a command that fails or, worse, reaches another
+arm."""
+
+UNNAMED = "NAME"
+"""What `torque_left_on` says in place of a name nobody told the transport. A placeholder a
+person can see is one, rather than a guess at the name that reads like the right one."""
+
+
+def torque_left_on(why: str, name: str | None) -> str:
+    """`TORQUE_LEFT_ON` for this arm, with its registered name where the caller knew it.
+
+    The name is the one the arm was built with (`make(robot_id=...)`), which is the registered
+    name on every path quackd builds an arm with a rest pose on: a run, an MCP session and a
+    flock resolve a registered robot to a spec carrying its name. `doctor` resolves the name to
+    the bare spec and builds the arm with no name at all, and so does anything that calls the
+    backend directly, and those get `NAME` rather than an id that may not be what the arm is
+    registered under."""
+    return TORQUE_LEFT_ON.format(why=why, name=name or UNNAMED)
 
 
 def rest_goal(rest_pose: dict[str, float]) -> dict[str, float]:
@@ -504,7 +530,22 @@ LIMP_IN_HAND = (
 the only way to reach a close in this state is a run that ended in the gap between: a Ctrl-C
 during the wait, a heartbeat that died, a `take_hold` the arm refused. Whoever is holding the
 arm is the one reading this, and the opposite note, the one about torque being left on, would
-tell them the arm is holding itself up while it hangs off their hand."""
+tell them the arm is holding itself up while it hangs off their hand.
+
+The other way here is on purpose: `quackd robot release`, and the offer a run makes when its
+rest move missed, end every release they make with this line, because it is the right last
+thing to tell somebody holding an arm with nothing else holding it up."""
+
+LET_GO_TO_PLACE = "it was let go of for you to place and never taken hold of again"
+"""`LIMP_IN_HAND`'s parenthesis after a `--by-hand` release, when nothing more specific is
+known: the arm was released at its fold for somebody to lift and set a pose with."""
+
+LET_GO_WHERE_IT_STOOD = "torque was taken off where it stood, because you asked for it"
+"""`LIMP_IN_HAND`'s parenthesis after a release through the second door (`let_go(anywhere=
+True)`). Not the shortfall from the rest pose, which is what the close would otherwise put
+there: that sentence ends "nothing moved it there" when no rest move ran, which is false of an
+arm a person is holding, and the person already knows where it stands, having just asked for
+it to be let go of there."""
 
 NO_DRIVABLE_JOINT = (
     "the recorded rest pose names no joint this arm drives ({named}). A pose is only kept "

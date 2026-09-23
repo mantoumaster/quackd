@@ -26,9 +26,10 @@ from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     JOINTS,
+    LET_GO_TO_PLACE,
+    LET_GO_WHERE_IT_STOOD,
     LIMP_IN_HAND,
     TOL_DEG,
-    TORQUE_LEFT_ON,
     Clip,
     at_rest,
     past_reach,
@@ -36,6 +37,7 @@ from quackd_lerobot.verbs import (
     rest_clip_note,
     rest_goal,
     shortfall,
+    torque_left_on,
     worth_saying,
 )
 
@@ -93,6 +95,7 @@ class LeRobotMock(MockTransport):
         hot_joints: tuple[str, ...] = (),
         rest_pose: dict[str, float] | None = None,
         rest_fails: str | None = None,
+        registered_name: str | None = None,
     ) -> None:
         super().__init__(
             states=[DuckState(policy="idle", posture="unknown", battery_percent=None)],
@@ -113,9 +116,13 @@ class LeRobotMock(MockTransport):
         self.rest_fails = rest_fails
         """Set to a reason and the rest move stalls without moving, which is the one thing
         an offline arm cannot do to itself and every caller of the rest move has to handle."""
+        self.registered_name = registered_name
+        """The name the close note gives the commands it names, as on the real backend."""
         self.close_note: str | None = None
         self.in_hand = False
         """The arm is limp because `let_go()` put it there, as on the real backend."""
+        self.let_go_why: str | None = None
+        """What the close says the arm was let go of for: the real backend's `_let_go_why`."""
         self.hold_slips: dict[str, float] | None = None
         """Set to joint offsets and `take_hold` finds the arm somewhere else than where it
         was read, which is how an offline arm stands in for one that moved as torque came on."""
@@ -306,20 +313,26 @@ class LeRobotMock(MockTransport):
             result = RestResult(result.how, result.reason, clipped, note)
         return result
 
-    async def let_go(self) -> HandResult:
-        """Torque off for a person to place the arm, refused wherever the real one refuses."""
+    async def let_go(self, *, anywhere: bool = False) -> HandResult:
+        """Torque off for a person to place the arm, refused wherever the real one refuses.
+
+        `anywhere` is the real backend's second door, opened the same way: the two refusals
+        about the pose are skipped and the arm is released where it stands, in the same words,
+        so a rehearsal of `quackd robot release` or of the end-of-run offer says what the arm
+        would. An in-memory release always takes, so every motor reads off afterwards."""
         self.sequence.append("let_go")
-        if self.rest_pose is None:
+        if not anywhere and self.rest_pose is None:
             return HandResult(
                 "refused",
                 "no rest pose is recorded for this arm, so there is nowhere it is known to be "
                 "safe to let go of it: quackd robot rest-pose NAME",
             )
-        recorded = rest_goal(self.rest_pose)
+        recorded = rest_goal(self.rest_pose or {})
         goal = self.rest_reachable
-        if not goal:
+        if not anywhere and not goal:
             return HandResult("refused", "the recorded pose names no joint this arm drives")
-        if not at_rest(goal, self.joints, recorded):
+        resting = bool(goal) and at_rest(goal, self.joints, recorded)
+        if not anywhere and not resting:
             return HandResult(
                 "refused",
                 f"the arm is not at its rest pose ({shortfall(goal, self.joints, recorded)}), "
@@ -327,7 +340,11 @@ class LeRobotMock(MockTransport):
             )
         self.torque = False
         self.in_hand = True
-        return HandResult("released", "torque is off at the rest pose", joints=dict(self.joints))
+        self.let_go_why = LET_GO_WHERE_IT_STOOD if anywhere else None
+        where = "at the rest pose" if resting else "where the arm stands"
+        return HandResult(
+            "released", f"torque is off {where}", joints=dict(self.joints), torque_on=()
+        )
 
     async def take_hold(self) -> HandResult:
         """Hold wherever a test left the joints, and record the goal that pins them there."""
@@ -366,15 +383,15 @@ class LeRobotMock(MockTransport):
         recorded = rest_goal(self.rest_pose or {})
         goal = self.rest_reachable
         if self.in_hand:
-            self.close_note = LIMP_IN_HAND.format(
-                why="it was let go of for you to place and never taken hold of again"
-            )
+            self.close_note = LIMP_IN_HAND.format(why=self.let_go_why or LET_GO_TO_PLACE)
         elif self.rest_pose and not goal:
-            self.close_note = TORQUE_LEFT_ON.format(
-                why="the recorded pose names no joint this arm drives"
+            self.close_note = torque_left_on(
+                "the recorded pose names no joint this arm drives", self.registered_name
             )
         elif goal and not at_rest(goal, self.joints, recorded):
-            self.close_note = TORQUE_LEFT_ON.format(why=shortfall(goal, self.joints, recorded))
+            self.close_note = torque_left_on(
+                shortfall(goal, self.joints, recorded), self.registered_name
+            )
         else:
             self.torque = False
         await super().close()

@@ -73,13 +73,14 @@ from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     JOINTS,
+    LET_GO_TO_PLACE,
+    LET_GO_WHERE_IT_STOOD,
     LIMP_IN_HAND,
     STALL_DEG,
     STALL_TICKS,
     TICK_S,
     TOL_DEG,
     TORQUE_COULD_NOT_BE_KEPT,
-    TORQUE_LEFT_ON,
     Clip,
     at_rest,
     past_reach,
@@ -88,6 +89,7 @@ from quackd_lerobot.verbs import (
     rest_clip_note,
     rest_goal,
     shortfall,
+    torque_left_on,
     worth_saying,
 )
 
@@ -480,12 +482,18 @@ class LeRobotReal:
         camera_objects: Mapping[str, Any] | None = None,
         rest_pose: dict[str, float] | None = None,
         clock: Clock | None = None,
+        registered_name: str | None = None,
     ) -> None:
         self.port = address or ""
         self.clock: Clock = clock if clock is not None else WallClock()
         """Whose time `now()`, `sleep()` and every paced wait in here run on (`Clock`)."""
         self.robot_type = robot_type
         self.robot_id = robot_id
+        self.registered_name = registered_name
+        """The name a person registered this arm under, when whoever built it said so, for the
+        commands the close note gives them (`verbs.torque_left_on`). Kept apart from
+        `robot_id`, which always has a value because LeRobot needs one to find a calibration,
+        and whose default is not a name anybody necessarily registered."""
         self.timeout_s = timeout_s
         self.max_step_deg = max_step_deg
         self._robot: Any = robot  # injected in tests; built in connect() otherwise
@@ -529,6 +537,11 @@ class LeRobotReal:
 
         Kept apart from `_register_error`, which is either register, because `take_hold()` has
         to know whether *torque* is unknown rather than whether anything is."""
+        self._torque_on: tuple[str, ...] = ()
+        """The motors whose `Torque_Enable` read 1 in the last torque read that answered, in
+        the bus's order. `_torque` is whether all of them did, which is the question a hold
+        asks; a release asks the other one, whether any still does, because a motor that kept
+        its torque is a joint still holding in the hands of somebody told it is limp."""
         self._gripper_goal: float | None = None
         self._gripper_trace: deque[tuple[float, float]] = deque(maxlen=16)
         self._policy_lock = asyncio.Lock()
@@ -548,6 +561,10 @@ class LeRobotReal:
         Set only by a release that was read back off the arm, cleared only by a `take_hold()`
         that confirmed torque came on. Every teardown begins with `stop`, which is what picks
         the arm back up, so the window this is true in is the wait itself."""
+        self._let_go_why: str | None = None
+        """What the close says the arm was let go of for, when the last release said: set by
+        the second door (`verbs.LET_GO_WHERE_IT_STOOD`), cleared by the first, which leaves the
+        close to say where the arm is against its pose."""
 
     def _primary_name(self) -> str:
         """The first `--camera-url`'s camera: the one the detections describe, the one
@@ -953,9 +970,7 @@ class LeRobotReal:
         if self._in_hand:
             # Whoever is reading this has the arm in their hand. The torque note below would
             # tell them it is holding itself up, which is the one thing it may not be.
-            self.close_note = LIMP_IN_HAND.format(
-                why=why or "it was let go of for you to place and never taken hold of again"
-            )
+            self.close_note = LIMP_IN_HAND.format(why=self._let_go_why or why or LET_GO_TO_PLACE)
             with contextlib.suppress(Exception):
                 # Keep torque, and keep it without knowing whether there is any to keep. This
                 # branch is reached in two states: an arm that is genuinely limp, where the
@@ -967,7 +982,7 @@ class LeRobotReal:
                 await self._call(self._robot.disconnect, deadline_s=5.0)
             return
         if why is not None:
-            self.close_note = TORQUE_LEFT_ON.format(why=why)
+            self.close_note = torque_left_on(why, self.registered_name)
         wrote = False
         with contextlib.suppress(Exception):
             # up.SO_DISCONNECT_READS_ITS_CONFIG_LATE: the flag is read off the config instance
@@ -1048,6 +1063,7 @@ class LeRobotReal:
         self._torque_error = errors.torque
         if torque:
             self._torque = all(int(v) == 1 for v in torque.values())
+            self._torque_on = tuple(str(k) for k, v in torque.items() if int(v) == 1)
         if temperature:
             self._temperature_c = {str(k): float(v) for k, v in temperature.items()}
         return obs
@@ -1411,23 +1427,39 @@ class LeRobotReal:
 
     # ── handing the arm to a person ─────────────────────────────────────────────────
 
-    async def let_go(self) -> HandResult:
+    async def let_go(self, *, anywhere: bool = False) -> HandResult:
         """Take torque off, so somebody can pick the arm up and place it. Never raises.
 
         This is the only call in quackd that de-energises a robot, and it is deliberately the
-        narrowest one that could do the job. It refuses anywhere but the recorded rest pose,
-        which is the same condition `close()` uses to decide whether letting go is safe: a
-        pose the arm demonstrably holds with no torque on it. Releasing an arm held up by
-        torque alone would drop it, and the person asking for this has their hands nowhere
-        near it yet.
+        narrowest one that could do the job. By default it refuses anywhere but the recorded
+        rest pose, which is the same condition `close()` uses to decide whether letting go is
+        safe: a pose the arm demonstrably holds with no torque on it. Releasing an arm held up
+        by torque alone would drop it, and the person asking for this with `--by-hand` has
+        their hands nowhere near it yet.
 
-        A register read that failed after the release is treated as a release that took. The
-        alternative reading, that torque is still on, ends with `close()` printing that the
-        arm is holding itself up over an arm hanging limp in somebody's hand, and of the two
-        wrong answers that is the one that gets an arm dropped."""
+        `anywhere` is the second door, and a person opens it, never a verb or a model: `quackd
+        robot release` and the offer a run makes when its rest move missed, both at a terminal,
+        both after telling the person to hold the arm, which is the whole difference. It skips
+        the two refusals about the pose, the arm being away from it and there being none
+        recorded, and releases wherever the arm stands. Everything else is the same call: the
+        joints are read first, the release is read back, and the arm is in somebody's hands
+        afterwards. It exists because the power switch was the only other way to take torque
+        off an arm left holding itself up, and on the bench of 2026-09-23 that was how every
+        run that got to its end finished.
+
+        Nothing is said to be released that was not sent. A read that fails *before* the
+        release refuses, because nothing has changed on the arm and a person told it is theirs
+        would be holding an arm that is still holding itself. From the moment the release is
+        sent the answer is `released`, whatever comes after, and the arm is taken to be in
+        somebody's hands: a release call that never came back, a read that failed, a torque
+        register that said nothing. The alternative reading, that torque is still on, ends
+        with `close()` printing that the arm is holding itself up over an arm hanging limp in
+        somebody's hand, and of the two wrong answers that is the one that gets an arm
+        dropped. `torque_on` on the result says which of those it was, so the command that
+        asked can tell the person "torque reads off" only when every motor said so."""
         if self._closed:
             return HandResult("refused", "the arm's transport is closed")
-        if self.rest_pose is None:
+        if not anywhere and self.rest_pose is None:
             return HandResult(
                 "refused",
                 "no rest pose is recorded for this arm, so there is nowhere it is known to be "
@@ -1436,44 +1468,92 @@ class LeRobotReal:
         # the reachable pose and the half-line rule, as `close()` judges it: an arm folded past
         # its travel is at its rest pose, and refusing it here would refuse `--by-hand` the one
         # arm whose fold is the most certainly safe place to let go of it
-        recorded = rest_goal(self.rest_pose)
+        recorded = rest_goal(self.rest_pose or {})
         goal = self.rest_reachable
-        if not goal:
+        if not anywhere and not goal:
             return HandResult("refused", "the recorded pose names no joint this arm drives")
         try:
             await self._cancel_policy()
             await self._probe()
-            if not at_rest(goal, self._joints, recorded):
-                return HandResult(
-                    "refused",
-                    "the arm is not at its rest pose "
-                    f"({shortfall(goal, self._joints, recorded)}), and "
-                    "an arm held up by torque alone falls when torque goes",
-                )
+        except Exception as e:
+            return HandResult(
+                "refused",
+                "the arm did not answer before the release, so nothing was released "
+                f"({self.stop_error or f'{type(e).__name__}: {e}'})",
+            )
+        resting = bool(goal) and at_rest(goal, self._joints, recorded)
+        if not anywhere and not resting:
+            return HandResult(
+                "refused",
+                "the arm is not at its rest pose "
+                f"({shortfall(goal, self._joints, recorded)}), and "
+                "an arm held up by torque alone falls when torque goes",
+            )
+        where = "at the rest pose" if resting else "where the arm stands"
+        before = dict(self._joints)
+        self._let_go_why = LET_GO_WHERE_IT_STOOD if anywhere else None
+        try:
             # up.BUS_DISABLE_TORQUE, with the retries upstream's own disconnect gives the same
             # writes: without them one lost packet releases the motors before it and not the
             # ones after, and the person is told the arm is theirs while part of it still holds
             await self._call(
                 functools.partial(self._robot.bus.disable_torque, num_retry=TORQUE_RETRIES)
             )
-            # Believed the moment the call returns, and before anything is read back. The
-            # confirming probe can fail on its own, and treating that as "no release happened"
-            # is the reading that ends with `close()` telling somebody holding a limp arm that
-            # it is holding itself up. Everything after this point may only downgrade the
-            # reason, never the fact.
+        except Exception as e:
+            # The writes go out one motor at a time, so a call that raised may have released
+            # the motors before the one it failed on and none after. Some joints are limp and
+            # some hold, and which is unknown: the person is told to treat it as limp, and
+            # `close()` and the next `stop` treat it the same way.
             self._in_hand = True
+            return HandResult(
+                "released",
+                f"torque was being taken off {where} and the call did not come back "
+                f"({self.stop_error or f'{type(e).__name__}: {e}'}), so some joints may be "
+                "limp and some may still hold: hold the arm as though nothing holds it",
+                joints=before,
+            )
+        # Believed the moment the call returns, and before anything is read back. The
+        # confirming probe can fail on its own, and treating that as "no release happened" is
+        # the reading that ends with `close()` telling somebody holding a limp arm that it is
+        # holding itself up. Everything after this point may only downgrade the reason, never
+        # the fact.
+        self._in_hand = True
+        try:
             await self._probe()
         except Exception as e:
             return HandResult(
                 "released",
-                f"torque is off at the rest pose, and the arm then stopped answering "
+                f"torque is off {where}, and the arm then stopped answering "
                 f"({self.stop_error or f'{type(e).__name__}: {e}'})",
+                joints=before,
+            )
+        if self._torque_error is not None:
+            return HandResult(
+                "released",
+                f"torque is off {where}, and the torque register did not answer to confirm "
+                f"it ({self._torque_error})",
                 joints=dict(self._joints),
             )
-        if self._torque and self._torque_error is None:
+        if self._torque:
             self._in_hand = False  # nothing was released, so nothing is in anybody's hands
-            return HandResult("refused", "the arm still reports torque on, so it was not released")
-        return HandResult("released", "torque is off at the rest pose", joints=dict(self._joints))
+            return HandResult(
+                "refused",
+                "the arm still reports torque on, so it was not released",
+                joints=dict(self._joints),
+                torque_on=self._torque_on,
+            )
+        if self._torque_on:
+            # some motors took the release and some did not: limp in part, so still in a hand
+            return HandResult(
+                "released",
+                f"torque is off {where} except on {', '.join(self._torque_on)}, which still "
+                "read on",
+                joints=dict(self._joints),
+                torque_on=self._torque_on,
+            )
+        return HandResult(
+            "released", f"torque is off {where}", joints=dict(self._joints), torque_on=()
+        )
 
     async def take_hold(self) -> HandResult:
         """Hold the pose the arm is in right now, so the person can let go of it.

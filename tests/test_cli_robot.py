@@ -96,6 +96,7 @@ def test_an_empty_registry_says_how_to_fill_it(tmp_path: Path) -> None:
         (["robot", "edit", "ghost", "--note", "x"], "no robot called 'ghost'"),
         (["robot", "remove", "ghost", "--yes"], "no robot called 'ghost'"),
         (["robot", "rest-pose", "ghost", "--yes"], "no robot called 'ghost'"),
+        (["robot", "release", "ghost", "--yes"], "no robot called 'ghost'"),
     ],
 )
 def test_a_refusal_is_one_line_and_never_a_traceback(
@@ -678,7 +679,9 @@ def test_an_unknown_bare_name_names_both_things_it_could_have_been(tmp_path: Pat
     assert "unknown adapter 'ghost'" in result.output, "the adapter's own words still show"
 
 
-@pytest.mark.parametrize("command", ["add", "list", "show", "edit", "remove", "rest-pose"])
+@pytest.mark.parametrize(
+    "command", ["add", "list", "show", "edit", "remove", "rest-pose", "release"]
+)
 def test_every_robot_command_answers_help(command: str) -> None:
     result = runner.invoke(app, ["robot", command, "--help"])
     assert result.exit_code == 0, result.output

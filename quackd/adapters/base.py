@@ -100,22 +100,38 @@ class HandResult:
     reason: str
     joints: dict[str, float] = field(default_factory=dict)
     """Where the arm was when this finished. Empty for a refusal that never read it."""
+    torque_on: tuple[str, ...] | None = None
+    """The joints whose torque register read on straight after a release, in the bus's order:
+    empty when every one read off, and None when nothing was read back at all, which is every
+    result but a release that got as far as the read.
+
+    A person holding an arm is owed which of those three it was, and `how` cannot say it: a
+    release whose read-back failed is still `released`, on purpose (`let_go`), and a release
+    that some motors ignored is limp in part and energised in part. `quackd robot release`
+    prints "torque reads off" only for the empty tuple."""
 
     @property
     def ok(self) -> bool:
         return self.how in ("released", "held")
 
 
-async def let_go_if_any(transport: Any) -> HandResult:
+async def let_go_if_any(transport: Any, **kw: Any) -> HandResult:
     """Release the body into a person's hands, on anything that can be handed over.
 
     Duck-typed like `go_to_rest_if_any`, and for the same reason: one body out of seven does
-    this, and the other six should not have to carry a method to say so."""
+    this, and the other six should not have to carry a method to say so.
+
+    `kw` goes to the body's own `let_go` untouched, and the one keyword the arm takes is
+    `anywhere`: True skips the rule that it is released only at its rest pose, for the two
+    callers a person drives from a terminal, `quackd robot release` and the offer at the end
+    of a run whose rest move missed. Nothing passes it without a person at the arm. The
+    keywords are passed only when given, so a body whose `let_go` takes none is called exactly
+    as it always was."""
     hand = getattr(transport, "let_go", None)
     if not callable(hand):
         return HandResult("refused", "this body is not handed to a person")
     try:
-        return await hand()
+        return await hand(**kw)
     except Exception as e:
         return HandResult("refused", f"{type(e).__name__}: {e}")
 

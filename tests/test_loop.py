@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from quackd.adapters.base import AdapterError
+from quackd.adapters.base import AdapterError, RestResult
 from quackd.agent.images import load_task_images
 from quackd.agent.loop import AgentLoop, RunConfig, run_duck
 from quackd.agent.providers import pricing
@@ -2936,6 +2936,214 @@ async def test_a_terminal_that_goes_away_mid_wait_ends_the_run_instead_of_hangin
     assert "nobody placed the arm" in result.reason
     assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
     assert mock.torque is False and mock.close_note is None, "and it is down and let go of"
+
+
+# ── the offer at the end of a run whose rest move missed ────────────────────────────────
+#
+# A run that cannot fold its arm keeps torque on, so the arm stands holding itself up at
+# whatever pose the rest move stopped in. On 2026-09-23 that was every run that got to its end,
+# and each one finished at the power switch. So a person at the terminal (`RunConfig.person`,
+# which the CLI wires and nothing else does) is told to hold the arm and offered torque off:
+# Enter releases it where it stands, and anything else leaves it exactly as before. The mock's
+# `rest_fails` is the miss, in reasons made up for these tests.
+
+MISSES = [
+    "shoulder_lift is at -12 with a goal of -40, and it has stopped moving",
+    "elbow_flex is at 61 with a goal of 20 when the time ran out (4 s)",
+]
+
+
+def _missing_run(mock: LeRobotMock, runs: Path, **extra: Any) -> RunConfig:
+    """The arm task on a mock arm, with a pilot that would declare success if it were ever
+    asked. A mock told to fail its rest move fails the first one too, so these runs end before
+    the pilot, and the offer is the teardown's."""
+    declare = ToolCall(name="declare_success", arguments={"reason": "up"})
+    return RunConfig(
+        duck=_arm_duck(),
+        provider=FakeProvider(script=[declare]),
+        transport=LeRobotAdapter(mock),
+        runs_dir=runs,
+        **extra,
+    )
+
+
+def _offered(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in events if e["kind"] == "release"]
+
+
+def _offer(why: str) -> str:
+    return AgentLoop.RELEASE_OFFER.format(why=why, seconds=AgentLoop.RELEASE_OFFER_S)
+
+
+@pytest.mark.parametrize("why", MISSES)
+async def test_enter_at_the_offer_releases_the_arm_and_the_close_says_it_is_in_a_hand(
+    tmp_path: Path, why: str
+) -> None:
+    """The ending the bench did not have. The rest move missed, so the close was going to keep
+    torque on and tell somebody to cut the power; instead they are told to hold the arm, press
+    Enter, and the arm is released where it stands through the transport's second door. The
+    close then says the arm is limp in their hands, which is the line that keeps it from being
+    dropped: put it down before you let go of it.
+
+    The offer names why the move missed, is bounded, and waits on a fresh key press rather than
+    the abort flag, which is already set on every run a person ended."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=why)
+    person = ScriptedPerson(mock, answers=[True])
+    person.asks_a_person = True
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+    assert result.outcome == "aborted", result.reason
+
+    assert person.asked == [(_offer(why), AgentLoop.RELEASE_OFFER_S, False)]
+    assert why in person.asked[0][0] and "Hold it and press Enter" in person.asked[0][0]
+    assert person.said == [
+        "torque is off where the arm stands: the arm is in your hands, so put it down before "
+        "you let go of it"
+    ], "told to the person, whatever the log is doing"
+    assert mock.sequence == ["rest", "stop", "rest", "let_go", "close"], mock.sequence
+    assert mock.torque is False and mock.in_hand is True
+    note = mock.close_note or ""
+    assert "the arm is limp and in your hands" in note and "put it down" in note, note
+    assert "torque was left on" not in note
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    offered = _offered(events)
+    assert [(e["stage"], e["how"]) for e in offered] == [("released", "released")], offered
+    assert offered[0]["torque_on"] == [], "every motor read off, and the record says so"
+    assert _prompts(events) == [("release", _offer(why), True)]
+    assert note in [e["text"] for e in events if e["kind"] == "note"]
+    assert events[-1]["kind"] == "run_end"
+
+
+async def test_an_offer_nobody_answers_leaves_torque_on_exactly_as_before(tmp_path: Path) -> None:
+    """The wait ran out, or there was no key to read: the arm is left as a run without the
+    offer leaves it, holding itself up with the torque note said, and the record says the
+    offer was made and why nothing came of it."""
+    why = MISSES[0]
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=why)
+    person = ScriptedPerson(mock, answers=[False])
+    person.asks_a_person = True
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    assert person.waits == 1
+    assert "let_go" not in mock.sequence and mock.torque is True and mock.in_hand is False
+    assert (mock.close_note or "").startswith("the arm is not at its rest pose"), mock.close_note
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [(e["stage"], e["reason"]) for e in _offered(events)] == [
+        ("kept", "nobody pressed Enter")
+    ]
+    assert _prompts(events) == [("release", _offer(why), False)]
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert "nobody pressed Enter, so torque stays on and the arm holds itself up" in notes
+
+
+@pytest.mark.parametrize("press", [KeyboardInterrupt, asyncio.CancelledError])
+async def test_a_ctrl_c_on_the_offer_keeps_torque_and_the_record_still_ends(
+    tmp_path: Path, press: type[BaseException]
+) -> None:
+    """A second Ctrl-C lands on this wait on exactly the runs a person ended, and it means
+    "skip this and finish", as it does on the hand-back. Raised through, it would skip the
+    close, `run_end` and the summary with the arm energised; caught, the arm keeps its torque
+    and says so, and the record ends."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[1])
+
+    def interrupt(_person: ScriptedPerson) -> None:
+        raise press
+
+    person = ScriptedPerson(mock, answers=[True], on_wait=interrupt)
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    assert "let_go" not in mock.sequence and mock.torque is True
+    assert mock.sequence[-1] == "close", "the close still ran"
+    assert (mock.close_note or "").startswith("the arm is not at its rest pose")
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [(e["stage"], e["reason"]) for e in _offered(events)] == [
+        ("kept", "interrupted while waiting")
+    ]
+    assert events[-1]["kind"] == "run_end", "the record still ends"
+    assert (result.run_dir / "summary.json").exists()
+
+
+async def test_no_offer_is_made_without_a_person_or_to_the_by_hand_asker(tmp_path: Path) -> None:
+    """Nobody at a terminal: an MCP session, a flock member, a test, a piped run. The arm keeps
+    torque as it always has, and nothing waits. And `hand_off` is not a person for this: the
+    loop reads it as "this run was handed over", so the offer asks `person` and nothing else."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+    result = await run_duck(_missing_run(mock, tmp_path / "nobody"))
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert not _offered(events) and "let_go" not in mock.sequence
+    assert mock.torque is True
+
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[1])
+    hand = ScriptedPerson(mock, answers=[True])
+    result = await run_duck(_by_hand(mock, hand, tmp_path / "by-hand"))
+    assert hand.asked == [], "the by-hand asker was put a question it was never given"
+    assert not _offered(Transcript.read(result.run_dir / "transcript.jsonl"))
+    assert "let_go" not in mock.sequence and mock.torque is True
+
+
+async def test_no_offer_is_made_on_a_dry_run_or_after_a_rest_move_that_arrived(
+    tmp_path: Path,
+) -> None:
+    """A dry run moves nothing at either end, so it has no rest move to miss and must never
+    take torque off anything. A run that folded its arm lets go at the fold anyway, and asking
+    would be asking a person to act on an arm that needs nothing."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+    person = ScriptedPerson(mock, answers=[True])
+    await run_duck(_missing_run(mock, tmp_path / "dry", person=person, dry_run=True))
+    assert person.asked == [] and "let_go" not in mock.sequence and "rest" not in mock.sequence
+    # and the offer holds the line itself, not only because a dry run's rest move never ran:
+    # handed a miss on a dry run, it still asks nobody and releases nothing
+    dry = AgentLoop(_missing_run(mock, tmp_path / "dry-offer", person=person, dry_run=True))
+    await dry._offer_release(RestResult("stalled", MISSES[1]))
+    dry.transcript.close()
+    assert person.asked == [] and "let_go" not in mock.sequence
+
+    mock = LeRobotMock(rest_pose=ARM_REST)
+    person = ScriptedPerson(mock, answers=[True])
+    result = await run_duck(_missing_run(mock, tmp_path / "folded", person=person))
+    assert result.outcome == "success", result.reason
+    assert person.asked == [] and "let_go" not in mock.sequence
+    assert mock.torque is False and mock.close_note is None, "folded and let go, as always"
+
+
+async def test_a_by_hand_run_is_asked_its_two_questions_and_the_offer_only_after_a_missed_fold(
+    tmp_path: Path,
+) -> None:
+    """The CLI hands the same terminal to `hand_off` and to `person`, so a by-hand run reads
+    Enter through one reader. Its two questions keep their order and their meaning, and the
+    offer is a third only when the fold after them missed. A run that folds is asked twice."""
+
+    def both(mock: LeRobotMock, person: ScriptedPerson, runs: Path) -> RunConfig:
+        cfg = _by_hand(mock, person, runs)
+        cfg.person = person  # the one terminal, as the CLI wires it
+        return cfg
+
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED, answers=[True, False])
+    folded = await run_duck(both(mock, person, tmp_path / "folds"))
+    assert folded.outcome == "success", folded.reason
+    assert [ask[0] for ask in person.asked] == [AgentLoop.PLACE_IT, AgentLoop.HAND_IT_BACK]
+    assert not _offered(Transcript.read(folded.run_dir / "transcript.jsonl"))
+
+    why = MISSES[1]
+    mock = LeRobotMock(rest_pose=REST)
+
+    def the_fold_misses(asked: ScriptedPerson) -> None:
+        if asked.waits == 2:  # the hand-back: the run is over, and the fold comes next
+            mock.rest_fails = why
+
+    person = ScriptedPerson(mock, places=PLACED, answers=[True], on_wait=the_fold_misses)
+    missed = await run_duck(both(mock, person, tmp_path / "misses"))
+    assert [ask[0] for ask in person.asked] == [
+        AgentLoop.PLACE_IT,
+        AgentLoop.HAND_IT_BACK,
+        _offer(why),
+    ]
+    events = Transcript.read(missed.run_dir / "transcript.jsonl")
+    assert _stages(events) == ["released", "held", "unloaded"], "the hand-off is unchanged"
+    assert [e["stage"] for e in _offered(events)] == ["released"]
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "let_go", "close"]
+    assert mock.in_hand is True
 
 
 # ── what a person was asked, and whether anybody was asked at all ───────────────────────

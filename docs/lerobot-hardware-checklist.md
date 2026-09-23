@@ -188,14 +188,18 @@ clear and the switch from step 3 has to be fitted and within reach before you st
 
    ```
    the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the
-   arm and cut its power, or run again
+   arm and run quackd robot release arm-01, or run quackd doctor --robot arm-01 to park it, or
+   cut its power
    ```
 
    > [!WARNING]
    > That is a change in behaviour and it is the one to read twice. A probe or a dry run on an
    > arm away from its recorded rest pose now leaves torque **on** where it used to drop it.
-   > The arm will not fall, and it will also not let go until you hold it and cut its power, or
-   > until a run puts it back.
+   > The arm will not fall, and it will also not let go until you hold it and run
+   > `quackd robot release arm-01`, until a run or `doctor` puts it back, or until you cut its
+   > power. A run at a terminal whose rest move missed asks you first: hold the arm and press
+   > Enter.
+
 
    The `rest pose` row in `doctor` says which of four things happened:
 

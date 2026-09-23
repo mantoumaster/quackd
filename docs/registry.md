@@ -36,6 +36,7 @@ quackd robot list [--probe]                   # what is registered, and optional
 quackd robot show NAME                        # everything about one, including what it remembers
 quackd robot edit NAME [--field X] [--clear F] # change it
 quackd robot rest-pose NAME [--clear]         # read where this arm rests, off the arm
+quackd robot release NAME [--yes]             # hold the arm: torque off, wherever it stands
 quackd robot remove NAME [--force]            # forget it
 ```
 
@@ -213,6 +214,52 @@ is calibrated again.
 > joint taken all the way into the fold before you record one
 > ([lerobot-first-run.md](lerobot-first-run.md#07-record-the-rest-pose)). Every joint value on
 > this page is a mock's.
+
+### Releasing the arm where it stands
+
+An arm that could not get back to its rest pose keeps its torque at the end of a run, holding
+itself up rather than falling, and the line the run ends on says so. `quackd robot release`
+is how a person holding that arm takes the torque off without reaching for the power switch:
+
+```
+$ quackd robot release arm --yes
+! connecting takes torque off every motor for a moment, because LeRobot
+configures them with it off, and the release then lets the arm fall from
+wherever it is: hold it now, and keep hold of it until it is down
+arm (lerobot:mock) is at
+shoulder_pan   0.0
+shoulder_lift  -90.0
+elbow_flex     90.0
+wrist_flex     0.0
+wrist_roll     0.0
+gripper        100.0
++ torque reads off on every joint of arm
+! the arm is limp and in your hands (torque was taken off where it stood,
+because you asked for it): put it down before you let go of it, because nothing
+is holding it up
+```
+
+The warning comes before anything connects, because connecting is the first thing that takes a
+real arm's torque off. Without `--yes` the question comes next, `release torque on arm? [y/N]`,
+and nothing connects until it is answered. With no terminal and no `--yes` it refuses rather
+than guessing, and a body that is never handed to a person refuses by name:
+
+```
+$ quackd robot release arm
+x error: no terminal to ask on: pass --yes to release it
+  hold the arm, then quackd robot release arm --yes
+
+$ quackd robot release duck --yes
+x error: duck (microduck:mock) is not a body quackd takes torque off: only the
+LeRobot arm is
+  quackd list-adapters
+```
+
+It uses the registered rest pose and no camera, and it exits 1 unless every motor read torque
+off afterwards. Those joints are the mock arm's, and its connect takes nothing off, so on the
+mock the warning is only printed. What each other ending means, and the same offer a run makes
+at its own terminal when its rest move missed, is
+[adapters/lerobot.md](adapters/lerobot.md#releasing-it-where-it-stands).
 
 ## Probing
 
