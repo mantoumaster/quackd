@@ -217,7 +217,7 @@ quackd run --goal "Wave to the camera with an extended arm" --robot lerobot:real
 
 No task file, no registered name, no rest pose. `--goal` writes a contract on the spot: the arm's own five verbs allowed, `gripper`, `move_joints`, `place`, `report_state` and `stop`, plus the four the loop always offers, `assess_task`, `declare_success`, `declare_failure` and `remember`. Exactly one of them per turn, and anything else refused. It was the last of twelve runs that afternoon, so the memory quackd keeps per robot handed it five notes and how the last five of the eleven before it had ended, which is the whole of what it carries.
 
-**What the model was told.** About a third of the system prompt, cut where marked, with the two lines that were wrong left in:
+**What the model was told.** About a third of the system prompt as it read that day, cut where marked, with the two lines that were wrong left in:
 
 ```text
 You are the brain of a six-joint desktop robot arm with a parallel gripper (an SO-101 class
@@ -310,6 +310,8 @@ strategy is already recorded in memory.
 </p>
 
 **The honest half.** Each frame was between 5.6 and 12.5 seconds old at the moment the model was handed it, about eight on average, and older still by the time the move it prompted had finished, so the model was always looking at where the arm had been. The colour detector that turns a frame into a line of text reported a ball that was not there on every step, called a small blue figurine on a shelf a person about 8.5 metres away on eight of the ten, and never once saw the actual people in the room. The model ignored all of it, and used the picture for exactly one thing: noticing that the raised arm ran off the top of the frame, and saying so rather than claiming a wave it could not see. It asked for `elbow_flex` 25° and the arm settled at 30°, and it reported the 30. The arm fell when the run ended, because this was before the rest pose existed. And reading this transcript to write this section turned up two bugs, both fixed alongside it: the prompt said `Budgets: 40 steps` while the command and every observation said ten, because it was built from the task file's own contract rather than from the one the run was enforcing, and the strategy paragraph told this arm to look with `observe` or `search_scan` and to prefer `go_to`, three verbs it does not have and the allowlist at the top of the same prompt did not list. The model worked around the second one by looking with `report_state`, which is not a thing to rely on.
+
+One more line of that prompt reads differently now, for a reason a later day on the bench found. `Not published: mass, reach. Decline any task that hinges on any of them.` forbids an arm whose reach nobody published to reach for anything, and on 2026-09-23 it was one of the lines a run with a pen ended on. The line now tells the pilot to answer uncertain and name the figure rather than decline, and the arm's sheet publishes a reach of 0.4 m, an estimate summed from the link lengths in the maker's URDF ([docs/adapters/lerobot.md](docs/adapters/lerobot.md)).
 
 <br>
 

@@ -88,9 +88,31 @@ def test_the_datasheet_declines_to_guess_a_mass() -> None:
     A figure nobody published is listed as not published, which is the whole rule."""
     sheet = lerobot_manifest("mock").datasheet
     assert sheet is not None and sheet.mass_kg is None
-    assert "mass" in sheet.unknown() and "reach" in sheet.unknown()
+    assert "mass" in sheet.unknown()
     assert sheet.payload_kg is not None and sheet.payload_kg.value == 0.5
     assert any("0.8 to 2.5 kg" in note for note in sheet.notes)
+
+
+def test_the_reach_is_read_off_the_makers_urdf_and_says_so() -> None:
+    """Nobody publishes a reach for the SO-101, and the sheet said so, which told the pilot to
+    decline whatever turned on reaching: every task an arm has. The maker's URDF gives every
+    link, so the reach is quackd's arithmetic on the maker's file, and it is labelled as that:
+    an estimate, the file named, what was summed in the note. The cannot line that used to say
+    "the reach is not published" states the figure itself, so the two cannot disagree.
+
+    The payload line used to forbid "nothing whose weight is not known", which is nearly every
+    object a task names. It keeps the limit and gives the pilot something to judge by."""
+    sheet = lerobot_manifest("mock").datasheet
+    assert sheet is not None and "reach" not in sheet.unknown()
+    reach = sheet.reach_m
+    assert reach is not None and reach.confidence == "estimate"
+    assert "TheRobotStudio/SO-ARM100" in reach.source and "so101_new_calib.urdf" in reach.source
+    assert "gripper frame" in reach.note and "rounded down" in reach.note
+    lines = [line for line in sheet.cannot if line.startswith("reach ")]
+    assert len(lines) == 1 and f"{reach.value:g} m" in lines[0]
+    assert not any("not published" in line or "not known" in line for line in sheet.cannot)
+    payload = next(line for line in sheet.cannot if line.startswith("lift or hold"))
+    assert "half a kilogram" in payload and "a pen" in payload
 
 
 def test_registry_from_the_manifest_has_joints_not_legs() -> None:

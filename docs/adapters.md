@@ -221,9 +221,10 @@ lives. The rules, enforced by the model itself ([manifest-spec.md](manifest-spec
   moves: what it weighs, carries and reaches, what it holds with, what it is rated for and
   what it cannot do whatever the task says. Every figure carries a confidence and a source,
   and a figure the maker never published is left out rather than guessed at, because the
-  prompt renders an absent one as "not published" and tells the pilot to decline whatever
-  hinges on it ([manifest-spec.md](manifest-spec.md#the-datasheet)). The same sheet describes
-  the body on every backend, which is part of why `digest()` matches across them.
+  prompt renders an absent one as "not published" and tells the pilot to answer `uncertain`
+  where a task turns on it ([manifest-spec.md](manifest-spec.md#the-datasheet)). The same
+  sheet describes the body on every backend, which is part of why `digest()` matches across
+  them.
 - **`digest()`** is the capability fingerprint discovery advertises; it ignores `id` and
   `backend`, so the same robot over `sim2d` and `mock` hashes the same.
 

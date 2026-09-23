@@ -151,7 +151,7 @@ And what it cannot do whatever the task says, which is the half a refusal usuall
 - climb or descend a step
 - hold a heading for long without a landmark: the IMU has no magnetometer, so heading drifts
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](duck-spec.md)).
 
 ### What we do not touch
 

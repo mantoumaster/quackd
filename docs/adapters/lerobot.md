@@ -251,19 +251,25 @@ Its datasheet, which the pilot is shown and told to judge a task against before 
 | Height | 0.53 m (estimate: one vendor's listing; reaching straight up) |
 | Actuated joints | 6 (official: the LeRobot SO-101 docs; five joints and a gripper) |
 | Payload | 0.5 kg (estimate: one vendor's listing) |
-| Not published | mass, reach |
+| Reach | 0.4 m (estimate: the maker's URDF, TheRobotStudio/SO-ARM100 Simulation/SO101/so101_new_calib.urdf; link lengths from the shoulder to the gripper frame, summed with the arm straight and rounded down) |
+| Not published | mass |
 
 And what it cannot do whatever the task says, which is the half a refusal usually turns on, in the words the pilot is shown:
 
 - go anywhere: it is bolted to a table and has no base
-- lift or hold more than about half a kilogram, and nothing whose weight is not known
-- reach anything that is not already within arm's length of its base: the reach is not
-  published
+- lift or hold more than about half a kilogram: a pen, an empty cup or a wooden block weighs
+  far less than that, and a full bottle or a tool may weigh more
+- reach anything more than about 0.4 m from its shoulder: that is the arm held straight out,
+  and any bent pose reaches less
 - feel what it holds: nothing reports grip force, so holding is inferred from the gripper
   stopping short of shut, which an empty hand that binds also does
 - know its own mass: vendor listings disagree by a factor of three
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
+**Where the reach comes from.** Nobody publishes a reach for the SO-101, and until 2026-09-23 the sheet said so, which told the pilot to decline whatever turned on reaching: every task an arm has. The maker's URDF gives every link, so the figure is quackd's arithmetic on the maker's file. From the `shoulder_lift` joint outwards the joint origins are 0.116 m to `elbow_flex`, 0.135 m to `wrist_flex`, 0.064 m to `wrist_roll` and 0.098 m to the gripper frame, 0.413 m in all, which is an upper bound because links only add up in full when they are in a line. A grid sweep of the elbow and both wrist joints through their URDF limits puts the farthest the gripper frame gets from the shoulder axis at about 0.41 m. The sheet says 0.4, as an estimate, and the adapter's source (`REACH` in `quackd_lerobot/__init__.py`) keeps the four vectors so anyone can check them. It is measured from the shoulder joint rather than the base, and to the gripper frame rather than the fingertips.
+
+**What the pilot is told about a pen.** The payload line used to end "and nothing whose weight is not known", which is nearly every object a task names: nobody tells the pilot what a pen weighs. It keeps the half kilogram, itself an estimate from one vendor's listing, and gives the pilot objects to judge by instead.
 
 ## Camera
 

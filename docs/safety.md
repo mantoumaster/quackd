@@ -145,6 +145,14 @@ as a `decide` prompt ([above](#who-the-record-says-was-asked)).
 A no ends the run `aborted` and exits 1, not `infeasible` and 3, because a person
 stopping a robot is the kill switch's kind of act rather than a statement about the body.
 
+A go is told to the pilot as a go: its doubt is recorded, a person read it and said go, the
+verbs that move the body now run, and it should not assess again on the same doubt, only on
+something new it sees. Before 2026-09-23 it heard only that motion now ran, which reads the same
+as its own `feasible`, and the prompt invites a pilot to assess again when it changes its mind.
+On the bench that day a pilot a person had just cleared assessed the same doubt again, as
+`infeasible`, and the run ended on a question somebody had already answered. Over MCP nobody
+sets that answer: the model asks you in the chat and records its own verdict again.
+
 **`--yes` answers that question with go**, the same way it answers a confirm gate, and
 `quackd record` always passes it. So a `--yes` in a script no longer only skips
 confirmations: it also clears the pilot's own doubt about whether the task suits the body.
@@ -160,12 +168,36 @@ nobody has ever published, and the duck walked until its step budget ran out.
 
 So a `feasible` is now held to the body's own datasheet before it is recorded, by the same
 function that holds another robot's bid at the coordinator. A need the sheet does not meet, or
-does not publish, is refused and named, with two exceptions that would otherwise refuse an
-honest answer: a minimum of zero asks for nothing, and an unpublished terrain meets
-`indoor_flat`, which is what the prompt tells such a body to assume about itself. and the pilot is told the three ways on: `infeasible`
+does not publish, is refused and named, and the pilot is told the three ways on: `infeasible`
 if that need decides the task, `uncertain` if a person could know the figure, or a corrected
 need if it asked for more than the task turns on. An `uncertain` and an `infeasible` are left
 alone, because one asks a person and the other ends the run anyway.
+
+There are four exceptions, each of which would otherwise refuse an honest answer, because the
+check and the words the pilot reads have to agree:
+
+- **A zero asks for nothing**, for every number, `work_height_m` included. The tool tells the
+  pilot to fill `needs` in even for a feasible verdict, and to give `0` for what the task does
+  not turn on.
+- **`none` asks for nothing**, for `mobility` and `manipulator`. It is how a pilot on an arm
+  bolted to a table says the task goes nowhere. `any` still means some kind, so the arm fails
+  `mobility: any`.
+- **An unpublished terrain meets `indoor_flat`** on a body that moves, because that is what
+  the prompt tells such a body to assume about itself.
+- **A body that does not move meets `indoor_flat`**, and anything above it is refused as
+  `(it does not move)`, which is the sentence its prompt carries instead of a terrain.
+
+A body with no datasheet at all gets neither floor: its prompt tells it to treat every
+physical limit as not published. And one reading is kinder to a pilot's own sheet than to a
+stranger's: a `work_height_m` against a sheet with no working height band is not held against
+the pilot's own verdict, because the prompt never lists a working height as missing, while the
+coordinator, a flock role and the list of bodies that could still refuse it.
+
+Until 2026-09-23 there were two, the zero stopped short of `work_height_m`, and the only
+floor was the one for a body that moves. On the bench that day the pilot of an SO-101, filling
+every field in as it was told, was refused by its own sheet for needs of exactly that kind on
+nearly every run, and each refusal became an `uncertain` and then the y/N question at the
+terminal.
 
 On the one model measured so far it turns a silent `feasible` into an `uncertain`, which is
 then the question above, so under `--yes` the check costs one LLM call and leaves the

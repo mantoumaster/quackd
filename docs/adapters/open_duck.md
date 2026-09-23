@@ -74,7 +74,7 @@ And what it cannot do whatever the task says, which is the half a refusal usuall
 - pick up, push or carry anything: there is no arm, no gripper and no beak
 - get back on its feet after a fall: there is no recovery policy, so a fall ends the run and needs a human
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The manifest
 

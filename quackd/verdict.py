@@ -8,9 +8,11 @@ refusal.
 
 `needs` is the one vocabulary three readers share: the tool schema the model fills in, the
 matcher that says which other body could, and a flock role that asks for a body that can
-carry. A number is a minimum, a word must match, and a figure the maker never published is
-not met: a robot that cannot say what it carries is not offered a task that carries something.
-`missing_needs_in` carries the two exceptions to that last rule and says why it has them.
+carry. A number is a minimum (a working height is a point inside a band), a word must match,
+and a figure the maker never published is not met: a robot that cannot say what it carries is
+not offered a task that carries something. `missing_needs_in` carries the four exceptions to
+that last rule, and the one place a pilot judging its own body is read more kindly than a
+coordinator judging a stranger's bid, and says why it has each of them.
 """
 
 from __future__ import annotations
@@ -72,8 +74,14 @@ shipped adapter offers was classified deliberately, in both directions."""
 TERRAIN_ORDER: tuple[Terrain, ...] = ("indoor_flat", "indoor", "outdoor")
 """Rated for more than the task asks is fine; rated for less is not."""
 
-MANIPULATOR_WORDS = (*(w for w in get_args(Manipulator) if w != "none"), "any")
-MOBILITY_WORDS = (*(w for w in get_args(Mobility) if w != "none"), "any")
+MANIPULATOR_WORDS = (*get_args(Manipulator), "any")
+MOBILITY_WORDS = (*get_args(Mobility), "any")
+"""`none` is a need too: "this task needs no locomotion" is what a pilot on an arm bolted to a
+table has to be able to say. The words used to leave it out, so the only other thing on offer
+was `any`, which means some kind and which a bolted arm fails, and nothing told the pilot that
+leaving the key out was the way to say it. On the 2026-09-23 bench runs an SO-101 pilot, told
+to fill `needs` in even for a feasible verdict, was refused by its own datasheet for needs it
+did not have, and the y/N question that followed is why nearly every run stopped there."""
 
 NEEDS_NUMBERS: tuple[str, ...] = (
     "payload_kg",
@@ -84,6 +92,33 @@ NEEDS_NUMBERS: tuple[str, ...] = (
 )
 """Minimums, in the datasheet's own field names. `work_height_m` is the odd one: it asks for a
 height the hands must be able to reach, which is a point inside `workspace_height_m`."""
+
+_NUMBER_TEXT: dict[str, str] = {
+    "payload_kg": "The heaviest thing the task has the body hold or carry, in kg: a minimum.",
+    "reach_m": "How far the task has the hands reach, in metres: a minimum.",
+    "endurance_min": "How long the task keeps the body running, in minutes: a minimum.",
+    "work_height_m": (
+        "A height above the floor the hands must reach, in metres. Not a minimum: it has to "
+        "fall inside the band the body works in. Leave it out, or give 0, when the task does "
+        "not turn on a height."
+    ),
+    "arms": "How many arms the task needs at once: a minimum.",
+}
+
+_WORD_TEXT: dict[str, str] = {
+    "mobility": (
+        "How the body must get about. none: the task needs no locomotion, so an arm on a table "
+        "is fine. legged or wheeled: that kind. any: some kind of locomotion, either one."
+    ),
+    "manipulator": (
+        "What the body must touch objects with. none: the task touches nothing. beak, gripper "
+        "or arms: that kind. any: something that touches objects, whichever kind."
+    ),
+    "terrain": (
+        "The floor the task is on, from least to most demanding: indoor_flat, indoor, outdoor. "
+        "A body rated for more meets it, and a body that does not move meets indoor_flat."
+    ),
+}
 
 NEEDS_WORDS: dict[str, tuple[str, ...]] = {
     "manipulator": MANIPULATOR_WORDS,
@@ -113,14 +148,19 @@ def check_needs(value: Mapping[str, Any]) -> dict[str, float | str]:
 
 
 def needs_properties() -> dict[str, dict[str, Any]]:
-    """The `needs` object's JSON schema, so the model is shown the vocabulary it must use."""
+    """The `needs` object's JSON schema, so the model is shown the vocabulary it must use.
+
+    Every field says what it means, because the words are only half of it. The enums went out
+    bare, so a pilot saw `legged, wheeled, any` and nothing saying that `any` excludes a body
+    that stays put, and `work_height_m` was described as "at least this much", which is the
+    one thing it is not: `missing_needs_in` reads it as a point inside a band. The text here
+    and the reader have to agree, or a pilot is refused for doing what it was told."""
     properties: dict[str, dict[str, Any]] = {
-        key: {"type": "number", "description": f"At least this much {key}."}
-        for key in NEEDS_NUMBERS
+        key: {"type": "number", "description": _NUMBER_TEXT[key]} for key in NEEDS_NUMBERS
     }
-    properties["arms"] = {"type": "integer", "description": "At least this many arms."}
+    properties["arms"] = {"type": "integer", "description": _NUMBER_TEXT["arms"]}
     for key, words in NEEDS_WORDS.items():
-        properties[key] = {"type": "string", "enum": list(words)}
+        properties[key] = {"type": "string", "enum": list(words), "description": _WORD_TEXT[key]}
     return properties
 
 
@@ -131,6 +171,17 @@ def needs_text(needs: Mapping[str, Any]) -> str:
 
 def _number(value: Any) -> str:
     return f"{value:g}" if isinstance(value, int | float) and not isinstance(value, bool) else value
+
+
+def _as_number(value: Any) -> float | None:
+    """A need's value as a number, or None for a null, a word or a bool.
+
+    `missing_needs_in` is handed a raw dict off the wire before anything validates it, so every
+    comparison goes through here: a value that is not a number is not a zero and not a height,
+    and it falls through to the refusal rather than raising out of the caller."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
 
 
 def _figure_value(facts: Mapping[str, Any], key: str) -> float | None:
@@ -144,38 +195,65 @@ def _figure_value(facts: Mapping[str, Any], key: str) -> float | None:
 
 
 def missing_needs_in(
-    needs: Mapping[str, Any], facts: Mapping[str, Any], mobility: str | None
+    needs: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    mobility: str | None,
+    *,
+    own_sheet: bool = False,
 ) -> list[str]:
     """One line per unmet need, sorted by key; empty means this body can be asked.
 
     `facts` is a datasheet dumped to a dict, which is what a flock bid carries, so a
     coordinator can judge a bid from a robot it does not run. A figure nobody published is
-    unmet rather than assumed, with two exceptions that would otherwise refuse an honest
-    answer: a minimum of zero asks for nothing, and an unpublished terrain meets
-    `indoor_flat`, because that is what the prompt tells such a body to assume about itself.
-    The reader and the prompt have to agree or a pilot is refused for doing as it was told."""
+    unmet rather than assumed. The reader and the text the pilot reads have to agree, or a
+    pilot is refused for doing as it was told, so there are four exceptions, each of which
+    would otherwise refuse an honest answer:
+
+    - A zero asks for nothing, for every number. The tool asks the pilot to fill `needs` in
+      even when the verdict is feasible and to give 0 for what the task does not turn on, so
+      `payload_kg: 0` is how a pilot says the task carries nothing. `work_height_m: 0` used to
+      be read as "the ground", which is below the one working height band quackd ships and
+      unpublished everywhere else, so a pilot that did as it was told was refused on every
+      body. A task whose hands really work at the floor says so with a height above zero.
+    - `none` for `mobility` or `manipulator` asks for nothing: no locomotion, nothing held.
+    - An unpublished terrain meets `indoor_flat` on a body that moves and has a datasheet,
+      because the prompt tells exactly that body to assume a flat indoor floor.
+    - A body that does not move, and has a datasheet, meets `indoor_flat` and nothing above it:
+      it stands on whatever floor its table stands on, and the prompt says "it does not move"
+      where a moving body is told its terrain. It is refused as "(it does not move)", which is
+      the fact the pilot was shown, rather than "(not published)", which it never was.
+
+    A body with no datasheet at all gets none of the floor exceptions: its prompt says to treat
+    every physical limit as not published, terrain included, and a bid that carried no sheet
+    said nothing. `mobility` comes in apart from `facts` because it lives on the manifest.
+
+    `own_sheet` is the one place a pilot judging its own body is read more kindly than anybody
+    judging a stranger's. With it, a `work_height_m` against a sheet that publishes no working
+    height band is not refused: the prompt never lists a working height as a gap
+    (`Datasheet.FIGURES` leaves it out on purpose), so the pilot had no way to know it was one
+    and is judging a height against the height and reach it was shown. The verdict gate
+    (`own_sheet_objection`) and `solo_hint`'s "this body meets those needs" read it that way.
+    Everything that names a body to hand a task to reads it strictly, which is the default:
+    `bodies_that_could`, the MCP `could` list, a flock role and the coordinator judging a bid.
+    There an unknown is not a yes, and a body that never said how high it works is not the one
+    to offer a task at a height. A body with no datasheet is told height is not published, so
+    it gets no leniency either way."""
     out: list[str] = []
     for key in sorted(needs):
         want = needs[key]
-        if (
-            key in NEEDS_NUMBERS
-            and key != "work_height_m"
-            # a raw dict off the wire reaches this before anything validates it, so a null or a
-            # word is not a zero and must fall through to the refusal rather than raise here
-            and isinstance(want, int | float)
-            and not isinstance(want, bool)
-            and float(want) == 0
-        ):
-            # "this task needs no payload" is a real thing to say, and the tool asks the pilot
-            # to fill `needs` in even when the verdict is feasible. A floor of zero is not the
-            # same: `work_height_m: 0` means the ground, which a body either reaches or does not
+        number = _as_number(want)
+        if key in NEEDS_NUMBERS and number == 0:
             continue
         if key == "mobility":
+            if want == "none":
+                continue  # no locomotion needed: met by a body that has some, too
             has = mobility or "unknown"
             if not (want == "any" and has not in ("none", "unknown")) and has != want:
                 out.append(f"mobility = {want} (has {has})")
             continue
         if key == "manipulator":
+            if want == "none":
+                continue  # nothing held: met by a body with hands, too
             has = str(facts.get("manipulator") or "unknown")
             if not (want == "any" and has not in ("none", "unknown")) and has != want:
                 out.append(f"manipulator = {want} (has {has})")
@@ -184,14 +262,16 @@ def missing_needs_in(
             rated = facts.get("terrain")
             if rated is None:
                 # the prompt renders an unpublished terrain as "assume a flat indoor floor and
-                # decline anything else" (`prompts._power_and_ground`), so a pilot that asks
-                # for exactly that has done as it was told and must not be refused for it.
-                # Only where the prompt says it, though: a body with no datasheet at all is
-                # told the opposite ("treat every physical limit as not published"), and one
-                # that does not move is never shown the sentence. Anything above a flat indoor
-                # floor is unmet either way.
-                told_to_assume = bool(facts) and mobility not in (None, "none")
-                if not (told_to_assume and want == "indoor_flat"):
+                # decline anything else" for a body that moves (`prompts._power_and_ground`),
+                # and "it does not move" for one that does not, so either way a pilot asking
+                # for a flat indoor floor has done as it was told. Only where the prompt says
+                # it, though: a body with no datasheet at all is told the opposite ("treat
+                # every physical limit as not published"). Anything above a flat indoor floor
+                # is unmet either way.
+                if facts and mobility == "none":
+                    if want != "indoor_flat":
+                        out.append(f"terrain = {want} (it does not move)")
+                elif not (facts and mobility is not None and want == "indoor_flat"):
                     out.append(f"terrain = {want} (not published)")
             elif TERRAIN_ORDER.index(str(rated)) < TERRAIN_ORDER.index(str(want)):  # type: ignore[arg-type]
                 out.append(f"terrain = {want} (rated {rated})")
@@ -200,14 +280,17 @@ def missing_needs_in(
             continue  # mains powered: nothing to run down
         if key == "arms":
             arms = facts.get("arms")
-            if not isinstance(arms, int) or arms < float(want):
+            if not isinstance(arms, int) or number is None or arms < number:
                 out.append(f"arms >= {_number(want)} (has {arms if arms is not None else 0})")
             continue
         if key == "work_height_m":
             band = facts.get("workspace_height_m")
             if not isinstance(band, Mapping):
-                out.append(f"work_height_m = {_number(want)} (not published)")
-            elif not float(band["low"]) <= float(want) <= float(band["high"]):
+                # a pilot's own sheet that publishes no band was never shown the gap; a stranger
+                # is judged strictly. A value that is not a number is never excused
+                if not (own_sheet and facts and number is not None):
+                    out.append(f"work_height_m = {_number(want)} (not published)")
+            elif number is None or not float(band["low"]) <= number <= float(band["high"]):
                 out.append(
                     f"work_height_m = {_number(want)} "
                     f"(reaches {float(band['low']):g} to {float(band['high']):g} m)"
@@ -216,16 +299,21 @@ def missing_needs_in(
         have = _figure_value(facts, key)
         if have is None:
             out.append(f"{key} >= {_number(want)} (not published)")
-        elif have < float(want):
+        elif number is None or have < number:
             out.append(f"{key} >= {_number(want)} (has {have:g})")
     return out
 
 
-def missing_needs(needs: Mapping[str, Any], manifest: RobotManifest) -> list[str]:
-    """The same, for a robot whose manifest is in hand."""
+def missing_needs(
+    needs: Mapping[str, Any], manifest: RobotManifest, *, own_sheet: bool = False
+) -> list[str]:
+    """The same, for a robot whose manifest is in hand. `own_sheet` as `missing_needs_in`."""
     sheet = manifest.datasheet
     return missing_needs_in(
-        needs, sheet.model_dump() if sheet is not None else {}, manifest.mobility
+        needs,
+        sheet.model_dump() if sheet is not None else {},
+        manifest.mobility,
+        own_sheet=own_sheet,
     )
 
 
@@ -250,10 +338,11 @@ def own_sheet_objection(
     leaving an older `feasible` to carry the motion.
 
     A body with no manifest has no sheet to object with, and a verdict that named no need has
-    nothing to be held to."""
+    nothing to be held to. The sheet is read as its own pilot was shown it (`own_sheet`): a
+    working height the prompt never listed as a gap is not held against the verdict."""
     if here is None or not needs:
         return None
-    lacking = missing_needs(needs, here)
+    lacking = missing_needs(needs, here, own_sheet=True)
     if not lacking:
         return None
     return (
@@ -356,7 +445,11 @@ def solo_hint(needs: Mapping[str, Any], here: RobotManifest | None) -> str:
     adapter is installed, because a manifest is built by the adapter and quackd cannot
     describe a body whose package is absent. So the answer is about this machine rather than
     about the seven quackd publishes, and a machine with one robot can only speak for that
-    one. A body whose maker never published the figure is not named: unknown is not a yes."""
+    one. A body whose maker never published the figure is not named: unknown is not a yes.
+
+    The last sentence is about the pilot's own body and reads its sheet the way the verdict
+    gate does (`own_sheet`), so it cannot say "does not meet" of a verdict the gate let
+    through. The list of bodies that could stays strict: it names bodies to hand a task to."""
     if not needs:
         return ""
     from quackd.adapters.factory import bodies_that_could
@@ -371,7 +464,7 @@ def solo_hint(needs: Mapping[str, Any], here: RobotManifest | None) -> str:
         sentence = f"No robot installed here meets needs {listed}."
         if best := _best_numeric(needs):
             sentence = sentence[:-1] + f": {best}."
-    if here is not None and not missing_needs(needs, here):
+    if here is not None and not missing_needs(needs, here, own_sheet=True):
         sentence += (
             " This body's own datasheet meets those needs, so the verdict is the pilot's "
             "judgement rather than a limit."
@@ -380,20 +473,33 @@ def solo_hint(needs: Mapping[str, Any], here: RobotManifest | None) -> str:
 
 
 def _best_numeric(needs: Mapping[str, Any]) -> str:
-    """`the most is toddlerbot at 1.48 kg`, for the first numeric need nobody meets."""
+    """`the most is toddlerbot at 1.48 kg`, for the first numeric need nobody meets.
+
+    It used to report the first numeric key present, met or not, so a task that asked for
+    nothing (`payload_kg: 0`) and was refused on some other need read "the most is lerobot at
+    0.5 kg", which explains a refusal that never happened. Now it names a need only when it is
+    above zero, no installed body meets it, and the want exceeds the most anybody publishes:
+    the last is what "the most" answers, and it leaves out a working height that is below
+    every band rather than above it."""
     from quackd.adapters.factory import installed_manifests
 
+    installed = installed_manifests()
     for key in NEEDS_NUMBERS:
-        if key not in needs:
+        want = _as_number(needs.get(key))
+        if want is None or want <= 0:
             continue
+        if any(not missing_needs({key: want}, manifest) for _name, manifest in installed):
+            continue  # somebody here meets this one, so it is not why nobody could
         ranked = [
             (value, name)
-            for name, manifest in installed_manifests()
+            for name, manifest in installed
             if isinstance(value := datasheet_value(manifest, key), float)
         ]
         if not ranked:
             continue
         value, name = max(ranked)
+        if want <= value:
+            continue
         unit = key.rsplit("_", 1)[-1] if "_" in key else key
         return f"the most is {name} at {value:g} {unit}"
     return ""

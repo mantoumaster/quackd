@@ -183,9 +183,10 @@ class Datasheet(BaseModel):
 
     Speeds are not here: `RobotManifest.limits` is what quackd clamps to, and the prompt
     renders those as clamps. `None` means not published, and the prompt says so in those words
-    and tells the pilot to decline whatever hinges on it (refuse by default). The same
-    datasheet describes a body on every backend: sim2d, mock or real, the body is the body,
-    which is what keeps digests equal across backends.
+    and tells the pilot to answer `uncertain` where a task turns on it, and the verdict gate
+    refuses a `feasible` that names it (refuse by default). The same datasheet describes a
+    body on every backend: sim2d, mock or real, the body is the body, which is what keeps
+    digests equal across backends.
     """
 
     model_config = ConfigDict(extra="forbid")
