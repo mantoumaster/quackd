@@ -1,9 +1,10 @@
 # quackd on an NVIDIA Jetson
 
-A Jetson is the smallest computer that can hold both halves of a run: the model that decides
-what the robot should do next, and quackd, which turns that decision into a verb and refuses
-the ones the body cannot carry. Put both on the board and a goal in plain language never
-leaves the room. That is the whole reason this page exists.
+A Jetson is small enough to ride on a robot and has a GPU for a model, so one board can hold
+both halves of a run: the model that decides what the robot should do next, and quackd, which
+turns that decision into a verb and refuses the ones the body cannot carry. Put both on the
+board and a goal in plain language never leaves the room. That is the whole reason this page
+exists.
 
 Nothing here has been run on a Jetson by this project. It is written from NVIDIA's own
 documentation, and the image is built and run on arm64 both under emulation and on a native
@@ -66,11 +67,11 @@ Ollama bundles all exist today.
 The L4T column is off NVIDIA's JetPack archive and the Ubuntu column off each release's own
 download page, both read on 2026-09-22. **NVIDIA publishes no Python version at all**: that
 column is Ubuntu's own default `python3` for the release beside it. All of it is version
-sensitive by nature, so check it against the board in front of you. `quackd doctor` names your board's JetPack out of this
-same table in `quackd/doctor.py`, and `tests/test_deploy_jetson.py` holds the two copies to
-each other so the page and the command cannot drift apart. The releases are spelled in three parts here, which is the
-form the parser normalises to, so JetPack 6.1 appears as `36.4.0` where NVIDIA's own table
-writes `36.4`.
+sensitive by nature, so check it against the board in front of you. `quackd doctor` names
+your board's JetPack out of this same table in `quackd/doctor.py`, and
+`tests/test_deploy_jetson.py` holds the two copies to each other so the page and the command
+cannot drift apart. The releases are spelled in three parts here, which is the form the parser
+normalises to, so JetPack 6.1 appears as `36.4.0` where NVIDIA's own table writes `36.4`.
 
 JetPack 5 (L4T 35.x, Ubuntu 20.04, Python 3.8) is below quackd's Python floor of 3.11, so the
 container is the route there rather than a native install. JetPack 7 brought the Orin family
@@ -128,11 +129,6 @@ uvx --python 3.12 --from "quackd[openai,microduck]" quackd run find-and-kick \
 > The `openai` extra is the client every local preset speaks through, and `microduck` is a
 > robot, because `uv pip install quackd` installs the core and no body at all. `--llm ollama`
 > already means `http://localhost:11434/v1`, so there is no address to pass.
-
-> [!NOTE]
-> The Jetson section of `doctor` described further down ships in quackd 0.13.0. Until that
-> release `uvx` hands you the published wheel, which runs on the board perfectly well and
-> simply prints no Jetson block. To see it before then, install from a checkout of `main`.
 
 That run is the cartoon simulator, which needs no robot and no GPU. It is the honest first
 test of the board: if the duck kicks the ball, quackd works here, and what is left to find out
@@ -234,8 +230,9 @@ gives the model back whatever the graphical session was holding, and
 ## In a container
 
 [`deploy/jetson/`](../deploy/jetson/README.md) holds a Dockerfile and a compose file. The
-Dockerfile installs quackd from `uv.lock` at whatever commit you checked out, onto a plain
-Debian Python image, and there is no CUDA in it at all.
+Dockerfile builds quackd from the checkout you build it in, uncommitted edits included, with its
+third-party Python packages pinned by `uv.lock`, onto a plain Debian Python image, and there is
+no CUDA in it at all.
 
 ```bash
 git clone https://github.com/rokbenko/quackd && cd quackd/deploy/jetson
@@ -319,11 +316,14 @@ model bigger than memory will not load, and that a container started there will 
 the GPU.
 
 The section is absent on everything that is not a Tegra, and `--json` carries the same fields
-under a `jetson` key, or `null`. Inside a container you will usually see the board but not the
-L4T release: `/proc/device-tree` is the host's and is visible from inside, while
-`/etc/nv_tegra_release` is a file in the host's root filesystem that a plain Python image does
-not have. The servers table below it is the one that answers "is the model up", and it already
-probes `localhost:11434` for you.
+under a `jetson` key, or `null`. Run `doctor` on the board itself to see it. Inside the
+container it will most likely be absent too: a Tegra is recognised from
+`/proc/device-tree/compatible` or `/etc/nv_tegra_release`, `/proc/device-tree` points into
+`/sys/firmware`, which Docker masks in every container that is not privileged or started with
+`--security-opt systempaths=unconfined`, and a plain Python image has no
+`/etc/nv_tegra_release`. That is read from Docker's own list of masked paths rather than seen
+on a board, like everything else on this page. The servers table below it is the one that
+answers "is the model up", and it already probes `localhost:11434` for you.
 
 ## Pitfalls
 
@@ -355,15 +355,18 @@ your own board.
 
 - The image builds for `linux/arm64` and quackd runs inside it, including a whole
   `find-and-kick` task on the scripted pilot. That was done under emulation on the machine
-  that wrote this page. It is the first aarch64 Linux run of quackd this repository
-  records, which is a smaller claim than a first: where the transcripts in
-  [local-llms.md](local-llms.md) say anything they put an aarch64 model server behind a
-  quackd running on something else, and the largest contributor measurement on that same
-  board publishes no transcripts at all, so where quackd ran for it is not checkable.
-- `.github/workflows/jetson-image.yml` is set up to repeat that on a native arm64 runner
-  with no GPU on every change to these files, so it stays true rather than having been true
-  once. It first ran on 2026-09-23, on the commit that merged these files, and was green:
-  the build, `import cv2`, the `doctor --json` assertions and the task.
+  that wrote this page. It is the first aarch64 Linux run of quackd this repository records,
+  which is a smaller claim than a first: where the transcripts in
+  [local-llms.md](local-llms.md) say anything they put an aarch64 model server behind a quackd
+  running on something else, and the largest contributor measurement on that same board
+  publishes no transcripts at all, so where quackd ran for it is not checkable.
+- `.github/workflows/jetson-image.yml` is set up to repeat that on a native arm64 runner with
+  no GPU whenever the deploy files, `.dockerignore`, the lockfile, the packaging or the
+  workflow itself change. It does not rerun on a change to `quackd/` alone, although `quackd/`
+  goes into the image, and `ci` tests that code on Linux x86-64, on macOS on arm64 and on
+  Windows but never on aarch64 Linux, so the claim is as fresh as the job's last run. It first
+  ran on 2026-09-23, on the commit that merged these files, and was green: the build, `import
+  cv2`, the `doctor --json` assertions and the task.
 - The compose file, the extras, and the version table above are held against the code by
   `tests/test_deploy_jetson.py`.
 - The JetPack table and the model download sizes were read from NVIDIA's and Ollama's own

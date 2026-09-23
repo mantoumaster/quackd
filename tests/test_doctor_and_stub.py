@@ -328,11 +328,12 @@ def test_the_two_ways_l4t_can_be_unknown_read_differently(
     assert "is here and its first line is not one this build knows" in buf.getvalue()
 
 
-def test_a_container_on_a_jetson_is_a_board_with_no_l4t(tmp_path: Path) -> None:
-    """The case the section is most useful in. `/proc/device-tree` is the host's and is visible
-    inside a container; `/etc/nv_tegra_release` is a file in the host's root filesystem and a
-    plain Python image has none, so reporting the image's userspace as the board's would be
-    the one wrong answer available here."""
+def test_a_device_tree_with_no_release_file_is_a_board_with_no_l4t(tmp_path: Path) -> None:
+    """A privileged container on a Jetson, or one started with `--security-opt
+    systempaths=unconfined`: the device tree is readable, because nothing masks `/sys/firmware`,
+    and `/etc/nv_tegra_release` is a file in the host's root filesystem that a plain Python image
+    has none of. Reporting the image's userspace as the board's would be the one wrong answer
+    available here. An ordinary container sees neither and gets no section."""
     got = doctor._jetson(_tegra_tree(tmp_path, release=None))
     assert got is not None and got.board == ORIN_NANO
     assert got.l4t is None
@@ -435,19 +436,19 @@ def test_the_jetson_section_warns_about_zram_and_a_runtime_that_is_not_nvidia(
         assert needle in out, needle
 
 
-def test_a_container_with_no_docker_says_so_rather_than_dropping_the_row(
+def test_a_board_where_docker_does_not_answer_says_so_rather_than_dropping_the_row(
     fake_tegra: Path,
 ) -> None:
-    """The row people are sent here to read, in the container the quickstart runs.
+    """The row people are sent here to read, on a board where `docker info` gives no answer.
 
-    The image carries no docker CLI and mounts no socket, so the answer is None, and the
-    renderer used to drop the row entirely. Three documents tell a reader to check this
-    setting with this command, so silence there is the one unacceptable answer."""
+    That is a board on the page's native route, which installs no Docker, or a user outside the
+    docker group, and the renderer used to drop the row entirely. Three documents tell a reader
+    to check this setting with this command, so silence there is the one unacceptable answer."""
     buf = io.StringIO()
     doctor.render(Console(file=buf, width=200), doctor.collect())
     out = buf.getvalue()
     assert "docker default runtime" in out
-    assert "no docker here, which is what a container sees" in out
+    assert "docker did not answer here, because it is not installed" in out
 
 
 def test_the_jetson_section_survives_a_codepage_that_cannot_carry_it(

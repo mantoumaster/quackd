@@ -14,10 +14,10 @@ name: jetson image
 # `ubuntu-24.04-arm` is a native arm64 runner, free for public repositories, so nothing here is
 # emulated and the smoke steps below run the real aarch64 binaries.
 #
-# Its path filters are the deploy files, the lockfile and the packaging. It does NOT rerun on
-# a change to `quackd/`, which is what its smoke steps assert against: `ci` covers that
-# natively on every push, and a container build on every pull request would be a toll for a
-# thing already checked.
+# Its path filters are the deploy files, .dockerignore, the lockfile, the packaging and this
+# file. It does NOT rerun on a change to `quackd/`, which is what its smoke steps assert
+# against: `ci` covers that natively on every push, and a container build on every pull request
+# would be a toll for a thing already checked.
 #
 # What it cannot prove: the runner is not a Tegra and has no GPU, so nothing here exercises the
 # Jetson section of `quackd doctor` beyond the one assertion that it stays quiet, nothing

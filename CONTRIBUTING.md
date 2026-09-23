@@ -38,7 +38,7 @@ extra once reached a release. Change a dependency anywhere, run `uv lock`, and c
 
 Versions move together. The core and each adapter carry their own `__version__`, because an
 adapter's sdist holds only its own source and cannot read the core's, and each one pins a
-window on the core (`quackd>=0.12,<0.13`). `uv run python scripts/set_version.py X.Y.Z`
+window on the core (`quackd>=0.13,<0.14`). `uv run python scripts/set_version.py X.Y.Z`
 rewrites all eight and the windows that tie them together in `pyproject.toml`. It cannot reach
 prose, so the copies of that window quoted in this file and in the docs are the part a release
 still edits by hand. A
@@ -97,13 +97,12 @@ page against `_JETPACK_FOR_L4T` in `quackd/doctor.py`, so editing one of those t
 other fails locally. The build is the half pytest cannot see. Do it yourself with `docker buildx
 build --platform linux/arm64 -f deploy/jetson/Dockerfile -t quackd-jetson .` if you have buildx
 and qemu. `.github/workflows/jetson-image.yml` is written to do it on a native arm64 runner and
-then run `doctor` and a whole task inside the image, which it first did green on
-2026-09-23. That job is
-deliberately off the required path, so a red run blocks no merge and somebody has to go and
-read it. The image installs nothing from apt on purpose, which is why a dependency that one day
-wants a system library shows up as the `import cv2` step failing there rather than on somebody's
-board. Nothing here has been run on a Jetson, so what you change is checked against files and
-against `uv.lock` and never against the board it is named after
+then run `doctor` and a whole task inside the image, which it first did green on 2026-09-23.
+That job is deliberately off the required path, so a red run blocks no merge and somebody has to
+go and read it. The image installs nothing from apt on purpose, which is why a dependency that
+one day wants a system library shows up as the `import cv2` step failing there rather than on
+somebody's board. Nothing here has been run on a Jetson, so what you change is checked against
+files and against `uv.lock` and never against the board it is named after
 ([ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
 
 Touching `web/`? That is the browser demo, and the only quackd code that is not Python: plain

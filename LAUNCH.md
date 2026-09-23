@@ -7,9 +7,11 @@ walking. 0.9's was that you register the robots you own, name a flock of them, h
 flock a goal, and every robot gets its own LLM pilot, talking to the others. 0.10's was that
 a real arm ran it, `uv pip install quackd` now installs no robot at all and you choose the
 body, and the arm no longer falls over when the run ends. 0.11's was that a run says when
-it ran and what it cost, the trace is the log, and the log is the whole screen. **0.12's is
+it ran and what it cost, the trace is the log, and the log is the whole screen. 0.12's was
 that a decision LLM is a row of data rather than a vendor, the pilot is one flag, and the
-trace spellings are gone.**
+trace spellings are gone. **0.13's is that quackd has a path onto an NVIDIA Jetson, where a
+Jetson is a host rather than a body, and that a bare `--llm anthropic` and `--llm openai`
+now run Claude Opus 5.5 and GPT-6 Sol.**
 
 **The one sentence:** One CLI for all your robots. Connect them, command them, and let them
 work together, each with an LLM for a brain.

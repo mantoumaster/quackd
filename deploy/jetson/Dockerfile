@@ -15,9 +15,10 @@
 #
 # Build it on the Jetson, or on any arm64 machine, or under emulation:
 #   docker buildx build --platform linux/arm64 -f deploy/jetson/Dockerfile -t quackd-jetson .
-# The build context is the repository root, because the install comes from `uv.lock` at this
-# commit rather than from PyPI. That is what makes the image reproducible and what lets it be
-# built from a branch that has not been released.
+# The build context is the repository root, because quackd is built from the checkout rather
+# than fetched from PyPI, with every third-party Python package pinned by `uv.lock`. That is what
+# makes the image reproducible and what lets it be built from a branch that has not been
+# released. It also means an uncommitted edit goes into the image with everything else.
 
 # The interpreter's minor version and Debian's release are pinned; the patch is not, so a
 # rebuild picks up Debian's security updates. Everything Python is pinned exactly by uv.lock,
@@ -81,5 +82,8 @@ LABEL org.opencontainers.image.source="https://github.com/rokbenko/quackd" \
 
 ENTRYPOINT ["quackd"]
 # Bare `docker run` says what this image has rather than printing a help screen nobody asked
-# for. On a Jetson it also names the board, because /proc/device-tree is the host's.
+# for. It will most likely print no Jetson section even on a Jetson: /proc/device-tree points
+# into /sys/firmware, which Docker masks unless the container is privileged or started with
+# --security-opt systempaths=unconfined, and this image has no /etc/nv_tegra_release. Run
+# `quackd doctor` on the board itself for that.
 CMD ["doctor"]

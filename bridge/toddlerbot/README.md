@@ -102,10 +102,10 @@ can starve the loop this file exists to protect, and nobody has measured it.
 
 ## Rules this file lives by
 
-- **It never imports quackd.** this file runs in upstream's own environment and quackd's
-dependencies must not be in its import path, while a quackd installed beside it with `uv`
-is a different process in a different environment, and a test
-  enforces this by reading the file.
+- **It never imports quackd.** This file runs in upstream's own environment and quackd's
+  dependencies must not be in its import path, while a quackd installed beside it with `uv`
+  is a different process in a different environment, and a test enforces this by reading the
+  file.
 - **It ships in the sdist and never in the wheel**, so `packages` stays `["quackd"]`.
 - **It is testable with no hardware.** Everything above the `Robot` boundary is pure and takes
   plain arrays, so the clamp, the rate limit, the dropped-read detector and the slew are all

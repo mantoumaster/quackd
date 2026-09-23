@@ -72,7 +72,7 @@ flip that backend's row, and not before.
   [`deploy/jetson/`](deploy/jetson/README.md) were written from NVIDIA's own documentation on
   a Windows laptop, and the image was built for arm64 and run under emulation there, then
   built and run again on a native arm64 runner with no GPU, green on 2026-09-23. What
-  emulated build is worth is not the board: it proves quackd runs on aarch64 Linux, and
+  those runs are worth is not the board: they prove quackd runs on aarch64 Linux, and
   nothing else. Unmeasured is everything that makes a Jetson one: Ollama on the
   Orin GPU, the NVIDIA container runtime, what the doctor section reads off real files, how
   much memory a model actually takes beside quackd, and the one that matters near a robot,
@@ -83,11 +83,11 @@ flip that backend's row, and not before.
   and one `tegrastats` line captured while the model was answering.
 
 - ⬜ **No `cost_usd` quackd reports has been checked against an invoice.** Every rate in
-  `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand on
-  2026-09-21, and a rate read by hand is wrong from the day the vendor edits the page until
-  somebody reads it again. What would close this is one run on a metered account, reconciled
-  against that account's own billing page, on any vendor. Until then `--price` is the answer to
-  a disagreement and the catalogue is a table rather than a bill.
+  `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand, most
+  recently on 2026-09-23, and a rate read by hand is wrong from the day the vendor edits the
+  page until somebody reads it again. What would close this is one run on a metered account,
+  reconciled against that account's own billing page, on any vendor. Until then `--price` is the
+  answer to a disagreement and the catalogue is a table rather than a bill.
 
 - ⬜ **One local model has refused tasks on feasibility grounds; no frontier model has, and
   nobody has watched an `uncertain` over MCP.** Qwen3-32B-AWQ on vLLM, driving
