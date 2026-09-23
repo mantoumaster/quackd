@@ -326,7 +326,9 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
 - `pick` hands the whole arm to a learned policy for up to a minute. It is confirm-gated
   for that reason. Watch it, and keep `stop` within reach.
 - `stop` holds position and never releases, and it leaves the gripper's goal alone so a
-  failed verb never drops what is held.
+  failed verb never drops what is held. It also writes no goal for a joint that reads past its
+  calibrated travel, because the servo would clamp "stay here" to its limit and drive the joint
+  there at full speed.
 - **The arm falls when a session ends, unless you have recorded a rest pose.** LeRobot's own
   `disconnect()` disables torque by its default and quackd keeps that default, which is why the
   arm fell at the end of every run on 2026-09-15. Fold the arm by hand while nothing is
@@ -340,11 +342,22 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
   `quackd robot rest-pose <name> --clear` returns you to. An MCP session does the same at both
   ends and refuses to open at all if it cannot get there, because a client is about to drive a
   body nobody has established the pose of ([mcp.md](mcp.md)).
-- **The rest move is sent unclipped, so it is the one move that ignores the joint limits.** A
-  folded arm often sits outside the travel its own calibration recorded (the bench arm folded to
-  `shoulder_lift` -113.5 degrees against a calibrated ±84.2), and the refusal that keeps
-  `move_joints` inside those limits would otherwise refuse to put the arm down. Record a pose you
-  are willing to have the arm driven into from wherever a run ends, and watch the first one.
+- **A rest pose past the calibrated travel is parked at the edge of it.** A servo on this arm is
+  never driven outside the travel its calibration recorded: LeRobot writes that travel into it
+  as two limits, and it clamps every goal to them. A folded arm can still sit past them, because
+  a reading is not clamped, and on 2026-09-23 a recorded fold did, about 20 degrees past the
+  floor of `shoulder_lift`'s travel. The rest move could not get there, runs aborted before the
+  first model call, every run that got to its end kept torque on, and the `stop` at the end of a
+  run hauled the folded shoulder up out of its fold. So the rest move now drives each joint
+  clipped into its travel, a joint recorded past it is at rest at the edge or anywhere beyond it
+  on the fold's side, torque is released there, and the run says once which joint is free to
+  settle the rest of the way. Calibrate with every joint taken all the way into the fold, then
+  record the pose, and the fold is inside the travel to begin with. A new calibration moves the
+  zero of any joint whose travel it records differently, so record the pose again after one
+  ([adapters/lerobot.md](adapters/lerobot.md#a-pose-past-the-travel),
+  [ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md)). Whether a joint let go at
+  the edge settles onto its fold gently has not been watched on an arm yet, so watch the first
+  one with a hand near it.
 - **An arm that did not reach that pose keeps torque instead of letting go.** quackd turns
   LeRobot's flag off for that one case, leaves the arm holding itself up, and prints one line:
 
@@ -353,8 +366,9 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
   ```
 
   The brackets name the joint furthest from where it was asked to be, what it reads, and why
-  nothing put it there. Do what the line says. The arm is energised, the run is over, and
-  nothing is going to put it down on its own.
+  nothing put it there. That is a joint stopped short *inside* its travel: one parked at the
+  edge of its travel, or folded past it, has reached the pose. Do what the line says. The arm
+  is energised, the run is over, and nothing is going to put it down on its own.
 - **A probe and a dry run now leave torque on where they used to drop it.** A dry run never
   moves the arm and `quackd robot list --probe` never moves it either, so on an arm away from
   its recorded rest pose both end with torque on: the dry run prints the line above, and the

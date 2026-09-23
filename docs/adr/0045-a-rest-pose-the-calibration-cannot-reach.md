@@ -1,0 +1,180 @@
+# ADR-0045: A rest pose the calibration cannot reach
+
+**Status:** accepted · **Date:** 2026-09-23 · Extends [ADR-0036](0036-what-the-arm-does-not-say.md) (the range refusal, and `stop` as a hold of the five body joints) and [ADR-0039](0039-an-arm-placed-by-hand.md) (the one place quackd lets go, on the condition `close()` trusts) · Implemented in `adapters/lerobot/` (`verbs.py`, `real.py`, `mock.py`), `quackd/adapters/base.py`, `quackd/agent/loop.py` and `quackd/doctor.py` ([page](../adapters/lerobot.md#a-pose-past-the-travel), [first run](../lerobot-first-run.md#07-record-the-rest-pose))
+
+## Context
+
+The rest pose was written after the bench of 2026-09-15, where the arm fell at the end of every
+run, and it met an arm for the first time on 2026-09-23: the same SO-101, `arm-01`, on lerobot
+0.6.1 and Windows, with a pose recorded under its registered name. Almost none of that
+afternoon's 26 runs moved the arm, for five separate reasons, and the rest pose was the first
+of them.
+
+The recorded pose had `shoulder_lift` at -104.7. The travel `joint_ranges()` read off the
+arm's calibration, written on 2026-09-15, was ±84.2 for that joint: `range_min` 1180 and
+`range_max` 3096, a midpoint of 2138, and the fold at tick 947, 233 ticks or 20.5 degrees
+below the floor. That calibration had never seen the shoulder folded all the way back. The fold
+was where a hand put the arm afterwards.
+
+The rest move sent the recorded pose unclipped, on purpose. A pose read off the arm was where
+the arm had physically been, a folded arm often sits outside its recorded travel, and the range
+refusal that guards `move_joints` would have refused to put it down; the adapter page said so,
+with an earlier reading of -113.5 against ±84.2 as its example. That rested on the servo
+following a goal past the travel, and nothing had checked that it would. It does not.
+LeRobot's `write_calibration()` writes each motor's `range_min` and `range_max` into its
+EEPROM as `Min_Position_Limit` and `Max_Position_Limit` (`motors/feetech/feetech.py` lines 268
+to 276 at 0.6.1). `_unnormalize` bounds nothing in DEGREES mode (`motors/motors_bus.py` 904 to
+907), so the tick it computes goes to the servo as it is. And the STS3215 clamps
+`Goal_Position` to its two limits. The runs show it from both sides. Driven down from above,
+the shoulder stopped at tick 1181, one inside its floor. Starting from the fold, every goal
+written below the reading moved the arm **up**, to ticks 1139 to 1152, about -87 degrees: the
+limit, less what a P-only controller sags under the arm's weight.
+
+What followed, all of it in that afternoon's traces:
+
+- The rest move's stall check (`STALL_TICKS`) fired about 17 degrees short of the recorded
+  angle, so a run that started away from the fold aborted with `the arm did not reach its rest
+  pose` before its first model call. Five runs ended that way.
+- A run that got as far as its end ran the same move again, missed the same way, and `close()`
+  kept torque on with `TORQUE_LEFT_ON`. Every one of those runs ended at the power switch.
+- `_hold()`, which every `stop` and every teardown reaches, wrote each body joint's present
+  position as its goal, unclipped. For a shoulder folded past its floor the servo clamped that
+  goal to the limit and drove there at full speed. In one run the final state, recorded 15 ms
+  after the run's last stop, read the shoulder at -107.6, and the close note 0.34 s later read
+  it at -87, with no clamp warning from LeRobot in between because the goal quackd wrote was
+  the reading itself, well inside the step cap. The stop was what moved it.
+- A pilot shown `shoulder_lift` at -108 beside a prompt line giving its travel as -84.2 to
+  84.2, with nothing to reconcile the two, refused to move an arm in a state it could not
+  explain.
+- Holding at about -87 against a goal clamped at -84.2 kept the shoulder's servo pushing all
+  afternoon, and it went from 38 °C to 45 °C.
+
+Those numbers are one arm's, on one calibration, and they are here as the record of what
+happened. Nothing below uses them. Every figure the code works with is read off the arm it is
+driving, and the tests build calibrations and poses of their own.
+
+## Decision
+
+**The rest move drives to the reachable pose.** `verbs.reachable_rest_goal(rest_pose, ranges)`
+clips each body joint of the recorded pose into the travel `joint_ranges()` read off this arm
+at connect: either end, any number of joints at once. It returns the clipped joints as
+`(joint, recorded, reachable)`. A joint with no known range passes through, the gripper is
+never in it because it is never driven, and `wrist_roll`, whose calibration is a full turn, is
+never clipped in practice. `rest_pose` stays the pose as recorded. The reachable pose is
+computed from it and the calibration each time it is asked for (`LeRobotReal.rest_reachable`),
+so it cannot outlive the calibration it came from.
+
+**"At rest" is a half-line for a clipped joint.** `verbs.joint_at_rest(goal, reading,
+recorded)`: where the recorded angle lies below the floor, the joint is at rest at
+`reading <= goal + TOL_DEG`, and where it lies above the ceiling, at `reading >= goal -
+TOL_DEG`. The side is read off the sign of `recorded - goal`, so a fold past the ceiling is the
+mirror of one past the floor. Every other joint keeps the band of `TOL_DEG` (5.0 degrees)
+either side of its recorded angle, and `at_rest` called with two arguments judges exactly as it
+always did. The reason is the servo's. Nothing quackd can write drives a joint further past its
+limit than the few degrees a loaded joint sags there, so a joint that reads well past it was put
+there with torque off, by a hand or by its own weight settling: it is folded, not lost. A joint
+parked at the limit and sagging past it is at rest by the same rule. `go_to_rest`, `close()`, `let_go()` and the mock all use the
+rule, so an arm parked at the edge of its travel has `arrived`, an arm already folded past it
+is `already` there, and both are let go of. A joint that stops short *inside* its travel,
+against a hand or the desk, is still a miss, and it still keeps torque on with
+`TORQUE_LEFT_ON`.
+
+**Torque is released at the reachable pose, and the joint is left to settle the rest of the way
+on its own.** This was decided at the bench, against the alternative, which was an arm that
+keeps torque on at every close until somebody recalibrates it: that alternative is the
+afternoon above. It is safe enough to do because the joint is let go at the nearest point to
+its fold that the servo can reach, on the way to a fold the person watched the arm hold limp
+when they recorded it, and because the note says which joint, where it was recorded and where
+it parks, so the distance it may travel is in front of whoever is standing there.
+`verbs.worth_saying` names only the joints clipped by more than `TOL_DEG`: a smaller clip is
+inside the tolerance any reached pose may miss by, and a sentence about it would be a
+sentence about nothing.
+
+**The rest move never sends the limit to a joint already past it.** Each tick of
+`_drive_to_rest` sends the reachable goal less any clipped joint that already reads beyond it
+on its fold's side (`verbs.past_reach`). The goal that joint would get is the limit, and sending
+it hauls the joint up out of its fold. Such a joint is at rest by the half-line, so leaving it
+out never keeps the move from arriving. The move's budget is sized on the joints that are left,
+and `shortfall` is handed the recorded pose, so a genuine miss never names the folded joint as
+the one that fell short.
+
+**A hold writes no goal for a joint that reads outside its travel.** `_hold()`, which is every
+`stop` and every teardown, and both writes in `take_hold()`, leave out any joint reading
+strictly outside its travel (`_outside_travel`). Written to that joint, "stay where you are"
+arrives as "go to the limit" once the servo has clamped it, which is what hauled the shoulder
+up. What it costs is that the joint keeps whatever goal its servo already holds instead of a
+fresh one. When that goal is one quackd wrote, it is within one step of where the joint was when
+it was written, because every goal quackd writes is within `max_relative_target` of the reading
+it was written against. After a fresh connect it is whatever the servo holds once torque comes
+back on, which is the question `TORQUE_ENABLE_HOLDS_PRESENT` asks and nothing has answered. If
+every body joint reads outside its travel, nothing is sent, `stop_error` stays None, and the
+stop is still a stop, since every servo keeps the goal it already has. In `take_hold()` the skip
+avoids writing a goal the servo would clamp and does no more than that: when the joint that
+moved as torque came on is one it wrote no goal for, the refusal says so, names the end of the
+travel in this arm's numbers, and asks for the joint to be placed inside it.
+
+**The note travels on the rest result, never on `close_note`.** `RestResult` gains `clipped`
+and `note`, both with defaults, so the six other bodies, which only ever build
+`RestResult.none()`, and every equality between results are unchanged. `go_to_rest` sets
+`clipped`, the joints clipped by more than `TOL_DEG`, on every result whether the pose was
+reached or not, because it is a fact about the pose, and `note` only when the pose was reached.
+The run says the note once, right after its first `at the rest pose`, because the rest move
+runs at both ends and the note is about the pose rather than the move. `doctor` prints it as
+advice under its table with the `rest pose` row green. The MCP session logs it when it parks at
+connect. `quackd robot rest-pose` prints it as a warning before it asks, through
+`LeRobotAdapter.rest_pose_note()`, so the command neither knows the rule nor reimplements it,
+and it still records the pose. It is not a `close_note`, because everything that reads a close
+note reads it as torque left on: `doctor` fails its verdict on any close note, and
+`robot list --probe` shortens one to `torque left on: not at its rest pose`. A release that
+said anything there would be reported as the opposite of what it was.
+
+**The record and the pilot are told.** The manifest carries `extras.rest_pose_clipped` beside
+`joint_range_deg`, and only when something was clipped, so a run's `run_start` names the clip
+and the manifest of every other arm, its digest included, is what it was. `report_state` adds
+one clause per joint reading past its travel, in the arm's own numbers, and the travel line of
+the system prompt adds that a joint can read past its travel when it was folded or placed there
+with torque off. Neither claims how the joint got there: `out_of_range` has a margin
+(`OUT_OF_RANGE_DEG`), and a joint the servo parked at its limit and that then sagged past it
+qualifies too.
+
+**What the bench showed is written down where refs live.** A new VERIFIED ref,
+`POSITION_LIMITS_CLAMP_GOALS`, cites `feetech.py` 268 to 276 and the bench. The open question in
+`DEGREES_NO_CLAMP`, what the firmware does with an unclamped degrees goal, is answered there.
+`JOINT_RANGES` now says a calibration that never saw a joint folded leaves the fold past the
+travel. The test double, `FakeArm`, clamps a body joint's goal to whatever travel the test gives
+it while letting a reading sit past it, which is the one property the old one lacked and the
+reason the old behaviour passed.
+
+## Consequences
+
+- **The fix at the bench is a calibration that saw the fold.** When `lerobot-calibrate` asks for
+  every joint to be moved through its whole range, take each one into the fold the arm will
+  rest in. The fold is then inside the travel, the servo can be driven to it, and there is no
+  note. A calibration that records a wider travel moves that joint's zero, because a joint's
+  zero in degrees is the middle of the travel its calibration recorded, so a pose recorded
+  under the old calibration names a different shape under the new one. The rest pose has to be
+  recorded again, and a `.duck` or a remembered note that names an angle names a different pose
+  afterwards. The note tells a person to calibrate folded and record the pose again. The first
+  run guide and the checklist also say why the old pose goes stale, and the guide says the same
+  of every task and remembered note that names an angle.
+- **Parking at the edge is not the fold.** An arm released at its limit is short of the pose its
+  owner recorded by the distance the note names. A joint folded past its floor may fall the rest
+  of the way under its own weight. One folded past its ceiling may not, and stays where it was
+  released. Either way it is released, which it was not before, and a run that parked there
+  starts from the edge rather than from the fold.
+- **Still unverified, and only the arm can settle it.** Nothing in this change has run on an
+  arm yet. Whether a joint let go at the edge of its travel settles onto its fold, and whether
+  it does so gently, is the first thing a bench should watch, starting with `quackd doctor` on
+  an arm whose pose lies past its travel: the note, a green `rest pose` row, and an arm released
+  at the edge. Whether a joint `take_hold()` wrote no goal for stays where it was placed when
+  torque comes on is `TORQUE_ENABLE_HOLDS_PRESENT`, still UNVERIFIED; the read-back catches it
+  when it does not.
+- **Some readers do not say it yet.** The core `stop` verb's summary is unchanged when the hold
+  sent nothing, and does not say which joints it left alone. `quackd robot show` prints the pose
+  as recorded and not the reachable one, because it does not connect and so has no calibration
+  to clip against. A flock member's rest move does not narrate the note.
+- [ADR-0036](0036-what-the-arm-does-not-say.md) and [ADR-0039](0039-an-arm-placed-by-hand.md)
+  are amended rather than reversed, and each carries the amendment. The range refusal, the step
+  cap and the rule that torque comes off only at the rest pose all stand. What changed is what
+  "the rest pose" means on an arm whose calibration cannot reach it, and which joints a hold
+  writes.

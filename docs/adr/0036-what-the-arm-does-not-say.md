@@ -15,6 +15,18 @@ sentence is untouched and still holds: the adapter never calibrates, still refus
 no calibration file because that file is where the joint ranges come from, and still keeps
 LeRobot's default of dropping torque on `disconnect()` rather than overriding it.
 
+**Amended 2026-09-23 by [ADR-0045](0045-a-rest-pose-the-calibration-cannot-reach.md):** the
+Context below leaves open what the firmware does with a goal past a joint's calibrated travel,
+and an SO-101 has answered it. LeRobot's calibration writes that travel into each servo as its
+two position limits, and the servo clamps every goal to them. A reading is not clamped, so a
+joint folded with torque off can sit past either end. The range refusal below stands, and has a
+second reason now: a goal it let through would be one the arm silently stops short of. The
+decision that `stop` holds the five body joints now holds each one that reads inside its travel
+and writes nothing for one that reads past it, because the only goal the servo would take for
+that joint is its limit, and it drives there at full speed. The rest pose the amendment above
+names is now driven clipped into the travel, and a joint recorded past the travel is at rest at
+its edge or anywhere beyond it.
+
 ## Context
 
 The LeRobot adapter drives an SO-101 follower through the `Robot` interface of

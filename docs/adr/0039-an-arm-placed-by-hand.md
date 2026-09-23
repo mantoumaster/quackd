@@ -1,6 +1,19 @@
 # ADR-0039: The one place quackd lets go of a robot
 
-**Status:** accepted · **Date:** 2026-09-18 · Extends [ADR-0036](0036-what-the-arm-does-not-say.md) (which said quackd never disables torque) and [ADR-0012](0012-safety-executor.md) (the kill switch, and what a second Ctrl-C means) · Implemented in `quackd/agent/loop.py`, `quackd/safety.py` and `adapters/lerobot/` ([page](../adapters/lerobot.md), [checklist](../lerobot-hardware-checklist.md))
+**Status:** accepted, amended · **Date:** 2026-09-18 · Extends [ADR-0036](0036-what-the-arm-does-not-say.md) (which said quackd never disables torque) and [ADR-0012](0012-safety-executor.md) (the kill switch, and what a second Ctrl-C means) · Implemented in `quackd/agent/loop.py`, `quackd/safety.py` and `adapters/lerobot/` ([page](../adapters/lerobot.md), [checklist](../lerobot-hardware-checklist.md))
+
+**Amended 2026-09-23 by [ADR-0045](0045-a-rest-pose-the-calibration-cannot-reach.md):** "the
+recorded rest pose" in the first decision below now means that pose as far as this arm's
+calibration lets the servo be driven toward it. A joint recorded past its calibrated travel is
+at rest within `TOL_DEG` of the edge of that travel or anywhere beyond it on the side of its
+fold, and `let_go()` still asks exactly what `close()` asks, so `--by-hand` releases an arm
+parked at the edge and one already folded past it. The second decision loses one joint:
+`take_hold()` writes no goal for a joint the person placed outside its travel, because the servo
+would clamp that goal to the limit and drive the joint there under their hand. That joint is
+left to whatever its servo does when torque comes on, which is `TORQUE_ENABLE_HOLDS_PRESENT` and
+still unverified, and the read-back still catches it: when it is the joint that moved, the
+refusal says it was placed past its travel and gives the numbers. The stop that picks an arm up
+out of a hand skips such a joint for the same reason.
 
 ## Context
 

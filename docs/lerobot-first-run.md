@@ -24,13 +24,16 @@ Three documents cover this arm and they do different jobs:
 > now exists to fix.
 >
 > Two things that account does not cover. It was reached as `--robot lerobot:real --address
-> COM3`, with no registered name, so the registry steps below have not been run on hardware
-> either; `arm-01` is both the id that run calibrated under and the id a bare
-> `--robot lerobot:real` uses when you have not named the robot, which is why the two look
-> alike. And the rest pose in section 07 was written after that day and has not been tried on
-> an arm at all. So you are the second person down this path rather than the first, and what
-> differs from that account is the part worth writing down. [What to
-> report](#14-what-to-report) still matters most, whether or not the arm waves.
+> COM3`, with no registered name; `arm-01` is both the id that run calibrated under and the id
+> a bare `--robot lerobot:real` uses when you have not named the robot, which is why the two
+> look alike. And the rest pose in section 07 was written after that day. Both were taken on
+> the same arm on 2026-09-23, under a registered name with a rest pose recorded, and the pose
+> could not be reached: it lay past the travel the arm's calibration recorded, and the servo
+> will not be driven there. That is why [section 07](#07-record-the-rest-pose) now asks you to
+> calibrate with the arm folded, and what quackd does when the fold is outside the travel
+> anyway. So you are the second person down this path rather than the first, and what differs
+> from those accounts is the part worth writing down. [What to report](#14-what-to-report)
+> still matters most, whether or not the arm waves.
 
 This page is in two parts, and they are two ways of driving the same arm rather than two
 different jobs. **Part 1 is the terminal**, `quackd run` with a model you bring and a key in a
@@ -340,6 +343,12 @@ through its range.
 lerobot-calibrate --robot.type=so101_follower --robot.port=COM5 --robot.id=arm-01
 ```
 
+**When it asks you to move every joint through its range, take each one all the way into the
+fold you will rest the arm in.** The travel it records is written into each servo as its
+limits, and the servo is never driven past them afterwards. A shoulder that never went all the
+way back during calibration leaves its own fold outside its travel, which is what happened on
+the bench on 2026-09-23, and [section 07](#07-record-the-rest-pose) says what that costs.
+
 > [!IMPORTANT]
 > The id has to be the one quackd will use, which is why the command above says `arm-01`:
 > [section 06](#06-first-contact) registers this arm under that name, and a registered name
@@ -477,6 +486,30 @@ refuses with `no terminal to ask on: pass --yes to record it` rather than guessi
 > the arm before you run the command and watch whether it stays there. If it sags, fold it
 > lower and record again.
 
+**The fold has to be inside the travel your calibration recorded**, which is why
+[section 05](#05-find-the-port-then-calibrate) asked you to take every joint all the way into
+it. A servo on this arm is never driven past the limits calibration wrote into it, so a fold
+outside them is a pose the arm can rest in and cannot be driven back to. That is the bench of
+2026-09-23. The arm's calibration had never seen the shoulder folded all the way back, the
+rest pose lay about 20 degrees past the floor of that joint's travel, and the rest move could
+not get there: runs aborted before the first model call, every run that got to its end kept
+torque on and finished at the power switch, and the `stop` at the end of a run hauled the
+folded shoulder up out of its fold.
+
+If your fold lies outside the travel anyway, `rest-pose` says so as a warning before it asks,
+naming the joint, the angle you folded it to and the edge of its travel, and records the pose
+all the same. From then on quackd parks the arm at the edge of the travel, counts that as
+reaching the pose, lets go of it there, and says once per run which joint is free to settle
+the rest of the way ([the table below](#what-a-run-then-does-with-it)). A `stop` never writes a
+goal for a joint that reads past its travel, so it cannot haul a folded joint up again. The fix
+is still a calibration that saw the fold.
+
+**Calibrating again makes the pose stale.** A joint's zero in degrees is the middle of the
+travel its calibration recorded, so a calibration that records a different travel moves that
+zero, and the angles you recorded before it name a different shape after it. Record the pose
+again after every `lerobot-calibrate`, and read any task or remembered note that names an angle
+as meaning a different pose too.
+
 #### What a run then does with it
 
 | When | What happens |
@@ -484,6 +517,7 @@ refuses with `no terminal to ask on: pass --yes to record it` rather than guessi
 | The start of a run | the arm is driven to the pose before the pilot is given control, so what a model improvises from is the same arm every time. A run that cannot get there aborts before a single LLM call is made |
 | The end of a run | between the `stop` and the disconnect, on every exit path there is: success, failure, infeasible, out of budget, an abort, an error, and Ctrl-C |
 | Torque, at the end | released only where the arm is known to have reached the pose. Where it has not, quackd turns LeRobot's disconnect flag off, leaves the arm holding itself up, and says so in one line |
+| A fold past the travel | the arm is driven to the edge of the travel instead, which counts as reaching the pose, and torque is released there. A joint already folded past the edge is at rest where it is and is sent nothing. The run says once which joint is free to settle the rest of the way, `doctor` prints the same sentence under its table with the `rest pose` row green, and an MCP session logs it |
 | `--dry-run` | nothing. A dry run never moves the arm, at either end, so unless the arm happens to be at the pose already it is let go of with torque on |
 | `quackd doctor` | a probe returns the arm to the pose too, and prints a `rest pose` row: `at it already`, `returned to it`, `not reached: ...`, or `none recorded (quackd robot rest-pose <name>)` |
 | `quackd robot list --probe` | does not move the arm. It says `torque left on: not at its rest pose` when it had to keep holding it |
@@ -501,18 +535,29 @@ the arm is not at its rest pose (...), so torque was left on and it will not fal
 arm and cut its power, or run again
 ```
 
-Something is in the way, or a servo tripped. The arm is still energised and still holding
-itself up, so hold it and cut power rather than walking away from it.
+Something is in the way, or a servo tripped. A fold past the calibrated travel is no longer
+one of the reasons, since the edge of the travel counts as there. The arm is still energised
+and still holding itself up, so hold it and cut power rather than walking away from it.
 
 Two details worth knowing before they surprise you:
 
 - **Only the five body joints are ever driven.** The gripper is recorded and printed, and it
   is never commanded, for the same reason `stop` leaves it alone: re-sending it would open a
   hand that is holding something.
-- **The pose is sent without the range clamp.** A folded arm often sits outside the travel its
-  calibration recorded, and the bench arm folded to `shoulder_lift` -113.5 against a
-  calibrated range of about plus or minus 84.2. The usual out of range refusal would refuse to
-  put the arm down, so the rest move does not go through it.
+- **The pose is sent clipped into the travel, joint by joint.** Where a joint of the pose lies
+  past its travel, the goal is the edge of the travel, and that joint is at rest anywhere from
+  5 degrees short of the edge out past it on the side of the fold. Every other joint is at rest
+  within 5 degrees of the angle you recorded. Captured on the mock arm, whose `shoulder_lift`
+  travels -100 to 100, registered with that joint recorded at -118:
+
+  ```
+  ·  note    moving to the rest pose
+  ·  note    at the rest pose
+  ·  note    shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose NAME) to make the fold reachable
+  ```
+
+  Whether a real joint let go at the edge settles onto its fold, and gently, is one of the
+  things [section 14](#14-what-to-report) asks.
 
 To forget the pose:
 
@@ -1199,7 +1244,8 @@ And once it is running:
 | `the arm's torque is off` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so this points at a tripped servo or the supply |
 | the run ends saying the arm did not answer | the heartbeat's round trip failed | the cable, the power, or a tripped servo. The arm holds its last goal under torque. Seen once on 2026-09-15, in a dry run, and not since |
 | the arm sags when the run ends | no rest pose is recorded, so torque drops where the arm stands | `quackd robot rest-pose arm-01`, with the arm folded by hand first |
-| `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose` | hold the arm, cut its power, clear whatever stopped it, and run again. It stays energised until you do |
+| `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose` | hold the arm, cut its power, clear whatever stopped it, and run again. It stays energised until you do. If you calibrated again since you recorded the pose, record it again: the old angles name a different shape now |
+| `... is recorded at ... in the rest pose and this calibration lets its servo be driven to ... and no further` | the fold you recorded lies past the travel your calibration recorded. The arm parks at the edge of the travel and is let go of there, and the run carries on | nothing needs doing today. To make the fold itself reachable, calibrate again with every joint taken all the way into it, then record the pose again |
 
 [adapters/lerobot.md](adapters/lerobot.md) has the full table, including the failures SO-101
 owners report that nobody here has reproduced.
@@ -1222,7 +1268,10 @@ have two. The four that nobody has measured at all:
   refusal and the 70 cut-off are Feetech's documentation rather than anything measured here,
   and the bench run was too short to warm anything up.
 - **Whether a stall is caught on purpose.** Hold a joint gently against its goal and see
-  whether the verb fails with where it stopped. Nobody has deliberately tried it.
+  whether the verb fails with where it stopped. Nobody has deliberately tried it. The rest
+  move's own stall check did fire on 2026-09-23, by accident, when it drove a folded shoulder
+  into the servo's limit and the joint stopped there, and it said where. A verb's check, on a
+  joint held on purpose, is still untried.
 - **Whether five degrees an action felt right** in the room. One person has watched this arm
   move, and they did not write down an opinion on the speed.
 
@@ -1254,6 +1303,16 @@ can answer either:
   or whether the pilot has to close the gripper properly on it first with the `gripper` verb,
   is the difference between `--by-hand` being useful for a task with a tool in it and being a
   way to set a starting shape and nothing more.
+
+One more arrived with the bench of 2026-09-23, and it only applies if your run prints the note
+about a joint recorded past its travel:
+
+- **Whether a joint let go at the edge of its travel settles onto its fold.** quackd parks it at
+  the edge, releases torque there, and says it is free to settle the rest of the way. Whether
+  it does, whether it drops or eases down, and whether a joint folded past the *top* of its
+  travel settles at all, are the servo's and the arm's weight's to answer. Say which joint, how
+  far the note said it had to go, and what it did. Then calibrate folded, record the pose
+  again, and say whether the note went away.
 
 The webcam question is closed enough to stop asking: the plugged-in camera was `opencv://1`
 and later `opencv://2` at 640x480, and it needed no `?backend=` key on Windows. Say so anyway
@@ -1965,6 +2024,17 @@ Read the order. The park comes first, so the arm is folded before the client has
 all. An arm that was there already and had nothing to travel logs `already at the rest pose`
 instead.
 
+A pose that lies past the arm's calibrated travel ([section 07](#07-record-the-rest-pose)) is
+parked at the edge of the travel, which counts as getting there, and the session says so once,
+between the park and the line that says it is up. Captured on the mock arm registered with
+`shoulder_lift` at -118, where the mock's travel for that joint ends at -100:
+
+```
+quackd-mcp INFO arm-01: moved to the rest pose
+quackd-mcp INFO arm-01: shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose NAME) to make the fold reachable
+quackd-mcp INFO quackd MCP server up: robot=arm-01 transport=mock dry_run=False
+```
+
 The first `report_state` reads 0 where 45 was. The mock's numbers, yours will be your arm's:
 
 ```
@@ -2020,8 +2090,9 @@ energised and holding itself up, cut its power, clear whatever stopped the fold,
 
 > [!CAUTION]
 > A session that ends any way but cleanly leaves an energised arm. Torque comes off only where
-> the arm is known to have reached the recorded pose, which is deliberate: an arm holding itself
-> up is better than an arm on the desk. The one exception is written in the stderr note: where
+> the arm is known to have reached the recorded pose, or the edge of its travel where the pose
+> lies past it, which is deliberate: an arm holding itself up is better than an arm on the
+> desk. The one exception is written in the stderr note: where
 > it says quackd could not keep torque on and the arm was released where it stood, torque is off
 > and nothing is holding the arm up, so read that line before you trust the rest of this. A hard
 > kill, a dry run away from the pose and a failed park all end with servos under load, and
@@ -2033,7 +2104,9 @@ both ends, the refusal and the dry run's missing parks: the mock transport recor
 `tests/test_mcp_server.py` holds them to it. The other rows are how the code reads, with no
 capture and no test behind them. No MCP session has yet parked a real arm. The bench arm on
 2026-09-15 fell at the end of every run of the day and this is the answer to that, written
-afterwards and not yet tried against servos with weight in them. Keep a hand near the arm for
+afterwards. It first met servos with weight in them on 2026-09-23, in `quackd run`, and could
+not reach a fold that lay past the arm's calibrated travel, which is what the parking at the
+edge above now answers ([section 07](#07-record-the-rest-pose)). Keep a hand near the arm for
 the first connect and the first close, and say in [what to report](#m14-what-to-report)
 whether the fold held with torque off and whether the park at the end put it back in shape.
 
@@ -2614,7 +2687,9 @@ terminal running `quackd run`, and an MCP session has no terminal of its own:
   which is LeRobot's default and quackd keeps it, so the ordinary end leaves the arm limp at the
   rest pose. A rest pose your arm does not hold by itself is a falling arm, which is what the bench
   saw at the end of every run on 2026-09-15 before the rest pose existed. quackd keeps torque on
-  when the park did not get there, and that fallback has not been tried on hardware.
+  when the park did not get there, and that fallback has fired on hardware: on 2026-09-23, on
+  every run that got to its end, because the fold lay past the arm's calibrated travel, and the
+  arm held itself up until its power was cut.
 - **Cut power.** Still the only thing that works in every case, including the one where the process
   holding the goal has died.
 
@@ -2894,7 +2969,8 @@ never happened is a chat client's model answering it.
   there, whether the path it took was a sensible one to watch, and whether the log said so.
 - **Did the close-time park work?** Ending the session should stop the arm, fold it, and then
   let go, in that order. Say whether the arm was at its pose when torque dropped, and whether it
-  stayed where it was once torque was off.
+  stayed where it was once torque was off. If the log said a joint is recorded past its travel,
+  say whether that joint settled onto its fold after it was let go at the edge.
 - **What did an unclean exit leave?** Kill the server process from Task Manager, the `quackd.exe`
   the client launched rather than the client itself, with the arm somewhere away from its pose.
   None of the teardown runs in that case. What should happen is that the arm holds its last goal

@@ -16,13 +16,16 @@ and why the adapter is shaped the way it is is
 [ADR-0036](../adr/0036-what-the-arm-does-not-say.md).
 
 > [!NOTE]
-> **The `real` backend has run on an arm. Once.** On 2026-09-15 an SO-101 follower, calibrated
+> **The `real` backend has run on an arm.** On 2026-09-15 an SO-101 follower, calibrated
 > as `arm-01` and reached with no registered name, ran `lerobot-lookout` and then free-form `--goal` runs
 > on Windows 11 with Python 3.12.12, lerobot 0.6.1 and quackd 0.9.0, piloted by OpenAI's
 > `gpt-6-astra`. It also went limp and fell at the end of every one of those runs, which is what
-> [the rest pose](#the-rest-pose) now exists to fix. What ran, what went wrong and what that
-> afternoon did not measure is in [Status](#status); the account from the other end, an empty
-> laptop to a waving arm, is [lerobot-first-run.md](../lerobot-first-run.md).
+> [the rest pose](#the-rest-pose) exists to fix. On 2026-09-23 the same arm ran again with a rest
+> pose recorded, and the pose lay past the travel its calibration recorded, where the servo will
+> not be driven: [The rest pose](#the-rest-pose) says what that did and what quackd does about
+> it now. What ran, what went wrong and what that first afternoon did not measure is in
+> [Status](#status); the account from the other end, an empty laptop to a waving arm, is
+> [lerobot-first-run.md](../lerobot-first-run.md).
 
 ```bash
 # offline, the default
@@ -211,7 +214,8 @@ opened, and `pick` when a policy object was injected. It also adds what cannot b
 the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
 the calibration file (`wrist_roll` included, where that travel is the whole turn upstream
 records rather than anything swept, see Safety), `extras.calibration_file`, the path that came
-from, `limits.step_deg`,
+from, `extras.rest_pose_clipped` when the recorded rest pose lies past that travel
+([A pose past the travel](#a-pose-past-the-travel)), `limits.step_deg`,
 how far one action may move a joint (`QUACKD_LEROBOT_MAX_STEP_DEG` sets it), and
 `extras.camera` with `limits.camera_fov_deg` when there is a camera. With more than one camera
 it also carries `extras.cameras`, their names in the order the urls were given, primary first.
@@ -222,8 +226,8 @@ naming it in sentences nobody needs.
 | Verb | Kind | What it does here |
 |---|---|---|
 | `observe` (alias `get_frame`) | core | one frame plus detections, only when a camera is configured. With several cameras it is the primary's frame, because a detection is a bearing and a bearing belongs to one lens |
-| `report_state` | core | joint positions in degrees, whether torque is on, each servo's temperature, whether something is held |
-| `stop` | core | hold: the present position becomes the goal. Never limp (see Safety) |
+| `report_state` | core | joint positions in degrees, whether torque is on, each servo's temperature, whether something is held, and a clause for any joint that reads more than 2 degrees past its travel |
+| `stop` | core | hold: the present position becomes the goal of every body joint inside its travel. Never limp (see Safety) |
 | `move_joints(positions, duration_s)` | extension | goal angles for one or more of the six joints, re-sent at 10 Hz until the measurement arrives; a joint that stops short is a failure, and `duration_s` is the budget |
 | `gripper(open)` | extension | open or close the gripper, and report where it stopped |
 | `place` | extension | open the gripper where the arm is; needs `holding` |
@@ -610,8 +614,10 @@ quackd, side by side, is [safety.md](../safety.md).
   `Torque_Enable` and `Present_Temperature` are read off the bus. A body joint at or above
   60 °C refuses `move_joints` and `pick`; the servo's own cut-off is 70 °C.
 - **A goal outside the calibrated range is refused, on four joints of the five.** LeRobot
-  does not clamp a degrees goal, so quackd computes each joint's travel from the calibration
-  file and refuses instead. `wrist_roll` is the exception, and it is upstream's: its
+  does not clamp a degrees goal and the servo does, silently, to the travel calibration wrote
+  into it (`up.POSITION_LIMITS_CLAMP_GOALS`), so a goal let through would be one the arm quietly
+  stops short of. quackd computes each joint's travel from the calibration file and refuses
+  instead. `wrist_roll` is the exception, and it is upstream's: its
   calibration deliberately does not sweep that joint, printing *move all joints except
   'wrist_roll'* and recording a full encoder turn for it instead
   (`up.WRIST_ROLL_IS_A_FULL_TURN`). Its travel therefore comes out as -180..180, and a refusal
@@ -622,7 +628,9 @@ quackd, side by side, is [safety.md](../safety.md).
 - **No deadman.** Nothing in LeRobot's `Robot` stops an arm when the client goes quiet: read
   from the class, not assumed. quackd's `stop` re-sends the present position as the goal and
   never calls `disable_torque()`, the same principle as never sending `robot.relax` to a
-  Microduck.
+  Microduck. A joint that reads past its travel gets no goal from a stop at all, because the
+  servo would clamp "stay here" to its limit and drive there
+  ([A pose past the travel](#a-pose-past-the-travel)).
 - **`stop` leaves the gripper's goal alone.** It sends the five body joints and omits the
   gripper key, so a stop never opens a hand that is squeezing something, and every failed
   verb ends in a stop.
@@ -636,8 +644,9 @@ quackd, side by side, is [safety.md](../safety.md).
 - **Torque is released only where the arm is known to be at its recorded rest pose.**
   `disconnect()` disables it by LeRobot's default, which quackd keeps, because an arm at rest
   should be limp: that is what "at rest" means. So before the disconnect quackd reads the
-  joints one last time, and where they are not the pose you recorded it turns that default off
-  and leaves the arm holding itself up, with one line saying so:
+  joints one last time, and where they are not the pose you recorded, or as near it as the
+  calibrated travel lets the servo go, it turns that default off and leaves the arm holding
+  itself up, with one line saying so:
 
   ```
   the arm is not at its rest pose (...), so torque was left on and it will not fall:
@@ -665,11 +674,20 @@ A rest pose fixes both. You fold the arm by hand, tell quackd where that is, and
 it there at both ends of every run.
 
 > [!IMPORTANT]
-> None of this has been run on an arm. It was written after the day the arm fell, and it is
-> exercised against a fake arm and the mock, the same standing as every other `lerobot:real`
-> behaviour on this page. The first person to record a pose on real hardware is finding out
-> whether it holds, so read [section 07 of the first run](../lerobot-first-run.md#07-record-the-rest-pose)
-> with a hand near the power switch and say what happened.
+> **The first arm to run a rest pose could not reach it.** On 2026-09-23 the SO-101 of the 15th
+> ran with a pose recorded, and that pose had `shoulder_lift` folded about 20 degrees past the
+> floor of the travel its calibration recorded, because the calibration never saw the shoulder
+> folded all the way back. LeRobot's calibration writes that travel into each servo as its
+> position limits, and the servo clamps every goal to them. So the rest move drove the shoulder
+> to the limit, stalled there and called the arm lost: runs aborted before their first model
+> call, every run that got to its end kept torque on and finished at the power switch, and the
+> `stop` at the end of a run hauled a folded shoulder up out of its fold. What quackd does with
+> a pose past the travel now is [A pose past the travel](#a-pose-past-the-travel), below, and
+> the whole account is [ADR-0045](../adr/0045-a-rest-pose-the-calibration-cannot-reach.md).
+> That answer has run against a fake arm that clamps the way the servo does and against
+> `lerobot:mock`, and not yet on the arm, so read
+> [section 07 of the first run](../lerobot-first-run.md#07-record-the-rest-pose) with a hand
+> near the power switch and say what happened.
 
 ### Recording it
 
@@ -699,6 +717,18 @@ gripper        100.0
 Those numbers are the **mock** arm's, which is where that transcript was captured. A real
 SO-101 folded on a desk reports its own, and they will not look like these.
 
+**Calibrate with the arm folded, before you record.** A servo will not be driven past the
+travel its calibration recorded, so the fold you record should be inside that travel. When
+`lerobot-calibrate` asks you to move every joint through its whole range, take each one all
+the way into the fold you mean to rest the arm in. Where the fold still lies past the travel,
+`rest-pose` says so as a warning before it asks, in the same sentence a run will use, and
+records the pose anyway: it is where the arm rests, and a run parks as near it as the servo
+goes ([A pose past the travel](#a-pose-past-the-travel)). A new calibration also moves the zero
+of any joint whose travel it records differently, because a joint's zero in degrees is the
+middle of its recorded travel. So a pose recorded before it names a different shape after it:
+record the pose again, and read any task or remembered note that names an angle as meaning a
+different pose too.
+
 `quackd robot show NAME` prints the pose back in a `rest pose` row, and `--json` puts it under
 `rest_pose`. `--clear` forgets it:
 
@@ -720,6 +750,7 @@ its name. There is no `--rest-pose` flag on `quackd run`.
 | a `--by-hand` run | the rest move still happens first, and then the arm is released **at** that pose for somebody to place. The pose is what makes the release safe rather than something the flag skips, and the run ends back at it ([Placing it by hand](#placing-it-by-hand)) |
 | a dry run | nothing. `--dry-run` never moves the arm, and that includes the rest move |
 | an MCP session | the same at both ends, and the session refuses to start if it cannot get there |
+| a pose past the travel | the arm is driven as near the pose as its servos go, which is the edge of the travel, and that counts as getting there. Torque is released at the edge, and the run says once which joint is free to settle the rest of the way ([A pose past the travel](#a-pose-past-the-travel)) |
 
 Both ends are narrated, so the transcript says what happened rather than leaving you to infer
 it from a joint reading:
@@ -728,6 +759,85 @@ it from a joint reading:
 ·  note    moving to the rest pose
 ·  note    already at the rest pose
 ```
+
+### A pose past the travel
+
+A servo on this arm will not be driven outside the travel its calibration recorded. LeRobot's
+calibration writes each joint's travel into its servo as two position limits, and the servo
+clamps every goal it is written to them (`up.POSITION_LIMITS_CLAMP_GOALS`). A reading is not
+clamped: with torque off a joint goes wherever a hand or its own weight puts it, past either
+end. So a pose recorded off a hand-folded arm can lie past the travel, and a goal of that pose
+is one the arm drives to the limit, stops at, and never reaches. That is the bench of
+2026-09-23 in the box above.
+
+quackd now plans for it, on any joint, at either end of its travel, from the numbers this
+arm's own calibration gives it at connect:
+
+- **The rest move drives to the reachable pose.** Each body joint of the recorded pose is
+  clipped into its travel. The pose in `robots.json` stays exactly as you recorded it, because
+  the clip is a fact about this calibration and not about your fold.
+- **A clipped joint is at rest anywhere from 5 degrees short of the edge of its travel out
+  past it**, on the side its fold lies. Nothing quackd sends can drive a joint past its limit,
+  so a joint that reads well past it was put there with torque off: it is folded, not lost.
+  Every other joint keeps the ordinary rule of within 5 degrees of its recorded angle.
+- **So the arm parks at the edge, which counts as arriving, and torque is released there.** The
+  joint is then free to settle the rest of the way toward its fold. An arm already folded past
+  the edge is `already` at rest, and the rest move sends that joint nothing, because the only
+  goal it could send is the limit, and that would haul the joint up out of its fold.
+- **A stop writes no goal for a joint that reads past its travel**, and neither does the
+  take-hold of a [hand-placed start](#placing-it-by-hand). "Stay where you are" written to that
+  joint arrives as "go to the limit", and the servo does it at full speed: on the bench, the
+  stop at the end of a run hauled a folded shoulder up out of its fold this way. The joint keeps
+  whatever goal its servo already holds instead. If every body joint reads past its travel,
+  nothing is sent at all, and the stop is still a stop.
+- **A joint that stops short *inside* its travel is still a miss.** A hand, the desk or a
+  tripped servo in the way keeps torque on and prints the line in
+  [The torque rule](#the-torque-rule), exactly as before.
+
+The run says what happened, once, right after its first `at the rest pose`, in this arm's own
+numbers. Captured on `lerobot:mock`, whose `shoulder_lift` travels -100 to 100, registered with
+a rest pose that has `shoulder_lift` at -118:
+
+```
+·  note    moving to the rest pose
+·  note    at the rest pose
+·  note    shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose NAME) to make the fold reachable
+```
+
+The end of that run's transcript reads `already at the rest pose`, and says nothing more,
+because the note is about the pose rather than about either move. The same sentence is what
+`doctor` prints as advice under its table, with the `rest pose` row still green
+([doctor](#doctor-and-robot-list---probe)), what an MCP session logs when it parks at connect,
+and what `quackd robot rest-pose` warns before it asks. It names only a joint clipped by more
+than 5 degrees, since a smaller clip is inside the tolerance any reached pose may miss by. The
+run's first record names every clipped joint, whatever the amount, in the manifest:
+
+```
+"rest_pose_clipped": {"shoulder_lift": {"recorded": -118.0, "reachable": -100.0}}
+```
+
+**The pilot is told why a joint can read past its travel.** The travel line of its system prompt
+now ends *A joint can read past its travel when it was folded or placed there with torque off,
+which is where a rest pose usually is; goals are still limited to the travel.* And
+`report_state` adds a clause for each joint that reads more than 2 degrees past its travel, in
+the form `<joint> reads <angle>, past the <limit> its servo can be driven to; goals are still
+limited to its travel`. On the bench, a pilot handed a shoulder reading past the end of its travel line, with
+nothing to explain it, refused to move the arm at all.
+
+**The fix is a calibration that saw the fold.** Calibrate again with every joint taken all the
+way into the fold during the sweep, then record the pose again, for the reasons in
+[Recording it](#recording-it). The note goes away once no joint of the pose lies more than 5
+degrees past its travel.
+
+> [!NOTE]
+> Parking at the edge and letting go there has run against a fake arm that clamps goals the way
+> the servo does and against `lerobot:mock`, and not yet on the arm. Two things only a bench
+> can say: whether a joint let go at the edge settles onto its fold, and gently, and whether one
+> folded past its *ceiling* settles at all, since its weight need not pull it toward the fold.
+> The note says the joint is free to settle, not that it will. And a joint the take-hold writes
+> no goal for is left to whatever its servo does when torque comes on, which is
+> `up.TORQUE_ENABLE_HOLDS_PRESENT` below: the read-back still catches it, and when it is that
+> joint that moved, the refusal says it was placed past its travel.
 
 ### Placing it by hand
 
@@ -747,8 +857,10 @@ The order below is the whole of the feature, and none of it is a step you can sk
    A run that cannot get there aborts here, before any torque is touched, because an arm that
    did not reach the pose is precisely an arm that must not be released at it.
 2. **Torque comes off, at that pose and nowhere else.** `let_go()` re-reads the joints and
-   refuses anywhere but the recorded pose: an arm held up by torque alone falls the moment
-   torque goes, and the person who asked for this still has their hands nowhere near it. It
+   refuses anywhere but the recorded pose, judged exactly as the close judges it, so a joint
+   recorded past its travel counts at the edge of it or beyond
+   ([A pose past the travel](#a-pose-past-the-travel)): an arm held up by torque alone falls the
+   moment torque goes, and the person who asked for this still has their hands nowhere near it. It
    also refuses a pose that names no joint this arm drives, and an arm that still reports
    torque on after the call, which is a release that did not take rather than one to walk
    away from.
@@ -760,7 +872,11 @@ The order below is the whole of the feature, and none of it is a step you can sk
    *before* torque comes on, written again after, and then the arm is read back. A joint that
    moved more than the same **5 degrees** every other goal on this page is judged by is a
    refusal and the run ends, because a run that started from a pose nobody chose is a run whose
-   first observation is a lie.
+   first observation is a lie. A joint you placed past its calibrated travel is left out of both
+   writes, because the servo would clamp its goal to the limit and drive it there under your
+   hand. That joint is left with whatever goal its servo already had, and if it is the one that
+   moved, the refusal says it was placed past its travel, gives the edge in this arm's numbers,
+   and asks for it to be placed inside.
 5. **The pilot runs from those angles.** The step cap, the range refusal, the heat gate and the
    budgets are all the ones any other run gets. The minutes clock restarts the moment the arm
    is holding your pose, so the time you spent looking for a pencil is not taken out of the
@@ -885,18 +1001,21 @@ connects and before a run directory exists:
 | `--by-hand releases the arm at its recorded rest pose, and this arm has none recorded` | the release refuses anywhere but the recorded pose, so an arm without one could never be handed over at all. Said here rather than after it has connected: `quackd robot rest-pose NAME` |
 
 > [!NOTE]
-> Like the rest pose it departs from, the hand-off is exercised against `lerobot:mock` and in
-> the test suite, and not yet on a real arm. The step that most wants one is the take-hold:
-> whether a servo re-energised under the weight of an outstretched arm actually stays within
-> 5 degrees of where a hand left it is `up.TORQUE_ENABLE_HOLDS_PRESENT` in the table below, and
-> it stays an assumption until somebody stands there and watches it happen. Say what it did.
+> The hand-off is exercised against `lerobot:mock` and in the test suite, and not yet on a
+> real arm. The step that most wants one is the take-hold: whether a servo re-energised under
+> the weight of an outstretched arm actually stays within 5 degrees of where a hand left it is
+> `up.TORQUE_ENABLE_HOLDS_PRESENT` in the table below, and it stays an assumption until
+> somebody stands there and watches it happen. Say what it did.
 
 ### The torque rule
 
-Torque is released **only** where the arm is known to be at the pose you recorded. A joint is
-at its recorded angle when it reads within **5 degrees** of it, the same tolerance a
-`move_joints` goal is judged by, and every joint of the pose has to be reported and within it.
-Where that does not hold, quackd turns LeRobot's `disable_torque_on_disconnect` off on the
+Torque is released **only** where the arm is known to be at the pose you recorded, or as near
+it as its calibration lets the servos go. A joint is at its recorded angle when it reads within
+**5 degrees** of it, the same tolerance a `move_joints` goal is judged by, and every joint of
+the pose has to be reported and within it. A joint recorded past its travel is at rest within
+the same 5 degrees of the edge of that travel, or anywhere beyond the edge on the side its fold
+lies, for the reasons in [A pose past the travel](#a-pose-past-the-travel). Where that does not
+hold, quackd turns LeRobot's `disable_torque_on_disconnect` off on the
 config instance before the call, closes the port with every motor still holding its goal, and
 prints one line:
 
@@ -906,7 +1025,10 @@ hold the arm and cut its power, or run again
 ```
 
 The parenthesis names the joints and how far short they are, and, where the rest move itself
-failed, why it failed.
+failed, why it failed. It never names a joint that is folded past its travel, because that
+joint is at rest. An arm parked at the edge of its travel and let go there prints nothing at
+the close: the sentence about its fold was said once, by the rest move, and a close line is
+read everywhere as torque left on.
 
 > [!CAUTION]
 > This is a behaviour change. A probe or a dry run on an arm away from its recorded rest pose
@@ -933,12 +1055,14 @@ never commanded, for the same reason `stop` omits it: LeRobot writes only the ke
 so leaving the gripper out keeps whatever squeeze is already commanded, and a rest move that
 re-sent the gripper would open a hand that is holding something.
 
-The rest move is also the one move quackd sends **unclipped**. A pose read off the arm is where
-the arm physically was, and an arm folded to rest often sits outside the travel its own
-calibration recorded: the bench arm folded to `shoulder_lift` -113.5 against a calibrated
-±84.2. The out-of-range refusal that guards `move_joints` would refuse to put that arm down, so
-the rest move does not go through it. Record a pose you are willing to have the arm driven to
-without that check.
+The rest move goes out **clipped** into the travel, like every other goal quackd sends. Until
+2026-09-23 it was the one move sent unclipped, on the belief that a servo sent the angle of a
+fold outside its recorded travel would drive the arm back into that fold. The bench showed it
+does not: it clamps the goal to its limit and stops there
+([A pose past the travel](#a-pose-past-the-travel)). The out-of-range refusal that guards
+`move_joints` is still not in the rest move's way, and would have nothing to refuse: the goal is
+the recorded pose already clipped into the travel from the same calibration. Record a pose you
+are willing to have the arm driven toward from wherever a run ends.
 
 The move itself is re-sent at 10 Hz under the same 5 degree step cap as any other, on a budget
 computed from how far the arm has to travel and bounded so a teardown cannot hold a run open
@@ -962,6 +1086,18 @@ dropped torque and put the bench arm on the desk:
 | `returned to it` | `doctor` drove it back, and torque dropped at the end |
 | `none recorded (quackd robot rest-pose <name>)` | nothing to park to, so the probe ended the way it always did: limp |
 | `not reached: ...` | the probe **fails**, the arm kept its torque, and the line about holding it and cutting the power comes out as an advisory under the table |
+
+A pose past the travel is parked at the edge of it, and the row says `returned to it` or `at it
+already` as it would for any pose, because the arm reached the pose it can be driven to and was
+let go of there. What the fold means comes out as advice under the table, and the verdict stays
+green. Captured on `lerobot:mock` registered with `shoulder_lift` at -118, against the mock's
+travel of -100 to 100 for that joint (`quackd doctor --robot arm-01 --address mock://arm`):
+
+```
+│ rest pose         │ returned to it                                                              │
+└───────────────────┴─────────────────────────────────────────────────────────────────────────────┘
+shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose NAME) to make the fold reachable
+```
 
 `quackd robot list --probe` does **not** move the arm. It reads, lets go, and where the arm was
 not already at its pose it keeps torque and says so on the same line that says the arm
@@ -1024,8 +1160,10 @@ And once it is running:
 | `cannot place: nothing is held: pick something first` | the `holding` precondition | holding is inferred from the gripper stopping short of shut, so an empty hand reads as nothing held. After a `--by-hand` start it is also what a pilot gets for the pencil you put between the jaws yourself: closing the gripper by hand sets a position and not a grip, and the pilot has to close on the object itself first |
 | the run ends saying the arm did not answer | the heartbeat's round trip to the motors failed | the cable, the power, or a servo that has tripped. The arm holds its last goal under torque |
 | the arm sags when the run ends | no rest pose is recorded, so LeRobot's `disconnect()` disables torque by its own default, at the end of every clean session | record one: `quackd robot rest-pose <name>`. Until you do, support it or fold it somewhere it can rest before you exit |
-| `the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut its power, or run again` | the arm did not reach the pose you recorded, so quackd kept torque rather than dropping it | hold the arm and cut the servo supply, or run again and let the rest move try from where it now is. The parenthesis names the joints that fell short |
-| a run aborts with `the arm did not reach its rest pose: ...` before any model call | the run could not start from the recorded pose | something is in the way, or the pose no longer matches the arm. Clear it with `--clear` and record it again, or move whatever is blocking the fold |
+| `the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut its power, or run again` | the arm did not reach the pose you recorded, or the edge of its travel where the pose lies past it, so quackd kept torque rather than dropping it | hold the arm and cut the servo supply, or run again and let the rest move try from where it now is. The parenthesis names the joints that fell short |
+| a run aborts with `the arm did not reach its rest pose: ...` before any model call | the run could not start from the recorded pose | something is in the way, or the pose no longer matches the arm, which is what a new calibration does to a pose recorded before it. Record it again, or move whatever is blocking the fold. A fold past the calibrated travel no longer ends a run here: the arm parks at the edge |
+| `<joint> is recorded at <angle> in the rest pose and this calibration lets its servo be driven to <limit> and no further, so it parks there and is let go of there ...` | the fold you recorded lies past the travel in your calibration file, so the arm parks at the edge of it and is let go of there. Not a fault: the run carries on | calibrate again with every joint taken all the way into the fold, then record the pose again ([A pose past the travel](#a-pose-past-the-travel)) |
+| `report_state` says `<joint> reads <angle>, past the <limit> its servo can be driven to` | that joint was folded or placed past its travel with torque off, which is where a rest pose past the travel leaves it, or it was parked at its limit and has sagged a few degrees past it under its own weight | nothing. It is said so the pilot does not take the reading for a fault, and goals are still limited to the travel |
 
 ### Reported by owners, not by us
 
@@ -1117,7 +1255,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `NORMALIZED_DATA is Goal_Position and Present_Position` | every other register comes back raw |
 | `MotorCalibration(id, drive_mode, homing_offset, range_min, range_max)` | raw encoder ticks, not degrees |
 | `degrees = (raw - mid) * 360 / 4095` | how a calibration file becomes a range in degrees, centred on zero |
-| `a degrees goal is not clamped to the calibrated range` | the two 0..100 modes are clamped and DEGREES is not: why quackd refuses |
+| `a degrees goal is not clamped to the calibrated range` | the two 0..100 modes are clamped and DEGREES is not, so the servo's own clamp is what stops a goal past the travel, silently: why quackd refuses |
 | `write_calibration() writes Min_Position_Limit and Max_Position_Limit, and the servo clamps Goal_Position to them` | the servo clamps every goal to the calibrated travel and never a reading, seen on an SO-101 on 2026-09-23: why a rest pose is clipped into the travel and a joint past it gets no goal |
 | `sts3215 resolution 4096` | one tick is about 0.088 degrees |
 | `Torque_Enable (40, 1) and Present_Temperature (63, 1)` | the two registers quackd reads; upstream reads neither |
@@ -1152,11 +1290,11 @@ If you hit one of these, or fail to, that is exactly what the
 | Name | What quackd does |
 |---|---|
 | `POLICY_PIPELINE` | `pick` runs an injected policy object; `load_policy()` builds one from verified names and is untested. A policy's actions get the same step cap and range check as a verb's |
-| `TORQUE_ENABLE_HOLDS_PRESENT` | what a servo does with the goal it was last told when torque comes back on. `enable_torque()` writes the `Torque_Enable` register and nothing else, so whether the motor then holds where it is or drives to that stale goal is the firmware's business and is documented nowhere quackd can read. It matters because the goal last written before a hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back to it would happen with somebody's fingers in the way. `take_hold()` writes the present position as the goal **before** enabling torque, writes it again after, and reads the arm back to check it stayed, so the assumption is never relied on in either direction |
+| `TORQUE_ENABLE_HOLDS_PRESENT` | what a servo does with the goal it was last told when torque comes back on. `enable_torque()` writes the `Torque_Enable` register and nothing else, so whether the motor then holds where it is or drives to that stale goal is the firmware's business and is documented nowhere quackd can read. It matters because the goal last written before a hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back to it would happen with somebody's fingers in the way. `take_hold()` writes the present position as the goal **before** enabling torque, writes it again after, and reads the arm back to check it stayed, so the assumption is never relied on in either direction. The one exception is a joint placed past its calibrated travel, which gets no goal at all because the servo would clamp it to the limit (`POSITION_LIMITS_CLAMP_GOALS`). For that joint this row is all there is, and the read-back is what says whether it moved |
 | `GRIPPER_OPEN_VALUE` | 100 is assumed open; which end is open is how the arm was calibrated, and the checklist asks for it by hand |
 | `HOLDING_INFERRED` | holding is the gripper told to close, settled, and short of shut; listed in `extras.assumptions`. A gripper a person closed by hand is a position and not a grip, so an arm placed with `--by-hand` reports nothing held until the pilot closes the gripper itself |
 | `TEMPERATURE_C` | the register is read raw and treated as Celsius; the 60 °C refusal and the 70 °C cut-off are Feetech's numbers, not measured |
-| `JOINT_RANGES` | each joint's travel is computed from the calibration file and a goal outside it is refused; whether that is the mechanical limit is unverified |
+| `JOINT_RANGES` | each joint's travel is computed from the calibration file and a goal outside it is refused. It is not the mechanical limit on every arm: a calibration that never saw a joint folded all the way leaves the fold past it, as the bench arm's did on 2026-09-23, which is why a rest pose is clipped into the travel. Whether it is the mechanical limit on any given arm is unverified |
 | `SERIAL_PORT` | `--address` is checked for shape and nothing more |
 | `THREAD_SAFETY` | every call is serialised under one lock in a worker thread with a deadline; a blown deadline wedges the transport |
 | `CAMERA_INDEX_MOVES` | an index is a scan position, not an identity: it can move on a replug or a reboot, and a laptop's own webcam usually holds 0. quackd records the index it opened and cannot tell you it is the camera you meant |
@@ -1167,7 +1305,7 @@ If you hit one of these, or fail to, that is exactly what the
 `lerobot:mock` runs every arm verb through the executor in the test suite, including the
 confirm gate on `pick`, the `holding` precondition on `place` and the heat refusal.
 `lerobot:real` is exercised against a fake arm and a fake policy (verified method names, no
-serial port), and it has now run on one real arm, once.
+serial port), and it has now run on one real arm, on 2026-09-15 and again on 2026-09-23.
 
 ### What one afternoon proved, and what it did not
 
@@ -1191,7 +1329,9 @@ What went wrong, which belongs in the same breath as the above:
 
 - **The arm fell at the end of every run**, because `disconnect()` drops torque. That is the
   whole reason [the rest pose](#the-rest-pose) exists, and the rest pose is the one thing on
-  this page written after hardware rather than before it.
+  this page written after hardware rather than before it. It met the same arm on 2026-09-23 and
+  could not reach a fold that lay past the calibrated travel, which is the box at the top of
+  that section.
 - One dry run aborted with `the arm did not answer: TimeoutError` when a single heartbeat round
   trip failed. It never recurred, and nothing since has explained it.
 - One dry run aborted because the pilot answered `uncertain` at `assess_task` and the human

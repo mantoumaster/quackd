@@ -195,14 +195,24 @@ LeRobot arm does today
 What a recorded pose then changes is [safety.md](safety.md): a run drives the arm to it before
 the pilot gets control and back to it on every exit path there is, an MCP session does the same
 at both ends and refuses to start if it cannot get there, and `quackd doctor` returns the arm
-it probed. The arm's own side of it, including why the pose is sent unclipped, is
-[adapters/lerobot.md](adapters/lerobot.md).
+it probed. The arm's own side of it, including what happens to a pose recorded past the travel
+the arm's calibration recorded, is
+[adapters/lerobot.md](adapters/lerobot.md#a-pose-past-the-travel).
+
+A pose is kept exactly as it was read, and it is only as good as the calibration it was read
+under. A new calibration moves the zero of any joint whose travel it records differently, so
+the angles kept here name a different shape after one: record the pose again whenever the arm
+is calibrated again.
 
 > [!WARNING]
-> No rest pose has ever been recorded off a real arm. The SO-101 that ran on 2026-09-15 fell
-> at the end of every run, which is the reason this exists, and the rest pose landed the day
-> after ([lerobot-first-run.md](lerobot-first-run.md)). Every joint value on this page is a
-> mock's.
+> One rest pose has been recorded off a real arm, and it could not be reached. The SO-101 that
+> fell at the end of every run on 2026-09-15, which is the reason this exists, ran again on
+> 2026-09-23 with a pose recorded, and that pose lay past the travel the arm's calibration
+> recorded, where its servos will not be driven
+> ([ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md)). Calibrate with every
+> joint taken all the way into the fold before you record one
+> ([lerobot-first-run.md](lerobot-first-run.md#07-record-the-rest-pose)). Every joint value on
+> this page is a mock's.
 
 ## Probing
 
