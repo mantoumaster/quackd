@@ -589,6 +589,32 @@ async def test_the_mcp_verdict_tool_says_what_the_prompt_says() -> None:
         assert "before_verdict" in said, "which verbs run first is a field, not a fixed list"
 
 
+async def test_the_mcp_verdict_tool_spells_out_the_words_needs_takes() -> None:
+    """MCP types `needs` as a bare dict, so a client is shown no enum and none of the loop's
+    field descriptions. An MCP pilot asked to fill `needs` in had to guess the words, and the
+    one it most needs on an arm, `mobility: none`, did not exist. The description names every
+    word the checker accepts, read from the same tuples, and says a 0 or a none asks for
+    nothing."""
+    from quackd.verdict import MANIPULATOR_WORDS, MOBILITY_WORDS, TERRAIN_ORDER
+
+    assert "none" in MOBILITY_WORDS and "none" in MANIPULATOR_WORDS, "the words an arm needs"
+    async with connected() as (client, _session, _transport):
+        tool = next(t for t in (await client.list_tools()).tools if t.name == "robot_assess_task")
+        said = tool.description or ""
+        for key, words in (
+            ("mobility", MOBILITY_WORDS),
+            ("manipulator", MANIPULATOR_WORDS),
+            ("terrain", TERRAIN_ORDER),
+        ):
+            assert f"{key} is " in said, key
+            for word in words:
+                assert word in said, f"{key} never names {word}"
+        assert "none means the task needs no locomotion" in said
+        assert "a body that does not move meets indoor_flat" in said
+        assert "give 0 or none, when the task does not need it" in said
+        assert "work_height_m is a height the hands must reach, not a minimum" in said
+
+
 async def test_a_model_cannot_answer_for_the_human() -> None:
     """The tool has no `human` field to fill in, so the pilot cannot clear its own doubt."""
     async with connected() as (client, session, _transport):

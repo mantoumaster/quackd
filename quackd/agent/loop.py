@@ -738,6 +738,21 @@ class AgentLoop:
                 VerbResult.fail("a human was asked and said no"),
                 f"the pilot was unsure ({verdict.reason}) and the human said no",
             )
+        if verdict.human == "go":
+            # The pilot has to hear who cleared it. It used to be told only "recorded
+            # uncertain: ...; verbs that move the body now run", which reads the same as its
+            # own feasible, and the prompt invites it to assess again when it changes its mind.
+            # On the 2026-09-23 bench a pilot that a person had just said go to assessed the
+            # same doubt again, as infeasible, and the run ended on the question it had already
+            # asked and been answered. Something new it sees is still a reason to assess again.
+            return (
+                VerbResult.success(
+                    f"recorded {verdict.summary()}; a person read that and said go, so verbs "
+                    "that move the body now run. Do not assess again on the same doubt, only "
+                    "on something new you see"
+                ),
+                None,
+            )
         return (
             VerbResult.success(f"recorded {verdict.summary()}; verbs that move the body now run"),
             None,

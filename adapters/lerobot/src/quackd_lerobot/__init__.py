@@ -59,6 +59,32 @@ BLURB = (
     "by LeRobot), bolted to a table"
 )
 
+REACH = Figure(
+    value=0.4,
+    confidence="estimate",
+    source="the maker's URDF, TheRobotStudio/SO-ARM100 Simulation/SO101/so101_new_calib.urdf",
+    note="link lengths from the shoulder to the gripper frame, summed with the arm straight and "
+    "rounded down",
+)
+"""How far the gripper gets from the shoulder, read off the maker's own robot description.
+
+Nobody publishes a reach for the SO-101, and the sheet used to say so, which on an arm told
+the pilot to decline anything that turned on reaching: every task an arm has. The URDF gives
+each joint's origin in its parent link's frame, so the distance from one joint to the next is
+the length of that origin vector. From `shoulder_lift` outwards, read on 2026-09-23:
+
+    elbow_flex          (-0.11257, -0.028,     0)          0.116 m
+    wrist_flex          (-0.1349,   0.0052,    0)          0.135 m
+    wrist_roll          ( 0,       -0.0611,    0.0181)     0.064 m
+    gripper_frame_joint (-0.0079,  -0.000218, -0.0981274)  0.098 m
+
+They sum to 0.413 m. That is an upper bound, since the links only add up in full when they
+are collinear, and a grid sweep of `elbow_flex`, `wrist_flex` and `wrist_roll` through their
+URDF limits put the farthest the gripper frame gets from the `shoulder_lift` axis at about
+0.41 m. So 0.4, rounded down, and an estimate rather than official: it is quackd's arithmetic
+on the maker's file, not a figure the maker states. It is measured from the shoulder joint
+rather than the base, and to the gripper frame rather than the fingertips."""
+
 DATASHEET = Datasheet(
     height_m=Figure(
         value=0.53,
@@ -73,14 +99,19 @@ DATASHEET = Datasheet(
         note="five joints and a gripper",
     ),
     payload_kg=Figure(value=0.5, confidence="estimate", source="one vendor's listing"),
+    reach_m=REACH,
     manipulator="gripper",
     arms=1,
     tethered=True,
     cannot=[
         "go anywhere: it is bolted to a table and has no base",
-        "lift or hold more than about half a kilogram, and nothing whose weight is not known",
-        "reach anything that is not already within arm's length of its base: the reach is not "
-        "published",
+        # This used to end "and nothing whose weight is not known", which is nearly every
+        # object a task names: nobody tells the pilot what a pen weighs. It needs a scale to
+        # judge an object by, not a ban on everything unweighed
+        "lift or hold more than about half a kilogram: a pen, an empty cup or a wooden block "
+        "weighs far less than that, and a full bottle or a tool may weigh more",
+        f"reach anything more than about {REACH.value:g} m from its shoulder: that is the arm "
+        "held straight out, and any bent pose reaches less",
         "feel what it holds: nothing reports grip force, so holding is inferred from the "
         "gripper stopping short of shut, which an empty hand that binds also does",
         "know its own mass: vendor listings disagree by a factor of three",

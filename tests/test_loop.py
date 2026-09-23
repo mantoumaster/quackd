@@ -1049,6 +1049,50 @@ async def test_a_person_who_says_go_clears_the_gate(hello_duck: DuckFile, tmp_pa
     assert next(e for e in events if e["kind"] == "assess")["human"] == "go"
 
 
+async def test_a_pilot_hears_that_a_person_cleared_its_doubt(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """On the 2026-09-23 bench a pilot answered `uncertain`, a person at the terminal said go,
+    and all it heard back was "recorded uncertain: ...; verbs that move the body now run",
+    which reads like its own feasible. The prompt invites it to assess again when it changes
+    its mind, so it assessed the same doubt again, as infeasible, and the run ended on a
+    question somebody had already answered. It is told now who cleared it, and not to ask
+    the same thing twice. A pilot that says feasible on its own is told nothing about a
+    person, because nobody was asked."""
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see how heavy the thing is"),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                    _verdict_call("feasible", "looked again: it is a tennis ball"),
+                    ToolCall(name="declare_success", arguments={"reason": "walked"}),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+            decide=lambda _why: True,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    cleared, own = [e for e in events if e["kind"] == "assess"]
+    assert cleared["human"] == "go" and cleared["ok"] is True
+    for said in (
+        "cannot see how heavy the thing is",
+        "a person read that and said go",
+        "verbs that move the body now run",
+        "Do not assess again on the same doubt, only on something new you see",
+    ):
+        assert said in cleared["summary"], said
+    heard = [e["text"] for e in events if e["kind"] == "observation"]
+    assert any("a person read that and said go" in text for text in heard), "the pilot's ears"
+    assert own["human"] is None and "a person" not in own["summary"]
+    assert own["summary"].endswith("verbs that move the body now run")
+
+
 async def test_with_nobody_to_ask_the_pilot_is_told_to_decide_itself(
     hello_duck: DuckFile, tmp_path: Path
 ) -> None:
