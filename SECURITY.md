@@ -153,6 +153,24 @@ Also in scope:
   to anything on the network, and the MQTT flock bus carries messages that command robots
   with no authentication of its own. Both are off by default and neither has a threat model
   yet, so treat them as trusted-network only.
+- **The Jetson container and its compose file** (`deploy/jetson/`,
+  [docs/jetson.md](docs/jetson.md)). Three things in there are security decisions rather than
+  deployment taste. The model server is pinned to `OLLAMA_HOST: 127.0.0.1:11434` because the
+  image's own default is every interface, and under `network_mode: host` that default would put
+  a server with no authentication of any kind on whatever network the board is on: reach it from
+  a laptop with `ssh -L 11434:127.0.0.1:11434`, the way you reach a robot's bridge. Host
+  networking is also what makes the loopback presets true, so the container is on the board's
+  loopback rather than isolated from it, and `~/.quackd` is mounted in, which hands the process
+  inside the plain text tokens in `robots.json` and every robot's memory file. The compose file
+  runs it as uid 1000 rather than as root. That is the access a natively installed quackd already
+  has, and it is still worth knowing before you give that mount to an image somebody else built.
+  Then `.dockerignore`, which is not housekeeping: the build copies the repository root, a key
+  copied into a layer is in the build cache on that machine even after a later layer deletes it,
+  and `**/.env` rather than `.env` is what covers `deploy/jetson/.env`, the file the compose file
+  reads provider keys from. What would be a security issue: an `.env` reaching a layer, the model
+  server binding wider than loopback, or the container being handed anything the compose file
+  does not name. None of it has been run on a Jetson, so treat the arrangement as reviewed rather
+  than proven.
 - **The bridge daemon** (`bridge/open_duck/quackd_duck_bridge.py`), a TCP listener on port
   9871 that walks a 42 cm biped. It binds loopback by default and compares a token with
   `hmac.compare_digest`, but a token is only required if one is configured, and binding it

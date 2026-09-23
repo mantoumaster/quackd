@@ -220,6 +220,15 @@ else (`mcp.run(transport="stdio")` in `quackd/mcp_server.py`), so the client spa
 subprocess on the same machine and talks to it over stdin and stdout. It lives exactly as
 long as that process does.
 
+A container is still that same machine. If quackd lives in the Jetson image
+([jetson.md](jetson.md)), the command a client spawns is `docker compose run --rm -T quackd
+serve-mcp --robot microduck:sim2d`: `compose run` hands the container its stdin and stdout, and
+`-T` keeps it from asking for a terminal no client is going to give it. That command was
+checked on 2026-09-22: the server answered an `initialize` handshake through it and
+returned the duck's own instructions. What has not happened is a real client driving a
+robot that way, and the compose file was written for `quackd run` rather than for this.
+The `QUACKD_LLM` it sets is ignored here like every other way of naming a model.
+
 Reaching it from the Claude mobile app would need a different shape: a remote connector,
 which is a server that runs persistently somewhere reachable over the network, with its own
 address and its own authentication. quackd is not that today, and there is no flag that makes

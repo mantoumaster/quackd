@@ -92,9 +92,19 @@ upstream installed, which is what CI does. `--once` sets up, reports what it fou
 gitignored upstream so a fresh clone has none). Without it every commanded angle is offset by
 however that particular robot was assembled. Run upstream's `calibrate_zero` first.
 
+**quackd itself can run on this board.** A Jetson is a host and not a body, so quackd is
+just another arm64 process here: it reaches this daemon on `127.0.0.1:9873` and a model
+server on loopback beside it, and a goal in plain language never leaves the robot
+([docs/jetson.md](../../docs/jetson.md)). It does not belong in upstream's conda
+environment: install it with `uv`, which brings its own Python, and leave upstream's pins
+alone. What to watch is contention, because a model server saturating the board is what
+can starve the loop this file exists to protect, and nobody has measured it.
+
 ## Rules this file lives by
 
-- **It never imports quackd.** quackd's dependencies do not belong on a robot, and a test
+- **It never imports quackd.** this file runs in upstream's own environment and quackd's
+dependencies must not be in its import path, while a quackd installed beside it with `uv`
+is a different process in a different environment, and a test
   enforces this by reading the file.
 - **It ships in the sdist and never in the wheel**, so `packages` stays `["quackd"]`.
 - **It is testable with no hardware.** Everything above the `Robot` boundary is pure and takes

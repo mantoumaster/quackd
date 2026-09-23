@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+quackd runs on an NVIDIA Jetson now, and a Jetson is a board rather than a robot. The model
+that decides what a robot should do next and the process that turns that decision into a verb
+both fit on one computer the size of a paperback, so a goal in plain language never has to
+leave the room. Nothing here has been run on a Jetson by this project, and the page says so
+above everything else it says.
+
+### Added
+
+- **quackd has a path onto an NVIDIA Jetson, and a Jetson is a host rather than a body.**
+  There is no adapter, no extra and no `--robot jetson:...`: the board runs the quackd
+  process the way a laptop does, and everything interesting is about what runs beside it.
+  [`deploy/jetson/`](deploy/jetson/README.md) is a Dockerfile that installs quackd from
+  `uv.lock` at the commit you checked out, onto a plain Debian Python image with no CUDA in
+  it at all, and a compose file that gives the GPU to Ollama and nothing to quackd. The
+  quackd service is behind a profile with `restart: "no"`, because `quackd run` is a command
+  that declares a verdict and exits rather than a service to keep alive. The arrangement the
+  page is really about is a ToddlerBot's own Jetson holding its control daemon, a model and
+  quackd between them, three processes on one board talking over loopback
+  ([docs/jetson.md](docs/jetson.md),
+  [ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
+- **`quackd doctor` reads the board it is running on, when that board is a Tegra.** The
+  model, the L4T release and which JetPack it is, the memory the CPU and the GPU are
+  sharing, whether the only swap is zram, the GPU device node, the power mode and Docker's
+  default runtime. All of it informational: none of it can change the exit code, because
+  quackd runs perfectly well on a board with every one of those wrong. It detects a Tegra
+  from `/proc/device-tree/compatible` as well as `/etc/nv_tegra_release`, because the first
+  is the host's and is visible from inside a container while the second is not.
+- **The image is built and then run on arm64**, which is the first aarch64 Linux run of
+  quackd this repository records: where the contributor transcripts say anything they put
+  an aarch64 model server behind a quackd running on something else, and the largest
+  measurement on that same board publishes none. It was done under emulation on the
+  machine that wrote it. `jetson-image.yml` is set up to repeat it on a native arm64
+  runner, running `import cv2`, `quackd doctor --json` and a whole `find-and-kick` task
+  inside the result, and it has not run yet, because this release is where those files
+  first exist. It publishes nothing, because an image with a pull command beside it is a
+  promise that somebody ran it on the hardware it is named after, and nothing here has
+  been run on a Jetson by this project.
+
 ## [0.12.0] — 2026-09-23
 
 Jev turned out to be the first of many. In the week after it launched, thirty-odd projects

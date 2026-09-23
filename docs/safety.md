@@ -118,6 +118,18 @@ ends with a `run_end` and a summary. It buys one press and no more: the guard is
 alone, so a third press lands somewhere without one and quits at once, on the terms of the
 paragraph above.
 
+**SIGTERM is not one of them.** quackd installs a handler for SIGINT and for nothing else, so a
+bare `kill`, a systemd unit's default stop and a `docker compose stop` against a service that
+names no `stop_signal` all end a run without the
+`finally` above ever running: outside a container the process dies where it is, and inside one,
+where quackd is PID 1 with no handler for it, the signal is ignored until Docker's SIGKILL
+arrives. Neither path sends the robot a `stop`, which is why `deploy/jetson/compose.yml` sets
+`stop_signal: SIGINT` and gives the teardown twenty seconds, so there it is the clean path
+rather than one of the killers. Anything else you wrap `quackd run` in should send SIGINT.
+The Open Duck Mini's bridge and the ToddlerBot daemon are the other way round and settle
+on both, which is what a daemon has to do: one is started by a unit this repository ships,
+and the other is started by hand and stopped by somebody typing `kill`.
+
 ## When the pilot is unsure
 
 `assess_task` has a third answer. `uncertain` means the verdict itself turns on a figure the
@@ -282,6 +294,12 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
   this body torque off is a fall.
 - **quackd owns the control loop here**, which is true of no other body. Upstream's own
   `step()` is a no-op, so nothing times out and nothing re-arms without the daemon.
+- **A model on the same board competes with that loop.** This robot carries a Jetson, and
+  quackd's daemon, a model server and quackd itself all fit on it ([jetson.md](jetson.md)). A
+  server saturating the CPU and the memory bus is the load that starves a fifty hertz loop, and
+  here a starved loop is a fall. Nobody has measured that contention on any board: keep the
+  robot on a stand the first time, watch `tegrastats` while a model answers, and consider
+  pinning the model server off the cores the loop runs on.
 - A good first contract is the shipped `toddlerbot-lookout`: it moves no leg, no arm and
   no waist.
 

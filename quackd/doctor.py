@@ -19,8 +19,12 @@ import importlib
 import importlib.metadata as md
 import os
 import platform
+import re
+import shutil
+import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -323,6 +327,62 @@ class PinRow:
 
 
 @dataclass
+class JetsonReport:
+    """What an NVIDIA Jetson says about itself, for whoever is putting a model on it.
+
+    Informational, and never part of `ok`. quackd is CPU Python on this board exactly as it is
+    on a laptop: the GPU belongs to the model server, which is a separate process reached
+    through one of the local presets in the servers table. Nothing in this block can stop a
+    run, so nothing in it may fail one.
+    """
+
+    board: str | None = None
+    """`/proc/device-tree/model`, which describes the board rather than the image. It is the
+    field a container still reads truthfully, because that tree is the host's."""
+    l4t: str | None = None
+    release_seen: bool = False
+    """`/etc/nv_tegra_release` was there to read. Absent and unparseable are different
+    facts and the renderer says which: the first is what a container sees, the second is a
+    board this build has not met."""
+    """`36.4.3`, parsed from `/etc/nv_tegra_release`. That file belongs to the host, so a
+    container usually has none and this is None there even on a Jetson."""
+    jetpack: str | None = None
+    mem_total_bytes: int | None = None
+    mem_available_bytes: int | None = None
+    swap_total_bytes: int | None = None
+    """None where the file could not be read. Zero would have said a board with no swap, which
+    is a different fact and one worth warning about."""
+    swap_devices: list[str] = field(default_factory=list)
+    gpu_device: str | None = None
+    power_mode: str | None = None
+    docker_default_runtime: str | None = None
+
+    @property
+    def swap_only_zram(self) -> bool:
+        """Every swap here compresses RAM rather than adding any.
+
+        JetPack ships zram on, which is the right default for a desktop and the wrong one for
+        a model that does not fit: compressing memory cannot hold what memory could not."""
+        return bool(self.swap_devices) and all(d.startswith("/dev/zram") for d in self.swap_devices)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "board": self.board,
+            "l4t": self.l4t,
+            "release_seen": self.release_seen,
+            "jetpack": self.jetpack,
+            "mem_total_bytes": self.mem_total_bytes,
+            "mem_available_bytes": self.mem_available_bytes,
+            "swap_total_bytes": self.swap_total_bytes,
+            "swap_devices": self.swap_devices,
+            "swap_only_zram": self.swap_only_zram,
+            "gpu_device": self.gpu_device,
+            "power_mode": self.power_mode,
+            "docker_default_runtime": self.docker_default_runtime,
+        }
+
+
+@dataclass
 class DoctorReport:
     version: str
     python: str
@@ -353,6 +413,8 @@ class DoctorReport:
     assumptions: list[Assumption] = field(default_factory=list)
     pins: list[PinRow] = field(default_factory=list)
     robot: RobotReport | None = None
+    jetson: JetsonReport | None = None
+    """None on every machine that is not a Tegra, which is most of them."""
 
     @property
     def ok(self) -> bool:
@@ -381,6 +443,7 @@ class DoctorReport:
             "python": self.python,
             "platform": self.platform,
             "api_version": self.api_version,
+            "jetson": self.jetson.to_dict() if self.jetson else None,
             "core": [c.to_dict() for c in self.core],
             "bundled_ducks": self.bundled_ducks,
             "providers": [p.to_dict() for p in self.providers],
@@ -656,6 +719,188 @@ def _upstreams() -> list[tuple[str, Any, str, str]]:
     return rows
 
 
+# ── the board underneath, when it is a Jetson ───────────────────────────────────────────
+
+_HOST_ROOT = Path("/")
+"""Where the board's own files are read from.
+
+A module attribute rather than a parameter of `collect`, for the reason `_probe_models` is one:
+a test points it at a tree it built. It must never become a default argument, which would bind
+at import and ignore the monkeypatch."""
+
+_DT_MODEL = "proc/device-tree/model"
+_DT_COMPATIBLE = "proc/device-tree/compatible"
+_L4T_RELEASE = "etc/nv_tegra_release"
+
+_GPU_NODES = ("dev/nvgpu/igpu0", "dev/nvhost-ctrl-gpu", "dev/nvidia0")
+"""JetPack 6's node, JetPack 5's, and the one a discrete driver leaves. quackd needs none of
+them, and the renderer says so: it is the model server that wants a GPU, and a container that
+cannot see one of these is the commonest reason a Jetson answers off its CPU."""
+
+_L4T_LINE = re.compile(r"R(\d+)\s*\(release\),\s*REVISION:\s*(\d+(?:\.\d+)*)")
+"""`# R36 (release), REVISION: 4.3, GCID: ...` is the first line of `/etc/nv_tegra_release`."""
+
+_JETPACK_FOR_L4T = {
+    "36.5.2": "6.2.3",
+    "36.5.0": "6.2.2",
+    "36.4.4": "6.2.1",
+    "36.4.3": "6.2",
+    "36.4.0": "6.1",
+    "36.3.0": "6.0",
+    "39.2.1": "7.2.1",
+    "39.2.0": "7.2",
+    "38.4.0": "7.1",
+    "38.2.1": "7.0",
+    "38.2.0": "7.0",
+}
+"""Exact releases only, read off NVIDIA's JetPack archive on 2026-09-22.
+
+`docs/jetson.md` prints this same table and `tests/test_deploy_jetson.py` holds the two to each
+other, so a board whose JetPack shipped after this was written cannot read as one version in
+the documentation and another on the screen."""
+
+_JETPACK_MAJOR = {"32": "4.x", "35": "5.x", "36": "6.x", "38": "7.x", "39": "7.x"}
+"""What to say about a revision the table above has not heard of. The major version only, on
+purpose: L4T 35.1 was JetPack 5.0.2 and 35.2.1 was 5.1, so a guessed minor here would be wrong
+about a board somebody owns."""
+
+
+def _read_text(path: Path) -> str | None:
+    """A small file, or None for any reason at all: absent, unreadable, a directory.
+
+    The `/proc/device-tree` entries are the device tree's own bytes and are NUL terminated, and
+    a NUL arriving in a Rich cell is not something anyone should have to debug."""
+    try:
+        raw = path.read_bytes()
+    except Exception:
+        return None
+    return raw.decode("utf-8", errors="replace").replace("\x00", "")
+
+
+def _exists(path: Path) -> bool:
+    """`Path.exists()` raises on a path this process may not stat, and being refused a look at
+    a device node is not the same fact as a board that has none."""
+    try:
+        return path.exists()
+    except Exception:
+        return False
+
+
+def _run_quiet(argv: Sequence[str], timeout_s: float = 3.0) -> str | None:
+    """The stdout of a command that exited 0, or None.
+
+    Best effort in the sense `_probe_models` is: `nvpmodel` is absent inside a container and
+    the docker daemon may be down, and neither is a fault of the machine being described.
+    `shutil.which` first, so a missing binary never forks; stdin closed, so the docker CLI
+    cannot sit waiting on a terminal that is not there."""
+    if shutil.which(argv[0]) is None:
+        return None
+    try:
+        done = subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def _parse_l4t(text: str) -> str | None:
+    match = _L4T_LINE.search(text)
+    return f"{match.group(1)}.{match.group(2)}" if match else None
+
+
+def _jetpack_for(l4t: str) -> str | None:
+    parts = [p for p in l4t.split(".") if p]
+    if not parts:
+        return None
+    # padded to three, because NVIDIA writes JetPack 6.1's as "36.4" and the archive's own
+    # table spells the same release "36.4.0"
+    exact = ".".join([*parts, "0", "0"][:3])
+    return _JETPACK_FOR_L4T.get(exact) or _JETPACK_MAJOR.get(parts[0])
+
+
+def _kb_fields(text: str, wanted: Sequence[str]) -> dict[str, int]:
+    """`MemTotal:  7650336 kB` into bytes, for the names asked for."""
+    out: dict[str, int] = {}
+    for line in text.splitlines():
+        name, _, rest = line.partition(":")
+        if name.strip() in wanted:
+            with contextlib.suppress(ValueError, IndexError):
+                out[name.strip()] = int(rest.split()[0]) * 1024
+    return out
+
+
+def _swaps(text: str) -> tuple[int, list[str]]:
+    """`/proc/swaps` as (total bytes, device names), its sizes being in kB like `/proc/meminfo`."""
+    total = 0
+    devices: list[str] = []
+    for line in text.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        devices.append(parts[0])
+        with contextlib.suppress(ValueError):
+            total += int(parts[2]) * 1024
+    return total, devices
+
+
+def _power_mode(text: str | None) -> str | None:
+    """The mode name out of `nvpmodel -q`, whose answer is two labelled lines and a number."""
+    for line in (text or "").splitlines():
+        if "NV Power Mode" in line:
+            # partition, not split: a line carrying the label and no colon is malformed
+            # input, and this block's whole contract is that none of it may raise
+            return line.partition(":")[2].strip() or None
+    return None
+
+
+def _jetson(root: Path) -> JetsonReport | None:
+    """What this board is, or None where it is not a Tegra.
+
+    Two ways in, because they fail in different places: the device tree is the host's and is
+    visible inside a container, while `/etc/nv_tegra_release` is a file in the host's root
+    filesystem and usually is not. A board seen only through the first is a container on a
+    Jetson, which is exactly the case this section is most useful in.
+
+    Every question here is asked of a file that may be absent or a binary that may not exist,
+    and none of them may raise: doctor is what people run when something is already wrong,
+    which is the worst possible place to add a new way to crash."""
+    compatible = _read_text(root / _DT_COMPATIBLE) or ""
+    release = _read_text(root / _L4T_RELEASE)
+    if "nvidia,tegra" not in compatible and release is None:
+        return None
+
+    model = _read_text(root / _DT_MODEL) or ""
+    l4t = _parse_l4t(release) if release is not None else None
+    mem = _kb_fields(_read_text(root / "proc/meminfo") or "", ("MemTotal", "MemAvailable"))
+    swap_text = _read_text(root / "proc/swaps")
+    swap_total: int | None = None
+    swap_devices: list[str] = []
+    if swap_text is not None:
+        swap_total, swap_devices = _swaps(swap_text)
+    runtime = (_run_quiet(["docker", "info", "--format", "{{.DefaultRuntime}}"]) or "").strip()
+    return JetsonReport(
+        board=model.strip() or None,
+        l4t=l4t,
+        release_seen=release is not None,
+        jetpack=_jetpack_for(l4t) if l4t else None,
+        mem_total_bytes=mem.get("MemTotal"),
+        mem_available_bytes=mem.get("MemAvailable"),
+        swap_total_bytes=swap_total,
+        swap_devices=swap_devices,
+        gpu_device=next((f"/{node}" for node in _GPU_NODES if _exists(root / node)), None),
+        power_mode=_power_mode(_run_quiet(["nvpmodel", "-q"])),
+        docker_default_runtime=runtime or None,
+    )
+
+
 def collect(
     robot: str | None = None,
     *,
@@ -677,9 +922,12 @@ def collect(
     report = DoctorReport(
         version=__version__,
         python=platform.python_version(),
-        platform=f"{platform.system()} {platform.release()}",
+        platform=f"{platform.system()} {platform.release()} {platform.machine()}",
         api_version=_microduck_api_version(),
     )
+
+    say("looking for a Jetson")
+    report.jetson = _jetson(_HOST_ROOT)
 
     say("checking the core packages")
     for name, module in CORE_MODULES:
@@ -884,6 +1132,98 @@ def _checks(checks: list[Check], *, missing_is_fine: bool = False) -> Any:
             else:
                 mark, style = g.fail, ui.STYLES["fail"]
             rows.append((f"{mark} {check.name}", Text(check.detail, style=style)))
+        return ui.kv_grid(rows, key_style="")
+
+    return ui.Deferred(build)
+
+
+def _gib(n: int) -> str:
+    return f"{n / (1024**3):.1f} GiB"
+
+
+def _jetson_grid(jetson: JetsonReport) -> Any:
+    """The board, for somebody about to put a model on it.
+
+    Warnings only where a person would have to do something about it: swap that cannot hold a
+    model, and a docker daemon whose containers will not be given the GPU. The GPU node is a
+    note rather than a warning, because quackd running without one is not a fault."""
+
+    def build(g: ui.Glyphs) -> Any:
+        rows: list[tuple[str, Any]] = []
+
+        def row(key: str, value: str, style: str = "muted", mark: str = "") -> None:
+            rows.append((f"{mark or g.note} {key}", Text(value, style=ui.STYLES[style])))
+
+        row("board", jetson.board or "unknown (no /proc/device-tree/model)")
+        if jetson.l4t:
+            named = f" (JetPack {jetson.jetpack})" if jetson.jetpack else ""
+            row("L4T", f"{jetson.l4t}{named}")
+        elif jetson.release_seen:
+            row(
+                "L4T",
+                "/etc/nv_tegra_release is here and its first line is not one this build knows",
+            )
+        else:
+            row("L4T", "unknown: no /etc/nv_tegra_release, which is what a container sees")
+
+        if jetson.mem_total_bytes is not None:
+            free = (
+                f", {_gib(jetson.mem_available_bytes)} available"
+                if jetson.mem_available_bytes is not None
+                else ""
+            )
+            row("memory", f"{_gib(jetson.mem_total_bytes)}{free}, shared with the GPU")
+
+        if jetson.swap_total_bytes is not None:
+            if jetson.swap_total_bytes == 0:
+                row(
+                    "swap",
+                    "none. A model that does not fit in memory cannot load, and a swapfile on "
+                    "the NVMe is what lets a bigger one in",
+                    "warn",
+                    g.warn,
+                )
+            elif jetson.swap_only_zram:
+                row(
+                    "swap",
+                    f"{_gib(jetson.swap_total_bytes)}, all zram: it compresses RAM rather than "
+                    "adding any (docs/jetson.md)",
+                    "warn",
+                    g.warn,
+                )
+            else:
+                row(
+                    "swap",
+                    f"{_gib(jetson.swap_total_bytes)} on {', '.join(jetson.swap_devices)}",
+                )
+
+        if jetson.gpu_device:
+            row("GPU device", jetson.gpu_device)
+        else:
+            row(
+                "GPU device",
+                "none visible here. quackd never asks for one, and the model server does",
+            )
+
+        if jetson.power_mode:
+            row("power mode", f"{jetson.power_mode} (nvpmodel -q)")
+
+        if jetson.docker_default_runtime == "nvidia":
+            row("docker default runtime", "nvidia", "ok", g.ok)
+        elif jetson.docker_default_runtime:
+            row(
+                "docker default runtime",
+                f"{jetson.docker_default_runtime}: a container is given no GPU unless it is "
+                "started with --runtime nvidia",
+                "warn",
+                g.warn,
+            )
+        else:
+            row(
+                "docker default runtime",
+                "unknown: no docker here, which is what a container sees. This row is the one"
+                "reason to run doctor on the board itself as well",
+            )
         return ui.kv_grid(rows, key_style="")
 
     return ui.Deferred(build)
@@ -1145,6 +1485,13 @@ def render(console: Console, report: DoctorReport) -> None:
             (f"  duck-ipc-proto API v{report.api_version}", ui.STYLES["muted"]),
         )
     )
+
+    if report.jetson is not None:
+        _section(
+            console,
+            "Jetson (the board this is running on, and the GPU on it belongs to the model server)",
+        )
+        console.print(_jetson_grid(report.jetson))
 
     _section(console, "core")
     console.print(_checks(report.core))

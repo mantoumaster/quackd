@@ -34,6 +34,9 @@ for naming something the catalogue has not heard of.
 `quackd doctor` probes all four default addresses and prints which servers are up and what
 they serve.
 
+The server and quackd can share one small board. An NVIDIA Jetson is the case this project
+has written up, the model on the GPU and quackd on the CPU beside it, in [jetson.md](jetson.md).
+
 > [!NOTE]
 > **A decision LLM is not one of these, and this is the page where that is easiest to get
 > wrong.** A decision LLM answers typed questions about a state and generates no text at all,
@@ -58,6 +61,11 @@ ollama pull qwen3:8b          # any model whose card says it supports tools
 ollama serve                  # usually already running as a service
 quackd run find-and-kick --llm ollama:qwen3:8b
 ```
+
+On a Jetson, install it with the official script rather than a tarball: the script reads
+`/etc/nv_tegra_release` and fetches the JetPack build, and the generic arm64 one carries no
+Tegra CUDA, so the board answers off its CPU and nothing tells you. `ollama ps` names the
+processor a loaded model is on, which is where you find out.
 
 **llama.cpp**
 

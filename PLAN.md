@@ -68,6 +68,20 @@ flip that backend's row, and not before.
   a result: the break-even there is a stepper answering in under 1.40 seconds, and below that
   it is a net loss.
 
+- ⬜ **Nobody has run quackd on a Jetson.** [docs/jetson.md](docs/jetson.md) and
+  [`deploy/jetson/`](deploy/jetson/README.md) were written from NVIDIA's own documentation on
+  a Windows laptop, and the image was built for arm64 and run under emulation there. CI has a
+  job to repeat that on a native arm64 runner with no GPU and has not run it yet. What the
+  emulated build is worth is not the board: it proves quackd runs on aarch64 Linux, and
+  nothing else. Unmeasured is everything that makes a Jetson one: Ollama on the
+  Orin GPU, the NVIDIA container runtime, what the doctor section reads off real files, how
+  much memory a model actually takes beside quackd, and the one that matters near a robot,
+  whether a model server and a fifty hertz control loop can share a board without the loop
+  suffering, which on a humanoid is a fall. A ToddlerBot carries the only Jetson any of the
+  seven bodies has, so that is where it gets answered. The page says what to send: the
+  `jetson` block out of `quackd doctor --json`, a terminal and a transcript from a real run,
+  and one `tegrastats` line captured while the model was answering.
+
 - ⬜ **No `cost_usd` quackd reports has been checked against an invoice.** Every rate in
   `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand on
   2026-09-21, and a rate read by hand is wrong from the day the vendor edits the page until

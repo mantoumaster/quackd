@@ -249,14 +249,18 @@ still shows you the shape of the log.
 ## Real robots
 
 **Does the robot need a powerful onboard computer?** No. quackd's own process, the part
-that calls the LLM and runs the detector, never runs on the robot itself — you run
+that calls the LLM and runs the detector, never has to run on the robot itself: you run
 `quackd run` on a laptop or a server, a network hop away, and it talks to the robot (or the
 simulator) from there. The Open Duck Mini's official target, a Raspberry Pi Zero 2 W, only
 ever runs its existing 50 Hz walk policy plus two small daemons that do run on the Pi, a
 bridge and a camera server, and neither does any perception or inference of its own: just
 enough to swap the gamepad for a socket and to serve a JPEG ([`bridge/open_duck/`](../bridge/open_duck/README.md)). The Microduck's onboard
 computer works the same way, through `robotd`. Nothing here needs an NPU or a bigger board
-to keep up, because nothing model-shaped runs on the robot's own board in the first place.
+to keep up, because nothing model-shaped *has to* run on the robot's own board.
+When the robot's own computer is big enough, that server can be it. A ToddlerBot carries a
+Jetson, and quackd and a local model both fit beside its daemon on that board. They stay
+three separate processes with the same boundaries between them, and the network hop
+becomes loopback ([jetson.md](jetson.md)).
 
 **Does quackd use TOF or another depth sensor for obstacle avoidance?** Not yet. The only
 sensing input today is a single colour camera: an HSV threshold (or optionally YOLO) gives
@@ -468,6 +472,13 @@ your task fits that body. The rule never bends: a verb that is not in the manife
 not exist on that robot. Those seven are each their own package, and an adapter somebody else
 publishes is found exactly the same way, through the `quackd.adapters` entry point group, with
 no pull request to this repository. Writing one: [adapters.md](adapters.md).
+
+**Is a Jetson one of the seven?** No, and it is not an eighth. A Jetson is a computer, not a
+body: it has no manifest and no verbs, `quackd list-adapters` will never show it, there is no
+`--robot jetson:...`, and there is nothing to install for it. quackd runs there the way it runs
+on your laptop, and the GPU on that board belongs to a local model server it reaches over
+loopback, which is the arrangement *Does the robot need a powerful onboard computer?* above
+describes ([ADR-0044](adr/0044-a-jetson-is-a-host-not-a-body.md)).
 
 **Why does `validate` say "requires kick, but arm-01 (lerobot-so101) does not provide
 it"?** Because it is true. A `.duck` lists what it needs (`requires`, or for a `duck: 0`

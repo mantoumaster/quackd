@@ -1,0 +1,107 @@
+name: jetson image
+
+# The arm64 image from deploy/jetson/, built and then actually run. See docs/jetson.md.
+#
+# It builds nothing that is published. There is no registry push and no `packages` permission,
+# because an image nobody has run on a Jetson is not something to put a pull command next to in
+# a README. People build it from a checkout, which is what the documentation tells them to do,
+# and this job is the proof that a checkout builds.
+#
+# Separate from `ci` for the reason `microduck-assets.yml` gives: it reaches the network for a
+# base image and a registry, so putting it on the required path would let an outage somewhere
+# else block a merge. It gates nothing by construction.
+#
+# `ubuntu-24.04-arm` is a native arm64 runner, free for public repositories, so nothing here is
+# emulated and the smoke steps below run the real aarch64 binaries.
+#
+# Its path filters are the deploy files, the lockfile and the packaging. It does NOT rerun on
+# a change to `quackd/`, which is what its smoke steps assert against: `ci` covers that
+# natively on every push, and a container build on every pull request would be a toll for a
+# thing already checked.
+#
+# What it cannot prove: the runner is not a Tegra and has no GPU, so nothing here exercises the
+# Jetson section of `quackd doctor` beyond the one assertion that it stays quiet, nothing
+# exercises the NVIDIA container runtime, and nothing exercises Ollama. docs/jetson.md says so
+# and says what to send back from a board that can.
+
+on:
+  pull_request:
+    paths:
+      - "deploy/jetson/**"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "adapters/*/pyproject.toml"
+      - ".github/workflows/jetson-image.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/jetson/**"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "adapters/*/pyproject.toml"
+      - ".github/workflows/jetson-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jetson-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: build it on arm64, then run it
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v3
+
+      # No setup-qemu-action: the runner is already aarch64, so linux/arm64 is native here.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/jetson/Dockerfile
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: quackd-jetson:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: cv2 imports with nothing from apt, which is why there is no apt layer
+        # The image installs no system packages at all. If a dependency ever starts wanting
+        # one, the failure is an ImportError here rather than on somebody's board.
+        run: docker run --rm --entrypoint python quackd-jetson:ci -c "import cv2; print(cv2.__version__)"
+
+      - name: It carries one robot, the OpenAI client, and no CUDA
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm quackd-jetson:ci doctor --json > report.json
+          python - <<'PY'
+          import json
+          report = json.load(open("report.json"))
+          assert report["ok"] is True, report
+          assert report["platform"].endswith("aarch64"), report["platform"]
+          # A runner is not a Tegra, and a detector that says it is would be worse than one
+          # that says nothing: this is the half of the Jetson section CI can actually check.
+          assert report["jetson"] is None, report["jetson"]
+          installed = [r["name"] for r in report["adapters"] if r["adapter_installed"]]
+          assert installed == ["microduck"], installed
+          PY
+          docker run --rm --entrypoint python quackd-jetson:ci -c "
+          import importlib.util as u
+          for name in ('ultralytics', 'torch', 'mujoco', 'pytest'):
+              assert u.find_spec(name) is None, name
+          print('no torch, no dev tooling')
+          "
+
+      - name: A whole task, in the image, on the scripted pilot
+        # `--llm fake` because a runner has no key and no model server, and the point is the
+        # loop, the executor and the cartoon arena rather than anything a model decided.
+        run: docker run --rm quackd-jetson:ci run find-and-kick --llm fake --robot microduck:sim2d
