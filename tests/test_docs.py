@@ -586,6 +586,11 @@ _KEPT_PROMISES = (
     "removed in 0.12",
     "stop working in 0.12",
     "stop being read in 0.12",
+    # docs/jetson.md said the doctor section "ships in quackd 0.13.0" and told readers to
+    # install from `main` until then. Nothing here could see that go stale on the day it
+    # shipped, which is the day this list exists for.
+    "ships in quackd 0.13",
+    "until 0.13",
 )
 
 

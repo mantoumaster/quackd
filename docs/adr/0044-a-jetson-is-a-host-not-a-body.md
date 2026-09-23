@@ -62,14 +62,16 @@ Jetson: Ollama's own installer writes one for the thing that is actually a servi
 the board, the L4T release, the shared memory, whether the swap is only zram, the GPU device
 node, the power mode and Docker's default runtime. Every one of those is informational and none
 of them touches `ok`: quackd runs on a board with all of them wrong. It is detected from
-`/proc/device-tree/compatible` as well as `/etc/nv_tegra_release`, because the first is the
-host's and visible inside a container while the second is not, and a container on a Jetson is
-exactly the case worth reporting well.
+`/proc/device-tree/compatible` as well as `/etc/nv_tegra_release`, and it is meant for `doctor`
+run on the board itself: `/proc/device-tree` points into `/sys/firmware`, which Docker masks in
+any container that is neither privileged nor started with `--security-opt
+systempaths=unconfined`, and a plain Python image has no release file, so in the quackd
+container the section will most likely not appear at all.
 
 **Nothing is published.** No image is pushed to a registry. `.github/workflows/jetson-image.yml`
 is set up to build for `linux/arm64` on a native arm64 runner and then run quackd inside the
-result, and to stop there. It first ran green on 2026-09-23. An image with a pull command beside it is a promise that somebody ran it on the
-hardware it is named after, and nobody has.
+result, and to stop there. It first ran green on 2026-09-23. An image with a pull command
+beside it is a promise that somebody ran it on the hardware it is named after, and nobody has.
 
 ## Why not
 
@@ -85,15 +87,16 @@ is the half that decides what executes. Pinning Debian's patch level too would m
 deliberate bump for every security update on a file nobody would remember to revisit.
 
 **A hardware report issue template.** Three of the seven bodies have one today, and all seven
-have a row in `docs/adapter-status.md` that a hardware run would flip. A Jetson flips no row: it is not a robot and it
-changes nothing about which upstream API quackd speaks. The page asks for a Discussion and a
-transcript instead, the way [local-llms.md](../local-llms.md) does.
+have a row in `docs/adapter-status.md` that a hardware run would flip. A Jetson flips no row: it
+is not a robot and it changes nothing about which upstream API quackd speaks. The page asks for
+a Discussion and a transcript instead, the way [local-llms.md](../local-llms.md) does.
 
 ## Consequences
 
 - There is now a container in this repository, which is a kind of artifact it has not had
   before, and a Dockerfile goes stale in ways a Python file does not. The CI job is what
-  notices, and it runs only when `deploy/jetson/`, the lock or the packaging changes.
+  notices, and it runs only when `deploy/jetson/`, `.dockerignore`, the lock, the packaging or
+  the workflow itself changes.
 - `quackd doctor` gained its first subprocess. `_run_quiet` refuses to fork a binary that is
   not on `PATH`, closes stdin and gives up after three seconds, because doctor is what people
   run when something is already wrong and is the worst place to add a new way to hang.

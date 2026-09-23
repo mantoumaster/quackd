@@ -120,15 +120,15 @@ paragraph above.
 
 **SIGTERM is not one of them.** quackd installs a handler for SIGINT and for nothing else, so a
 bare `kill`, a systemd unit's default stop and a `docker compose stop` against a service that
-names no `stop_signal` all end a run without the
-`finally` above ever running: outside a container the process dies where it is, and inside one,
-where quackd is PID 1 with no handler for it, the signal is ignored until Docker's SIGKILL
-arrives. Neither path sends the robot a `stop`, which is why `deploy/jetson/compose.yml` sets
-`stop_signal: SIGINT` and gives the teardown twenty seconds, so there it is the clean path
-rather than one of the killers. Anything else you wrap `quackd run` in should send SIGINT.
-The Open Duck Mini's bridge and the ToddlerBot daemon are the other way round and settle
-on both, which is what a daemon has to do: one is started by a unit this repository ships,
-and the other is started by hand and stopped by somebody typing `kill`.
+names no `stop_signal` all end a run without the `finally` above ever running: outside a
+container the process dies where it is, and inside one, where quackd is PID 1 with no handler
+for it, the signal is ignored until Docker's SIGKILL arrives. Neither path sends the robot a
+`stop`, which is why `deploy/jetson/compose.yml` sets `stop_signal: SIGINT` and gives the
+teardown twenty seconds, so there it is the clean path rather than one of the killers. Anything
+else you wrap `quackd run` in should send SIGINT. The Open Duck Mini's bridge and the ToddlerBot
+daemon are the other way round and settle on both, which is what a daemon has to do: one is
+started by a unit this repository ships, and the other is started by hand and stopped by
+somebody typing `kill`.
 
 ## When the pilot is unsure
 

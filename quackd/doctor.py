@@ -337,15 +337,16 @@ class JetsonReport:
     """
 
     board: str | None = None
-    """`/proc/device-tree/model`, which describes the board rather than the image. It is the
-    field a container still reads truthfully, because that tree is the host's."""
+    """`/proc/device-tree/model`, which describes the board rather than the image. A container
+    reads it only when it is privileged or started with `--security-opt systempaths=unconfined`:
+    `/proc/device-tree` points into `/sys/firmware`, which Docker masks by default."""
     l4t: str | None = None
+    """`36.4.3`, parsed from `/etc/nv_tegra_release`. That file belongs to the host, so a
+    container usually has none and this is None there even on a Jetson."""
     release_seen: bool = False
     """`/etc/nv_tegra_release` was there to read. Absent and unparseable are different
     facts and the renderer says which: the first is what a container sees, the second is a
     board this build has not met."""
-    """`36.4.3`, parsed from `/etc/nv_tegra_release`. That file belongs to the host, so a
-    container usually has none and this is None there even on a Jetson."""
     jetpack: str | None = None
     mem_total_bytes: int | None = None
     mem_available_bytes: int | None = None
@@ -864,10 +865,13 @@ def _power_mode(text: str | None) -> str | None:
 def _jetson(root: Path) -> JetsonReport | None:
     """What this board is, or None where it is not a Tegra.
 
-    Two ways in, because they fail in different places: the device tree is the host's and is
-    visible inside a container, while `/etc/nv_tegra_release` is a file in the host's root
-    filesystem and usually is not. A board seen only through the first is a container on a
-    Jetson, which is exactly the case this section is most useful in.
+    Two ways in. The device tree is the kernel's and names the board on any Tegra, and
+    `/etc/nv_tegra_release` is a file in the host's root filesystem that also carries the L4T
+    release. Neither is dependable inside a container: `/proc/device-tree` points into
+    `/sys/firmware`, which Docker masks unless the container is privileged or started with
+    `--security-opt systempaths=unconfined`, and a plain Python image has no release file. This
+    section is for `doctor` run on the board itself, and a board seen only through the device
+    tree is a container started one of those two ways, or an unusual install.
 
     Every question here is asked of a file that may be absent or a binary that may not exist,
     and none of them may raise: doctor is what people run when something is already wrong,
@@ -1221,8 +1225,8 @@ def _jetson_grid(jetson: JetsonReport) -> Any:
         else:
             row(
                 "docker default runtime",
-                "unknown: no docker here, which is what a container sees. This row is the one"
-                "reason to run doctor on the board itself as well",
+                "unknown: docker did not answer here, because it is not installed or this "
+                "user cannot reach it",
             )
         return ui.kv_grid(rows, key_style="")
 

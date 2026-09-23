@@ -5,46 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] — 2026-09-23
 
-quackd runs on an NVIDIA Jetson now, and a Jetson is a board rather than a robot. The model
-that decides what a robot should do next and the process that turns that decision into a verb
-both fit on one computer the size of a paperback, so a goal in plain language never has to
-leave the room. Nothing here has been run on a Jetson by this project, and the page says so
-above everything else it says.
+quackd has a path onto an NVIDIA Jetson now, and a Jetson is a host rather than a robot. The
+model that decides what a robot should do next and the process that turns that decision into a
+verb both fit on one small computer, so a goal in plain language never has to leave the room.
+Nothing here has been run on a Jetson by this project, and [docs/jetson.md](docs/jetson.md)
+says so in its second paragraph, before any of its sections, and again in bold where its Status
+section begins.
+
+The other half is the model catalogue, which caught up with the day before. Anthropic shipped
+Claude Opus 5.5 and OpenAI shipped GPT-6 Sol and Luna on 2026-09-22, and a bare
+`--llm anthropic` and `--llm openai` now run Opus 5.5 and GPT-6 Sol. Moving the Claude default
+found that Opus 5.5 refuses two things: the forced tool call quackd sent every Claude model,
+and, on accounts created on or after 2026-08-31, a replayed thinking block whose earlier history
+changed, which quackd's dropping of older camera frames did from the third call on. Claude Fable
+5.1, a row since 0.9, does both and has failed every quackd turn since. Reading all eleven
+vendors' pages again the same day found three more request forms a model does not take. Each fix
+is proven against the request shape the vendor documents, and against the error text where the
+vendor prints one, and none against a live model: Known limitations, below, says so again where
+it counts.
 
 ### Added
 
 - **quackd has a path onto an NVIDIA Jetson, and a Jetson is a host rather than a body.**
   There is no adapter, no extra and no `--robot jetson:...`: the board runs the quackd
   process the way a laptop does, and everything interesting is about what runs beside it.
-  [`deploy/jetson/`](deploy/jetson/README.md) is a Dockerfile that installs quackd from
-  `uv.lock` at the commit you checked out, onto a plain Debian Python image with no CUDA in
-  it at all, and a compose file that gives the GPU to Ollama and nothing to quackd. The
-  quackd service is behind a profile with `restart: "no"`, because `quackd run` is a command
-  that declares a verdict and exits rather than a service to keep alive. The arrangement the
-  page is really about is a ToddlerBot's own Jetson holding its control daemon, a model and
-  quackd between them, three processes on one board talking over loopback
-  ([docs/jetson.md](docs/jetson.md),
+  [`deploy/jetson/`](deploy/jetson/README.md) is a Dockerfile that builds quackd from the
+  checkout you build it in, with its third-party Python packages pinned by `uv.lock`, onto a
+  plain Debian Python image with no CUDA in it at all, and a compose file that gives the GPU
+  to Ollama and nothing to quackd. The quackd service is behind a profile with
+  `restart: "no"`, because `quackd run` is a command that declares a verdict and exits rather
+  than a service to keep alive. The arrangement the page is really about is a ToddlerBot's own
+  Jetson holding its control daemon, a model and quackd between them, three processes on one
+  board talking over loopback ([docs/jetson.md](docs/jetson.md),
   [ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
 - **`quackd doctor` reads the board it is running on, when that board is a Tegra.** The
   model, the L4T release and which JetPack it is, the memory the CPU and the GPU are
   sharing, whether the only swap is zram, the GPU device node, the power mode and Docker's
   default runtime. All of it informational: none of it can change the exit code, because
-  quackd runs perfectly well on a board with every one of those wrong. It detects a Tegra
-  from `/proc/device-tree/compatible` as well as `/etc/nv_tegra_release`, because the first
-  is the host's and is visible from inside a container while the second is not.
+  quackd runs perfectly well on a board with every one of those wrong. It looks for a Tegra in
+  `/proc/device-tree/compatible` and in `/etc/nv_tegra_release`, and it is meant to be run on
+  the board itself. Inside a container it will most likely find neither:
+  `/proc/device-tree` points into `/sys/firmware`, which Docker masks unless the container is
+  privileged or started with `--security-opt systempaths=unconfined`, and a plain Python image
+  has no `/etc/nv_tegra_release`.
 - **The image is built and then run on arm64**, which is the first aarch64 Linux run of
   quackd this repository records: where the contributor transcripts say anything they put
   an aarch64 model server behind a quackd running on something else, and the largest
   measurement on that same board publishes none. It was done under emulation on the
   machine that wrote it. `jetson-image.yml` is set up to repeat it on a native arm64
   runner, running `import cv2`, `quackd doctor --json` and a whole `find-and-kick` task
-  inside the result. It first ran on 2026-09-23, on the commit that merged these files, and
-  was green on all four steps. It publishes nothing, because an image with a pull command
-  beside it is a
-  promise that somebody ran it on the hardware it is named after, and nothing here has
-  been run on a Jetson by this project.
+  inside the result, on the scripted pilot, because a runner has no key and no model server.
+  It first ran on 2026-09-23, on the commit that merged these files, and was green: the build,
+  `import cv2`, the `doctor --json` assertions and the task. It publishes nothing, because an
+  image with a pull command beside it is a promise that somebody ran it on the hardware it is
+  named after, and nothing here has been run on a Jetson by this project.
+- **The container is a new surface in [SECURITY.md](SECURITY.md).** Both services use host
+  networking, so quackd is on the board's loopback rather than isolated from it. Ollama is
+  pinned to `127.0.0.1:11434`, because its image's own default is every interface, and under
+  host networking that would put a server with no authentication on whatever network the
+  board is on. The compose file mounts `~/.quackd` into the quackd service, which hands it the
+  plain-text tokens in `robots.json` and every robot's memory file, the same access a native
+  install has, and runs that service as uid 1000; the image itself sets no user, so a bare
+  `docker run` is root. The new `.dockerignore` at the repository root is not housekeeping:
+  the build copies the whole checkout, and `**/.env` rather than `.env` is what keeps
+  `deploy/jetson/.env`, the file the compose file reads provider keys from, out of it.
 - **A turn a refusal fallback answered says which model answered it.** Server-side fallbacks
   are on by default for Claude: a turn the requested model declines is re-run on another one
   inside the same call. Nothing recorded that. The `llm` line the agent loop writes to
@@ -56,6 +82,23 @@ above everything else it says.
 
 ### Changed
 
+- **`quackd doctor` names the architecture on every machine, and its JSON has a `jetson` key
+  everywhere.** The header line and the `platform` field of `--json` now end with
+  `platform.machine()`, where they used to stop at the operating system's release, so this
+  Windows laptop's `Windows 10` is now `Windows 10 AMD64`, and the arm64 image's ends in
+  `aarch64`. `--json` also carries a top-level `jetson` key, `null` unless the device tree
+  names a Tegra or `/etc/nv_tegra_release` exists. A script that compared `platform` with what
+  0.12.0 printed will stop matching.
+- **The ToddlerBot hardware checklist covers quackd on the robot's own board.** It now says to
+  drive the robot from a laptop the first time, with nothing else running on the Jetson,
+  because a model server saturating that board is the load that can starve the fifty hertz
+  loop, and to try the crowded board only once the steps have passed. Step 11 tests the
+  deadman by pulling the network cable mid-move, and over loopback there is no cable, so it
+  now says to `kill -STOP` quackd's process instead, which stops the keepalives without
+  closing the socket, then kill it outright and start a fresh run once the robot has settled.
+  Never resume it with `kill -CONT`: `bot.keepalive` feeds the deadman on its own and the
+  daemon clears the trip on the first keepalive it sees, so resuming hands the body straight
+  back to the verb that was in flight, while your hands are on it.
 - **A bare `--llm anthropic` runs Claude Opus 5.5, and a bare `--llm openai` runs GPT-6 Sol.**
   Both shipped on 2026-09-22. Anthropic's models overview says to start with Opus 5.5 and
   files Opus 5 under legacy, and OpenAI's models page lists GPT-6 Sol with Astra and Luna as
@@ -65,12 +108,12 @@ above everything else it says.
   A bare `--llm grok` runs Grok 4.7 for the same reason, at the price Grok 4.6 had
   ([ADR-0031](docs/adr/0031-model-catalogue.md), amended).
 - **The catalogue was read again against all eleven vendors' own pages, on 2026-09-23.** Nine
-  ids are new: `claude-opus-5-5`, `gpt-6-sol`, `gpt-6-luna`, `gemini-3.1-pro-preview-customtools`,
-  `grok-4.7`, `zai-glm-5-3` on Mistral, `north-mini-code-1-0` on Cohere, `qwen-max` and
-  `glm-5.3-flashx`. Claude Opus 5,
-  Gemini 3.7 and 3.6 Flash and DeepSeek V4 Pro move from `current` to `legacy`, each on its
-  vendor's own grouping, and Leanstral takes images. `PRICES_CHECKED`, which every
-  `run_start` records, is 2026-09-23.
+  ids are new: `claude-opus-5-5`, `gpt-6-sol`, `gpt-6-luna`,
+  `gemini-3.1-pro-preview-customtools`, `grok-4.7`, `zai-glm-5-3` on Mistral,
+  `north-mini-code-1-0` on Cohere, `qwen-max` and `glm-5.3-flashx`. Claude Opus 5, Gemini 3.7
+  and 3.6 Flash and DeepSeek V4 Pro move from `current` to `legacy`, each on its vendor's own
+  grouping, and Leanstral takes images. `PRICES_CHECKED`, which every `run_start` records, is
+  2026-09-23.
 - **Breaking, for anyone who names one of them: seven ids leave the catalogue.** The three
   Gemini 2.5 models, because since 2026-09-18 Google is "limiting access to the 2.5 models to
   users who have actively used them in the past", and a model a new user cannot call does
@@ -110,7 +153,10 @@ above everything else it says.
   does the same now; it replays no thinking blocks, so the second fix is the CLI's alone. What
   `auto` changes is that a turn can come back as prose with no call in it: the CLI re-prompts
   once and then ends the run, as it always has for a turn like that, and the browser demo ends
-  the run at once, as it does for every vendor it can only ask.
+  the run at once, as it does for every vendor it can only ask. A coordinator flock's one
+  planner call is asked the same way, and a prose reply there falls back to the task's own
+  defaults, with a `planner fallback:` note and `fallback: true` on the `plan` line, as a reply
+  with no plan in it always has.
 - **Claude Haiku 4.5, Sonnet 4.5 and Opus 4.5 failed their first call on every run.** They
   take only the older extended thinking, and answer quackd's adaptive request with
   `adaptive thinking is not supported on this model`. The retry that exists for exactly those
@@ -139,6 +185,95 @@ above everything else it says.
   Mistral answers OpenAI's `required` with a 400, which Mistral's own spec, listing
   `required` beside `any`, does not support; quackd still sends `any`, the value its guide
   documents.
+
+### Known limitations
+
+- **Nothing here has been run on a Jetson by this project.** The native arm64 runner has no
+  GPU and is not a Tegra, so what it proves is that the image builds and that quackd runs on
+  aarch64 Linux. Ollama on an Orin's GPU, the NVIDIA container runtime, `nvpmodel`, how much
+  memory a model takes beside quackd, and what the doctor section reads off a real board's
+  files are all unproven. [docs/jetson.md](docs/jetson.md) says what to send back from a board
+  that can: the `jetson` block of `quackd doctor --json`, a run's `terminal.txt` and
+  `transcript.jsonl`, and one `tegrastats` line taken while the model was answering.
+
+- **The Jetson section of `quackd doctor` has never read a real board.** What it reads is tested
+  against a board made of files in `tests/test_doctor_and_stub.py`, with `nvpmodel` and
+  `docker` answered by stubs, and the arm64 job checks only the other half, that `jetson` is
+  `null` on a runner that is not a Tegra. That job gates nothing and does not rerun on a change
+  to `quackd/` alone.
+
+- **Nobody has measured what a model server does to a ToddlerBot's fifty hertz control loop on
+  the same Jetson, and on that body a starved loop is a fall.** A model server saturating the
+  CPU and the memory bus is exactly the load that can starve that loop, and the daemon's
+  deadman is what protects the robot there, doing that job for real rather than as a
+  formality. Bring the robot up from a laptop first, as the checklist now says. On the crowded
+  board, keep it on its stand, watch `tegrastats` while a model answers, and consider pinning
+  the model server off the cores the loop runs on
+  ([ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
+
+- **A `SIGTERM` ends a run without sending the robot a `stop`, and it always has.** quackd
+  installs a handler for SIGINT and for no other signal. A run that ends by itself, or by
+  Ctrl-C, goes through the loop's `finally`, which sends the `stop`, and a signal other than
+  SIGINT skips it: a bare `kill`, a systemd unit's default stop and a `docker compose stop`
+  against a service that names no `stop_signal` all end a run that way. Outside a container
+  the process dies where it is. Inside one, where quackd is PID 1 with no handler, the signal
+  is ignored until Docker's SIGKILL arrives. That is why `deploy/jetson/compose.yml` sets
+  `stop_signal: SIGINT`, and anything else you wrap `quackd run` in should send SIGINT too.
+  Until this release [docs/safety.md](docs/safety.md) said the `finally` always sends the
+  `stop`, and it now says which ways of stopping quackd skip it.
+
+- **No provider fix in this release has reached a live model.** There is no Anthropic or
+  DeepSeek key on the machine that made them, and the one live check tried, a bare `--llm
+  openai` on `hello-world`, was refused for want of credit before it took a turn. So GPT-6 Sol
+  opening on the Responses API, `auto`, the stepped trim and the blocks left out on the two
+  Claude models that need them, the thinking retry on the 4.5 models, no effort for Haiku 4.5
+  and Sonnet 4.5, DeepSeek with its thinking off and Meta's one call per turn are each proven
+  against the request shape the vendor documents, and against the error text where the vendor
+  prints one, which is the vendor's claim and not a measurement. On a Claude model asked with
+  `auto`, a turn that answers in prose is newly possible, and how often that happens is
+  unmeasured too. So is what DeepSeek loses with its thinking off.
+
+- **Claude Opus 5.5 and Fable 5.1 carry up to nine exchanges' camera frames, and lose their
+  own earlier reasoning every eighth exchange.** Every other pilot is sent the frames of its
+  last two exchanges. Those two bind each replayed thinking block to everything before it, and
+  dropping a frame edits what came before, so their frames are trimmed every eight exchanges
+  instead. A trim invalidates every thinking block produced while a frame it took was still
+  sent: from the trim call on those are left out, and the API is asked to drop the latest
+  turn's, which may not be left out. A run with no frames to trim, under `--no-vision` or on a
+  body with no camera, loses nothing. The request is larger between trims than any other
+  model's, and the reasoning a trim takes with it does not come back. Keeping every frame
+  instead would have passed the API's 32 MB request limit on a long run with two cameras.
+
+- **The catalogue is a snapshot of 2026-09-23.** Rates are the short context band, so a prompt
+  over 272k tokens on the ten OpenAI models that have a long-context rate, or over 200k on xAI
+  and Gemini 3.1 Pro, is under-costed, and Alibaba's rows are its first input-length tier, so
+  `qwen3.7-flash` is under-costed more than threefold on a prompt past 32k and
+  `qwen3-coder-flash` past 256k. Three Gemini Flash models and Robotics ER 2 double their rates
+  on 2027-01-01, and `gpt-5.6-sol`'s promotional rate is promised only through 2026-11-21. A
+  turn a refusal fallback took is priced at the rate of the model that was asked for, not the
+  one that answered.
+
+- **Nothing has answered a real robot through a decision LLM, or made a real call to one.**
+  Unchanged since 0.12.
+
+- **Two of the four confidence floors are numbers nobody published.** Unchanged since 0.12.
+
+- **A stepper is not on the critical path, and the arithmetic that says it pays is arithmetic.**
+  Unchanged since 0.12.
+
+- **Six of the seven bodies have still never run on hardware, and the one that has was running
+  0.9 at the time.** Unchanged since 0.10.
+
+- **Not one `cost_usd` has been checked against a bill.** Unchanged since 0.11, although every
+  rate was read again on 2026-09-23. `--price` is the answer to a disagreement.
+
+- **`terminal.txt` is most of the screen and not all of it, and it is redacted by name only.**
+  Unchanged since 0.11.
+
+- **No pilot flock has been driven by a real model, or by a real robot.** Unchanged since 0.9.
+
+- **A run directory from 0.10 or 0.11 that used the stepper replays with no stepper lines.**
+  Unchanged since 0.12.
 
 ## [0.12.0] — 2026-09-23
 
@@ -4172,7 +4307,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/rokbenko/quackd/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rokbenko/quackd/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rokbenko/quackd/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rokbenko/quackd/compare/v0.9.0...v0.10.0
