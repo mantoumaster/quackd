@@ -160,6 +160,31 @@ yours does not, quackd falls back to asking for JSON in the text and retries onc
 and is worse ([local-llms.md](local-llms.md)). Qwen3 thinks by default, which costs tokens on
 every turn; `--extra-body` turns that off and that page shows how.
 
+## A decision LLM on the same board
+
+0.12.0 put an optional discrete stepper in front of the pilot, and several of the decision
+LLMs it can name run on your own machine rather than on somebody else's
+([decision-llms.md](decision-llms.md)). On a board where one pool of memory serves
+everything, that is another tenant rather than a free lunch, so it belongs in the same
+budget as the table above.
+
+`von` is the one that fits without asking for anything. It is an encoder rather than a
+generator, it wants no GPU and no key, and it is small beside the model doing the piloting:
+
+```bash
+pip install von-sdk
+von serve --host 127.0.0.1 --port 8000     # --decision-llm von already looks here
+```
+
+`laya` is the awkward one here rather than the easy one. It runs inside quackd's own process
+and pulls torch with it, the image in [`deploy/jetson/`](../deploy/jetson/README.md) carries
+no torch on purpose, and torch on a Jetson wants NVIDIA's own wheel rather than the one PyPI
+serves. Treat that combination as unbuilt rather than merely uninstalled.
+
+Neither has been run on a Jetson, and the gap is wider than this page: nobody has run the
+stepper against a real decision LLM on any machine, which [PLAN.md](../PLAN.md) records as
+an open item of its own.
+
 ## Prepare the board
 
 None of this is required to run quackd. All of it matters once a model is resident.

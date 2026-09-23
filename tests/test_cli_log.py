@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from quackd.cli import app
 
-from .conftest import help_text
+from .conftest import help_text, plain_text
 
 runner = CliRunner()
 
@@ -391,54 +391,41 @@ def test_a_summary_written_before_the_clocks_replays_with_the_counters_it_had(
     assert "SUCCESS" in out and "quacked and walked one step" in out
 
 
-# ── the spellings the trace left behind, kept until 0.12 ────────────────────────────────
-
-
-@pytest.fixture(autouse=True)
-def _forget_earlier_deprecations(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`quackd.cli._DEPRECATIONS` is filled once per process and never emptied.
-
-    That is right for a command that runs once and wrong for a suite that invokes the CLI a
-    hundred times in one interpreter: the saved terminal replays that list into its header,
-    so without this a run here opens with the old spellings an earlier test typed."""
-    monkeypatch.setattr("quackd.cli._DEPRECATIONS", [])
+# ── the spellings the trace left behind, gone in 0.12 ───────────────────────────────────
 
 
 def _typed(monkeypatch: pytest.MonkeyPatch, *argv: str) -> None:
-    """What the deprecation warner reads.
+    """What the saved terminal records as the command that started the run.
 
-    `_warn_old_spellings` goes to `sys.argv` rather than to the parsed value, because Click
-    hands both spellings of an option to the same parameter and by then they cannot be told
-    apart. CliRunner passes its arguments to the command directly and leaves `sys.argv`
-    alone, so without this the warner is reading pytest's own command line."""
+    `_terminal_header` reads `sys.argv` for the `$ quackd ...` line at the top of the file.
+    CliRunner passes its arguments to the command directly and leaves `sys.argv` alone, so
+    without this the header of a run made here opens with pytest's own command line. Nothing
+    about a deprecation reads argv any more; this is only the recorded command."""
     monkeypatch.setattr(sys, "argv", ["quackd", *argv])
 
 
 def _deprecations(stderr: str) -> list[str]:
     """Every deprecation line on stderr and nothing else, so "exactly one" is a claim about
     how many were printed rather than about whether the text appears somewhere."""
-    return [line.strip() for line in stderr.splitlines() if "goes in 0.12" in line]
-
-
-def _flag_warning(old: str, new: str) -> str:
-    """The line an old flag prints, spelled out here so a change to it has to be deliberate."""
-    return f"the flag `{old}` is now `{new}`; the old spelling still works and goes in 0.12"
+    return [line.strip() for line in stderr.splitlines() if "not read any more" in line]
 
 
 def _name_warning(old: str, new: str) -> str:
-    """The same, for an environment variable, which says name where a flag says spelling."""
-    return f"{old} is now {new}; the old name still works and goes in 0.12"
+    """The line a name this release stopped reading prints when it finds one set, spelled out
+    here so a change to it has to be deliberate.
+
+    It is the sentence `QUACKD_MODEL` gets, and it is here for the same reason: a flag that is
+    gone fails loudly, because Click refuses it and names it, while a variable that is gone
+    says nothing at all unless something says it."""
+    return f"{old} is not read any more and this run ignores it; set {new} instead"
 
 
-def _narration(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *flags: str
-) -> tuple[str, list[str]]:
+def _narration(tmp_path: Path, *flags: str) -> tuple[str, list[str]]:
     """One run on the mock, what it narrated, and the deprecation lines it printed.
 
     The mock sends no frames and writes no GIF, so stderr carries the live view and the
     warnings and nothing else. The suite runs with the live view off (conftest), which is
-    what makes a flag that turns it on visible here as a change."""
-    _typed(monkeypatch, "run", *flags)
+    what makes a variable that turns it on visible here as a change."""
     result = runner.invoke(
         app,
         [
@@ -459,13 +446,12 @@ def _narration(
     return " ".join(result.stderr.split()), _deprecations(result.stderr)
 
 
-def _narrow_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *flags: str) -> list[str]:
+def _narrow_run(tmp_path: Path, *flags: str) -> list[str]:
     """The same run at the eighty columns a terminal has when nobody widened it, line by line.
 
     Everything else in this file runs at two hundred so that the panel's counters stay whole,
     and that width is exactly what would hide a warning folded at eighty. Not flattened
     either, for the same reason: a fold is a line break and nothing else."""
-    _typed(monkeypatch, "run", *flags)
     result = runner.invoke(
         app,
         [
@@ -495,167 +481,126 @@ def _terminal(tmp_path: Path) -> list[str]:
     return [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_the_help_offers_log_and_keeps_trace_hidden() -> None:
-    """A spelling kept alive for one release must not also still be taught. `trace` answers
-    for anyone who types it and appears nowhere, so nobody learns the name that goes next."""
+def test_the_help_offers_log_and_trace_is_no_command() -> None:
+    """0.11 kept `quackd trace` alive for one release, hidden from `--help` so that nobody
+    learned a name that was going, and said in twelve files that it went in 0.12. It went.
+
+    Refused rather than aliased, which is the shape 0.5 used on the flag `--robot` replaced:
+    Click names the command it does not have, and a script that still types the old one stops
+    rather than carrying on under a spelling nobody maintains. The phrase is asserted and not
+    the styled name, because the runner forces colour and Typer's highlighter splits the
+    quoted word across spans."""
     flat = help_text(["--help"])
     assert "log Replay a finished run" in flat
     assert "trace" not in flat, flat
 
+    old = runner.invoke(app, ["trace"], env=WIDE)
+    assert old.exit_code == 2, old.output
+    assert "No such command" in plain_text(old.output), old.output
 
-def test_the_trace_command_replays_what_log_replays_and_says_so_once(
+
+@pytest.mark.parametrize(
+    ("command", "old"),
+    [
+        ("run", "--trace"),
+        ("run", "--no-trace"),
+        ("run", "--trace-prompt"),
+        ("run", "--no-trace-prompt"),
+        ("serve-mcp", "--trace"),
+        ("serve-mcp", "--no-trace"),
+    ],
+)
+def test_the_old_flags_are_refused_like_any_unknown_option(
+    tmp_path: Path, command: str, old: str
+) -> None:
+    """Both halves of both pairs, on both commands that carried them.
+
+    `serve-mcp` is here because its log switch is its own option object rather than the run's,
+    so a spelling deleted from one and left on the other would pass a test that only ran the
+    run. It is invoked with the flag and nothing else: it takes no `--runs-dir`, and passing
+    one would let this pass on the wrong unknown option.
+
+    Nothing is written, which is the other half of a refusal being a refusal: the parse fails
+    before a run directory exists, so there is no half-run on disk to explain."""
+    full = ["run", "hello-world", "--llm", "fake", "--robot", "microduck:mock", "--no-gif"]
+    full += ["--runs-dir", str(tmp_path)]
+    result = runner.invoke(app, (full if command == "run" else [command]) + [old], env=WIDE)
+
+    # Read through `plain_text` because on GitHub Actions Typer forces colour and Rich
+    # styles the name it is complaining about in pieces, so `--trace` reaches a substring
+    # check as two spans with an escape sequence between the hyphens.
+    refusal = plain_text(result.output)
+    assert result.exit_code == 2, result.output
+    assert "No such option" in refusal, refusal
+    assert old in refusal, refusal
+    assert not list(tmp_path.iterdir()), "a refused flag wrote a run directory"
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "shows"),
+    [
+        ("QUACKD_TRACE", "QUACKD_LOG", "result quack ok"),
+        ("QUACKD_TRACE_THINKING", "QUACKD_LOG_THINKING", "[scripted]"),
+        ("QUACKD_TRACE_PROMPT", "QUACKD_LOG_PROMPT", "system prompt"),
+    ],
+)
+def test_an_old_env_name_is_ignored_and_says_so_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old: str, new: str, shows: str
+) -> None:
+    """A variable that is gone goes quiet, and the quiet is the failure this line prevents.
+
+    Each of these three sits in a `.env` somebody wrote months ago with the value `0`, and
+    0.11 honoured it. Unread and unannounced, the same line would switch back on the very
+    thing its author had turned off. So the run says what it ignored, and the proof that it
+    really was ignored is that the thing `0` used to hide is on the screen.
+
+    The new names are deleted rather than set, because the scenario is a `.env` carrying only
+    the old one; the suite sets `QUACKD_LOG`, and leaving it would answer the question this
+    test is asking."""
+    for name in ("QUACKD_LOG", "QUACKD_LOG_THINKING", "QUACKD_LOG_PROMPT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(old, "0")
+
+    narrated, said = _narration(tmp_path)
+    assert shows in narrated, narrated
+    assert said == [_name_warning(old, new)]
+
+
+def test_every_old_name_that_is_set_is_named_not_only_the_one_a_run_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The alias is one command under two names, not a second renderer to keep in step: what
-    it prints is the same bytes, plus one line saying what to type next time.
+    """0.11 could warn about a name only on a run that read it, so a `.env` with the log
+    switched off heard about one of its three old names and nothing about the other two: with
+    the log off, the thinking and the prompt settings were never consulted. Its own note said
+    to read those warnings as a floor and not as a list.
 
-    The line goes to stderr, so a replay piped into a pager or a file is byte for byte the
-    replay it was before, warning and all."""
-    run_dir = _run(tmp_path)
-    _typed(monkeypatch, "log", run_dir.name)
-    new = runner.invoke(app, ["log", run_dir.name, "--runs-dir", str(tmp_path)], env=WIDE)
-    _typed(monkeypatch, "trace", run_dir.name)
-    old = runner.invoke(app, ["trace", run_dir.name, "--runs-dir", str(tmp_path)], env=WIDE)
+    They are a list now. The names are read where the command line is, before anything asks
+    what the log should do, so one run answers for the whole file."""
+    for name in ("QUACKD_LOG", "QUACKD_LOG_THINKING", "QUACKD_LOG_PROMPT"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("QUACKD_TRACE", "QUACKD_TRACE_THINKING", "QUACKD_TRACE_PROMPT"):
+        monkeypatch.setenv(name, "0")
 
-    assert new.exit_code == 0 and old.exit_code == 0, old.output
-    flat = " ".join(new.stdout.split())
-    assert "SUCCESS" in flat and "result walk_to ok" in flat, "the new spelling replayed a run"
-    assert old.stdout == new.stdout
-    assert _deprecations(new.stderr) == []
-    assert _deprecations(old.stderr) == [
-        "the command `trace` is now `log`; the old spelling still works and goes in 0.12"
+    _, said = _narration(tmp_path)
+    assert said == [
+        _name_warning("QUACKD_TRACE", "QUACKD_LOG"),
+        _name_warning("QUACKD_TRACE_THINKING", "QUACKD_LOG_THINKING"),
+        _name_warning("QUACKD_TRACE_PROMPT", "QUACKD_LOG_PROMPT"),
     ]
-
-
-@pytest.mark.parametrize("on", [True, False])
-def test_the_old_trace_flags_still_switch_the_live_view(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on: bool
-) -> None:
-    """`--trace/--no-trace` is a second spelling on the same option rather than a second
-    option, so what has to hold is that it lands on the same switch: the run narrates, or it
-    does not, exactly as the new spelling leaves it, and saying it the old way costs one
-    line."""
-    new, old = ("--log", "--trace") if on else ("--no-log", "--no-trace")
-    with_new, quiet = _narration(tmp_path, monkeypatch, new)
-    with_old, warned = _narration(tmp_path, monkeypatch, old)
-    assert ("system prompt" in with_new) is on
-    assert ("result quack ok" in with_new) is on
-    assert ("system prompt" in with_old) is on
-    assert ("result quack ok" in with_old) is on
-    assert quiet == []
-    assert warned == [_flag_warning(old, new)]
-
-
-@pytest.mark.parametrize("shown", [True, False])
-def test_the_old_trace_prompt_flags_still_switch_the_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shown: bool
-) -> None:
-    """The same arrangement on the prompt switch. Both runs keep `--log`, because what this
-    flag decides is the sixty lines at the top of a log that is running either way, and the
-    rest of the log has to still be there to show that only the prompt went."""
-    new, old = (
-        ("--log-prompt", "--trace-prompt") if shown else ("--no-log-prompt", "--no-trace-prompt")
-    )
-    with_new, quiet = _narration(tmp_path, monkeypatch, "--log", new)
-    with_old, warned = _narration(tmp_path, monkeypatch, "--log", old)
-    assert ("system prompt" in with_new) is shown
-    assert ("system prompt" in with_old) is shown
-    assert "result quack ok" in with_old
-    assert quiet == []
-    assert warned == [_flag_warning(old, new)]
-
-
-def test_the_old_env_names_are_read_only_where_the_new_one_is_unset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`QUACKD_TRACE` sits in `.env` files people wrote months ago, and switching their log
-    back on would be the worse half of a rename. It is read where `QUACKD_LOG` is not there,
-    and only there: a reader who has already moved over hears nothing about either name.
-
-    `quackd.log` remembers which old names it has warned about so that a run prints one line
-    and not one per lookup, which makes the set a decision an earlier test would otherwise
-    get to make. Cleared here, twice, so each half of this asserts about its own run."""
-    monkeypatch.setattr("quackd.log._warned", set())
-    monkeypatch.delenv("QUACKD_LOG", raising=False)
-    monkeypatch.setenv("QUACKD_TRACE", "0")
-    fallback, warned = _narration(tmp_path, monkeypatch)
-    assert "system prompt" not in fallback and "result quack ok" not in fallback
-    assert warned == [_name_warning("QUACKD_TRACE", "QUACKD_LOG")]
-
-    monkeypatch.setattr("quackd.log._warned", set())
-    monkeypatch.setenv("QUACKD_LOG", "")  # an empty value is on
-    live, quiet = _narration(tmp_path, monkeypatch)
-    assert "system prompt" in live and "result quack ok" in live
-    assert quiet == [], "nothing fell back, so there was nothing to say"
-
-
-def test_a_run_named_trace_is_not_somebody_typing_the_old_spelling(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The warner reads `sys.argv`, where a flag's value sits beside the flag and is another
-    word on the line. `--run-name trace` is what the afternoon of this rename looks like on
-    disk, and a migration notice for it is a notice about nothing: what was named `trace` is
-    a run, and the reader is already typing the new spelling of everything else.
-
-    The second half is the same word as a positional. Somebody who named a run `trace`
-    replays it by that name, and a name is not a subcommand."""
-    _, deprecations = _narration(tmp_path, monkeypatch, "--run-name", "trace")
-    assert deprecations == []
-    (run_dir,) = [d for d in tmp_path.iterdir() if d.is_dir()]
-    assert run_dir.name.endswith("-trace"), f"the value never reached the run: {run_dir.name}"
-
-    _typed(monkeypatch, "log", "trace")
-    result = runner.invoke(app, ["log", "trace", "--runs-dir", str(tmp_path)], env=WIDE)
-    assert result.exit_code == 0, result.output
-    assert _deprecations(result.stderr) == []
-    assert "SUCCESS" in result.stdout, "and the run it names is the one that came back"
-
-
-def test_a_root_option_before_the_old_subcommand_does_not_hide_the_notice(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The subcommand is the first argument that is not an option, not `argv[1]`.
-
-    A script that says `quackd --no-color trace <run>` is exactly the script this notice is
-    written for: it is automated, nobody is reading its output for fun, and it breaks in 0.12.
-    Reading only `argv[1]` told that script nothing at all, which is the one audience a
-    deprecation cannot afford to be silent for."""
-    run_dir = _run(tmp_path)
-    where = ["--runs-dir", str(tmp_path)]
-
-    _typed(monkeypatch, "--no-color", "trace", run_dir.name)
-    old = runner.invoke(app, ["--no-color", "trace", run_dir.name, *where], env=WIDE)
-    assert old.exit_code == 0, old.output
-    assert _deprecations(old.stderr) == [
-        "the command `trace` is now `log`; the old spelling still works and goes in 0.12"
-    ]
-
-    # and the guard in the other direction still holds: a root option in front of the NEW
-    # spelling says nothing at all
-    _typed(monkeypatch, "--no-color", "log", run_dir.name)
-    new = runner.invoke(app, ["--no-color", "log", run_dir.name, *where], env=WIDE)
-    assert new.exit_code == 0, new.output
-    assert _deprecations(new.stderr) == []
-
-
-def test_an_old_flag_beside_that_value_still_says_its_one_line(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A narrower reading is only right if it kept the case it was narrowed for. One command
-    line carries both the decoy and a real old flag, and is told about the flag, once."""
-    _, deprecations = _narration(tmp_path, monkeypatch, "--no-trace", "--run-name", "trace")
-    assert deprecations == [_flag_warning("--no-trace", "--no-log")]
 
 
 def test_a_deprecation_line_is_not_folded_at_eighty_columns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The longest of these sentences is a hundred characters, and it is an instruction a
-    script greps for. Folded at the default width it breaks inside the new spelling, so the
-    one part of the line worth reading is the part a grep no longer finds."""
-    sentence = _flag_warning("--no-trace-prompt", "--no-log-prompt")
+    """The longest of these sentences is 99 characters, and it is an instruction a script
+    greps for. Folded at the default width it breaks inside the new name, so the one part of
+    the line worth reading is the part a grep no longer finds."""
+    sentence = _name_warning("QUACKD_TRACE_THINKING", "QUACKD_LOG_THINKING")
     assert len(sentence) > 80, "this stopped being a test about folding"
-    lines = _narrow_run(tmp_path, monkeypatch, "--no-trace-prompt")
+
+    monkeypatch.delenv("QUACKD_LOG_THINKING", raising=False)
+    monkeypatch.setenv("QUACKD_TRACE_THINKING", "0")
+    lines = _narrow_run(tmp_path)
     assert sentence in lines, lines[:4]
 
 
@@ -745,33 +690,30 @@ def test_a_dropped_counter_nobody_can_read_replays_as_no_counter(
 # ── and what the saved terminal keeps of all this ───────────────────────────────────────
 
 
-def test_an_old_flag_is_written_down_above_the_header_panel(
+def test_an_ignored_name_is_written_down_above_the_header_panel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The root callback says this before there is a run directory to write it into, which is
     the one thing a run says with nowhere to keep it. The header replays it rather than the
     warning being moved later, because on the screen it came before the panel and a saved
-    terminal that reorders what you saw is a record of a different afternoon."""
-    _, deprecations = _narration(tmp_path, monkeypatch, "--trace")
-    assert deprecations == [_flag_warning("--trace", "--log")]
+    terminal that reorders what you saw is a record of a different afternoon.
+
+    Until 0.12 this line was said from inside `quackd.log`, at the moment the value was read,
+    which is after the capture opens. It is read beside `QUACKD_MODEL` in the callback now, so
+    it moves up to where a reader opening the file meets it first.
+
+    `QUACKD_LOG` is set to empty rather than deleted: an empty value is on, so the panel is
+    drawn, and setting it at all shields this from a developer's own `.env`."""
+    _typed(monkeypatch, "run", "hello-world")
+    monkeypatch.setenv("QUACKD_LOG", "")
+    monkeypatch.setenv("QUACKD_TRACE", "0")
+    line = _name_warning("QUACKD_TRACE", "QUACKD_LOG")
+
+    _, said = _narration(tmp_path)
+    assert said == [line]
 
     lines = _terminal(tmp_path)
     assert lines[0].startswith("$ quackd run"), lines[:3]
-    (at,) = [i for i, line in enumerate(lines) if line == _flag_warning("--trace", "--log")]
-    panel = next(i for i, line in enumerate(lines) if "provider" in line)
+    (at,) = [i for i, text in enumerate(lines) if text == line]
+    panel = next(i for i, text in enumerate(lines) if "provider" in text)
     assert at < panel, lines[: panel + 1]
-
-
-def test_the_old_environment_name_is_written_down_there_too(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """This one is said from inside `quackd.log`, which is imported long before the consoles
-    exist and knows nothing about the capture. It goes out through `ui.err_console` for the
-    sake of this file: the reason a reader is looking at a log they did not ask for is a name
-    in a `.env` file they wrote months ago, and the answer belongs where they will find it."""
-    monkeypatch.setattr("quackd.log._warned", set())
-    monkeypatch.delenv("QUACKD_LOG", raising=False)
-    monkeypatch.setenv("QUACKD_TRACE", "0")
-    _, deprecations = _narration(tmp_path, monkeypatch)
-    assert deprecations == [_name_warning("QUACKD_TRACE", "QUACKD_LOG")]
-    assert _name_warning("QUACKD_TRACE", "QUACKD_LOG") in _terminal(tmp_path)

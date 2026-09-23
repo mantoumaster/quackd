@@ -174,7 +174,17 @@ def help_text(argv: list[str]) -> str:
 
     from quackd.cli import app
 
-    out = CliRunner().invoke(app, argv, env={"COLUMNS": "200"}).output
+    return plain_text(CliRunner().invoke(app, argv, env={"COLUMNS": "200"}).output)
+
+
+def plain_text(out: str) -> str:
+    """The same, for output a caller already has: styling off, borders off, one line.
+
+    Split out of `help_text` because an error panel needs exactly this treatment and
+    nothing else about a `--help` invocation, and because the docstring above is the
+    record of what copying these two regular expressions into a second module cost the
+    last time somebody did it.
+    """
     plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
     rows = [re.sub(r"^[\u2502|]\s?|\s?[\u2502|]$", "", line) for line in plain.splitlines()]
     return " ".join(" ".join(rows).split())

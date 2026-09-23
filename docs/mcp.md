@@ -79,13 +79,13 @@ reached the executor. A call the session refused still says why it was refused.
 answers with content rather than a dict. The five tools that never touch a robot carry none,
 because there is nothing behind the scenes to show.
 
-That key was called `trace` until 0.11, and it is the one place the old spelling is gone
-outright rather than carried beside the new one for a release. A person who types `--no-trace`
-gets a yellow line naming the new flag, and the command still runs. A model gets no such line:
-it learns the key from the tool description on every call, which is the only place it could be
-told, and a result carrying both spellings would hand it a second copy of up to thirty lines
-every time it used a tool, paid for in context on each one. The flags keep both spellings
-until 0.12.
+That key was called `trace` until 0.11, and it is the one place the old spelling went
+outright rather than being carried beside the new one for a release. A person who typed an old
+flag that release got a yellow line naming the new one, and the command still ran. A model gets
+no such line: it learns the key from the tool description on every call, which is the only
+place it could be told, and a result carrying both spellings would hand it a second copy of up
+to thirty lines every time it used a tool, paid for in context on each one. The flags have one
+spelling again as well, since 0.12.
 
 Every log opens with a `tool` line and closes with a `done` line. Those are the call's own
 envelope, recorded as `tool_call` and `tool_result`: what the client asked for, and what it

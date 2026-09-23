@@ -562,27 +562,66 @@ def test_no_living_document_quotes_an_exact_test_count() -> None:
             pytest.fail(f"{path.name} quotes {claim!r}; say 'the whole suite' and let CI count")
 
 
-def test_no_document_still_promises_a_removal_that_happened() -> None:
-    """0.4 said `--transport` and the duck_* tools go in 0.5. They did, so nothing should
-    still be promising it, and nothing should still be offering them.
+#: What 0.4 and 0.11 each kept alive for one release and the release after removed. A living
+#: document may not spell any of them, and neither may the source that prints to a terminal.
+#: The history files keep them all: that is what a changelog and an ADR are for.
+_REMOVED_SPELLINGS = ("--transport", "--trace", "--no-trace", "quackd trace")
 
-    A promise about a release that has NOT happened is a different thing and is allowed: 0.11
-    renamed the trace to the log and says the old spellings go in 0.12, which is exactly the
-    shape of the promise 0.4 made and 0.5 kept. What this guards against is the stale half,
-    a document still describing a removal that is already behind us."""
+#: The same, for names that are read rather than typed. Checked in every source file but
+#: `quackd/cli.py`, whose warner has to spell one in order to say it is not read any more;
+#: that it really is not read is `tests/test_cli_log.py`'s to prove.
+_REMOVED_ENV_NAMES = ("QUACKD_TRACE",)
+
+#: How each release phrased its promise. Once the removal has happened, a document still
+#: making the promise is describing a version of quackd that no longer exists. "gone in 0.12"
+#: is here because the README said it that way and none of the others would have caught it.
+_KEPT_PROMISES = (
+    "go away in 0.5",
+    "gone in 0.5",
+    "are removed in 0.5",
+    "goes in 0.12",
+    "go in 0.12",
+    "gone in 0.12",
+    "until 0.12",
+    "removed in 0.12",
+    "stop working in 0.12",
+    "stop being read in 0.12",
+)
+
+
+def test_no_document_still_promises_a_removal_that_happened() -> None:
+    """0.4 said `--transport` and the duck_* tools go in 0.5, and 0.11 said `quackd trace`,
+    the two `--trace` flag pairs and the three `QUACKD_TRACE*` variables go in 0.12. Both
+    releases kept their promise, so nothing should still be making either one, and nothing
+    should still be offering what went.
+
+    A promise about a release that has NOT happened is a different thing and is allowed. What
+    this guards against is the stale half: a document still describing a removal that is
+    already behind us, which is how a reader ends up typing a spelling that stopped working
+    two releases ago because the page they read still offered it.
+
+    `--no-trace` is a needle of its own, because it does not contain `--trace`."""
     from quackd.mcp_server import TOOL_NAMES
 
     assert not [n for n in TOOL_NAMES if n.startswith("duck_")]
     # a table title and a TransportError still told users to pass it, and no doc test could
-    # see a Python string, so the same rule now covers the source that prints to a terminal
+    # see a Python string, so the same rule now covers the source that prints to a terminal.
+    # `"trace"` was how the retired subcommand was registered; nothing else quotes the word.
     for src in sorted((REPO / "quackd").rglob("*.py")):
-        assert "--transport" not in src.read_text(encoding="utf-8"), (
-            f"quackd/{src.relative_to(REPO / 'quackd').as_posix()} still offers --transport"
-        )
-    for path in _living_docs():
+        text = src.read_text(encoding="utf-8")
+        where = f"quackd/{src.relative_to(REPO / 'quackd').as_posix()}"
+        for spelling in (*_REMOVED_SPELLINGS, '"trace"'):
+            assert spelling not in text, f"{where} still offers {spelling}"
+        if src.name != "cli.py":
+            for name in _REMOVED_ENV_NAMES:
+                assert name not in text, f"{where} still reads {name}"
+    # `.env.example` is not a `*.md` and so not a living document by the glob, and it is the
+    # one file whose whole job is to list the names a reader may set.
+    for path in [*_living_docs(), REPO / ".env.example"]:
         text = _prose(path.read_text(encoding="utf-8"))
-        assert "--transport" not in text, f"{path.name} still documents --transport"
-        for promise in ("go away in 0.5", "gone in 0.5", "are removed in 0.5"):
+        for spelling in (*_REMOVED_SPELLINGS, *_REMOVED_ENV_NAMES):
+            assert spelling not in text, f"{path.name} still documents {spelling}"
+        for promise in _KEPT_PROMISES:
             assert promise not in text, f"{path.name} still promises {promise!r}, which happened"
 
 
@@ -1130,6 +1169,27 @@ _FLOORS_ARE_NOT_ALL_PUBLISHED = (
 #: checker that cannot tell a citation from a claim would forbid the fix along with the bug.
 
 
+def _one_line(text: str, *, seams: bool = False) -> str:
+    """A file as one lowercase line, with nothing broken by where it happened to wrap.
+
+    Two things hide a sentence from a substring check, and both are ordinary formatting rather
+    than evasion. Python splits a long message across adjacent string literals, so a warning
+    reading `"... floors are Jev\'s " "published numbers."` carries a quote, a newline and an
+    indent in the middle of its own sentence; that is exactly how the line `--decision-mode
+    on` prints kept the old floor credit through a correction that was looking for it, with
+    the file in scope. And markdown wraps prose at the column, so any sentence long enough
+    falls across two lines and stops matching.
+
+    Literal seams are joined only where `seams` says so, which is for Python sources: in
+    markdown, two quotes with a space between them are two quotes and nothing is being
+    concatenated. Then all whitespace collapses, which is what makes "this sentence does not
+    appear" a claim about the sentence rather than about how somebody typed it.
+    """
+    if seams:
+        text = re.sub(r'"\s*\n\s*"', "", text)
+    return " ".join(text.split()).lower()
+
+
 def test_no_living_document_credits_all_four_confidence_floors_to_typesafe() -> None:
     """Two of the four are quackd's own, and the docs have said otherwise twice.
 
@@ -1145,8 +1205,12 @@ def test_no_living_document_credits_all_four_confidence_floors_to_typesafe() -> 
     live document, so the text above the ADR's first heading is what is read back, with
     quoted spans removed: both notes work by quoting the sentence they are overturning.
     """
+    # Every source file, not just the stepper's. The one live site this correction missed was
+    # the warning `--decision-mode on` prints, in `quackd/cli.py`, which said the forbidden
+    # sentence word for word while the guard read markdown and one module. A string a person
+    # reads on their own terminal is the most live site there is.
     sources = [
-        REPO / "quackd" / "agent" / "decision" / "stepper.py",
+        *sorted((REPO / "quackd").rglob("*.py")),
         REPO / "docs" / "adr" / "0040-a-discrete-stepper-in-front-of-the-model.md",
         REPO / "docs" / "adr" / "0043-decision-llms-are-a-wire-format-and-a-data-row.md",
     ]
@@ -1156,7 +1220,7 @@ def test_no_living_document_credits_all_four_confidence_floors_to_typesafe() -> 
             # the metadata line and the amendment notes, which stop at the first section,
             # and not the sentences they quote in order to overturn them
             text = re.sub(r'"[^"]*"', "", text.split("\n## ", 1)[0])
-        text = text.lower()
+        text = _one_line(text, seams=path.suffix == ".py")
         for wrong in _FLOORS_ARE_NOT_ALL_PUBLISHED:
             assert wrong not in text, (
                 f"{path.relative_to(REPO)} says {wrong!r}, but TypeSafe publish only 0.5 and "

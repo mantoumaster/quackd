@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+quackd runs on an NVIDIA Jetson now, and a Jetson is a board rather than a robot. The model
+that decides what a robot should do next and the process that turns that decision into a verb
+both fit on one computer the size of a paperback, so a goal in plain language never has to
+leave the room. Nothing here has been run on a Jetson by this project, and the page says so
+above everything else it says.
+
+### Added
+
+- **quackd has a path onto an NVIDIA Jetson, and a Jetson is a host rather than a body.**
+  There is no adapter, no extra and no `--robot jetson:...`: the board runs the quackd
+  process the way a laptop does, and everything interesting is about what runs beside it.
+  [`deploy/jetson/`](deploy/jetson/README.md) is a Dockerfile that installs quackd from
+  `uv.lock` at the commit you checked out, onto a plain Debian Python image with no CUDA in
+  it at all, and a compose file that gives the GPU to Ollama and nothing to quackd. The
+  quackd service is behind a profile with `restart: "no"`, because `quackd run` is a command
+  that declares a verdict and exits rather than a service to keep alive. The arrangement the
+  page is really about is a ToddlerBot's own Jetson holding its control daemon, a model and
+  quackd between them, three processes on one board talking over loopback
+  ([docs/jetson.md](docs/jetson.md),
+  [ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
+- **`quackd doctor` reads the board it is running on, when that board is a Tegra.** The
+  model, the L4T release and which JetPack it is, the memory the CPU and the GPU are
+  sharing, whether the only swap is zram, the GPU device node, the power mode and Docker's
+  default runtime. All of it informational: none of it can change the exit code, because
+  quackd runs perfectly well on a board with every one of those wrong. It detects a Tegra
+  from `/proc/device-tree/compatible` as well as `/etc/nv_tegra_release`, because the first
+  is the host's and is visible from inside a container while the second is not.
+- **The image is built and then run on arm64**, which is the first aarch64 Linux run of
+  quackd this repository records: where the contributor transcripts say anything they put
+  an aarch64 model server behind a quackd running on something else, and the largest
+  measurement on that same board publishes none. It was done under emulation on the
+  machine that wrote it. `jetson-image.yml` is set up to repeat it on a native arm64
+  runner, running `import cv2`, `quackd doctor --json` and a whole `find-and-kick` task
+  inside the result, and it has not run yet, because this release is where those files
+  first exist. It publishes nothing, because an image with a pull command beside it is a
+  promise that somebody ran it on the hardware it is named after, and nothing here has
+  been run on a Jetson by this project.
+
+## [0.12.0] — 2026-09-23
+
 Jev turned out to be the first of many. In the week after it launched, thirty-odd projects
 shipped models that answer the same typed questions over the same wire format, most of them
 open and several small enough to run on a laptop, and quackd had spelled one vendor's name into
@@ -50,15 +90,20 @@ the reading of it is.
 
 ### Added
 
-- **Six decision LLMs beside Jev, as rows of data rather than modules.** `kev` (Qwen3.5 with a
+- **Six decision LLMs beside Jev, five of them a row of data and nothing else.** `kev` (Qwen3.5 with a
   decision head, your own GPU), `von` (a 395M encoder, about 18 ms on a GPU, CPU viable),
   `openjev`
   (DiffusionGemma behind vLLM or MLX), `opendecision` (a zero-shot encoder, no GPU),
   `local` (anything else that speaks the format, with `--decision-url`), and `laya`, which runs
-  inside the quackd process with no server and no key at all. Each row carries its own default
-  address and model id, and that is not bookkeeping: OpenJev refuses a pinned Jev version with
-  a 400, and Laya's plain name is an alias for its English checkpoint rather than its
-  decision-tuned one, so a shared default would have been wrong for both on every request.
+  inside the quackd process with no server and no key at all -- the one of the six that is a
+  row plus a module, because a checkpoint in this process is not an HTTP call and `laya.py` is
+  the proof that the seam is the protocol rather than the transport. A row carries whatever that
+  project actually fixes, which for four of them is an address and a model id and for the
+  other three is less: `jev` names no address, because the SDK has its own; `laya` has none to
+  name; and `local` names neither, which is what `--decision-url` is for. Where a row does
+  carry one it is not bookkeeping: OpenJev refuses a pinned Jev version with a 400, and Laya's
+  plain name is an alias for its English checkpoint rather than its decision-tuned one, so a
+  shared default would have been wrong for both on every request.
 - **`quackd[decision]` and `quackd[laya]`.** The first installs the System One protocol client,
   which is one wheel for every server above; the second installs the one that runs in-process
   and pulls torch with it. Neither is in `quackd[all]`, for the same reason `quackd[jev]` never
@@ -72,42 +117,9 @@ the reading of it is.
   `decision_llm` with its name, model and address beside `decision_price`, and the summary's
   block carries `llm` and `url`. `kev-latest` on two machines is two different servers, and a
   transcript that recorded only the id could not tell a reader which one it had.
-- **One second means one second, whoever is answering.** The turn is bounded at the seam
-  rather than left to each backend, because a vendor's client has a timeout of its own with
-  its own meaning -- TypeSafe's retry budget is not its request timeout, and its request
-  timeout defaults to ten seconds -- while a model running in this process has none at all.
 - **`quackd doctor` lists every preset** with its extra, its key variable, its model and where
   it listens, so "could this run here?" is answerable without starting a task. It does not
   probe any of them, the way it does not probe a cloud vendor.
-
-- **quackd has a path onto an NVIDIA Jetson, and a Jetson is a host rather than a body.**
-  There is no adapter, no extra and no `--robot jetson:...`: the board runs the quackd
-  process the way a laptop does, and everything interesting is about what runs beside it.
-  [`deploy/jetson/`](deploy/jetson/README.md) is a Dockerfile that installs quackd from
-  `uv.lock` at the commit you checked out, onto a plain Debian Python image with no CUDA in
-  it at all, and a compose file that gives the GPU to Ollama and nothing to quackd. The
-  quackd service is behind a profile with `restart: "no"`, because `quackd run` is a command
-  that declares a verdict and exits rather than a service to keep alive. The arrangement the
-  page is really about is a ToddlerBot's own Jetson holding its control daemon, a model and
-  quackd between them, three processes on one board talking over loopback
-  ([docs/jetson.md](docs/jetson.md),
-  [ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
-- **`quackd doctor` reads the board it is running on, when that board is a Tegra.** The
-  model, the L4T release and which JetPack it is, the memory the CPU and the GPU are
-  sharing, whether the only swap is zram, the GPU device node, the power mode and Docker's
-  default runtime. All of it informational: none of it can change the exit code, because
-  quackd runs perfectly well on a board with every one of those wrong. It detects a Tegra
-  from `/proc/device-tree/compatible` as well as `/etc/nv_tegra_release`, because the first
-  is the host's and is visible from inside a container while the second is not.
-- **The image is built and then run on arm64**, which is the first aarch64 Linux run of
-  quackd this repository records: where the contributor transcripts say anything they put an
-  aarch64 model server behind a quackd running on something else, and the largest
-  measurement on that same board publishes none. It was done under emulation on the machine that wrote
-  it. `jetson-image.yml` is set up to repeat it on a native arm64 runner, running `import cv2`,
-  `quackd doctor --json` and a whole `find-and-kick` task inside the result, and it has not
-  run yet, because this release is where those files first exist. It publishes nothing, because an image with a pull
-  command beside it is a promise that somebody ran it on the hardware it is named after, and
-  nothing here has been run on a Jetson by this project.
 
 ### Changed
 
@@ -120,7 +132,8 @@ the reading of it is.
 - **Breaking. `~/.quackd/robots.json` stores one `llm` key** instead of `provider` and `model`.
   A file written by 0.11 or earlier is folded on read -- `provider` alone is the vendor, the
   pair together is the spec, and a `model` with no `provider` beside it names no pilot, because
-  under the old flags it named none either -- and the next write stores the new shape, so
+  under the old flags such an entry did nothing unless a `--provider` was typed beside it --
+  and the next write stores the new shape, so
   nothing needs migrating by hand. `quackd robot show --json` emits `llm` where it emitted the
   pair. Reading is deliberately lenient: a spec the catalogue can no longer resolve is kept as
   written, and the run that names that robot is what refuses, because refusing on read would
@@ -134,10 +147,13 @@ the reading of it is.
   `--decision-mode`.** A script passing `--jev` gets Typer's "no such option". `QUACKD_JEV` is
   `QUACKD_DECISION_LLM` plus `QUACKD_DECISION_MODE`, `QUACKD_JEV_PRICE` is
   `QUACKD_DECISION_PRICE`, and `QUACKD_LIVE_JEV` is `QUACKD_LIVE_DECISION`. None of the old
-  variables is read and none of them warns, so grep your `.env` files and your CI for
-  `QUACKD_JEV`. `TYPESAFE_BASE_URL` is no longer read by quackd at all, because an address is
-  now `--decision-url` and belongs to every row rather than to one vendor; the SDK still reads
-  it for the hosted row, whose address is the SDK's own. `TYPESAFE_DEFAULT_MODEL` is still
+  names is read. `QUACKD_JEV` is the one that says so, because it is the one that used to
+  switch a stepper on and silence there would leave a run quietly not doing what a `.env` line
+  asked for; the other three go without a word. Grep your `.env` files and your CI for
+  `QUACKD_JEV`, and for `QUACKD_LIVE_JEV` separately, which that string does not match.
+  `TYPESAFE_BASE_URL` is not read by quackd, and was not read by 0.11 either: an address is
+  `--decision-url` and belongs to every row rather than to one vendor, and that variable has
+  always belonged to the SDK, which still reads it for the hosted row. `TYPESAFE_DEFAULT_MODEL` is still
   honoured, for `jev` alone, as the fallback when the spec names no model, but the spec is the
   way to say it: `--decision-llm jev:jev-latest` is a choice the record can show somebody
   made.
@@ -177,14 +193,69 @@ the reading of it is.
   first with the line it prints, then `on` and what `from decision` means in the log, which of
   that arm's verbs are answerable and why `move_joints` is not, and which of the seven to point
   it at. It is last and marked optional because a first run wants fewer moving parts, not more.
-- **Install lines a reader can paste.** The `kev` row lost `cd kev` between the clone
-  and `uv sync`, so the sync ran in whatever directory you were standing in; the `openjev` row
-  dropped `--ipc=host` and the Hugging Face cache mount its own README carries, so every restart
-  of that container downloaded about 18 GB again. Both rows now quote the project's own command,
-  and the hub's table quotes the row rather than a shortened copy of it.
-
 ### Fixed
 
+- **The loud correction about the confidence floors was missing from the one site that is not
+  a document.** The line `--decision-mode on` prints on every run said "The confidence floors
+  are Jev's published numbers", which is the first entry in the test's own list of forbidden
+  phrasings, word for word. It survived the correction because that guard read the markdown,
+  `stepper.py` and two ADRs, and never opened `quackd/cli.py`; the intro to this very note
+  points a reader at that warning as the place the correction is made loudly. Two things
+  changed rather than one. The sentence now says which two floors are published and which two
+  are quackd's own. And the guard reads every file under `quackd/` and normalises before it
+  searches: a warning this long is split across adjacent string literals in the source, so the
+  sentence carries a quote, a newline and an indent in the middle of itself and matched
+  nothing even once the file was in scope. Markdown wraps prose for the same reason, so the
+  same normalisation closes the same hole in the documents. Proved by putting the shipped
+  sentence back and watching the guard fail.
+- **Two shipped release notes had this release's fixes pasted into them.** The last nine
+  `Fixed` bullets of this section, from **Three install lines a reader could not paste** down,
+  were also written into the 0.9.0 and 0.5.0 sections, each of which then
+  carried a second `Fixed` heading describing `kev`, `openjev`, `laya` and `von serve` -- none
+  of which existed on 2026-09-15, and none of which existed at all on 2026-09-03, since Jev
+  itself launched after 0.5.0 shipped. 114 lines, and nothing failed, because the changelog is
+  excluded from the living-document checks on purpose: it records what was true at a release
+  rather than what is true now. They are out, and the whole of the file from `## [0.11.0]`
+  down is byte for byte what v0.11.0 shipped, but for the two `docs/jev.md` links that this
+  release's rename turned into plain code spans rather than leave pointing at a deleted file.
+- **The one-second bound was never in force, and a stepper could hold a turn for ten.** The
+  page has said a second since 0.10 and what was actually set was `RetryPolicy.timeout`, which
+  is the budget for the retry sequence rather than for a request; the per-request timeout is a
+  different keyword whose default is ten seconds. Measured against a socket that never answers
+  it was 10.14. That is the whole argument for a stepper inverted: the turn it was meant to
+  save costs more than the model's. The bound is now a `wait_for` around `decide` in the
+  stepper, which is the one place it can hold for every backend including the one running in
+  this process with no timeout of its own, with the client's own kept beside it so a socket is
+  not held past the turn. A turn that runs out says how long it waited, because a bare
+  `TimeoutError` stringifies to nothing.
+- **A verb the task file gated on a person answered to the wrong floor.** `Executor.
+  needs_confirm` has always read the `.duck`'s own `verbs.confirm` as well as the manifest's
+  safety class, and `verb_class` read only the manifest, so a verb its author gated cleared
+  the 0.85 motion floor where the executor would have stopped and asked. Under `--yes` nothing
+  else would have noticed. The contract's list reaches the floors now, with `stop` exempt
+  exactly as the executor exempts it.
+- **The streak backstop could not fire on a short duck.** `MAX_IN_A_ROW` is eight and
+  `hello-world` allows five steps, so on a duck whose whole budget is smaller than the constant
+  the streak was unreachable and the model could be consulted once, or not at all, before the
+  run ended on `max_steps` -- which is the failure that constant's own docstring says it
+  prevents. The limit that holds is now that number or half the run's budget, whichever is
+  less. What that buys is not parity, and the bullet said parity: a streak ends by handing one
+  turn to the model and starting the count again, so the shape is a run of stepper turns and
+  then a model turn, not one each. What it guarantees is that on a budget of two steps or more
+  the stepper cannot answer the whole run. One step is the exception and the arithmetic says
+  so: the limit is at least 1, so a single-turn run can be the stepper's alone.
+- **A question nobody answered read as an answer of no, and a confidence spelled `true` cleared
+  every floor.** Both are reads of a backend's reply that shipped in 0.10. The two Nouls are
+  the gates that stop a run and ask for a person, and both were read with a default of `0.0`:
+  read that way, a reply carrying only `next_verb` said "certainly not finished, certainly
+  nobody needed", which is precisely the pair of answers that lets a verb through to a servo.
+  They hand the turn to the model now and the record says `null`, so a reader can tell a
+  backend that said "not done" from one that said nothing. Separately `float(True)` is `1.0`,
+  above the highest number in the table, so a backend writing `true` was believed absolutely
+  rather than doubted; `_finite` rejects `bool` alongside NaN and the infinities now, for the
+  reason it already rejected those. Neither was reachable through the one backend 0.11 shipped,
+  and both are reachable through a plugin, a server that drops a field, or a model with no
+  Nouls at all, which is what this release adds.
 - **Three install lines a reader could not paste.** `kev` lost the `cd kev` between its clone
   and its `uv sync`, so a copied command synced whatever directory you were standing in.
   `openjev` was missing the `--ipc=host` vLLM needs and the Hugging Face cache mount, without
@@ -242,9 +313,83 @@ the reading of it is.
 
 ### Removed
 
+- **`quackd trace`, `--trace/--no-trace`, `--trace-prompt/--no-trace-prompt`, `QUACKD_TRACE`,
+  `QUACKD_TRACE_THINKING` and `QUACKD_TRACE_PROMPT`**, the spellings 0.11 kept alive for one
+  release beside `quackd log`, `--log/--no-log`, `--log-prompt/--no-log-prompt`, `QUACKD_LOG`,
+  `QUACKD_LOG_THINKING` and `QUACKD_LOG_PROMPT`, along with the `sys.argv` scan in
+  `quackd/cli.py` and the environment fallback in `quackd/log.py` that existed only to carry
+  them. 0.11 said in twelve files, from the flags' own help text to the warning line itself,
+  that they would go here, which is the promise 0.4 made about `--transport` and 0.5 kept. The
+  subcommand and the flags are refused the way any unknown one is, naming what they are, with
+  exit code 2 and no run directory written. The three variables are not simply dropped, and
+  that asymmetry is the point: a flag that is gone fails loudly because Click refuses it, while
+  a variable that is gone says nothing at all, and `QUACKD_TRACE=0` going unread would switch
+  the log back on for the one reader who had deliberately turned it off. So a run that finds
+  one set prints `QUACKD_TRACE is not read any more and this run ignores it; set QUACKD_LOG
+  instead`, the line this release gives `QUACKD_MODEL`, and carries on. It is read where the
+  command line is rather than where the value used to be consulted, so a `.env` hears about
+  every old line in it on any one run rather than only the name that run would have read,
+  which is the limit 0.11 described and asked you to treat as a floor. The line is replayed
+  into the top of `terminal.txt` where the flag warnings used to be. Not removed:
+  `trace_dropped` is still read out of a `summary.json`, because a run directory outlives the
+  release that wrote it and 0.11 scoped this to what you type on a command line or set in a
+  shell.
 - **`--jev`, `QUACKD_JEV`, `QUACKD_JEV_PRICE`, `QUACKD_LIVE_JEV`, the `live_jev` pytest marker
-  and the `quackd[jev]` extra**, with no alias and no warning, for the reasons above.
+  and the `quackd[jev]` extra**, with no alias, for the reasons above. Only `QUACKD_JEV` says
+  anything when it is found set, as the Changed bullet above describes; the other five go
+  without a word, and a flag among them fails loudly by itself.
 - **`--provider`, `--model`, `QUACKD_MODEL`, and `list-models --provider`/`-p`.**
+
+### Known limitations
+
+- **Nothing in this release has answered a real robot, or made a real call to any of these
+  services.** Every decision LLM here is exercised against a stub or a fake: not TypeSafe's
+  hosted API, not a `kev`, `von`, `openjev` or `opendecision` server, not `laya` in this
+  process, and none of them on hardware. So there is no agreement rate, no calibration curve
+  and no measured latency for any of the seven. Every latency on those pages is the figure
+  that project publishes for itself, on its own hardware and its own task, copied out on the
+  day it was read: TypeSafe's for Jev, and this note repeats two more of them, von at about 18
+  ms on a GPU and Kev at 149 and 721 ms through MLX on an M5. Not one of them was measured
+  here, through quackd, answering a robot. `--decision-llm` ships off unless you
+  name one, and `--decision-mode shadow` exists to be the thing that changes this: it asks
+  every turn, records what it would have chosen beside what the model did, and changes nothing
+  about the run.
+
+- **Two of the four confidence floors are numbers nobody published, and all seven presets
+  inherit all four unmeasured.** TypeSafe's confidence page publishes 0.5 and 0.9, and both
+  are here as the brake and the confirm-gated floors. The read floor at 0.60 and the motion
+  floor at 0.85 sit between those two and are quackd's own. Every one of the four was shaped
+  around Jev, and the other six rows are gated on them while computing confidence by their own
+  formula, on their own architecture, with their own idea of what a probability means. A
+  number nobody published is a number nobody has calibrated either.
+
+- **A stepper is not on the critical path, and the arithmetic that says it pays is arithmetic.**
+  The break-even in [docs/decision-llms.md](docs/decision-llms.md) is a stepper answering in
+  1.40 seconds; under that it pays for itself and over it is a net loss. That figure comes from a worked example and
+  not from a run, and the one-second bound this release put in force is the ceiling rather
+  than the observation.
+
+- **Six of the seven bodies have still never run on hardware, and the one that has was running
+  0.9 at the time.** Unchanged since 0.10.
+
+- **Not one `cost_usd` has been checked against a bill.** Unchanged since 0.11. Every rate was
+  read off a vendor's pricing page by hand on 2026-09-21, and a rate read by hand is wrong from
+  the day the vendor edits the page until somebody reads it again, silently. `--price` is the
+  answer to a disagreement.
+
+- **`terminal.txt` is most of the screen and not all of it, and it is redacted by name only.**
+  Unchanged since 0.11. A credential under a name that is not on the list is kept, and so is a
+  key typed inside the JSON of `--extra-body` on a command line. Read the file before you paste
+  a run directory into an issue.
+
+- **No pilot flock has been driven by a real model, or by a real robot.** Unchanged since 0.9.
+
+- **A run directory from 0.10 or 0.11 that used the stepper replays with no stepper lines.**
+  The record's Jev-named kinds were renamed rather than aliased, and ADR-0040 said from the
+  start that a transcript kind the renderer does not know is drawn as nothing. So `quackd log`
+  on such a directory prints no stepper lines, still prints `from jev` on the verbs it chose,
+  and shows no stepper seconds or cost in its counters. The directory itself is untouched; only
+  the reading of it is.
 
 ## [0.11.0] — 2026-09-22
 
@@ -2097,63 +2242,6 @@ model or by a robot, and the two nightly jobs that watch upstream have been red 
   rather than `quackd[live]`, because Rich had read the extra as markup and eaten it. Same
   for `quackd[microduck-camera]` and `quackd[lan]`.
 
-### Fixed
-
-- **Three install lines a reader could not paste.** `kev` lost the `cd kev` between its clone
-  and its `uv sync`, so a copied command synced whatever directory you were standing in.
-  `openjev` was missing the `--ipc=host` vLLM needs and the Hugging Face cache mount, without
-  which every container restart downloads about 18 GB again, and it carried its MLX
-  alternative inside the same string, so the whole cell was not a command. `laya` carried its
-  own parenthetical the same way and left `quackd[laya]` unquoted, which zsh eats as a glob
-  before pip sees it. Each row now holds one command and nothing else, and the note that used
-  to be wedged into it is on the page.
-- **`von serve` was handed to readers with its own default bind.** Its `--host` defaults to
-  `0.0.0.0`, which is every interface on the machine, and it authenticates nothing unless
-  `VON_API_KEY` is set. The row now says `--host 127.0.0.1`, which is where its page already
-  told you to put it.
-- **The confidence floors were credited to TypeSafe, and two of the four are quackd's own.**
-  Their confidence page publishes 0.5 and 0.9, and both are here as the brake and the
-  confirm-gated floors. The read floor at 0.60 and the motion floor at 0.85 are quackd's,
-  set between those two, and nothing published sits there. Every live site now says which is
-  which: the `FLOORS` comment in `stepper.py`, the floors table and both warnings in
-  `docs/decision-llms.md`, all seven decision LLM pages, two README rows, the changelog's own
-  honest-notes paragraph, the first-run guide and the amendment notes on ADR-0040 and
-  ADR-0043. A test forbids the old phrasings, because this one was written once and then
-  copied, and it survived a first correction that only caught half the copies. A number
-  nobody published is a number nobody has calibrated either.
-- **A docs guard that could not fail.** The test asserting every decision LLM page has a
-  `VERIFIED` section was satisfied by the word `UNVERIFIED`, so only one of the pair was ever
-  really checked. Both are matched as headings now, and the honesty line is matched literally
-  rather than by the word *never*, which turns up in ordinary prose.
-- **Laya reports a token count, and quackd said it did not.** `laya/agent.py` returns
-  `usage.input_tokens` as `int(attention_mask.sum())`, a real count of what the model read,
-  so its turns are billed measured and print without the `~`. The module docstring, the page
-  and `tests/fake_laya.py` all said the opposite, which left the fake standing in for a shape
-  Laya never produces and the suite exercising the estimate path for the one backend that
-  does not take it. The fake now returns the real shape, probabilities on a choice included,
-  and a test reads the count back.
-- **Von accepts a model id, ignores it, and deliberately does not hand it back.** Its engine
-  overwrites whatever was asked for with `von-1.1.0` before the backend sees it, on purpose,
-  so a run's record and the server's answer name two different strings. The page had said
-  first that the id was neither routed nor echoed, then that it was echoed; it is the former.
-  The same re-read retired a second backend, a 512-token truncation and a `--backend` flag
-  that upstream no longer has, and corrected its CORS credentials, its `transformers` floor
-  and its weights repository.
-- **Every number a page attributes now survives a re-read.** Kev's latency figures had been
-  replaced upstream (149 ms and 721 ms through MLX on an M5, not 329 ms and 779 ms), which
-  also reversed the page's conclusion that the 4B does not fit inside the one-second budget.
-  Its state constants were renamed, its probability rounding is four decimal places rather
-  than two, and every line-number citation on every page is gone in favour of the file and
-  the symbol, because the numbers had already drifted on a page dated the same day.
-- **Three smaller claims that were not true.** `DecisionMissingKey` refuses the stepper, not
-  the run, and the run carries on without it. The SO-101 section of the first-run guide
-  listed gaze verbs the arm does not have and omitted two it does. `local.md` claimed a live
-  round-trip that only runs behind an opt-in environment variable.
-- **Two pasted log blocks that could not have come from a run.** The first-run guide's
-  decision blocks used the ASCII gutter on a page that uses the Unicode one, and printed
-  token counts bare where quackd prints a `~` for a figure it estimated itself. Both are
-  output from real runs now, re-rendered through the same renderer the CLI uses.
-
 ### Removed
 
 - **Breaking. The Reachy Mini adapter.** `--robot reachy_mini:{sim2d,mock,sdk}`, `quackd[reachy]`,
@@ -3656,63 +3744,6 @@ Still nothing has run on a duck. What is new is that everything except the duck 
   whether its control loop is healthy. It is the only way to see that difference before a
   run does.
 
-### Fixed
-
-- **Three install lines a reader could not paste.** `kev` lost the `cd kev` between its clone
-  and its `uv sync`, so a copied command synced whatever directory you were standing in.
-  `openjev` was missing the `--ipc=host` vLLM needs and the Hugging Face cache mount, without
-  which every container restart downloads about 18 GB again, and it carried its MLX
-  alternative inside the same string, so the whole cell was not a command. `laya` carried its
-  own parenthetical the same way and left `quackd[laya]` unquoted, which zsh eats as a glob
-  before pip sees it. Each row now holds one command and nothing else, and the note that used
-  to be wedged into it is on the page.
-- **`von serve` was handed to readers with its own default bind.** Its `--host` defaults to
-  `0.0.0.0`, which is every interface on the machine, and it authenticates nothing unless
-  `VON_API_KEY` is set. The row now says `--host 127.0.0.1`, which is where its page already
-  told you to put it.
-- **The confidence floors were credited to TypeSafe, and two of the four are quackd's own.**
-  Their confidence page publishes 0.5 and 0.9, and both are here as the brake and the
-  confirm-gated floors. The read floor at 0.60 and the motion floor at 0.85 are quackd's,
-  set between those two, and nothing published sits there. Every live site now says which is
-  which: the `FLOORS` comment in `stepper.py`, the floors table and both warnings in
-  `docs/decision-llms.md`, all seven decision LLM pages, two README rows, the changelog's own
-  honest-notes paragraph, the first-run guide and the amendment notes on ADR-0040 and
-  ADR-0043. A test forbids the old phrasings, because this one was written once and then
-  copied, and it survived a first correction that only caught half the copies. A number
-  nobody published is a number nobody has calibrated either.
-- **A docs guard that could not fail.** The test asserting every decision LLM page has a
-  `VERIFIED` section was satisfied by the word `UNVERIFIED`, so only one of the pair was ever
-  really checked. Both are matched as headings now, and the honesty line is matched literally
-  rather than by the word *never*, which turns up in ordinary prose.
-- **Laya reports a token count, and quackd said it did not.** `laya/agent.py` returns
-  `usage.input_tokens` as `int(attention_mask.sum())`, a real count of what the model read,
-  so its turns are billed measured and print without the `~`. The module docstring, the page
-  and `tests/fake_laya.py` all said the opposite, which left the fake standing in for a shape
-  Laya never produces and the suite exercising the estimate path for the one backend that
-  does not take it. The fake now returns the real shape, probabilities on a choice included,
-  and a test reads the count back.
-- **Von accepts a model id, ignores it, and deliberately does not hand it back.** Its engine
-  overwrites whatever was asked for with `von-1.1.0` before the backend sees it, on purpose,
-  so a run's record and the server's answer name two different strings. The page had said
-  first that the id was neither routed nor echoed, then that it was echoed; it is the former.
-  The same re-read retired a second backend, a 512-token truncation and a `--backend` flag
-  that upstream no longer has, and corrected its CORS credentials, its `transformers` floor
-  and its weights repository.
-- **Every number a page attributes now survives a re-read.** Kev's latency figures had been
-  replaced upstream (149 ms and 721 ms through MLX on an M5, not 329 ms and 779 ms), which
-  also reversed the page's conclusion that the 4B does not fit inside the one-second budget.
-  Its state constants were renamed, its probability rounding is four decimal places rather
-  than two, and every line-number citation on every page is gone in favour of the file and
-  the symbol, because the numbers had already drifted on a page dated the same day.
-- **Three smaller claims that were not true.** `DecisionMissingKey` refuses the stepper, not
-  the run, and the run carries on without it. The SO-101 section of the first-run guide
-  listed gaze verbs the arm does not have and omitted two it does. `local.md` claimed a live
-  round-trip that only runs behind an opt-in environment variable.
-- **Two pasted log blocks that could not have come from a run.** The first-run guide's
-  decision blocks used the ASCII gutter on a page that uses the Unicode one, and printed
-  token counts bare where quackd prints a `~` for a figure it estimated itself. Both are
-  output from real runs now, re-rendered through the same renderer the CLI uses.
-
 ### Removed
 
 - **`--transport X`**, the 0.4 alias of `--robot microduck:X`, along with `resolve_robot`'s
@@ -4046,7 +4077,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/rokbenko/quackd/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rokbenko/quackd/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rokbenko/quackd/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rokbenko/quackd/compare/v0.8.0...v0.9.0
