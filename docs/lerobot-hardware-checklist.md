@@ -1,10 +1,12 @@
 # A LeRobot SO-101 arm: the order to try it in
 
-quackd has run on an SO-101 once, on 2026-09-15: one arm, one bench, one afternoon, and
-[adapter-status.md](adapter-status.md) lists exactly what it did and what fell over. That
-makes this a robot quackd has worked on, not a robot quackd is tested on, and four of the
-questions at the foot of this page came back from that day still unanswered. This is the
-order to find out in, written so that each step can only fail in a way you can recover from.
+quackd has run on an SO-101 on two afternoons, 2026-09-15 and 2026-09-23, both times on the
+same arm, and [adapter-status.md](adapter-status.md) lists exactly what it did and what fell
+over. That makes this a robot quackd has worked on, not a robot quackd is tested on. Four of
+the questions at the foot of this page came back from the first afternoon still unanswered,
+the second added more, and what quackd changed after the second has not run on an arm yet.
+This is the order to find out in, written so that each step can only fail in a way you can
+recover from.
 **Nothing moves until step 10, and from there a hand stays on the power switch.**
 
 This robot is unusual in a quiet way, and the quiet thing is what makes the order matter:
@@ -179,7 +181,7 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    |---|---|
    | `quackd run ... --robot arm-01` | drives the arm there before the pilot gets its first turn, and a run that cannot get there aborts before the first LLM call. Returns it there between the final `stop` and the disconnect, on every exit: success, failure, infeasible, budget, abort, an error, Ctrl-C |
    | `quackd doctor --robot arm-01` | probes the arm, returns it there afterwards, and says which in a `rest pose` row |
-   | `quackd robot list --probe` | reads the arm and never moves it, so it says `torque left on: not at its rest pose` when it had to keep the arm up |
+   | `quackd robot list --probe` | reads the arm and never moves it, so it says `torque left on: not at its rest pose` when it had to keep the arm up, or `torque unknown: the arm did not answer the close` when the arm stopped answering before the probe could tell |
    | `quackd serve-mcp --robot arm-01` | the same at both ends, and it refuses to start if it cannot get there |
    | `--dry-run` | nothing at all: a dry run never moves the arm |
 
@@ -192,6 +194,11 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    stands: hold it first, because connecting takes torque off every motor for a moment, then
    run quackd robot release arm-01, or quackd doctor --robot arm-01 to park it, or cut its power
    ```
+
+   That line is for an arm that answered the close's own read. An arm that stopped answering
+   gets a different one, because nothing can read whether its torque is on: `quackd cannot tell
+   whether the arm is holding itself up (...), so it kept whatever torque the arm has: hold it,
+   and cut its power`. `robot list --probe` shortens that one to `torque unknown`.
 
    > [!WARNING]
    > That is a change in behaviour and it is the one to read twice. A probe or a dry run on an
@@ -236,10 +243,12 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    anything is hot. This is the first thing to point at a real arm, and it is what the arm on
    the bench ran first on 2026-09-15.
 
-   The rest pose is the only thing in this run that can move the arm, and the run prints a note
-   at each end saying which it did, `moving to the rest pose` or `already at the rest pose`. On
-   an arm still folded where you left it in step 6, both notes say it was already there and
-   nothing moves.
+   The rest pose is the only thing in this run that can move the arm. At each end the run
+   prints `moving to the rest pose`, before it has read where the arm is, then `already at the
+   rest pose` if it found the arm there and drove nothing, or `at the rest pose` once it has
+   driven it back. On an arm still folded where you left it in step 6, both ends say `already
+   at the rest pose` and nothing moves. On an arm whose pose was recorded past its travel, the
+   first end adds the one note from step 6 naming the joint.
 
 8. **Add a camera, if you brought one.** No SO-101 has one built in: it is a USB webcam into
    the laptop, and the arm's own cable carries no video. Find which index it is, which is the
@@ -400,7 +409,13 @@ means, and which moments move the arm without anybody asking for it.
     did not answer. The arm holds its last goal under torque: it must not sag and it must not
     carry on. There is no rest pose in this one, because quackd cannot drive an arm it cannot
     reach: the arm stays where it stopped, holding itself up, which is the safe half of the two
-    ways this could end. Plug it back in and reconnect before the next step.
+    ways this could end. The note the run closes with cannot say so: it says quackd cannot tell
+    whether the arm is holding itself up, and to hold it and cut its power, and no release is
+    offered, because the arm did not answer. Before you plug it back in, put a hand under the arm: every
+    command that reconnects, a run, `doctor` or `quackd robot release arm-01`, takes torque off
+    every motor for a moment. Either cut its power with your hand under it, or hold it and run
+    `quackd robot release arm-01`, or `quackd doctor --robot arm-01` to park it, before the next
+    step.
 14. **Ctrl-C mid-move.** quackd's kill switch sends `stop`, which re-sends the present
     position as the goal. The arm should freeze where it is rather than sag, and rather than
     finish the motion it was in the middle of. Then, with a rest pose recorded in step 6, the
@@ -445,7 +460,7 @@ recorded
     instead. The one expected exception is a joint the run named as recorded past its travel:
     it is let go at the edge of the travel rather than in the fold, and it is free to drop the
     rest of the way, so have your hand under that joint in particular. This is the only moment
-    a `--by-hand` run releases it, because its release is refused anywhere but that pose. The
+    the hand-off releases it, because that release is refused anywhere but that pose. The
     other way to have torque taken off is one you ask for by name while you hold the arm,
     wherever it stands: `quackd robot release arm-01`, or Enter at the offer a run at a terminal
     makes when its last rest move missed (step 6).
@@ -457,6 +472,13 @@ recorded
     the gripper, close the gripper on that, hold it where you want the run to start, and
     press Enter
     ```
+
+    That prompt does not say one thing: every body joint has to read inside its calibrated
+    travel when you press Enter, and above all a joint the run named as recorded past its
+    travel. That one was let go at the edge and may have settled back into the fold, so lift it
+    clear first. Press Enter with a joint still past its travel and quackd does not take hold:
+    torque stays off, the run stops, and it names the joint to lift inside its travel, saying
+    the arm is still limp at its rest pose if you had not lifted it at all.
 
     Lift the arm, put something in the gripper, squeeze the jaws shut on it with your fingers,
     hold the arm where the work should start, and press Enter. quackd writes the pose you are

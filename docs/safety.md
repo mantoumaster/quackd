@@ -244,16 +244,18 @@ instead of going limp.
 
 ## On hardware
 
-One of the seven bodies has run on hardware, once. On 2026-09-15 a LeRobot SO-101 follower arm
-ran `lerobot-lookout` and then a series of free-form `--goal` runs, piloted by OpenAI
-gpt-6-astra on Windows 11 with lerobot 0.6.1: it waved the wrist about 27 degrees either way,
-waved again from a raised pose, and opened and closed the gripper. **It also fell at the end of
-every one of those runs**, because LeRobot's `disconnect()` drops torque, which is the whole
-reason the rest pose below exists. [lerobot-first-run.md](lerobot-first-run.md) is the account,
-including what that day did not measure, and most of what this page would want to know is on
-that list: whether the holding band is right, what a joint reads after ten minutes of work, and
-whether a stall is caught on purpose rather than by luck. The other six bodies have not been on
-hardware at all.
+One of the seven bodies has run on hardware, on two afternoons. On 2026-09-15 a LeRobot SO-101
+follower arm ran `lerobot-lookout` and then a series of free-form `--goal` runs, piloted by
+OpenAI gpt-6-astra on Windows 11 with lerobot 0.6.1: it waved the wrist about 27 degrees either
+way, waved again from a raised pose, and opened and closed the gripper. **It also fell at the end
+of every one of those runs**, because LeRobot's `disconnect()` drops torque, which is the whole
+reason the rest pose below exists. On 2026-09-23 the same arm ran 26 runs on quackd 0.12.0,
+under a registered name with a rest pose recorded, and that afternoon is where the parking,
+release and verdict changes on this page come from. None of those changes has run on an arm
+yet. [lerobot-first-run.md](lerobot-first-run.md) is the account, including what the first day
+did not measure, and most of what this page would want to know is on that list: whether the
+holding band is right, what a joint reads after ten minutes of work, and whether a stall is
+caught on purpose rather than by luck. The other six bodies have not been on hardware at all.
 
 If the body is a Microduck, run the contract in the physics simulator first
 (`--robot microduck:mujoco`): it is the only place quackd can show you a body that undershoots,
@@ -466,7 +468,9 @@ a write used to be taken for the read that confirmed it.
 - **A probe and a dry run now leave torque on where they used to drop it.** A dry run never
   moves the arm and `quackd robot list --probe` never moves it either, so on an arm away from
   its recorded rest pose both end with torque on: the dry run prints the line above, and the
-  probe says `ok, torque left on: not at its rest pose` in its `reachable` column.
+  probe says `ok, torque left on: not at its rest pose` in its `reachable` column. Its connect
+  still takes torque off every motor for a moment, with no warning printed first, so hold an
+  arm that is holding itself up before you probe it.
   `quackd doctor` is the other way round: it drives a probed arm back to the pose and says which
   it got in a `rest pose` row, because a doctor probe disconnects like anything else, and that
   is one of the ways the arm fell.

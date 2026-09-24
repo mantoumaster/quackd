@@ -10,8 +10,9 @@ Legend: 🔨 in progress · ⬜ todo · ⏸ blocked (with reason)
 Six bring-ups still need hardware quackd has never touched, one per body that has not met
 any: the other six of the seven. The seventh happened, an SO-101 arm running
 `lerobot:real` on 2026-09-15, which flipped its row in
-[`docs/adapter-status.md`](docs/adapter-status.md). Each of the six ends the same way:
-flip that backend's row, and not before.
+[`docs/adapter-status.md`](docs/adapter-status.md), and the same arm ran again on 2026-09-23,
+registered as `arm-01`. Each of the six ends the same way: flip that backend's row, and not
+before.
 
 - ⏸ **An Open Duck Mini v2**, the most reachable of the six because you can build it. Run
   `open_duck:bridge` against a duck you built, work through
@@ -52,6 +53,14 @@ flip that backend's row, and not before.
   reached by `--address` and never by a registered name, which it was on 2026-09-23 when its
   rest pose was recorded; and that checklist's *What to report*, six things still chosen against
   Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
+- ⬜ **The SO-101 again, for everything since 0.13.0.** The arm last ran quackd 0.12.0. The
+  rest pose clipped into the travel, `quackd robot release`, the Enter offer at the end of a run
+  whose rest move missed, the `--by-hand` refusal over a joint past its travel, the paced
+  `move_joints` and the connect retries have run only against a fake arm, `lerobot:mock` and
+  the test suite. The seven bench steps that would settle them, in order, are under *Known
+  limitations* in [CHANGELOG.md](CHANGELOG.md) for the release after 0.13.0, and
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to take
+  the arm through, with a hand on the switch.
 - ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
   with neither a lookout task nor a checklist. A coordinator flock across two machines needs a
   distributed clock first; a pilot flock needs none and has simply never been tried across two.
@@ -92,17 +101,21 @@ flip that backend's row, and not before.
   reconciled against that account's own billing page, on any vendor. Until then `--price` is the
   answer to a disagreement and the catalogue is a table rather than a bill.
 
-- ⬜ **One local model has refused tasks on feasibility grounds; no frontier model has, and
-  nobody has watched an `uncertain` over MCP.** Qwen3-32B-AWQ on vLLM, driving
-  `microduck:sim2d`, answered this gate 54 times before the check in #24 and 54 times after.
+- ⬜ **One local model has refused tasks on feasibility grounds, one frontier pilot has refused
+  one on a real arm, and nobody has watched an `uncertain` over MCP.** Qwen3-32B-AWQ on vLLM,
+  driving `microduck:sim2d`, answered this gate 54 times before the check in #24 and 54 times after.
   Before: 14 `infeasible`, 26 `uncertain`, 14 `feasible`, with a noise floor around 2 per six
   run cell ([@Vallhalen](https://github.com/Vallhalen), #24, written up in
   [docs/local-llms.md](docs/local-llms.md#honest-notes)). It refuses a categorical `cannot`
   reliably, it hedged on one, and the figure nobody published was the hole the check now
   covers: on the eight tasks the check never fired on, the verdicts moved by 1 to 2 either
   way, which is that floor rather than a result. That is one model, one quantisation, one
-  simulated body and three repeats a cell. Still open: whether a frontier model uses `uncertain` when it should or reaches for
-  `infeasible` too readily, which the `live_llm` tests measure and which needs a key; a pilot
+  simulated body and three repeats a cell. On the SO-101 on 2026-09-23, with `gpt-6-sol` and
+  `gpt-6-astra` piloting, twelve runs stopped at the y/N question an `uncertain` asks, and one
+  pilot a person had just said go to assessed the same doubt again as `infeasible` and ended its
+  run. The gate and the prompt changed after that afternoon ([CHANGELOG.md](CHANGELOG.md)), and
+  nobody has yet watched a frontier pilot answer the new ones on an arm. Still open: whether a
+  frontier model uses `uncertain` when it should or reaches for `infeasible` too readily, which the `live_llm` tests measure and which needs a key; a pilot
   that never names the figure its plan hinges on, which the check reads nothing about and
   cannot catch; and `uncertain` over MCP, where the verdict stays pending and the model is
   told to ask the person it is chatting with, which no real session has been watched doing.

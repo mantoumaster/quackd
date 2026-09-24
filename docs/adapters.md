@@ -297,9 +297,10 @@ disable torque inside it (three by default, the ToddlerBot always), so `close()`
 and hold rather than delegate.
 
 The one exception is a body that has been put somewhere it can be let go of. A LeRobot arm
-with a recorded rest pose is driven there first, and only then is upstream's own torque-off
-allowed to happen; an arm that did not reach the pose has that flag turned off and is left
-holding itself up, with one line saying so ([safety.md](safety.md)). That is the shape any
+with a recorded rest pose is driven there first, or to the edge of its calibrated travel where
+the pose lies past it, and only then is upstream's own torque-off allowed to happen; an arm
+that did not reach the pose has that flag turned off and is left with whatever torque it has,
+with one line saying so ([safety.md](safety.md)). That is the shape any
 other body would have to take to earn a `go_to_rest()`: a pose the body holds with the power
 off, checked before anything is released, and a refusal to release when it is not there.
 
@@ -382,7 +383,9 @@ this repository claims a robot moved unless one did.
 
 One backend has been through that. `lerobot:real` drove an SO-101 on 2026-09-15: the lookout
 duck, free-form waves, the gripper and a USB webcam ([lerobot-first-run.md](lerobot-first-run.md)),
-and it is the only body here any of this has been tested against. Every other adapter is still
+and the same arm ran again on 2026-09-23 under a registered name with a rest pose recorded
+([adapter-status.md](adapter-status.md)). It is the only body here any of this has been tested
+against. Every other adapter is still
 🧪 on the backend that reaches its robot, which is the state this page is mostly written for.
 
 ## The checklist

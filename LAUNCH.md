@@ -61,9 +61,11 @@ command; a sentence needs something to read it.
 
 First comment (post immediately): what it is in three sentences, the manifest idea (a verb not
 in the manifest does not exist), the three-loop table, the honesty paragraph (one arm has run it,
-for one afternoon, and it fell at the end of every run; the other six hardware backends are
-experimental and have only ever talked to fakes), and the ask ("add a `.duck` to
-`ducks/`, or an adapter for the robot on your desk").
+on two afternoons: on 2026-09-15 it fell at the end of every run, and on 2026-09-23, with a rest
+pose recorded, 19 of 26 runs never moved it at a pilot's request and every run that reached its
+close kept torque on until the power switch, and the fixes for that have not run on an arm yet;
+the other six hardware backends are experimental and have only ever talked to fakes), and the
+ask ("add a `.duck` to `ducks/`, or an adapter for the robot on your desk").
 
 ## X thread (8 posts)
 
@@ -74,7 +76,7 @@ experimental and have only ever talked to fakes), and the ask ("add a `.duck` to
 5. **The `.duck` file.** Screenshot of `find-and-kick.duck` plus the refusal: `quackd validate find-and-kick --robot lerobot:mock` → `requires kick, but arm-01 (lerobot-so101) does not provide it`, exit 1, before anything connects.
 6. **MCP demo.** Short screen capture: `claude mcp add quackd -- uvx --from "quackd[microduck,lerobot]" quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock`, then "list my robots and make the duck find the ball". One executor, budget and heartbeat per robot. `--flock <name>` serves the same set from the registry, so you name the robots once.
 7. **Roadmap tease.** "v2: learned verbs. An LLM writes a reward (DrEureka-style), the training stack produces a policy, and it registers as one more verb. The hook exists today; the loop doesn't. Yet." Plus: an HTTP transport so the MCP server is a remote connector and you can poke the robot from your phone.
-8. **CTA.** "One of the seven bodies has run on hardware, an SO-101 arm on 2026-09-15, and it fell at the end of every run, which the README says in a table right beside the wave. The other six have only ever talked to fakes. The Open Duck Mini is the one you can build, so it is the one most likely to be next. If you write a `.duck`, PR it to `ducks/`. If you own a robot we don't support, an adapter is a manifest and a mock. Repo: github.com/rokbenko/quackd"
+8. **CTA.** "One of the seven bodies has run on hardware, an SO-101 arm on 2026-09-15 and again on 2026-09-23. It fell at the end of every run the first day, and the second day's rest pose could not reach its fold, which the README says in a table right beside the wave. The other six have only ever talked to fakes. The Open Duck Mini is the one you can build, so it is the one most likely to be next. If you write a `.duck`, PR it to `ducks/`. If you own a robot we don't support, an adapter is a manifest and a mock. Repo: github.com/rokbenko/quackd"
 
 ## Pollen Discord post (draft)
 
