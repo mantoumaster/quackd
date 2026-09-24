@@ -384,7 +384,10 @@ BUS_HANDSHAKE = UpstreamRef(
     "Feetech bus is _assert_motors_exist() and then _assert_same_firmware() (feetech.py lines "
     "155 to 157): a ping per motor, then two firmware reads per motor, and not one write. "
     "configure(), where every write of a connect is, runs only once bus.connect() has returned "
-    "(so_follower.py lines 98 and 108). So a connect that fails in the handshake has left every "
+    "(so_follower.py lines 98 and 108). Between the two, line 99 is `if not self.is_calibrated "
+    "and calibrate:`, whose left side is evaluated first, so the calibration check "
+    "(BUS_IS_CALIBRATED) runs on every connect, calibrate=False included: it reads every motor "
+    "and writes to none. So a connect that fails in the handshake or in that check has left every "
     "motor's torque as it found it. A failure raised in it has this frame in its traceback; "
     "_connect re-raises a serial error or an OSError from in there (a failed read is a "
     "ConnectionError, which is one) as its own port error, from the original (lines 530 to "
@@ -445,7 +448,13 @@ BUS_IS_CALIBRATED = UpstreamRef(
     src(_FEETECH, 228),
     "it reads Min_Position_Limit, Max_Position_Limit and Homing_Offset off every motor and "
     "compares them with the cached file. A missing file, a stale file, and the file of a "
-    "different arm all come back False, which is the check quackd refuses on",
+    "different arm all come back False, which is the check quackd refuses on. The reads are "
+    "read_calibration() (line 247), each a read() with num_retry left at 0 (motors_bus.py lines "
+    "995 to 1001), and a lost status packet in one raises \"Failed to read '<register>' on id_=<N> "
+    'after 1 tries" (line 1020). SOFollower.connect() makes this check itself, between the '
+    "handshake and configure() (so_follower.py line 99, BUS_HANDSHAKE), so a connect can fail "
+    "in it having written nothing, and quackd places such a failure by the is_calibrated and "
+    "read_calibration frames in its traceback. Read in lerobot 0.6.1",
 )
 BUS_WRITE_CALIBRATION = UpstreamRef(
     "write_calibration() is reached only through calibrate()",

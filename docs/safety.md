@@ -303,7 +303,10 @@ That line and the "torque was left on" one under "A LeRobot arm" below are oppos
 and quackd has to pick the right one. Whoever reads this one is holding the arm, and being told
 instead that it is holding itself up is the sentence that gets an arm dropped. Where a release
 left some motors energised, "nothing is holding it up" would be the wrong one too, so that close
-names the joints that still read torque on and ends on cutting the power.
+names the joints that still read torque on and ends on cutting the power. And where nothing read
+the release back at all, a release that raised part way or that a Ctrl-C landed on, the close
+says exactly that, since the motors after the one a release stopped at keep their torque: hold
+the arm as though nothing holds it, put it down, and cut its power to be sure.
 
 **An XLeRobot (a 12 kg dual-arm cart):**
 

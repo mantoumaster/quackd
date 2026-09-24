@@ -90,6 +90,20 @@ body:
         - "it moved at the step cap whatever the time"
         - "not tested"
   - type: dropdown
+    id: settle
+    attributes:
+      label: A joint let go at the edge of its travel. Did it settle onto its fold, and gently?
+      description: >-
+        Only if a run or doctor said a joint of the rest pose lies past its travel and parks at
+        the edge. Name the joint, and how far the note said it had to go, under what the arm
+        actually did.
+      options:
+        - "it eased down onto the fold"
+        - "it dropped onto the fold"
+        - "it stayed at the edge"
+        - "no joint was said to lie past its travel"
+        - "not tested"
+  - type: dropdown
     id: stall
     attributes:
       label: Held a joint against its goal. Was the stall caught?

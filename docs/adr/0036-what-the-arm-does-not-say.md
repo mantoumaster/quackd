@@ -50,7 +50,10 @@ ramp's own resolution) goes out at once. And a goal outside the travel went out 
 backend's range refusal to answer before anything moved; the manifest publishes the travel
 rounded inward, so a goal in the sliver between the published and the exact edge was neither
 refused nor paced. `move_joints` refuses a goal outside the published travel itself now, before
-anything is sent, in the one sentence both backends refuse with.
+anything is sent, in the one sentence both backends refuse with. That sentence gives the goal and
+the travel to a tenth, the travel rounded inward, so the verb's quotes the published travel
+exactly: in whole degrees a goal in that sliver was named inside the range the same sentence
+gave.
 
 ## Context
 

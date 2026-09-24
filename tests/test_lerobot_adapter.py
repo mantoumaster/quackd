@@ -8,6 +8,7 @@ import importlib.util
 import itertools
 import logging
 import math
+import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -60,6 +61,7 @@ from quackd_lerobot.verbs import (
     TICK_S,
     TOL_DEG,
     TORQUE_LEFT_ON,
+    UNREAD_IN_HAND,
     MoveJointsParams,
     at_rest,
     lerobot_verbs,
@@ -206,7 +208,7 @@ async def test_the_mock_refuses_a_goal_outside_the_calibrated_range() -> None:
     manifest = await adapter.connect()
     ex = _executor(adapter, manifest)
     out = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 150}})
-    assert not out.ok and "calibrated range" in out.summary and "-100..100" in out.summary
+    assert not out.ok and "calibrated range" in out.summary and "-100.0..100.0" in out.summary
     assert out.summary == f"move_joints: {mock._refuse_out_of_range({'shoulder_pan': 150.0})}"
     turn = await ex.run_verb("move_joints", {"positions": {"wrist_roll": 150}, "duration_s": 2})
     assert turn.ok, turn.summary  # wrist_roll is the full-turn joint
@@ -1032,6 +1034,45 @@ async def test_a_goal_in_the_sliver_past_the_published_edge_is_refused_before_it
         assert len(arm.actions) == sent and clock.t == t0, "something moved before the refusal"
 
 
+REFUSAL = re.compile(
+    r"^(\w+)=(-?\d+(?:\.\d+)?) is outside this arm's calibrated range (-?\d+\.\d)\.\.(-?\d+\.\d);"
+)
+"""The numbers out of `range_refusal`'s sentence: the goal as said, and the range as said."""
+
+
+def test_a_range_refusal_never_names_a_goal_inside_the_range_it_gives() -> None:
+    """The refusal printed whole degrees. A goal a hair past an edge of 85 was refused as "85 is
+    outside -85..85", a goal in the sliver past a published edge was named inside the range the
+    same sentence gave, and Python's half-to-even rounding printed a published edge of n.5 as n,
+    below what the arm took. Now the range is printed to a tenth, rounded inward, so on the
+    verb's side it is the published travel exactly and on a backend's it is never wider than the
+    travel that backend checks, and the goal to a tenth unless a tenth would put it inside that
+    range, when it is printed as given. Synthetic spans, each end both ways."""
+    spans = [*SPANS.values(), 143.3, 171.7, 199.9, 77.7, 209.1]
+    checked = as_given = 0
+    for travel_deg in spans:
+        exact = joint_ranges({"elbow_flex": FakeCalibration(travel_deg)})["elbow_flex"]
+        published = tuple(published_travel(*exact))
+        sliver = (published[1] + exact[1]) / 2
+        for travel, verbs_side in ((exact, False), (published, True)):
+            lo, hi = travel
+            for goal in (hi + 1e-3, hi + 0.04, hi + 0.06, hi + 0.5, hi + 12.3, lo - 0.04, sliver):
+                if lo <= goal <= hi:
+                    continue
+                refusal = range_refusal({"elbow_flex": goal}, {"elbow_flex": travel}) or ""
+                said = REFUSAL.match(refusal)
+                assert said is not None, refusal
+                shown, low, high = float(said[2]), float(said[3]), float(said[4])
+                assert not low <= shown <= high, f"a refused goal named inside: {refusal}"
+                assert lo <= low and high <= hi, f"a range wider than the travel: {refusal}"
+                if verbs_side:
+                    assert (low, high) == published, refusal
+                checked += 1
+                as_given += said[2] == repr(goal)
+    assert checked and as_given, "no goal needed more than a tenth, so the fallback is untested"
+    assert range_refusal({"elbow_flex": 0.0}, {"elbow_flex": published}) is None
+
+
 @pytest.mark.parametrize(
     ("joint", "off", "duration_s", "step"),
     [
@@ -1189,7 +1230,7 @@ async def test_a_goal_outside_the_calibrated_range_is_refused_with_the_range() -
     ex = _executor(adapter, manifest)
     sent = len(arm.actions)
     out = await ex.run_verb("move_joints", {"positions": {"elbow_flex": 170}})
-    assert not out.ok and "-100..100" in out.summary and "does not clamp" in out.summary
+    assert not out.ok and "-100.0..100.0" in out.summary and "does not clamp" in out.summary
     backend = transport._refuse_out_of_range({"elbow_flex": 170.0})
     assert backend is not None and out.summary == f"move_joints: {backend}"
     assert len(arm.actions) == sent, "the verb sent something before refusing"
@@ -2922,7 +2963,9 @@ async def test_a_register_read_that_failed_after_the_release_is_a_release_that_t
 
     Torque was taken off and the read that would confirm it came back corrupt, so the last
     reading stands and it still says torque is on. Believing it ends with `close()` telling
-    the person holding a limp arm that it is holding itself up, and they let go of it."""
+    the person holding a limp arm that it is holding itself up, and they let go of it. The
+    close says it is in their hands, and, since nothing read the release back, not that
+    nothing holds it up either (`UNREAD_IN_HAND`)."""
     arm, transport = _handover_arm()
     arm.bus_error_after_release = True
     adapter = LeRobotAdapter(transport)
@@ -2933,7 +2976,9 @@ async def test_a_register_read_that_failed_after_the_release_is_a_release_that_t
     assert transport._torque is True, "the stale register still claims torque, which is the case"
     assert arm.torque is False and transport._in_hand is True
     await adapter.close()
-    assert "limp and in your hands" in (adapter.close_note or ""), adapter.close_note
+    note = adapter.close_note or ""
+    assert note.startswith("the arm is in your hands"), note
+    assert "hold it as though nothing holds it" in note and "holding itself up" not in note, note
 
 
 async def test_take_hold_writes_the_pose_before_torque_comes_on_and_again_after() -> None:
@@ -3412,7 +3457,7 @@ async def test_a_release_that_went_out_and_was_not_confirmed_is_a_release_in_a_h
         assert "hold the arm as though nothing holds it" in released.reason
     assert transport._in_hand is True
     await transport.close()
-    assert (transport.close_note or "").startswith(LIMP_IN_HAND.split("(")[0])
+    assert transport.close_note == UNREAD_IN_HAND.format(why=LET_GO_WHERE_IT_STOOD)
     assert arm.config.disable_torque_on_disconnect is False
 
 
@@ -3649,6 +3694,194 @@ async def test_a_release_a_ctrl_c_landed_on_is_an_arm_in_a_hand() -> None:
     note = transport.close_note or ""
     assert note == LIMP_IN_HAND.format(why=LET_GO_WHERE_IT_STOOD), note
     assert arm.config.disable_torque_on_disconnect is False
+
+
+@pytest.mark.parametrize("pose", ["recorded", "none"], ids=["a rest pose", "no rest pose"])
+async def test_a_close_while_an_interrupted_release_is_still_out_says_nothing_read_it_back(
+    pose: str,
+) -> None:
+    """The close picked its line with "the motors a read found on, if a read has answered since
+    the release, else none", and none meant `LIMP_IN_HAND`: "nothing is holding it up". So a
+    Ctrl-C on the release at the end-of-run offer, with the loop going straight on to the close
+    while the release's thread was still writing, closed on that line over a bus that refused
+    every read, and over a joint the release had not reached yet, kept energised past the
+    close. Nothing read the release back, and the close now says exactly that, and to cut the
+    power to be sure. The joint left holding is synthetic, and so is the pose."""
+    arm = _spanned()
+    recorded, reading = _stopped_short(arm)
+    arm.positions.update(reading)
+    arm.bus = SlowRelease(arm)
+    arm.torque_holdouts = {sorted(SPANS)[1]}
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=recorded if pose == "recorded" else None)
+    await transport.connect()
+
+    release = asyncio.ensure_future(transport.let_go(anywhere=True))
+    assert await asyncio.to_thread(arm.bus.writing.wait, 5.0), "the release never went out"
+    release.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await release
+    try:
+        await transport.close()  # the release's thread is still on the wire
+        note = transport.close_note or ""
+        assert note == UNREAD_IN_HAND.format(why=LET_GO_WHERE_IT_STOOD), note
+        assert "nothing is holding it up" not in note, note
+        assert arm.config.disable_torque_on_disconnect is False, "a partly limp arm was dropped"
+    finally:
+        arm.bus.done.set()
+
+
+class GivesUpPartWay(FakeBus):
+    """A bus whose release writes the motors before one of them and then raises on it, as
+    upstream's `disable_torque` does when one motor's write fails: the motors after it keep
+    their torque (`arm.torque_holdouts`)."""
+
+    def disable_torque(self, motors: Any = None, num_retry: int = 0) -> None:
+        super().disable_torque(motors, num_retry=num_retry)
+        (stuck,) = self.arm.torque_holdouts
+        raise ConnectionError(
+            f"Failed to write 'Torque_Enable' on id_={self.motors[stuck].id} with '0' after "
+            f"{num_retry + 1} tries. {NO_STATUS}"
+        )
+
+
+async def test_a_release_that_raised_part_way_on_an_arm_with_no_pose_is_not_called_limp() -> None:
+    """`quackd robot release` on an arm registered with no rest pose: the release raised part
+    way, which leaves the motors after the failed one energised, and the close, which makes no
+    read of its own without a pose to judge against, ended on "nothing is holding it up" right
+    after telling the person that some joints may still hold. It ends on nothing having read
+    the release back now, and on the power switch."""
+    arm = _spanned()
+    arm.positions.update({j: _inside(arm, j, 0.3) for j in SPANS})
+    arm.bus = GivesUpPartWay(arm)
+    arm.torque_holdouts = {sorted(SPANS)[-1]}
+    transport = LeRobotReal("COM5", robot=arm)
+    await transport.connect()
+
+    released = await transport.let_go(anywhere=True)
+    assert released.how == "released" and released.torque_on is None, released
+    assert "some joints may be limp and some may still hold" in released.reason
+    reads = len(arm.reads)
+    await transport.close()
+    assert len(arm.reads) == reads, "the close made a read of its own after all"
+    note = transport.close_note or ""
+    assert note == UNREAD_IN_HAND.format(why=LET_GO_WHERE_IT_STOOD), note
+    assert "nothing is holding it up" not in note and "cut its power to be sure" in note
+    assert arm.config.disable_torque_on_disconnect is False
+
+
+async def test_the_mock_closes_a_release_nothing_read_back_in_the_real_close_s_words() -> None:
+    """The mock's twin, so a rehearsal of `quackd robot release` or of the end-of-run offer can
+    end the way an arm whose read-back failed ends: its in-memory release always read back, so
+    its close could only ever say the arm was limp or name a joint still on."""
+    mock = LeRobotMock()
+    mock.release_unread = "a reason made up for this test"
+    released = await mock.let_go(anywhere=True)
+    assert released.how == "released" and released.torque_on is None, released
+    assert "did not answer to confirm it (a reason made up for this test)" in released.reason
+    await mock.close()
+    assert mock.close_note == UNREAD_IN_HAND.format(why=LET_GO_WHERE_IT_STOOD), mock.close_note
+
+    read = LeRobotMock()
+    assert (await read.let_go(anywhere=True)).torque_on == ()
+    await read.close()
+    assert read.close_note == LIMP_IN_HAND.format(why=LET_GO_WHERE_IT_STOOD), read.close_note
+
+
+class HeldRead(FakeBus):
+    """A bus whose torque register read sits on the wire until the test lets it go, once told
+    to: the read `let_go` makes before it sends anything."""
+
+    def __init__(self, arm: FakeArm) -> None:
+        super().__init__(arm)
+        self.hold = False
+        self.reading = threading.Event()
+        self.done = threading.Event()
+
+    def sync_read(
+        self, data_name: str, motors: Any = None, *, normalize: bool = True, num_retry: int = 0
+    ) -> dict[str, int]:
+        if self.hold and data_name == "Torque_Enable":
+            self.reading.set()
+            self.done.wait(timeout=5.0)
+        return super().sync_read(data_name, motors, normalize=normalize, num_retry=num_retry)
+
+
+async def test_an_interrupt_on_the_read_before_a_release_refuses_nothing_and_sends_nothing() -> (
+    None
+):
+    """`let_go` marked a release through the second door refused on the way in and cleared the
+    mark only once its first read had come back. A Ctrl-C on that read went on up with nothing
+    sent and the mark still set, so the close said "the release did not take" of a release that
+    never went out. The mark is set only where a refusal is returned now, and `in_hand` stays
+    False, which is how the caller tells an interrupt before the send from one after it."""
+    arm = _spanned()
+    recorded, reading = _stopped_short(arm)
+    arm.positions.update(reading)
+    arm.bus = HeldRead(arm)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=recorded)
+    await transport.connect()
+
+    arm.bus.hold = True
+    release = asyncio.ensure_future(transport.let_go(anywhere=True))
+    try:
+        assert await asyncio.to_thread(arm.bus.reading.wait, 5.0), "the read never went out"
+        release.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await release
+        assert "disable_torque" not in arm.timeline and arm.torque is True, "a release went out"
+        assert transport.in_hand is False and LeRobotAdapter(transport).in_hand is False
+        assert transport._release_refused is False, "a release nobody refused was marked so"
+    finally:
+        arm.bus.hold = False
+        arm.bus.done.set()
+    for _ in range(50):
+        if transport._wedged is None or transport._wedged.done():
+            break
+        await asyncio.sleep(0.02)
+    await transport.close()
+    note = transport.close_note or ""
+    assert note.startswith("the arm is not at its rest pose"), note
+    assert "the release did not take" not in note, note
+
+
+@pytest.mark.parametrize("hangs", ["the goal write", "the hold after a stall"])
+async def test_a_rest_move_whose_write_never_came_back_did_not_answer(hangs: str) -> None:
+    """`RestResult.answered` was taken from the last read alone, which only a read clears, so a
+    rest move whose goal write never came back, and left the bus wedged behind it, said the arm
+    had answered, and so did one that stalled and whose hold, sent quietly as it gave up, never
+    came back. The loop then told a person the arm was holding itself up and to hold it and
+    press Enter, and the release that followed was refused at its first read on the same wedge.
+    A call that never came back is an arm that did not answer, read or write. A write the arm
+    refused after a read that came back is still an arm that answered (the lost-write test
+    above). Synthetic travel, goal and obstacle."""
+    release = threading.Event()
+    arm_travel = FakeArm().travel("elbow_flex")
+    goal = arm_travel[1] / 2
+
+    class Hangs(FakeArm):
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            # the rest move's goal, or any other write: the hold, which writes where it stopped
+            if (hangs == "the goal write") == (action.get("elbow_flex.pos") == goal):
+                release.wait(5.0)
+            return super().send_action(action)
+
+    arm = Hangs()
+    recorded = {j: arm.positions[j] for j in JOINTS if j != "gripper"} | {"elbow_flex": goal}
+    if hangs == "the hold after a stall":
+        arm.obstacles["elbow_flex"] = (arm_travel[0], goal / 3)  # something in the way
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=recorded, timeout_s=0.2)
+    try:
+        await transport.connect()
+        missed = await transport.go_to_rest()
+        assert not missed.reached, missed
+        if hangs == "the goal write":
+            assert missed.how == "refused" and "has not come back" in missed.reason, missed
+        else:
+            assert missed.how == "stalled" and transport._wedged is not None, missed
+        assert transport._answered is True, "the reads did come back"
+        assert missed.answered is False, "a write that never came back was said to be answered"
+    finally:
+        release.set()
 
 
 class OneRegisterDown(FakeBus):
@@ -3895,7 +4128,10 @@ async def test_a_connect_that_fails_every_attempt_names_the_joint_and_says_hold_
     assert result in why
     assert "some motors may be left with torque on and others off" in why, why
     assert "keep a hand under the arm" in why, why
-    assert f"Check {joint}'s cable and connectors, and that nothing else has {port} open" in why
+    assert (
+        f"Check {joint}'s cable and connectors, that the servo supply is on, and that nothing "
+        f"else has {port} open"
+    ) in why, why
     assert arm.calls.count(("connect", False)) == CONNECT_ATTEMPTS
     assert arm.calls.count(("bus.disconnect", False)) == CONNECT_ATTEMPTS
     assert ("bus.disconnect", True) not in arm.calls and ("disconnect",) not in arm.calls
@@ -4102,8 +4338,12 @@ async def test_a_connect_refused_in_the_handshake_names_the_servo_and_wrote_no_t
     head = f"lerobot real: connect failed {CONNECT_ATTEMPTS} times"
     assert why.startswith(f"{head}, the last on {joint} (id {n}): " if named else f"{head}: ")
     assert (SPLIT_TORQUE in why) is torque_said, why
-    look = f"{joint}'s cable and connectors" if named else "the arm's cables and power"
-    assert f"Check {look}, and that nothing else has COM7 open" in why, why
+    look = (
+        f"{joint}'s cable and connectors, that the servo supply is on,"
+        if named
+        else "the arm's cables and power,"
+    )
+    assert f"Check {look} and that nothing else has COM7 open" in why, why
     assert arm.calls.count(("connect", False)) == CONNECT_ATTEMPTS
     assert arm.timeline == [] and not arm.is_connected
     assert camera.calls == ["connect", "disconnect"]
@@ -4209,6 +4449,252 @@ async def test_a_serial_error_that_left_the_port_busy_does_not_fail_the_next_att
     assert arm.timeline == [] and arm.torque_retries == [], "torque was written between them"
     (note,) = transport.connect_notes
     assert "WriteFile failed" in note, note
+
+
+async def test_a_port_close_that_ran_out_of_time_waiting_for_the_bus_leaves_its_flag_alone() -> (
+    None
+):
+    """The busy flag was cleared after the close's own call whenever the transport was not
+    wedged, and a close that ran out of time still waiting for the bus's lock wedges nothing,
+    because its call never started. So the flag of whichever call held the lock was lowered in
+    the middle of that call's packet, by a close that had not closed anything. It is cleared in
+    the same call as the close now, straight after it, so only under the lock and only once the
+    port has shut."""
+    arm = FakeArm()
+    transport = LeRobotReal("COM7", robot=arm, timeout_s=2.0)
+    await transport.connect()
+    transport.port_close_deadline_s = 0.1
+    seen: list[bool] = []
+
+    def a_packet() -> None:
+        arm.bus.port_handler.is_using = True  # raised for its packet, as the servo SDK does
+        time.sleep(0.4)
+        seen.append(arm.bus.port_handler.is_using)
+        arm.bus.port_handler.is_using = False
+
+    other = asyncio.ensure_future(transport._call(a_packet))
+    await asyncio.sleep(0.05)  # the packet holds the lock
+    await transport._close_port()
+    assert ("bus.disconnect", False) not in arm.calls, "the close ran after all"
+    await other
+    assert seen == [True], "a close that never ran lowered another call's flag mid-packet"
+    assert arm.is_connected
+
+    await transport._close_port()  # with the bus free, it closes and lowers the flag
+    assert ("bus.disconnect", False) in arm.calls and not arm.is_connected
+    assert arm.bus.port_handler.is_using is False
+
+
+async def test_a_handshake_that_found_no_motor_names_no_joint_and_says_cables_and_power() -> None:
+    """With the servo supply off, which is how an arm is after the power cut a session ends
+    on, the handshake lists every motor as missing, and the first id listed was named: every
+    retry note and the refusal sent the person to one joint's cable, and no longer said a word
+    about power. A handshake that found none of the arm's motors names no joint now, and the
+    refusal says to check the arm's cables and power. Where the bus's motor table is not known,
+    the message's own list of every motor expected stands in for it. One motor that answered
+    is not the whole arm gone, and the first one missing is still named."""
+    arm, _camera, transport = _rewired()
+    everyone = sorted(REWIRED.values())
+    arm.handshake_errors = [_motor_check_failed(missing=everyone)] * CONNECT_ATTEMPTS
+    with pytest.raises(TransportError) as raised:
+        await LeRobotAdapter(transport).connect()
+    why = str(raised.value)
+    assert why.startswith(f"lerobot real: connect failed {CONNECT_ATTEMPTS} times: "), why
+    assert ", the last on" not in why and "cable and connectors" not in why, why
+    assert "Check the arm's cables and power, and that nothing else has COM7 open" in why, why
+    assert SPLIT_TORQUE not in why, "the handshake writes nothing"
+    assert len(transport.connect_notes) == CONNECT_ATTEMPTS - 1
+    for k, note in enumerate(transport.connect_notes, start=1):
+        assert note.startswith(f"connect attempt {k} of {CONNECT_ATTEMPTS} failed: "), note
+
+    table = {joint: SimpleNamespace(id=n) for joint, n in REWIRED.items()}
+    said = str(_motor_check_failed(missing=everyone))
+    for motors in (table, None):
+        assert motor_in_error(said, motors) is None, motors
+        assert motor_in_error(" ".join(said.split()), motors) is None, motors
+    joint, first = min(REWIRED.items(), key=lambda kv: kv[1])
+    all_but_one = str(_motor_check_failed(missing=everyone[:-1]))
+    assert motor_in_error(all_but_one, table) == (f"{joint} (id {first})", joint)
+
+
+class ChecksItsCalibration(FakeArm):
+    """`SOFollower.connect` in upstream's order with the calibration check in its place: the
+    port, the handshake, then `not self.is_calibrated and calibrate` (so_follower.py line 99,
+    evaluated whatever `calibrate` says), then `configure()`. `calibration_errors` are raised
+    from inside the check's reads, and `configure_errors` from inside `configure()`, from a
+    calibration read it makes itself when `configure_reads` says so."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calibration_errors: list[BaseException] = []
+        self.configure_errors: list[BaseException] = []
+        self.configure_reads = False
+
+    def read_calibration(self) -> dict[str, Any]:
+        if self.calibration_errors:
+            raise self.calibration_errors.pop(0)
+        return dict(self.calibration)
+
+    def connect(self, calibrate: bool = True) -> None:
+        self.calls.append(("connect", calibrate))
+        self.connected = True
+        self.bus._handshake()
+
+        def is_calibrated() -> bool:
+            return bool(self.read_calibration())
+
+        if not is_calibrated() and calibrate:
+            raise AssertionError("quackd never asks for a calibration")
+
+        def configure() -> None:
+            if not self.configure_errors:
+                return
+            if self.configure_reads:
+                self.calibration_errors.append(self.configure_errors.pop(0))
+                self.read_calibration()
+            raise self.configure_errors.pop(0)
+
+        configure()
+
+
+@pytest.mark.parametrize(
+    ("where", "torque_said"),
+    [
+        pytest.param("calibration check", False, id="a read in the calibration check"),
+        pytest.param("configure", True, id="a read inside configure()"),
+        pytest.param("both", True, id="a calibration read made inside configure()"),
+    ],
+)
+async def test_a_read_lost_in_the_calibration_check_before_configure_wrote_no_torque(
+    where: str, torque_said: bool
+) -> None:
+    """LeRobot's connect checks the calibration between the handshake and `configure()`,
+    reading each motor's limits and offset with no retry, and writes nothing there. quackd
+    placed every failure after the handshake in `configure()`, so a read lost in that check
+    told the person to keep a hand under an arm nothing had written to. A failure placed in the
+    check is a read now, like one in the handshake; one placed under `configure()`, or one that
+    cannot be placed, still earns the warning, and so does a calibration read made from inside
+    `configure()`, which would come after its torque-off. Synthetic ids and registers."""
+    arm = ChecksItsCalibration()
+    n = arm.bus.motors[sorted(JOINTS)[2]].id
+    lost = ConnectionError(f"Failed to read 'Homing_Offset' on id_={n} after 1 tries. {NO_STATUS}")
+    if where == "calibration check":
+        arm.calibration_errors = [lost] * CONNECT_ATTEMPTS
+    else:
+        arm.configure_errors = [lost] * CONNECT_ATTEMPTS
+        arm.configure_reads = where == "both"
+    transport = LeRobotReal("COM7", robot=arm)
+    transport.connect_pause_s = 0.0
+    with pytest.raises(TransportError) as raised:
+        await transport.connect()
+    why = str(raised.value)
+    assert "Failed to read 'Homing_Offset'" in why, why
+    assert (SPLIT_TORQUE in why) is torque_said, why
+    assert arm.calls.count(("connect", False)) == CONNECT_ATTEMPTS
+    assert arm.timeline == [] and not arm.is_connected
+
+
+class StoppedDuring(FakeArm):
+    """An arm whose connect fails on a lost write, and during whose first attempt `stop` runs:
+    a person asking for a stop, which is all the kill switch's first press does
+    (`KillSwitch._fire`), then or a moment later."""
+
+    def __init__(self, stop: Any) -> None:
+        super().__init__()
+        self.stop = stop
+
+    def connect(self, calibrate: bool = True) -> None:
+        if self.calls.count(("connect", False)) == 0:
+            self.stop()
+        super().connect(calibrate)
+
+
+@pytest.mark.parametrize(
+    ("when", "pause"),
+    [("attempt", 0.0), ("attempt", 0.3), ("pause", 0.6)],
+    ids=["during the attempt, no pause", "during the attempt", "during the pause"],
+)
+async def test_a_stop_asked_for_while_a_connect_fails_ends_the_attempts(
+    when: str, pause: float
+) -> None:
+    """A Ctrl-C while the first attempt was failing set the run's abort flag and cancelled
+    nothing, so the second and third attempts still went out, each a `configure()` that
+    switches torque off every motor and on again, and one that connected went on into the
+    start of the run. The connect is told how to hear a stop now, looks for one once an
+    attempt has failed, before it says it will try again, and throughout the pause, and refuses
+    on the spot: one attempt, the port closed without a write, the camera let go of, and the
+    stop named as why."""
+    asked = threading.Event()
+    arm = StoppedDuring(asked.set if when == "attempt" else threading.Timer(0.15, asked.set).start)
+    n = arm.bus.motors[sorted(JOINTS)[-1]].id
+    arm.connect_errors = [_lost_write("Lock", n, 1, NO_STATUS)] * CONNECT_ATTEMPTS
+    camera = FakeCamera()
+    transport = LeRobotReal(
+        "COM7", robot=arm, camera=parse_camera_url("opencv://0"), camera_object=camera
+    )
+    transport.connect_pause_s = pause
+    adapter = LeRobotAdapter(transport)
+    adapter.set_stop_check(asked.is_set)
+    with pytest.raises(TransportError) as raised:
+        await adapter.connect()
+    why = str(raised.value)
+    assert why.startswith(
+        f"lerobot real: connect stopped after attempt 1 of {CONNECT_ATTEMPTS}, because a stop "
+        "was asked for."
+    ), why
+    assert f"Failed to write 'Lock' on id_={n}" in why and SPLIT_TORQUE in why, why
+    assert "The port was closed without a write to any motor, and connect was not tried" in why
+    assert arm.calls == [("connect", False), ("bus.disconnect", False)], arm.calls
+    assert arm.timeline == [] and not arm.is_connected
+    assert camera.calls == ["connect", "disconnect"]
+    # a stop already asked for is not told "connect runs again" first
+    assert len(transport.connect_notes) == (0 if when == "attempt" else 1), transport.connect_notes
+
+    # and taken away, a connect nobody stopped tries again as it always did
+    again = StoppedDuring(lambda: None)
+    again.connect_errors = [_lost_write("Lock", n, 1, NO_STATUS)]
+    plain = LeRobotReal("COM7", robot=again)
+    plain.connect_pause_s = 0.0
+    plain.set_stop_check(None)
+    await plain.connect()
+    assert again.calls.count(("connect", False)) == 2 and again.is_connected
+
+
+async def test_a_run_whose_kill_switch_was_pressed_during_a_failing_connect_connects_no_more(
+    tmp_path: Any,
+) -> None:
+    """The same, through the agent loop, which is where the kill switch is: the loop hands the
+    arm its abort flag before it connects, so a press during the first failing attempt is one
+    connect call, no rest move and no second attempt, and the run is refused as stopped."""
+    from quackd.agent.loop import AgentLoop, RunConfig
+    from quackd.agent.providers.fake import FakeProvider
+
+    holder: dict[str, Any] = {}
+    running = asyncio.get_running_loop()
+    # from the connect's own thread, the way the kill switch's handler reaches the loop
+    arm = StoppedDuring(lambda: running.call_soon_threadsafe(holder["loop"].executor.abort.set))
+    n = arm.bus.motors[sorted(JOINTS)[0]].id
+    arm.connect_errors = [_lost_write("Torque_Enable", n, 0, CORRUPT)] * CONNECT_ATTEMPTS
+    rest = {j: arm.positions[j] for j in JOINTS if j != "gripper"}
+    transport = LeRobotReal("COM7", robot=arm, rest_pose=rest | {"elbow_flex": 30.0})
+    transport.connect_pause_s = 0.0
+    loop = AgentLoop(
+        RunConfig(
+            duck=ARM_DUCK,
+            provider=FakeProvider(script=[]),
+            transport=LeRobotAdapter(transport),
+            runs_dir=tmp_path,
+        )
+    )
+    holder["loop"] = loop
+    try:
+        with pytest.raises(TransportError, match="connect stopped after attempt 1"):
+            await loop.run()
+    finally:
+        loop.transcript.close()  # the run that would have closed it never started
+    assert arm.calls.count(("connect", False)) == 1, arm.calls
+    assert arm.actions == [], "the arm was driven after the stop"
+    assert transport._stop_check is None, "the loop left its abort flag on the arm"
 
 
 async def test_the_release_and_the_hold_give_each_torque_write_upstream_s_own_retries() -> None:

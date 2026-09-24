@@ -15,6 +15,7 @@ there is no force sensor anywhere on this body.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 from PIL import Image, ImageDraw
 
@@ -31,6 +32,7 @@ from quackd_lerobot.verbs import (
     LIMP_IN_HAND,
     TOL_DEG,
     TORQUE_KEPT_AFTER_REFUSAL,
+    UNREAD_IN_HAND,
     Clip,
     at_rest,
     past_reach,
@@ -137,6 +139,14 @@ class LeRobotMock(MockTransport):
         would, which an in-memory release that always takes cannot."""
         self.holding_in_hand: tuple[str, ...] = ()
         """The motors the last release left on, in the bus's order, for the close to name."""
+        self.release_unread: str | None = None
+        """Set to a reason and the release goes out with nothing to read it back, as on the real
+        backend when its read-back fails, and that reason is why the read did not answer. The
+        arm is in a hand, its torque is unknown, and the close says so in the real close's words
+        (`UNREAD_IN_HAND`), which an in-memory release that always reads back cannot."""
+        self.release_read_back = False
+        """A read of the torque register answered for the last release, as on the real backend:
+        the close names what it found only then."""
         self.release_refused = False
         """The last release a person asked for through the second door was refused, as on the
         real backend: the close then does not send them back to it."""
@@ -325,41 +335,58 @@ class LeRobotMock(MockTransport):
         about the pose are skipped and the arm is released where it stands, in the same words,
         so a rehearsal of `quackd robot release` or of the end-of-run offer says what the arm
         would. An in-memory release takes wherever `release_holdouts` does not say otherwise,
-        and those motors read on afterwards in the real backend's words."""
+        and those motors read on afterwards in the real backend's words, and is read back
+        unless `release_unread` says the read did not answer.
+
+        `release_refused` is set where a refusal is returned and nowhere else, as on the real
+        backend, whose release an interrupt can land on before anything is sent."""
         self.sequence.append("let_go")
-        self.release_refused = anywhere
+
+        def refused(reason: str, **kw: Any) -> HandResult:
+            self.release_refused = anywhere
+            return HandResult("refused", reason, **kw)
+
         if not anywhere and self.rest_pose is None:
-            return HandResult(
-                "refused",
+            return refused(
                 "no rest pose is recorded for this arm, so there is nowhere it is known to be "
                 "safe to let go of it: quackd robot rest-pose NAME",
             )
         recorded = rest_goal(self.rest_pose or {})
         goal = self.rest_reachable
         if not anywhere and not goal:
-            return HandResult("refused", "the recorded pose names no joint this arm drives")
+            return refused("the recorded pose names no joint this arm drives")
         resting = bool(goal) and at_rest(goal, self.joints, recorded)
         if not anywhere and not resting:
-            return HandResult(
-                "refused",
+            return refused(
                 f"the arm is not at its rest pose ({shortfall(goal, self.joints, recorded)}), "
                 "and an arm held up by torque alone falls when torque goes",
             )
         where = "at the rest pose" if resting else "where the arm stands"
         holding = tuple(j for j in JOINTS if j in self.release_holdouts)
-        if holding == JOINTS:
+        if holding == JOINTS and self.release_unread is None:
             # every motor kept its torque, so nothing was released and nobody holds anything
-            return HandResult(
-                "refused",
+            return refused(
                 "the arm still reports torque on, so it was not released",
                 joints=dict(self.joints),
                 torque_on=holding,
             )
         self.release_refused = False
-        self.torque = False
+        self.torque = holding == JOINTS
         self.in_hand = True
-        self.holding_in_hand = holding
         self.let_go_why = LET_GO_WHERE_IT_STOOD if anywhere else None
+        if self.release_unread is not None:
+            # sent, and nothing read it back: the real backend's words for a read-back whose
+            # torque register did not answer, and what the motors did is not known
+            self.release_read_back = False
+            self.holding_in_hand = ()
+            return HandResult(
+                "released",
+                f"torque is off {where}, and the torque register did not answer to confirm "
+                f"it ({self.release_unread})",
+                joints=dict(self.joints),
+            )
+        self.release_read_back = True
+        self.holding_in_hand = holding
         if holding:
             return HandResult(
                 "released",
@@ -405,19 +432,21 @@ class LeRobotMock(MockTransport):
         reachable rest pose or past it on a clipped joint's side, with nothing to say about it.
 
         And the real close's words for the endings a person drove: an arm in a hand that a
-        release left partly energised names what still holds, and an arm whose release was
-        just refused is neither sent back to that release nor let go of without a word."""
+        release left partly energised names what still holds, one whose release nothing read
+        back says so and to cut its power to be sure, and an arm whose release was just refused
+        is neither sent back to that release nor let go of without a word."""
         self.sequence.append("close")
         self.close_note = None
         recorded = rest_goal(self.rest_pose or {})
         goal = self.rest_reachable
         if self.in_hand:
             limp = self.let_go_why or LET_GO_TO_PLACE
-            self.close_note = (
-                still_holding_in_hand(self.holding_in_hand, limp)
-                if self.holding_in_hand
-                else LIMP_IN_HAND.format(why=limp)
-            )
+            if not self.release_read_back:
+                self.close_note = UNREAD_IN_HAND.format(why=limp)
+            elif self.holding_in_hand:
+                self.close_note = still_holding_in_hand(self.holding_in_hand, limp)
+            else:
+                self.close_note = LIMP_IN_HAND.format(why=limp)
         elif self.rest_pose and not goal:
             self.close_note = torque_left_on(
                 "the recorded pose names no joint this arm drives", self.registered_name

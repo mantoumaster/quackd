@@ -537,9 +537,18 @@ class AgentLoop:
         "the release was interrupted while it was going out, so the arm may be limp, all of it "
         "or part of it: hold it as though nothing holds it, and put it down"
     )
-    """Said when a Ctrl-C lands on the release after Enter. The person pressed Enter because
-    they were holding the arm, the release may have reached some motors and not others, and
-    the only safe reading of that is the limp one."""
+    """Said when a Ctrl-C lands on the release after Enter, once it has gone out. The person
+    pressed Enter because they were holding the arm, the release may have reached some motors
+    and not others, and the only safe reading of that is the limp one."""
+
+    RELEASE_NOT_SENT = (
+        "the release was interrupted before anything was sent, so torque is as it was and the "
+        "arm still holds itself up where it stopped"
+    )
+    """Said when a Ctrl-C lands on the release after Enter and before it went out, on the read
+    the release begins with: the arm's own backend says so (`in_hand` still False). Nothing
+    reached a motor, so the arm is the one the offer described, holding itself up, and the
+    close's own line about torque follows."""
 
     async def _hand_over(self) -> bool:
         """Let go of the arm, wait for somebody to place it, then hold what they left.
@@ -615,8 +624,20 @@ class AgentLoop:
             return
         self._ask_recorded("hand_off", self.HAND_IT_BACK, unloaded, hand)
         if not unloaded:
-            self._emit("hand_off", stage="skipped", reason="nobody answered")
-            self._note("nobody unloaded the gripper, so it stays shut and the arm folds up")
+            # why the wait ended, where the person can say (`_TerminalHandOff.ended`), for
+            # `_offer_release`'s reason: this wait watches a fresh key press and not the abort
+            # flag, so a first Ctrl-C (or `q`) ends it with False and no exception, exactly as
+            # the room being empty does, and "nobody answered" is not what happened
+            ended = getattr(hand, "ended", None)
+            if ended == "kill switch":
+                self._emit("hand_off", stage="skipped", reason="interrupted while waiting")
+                self._note("the gripper was left as it is, and the arm still folds up")
+            elif ended == "no keys":
+                self._emit("hand_off", stage="skipped", reason="no key could be read")
+                self._note("no key could be read, so the gripper stays shut and the arm folds up")
+            else:
+                self._emit("hand_off", stage="skipped", reason="nobody answered")
+                self._note("nobody unloaded the gripper, so it stays shut and the arm folds up")
             return
         # through the logged transport, so the record has the intent like every other one.
         # Not through the executor: its abort is set on every run a person ended, and this runs
@@ -654,15 +675,17 @@ class AgentLoop:
         person ended, which are the runs most likely to have missed their fold. And a second
         Ctrl-C landing on it is caught here for the same reason too: it means "skip this and
         finish", and the close, `run_end` and the summary still have to happen. So is one
-        landing on the release itself, after Enter, which is the one moment the arm may already
-        be limp in part: the person is told so, and the teardown carries on. Nothing here
-        raises.
+        landing on the release itself, after Enter: once the release has gone out, which is the
+        one moment the arm may already be limp in part, the person is told so, and before it
+        went out, that nothing was sent and torque is as it was. Either way the teardown carries
+        on. Nothing here raises.
 
         Only a miss the arm answered for gets the offer: a move that stalled or ran out of time,
-        or one refused after a read came back (`RestResult.answered`). A move that failed
-        because the arm stopped answering, which is what cutting the servo supply looks like,
-        is nothing quackd can say "holding itself up" of, and the release it would offer
-        refuses at its first read anyway, after a person has been kept waiting for it."""
+        or one refused on a write after a read that came back (`RestResult.answered`). A move that
+        failed because the arm stopped answering, which is what cutting the servo supply looks
+        like, or on a call that never came back and left the bus wedged, is nothing quackd can
+        say "holding itself up" of, and the release it would offer refuses at its first read
+        for as long as that stays so, after a person has been kept waiting for it."""
         person = self.cfg.person
         if person is None or self.cfg.dry_run or parked is None:
             return
@@ -693,13 +716,24 @@ class AgentLoop:
         try:
             released = await let_go_if_any(self.cfg.transport, anywhere=True)
         except (asyncio.CancelledError, KeyboardInterrupt):
-            # A Ctrl-C after the Enter, while the release is on the wire. The release was sent,
-            # or was about to be, so part of the arm may already be limp in the person's hands;
-            # the arm's own backend takes it to be in a hand, so the close says the same.
-            self._emit("release", stage="interrupted", reason="interrupted during the release")
-            self._note(self.RELEASE_INTERRUPTED)
+            # A Ctrl-C after the Enter. Which side of the send it landed on is the arm's own
+            # backend's to say (`in_hand`), because the backend marks the arm in a hand the
+            # moment the release call goes out. Before that, on the read the release begins
+            # with, nothing was sent and torque is as it was, and "the arm may be limp" would
+            # send a person to hold up an arm that is holding itself. After it, part of the arm
+            # may already be limp in their hands, and the close says the same. A body that does
+            # not say gets the limp reading, which is the one that never drops an arm.
+            if getattr(self.cfg.transport, "in_hand", None) is False:
+                self._emit(
+                    "release", stage="kept", reason="interrupted before the release was sent"
+                )
+                said = self.RELEASE_NOT_SENT
+            else:
+                self._emit("release", stage="interrupted", reason="interrupted during the release")
+                said = self.RELEASE_INTERRUPTED
+            self._note(said)
             with contextlib.suppress(Exception):
-                person.say(self.RELEASE_INTERRUPTED)
+                person.say(said)
             return
         self._emit(
             "release",
@@ -909,8 +943,8 @@ class AgentLoop:
             cleared = (
                 "a person read that and said go"
                 if asked
-                else "this run was started to go ahead without asking anybody (--yes or a "
-                "flock's standing answer)"
+                else "this run was started to go ahead without asking anybody (--yes, a "
+                "flock's standing answer or a pipe)"
             )
             return (
                 VerbResult.success(
@@ -1051,7 +1085,21 @@ class AgentLoop:
         # connect FIRST: an adapter answers with its manifest, and the vocabulary (tools,
         # prompt, allowlist universe) is built from that, not hardcoded (ADR-0017)
         connect_started = time.perf_counter()
-        connected = await cfg.transport.connect()
+        # A body that tries its connect again when the bus loses a packet (the LeRobot arm) is
+        # told how to hear a stop while it does. The kill switch's first press only sets the
+        # abort flag and cancels nothing, so without this a Ctrl-C during a connect that was
+        # failing got every attempt still to come, each one switching torque off and on again
+        # on every motor, and a later one that connected went on into the start of the run.
+        # Read with `getattr`, so a body with no such thing is called exactly as it always was,
+        # and taken back once the connect is over: it is the connect's and nothing else's.
+        stop_check = getattr(cfg.transport, "set_stop_check", None)
+        if callable(stop_check):
+            stop_check(self.executor.abort.is_set)
+        try:
+            connected = await cfg.transport.connect()
+        finally:
+            if callable(stop_check):
+                stop_check(None)
         # Everything from here to the first step can raise: a task that needs a verb this
         # build does not have, a person who would not confirm they were watching, a state
         # read that timed out. The arm is connected and holding by then, and the run's own

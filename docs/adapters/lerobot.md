@@ -751,16 +751,29 @@ quackd, side by side, is [safety.md](../safety.md).
   moment above happens once per attempt. When the last attempt fails too, the port is closed
   the same way and the refusal says the arm may be left half energised
   ([When it will not work](#when-it-will-not-work)), if any attempt can have written torque:
-  one that failed on a write or after the handshake, or a connect that ends on a timeout. A
-  servo that does not answer its ping is refused by LeRobot's handshake, before `configure()`
-  has written anything (`up.BUS_HANDSHAKE`), so that refusal names the joint
-  (`up.HANDSHAKE_NAMES_THE_ID`) and says nothing about torque.
+  one that failed on a write or inside `configure()`, one that failed somewhere nothing can
+  place, or a connect that ends on a timeout. A servo that does not answer its ping is refused
+  by LeRobot's handshake, before `configure()` has written anything (`up.BUS_HANDSHAKE`), so
+  that refusal names the joint (`up.HANDSHAKE_NAMES_THE_ID`) and says nothing about torque. So
+  does a read lost in the calibration check LeRobot's connect makes between the handshake and
+  `configure()`, whatever `calibrate` says (so_follower.py line 99, `up.BUS_IS_CALIBRATED`),
+  which reads each motor's limits and writes nothing. A handshake that found none of the arm's
+  motors, which is how a servo supply that is switched off looks, names no joint at all, since
+  one joint's cable would be a guess, and sends you to the arm's cables and power.
+
+  A stop asked for while a connect is failing ends it: a Ctrl-C during a `quackd run`, whose
+  first press sets the run's abort flag, is looked for once an attempt has failed and
+  throughout the pause before the next, and the connect is refused on the spot with no further
+  attempt, and so no further torque switched off and on (`connect stopped after attempt <k> of
+  3, because a stop was asked for`). A stop asked for during an attempt that then connects is
+  answered by the run as any other stop is, after the rest move that opens it.
 
   A serial error in the middle of a packet, a USB glitch rather than a lost reply, leaves the
   servo SDK's busy flag raised, and reopening the port does not lower it, so the next attempt
   would be answered "port in use" before a byte went out and refused as every motor missing.
-  quackd lowers the flag when it closes the port between attempts, which upstream's own
-  disconnect does too, and which writes nothing to a motor (`up.BUS_DISCONNECT`).
+  quackd lowers the flag when it closes the port between attempts, in the same call and once
+  the port has shut, so never under another call's packet. Upstream's own disconnect lowers it
+  too, and lowering it writes nothing to a motor (`up.BUS_DISCONNECT`).
 - **`pick` is confirm-gated**: a learned policy moves the whole arm. Its actions go through
   the same step cap and range check as a verb's.
 
@@ -1081,6 +1094,24 @@ quits at once:
 ·  note    the gripper was left as it is, and the arm still folds up
 ```
 
+The first Ctrl-C of a run nobody had stopped yet, or `q`, ends this wait without raising
+anything, since the wait watches for a fresh key press and not for the run being stopped, and it
+is recorded in the same words. It used to be filed as nobody answering. A terminal with no keys
+to read says so. Captured on `lerobot:mock` with the key reader stood in for, Enter at the first
+wait and the kill switch at this one:
+
+```
+·  hand    skipped: interrupted while waiting
+·  note    the gripper was left as it is, and the arm still folds up
+```
+
+and with no keys to read:
+
+```
+·  hand    skipped: no key could be read
+·  note    no key could be read, so the gripper stays shut and the arm folds up
+```
+
 Walking away and pressing nothing at all is the same ending by a different route, once the
 120 seconds are up:
 
@@ -1242,7 +1273,7 @@ said 0, and the command exits 0 only then. Everything else exits 1 and says whic
 | What you see | What it means |
 |---|---|
 | `torque still reads on for <joints>: cut the power` | those motors kept their torque through the release, or every motor did and nothing was released. The ones not named are limp, and the close's line after it says which case it was: below |
-| `torque was taken off and could not be read back: ...` | the release went out and the read that would confirm it failed, or the release call itself did not come back part way through its motors. quackd reads that silence as a release, so treat the arm as limp, and cut the power if it still holds itself up |
+| `torque was taken off and could not be read back: ...` | the release went out and the read that would confirm it failed, or the release call itself did not come back part way through its motors, and then the motors after the one it failed on kept their torque. quackd reads that silence as a release, so hold the arm as though nothing holds it, and cut its power to be sure. The close's line after it says the same, and that nothing read the release back |
 | `nothing was released: ...` | the arm did not answer before the release, so nothing was sent. Whether it is holding itself up is not something quackd could read, so hold it |
 | `lerobot:real at COM5: ...` and `keep hold of the arm` | the connect failed, and a connect that fails part way can leave some motors limp ([When it will not work](#when-it-will-not-work)) |
 | `... is not a body quackd takes torque off: only the LeRobot arm is` | the name is a body that does not declare `supports_hand_off` |
@@ -1277,11 +1308,28 @@ there, as every such close does, which sends the same release a second time with
 it back. The line then begins `the release did not take, and the close then took torque off at
 the rest pose`, and ends on cutting the power if the arm still holds itself up.
 
+After `could not be read back`, nothing read the release back, so the close does not say the arm
+is limp either: the call may have stopped at one motor's write and left the motors after it
+holding. Its line says that, and ends on the power switch. Captured on `lerobot:mock` registered
+as `arm-02`, its read-back made to fail, since an in-memory release otherwise always reads back:
+
+```
+✗ error: torque was taken off and could not be read back: torque is off at the rest pose, and the
+torque register did not answer to confirm it (the capture's stand-in for a register that did not
+answer)
+  hold the arm as though nothing holds it, and cut its power to be sure
+⚠ the arm is in your hands (torque was taken off where it stood, because you asked for it), but
+nothing read its torque back after the release went out, so it may be limp only in part: hold it as
+though nothing holds it, put it down, and cut its power to be sure
+```
+
 **The offer at the end of a run.** A run with you at its terminal makes the same offer itself,
 between its last rest move and the close, when that rest move missed: never on a dry run, never
 over MCP and never in a flock. And never over an arm that stopped answering: a rest move that
 failed because the arm went quiet is what cutting the servo supply looks like, nothing read says
-that arm is holding itself up, and the release would refuse at its first read anyway. Enter
+that arm is holding itself up, and the release would refuse at its first read anyway. The same
+goes for a rest move that left a call which never came back, a goal write or the hold a stalled
+move ends with, since the bus stays wedged behind it for as long as the call is out. Enter
 releases the arm through the same door. Sixty seconds with no Enter
 (`AgentLoop.RELEASE_OFFER_S`), no keyboard to read, or a Ctrl-C leaves it exactly as a run
 without the offer would, holding itself up with the torque line said. Captured on
@@ -1313,10 +1361,21 @@ And left alone:
 The record says which of those ended the wait. A Ctrl-C at the offer, the first of the run or a
 later one, reads `release kept: interrupted while waiting` rather than `nobody pressed Enter`,
 and a terminal with no keys to read reads `release kept: no key could be read`. A Ctrl-C that
-lands on the release itself, after Enter, is caught too: the release may have reached some motors
-and not others, so the arm is taken to be limp in your hands, you are told to hold it as though
-nothing holds it, the record says `release interrupted: interrupted during the release`, and
-the close, the summary and the rest of the teardown still happen. When the release is refused, what you are told follows what was
+lands on the release itself, after Enter, is caught too, and what you are told turns on which
+side of the send it landed, which the arm's backend knows. Once the release has gone out, it may
+have reached some motors and not others, so the arm is taken to be limp in your hands, you are
+told to hold it as though nothing holds it, the record says `release interrupted: interrupted
+during the release`, and a close that nothing has read the release back for says so, and to cut
+its power to be sure. Before it went out, on the read the release begins with, nothing was sent,
+and a person told the arm may be limp would be holding up an arm that is holding itself.
+Captured on `lerobot:mock` with the interrupt landing there:
+
+```
+·  release kept: interrupted before the release was sent
+·  note    the release was interrupted before anything was sent, so torque is as it was and the arm still holds itself up where it stopped
+```
+
+Either way the close, the summary and the rest of the teardown still happen. When the release is refused, what you are told follows what was
 read: every motor reading torque on says the arm is still holding itself up and to cut its
 power, and a release refused before anything was read says quackd cannot tell whether torque is
 on, to keep holding the arm, and to cut its power.
@@ -1434,6 +1493,9 @@ touched by anything in the first block: these all happen before or during connec
 | `connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' on id_=<N> ...`, and the session carries on | the bus lost a status packet on one of the torque writes LeRobot's connect makes (`Lock` or `Torque_Enable`), and quackd closed the port without writing anything and connected again. Seen three times on 2026-09-23, each on the first connect after the power had been off | nothing, once. The same joint named session after session is a cable to reseat: the one into that servo, and its connectors |
 | `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to write ...` | every attempt failed, the last one on that servo. The torque writes may have stopped part way, so some motors can be holding and others limp, which the message says | keep a hand under the arm. Check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again. A message that names no joint says to check the arm's cables and power instead |
 | `lerobot real: connect failed 3 times, the last on <joint> (id <N>): FeetechMotorsBus motor check failed on port ...: Missing motor IDs: - <N> ...` | the servo at that address did not answer its ping on any attempt: a cable out, a servo with no power, or one answering with an error such as an overload, which LeRobot lists as missing too. `Motors with incorrect model numbers` in the same place is a servo that answered as another model. LeRobot's handshake reports it before anything is written, so the message says nothing about torque unless an earlier attempt got as far as writing | check that joint's cable and connectors and that the servo supply is on, then connect again |
+| `lerobot real: connect failed 3 times: FeetechMotorsBus motor check failed on port ...: Missing motor IDs: - <N> ...` with every motor listed and `Full found motor list (id: model_number): {}` | no servo answered its ping on any attempt. That is what a servo supply that is switched off looks like, which is how the arm is after a power cut, and a cable out between the board and the first servo looks the same, so no joint is named | check that the servo supply is on, then the arm's cables and their connectors, and that nothing else has the port open, then connect again. Nothing was written, so the message says nothing about torque unless an earlier attempt got as far as writing |
+| `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to read 'Min_Position_Limit' on id_=<N> ...` (or `Max_Position_Limit`, `Homing_Offset`) | every attempt lost a reply in the calibration check LeRobot's connect makes after the handshake and before `configure()`. It reads and writes nothing, so the message says nothing about torque unless an earlier attempt got as far as writing | check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again |
+| `lerobot real: connect stopped after attempt <k> of 3, because a stop was asked for. ...` | a Ctrl-C, or `q`, while the connect was failing. The attempt's own failure follows, LeRobot's words and the joint they name, then that the port was closed without a write and connect was not tried again | nothing to fix for the stop. Read the failure as the rows above, and where the message says some motors may be left with torque on and others off, keep a hand under the arm |
 | `lerobot real: connect failed: a LeRobot call (connect) has not come back; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
 | `lerobot real: the arm is not calibrated; run LeRobot's calibration first` | LeRobot read the motors back and they do not match a calibration | run `lerobot-calibrate` under the id quackd will use, and see [the id section](#the-name-you-give-the-arm-is-its-calibration-id) |
 | `lerobot real: the arm reports no calibration file, so nothing knows how far each joint travels` | there is no file for this id | the same fix, and check the path `doctor` prints |
@@ -1449,7 +1511,7 @@ And once it is running:
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `move_joints: shoulder_pan=170 is outside this arm's calibrated range -100..100` | the goal is outside the travel in your calibration file | aim inside it, or recalibrate if the file does not match the arm's real travel. Nothing was sent. On `wrist_roll` this refusal will never fire, because upstream records a full turn for that joint rather than a sweep |
+| `move_joints: shoulder_pan=170.0 is outside this arm's calibrated range -100.0..100.0` | the goal is outside the travel in your calibration file | aim inside it, or recalibrate if the file does not match the arm's real travel. Nothing was sent. On `wrist_roll` this refusal will never fire, because upstream records a full turn for that joint rather than a sweep |
 | `cannot move_joints: elbow_flex reads 61°C: let the arm cool before moving it ...` | the heat gate, below the servo's own 70 °C cut-off | let it cool. A joint that trips its own protection goes slack without announcing it |
 | `move_joints: elbow_flex is at 12 with a goal of 45, and it has stopped moving` | a stall: five ticks of 0.1 s in which no watched joint moved more than half a step, counted once the move's ramp has handed the servo the goal itself | something is in the way, a mechanical limit the calibration does not know about, or a tripped servo. The arm is held first. A joint blocked partway through a long `duration_s` is only called stalled when that time is up. The same sentence ending `when the time ran out` means the joint was still moving when the verb's limit came: the time asked for, or the time the step cap needs if that is longer, plus 2.5 s, and never more than 18 s. A lowered `QUACKD_LEROBOT_MAX_STEP_DEG` on a long move gets there, and so does a joint creeping under a load |
 | `the camera gave no frame: TimeoutError: ... too old` | the webcam stalled or was unplugged | only `observe` is affected, and a `pick` in flight. The arm carries on, and `report_state` starts saying `CAMERA DOWN:` with the reason, so a run that cannot call `observe` still records it |

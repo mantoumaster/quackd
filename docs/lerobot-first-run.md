@@ -1277,6 +1277,8 @@ connect.
 | `connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' ...`, and the run carries on | the bus lost a packet on one of the torque writes (`Lock` or `Torque_Enable`) LeRobot's connect makes to every motor. quackd closed the port without writing anything and connected again, up to three attempts, and the run's transcript keeps the line | nothing, once. Support the arm while it connects, since each attempt drops torque for a moment. A joint named run after run is a cable to reseat |
 | `connect failed 3 times, the last on <joint> (id <N>): Failed to write ...` | every attempt lost a packet, and the arm may be left with some motors holding and others limp | keep a hand under the arm, check that joint's cable and connectors and the servo supply, make sure nothing else has the port open, then run again |
 | `connect failed 3 times, the last on <joint> (id <N>): ... Missing motor IDs: - <N> ...` | that servo never answered its ping: a cable out, no power to it, or an error such as an overload. Nothing had been written yet, so nothing is said about torque | check that joint's cable and connectors and the servo supply, then run again |
+| `connect failed 3 times: ... Missing motor IDs:` with every motor listed | no servo answered at all, which is what a servo supply switched off looks like, as after a power cut, or a cable out between the board and the first servo. So no joint is named | check that the servo supply is on, then the arm's cables, then run again |
+| `connect stopped after attempt <k> of 3, because a stop was asked for` | you pressed Ctrl-C while the connect was failing, so it was not tried again. The attempt's own failure follows | nothing for the stop. Read the failure as the rows above, and keep a hand under the arm if the message says some motors may be left with torque on |
 | `connect failed: a LeRobot call (connect) has not come back; ...` and `keep a hand under the arm` | the connect ran past its deadline, and it may have stopped anywhere in the torque writes. It is not tried again | keep a hand under the arm, check the USB cable and that nothing else has the port, then run again |
 | `the arm is not calibrated` | the motors do not match a calibration | run `lerobot-calibrate` under the id quackd will use |
 | `the arm reports no calibration file` | there is no file for this id | the same fix, and check the path `doctor` prints |
@@ -2680,7 +2682,7 @@ on each, as the heartbeat block in check 4 shows.
 should reach the arm:
 
 ```
-move_joints: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it
+move_joints: shoulder_pan=170.0 is outside this arm's calibrated range -100.0..100.0; LeRobot does not clamp a degrees goal, so quackd refuses it
 ```
 
 **This is the check [Part 1](#11-prove-the-safety-net) could not make properly.** On a `--goal` run
@@ -2688,7 +2690,7 @@ the model picks the number, so a refusal that came from the pilot rather than th
 you about the model and nothing about the gate. Here you send 170 yourself and the executor
 answers, which is the clearest reason there is to be driving this arm from a client.
 
-`-100..100` is the mock's range, and a real arm's comes off the calibration file you wrote in
+`-100.0..100.0` is the mock's range, and a real arm's comes off the calibration file you wrote in
 [section M05](#m05-find-the-port-then-calibrate). Use any body joint except `wrist_roll`: upstream
 records a full turn for that one rather than anything you swept, so nothing you can name is outside
 it. The log shows what the chat does not, which is that nothing went to the arm at all. Its middle
@@ -2696,7 +2698,7 @@ two lines:
 
 ```
 verb    move_joints(positions={'shoulder_pan': 170}) from mcp
-<-      move_joints FAIL: move_joints: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it (0.0 s, 0 intents)
+<-      move_joints FAIL: move_joints: shoulder_pan=170.0 is outside this arm's calibrated range -100.0..100.0; LeRobot does not clamp a degrees goal, so quackd refuses it (0.0 s, 0 intents)
 ```
 
 There is no `->` line and the count is `0 intents`: the verb checks the goal against the travel the

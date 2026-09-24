@@ -69,14 +69,17 @@ class RestResult:
     knows its own calibration, and said once by whoever narrates the rest move. Never a
     failure: a result carrying it reached the reachable pose."""
     answered: bool = True
-    """Whether the body answered the last thing the move asked it. False only for a move that
-    ended because the body stopped answering, or could not be asked at all (a wedged bus, a
-    closed transport), which is the one miss where nothing it last said about its pose or its
-    torque can be believed: the servo supply cut at the switch looks exactly like this, and so
-    does a pulled cable in front of servos that are still holding. A caller about to tell a
-    person that the body is holding itself up reads this first, because that is a thing only
-    a body that answered can be said to be doing. True for every body that never fails this
-    way, which is why it has a default."""
+    """Whether the body answered the last thing the move asked it. False for a move that ended
+    because the body stopped answering a read, because a call to it never came back (one that
+    ran out of time, or left the bus wedged behind it, a read or a write alike), or because it
+    could not be asked at all (a bus already wedged, a closed transport). That is the one miss
+    where nothing it last said about its pose or its torque can be believed: the servo supply
+    cut at the switch looks exactly like this, and so does a pulled cable in front of servos
+    that are still holding. A caller about to tell a person that the body is holding itself up
+    reads this first, because that is a thing only a body that answered can be said to be
+    doing. True for a move the body answered and still missed, a write it refused after a read
+    that came back included, and for every body that never fails this way, which is why it has
+    a default."""
 
     @property
     def reached(self) -> bool:

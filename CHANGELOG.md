@@ -58,10 +58,14 @@ Known limitations, below, lists the bench steps that would say whether it works.
   closes. Enter releases it where it stands, through the same door as `quackd robot release`.
   Sixty seconds with no answer (`AgentLoop.RELEASE_OFFER_S`), a terminal with no key to read
   or a Ctrl-C leave torque on, exactly as a run without the offer would. A Ctrl-C that lands on
-  the release itself is caught: the person is told the arm may be limp, and the close,
-  `run_end` and the summary still happen. The exchange is a `prompt` row and a new `release`
-  event whose `stage` and `reason` say how it ended. Never on a dry run, an MCP session or a
-  flock member ([docs/architecture.md](docs/architecture.md)).
+  the release itself is caught, and what the person is told turns on the arm's backend saying
+  which side of the send it landed: once the release has gone out, that the arm may be limp,
+  and before it did, on the read the release begins with, that nothing was sent and torque is
+  as it was. The close, `run_end` and the summary still happen either way. The exchange is a
+  `prompt` row and a new `release` event whose `stage` and `reason` say how it ended. Never on
+  a dry run, an MCP session or a flock member, and never over an arm whose rest move left a
+  call that never came back, a goal write or the hold a stalled move ends with, since that arm
+  has not answered ([docs/architecture.md](docs/architecture.md)).
 - **`mobility` and `manipulator` take `none`, which asks for nothing.** `any` means some kind,
   which an arm bolted to a table fails, so a task that goes nowhere had no word to say so
   ([docs/duck-spec.md](docs/duck-spec.md),
@@ -107,7 +111,9 @@ Known limitations, below, lists the bench steps that would say whether it works.
   move given no time takes five seconds where it used to take as long as the cap needed. The
   only move sent whole is one with nothing to walk, every joint already within a tenth of a
   degree of its goal. A goal outside the travel the manifest publishes, now rounded inward to a
-  tenth, is refused by the verb before it reads the arm or sends anything. A gripper named in
+  tenth, is refused by the verb before it reads the arm or sends anything, in the sentence both
+  backends refuse with, which now gives the goal and the travel to a tenth: in whole degrees it
+  could name a refused goal inside the range it gave, `85 is outside -85..85`. A gripper named in
   `move_joints` is walked like any joint, and the `gripper` verb is not
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md),
   [ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md), amended).
@@ -137,9 +143,10 @@ Known limitations, below, lists the bench steps that would say whether it works.
   answered with go hears that a person read it and said go, and not to assess again on the
   same doubt, only on something new. On 2026-09-23 a pilot told only that the verbs now ran
   assessed the same doubt again as `infeasible` and ended its run. A run started to go ahead
-  without asking, with `--yes` or a flock's standing answer, tells its pilot exactly that
-  rather than that a person was asked. The hint beside a refused need says a body publishes no
-  working height band where that is the reason, rather than that its sheet meets the height.
+  without asking anybody tells its pilot exactly that rather than that a person was asked, and
+  names the three ways that happens, `--yes`, a flock's standing answer and a pipe. The hint
+  beside a refused need says a body publishes no working height band where that is the reason,
+  rather than that its sheet meets the height.
 - **For adapter authors:** `RestResult` gains `clipped`, `note` and `answered`, all with
   defaults, so every body that builds `RestResult.none()` is unchanged. `HandResult.torque_on`
   names the motors still on after a release, empty when every one read off and `None` when
@@ -157,10 +164,17 @@ Known limitations, below, lists the bench steps that would say whether it works.
   `id_=N` or in its handshake's list of missing motors or wrong models, is named through the
   bus's own motor table. Each retry is a warning, a line in the transcript and advice under
   `doctor` with the verdict still green. The refusal after the last attempt carries LeRobot's
-  words, the joint, and the cable and port to check, and when an attempt can have written
-  torque, or ended on a timeout, it says some motors may be left with torque on and others off,
-  so keep a hand under the arm. `let_go` and the take-hold pass `num_retry` 5 to their torque
-  writes (`TORQUE_RETRIES`, upstream's own disconnect count).
+  words, the joint, and the cable, the servo supply and the port to check, and when an attempt
+  can have written torque, or ended on a timeout, it says some motors may be left with torque
+  on and others off, so keep a hand under the arm. A read lost in the calibration check
+  LeRobot's connect makes between its handshake and `configure()` writes nothing and does not
+  earn that warning. A handshake that found none of the arm's motors, which is how a servo
+  supply that is switched off looks, names no joint and says to check the arm's cables and
+  power. A Ctrl-C during a connect that is failing ends it: the run hands the arm a way to hear
+  its kill switch, and the connect is refused as stopped rather than making another attempt,
+  each of which switches torque off every motor and on again. The busy flag is lowered inside the port's
+  close itself, so only once the port has shut. `let_go` and the take-hold pass `num_retry` 5
+  to their torque writes (`TORQUE_RETRIES`, upstream's own disconnect count).
 - **`quackd doctor --robot NAME` probed a registered arm under the default calibration id,
   `arm-01`, whatever name it was registered under.** It builds the arm under its registered
   name now, as a run does, so it reads that arm's calibration and its lines name it.
@@ -168,7 +182,16 @@ Known limitations, below, lists the bench steps that would say whether it works.
   `--by-hand` calls, reported a release when the read before it had failed, and now refuses. A
   release that raised part way through its motors, or that a Ctrl-C landed on, now leaves the
   arm in a person's hands rather than in nobody's, so the close no longer says torque was left
-  on over an arm that may be limp.
+  on over an arm that may be limp. Nor does it say "nothing is holding it up" where nothing read
+  the release back, since the motors after the one a release stopped at keep their torque: it
+  says the release went out, that nothing read it back, and to cut the power to be sure, on the
+  real arm and on `lerobot:mock` alike. And a Ctrl-C on the read a release begins with no longer
+  leaves the release marked refused, so the close does not say a release that never went out
+  "did not take".
+- **A first Ctrl-C at `--by-hand`'s hand-back was recorded as nobody answering.** The wait
+  watches a fresh key press, so the kill switch ends it without raising, as an empty room does.
+  The record says `interrupted while waiting` for it now, and `no key could be read` for a
+  terminal with nothing to read, as the end-of-run offer already did.
 - **The verdict raised `TypeError` on a null asked of a body that publishes the figure**, for
   the working height band, the arm count and every published figure, and the non-number guard
   covers them now. And it named a best body for a need of zero, which is how the run with a pen
@@ -180,14 +203,17 @@ Known limitations, below, lists the bench steps that would say whether it works.
 - **Nothing in this release has run on an arm.** These are the bench steps that would settle
   it, in order, with a hand near the power switch, and what to report from each
   ([docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)):
-  1. `quackd doctor --robot arm-01`: whether the clip note names `shoulder_lift`, the `rest
-     pose` row says the arm arrived at the reachable pose, torque is released there, and the
-     shoulder settles onto its fold without falling from height.
+  1. `quackd doctor --robot arm-01`: whether the `rest pose` row reads `at it already` for an
+     arm left folded, or `returned to it` for one that had to move, with the clip note naming
+     `shoulder_lift` listed under the table as advice, and whether the shoulder, released at
+     the edge of its travel, settles onto its fold without falling from height.
   2. `quackd robot release arm-01` with the arm parked: the joints it prints, the y/N, and
      `torque reads off`.
   3. The `e004-mornings` task, three times, because three of that afternoon's 26 runs ended at
-     connect: whether the verdict goes through with no y/N, the wave happens, the connect goes
-     through, and the arm folds and is released with the settle note.
+     connect: whether the verdict goes through with no y/N, the wave happens and the connect
+     goes through. The clip note naming `shoulder_lift` is said once, right after the run's
+     first rest move, and at the end the arm folds to the edge of its travel and is released
+     there with no further line, so look for the note at the start rather than at the release.
   4. The `e116-slow-raise` task: whether the model passes a `duration_s` near ten seconds and
      the shoulder takes about that long, with no refusal over the arm's state.
   5. `--by-hand` with the pen, once with a joint placed past its travel: whether a dropped
@@ -211,10 +237,12 @@ Known limitations, below, lists the bench steps that would say whether it works.
   failed `configure()` leaves the motors in. Whether a real pilot now answers the verdict
   without a y/N.
 - **The SO-101's reach is quackd's arithmetic on the maker's URDF, not a measurement.**
-- **A connect refusal finds LeRobot's handshake by its method name, `_handshake`.** It is
-  recorded as an upstream ref and matches the pinned 0.6.1. If upstream renames it, the refusal
-  falls back to the warning that some motors may be left with torque on, which is the safe
-  reading.
+- **A connect refusal places a failure by LeRobot's method names:** `_handshake`, the
+  calibration check's `is_calibrated` and `read_calibration`, and `configure`,
+  `torque_disabled`, `enable_torque` and `disable_torque`. They match the installed 0.6.1 and
+  are cited in the upstream refs. If upstream renames any of them, a failure in there can no
+  longer be placed, and the refusal falls back to the warning that some motors may be left with
+  torque on, which is the safe reading.
 - **On Windows a standard input redirected from `NUL` counts as a terminal**, so `quackd robot
   release` fed from `NUL` asks its question and aborts rather than refusing for want of one.
   Nothing connects either way ([docs/registry.md](docs/registry.md)).

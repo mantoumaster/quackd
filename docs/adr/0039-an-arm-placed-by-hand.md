@@ -22,7 +22,8 @@ pose it could not reach and finished at the power switch. `let_go(anywhere=True)
 refusals about the pose and nothing else: the joints are read first, the release is read back
 off every motor, and the arm is in somebody's hands afterwards, so the close says
 `LIMP_IN_HAND`, or, where that read-back found motors still on, names them and says to cut the
-power (`still_holding_in_hand`). Two things open it, and both are a person at a terminal. `quackd robot release
+power (`still_holding_in_hand`), or, where nothing read the release back, says that and to cut
+the power to be sure (`UNREAD_IN_HAND`). Two things open it, and both are a person at a terminal. `quackd robot release
 NAME` warns that connecting takes torque off for a moment and that the release lets the arm
 fall, asks, and only then connects. A run whose last rest move missed, over an arm that still
 answered, offers the same before its close, Enter within `AgentLoop.RELEASE_OFFER_S` (60 s), and only where the CLI could prompt

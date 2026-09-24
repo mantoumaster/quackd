@@ -22,6 +22,7 @@ be quicker than the arm allows ends later than asked.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -259,6 +260,34 @@ def ramp_start(
     return start
 
 
+def published_travel(lo: float, hi: float) -> list[float]:
+    """A joint's travel as the manifest publishes it: to a tenth of a degree, rounded inward.
+
+    Inward, never to nearest, because the published figure is a promise two readers act on.
+    The pilot is told it as the travel, and asks for its ends; `move_joints` clips the start of
+    a ramp into it. The backend refuses any goal outside the travel it computed exactly, and
+    rounding to nearest can move an end outward by up to a twentieth of a degree: the pilot
+    asks for the edge it was shown and is refused, and a ramp from a joint folded past its
+    travel begins a hair outside it and is refused before it has moved. Inward, every published
+    angle is one the backend takes.
+
+    Each end is checked against the float it came from rather than trusted to the arithmetic,
+    because that float is what the backend compares a goal with: ten times a float can round
+    to a whole number the float itself lies a hair short of, and then the tenth it gives is a
+    hair outside. Such an end moves one tenth further in. A travel published a tenth narrower
+    costs nothing; one published a hair wider is the refusal this exists to prevent.
+
+    Here rather than beside the manifest it publishes, because `range_refusal` prints a travel
+    the same way and the manifest's module imports this one."""
+    low = math.ceil(lo * 10.0)
+    if low / 10.0 < lo:
+        low += 1
+    high = math.floor(hi * 10.0)
+    if high / 10.0 > hi:
+        high -= 1
+    return [low / 10.0 + 0.0, high / 10.0 + 0.0]
+
+
 def range_refusal(goals: Mapping[str, float], travel: Mapping[str, Any]) -> str | None:
     """Why a joint goal cannot be sent, in the first joint's words, or None when every joint
     with a known travel has its goal inside it.
@@ -268,16 +297,32 @@ def range_refusal(goals: Mapping[str, float], travel: Mapping[str, Any]) -> str 
     manifest published, before anything moves. LeRobot does not clamp a degrees goal and the
     servo clamps it silently (`upstream_api.POSITION_LIMITS_CLAMP_GOALS`), so a goal let through
     would be one the arm quietly stops short of. Joints in name order, so the same goals are
-    always refused over the same joint."""
+    always refused over the same joint.
+
+    The numbers are to a tenth of a degree, the resolution the manifest publishes the travel
+    in. They were whole degrees, and a whole degree can put a refused goal inside the range the
+    same sentence names: a goal a hair past a whole-degree edge read as that edge, "outside" a
+    range ending on the same number, and Python rounds a half to even, so a published edge
+    ending in .5 on an even degree was printed a degree short of goals the arm took. The travel
+    is printed rounded inward (`published_travel`), the promise the manifest makes, so on the
+    verb's side it is the published travel exactly and on a backend's it is never wider than
+    what that backend takes. The goal is printed to a tenth unless a tenth would round it onto
+    the range it is refused from, and then as it was given: a goal a few hundredths past an
+    edge is refused, and its tenth would be the edge itself."""
     for joint, goal in sorted(goals.items()):
         span = travel.get(joint)
         if not span:
             continue
         lo, hi = float(span[0]), float(span[1])
         if not lo <= float(goal) <= hi:
+            shown_lo, shown_hi = published_travel(lo, hi)
+            said = f"{float(goal):.1f}"
+            if shown_lo <= float(said) <= shown_hi:
+                said = repr(float(goal))
             return (
-                f"{joint}={float(goal):.0f} is outside this arm's calibrated range "
-                f"{lo:.0f}..{hi:.0f}; LeRobot does not clamp a degrees goal, so quackd refuses it"
+                f"{joint}={said} is outside this arm's calibrated range "
+                f"{shown_lo:.1f}..{shown_hi:.1f}; LeRobot does not clamp a degrees goal, so "
+                "quackd refuses it"
             )
     return None
 
@@ -610,8 +655,9 @@ tell them the arm is holding itself up while it hangs off their hand.
 
 The other way here is on purpose: `quackd robot release`, and the offer a run makes when its
 rest move missed, end every release they make with this line, because it is the right last
-thing to tell somebody holding an arm with nothing else holding it up. Except where something
-else is: a release some motors ignored ends on `still_holding_in_hand` instead."""
+thing to tell somebody holding an arm with nothing else holding it up. Only where a read of the
+torque register after the release found every motor off, though: a release some motors ignored
+ends on `still_holding_in_hand`, and one nothing read back on `UNREAD_IN_HAND`."""
 
 
 def still_holding_in_hand(holding: tuple[str, ...], why: str) -> str:
@@ -629,6 +675,27 @@ def still_holding_in_hand(holding: tuple[str, ...], why: str) -> str:
         f"{'reads' if one else 'read'} torque on and {'holds' if one else 'hold'}: keep hold of "
         f"the arm, put it down, and cut its power to let go of {'it' if one else 'them'}"
     )
+
+
+UNREAD_IN_HAND = (
+    "the arm is in your hands ({why}), but nothing read its torque back after the release went "
+    "out, so it may be limp only in part: hold it as though nothing holds it, put it down, and "
+    "cut its power to be sure"
+)
+"""The close's line for an arm in a person's hands whose release no torque read has answered
+for: `LIMP_IN_HAND` and `still_holding_in_hand` each say what a read found, and here none did.
+
+Two ways reach it. A release whose call raised part way, or that a Ctrl-C landed on while it
+was on the wire, has gone out to some motors and maybe not to the rest, and upstream's
+`disable_torque` writes one motor at a time and stops at the first write that fails
+(`upstream_api.BUS_DISABLE_TORQUE`), so the motors after it keep their torque. And a release
+that returned and whose read-back then failed, or found the torque register silent. Unless the
+close's own read of the arm answers first, which on an arm with no rest pose it never makes,
+and which a bus still wedged by the release refuses. "Nothing is holding it up" would then be a
+sentence about motors nobody asked, over an arm that may have some still holding, and that arm
+is also kept energised past the close. So this says the release went out, that nothing read it
+back, and the one way to be certain, which is the switch. And it tells the person to hold the
+arm as though it were limp, which is the reading that never drops one."""
 
 
 LET_GO_TO_PLACE = "it was let go of for you to place and never taken hold of again"

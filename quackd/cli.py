@@ -837,9 +837,12 @@ class _TerminalHandOff:
         """How the last wait ended: `enter`, `kill switch` (a Ctrl-C, or `q`), `no keys` (no
         key thread, or stdin finished), `stopped` (an abort nobody pressed, on a wait that
         watches the abort flag) or `timeout`. `wait` still answers with a bool, which is
-        all `--by-hand`'s two waits need; the end-of-run offer reads this as well, because a
-        record that files a Ctrl-C under "nobody pressed Enter" says the room was empty when
-        somebody in it pressed a key."""
+        all the first `--by-hand` wait needs, since it watches the abort flag and reads that
+        after a False. The two waits that watch a fresh key press instead, the hand-back at the
+        end of a `--by-hand` run and the end-of-run offer, read this as well, because the abort
+        flag is set on every run a person ended and says nothing about this wait, and a record
+        that files a Ctrl-C under "nobody answered" says the room was empty when somebody in it
+        pressed a key."""
 
     def bind(self, switch: KillSwitch) -> None:
         """The switch is built from the loop's own abort event, which does not exist until the
@@ -3521,12 +3524,12 @@ def robot_release(
             )
         )
     elif released.ok:
-        # sent, and never read back: the arm is treated as limp, which is what keeps it up
+        # sent, and never read back: the arm is treated as limp, which is what keeps it up, and
+        # the motors after one whose write failed may still hold, which only the switch settles
         ui.err_console.print(
             ui.fail_line(
                 f"torque was taken off and could not be read back: {released.reason}",
-                hint="hold the arm as though it is limp, and cut the power if it still holds "
-                "itself up",
+                hint="hold the arm as though nothing holds it, and cut its power to be sure",
             )
         )
     else:

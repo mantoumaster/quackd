@@ -1099,19 +1099,30 @@ async def test_a_pilot_hears_that_a_person_cleared_its_doubt(
     assert own["summary"].endswith("verbs that move the body now run")
 
 
-@pytest.mark.parametrize("standing", ["--yes", "a flock's standing answer"])
+@pytest.mark.parametrize("standing", ["--yes", "a flock's standing answer", "a pipe"])
 async def test_a_pilot_cleared_without_asking_anybody_is_not_told_a_person_did(
-    hello_duck: DuckFile, tmp_path: Path, standing: str
+    hello_duck: DuckFile, tmp_path: Path, standing: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`_assess` chose the "a person read that and said go" sentence on the answer alone, so a
     run started with `--yes` (which `quackd record` always passes) or a flock's standing
     answer told the pilot, and wrote into the assess event's summary, that a person had read its
     doubt, while the same run rightly wrote no `prompt` row because nobody was asked. A record
     that invents a witness is the one safety.md says is worse than none. The pilot is told the
-    run was started to go ahead without asking, and still not to raise the same doubt again."""
-    from quackd.cli import _yes_to_go
+    run was started to go ahead without asking, and still not to raise the same doubt again.
 
-    decide = _yes_to_go if standing == "--yes" else (lambda _q: True)
+    And the sentence named `--yes` or a flock's standing answer as the cause whatever it was,
+    so a run whose question a pipe answered (`yes | quackd run`, the CLI's own prompt with no
+    terminal under it) was told of two things that had not happened. It names all three now."""
+    from quackd import cli
+
+    if standing == "a pipe":
+        monkeypatch.setattr(cli, "_can_prompt", lambda: False)  # stdin is not a terminal
+        monkeypatch.setattr(cli, "_ask", lambda _question: True)  # and the pipe says y
+    decide = {
+        "--yes": cli._yes_to_go,
+        "a flock's standing answer": lambda _q: True,
+        "a pipe": cli._decide_prompt,
+    }[standing]
     result = await run_duck(
         RunConfig(
             duck=hello_duck,
@@ -1135,7 +1146,8 @@ async def test_a_pilot_cleared_without_asking_anybody_is_not_told_a_person_did(
     assert "a person" not in cleared["summary"], cleared["summary"]
     for said in (
         "cannot see how heavy the thing is",
-        "this run was started to go ahead without asking anybody",
+        "this run was started to go ahead without asking anybody (--yes, a flock's standing "
+        "answer or a pipe)",
         "verbs that move the body now run",
         "Do not assess again on the same doubt, only on something new you see",
     ):
@@ -2874,6 +2886,56 @@ async def test_a_cancellation_in_the_hand_back_still_finishes_the_teardown(
     assert (result.run_dir / "summary.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("ended", "reason", "note"),
+    [
+        (
+            "kill switch",
+            "interrupted while waiting",
+            "the gripper was left as it is, and the arm still folds up",
+        ),
+        (
+            "no keys",
+            "no key could be read",
+            "no key could be read, so the gripper stays shut and the arm folds up",
+        ),
+        (
+            "timeout",
+            "nobody answered",
+            "nobody unloaded the gripper, so it stays shut and the arm folds up",
+        ),
+    ],
+)
+async def test_the_hand_back_records_why_its_wait_ended(
+    tmp_path: Path, ended: str, reason: str, note: str
+) -> None:
+    """The hand-back watches a fresh key press, not the abort flag, so a first Ctrl-C there, on
+    a run nobody had interrupted, ends the wait with False and no exception, as an empty room
+    does. It was recorded as "nobody answered", with the note that nobody unloaded the gripper,
+    right under the saved terminal's own line that the kill switch had ended the wait, and the
+    same over a terminal with no keys to read. The terminal says how the wait ended
+    (`_TerminalHandOff.ended`), and the hand-back reads it as the end-of-run offer does. The
+    gripper stays shut and the arm folds up in every case."""
+    mock = LeRobotMock(rest_pose=REST)
+
+    def says_why(person: ScriptedPerson) -> None:
+        if person.waits == 2:  # the hand-back, not the wait that placed the arm
+            person.ended = ended  # type: ignore[attr-defined]
+
+    person = ScriptedPerson(mock, places=PLACED, answers=[True, False], on_wait=says_why)
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    skipped = [e for e in events if e["kind"] == "hand_off" and e["stage"] == "skipped"]
+    assert [e["reason"] for e in skipped] == [reason], skipped
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert note in notes, notes
+    assert not [e for e in events if e["kind"] == "intent" and e["intent"] == "gripper"]
+    assert mock.joints["gripper"] == PLACED["gripper"], "the gripper stayed shut"
+    assert {j: mock.joints[j] for j in rest_goal(REST)} == rest_goal(REST), "and it folded up"
+
+
 async def test_a_dry_run_never_takes_torque_off_an_arm(tmp_path: Path) -> None:
     """The CLI refuses the two flags together, because they ask for opposite things: one
     takes torque off the arm and the other moves nothing. This is the loop holding the same
@@ -3247,6 +3309,40 @@ async def test_a_ctrl_c_on_the_release_itself_still_ends_the_record(
     ]
     assert events[-1]["kind"] == "run_end", "the record still ends"
     assert (result.run_dir / "summary.json").exists()
+
+
+@pytest.mark.parametrize("press", [KeyboardInterrupt, asyncio.CancelledError])
+async def test_a_ctrl_c_before_the_release_went_out_says_nothing_was_sent(
+    tmp_path: Path, press: type[BaseException]
+) -> None:
+    """A Ctrl-C after Enter used to be told as a release "interrupted while it was going out, so
+    the arm may be limp" wherever it landed, and on the read the release begins with nothing
+    had gone out: the person was sent to hold up an arm that was holding itself, and the close
+    then said the release "did not take". The arm's own backend says which side of the send it
+    was (`in_hand`, still False here), and before it the person is told nothing was sent and
+    torque is as it was, the record keeps torque on, and the close says what it says of any arm
+    left holding itself up."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+
+    async def interrupted(*, anywhere: bool = False) -> Any:
+        mock.sequence.append("let_go")
+        raise press  # on the read, before anything is sent
+
+    mock.let_go = interrupted  # type: ignore[method-assign]
+    person = ScriptedPerson(mock, answers=[True])
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    assert person.said == [AgentLoop.RELEASE_NOT_SENT], person.said
+    assert mock.torque is True and mock.in_hand is False
+    assert mock.sequence[-1] == "close", "the close was skipped"
+    note = mock.close_note or ""
+    assert note.startswith("the arm is not at its rest pose") and "torque was left on" in note
+    assert "the release did not take" not in note and "limp" not in note, note
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [(e["stage"], e["reason"]) for e in _offered(events)] == [
+        ("kept", "interrupted before the release was sent")
+    ]
+    assert events[-1]["kind"] == "run_end", "the record still ends"
 
 
 async def test_no_offer_is_made_without_a_person_or_to_the_by_hand_asker(tmp_path: Path) -> None:
