@@ -299,12 +299,22 @@ always answers, which is what the rows above are.
 A probe reads and lets go: it never drives an arm to its rest pose. So an arm that is not at
 that pose ends a probe holding itself up rather than sagging, and the same row says so: `+ ok,
 torque left on: not at its rest pose`. `quackd doctor` is the other way round and parks the arm
-it probed ([safety.md](safety.md)).
+it probed ([safety.md](safety.md)). A probe's connect still takes torque off every motor for a
+moment, like any connect, and it prints no warning first, so hold an arm that is holding itself
+up before you probe it.
+
+Two rarer endings read differently. `torque unknown: the arm did not answer the close` is an
+arm that stopped answering before the close could read it, which is also how an arm whose power
+was cut at the switch looks, so hold it as though it may be limp. `torque could NOT be kept: the
+arm was released where it stood` is an arm quackd could not keep powered, so check whether it is
+still where you left it.
 
 No registered robot has been probed on hardware. The one real robot quackd has driven, the
-SO-101 arm of 2026-09-15, was reached as `--robot lerobot:real --address COM3` on the command
-line, before it had a name here at all ([lerobot-first-run.md](lerobot-first-run.md)). A name,
-a probe and a stored camera are still mock-only.
+SO-101 arm, was reached on 2026-09-15 as `--robot lerobot:real --address COM3` on the command
+line, before it had a name here at all ([lerobot-first-run.md](lerobot-first-run.md)). On
+2026-09-23 the same arm ran 26 runs registered as `arm-01`, with a rest pose recorded under that
+name, so a name and a rest pose have met hardware. A probe and a stored camera are still
+mock-only.
 
 ## Names
 

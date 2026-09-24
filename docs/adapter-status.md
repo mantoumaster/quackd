@@ -7,9 +7,13 @@ message type, enum or convention it relies on lives in one file per upstream, ta
 it). A test proves UNVERIFIED names stay inside the backend that needs them.
 `quackd doctor` prints every UNVERIFIED list on your machine.
 
-One row below has met hardware: `lerobot:real`, on 2026-09-15, on a LeRobot SO-101 arm. Six of
-the seven bodies here have still never been driven by quackd, and the row that has was driven
-on one bench for one afternoon. What that afternoon did and did not settle is under the table.
+One row below has met hardware: `lerobot:real`, on a LeRobot SO-101 arm, on 2026-09-15 and
+again on 2026-09-23. Six of the seven bodies here have still never been driven by quackd, and
+the row that has was driven on one arm for two afternoons, the second on quackd 0.12.0. Nothing
+changed since 0.12.0 has run on it: the rest pose clipped into the travel, `quackd robot
+release`, the paced `move_joints` and the connect retries are exercised only against a fake
+arm, `lerobot:mock` and the test suite ([CHANGELOG.md](../CHANGELOG.md), Known limitations).
+What the first afternoon did and did not settle is under the table.
 
 > [!IMPORTANT]
 > `uv pip install quackd` installs the core and no robot at all. Every body below is its own
@@ -43,7 +47,7 @@ at all, every command that needs a body refuses and names all seven.
 | | `microduck:jsonrpc` | 🧪 experimental: every method VERIFIED, never run on a duck | [`adapters/microduck/src/quackd_microduck/upstream_api.py`](../adapters/microduck/src/quackd_microduck/upstream_api.py) | |
 | | `microduck:websocket` | ⏳ stub: raises with a link until upstream ships it | | |
 | LeRobot | `lerobot:mock` | ✅ | | [adapters/lerobot.md](adapters/lerobot.md) |
-| | `lerobot:real` | ✅ **run on a real arm on 2026-09-15**, the only row here that has been: an SO-101 follower calibrated as `arm-01` and reached as `--robot lerobot:real --address COM3` with no registered name, on Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0, piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, once with `--llm fake` as well. Free-form `--goal` runs waved the wrist roll about plus or minus 27 degrees, reached wider with `shoulder_lift` -39 and `elbow_flex` 24 to 30, opened and closed the gripper (commanded 100, reported 98 open and 3 closed with the jaws nearly touching), and one of them mimed a duck quacking with the gripper. A USB webcam answered at `opencv://1`, and at `opencv://2` after a replug, 640x480, with no `?backend=` key needed. **The arm fell at the end of every run**, which is the fault the rest pose was written to fix. The rest pose first met that arm on 2026-09-23 and could not reach a fold that lay past the travel its calibration recorded, which is [ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md). Every LeRobot name is still VERIFIED at a pinned commit, and still exercised with a fake arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`adapters/lerobot/src/quackd_lerobot/upstream_api.py`](../adapters/lerobot/src/quackd_lerobot/upstream_api.py) | |
+| | `lerobot:real` | ✅ **run on a real arm on 2026-09-15**, the only row here that has been: an SO-101 follower calibrated as `arm-01` and reached as `--robot lerobot:real --address COM3` with no registered name, on Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0, piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, once with `--llm fake` as well. Free-form `--goal` runs waved the wrist roll about plus or minus 27 degrees, reached wider with `shoulder_lift` -39 and `elbow_flex` 24 to 30, opened and closed the gripper (commanded 100, reported 98 open and 3 closed with the jaws nearly touching), and one of them mimed a duck quacking with the gripper. A USB webcam answered at `opencv://1`, and at `opencv://2` after a replug, 640x480, with no `?backend=` key needed. **The arm fell at the end of every run**, which is the fault the rest pose was written to fix. The rest pose first met that arm on 2026-09-23 and could not reach a fold that lay past the travel its calibration recorded, which is [ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md). That second afternoon was 26 runs on quackd 0.12.0 with the arm registered as `arm-01`: 19 never moved the arm at a pilot's request, three ended at connect, each on one lost packet, and all 21 that reached their close kept torque on and ended at the power switch, which `quackd robot release` now answers. None of what changed after it has run on the arm. Every LeRobot name is still VERIFIED at a pinned commit, and still exercised with a fake arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`adapters/lerobot/src/quackd_lerobot/upstream_api.py`](../adapters/lerobot/src/quackd_lerobot/upstream_api.py) | |
 | rosbridge | `rosbridge:mock` | ✅ | | [adapters/rosbridge.md](adapters/rosbridge.md) |
 | | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics and fake services, including reading the robot's own description off the bridge, never run against a bridge | [`adapters/rosbridge/src/quackd_rosbridge/upstream_api.py`](../adapters/rosbridge/src/quackd_rosbridge/upstream_api.py) | |
 | Open Duck Mini v2 | `open_duck:sim2d` | ✅ `open-duck-scout` 10 of 10 seeds | | [adapters/open_duck.md](adapters/open_duck.md) |
@@ -68,9 +72,12 @@ said no. The camera framed the gripper and cropped the raised arm, so the model 
 waves against joint readings rather than against the picture. And four questions came back
 unanswered: whether the holding band is anywhere near right, what a joint reads after ten
 minutes of work, whether a stall is caught when you cause one on purpose, and whether 5 degrees
-an action felt right in the room. They are the list at the foot of
-[lerobot-hardware-checklist.md](lerobot-hardware-checklist.md), and they are why that ✅ is a
-robot quackd has worked on rather than a robot quackd is tested on.
+an action felt right in the room. They are in the list at the foot of
+[lerobot-hardware-checklist.md](lerobot-hardware-checklist.md), which has since grown to ask
+whether a slow `move_joints` looks like one motion and arrives when its time is up, whether a
+joint let go at the edge of its travel settles onto its fold, and what the hand placed start
+and a decision LLM leave open. Those four are why that ✅ is a robot quackd has worked on
+rather than a robot quackd is tested on.
 
 **Pilot flocks** (`flock.allocation.method: pilots`, `--flock NAME`) run one LLM pilot per body
 on wall-clock time, on any adapter and backend including mixed ones, and have run on `mock` and

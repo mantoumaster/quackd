@@ -7,7 +7,7 @@ The [LeRobot](https://github.com/huggingface/lerobot) SO-101 arm adapter for
 uv pip install "quackd[lerobot]"
 ```
 
-One SO-101 has run this adapter, on 2026-09-15. Every LeRobot name it relies on is read from
+One SO-101 has run this adapter, on 2026-09-15 and again on 2026-09-23. Every LeRobot name it relies on is read from
 upstream source at a pinned commit and listed in `upstream_api.py`.
 
 What it does, what it refuses and why:

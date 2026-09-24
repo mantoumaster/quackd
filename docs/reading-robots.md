@@ -1,8 +1,8 @@
 # Reading someone else's robot
 
 quackd drives seven bodies and has run on one of them: a LeRobot SO-101 follower arm, on
-2026-09-15, the first and so far the only time any of this met hardware
-([adapter-status.md](adapter-status.md) says what that run covered and what it did not). The
+2026-09-15 and again on 2026-09-23, the only two days any of this met hardware
+([adapter-status.md](adapter-status.md) says what those runs covered and what they did not). The
 other six it has never touched. Almost everything it does was worked out by reading upstream
 code closely enough to be safe without executing it, and the same handful of traps came up on
 robot after robot. They are collected here by pattern, because
@@ -105,10 +105,14 @@ statement about the host, and make the heartbeat a real round trip.
 
 The same motors bus bounds a goal to its calibrated range in both of its 0..100 modes and
 not in its degrees mode, which is the mode the arm's body joints use. A goal past the joint's
-travel goes to the servo as-is, and what the firmware does with it is the vendor's business.
+travel goes to the servo as-is, and the servo clamps it to the limits calibration wrote into
+it, which is the vendor's rule and not the SDK's: on 2026-09-23 a `stop` that wrote a folded
+shoulder's own reading as its goal drove it up to that limit. Readings are not clamped, so a
+joint folded by hand can read past a travel no goal can reach.
 
 **What to do:** read the clamp for the mode you are actually in, not the one the example
-uses, and refuse on your own side of the wire when it is missing.
+uses, and refuse on your own side of the wire when it is missing. And remember that a goal
+written where a joint reads is not "stay here" when the reading is past the limit.
 
 ## A name that exists, on the wrong class
 

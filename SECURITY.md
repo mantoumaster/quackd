@@ -108,6 +108,12 @@ Also in scope:
 - An adapter sending a body's "go limp" call (`robot.relax`, `disable_motors`,
   `disable_torque`, an XLeRobot `disconnect()`, a ToddlerBot torque-off) as if it were
   `stop`. Stop means stop, never collapse.
+- Anything that lets an LLM, an MCP client or a `.duck` file take torque off a LeRobot arm.
+  `quackd robot release` and the offer a run makes at its own terminal when its last rest move
+  missed both release the arm wherever it stands, and exist only for a person holding it: the
+  command asks at a terminal unless `--yes` is on its command line, and the offer waits for
+  Enter and is never made on a dry run, over MCP or in a flock. Neither is a verb, an MCP tool
+  or on the `RobotAdapter` protocol. A way round any of that is in scope.
 - **The browser demo** (`web/`), which is now publicly reachable at
   <https://www.quackd.org/simulator> rather than only a directory you serve yourself. That
   changes the assessment: anybody can be linked to a page that asks them to paste an API key.
