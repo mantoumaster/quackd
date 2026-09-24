@@ -441,6 +441,8 @@ def test_the_local_branch_is_handed_exactly_what_it_was_before(
         "api_key": None,
         "vision": True,
         "extra_body": None,
+        # the board `--host` names, which moves a preset's localhost; nothing here named one
+        "host": None,
     }
 
 

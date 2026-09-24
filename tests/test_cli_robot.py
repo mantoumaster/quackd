@@ -361,6 +361,199 @@ def test_remove_asks_unless_yes(tmp_path: Path) -> None:
 # ── --json and --probe ──────────────────────────────────────────────────────────────────
 
 
+# ── the board a robot uses (--host) ─────────────────────────────────────────────────────
+
+
+def test_add_stores_a_host_and_show_prints_it_but_never_its_token(tmp_path: Path) -> None:
+    added = runner.invoke(
+        app,
+        [
+            "robot",
+            "add",
+            "jet",
+            "microduck:mock",
+            "--host",
+            "jetson.local:9874",
+            "--host-token",
+            "hostd-s3cret",
+            *_reg(tmp_path),
+        ],
+    )
+    assert added.exit_code == 0, added.output
+    assert "added jet: microduck:mock, host jetson.local:9874" in added.output
+    entry = Registry(tmp_path).robot("jet")
+    assert (entry.host, entry.host_token) == ("jetson.local:9874", "hostd-s3cret")
+    shown = runner.invoke(app, ["robot", "show", "jet", *_reg(tmp_path)])
+    assert shown.exit_code == 0, shown.output
+    flat = " ".join(shown.output.split())
+    assert "host jetson.local:9874" in flat and "host token set" in flat, flat
+    assert "hostd-s3cret" not in shown.output
+    as_json = runner.invoke(app, ["robot", "show", "jet", "--json", *_reg(tmp_path)])
+    payload = json.loads(as_json.output.strip())
+    assert payload["host"] == "jetson.local:9874" and payload["host_token_set"] is True
+    assert "hostd-s3cret" not in as_json.output
+
+
+@pytest.mark.parametrize(
+    ("host", "why"),
+    [("http://jetson.local", "--host takes a machine, not a URL"), ("", "--host is empty")],
+    ids=["url", "empty"],
+)
+def test_add_refuses_a_host_that_is_not_one_and_registers_nothing(
+    tmp_path: Path, host: str, why: str
+) -> None:
+    """The door is where the typo is made, and `parse_host` says what to type instead. An
+    empty one included: the entry reads a blank host as none, so without the door it would
+    register a robot with no board and report success."""
+    result = runner.invoke(
+        app, ["robot", "add", "jet", "microduck:mock", "--host", host, *_reg(tmp_path)]
+    )
+    assert result.exit_code == 1, result.output
+    assert f"error: {why}" in " ".join(result.output.split())
+    assert "Traceback" not in result.output
+    assert Registry(tmp_path).get_robot("jet") is None
+
+
+def test_add_refuses_a_host_token_with_no_host_to_go_to(tmp_path: Path) -> None:
+    """A robot's token is sent only when the robot stores a board, so one stored with none
+    would never be sent, and the person would find out from a 401."""
+    result = runner.invoke(
+        app, ["robot", "add", "jet", "microduck:mock", "--host-token", "t0k", *_reg(tmp_path)]
+    )
+    assert result.exit_code == 1, result.output
+    assert "--host-token needs --host" in " ".join(result.output.split())
+    assert Registry(tmp_path).get_robot("jet") is None
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "why"),
+    [
+        ("--host", "jet:0", "the port in --host must be a whole number from 1 to 65535"),
+        ("--host-token", "bad\x01tok", "the host token has a character an HTTP header cannot"),
+    ],
+    ids=["host", "token"],
+)
+def test_edit_refuses_a_bad_host_in_its_own_words_and_not_as_a_broken_file(
+    tmp_path: Path, flag: str, value: str, why: str
+) -> None:
+    """Nothing was written, so a refusal that starts `robots.json: duck-a: host: Value error`
+    sends the reader to a file that is fine. `robot add` already answers in `parse_host`'s own
+    words, and `robot edit` says the same thing the same way."""
+    _seed(tmp_path, host="jetson.local", host_token="stored")
+    result = runner.invoke(app, ["robot", "edit", "duck-a", flag, value, *_reg(tmp_path)])
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert f"error: {why}" in flat, flat
+    assert "robots.json" not in flat and "Value error" not in flat
+    assert "bad" not in flat, "a token is never quoted back"
+    entry = Registry(tmp_path).robot("duck-a")
+    assert (entry.host, entry.host_token) == ("jetson.local", "stored"), "nothing was written"
+
+
+def test_list_shows_a_host_column_only_when_some_robot_has_one(tmp_path: Path) -> None:
+    """A column nobody has filled only makes the others narrower, the rule the address and
+    pilot columns already follow."""
+    _seed(tmp_path)
+    before = runner.invoke(app, ["robot", "list", *_reg(tmp_path)], env={"COLUMNS": "200"})
+    assert before.exit_code == 0, before.output
+    assert "host" not in before.output
+    Registry(tmp_path).update_robot("arm", {"host": "jetson.local"})
+    after = runner.invoke(app, ["robot", "list", *_reg(tmp_path)], env={"COLUMNS": "200"})
+    assert after.exit_code == 0, after.output
+    assert "host" in after.output and "jetson.local" in after.output
+
+
+def test_edit_sets_and_clears_the_host_and_its_token(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    changed = runner.invoke(
+        app,
+        [
+            "robot",
+            "edit",
+            "duck-a",
+            "--host",
+            "[::1]:9874",
+            "--host-token",
+            "t0k",
+            *_reg(tmp_path),
+        ],
+    )
+    assert changed.exit_code == 0, changed.output
+    assert "updated duck-a: host, host-token" in changed.output
+    entry = Registry(tmp_path).robot("duck-a")
+    assert (entry.host, entry.host_token) == ("[::1]:9874", "t0k")
+    cleared = runner.invoke(
+        app,
+        ["robot", "edit", "duck-a", "--clear", "host", "--clear", "host-token", *_reg(tmp_path)],
+    )
+    assert cleared.exit_code == 0, cleared.output
+    entry = Registry(tmp_path).robot("duck-a")
+    assert entry.host is None and entry.host_token is None
+
+
+def test_clearing_the_host_forgets_its_token_too(tmp_path: Path) -> None:
+    """The token was that board's. Left behind it would be a secret for a board this robot no
+    longer names, and `robot show` would print `host token set` beside `host -`. The line says
+    both went, so nobody is surprised later."""
+    _seed(tmp_path, host="board-a.local", host_token="token-for-a")
+    cleared = runner.invoke(app, ["robot", "edit", "duck-a", "--clear", "host", *_reg(tmp_path)])
+    assert cleared.exit_code == 0, cleared.output
+    assert "updated duck-a: host, host-token" in cleared.output
+    entry = Registry(tmp_path).robot("duck-a")
+    assert entry.host is None and entry.host_token is None
+    _seed_arm(tmp_path, host="board-a.local", host_token="token-for-a")
+    kept = runner.invoke(
+        app,
+        ["robot", "edit", "arm-01", "--clear", "host", "--host-token", "t", *_reg(tmp_path)],
+    )
+    assert kept.exit_code == 1, kept.output
+    assert "arm-01 would have a host token and no host" in " ".join(kept.output.split())
+    assert Registry(tmp_path).robot("arm-01").host == "board-a.local", "nothing was written"
+
+
+def test_a_hand_edited_bad_host_leaves_every_robot_command_working(tmp_path: Path) -> None:
+    """Every registry command reads the whole file. A host refused on read would stop `list`,
+    `show`, `remove`, and the very `edit --clear host` that mends it."""
+    (tmp_path / "robots.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "robots": {
+                    "duck": {"spec": "microduck:mock"},
+                    "jet": {"spec": "microduck:mock", "host": "jetson.local:99999"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    listed = runner.invoke(app, ["robot", "list", *_reg(tmp_path)], env={"COLUMNS": "200"})
+    assert listed.exit_code == 0, listed.output
+    assert "jetson.local:99999" in listed.output, "quoted back as written"
+    shown = runner.invoke(app, ["robot", "show", "jet", *_reg(tmp_path)])
+    assert shown.exit_code == 0, shown.output
+    noted = runner.invoke(app, ["robot", "edit", "duck", "--note", "hi", *_reg(tmp_path)])
+    assert noted.exit_code == 0, noted.output
+    mended = runner.invoke(app, ["robot", "edit", "jet", "--clear", "host", *_reg(tmp_path)])
+    assert mended.exit_code == 0, mended.output
+    assert Registry(tmp_path).robot("jet").host is None
+    removed = runner.invoke(app, ["robot", "remove", "jet", "--yes", *_reg(tmp_path)])
+    assert removed.exit_code == 0, removed.output
+
+
+@pytest.mark.parametrize("flag", ["--host", "--host-token"])
+def test_edit_refuses_an_empty_host_and_names_the_clear_that_forgets_one(
+    tmp_path: Path, flag: str
+) -> None:
+    """An empty value would store nothing and report success. Forgetting the board is a word,
+    `--clear`, the rule `--llm` already follows."""
+    _seed(tmp_path, host="jetson.local", host_token="stored")
+    result = runner.invoke(app, ["robot", "edit", "duck-a", flag, "", *_reg(tmp_path)])
+    assert result.exit_code == 1, result.output
+    assert f"--clear {flag.lstrip('-')}" in " ".join(result.output.split())
+    entry = Registry(tmp_path).robot("duck-a")
+    assert (entry.host, entry.host_token) == ("jetson.local", "stored"), "nothing was written"
+
+
 def test_json_is_one_object_per_line_and_never_prints_the_token(tmp_path: Path) -> None:
     _seed(tmp_path, token="s3cret", address="tcp://x:1")
     result = runner.invoke(app, ["robot", "list", "--json", *_reg(tmp_path)])

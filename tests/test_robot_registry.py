@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from quackd.adapters.base import AdapterError
+from quackd.host import resolve_host
 from quackd.registry import (
     FlockNotRunnable,
     Registry,
@@ -412,6 +413,204 @@ def test_adapter_kwargs_carries_the_rest_pose_and_an_unregistered_spec_has_none(
     bare = resolve_robot_ref("lerobot:real", reg)
     assert not bare.registered
     assert bare.adapter_kwargs()["rest_pose"] is None, "a pose is something you get by naming it"
+
+
+# ── the board a robot uses (--host) ─────────────────────────────────────────────────────
+
+
+def test_a_host_and_its_token_survive_the_file_and_json_never_prints_the_token(
+    tmp_path: Path,
+) -> None:
+    """The host is kept as typed, so `show` quotes back what was written rather than a
+    `host:port` nobody typed. The token is kept apart from the body's own bridge `token`,
+    because the two belong to different daemons, and `--json` says only whether it is set."""
+    reg = Registry(tmp_path)
+    reg.add_robot(_entry(host=" jetson.local ", host_token="hostd-s3cret\n", token="body"))
+    again = Registry(tmp_path).robot("duck-a")
+    assert again.host == "jetson.local"
+    assert again.host_token == "hostd-s3cret", "stripped: a token file ends in a newline"
+    assert again.token == "body"
+    public = again.public()
+    assert public["host"] == "jetson.local"
+    assert public["host_token_set"] is True
+    assert "hostd-s3cret" not in json.dumps(public)
+    older = Registry(tmp_path)
+    older.add_robot(_entry("plain"))
+    assert older.robot("plain").public()["host"] is None
+    assert older.robot("plain").public()["host_token_set"] is False
+
+
+@pytest.mark.parametrize(
+    ("host", "why"),
+    [
+        ("http://jetson.local", "not a URL"),
+        ("user:pw@jetson.local", "never carries a token"),
+        ("jetson.local:0", "whole number from 1 to 65535"),
+    ],
+)
+def test_a_host_is_refused_on_the_way_in_in_parse_hosts_words_and_nothing_is_written(
+    tmp_path: Path, host: str, why: str
+) -> None:
+    """The door, both of them. The words are `parse_host`'s own, with no file and no robot in
+    front, because nothing in the file is wrong: the value was only just typed."""
+    reg = Registry(tmp_path)
+    with pytest.raises(RegistryError, match=f"^(?!robots.json).*{why}"):
+        reg.add_robot(_entry(host=host))
+    assert reg.get_robot("duck-a") is None
+    reg.add_robot(_entry(host="jetson.local"))
+    with pytest.raises(RegistryError, match=f"^(?!robots.json).*{why}"):
+        reg.update_robot("duck-a", {"host": host})
+    assert reg.robot("duck-a").host == "jetson.local"
+
+
+def _hand_edit(tmp_path: Path, **jet: Any) -> None:
+    """robots.json as somebody's editor left it: one good robot, and `jet` with whatever the
+    test puts in it, written past every check the registry makes on the way in."""
+    (tmp_path / "robots.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "robots": {
+                    "duck": {"spec": "microduck:mock"},
+                    "jet": {"spec": "microduck:mock", **jet},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "jet",
+    [{"host": "jetson.local:99999"}, {"host": "a b"}, {"host": "j", "host_token": "hunter2\x01"}],
+    ids=["port", "space", "token"],
+)
+def test_a_hand_edited_bad_host_or_token_does_not_take_the_file_down(
+    tmp_path: Path, jet: dict[str, str]
+) -> None:
+    """Lenient on the shelf, the bargain `llm` strikes. Every registry command reads the whole
+    file, so a host refused on read would stop `list`, `remove`, a run of another robot and the
+    very `edit --clear host` that would mend it. The run of this robot is what refuses, with
+    the robot's name in front and never the token."""
+    _hand_edit(tmp_path, **jet)
+    reg = Registry(tmp_path)
+    assert sorted(reg.robots()) == ["duck", "jet"]
+    reg.update_robot("jet", {"note": "the one on the bench"})
+    stored = reg.robot("jet")
+    with pytest.raises(ValueError, match=r"^robot jet \(robots.json\): ") as refused:
+        resolve_host(None, stored.host, stored_token=stored.host_token, robot="jet")
+    assert "hunter2" not in str(refused.value)
+    reg.update_robot("jet", {"host": None, "host_token": None})
+    assert reg.robot("jet").host is None
+    reg.remove_robot("jet")
+    assert sorted(reg.robots()) == ["duck"]
+
+
+def test_a_blank_host_token_is_no_token_and_one_a_header_cannot_carry_is_refused_at_the_door(
+    tmp_path: Path,
+) -> None:
+    """Blank is the daemon's own rule for no token. A character an HTTP header cannot carry is
+    refused on the way in, by `add_robot` and `update_robot` both, without quoting the token,
+    rather than on the first run that sends it."""
+    assert _entry(host_token="   ").host_token is None
+    reg = Registry(tmp_path)
+    with pytest.raises(RegistryError, match="an HTTP header cannot carry") as refused:
+        reg.add_robot(_entry(host="jetson.local", host_token="hunter2é"))
+    assert "hunter2" not in str(refused.value)
+    assert reg.get_robot("duck-a") is None
+    reg.add_robot(_entry(host="jetson.local", host_token="stored"))
+    with pytest.raises(RegistryError, match="an HTTP header cannot carry") as refused:
+        reg.update_robot("duck-a", {"host_token": "hunter2é"})
+    assert "hunter2" not in str(refused.value)
+    assert reg.robot("duck-a").host_token == "stored"
+
+
+def test_a_host_token_is_stored_only_beside_the_board_it_is_for(tmp_path: Path) -> None:
+    """`resolve_host` sends a robot's token only when the robot stores a board, so a token
+    stored with none would never be sent, and refusing it now beats a 401 later. Only an edit that
+    touches the pair is asked: a token some hand left alone must not stop a note."""
+    reg = Registry(tmp_path)
+    with pytest.raises(RegistryError, match="--host-token needs --host"):
+        reg.add_robot(_entry(host_token="for-a-board"))
+    assert reg.get_robot("duck-a") is None
+    reg.add_robot(_entry(host="jetson.local", host_token="stored"))
+    with pytest.raises(RegistryError, match="duck-a would have a host token and no host"):
+        reg.update_robot("duck-a", {"host": None})
+    assert reg.robot("duck-a").host == "jetson.local", "nothing was written"
+    reg.add_robot(_entry("plain"))
+    with pytest.raises(RegistryError, match="plain would have a host token and no host"):
+        reg.update_robot("plain", {"host_token": "for-a-board"})
+    _hand_edit(tmp_path, host_token="orphan")
+    assert Registry(tmp_path).update_robot("jet", {"note": "fine"}).host_token == "orphan"
+
+
+#: The fields 0.13.0's `RobotEntry` knows. It reads robots.json with `extra="forbid"`, so a key
+#: outside this set refuses the whole file for it, even a key that is null.
+_RELEASED_0_13 = {
+    "spec",
+    "address",
+    "token",
+    "camera_url",
+    "rest_pose",
+    "llm",
+    "note",
+    "added",
+    "updated",
+}
+
+
+def test_a_robot_that_names_no_board_is_written_the_way_0_13_can_still_read(
+    tmp_path: Path,
+) -> None:
+    """Two installs on one machine share one ~/.quackd, and every write saves every robot. A
+    registry that never named a board must not become a file 0.13 refuses because this version
+    wrote `"host": null` into each entry, by an add, an edit of a note, or a board forgotten."""
+    reg = Registry(tmp_path)
+    reg.add_robot(_entry("plain"))
+    reg.add_robot(_entry("jet", host="jetson.local", host_token="stored"))
+    reg.update_robot("plain", {"note": "the one by the door"})
+
+    def saved() -> dict[str, dict[str, Any]]:
+        loaded: dict[str, dict[str, Any]] = json.loads(
+            (tmp_path / "robots.json").read_text(encoding="utf-8")
+        )["robots"]
+        return loaded
+
+    assert set(saved()["plain"]) <= _RELEASED_0_13, set(saved()["plain"]) - _RELEASED_0_13
+    assert saved()["jet"]["host"] == "jetson.local" and saved()["jet"]["host_token"] == "stored"
+    reg.update_robot("jet", {"host": None, "host_token": None})
+    assert set(saved()["jet"]) <= _RELEASED_0_13, set(saved()["jet"]) - _RELEASED_0_13
+    assert reg.robot("jet").host is None, "and it still reads back here"
+
+
+def test_host_kwargs_takes_the_flag_field_by_field_and_a_bare_spec_only_the_flags(
+    tmp_path: Path,
+) -> None:
+    """`adapter_kwargs`'s rule: `--host 127.0.0.1` through a tunnel reaches the board that was
+    registered, so the stored token still goes with it. The environment is the rung below
+    both, and `resolve_host` reads it; nothing here does."""
+    reg = Registry(tmp_path)
+    reg.add_robot(_entry(host="jetson.local", host_token="stored"))
+    resolved = resolve_robot_ref("duck-a", reg)
+    assert resolved.host_kwargs() == {"host": "jetson.local", "host_token": "stored"}
+    tunnel = resolved.host_kwargs(host="127.0.0.1")
+    assert tunnel == {"host": "127.0.0.1", "host_token": "stored"}, "one flag, one field"
+    assert resolved.host_kwargs(host_token="typed")["host_token"] == "typed"
+    bare = resolve_robot_ref("microduck:mock", reg)
+    assert bare.host_kwargs() == {"host": None, "host_token": None}
+    assert bare.host_kwargs(host="jetson.local")["host"] == "jetson.local"
+
+
+def test_update_sets_and_clears_the_host_and_refuses_a_bad_one_without_writing_it(
+    tmp_path: Path,
+) -> None:
+    reg = Registry(tmp_path)
+    reg.add_robot(_entry(host="jetson.local", host_token="stored"))
+    with pytest.raises(RegistryError, match="not a URL"):
+        reg.update_robot("duck-a", {"host": "http://other"})
+    assert reg.robot("duck-a").host == "jetson.local"
+    cleared = reg.update_robot("duck-a", {"host": None, "host_token": None})
+    assert cleared.host is None and cleared.host_token is None
 
 
 # ── cameras ─────────────────────────────────────────────────────────────────────────────

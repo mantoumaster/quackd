@@ -1018,7 +1018,8 @@ class AgentLoop:
                 # What was asked for, and by what. Every flag is half the story of a run
                 # (which robot, which model, which budget, whether it was a dry run), and
                 # reading a transcript a month later used to mean guessing at them. The
-                # values of `--api-key` and `--token` never appear (`quackd.command`).
+                # values of `--api-key`, `--token` and `--host-token` never appear
+                # (`quackd.command`).
                 command=command_line(),
                 version=__version__,
                 started_at=self.transcript.started_at_iso,

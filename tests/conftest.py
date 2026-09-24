@@ -123,6 +123,17 @@ def _no_extra_body(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUACKD_EXTRA_BODY", "")
 
 
+@pytest.fixture(autouse=True)
+def _no_host_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`QUACKD_HOST` moves every local preset's model server to another machine, and the CLI
+    loads a developer's `.env` in its root callback, so one line in an untracked file would
+    point this suite's local-provider tests at a Jetson on somebody's desk. Its token rides
+    along for the same reason. Empty reads as unset, and unlike `delenv` it survives
+    `load_dotenv`. The tests that exercise them set them themselves."""
+    monkeypatch.setenv("QUACKD_HOST", "")
+    monkeypatch.setenv("QUACKD_HOST_TOKEN", "")
+
+
 @pytest.fixture
 def registry() -> VerbRegistry:
     return default_registry()

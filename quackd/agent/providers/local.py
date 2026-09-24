@@ -5,6 +5,9 @@ knobs turned for servers that are pickier and models that are weaker at tool cal
 no key needed, a preset base URL per server, `tool_choice="auto"` and no
 `parallel_tool_calls` field, vision off unless asked, model discovery from `/v1/models`,
 and a text fallback that rescues a tool call a small model wrote as plain JSON.
+
+A preset's address can move to another machine with `--host` (`on_host`), which is how a
+model served on a Jetson's GPU is reached from the laptop without typing its URL.
 """
 
 from __future__ import annotations
@@ -13,9 +16,11 @@ import json
 import os
 import re
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from quackd.agent.providers.base import ProviderError, ProviderTurn, ToolCall
 from quackd.agent.providers.openai import OpenAIProvider
+from quackd.host import HOST_ENV, host_of, netloc
 
 PRESETS: dict[str, str | None] = {
     "local": None,  # needs --base-url or QUACKD_BASE_URL
@@ -32,10 +37,53 @@ TOOL_HINT = (
     '{"name": "<verb>", "arguments": {<parameters>}}\n'
 )
 
+_LOCAL_NEEDS_A_URL = (
+    "--llm local needs the server address: --base-url http://host:port/v1 "
+    "(or QUACKD_BASE_URL). Or use a preset: --llm ollama, vllm, llamacpp, lmstudio."
+)
+_A_HOST_MOVES_ONLY_A_PRESET = (
+    "--llm local has no preset address, and a host only moves a preset's: give the "
+    "server's own with --base-url http://host:port/v1 (or QUACKD_BASE_URL), or use a "
+    "preset: --llm ollama, vllm, llamacpp, lmstudio."
+)
+
 _FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.S)
 _NAME_KEYS = ("name", "tool", "function", "verb")
 _ARGS_KEYS = ("arguments", "parameters", "params", "args", "input")
+
+
+def on_host(url: str, host: str) -> str:
+    """A preset's address on another machine: its `localhost` replaced by `host`, and the
+    scheme, the port and the path kept. `on_host("http://localhost:11434/v1", "jetson.local")`
+    is `http://jetson.local:11434/v1`.
+
+    `host` is anything `--host` takes: the machine alone, `machine:port`, or `[v6]:port`.
+    The port in it belongs to quackd's daemon on the board, never to the model server, so it
+    is dropped: Ollama on a Jetson listens on 11434 whatever port the daemon was given. An
+    IPv6 address comes back in brackets, the only way a URL can carry one. A userinfo in
+    `url` is kept, though no preset has one.
+
+    Raises ValueError in `parse_host`'s words for anything that is not a machine."""
+    parts = urlsplit(url)
+    machine = host_of(host)
+    userinfo, at, _ = parts.netloc.rpartition("@")
+    where = (
+        netloc(machine, parts.port)
+        if parts.port is not None
+        else (f"[{machine}]" if ":" in machine else machine)
+    )
+    return urlunsplit(parts._replace(netloc=f"{userinfo}{at}{where}"))
+
+
+def _moved(url: str, host: str, *, source: str) -> str:
+    """`on_host` with its refusal as a ProviderError, which is what every caller of a
+    provider's constructor catches and prints as one line. `parse_host`'s sentences all say
+    `--host`, so a host from anywhere else gets its own name in front."""
+    try:
+        return on_host(url, host)
+    except ValueError as e:
+        raise ProviderError(str(e) if source == "--host" else f"{source}: {e}") from e
 
 
 def split_thinking(text: str) -> tuple[str | None, str]:
@@ -106,6 +154,24 @@ def parse_tool_call_from_text(text: str, tool_names: set[str]) -> ToolCall | Non
 
 
 class LocalProvider(OpenAIProvider):
+    """A model on a server you run: one of the four presets, or `local` at any address.
+
+    Where the server is, first rung that answers wins:
+
+    1. `base_url`, which is `--base-url`: a URL given for this run is used exactly as given.
+    2. `host`, which is `--host` or the host a registered robot was stored with: the preset's
+       address moved to that machine (`on_host`), port and path kept.
+    3. `QUACKD_BASE_URL`, then 4. `OPENAI_BASE_URL`, each used exactly as given.
+    5. `QUACKD_HOST`: the preset's address moved to that machine.
+    6. The preset's own address, on localhost.
+
+    A URL given anywhere is used as given, and a host only ever moves a preset. That is why
+    `local`, which has no preset address, refuses a host on its own and asks for
+    `--base-url`. The two hosts sit on different rungs on purpose. One typed for this run or
+    registered with this robot is a decision about this run, and beats a `.env` line naming a
+    model server's URL; `QUACKD_HOST` is the board you usually use, and must not.
+    """
+
     supports_vision = False
     key_env = "LOCAL_API_KEY"
     default_tool_choice = "auto"
@@ -118,6 +184,7 @@ class LocalProvider(OpenAIProvider):
         *,
         preset: str = "local",
         base_url: str | None = None,
+        host: str | None = None,
         client: Any = None,
         api_key: str | None = None,
         tool_choice: str | None = None,
@@ -128,17 +195,7 @@ class LocalProvider(OpenAIProvider):
             raise ProviderError(f"unknown local preset {preset!r}; one of {', '.join(LOCAL_NAMES)}")
         self.name = preset
         self.preset = preset
-        url = (
-            base_url
-            or os.environ.get("QUACKD_BASE_URL")
-            or os.environ.get("OPENAI_BASE_URL")
-            or PRESETS[preset]
-        )
-        if not url:
-            raise ProviderError(
-                "--llm local needs the server address: --base-url http://host:port/v1 "
-                "(or QUACKD_BASE_URL). Or use a preset: --llm ollama, vllm, llamacpp, lmstudio."
-            )
+        url = self._address(PRESETS[preset], base_url, host)
         choice = tool_choice or os.environ.get("QUACKD_TOOL_CHOICE") or "auto"
         if vision is None:
             vision = os.environ.get("QUACKD_VISION", "0").lower() not in ("", "0", "false", "no")
@@ -152,6 +209,25 @@ class LocalProvider(OpenAIProvider):
             extra_body=extra_body,
         )
         self.text_fallbacks = 0
+
+    @staticmethod
+    def _address(preset: str | None, base_url: str | None, host: str | None) -> str:
+        """The class docstring's ladder, rung by rung. Blank is absent at every rung, as it is
+        everywhere quackd reads a setting: `QUACKD_HOST=` in a `.env` is a shell saying unset."""
+        host = (host or "").strip() or None
+        env_host = (os.environ.get(HOST_ENV) or "").strip() or None
+        if base_url:
+            return base_url
+        if host and preset:
+            return _moved(preset, host, source="--host")
+        url = os.environ.get("QUACKD_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+        if url:
+            return url
+        if env_host and preset:
+            return _moved(preset, env_host, source=HOST_ENV)
+        if preset:
+            return preset
+        raise ProviderError(_A_HOST_MOVES_ONLY_A_PRESET if host or env_host else _LOCAL_NEEDS_A_URL)
 
     def _fallback_key(self) -> str | None:
         # local servers ignore the key but the SDK insists on a non-empty string

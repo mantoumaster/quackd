@@ -333,6 +333,9 @@ def test_no_flag_that_could_carry_a_credential_is_missing_from_the_two_lists() -
     exempt = {
         "--registry-dir",  # a directory, and any secret in it is a secret on disk already
         "--memory-dir",  # the same
+        # a machine, never a URL: `parse_host` refuses a value with an `@` in it, without
+        # quoting it, before any record exists, so no credential it could carry gets that far
+        "--host",
     }
     secret_words = ("key", "token", "secret", "password", "passwd", "credential")
     url_words = ("url", "address", "endpoint", "host", "broker")
@@ -353,7 +356,11 @@ def test_no_flag_that_could_carry_a_credential_is_missing_from_the_two_lists() -
     missed: list[tuple[str, str]] = []
     for name in sorted(seen - exempt):
         bare = name.lstrip("-").replace("-", "")
-        if any(w in bare for w in secret_words) and name not in SECRET_FLAGS:
+        if name in SECRET_FLAGS:
+            # hidden whole, which covers anything a URL shape could carry too: `--host-token`
+            # is spelled like both and needs only the stronger of the two
+            continue
+        if any(w in bare for w in secret_words):
             missed.append((name, "SECRET_FLAGS"))
         elif any(w in bare for w in url_words) and name not in URL_FLAGS:
             missed.append((name, "URL_FLAGS"))

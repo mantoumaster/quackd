@@ -979,6 +979,8 @@ def _run_impl(
     log_prompt: bool | None = None,
     run_name: str | None = None,
     price: str | None = None,
+    host: str | None = None,
+    host_token: str | None = None,
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
@@ -1002,6 +1004,7 @@ def _run_impl(
     from quackd.duckfile.validate import validate_duck
     from quackd.flock.pilots import ADVISORY_FIELDS, roster_from_specs
     from quackd.flock.runner import member_specs
+    from quackd.host import HostChoice, resolve_host
     from quackd.log import (
         ConsoleLog,
         fan_out,
@@ -1116,6 +1119,46 @@ def _run_impl(
         or duck.frontmatter.flock is not None
         or len(specs) > 1
     )
+    # A host is one machine: one camera, one detector, the health of one board. A fleet is
+    # several bodies, and one --host would have to be every member's camera at once, so it is
+    # refused here with --image and --by-hand, before anything connects. `--robots` counts even
+    # with one member in it, because it is the fleet spelling. A host stored with a member is
+    # the same claim made in robots.json, and is refused by that member's name. QUACKD_HOST is
+    # not: it is the board you usually use rather than a claim about these bodies, and for a
+    # fleet it moves only the local presets' model server, which LocalProvider reads itself.
+    fleet = several or bool(robots)
+    hosted = [r.entry.name for r in resolved if r.entry is not None and r.entry.host]
+    if fleet and (host or "").strip():
+        _fail(
+            "--host names one machine's camera and detector, and a fleet has several bodies",
+            hint="drop --host, or run the task on one body at a time",
+        )
+        return
+    if fleet and hosted:
+        _fail(
+            f"{hosted[0]} has a host in robots.json, which names one machine's camera and "
+            "detector, and a fleet has several bodies",
+            hint=f"quackd robot edit {hosted[0]} --clear host, or run it on its own",
+        )
+        return
+    # The one place this run's board is settled, so everything that uses the board reads this
+    # value rather than deriving its own. A fleet has none, whatever the environment says.
+    stored = here.host_kwargs()
+    try:
+        host_choice = (
+            HostChoice()
+            if fleet
+            else resolve_host(
+                host,
+                stored["host"],
+                token=host_token,
+                stored_token=stored["host_token"],
+                robot=here.entry.name if here.entry is not None else None,
+            )
+        )
+    except ValueError as e:
+        _fail(str(e))
+        return
     task_images: list[Any] = []
     if images:
         if several:
@@ -1310,6 +1353,9 @@ def _run_impl(
             api_key=api_key,
             vision=vision,
             extra_body=extra_body,
+            # only a host a person named for this run or this robot: QUACKD_HOST sits below
+            # QUACKD_BASE_URL, and the local provider reads it there for itself
+            host=host_choice.explicit,
         )
         duck_transport = make_adapter(
             spec,
@@ -2103,6 +2149,48 @@ _BASEURL = typer.Option(
     help="OpenAI-compatible server, e.g. http://localhost:8000/v1 (local presets).",
     rich_help_panel="Model",
 )
+# Declared once, like every option two commands share, so `run` and `serve-mcp` cannot come to
+# spell the board differently. No `envvar=`: Typer would fold QUACKD_HOST_TOKEN
+# into the flag, above a token stored with the robot, and quackd's order everywhere is the
+# flag, then the robot, then the environment. `quackd.host.resolve_host` reads both variables.
+_HOST = typer.Option(
+    None,
+    "--host",
+    metavar="HOST[:PORT]",
+    help="A machine quackd uses and never runs on: its model server, its camera, its detector "
+    "and its health. --robot still names the body. The port is the one quackd's daemon on the "
+    "board listens on, 9874 unless you changed it, and a local preset keeps its own port on "
+    "that machine. Without the flag, a run uses the robot's registered host, then QUACKD_HOST.",
+    rich_help_panel="Host",
+)
+_HOST_TOKEN = typer.Option(
+    None,
+    "--host-token",
+    help="The token the --host daemon was started with. It travels in a header, never in a "
+    "URL, and never reaches the run record. Without the flag, a run uses the robot's "
+    "registered one, then QUACKD_HOST_TOKEN.",
+    rich_help_panel="Host",
+)
+# The same two flags for `quackd robot add` and `edit`, with help of their own for the reason
+# `--llm` has its own there: those commands have no --robot, they are what does the
+# registering, and the token they take goes into robots.json rather than into a run.
+_ROBOT_HOST = typer.Option(
+    None,
+    "--host",
+    metavar="HOST[:PORT]",
+    help="The board this robot uses and quackd never runs on: its runs reach their model "
+    "server, camera and detector there. The port is quackd's daemon's on the board, 9874 "
+    "unless you changed it. --host on a run beats this, and this beats QUACKD_HOST.",
+    rich_help_panel="Host",
+)
+_ROBOT_HOST_TOKEN = typer.Option(
+    None,
+    "--host-token",
+    help="The token that board's daemon was started with. Kept in robots.json, as --token "
+    "is. A run of this robot sends it in a header to that board, or to the --host the run "
+    "names instead, and --host-token on the run beats it.",
+    rich_help_panel="Host",
+)
 _APIKEY = typer.Option(
     None,
     "--api-key",
@@ -2343,6 +2431,8 @@ def run(
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
     fov_deg: float | None = _FOV,
+    host: str | None = _HOST,
+    host_token: str | None = _HOST_TOKEN,
     gif: bool = typer.Option(
         True,
         "--gif/--no-gif",
@@ -2405,6 +2495,8 @@ def run(
             by_hand=by_hand,
             run_name=run_name,
             price=price,
+            host=host,
+            host_token=host_token,
         )
 
 
@@ -2776,6 +2868,8 @@ def serve_mcp(
     address: str | None = _ADDR,
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
+    host: str | None = _HOST,
+    host_token: str | None = _HOST_TOKEN,
     dry_run: bool = _DRY,
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Allow confirm-gated verbs (there is no terminal to ask)."
@@ -2801,6 +2895,8 @@ def serve_mcp(
             address=address,
             camera_url=camera_url,
             token=token,
+            host=host,
+            host_token=host_token,
             dry_run=dry_run,
             yes=yes,
             memory=memory,
@@ -2877,6 +2973,8 @@ def _entry_rows(entry: Any, *, flocks: list[str]) -> list[tuple[str, Any]]:
         ("camera", Text("\n".join(entry.camera_urls)) if entry.camera_urls else dash),
         ("rest pose", _rest_pose_text(entry.rest_pose) if entry.rest_pose else dash),
         ("token", Text("set") if entry.token else dash),
+        ("host", Text(entry.host) if entry.host else dash),
+        ("host token", Text("set") if entry.host_token else dash),
         ("pilot", pilot),
         ("note", Text(entry.note) if entry.note else dash),
         ("flocks", Text(", ".join(flocks)) if flocks else dash),
@@ -2909,6 +3007,8 @@ def robot_add(
     address: str | None = _ADDR,
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
+    host: str | None = _ROBOT_HOST,
+    host_token: str | None = _ROBOT_HOST_TOKEN,
     llm: str | None = typer.Option(
         None,
         "--llm",
@@ -2925,6 +3025,7 @@ def robot_add(
     from quackd.adapters.base import AdapterError
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import parse_llm
+    from quackd.host import parse_host
     from quackd.registry import RegistryError, RobotEntry
 
     try:
@@ -2934,21 +3035,30 @@ def robot_add(
         # place a typo can still be caught while the person who made it is looking at it.
         if llm is not None:
             parse_llm(llm, source="--llm")
+        # The board gets the same gate, and needs it here as well as in `add_robot`: the entry
+        # reads a blank host as none, so `--host ""` would otherwise register a robot with no
+        # board and report success.
+        if host is not None:
+            parse_host(host)
         entry = RobotEntry(
             name=name,
             spec=spec,
             address=address,
             camera_url=list(camera_url) or None,
             token=token,
+            host=host,
+            host_token=host_token,
             llm=llm,
             note=note,
         )
         _registry(registry_dir).add_robot(entry)
-    except (RegistryError, AdapterError, ValidationError, ProviderError) as e:
+    except (RegistryError, AdapterError, ValueError, ProviderError) as e:
+        # ValueError is parse_host's, and is also what pydantic's ValidationError is
         _registry_fail(_one_line(e))
         return
     where = f" at {entry.address}" if entry.address else ""
-    ui.console.print(_ok_line(f"added {entry.name}: {entry.key}{where}"))
+    board = f", host {entry.host}" if entry.host else ""
+    ui.console.print(_ok_line(f"added {entry.name}: {entry.key}{where}{board}"))
     ui.console.print(Text(f"  quackd run <duck> --robot {entry.name}", style=ui.STYLES["muted"]))
 
 
@@ -3007,6 +3117,7 @@ def robot_list(
     # 80-column terminal a probe's refusal needs every character it can get
     cells: dict[str, list[Any]] = {
         "address": [Text(e.address or "") for e in entries.values()],
+        "host": [Text(e.host or "") for e in entries.values()],
         "pilot": [Text(e.llm or "") for e in entries.values()],
         "flocks": [Text(", ".join(holders[n])) for n in entries],
         "note": [Text(e.note or "") for e in entries.values()],
@@ -3096,7 +3207,7 @@ def robot_show(
     ui.console.print(ui.kv_grid(rows))
 
 
-_CLEARABLE = ("address", "token", "camera-url", "rest-pose", "llm", "note")
+_CLEARABLE = ("address", "token", "camera-url", "rest-pose", "host", "host-token", "llm", "note")
 
 
 @robot_app.command("edit")
@@ -3106,6 +3217,8 @@ def robot_edit(
     address: str | None = _ADDR,
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
+    host: str | None = _ROBOT_HOST,
+    host_token: str | None = _ROBOT_HOST_TOKEN,
     llm: str | None = typer.Option(
         None,
         "--llm",
@@ -3118,7 +3231,8 @@ def robot_edit(
     clear: list[str] = typer.Option(
         [],
         "--clear",
-        help=f"Empty one field: {', '.join(_CLEARABLE)}. Repeatable.",
+        help=f"Empty one field: {', '.join(_CLEARABLE)}. Repeatable. Clearing host clears "
+        "its token too.",
     ),
     registry_dir: str | None = _REGISTRY_DIR,
 ) -> None:
@@ -3135,6 +3249,8 @@ def robot_edit(
         # cameras are today, which is the rule --address and --token already follow
         "camera_url": list(camera_url) or None,
         "token": token,
+        "host": host,
+        "host_token": host_token,
         "llm": llm,
         "note": note,
     }
@@ -3144,6 +3260,15 @@ def robot_edit(
         # a word rather than an absence.
         _fail("--llm needs a pilot: quackd robot edit NAME --clear llm forgets the stored one")
         return
+    for flag, value, what in (("host", host, "a machine"), ("host-token", host_token, "a token")):
+        if value is not None and not value.strip():
+            # the same rule as --llm, for the same reason: an empty value would store nothing
+            # and report success, and forgetting a board is `--clear`'s job
+            _fail(
+                f"--{flag} needs {what}: quackd robot edit NAME --clear {flag} forgets the "
+                "stored one"
+            )
+            return
     changes: dict[str, Any] = {k: v for k, v in given.items() if v is not None}
     for field in clear:
         key = field.strip().lower().replace("-", "_")
@@ -3154,6 +3279,12 @@ def robot_edit(
             _fail(f"--{key.replace('_', '-')} and --clear {field} contradict each other")
             return
         changes[key] = None
+    if "host" in changes and changes["host"] is None:
+        # A host token is its board's, and `resolve_host` sends a robot's token only when the
+        # robot stores a board. Left behind, it would sit in robots.json as a secret for a board
+        # this robot no longer names, and `robot show` would say `host token set` beside
+        # `host -`. `--host-token` given alongside is left to the registry, which refuses it.
+        changes.setdefault("host_token", None)
     if not changes:
         _fail("nothing to change: give a field to set, or --clear FIELD")
         return

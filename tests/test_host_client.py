@@ -127,6 +127,7 @@ def test_the_module_imports_nothing_heavier_than_pil() -> None:
         "ipaddress",
         "json",
         "math",
+        "os",  # `resolve_host` reads QUACKD_HOST and QUACKD_HOST_TOKEN
         "socket",
         "threading",
         "typing",

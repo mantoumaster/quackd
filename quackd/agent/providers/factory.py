@@ -251,6 +251,7 @@ def make_provider(
     api_key: str | None = None,
     vision: bool | None = None,
     extra_body: str | None = None,
+    host: str | None = None,
 ) -> LLMProvider:
     name = name.lower()
     # Before the branches, so a typo is refused the same way whichever provider was named,
@@ -302,10 +303,14 @@ def make_provider(
     if name in LOCAL_NAMES:
         from quackd.agent.providers.local import LocalProvider
 
+        # `host` reaches the local presets and nothing else. It moves a preset's localhost to
+        # the board `--host` names, and a vendor's API has no localhost to move: OpenAI and
+        # the rest are reached at their own address whatever board the robot uses.
         return LocalProvider(
             model,
             preset=name,
             base_url=base_url,
+            host=host,
             api_key=api_key,
             vision=vision,
             extra_body=body,

@@ -19,6 +19,7 @@ from quackd.agent.providers.factory import LOCAL_NAMES, PROVIDER_NAMES, make_pro
 from quackd.agent.providers.local import (
     PRESETS,
     LocalProvider,
+    on_host,
     parse_tool_call_from_text,
     split_thinking,
 )
@@ -84,6 +85,174 @@ def test_local_needs_an_address(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_env_base_url_overrides_preset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUACKD_BASE_URL", "http://box:9999/v1")
     assert LocalProvider("m", preset="ollama", client=FakeClient()).base_url == "http://box:9999/v1"
+
+
+# ── where the server is: the address ladder, and --host moving a preset ─────────────────
+
+_ADDRESS_ENV = ("QUACKD_BASE_URL", "OPENAI_BASE_URL", "QUACKD_HOST")
+
+
+def _address(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    preset: str = "ollama",
+    base_url: str | None = None,
+    host: str | None = None,
+    **env: str,
+) -> str:
+    """The address a local provider settles on, with every variable it reads set here and
+    nowhere else, so a developer's shell cannot decide a rung for the test."""
+    for name in _ADDRESS_ENV:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    provider = LocalProvider("m", preset=preset, base_url=base_url, host=host, client=FakeClient())
+    return str(provider.base_url)
+
+
+#: `LocalProvider`'s ladder, top rung first: where each rung is given, what it is given, and
+#: the address the Ollama preset then settles on. The two hosts move `localhost` and keep the
+#: preset's own port and path; the three URLs are used exactly as given.
+LADDER: list[tuple[str, str, str]] = [
+    ("base_url", "http://given:1/v1", "http://given:1/v1"),
+    ("host", "flag-board", "http://flag-board:11434/v1"),
+    ("QUACKD_BASE_URL", "http://quackd-env:2/v1", "http://quackd-env:2/v1"),
+    ("OPENAI_BASE_URL", "http://openai-env:3/v1", "http://openai-env:3/v1"),
+    ("QUACKD_HOST", "env-board", "http://env-board:11434/v1"),
+]
+
+
+@pytest.mark.parametrize("top", range(len(LADDER) + 1), ids=[r[0] for r in LADDER] + ["preset"])
+def test_each_rung_of_the_address_ladder_beats_every_rung_below_it(
+    monkeypatch: pytest.MonkeyPatch, top: int
+) -> None:
+    """Every rung from `top` down is given at once, and the one at `top` has to win. Across
+    the parametrisation that is each rung against all of the rungs below it together, which
+    catches a rung swapped with any lower one, not only with its neighbour. The last case gives
+    nothing and gets the preset itself."""
+    given = {name: value for name, value, _ in LADDER[top:]}
+    env = {name: value for name, value in given.items() if name.isupper()}
+    url = _address(monkeypatch, base_url=given.get("base_url"), host=given.get("host"), **env)
+    assert url == (LADDER[top][2] if top < len(LADDER) else "http://localhost:11434/v1")
+
+
+def test_a_base_url_on_the_line_beats_the_one_in_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The oldest two rungs, and until the ladder grew a host nothing had ever put them against
+    each other: `test_env_base_url_overrides_preset` only proves the variable beats a preset."""
+    url = _address(monkeypatch, base_url="http://typed:1/v1", QUACKD_BASE_URL="http://env:2/v1")
+    assert url == "http://typed:1/v1"
+
+
+def test_a_host_named_for_the_run_beats_quackd_base_url_and_one_from_the_environment_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two hosts sit on different rungs on purpose. `--host` (or the robot's own) is a
+    decision about this run and moves the preset past a model server's URL in `.env`;
+    `QUACKD_HOST` is the board you usually use, and a URL in the same `.env` is more exact."""
+    typed = _address(monkeypatch, host="jetson.local", QUACKD_BASE_URL="http://env:2/v1")
+    assert typed == "http://jetson.local:11434/v1"
+    usual = _address(monkeypatch, QUACKD_HOST="jetson.local", QUACKD_BASE_URL="http://env:2/v1")
+    assert usual == "http://env:2/v1"
+
+
+def test_a_blank_rung_is_no_rung(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`QUACKD_HOST=` in a `.env` is a shell saying unset, and a blank flag is nothing typed.
+    Neither may become a machine named "" in the model server's URL."""
+    assert _address(monkeypatch, host="  ", QUACKD_HOST="") == "http://localhost:11434/v1"
+
+
+def test_every_preset_moves_to_the_host_with_its_own_port_and_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The port in `--host` is the daemon's. A model server on the board listens where it
+    always does, so each preset keeps its own, whatever port the daemon was given."""
+    for preset, url in PRESETS.items():
+        if url is None:
+            continue
+        moved = _address(monkeypatch, preset=preset, host="jetson.local:9000")
+        assert moved == url.replace("localhost", "jetson.local"), preset
+
+
+@pytest.mark.parametrize(
+    ("host", "moved"),
+    [
+        ("jetson.local", "http://jetson.local:11434/v1"),
+        ("jetson.local:9874", "http://jetson.local:11434/v1"),
+        ("192.168.1.5:9000", "http://192.168.1.5:11434/v1"),
+        ("[::1]:9874", "http://[::1]:11434/v1"),
+        ("[2001:db8::5]", "http://[2001:db8::5]:11434/v1"),
+        ("fe80::1", "http://[fe80::1]:11434/v1"),
+    ],
+)
+def test_on_host_moves_localhost_and_keeps_the_scheme_the_port_and_the_path(
+    host: str, moved: str
+) -> None:
+    """Every shape `--host` takes, and an IPv6 address comes out in brackets whether or not it
+    went in with them: a URL cannot carry one any other way."""
+    assert on_host(PRESETS["ollama"] or "", host) == moved
+
+
+def test_on_host_keeps_a_port_that_is_not_a_presets_and_a_url_with_no_port() -> None:
+    assert on_host("https://localhost:8443/api/v1", "[::1]:9874") == "https://[::1]:8443/api/v1"
+    assert on_host("http://localhost/v1", "fe80::1") == "http://[fe80::1]/v1"
+    assert on_host("http://localhost:1234/v1", "jetson.local") == "http://jetson.local:1234/v1"
+
+
+def test_on_host_refuses_what_is_not_a_machine_in_parse_hosts_words() -> None:
+    with pytest.raises(ValueError, match="not a URL"):
+        on_host(PRESETS["ollama"] or "", "http://jetson.local")
+
+
+def test_a_bad_quackd_host_is_one_line_that_names_the_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every `parse_host` sentence says `--host`, and somebody who never typed one would look
+    for it on the wrong line. A ProviderError, because that is what every caller of a
+    provider's constructor prints as one line rather than a traceback."""
+    with pytest.raises(ProviderError, match=r"^QUACKD_HOST: --host takes a machine, not a URL"):
+        _address(monkeypatch, QUACKD_HOST="http://jetson.local")
+    with pytest.raises(ProviderError, match=r"^--host takes a machine, not a URL"):
+        _address(monkeypatch, host="http://jetson.local")
+
+
+def test_local_with_only_a_host_is_refused_and_told_a_host_moves_only_a_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`local` has no preset address, so there is no `localhost` for a host to replace, and
+    guessing a port on the board would be guessing which server the reader meant."""
+    with pytest.raises(ProviderError, match="a host only moves a preset's") as typed:
+        _address(monkeypatch, preset="local", host="jetson.local")
+    assert "--base-url" in str(typed.value)
+    with pytest.raises(ProviderError, match="a host only moves a preset's"):
+        _address(monkeypatch, preset="local", QUACKD_HOST="jetson.local")
+    given = _address(
+        monkeypatch, preset="local", host="jetson.local", base_url="http://gpu:8000/v1"
+    )
+    assert given == "http://gpu:8000/v1", "a URL given anywhere is used as given"
+
+
+def test_make_provider_hands_the_host_to_the_local_presets_and_to_no_vendor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The factory's half of the wiring, read off the constructors' own arguments, because
+    building either provider for real wants the OpenAI SDK and CI installs no provider SDK."""
+    seen: dict[str, dict[str, Any]] = {}
+
+    def recorder(name: str) -> Any:
+        def build(*args: Any, **kwargs: Any) -> Any:
+            seen[name] = kwargs
+            return NS(name=name)
+
+        return build
+
+    monkeypatch.setattr("quackd.agent.providers.local.LocalProvider", recorder("local"))
+    monkeypatch.setattr("quackd.agent.providers.openai.OpenAIProvider", recorder("openai"))
+    make_provider("ollama", model="m", host="jetson.local")
+    assert seen["local"]["host"] == "jetson.local"
+    make_provider("openai", host="jetson.local")
+    assert "host" not in seen["openai"], "a vendor's API has no localhost to move"
 
 
 def test_no_key_needed(monkeypatch: pytest.MonkeyPatch) -> None:

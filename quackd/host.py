@@ -38,6 +38,7 @@ import io
 import ipaddress
 import json
 import math
+import os
 import socket
 import threading
 import urllib.error
@@ -53,8 +54,11 @@ from PIL import Image
 PROTOCOL = "quackd-jetson-hostd"
 PROTOCOL_VERSION = 1
 DEFAULT_PORT = 9874
-#: Where `--host-token` is read from when the flag is not given. The client itself reads no
-#: environment: the CLI resolves flag, registry and environment once, for every command alike.
+#: Where `--host` is read from when neither the flag nor a registered robot names a board.
+HOST_ENV = "QUACKD_HOST"
+#: Where `--host-token` is read from when neither the flag nor a registered robot gives one.
+#: `HostClient` itself reads no environment: `resolve_host` settles flag, registry and
+#: environment once, for every command alike.
 TOKEN_ENV = "QUACKD_HOST_TOKEN"
 TOKEN_HEADER = "X-Quackd-Token"
 
@@ -193,6 +197,99 @@ def base_url(text: str) -> str:
     return f"http://{netloc(*parse_host(text))}"
 
 
+@dataclass(frozen=True)
+class HostChoice:
+    """Which board a command uses, which place named it, and the token that goes with it.
+
+    `host` is the value as it was given, stripped and checked by `parse_host`, or None when
+    nothing named a board. It is kept as typed rather than as `host:port`, so a header or a
+    refusal can quote back what the reader wrote. `source` is where it came from: `--host`,
+    `robot NAME (robots.json)` or `QUACKD_HOST`.
+
+    The token is left out of the repr, because an object like this ends up in a traceback
+    sooner or later and the token must not end up there with it."""
+
+    host: str | None = None
+    source: str | None = None
+    token: str | None = dataclasses.field(default=None, repr=False)
+
+    @property
+    def explicit(self) -> str | None:
+        """The host when a person named it for this command or for this robot, else None.
+
+        This is the value `make_provider(host=...)` is handed, and it moves a local preset's
+        address above `QUACKD_BASE_URL`. A host from the environment is left out, because the
+        local provider reads it for itself at the bottom of its own ladder, below
+        `QUACKD_BASE_URL` and `OPENAI_BASE_URL`: a `.env` line naming the board you usually
+        use must not outrank a `.env` line naming a model server's exact address, while a
+        board typed for this run, or registered with this robot, is a decision about this run
+        and does."""
+        return self.host if self.source != HOST_ENV else None
+
+
+def _given(value: str | None) -> str | None:
+    """A setting's value, or None when it is absent or blank. `QUACKD_HOST=` in a `.env` is
+    how a shell says unset, and reading it as a machine named "" would refuse every run."""
+    text = (value or "").strip()
+    return text or None
+
+
+def resolve_host(
+    flag: str | None,
+    stored: str | None = None,
+    *,
+    token: str | None = None,
+    stored_token: str | None = None,
+    robot: str | None = None,
+) -> HostChoice:
+    """Which board this command uses, from the three places one can be named.
+
+    The order is the one every quackd setting uses (`resolve_llm` spells it for the pilot):
+    `--host` beats the host a registered robot remembers, which beats `QUACKD_HOST`, which
+    beats no board at all. The robot beats the environment because it was registered by a
+    person who meant it, and a variable in a shell was not necessarily meant for this robot.
+
+    The token has a ladder of its own: `--host-token`, else the robot's stored `host_token`,
+    else `QUACKD_HOST_TOKEN`. Its own rather than wherever the host came from, because
+    `--host 127.0.0.1` through an ssh tunnel reaches the very board that was registered and
+    still wants that board's token, which is the rule `adapter_kwargs` already follows for
+    `--address` and `--token`. But the robot's token is its own board's, so it rides only when
+    the robot stores a board. A host from `QUACKD_HOST` means the robot stores none, and the
+    board it names is the environment's, whose token is `QUACKD_HOST_TOKEN`: sending the robot's
+    token there would hand one board's credential to another and still be refused. With no
+    board there is no token: one with nowhere to go is dropped rather than refused, since
+    `QUACKD_HOST_TOKEN` in a `.env` must not make every run that names no host fail.
+
+    Blank counts as absent at every level. A host that is not one raises ValueError in
+    `parse_host`'s words, with the place it came from in front when that was not the flag,
+    because every one of those sentences says `--host` and a reader who typed nothing of the
+    kind would go looking on the wrong line. A token an HTTP header cannot carry raises
+    ValueError too, the same way and without quoting it. Both can come from robots.json, which
+    reads leniently so that one bad line cannot stop every registry command, so this is where
+    a bad stored one is refused: on the run that would have used it."""
+    where = f"robot {robot} (robots.json)" if robot else "robots.json"
+    for value, source in ((flag, "--host"), (stored, where), (os.environ.get(HOST_ENV), HOST_ENV)):
+        text = _given(value)
+        if text is None:
+            continue
+        try:
+            parse_host(text)
+        except ValueError as e:
+            raise ValueError(str(e) if source == "--host" else f"{source}: {e}") from e
+        tokens = (
+            (token, "--host-token"),
+            (stored_token if _given(stored) else None, where),
+            (os.environ.get(TOKEN_ENV), TOKEN_ENV),
+        )
+        chosen, came_from = next(((t, s) for t, s in tokens if _given(t)), (None, None))
+        try:
+            cleaned = clean_token(chosen)
+        except ValueError as e:
+            raise ValueError(str(e) if came_from == "--host-token" else f"{came_from}: {e}") from e
+        return HostChoice(text, source, cleaned)
+    return HostChoice()
+
+
 def _port(text: str) -> int:
     # isascii as well as isdigit: `int()` accepts Arabic-Indic and full-width digits, and a port
     # that reads as one number on the screen and another on the wire helps nobody
@@ -211,7 +308,7 @@ def _is_ipv6(text: str) -> bool:
     return True
 
 
-def _clean_token(token: str | None) -> str | None:
+def clean_token(token: str | None) -> str | None:
     """The token as it goes on the wire, or None for no token.
 
     Stripped, because the usual token file is `openssl rand -hex 32 | tee`, which ends in a
@@ -642,7 +739,7 @@ class HostClient:
         self.address = netloc(name, port)
         self.base_url = f"http://{self.address}"
         self.snapshot_url = f"{self.base_url}{SNAPSHOT_PATH}"
-        self._token = _clean_token(token)
+        self._token = clean_token(token)
         # No proxy, whatever the environment says: HTTP_PROXY is common on a corporate laptop,
         # and a proxy would see the token header and every frame of a board on the local
         # network, which it has no business seeing.

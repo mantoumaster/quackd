@@ -50,6 +50,7 @@ from quackd.adapters.factory import (
     default_spec,
     parse_robot_spec,
 )
+from quackd.host import clean_token, parse_host
 from quackd.memory import robot_slug
 
 DEFAULT_DIR = "~/.quackd"
@@ -128,6 +129,22 @@ def _check_llm(spec: str) -> None:
         raise RegistryError(str(e)) from e
 
 
+def _check_host(host: str | None, host_token: str | None) -> None:
+    """Refuse a board or its token on the way into the file, in `quackd.host`'s own words.
+
+    The counterpart to `RobotEntry._host` and `_host_token`, which read leniently for
+    `_check_llm`'s reason. Only what is being written is checked: a stored host that stopped
+    parsing must not stop an edit of the note beside it. The refusal carries no file and no
+    robot in front, because nothing in the file is wrong yet: the words are about what was
+    just typed, and `parse_host`'s and `clean_token`'s sentences already say which value."""
+    try:
+        if host is not None:
+            parse_host(host)
+        clean_token(host_token)
+    except ValueError as e:
+        raise RegistryError(str(e)) from e
+
+
 def check_name(name: str, *, kind: str = "robot") -> str:
     """A name a person types on a command line, and never anything else it could be mistaken
     for: a number (`--flock 3` means three simulated ducks), an adapter (`--robot microduck`
@@ -158,7 +175,11 @@ def check_name(name: str, *, kind: str = "robot") -> str:
 class RobotEntry(BaseModel):
     """One robot you have named: which body, where it is, and who pilots it."""
 
-    model_config = ConfigDict(extra="forbid")
+    # `hide_input_in_errors` because an entry holds two secrets, `token` and `host_token`, and
+    # pydantic's own error text quotes the value it refused. Every refusal quackd prints is
+    # built from the message alone (`Registry._one_line`, `cli._one_line`), but a traceback
+    # or a caller printing the error whole would carry the token with it.
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     name: str
     spec: str
@@ -178,6 +199,13 @@ class RobotEntry(BaseModel):
     (`anthropic:claude-opus-4-5`). `--llm` on the line beats this, and this beats
     `QUACKD_LLM`. Stored canonically, so a bare listed model id is written back with its
     vendor in front: `--llm claude-opus-4-5` lands here as `anthropic:claude-opus-4-5`."""
+    host: str | None = None
+    """The board this robot uses and quackd never runs on (`--host`): the machine its local
+    model server, host camera and host detector are reached on, as `jetson.local` or
+    `jetson.local:9874`. `--host` on the line beats this, and this beats `QUACKD_HOST`."""
+    host_token: str | None = None
+    """The token that board's daemon was started with. Kept apart from `token`, which is the
+    body's own bridge token: the two are different daemons, often on different machines."""
     note: str | None = None
     added: str = Field(default_factory=_now)
     updated: str = Field(default_factory=_now)
@@ -279,6 +307,31 @@ class RobotEntry(BaseModel):
         """Every camera this robot was registered with, primary first."""
         return camera_urls(self.camera_url)
 
+    @field_validator("host")
+    @classmethod
+    def _host(cls, value: str | None) -> str | None:
+        """Lenient on the shelf, the bargain `_llm` strikes, and for its reason.
+
+        Refusing a host here would refuse it on every read, and every registry command reads
+        the whole file: `quackd robot list`, `show`, `remove`, a run of some other robot, and
+        the `quackd robot edit NAME --clear host` that would mend it. A hand edit is how a bad
+        host gets here, and `parse_host` is young enough to grow stricter, which would put a
+        host that was fine yesterday on the wrong side of it. So the host is kept as written,
+        stripped, with blank read as none, and `quackd robot show` quotes back what was
+        written. `_check_host` checks the one being written, and `quackd.host.resolve_host`
+        refuses a bad stored one on the run that uses it, with the robot's name in front."""
+        text = (value or "").strip()
+        return text or None
+
+    @field_validator("host_token")
+    @classmethod
+    def _host_token(cls, value: str | None) -> str | None:
+        """Stripped, and blank read as no token, the daemon's own rule. A character an HTTP
+        header cannot carry is left for `_check_host` at the door and `resolve_host` at use,
+        for the host's reason, and neither quotes the token while refusing it."""
+        text = (value or "").strip()
+        return text or None
+
     @field_validator("llm")
     @classmethod
     def _llm(cls, value: str | None) -> str | None:
@@ -352,8 +405,17 @@ class RobotEntry(BaseModel):
             "rest_pose": dict(self.rest_pose) if self.rest_pose else None,
         }
 
+    def host_kwargs(
+        self, *, host: str | None = None, host_token: str | None = None
+    ) -> dict[str, str | None]:
+        """The board this robot uses, by `adapter_kwargs`'s rule: a flag on the line wins,
+        field by field. `--host 127.0.0.1` through a tunnel is the same board reached another
+        way, so the stored token still goes with it. The environment is the rung below both,
+        and `quackd.host.resolve_host` reads it."""
+        return {"host": host or self.host, "host_token": host_token or self.host_token}
+
     def public(self) -> dict[str, Any]:
-        """The `--json` shape. The token is never printed, only whether there is one."""
+        """The `--json` shape. Neither token is ever printed, only whether there is one."""
         return {
             "name": self.name,
             "spec": self.spec,
@@ -363,6 +425,8 @@ class RobotEntry(BaseModel):
             "camera_url": self.camera_url,
             "rest_pose": dict(self.rest_pose) if self.rest_pose else None,
             "token_set": self.token is not None,
+            "host": self.host,
+            "host_token_set": self.host_token is not None,
             "llm": self.llm,
             "note": self.note,
             "added": self.added,
@@ -449,6 +513,33 @@ class Resolved:
             "token": token,
             "rest_pose": None,
         }
+
+    def host_kwargs(
+        self, *, host: str | None = None, host_token: str | None = None
+    ) -> dict[str, str | None]:
+        """`RobotEntry.host_kwargs`, and for a bare spec only what the flags say, since
+        nothing was registered to fall back on."""
+        if self.entry is not None:
+            return self.entry.host_kwargs(host=host, host_token=host_token)
+        return {"host": host, "host_token": host_token}
+
+
+#: Fields `--host` added, written to robots.json only while they hold something. quackd 0.13
+#: reads the file with `extra="forbid"`, so a key it has never heard of refuses the whole file,
+#: even one that is null, and every write saves every robot. Leaving the empty ones out keeps a
+#: registry that never named a board readable by 0.13, which matters because two installs on
+#: one machine share one ~/.quackd. A robot that does name a board is a file 0.13 cannot read,
+#: and nothing short of dropping the board could change that.
+_OMITTED_WHEN_EMPTY = ("host", "host_token")
+
+
+def _stored(entry: RobotEntry) -> dict[str, Any]:
+    """One robot as robots.json holds it: every field but the name, which is its key there."""
+    data = entry.model_dump(exclude={"name"})
+    for key in _OMITTED_WHEN_EMPTY:
+        if data[key] is None:
+            del data[key]
+    return data
 
 
 class Registry:
@@ -540,13 +631,22 @@ class Registry:
         self._write(
             self.robots_path,
             "robots",
-            {n: e.model_dump(exclude={"name"}) for n, e in entries.items()},
+            {n: _stored(e) for n, e in entries.items()},
         )
 
     def add_robot(self, entry: RobotEntry) -> RobotEntry:
         check_name(entry.name, kind="robot")
         if entry.llm is not None:
             _check_llm(entry.llm)  # a pilot chosen now is a pilot that can be checked now
+        _check_host(entry.host, entry.host_token)
+        if entry.host_token is not None and entry.host is None:
+            # `resolve_host` sends a robot's token only when the robot stores a board, so a
+            # token stored with none would never be sent anywhere, and saying so now beats a 401
+            # on the day somebody expects it to have been
+            raise RegistryError(
+                "--host-token needs --host: the token is for one board's daemon, so name that "
+                "board too"
+            )
         entries = self.robots()
         if entry.name in entries:
             raise RegistryError(
@@ -571,6 +671,8 @@ class Registry:
         # retired model would fail on the pilot.
         if (named := changes.get("llm")) is not None:
             _check_llm(str(named))
+        # The board being set, by the same rule and for the same reason.
+        _check_host(changes.get("host"), changes.get("host_token"))
         data = current.model_dump()
         data.update(changes)
         data["updated"] = _now()
@@ -578,6 +680,14 @@ class Registry:
             entry = RobotEntry.model_validate(data)
         except ValidationError as e:
             raise self._one_line(self.robots_path, name, e) from e
+        touched = "host" in changes or "host_token" in changes
+        if touched and entry.host_token is not None and entry.host is None:
+            # `add_robot`'s pairing rule, asked only of an edit that touches the pair, so a
+            # hand-edited token with no board beside it cannot stop an edit of the note
+            raise RegistryError(
+                f"{name} would have a host token and no host: the token is for one board's "
+                "daemon, so give --host too, or --clear host-token"
+            )
         entries[name] = entry
         self._save_robots(entries)
         return entry
