@@ -255,6 +255,20 @@ LeRobot arm is
   quackd list-adapters
 ```
 
+No terminal means a standard input that is not a terminal, such as a pipe. On Windows a
+standard input redirected from `NUL` counts as a terminal, so `< NUL` in `cmd`, and
+`< /dev/null` in Git Bash too, gets the warning and the question instead of that refusal.
+Nothing answers the question, so the command aborts and exits 1, and that is as safe as the
+refusal, because it has not connected yet:
+
+```
+$ quackd robot release arm < /dev/null
+! connecting takes torque off every motor for a moment, because LeRobot
+configures them with it off, and the release then lets the arm fall from
+wherever it is: hold it now, and keep hold of it until it is down
+release torque on arm? [y/N]: Aborted.
+```
+
 It uses the registered rest pose and no camera, and it exits 1 unless every motor read torque
 off afterwards. Those joints are the mock arm's, and its connect takes nothing off, so on the
 mock the warning is only printed. What each other ending means, and the same offer a run makes

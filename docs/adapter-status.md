@@ -157,8 +157,10 @@ A figure nobody published is listed as not published, and the pilot is told to a
 
 `robot.init` (moves every joint), `robot.relax` (the robot collapses), `system.*`, `net.*`,
 `update.*`. The gamepad (`padd`) keeps authority on hardware; quackd does not arbitrate.
-The same principle holds on every adapter: `disable_torque` is never sent to an arm, and a
-base over rosbridge gets a zero Twist, not silence.
+The same principle holds on every adapter: quackd never sends `disable_torque` to an arm of
+its own accord, and a base over rosbridge gets a zero Twist, not silence. A LeRobot arm is let
+go of only at its rest pose, or as near it as its calibration lets the servos go, where
+upstream's own `disconnect()` does it, or when a person holding it asks ([adapters/lerobot.md](adapters/lerobot.md#the-torque-rule)).
 On an Open Duck the guarantee is stronger than a promise: the bridge protocol has no word
 that reaches torque, so going limp is unreachable rather than merely forbidden.
 

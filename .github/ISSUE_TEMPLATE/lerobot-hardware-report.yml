@@ -5,11 +5,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you. One SO-101 has run `lerobot:real`, for one afternoon on 2026-09-15 on one
-        Windows laptop, so yours is the second arm and the first on a machine this project has
-        not seen, and a report that says "it did not work" is worth as much as one that says it
-        did. That afternoon loaded no policy, reached the arm by `--address` rather than by a
-        registered name and never tried the rest pose, so on any of those yours is still the first.
+        Thank you. One SO-101 has run `lerobot:real`, on one Windows laptop, for an afternoon
+        on 2026-09-15 and another on 2026-09-23, so yours is the second arm and the first on a
+        machine this project has not seen, and a report that says "it did not work" is worth as
+        much as one that says it did. Neither afternoon loaded a policy. The second reached the
+        arm by a registered name, with a rest pose recorded that the arm could not reach, and
+        most of its runs never moved the arm. What quackd changed after it has not met an arm
+        yet, so on a policy, a rest pose that parks and a release, yours is still the first.
 
         Please follow [docs/lerobot-hardware-checklist.md](https://github.com/rokbenko/quackd/blob/main/docs/lerobot-hardware-checklist.md)
         first. It is ordered so that nothing moves until step 10, because this arm has no

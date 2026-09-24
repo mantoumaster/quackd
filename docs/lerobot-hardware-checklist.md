@@ -183,8 +183,9 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    | `quackd serve-mcp --robot arm-01` | the same at both ends, and it refuses to start if it cannot get there |
    | `--dry-run` | nothing at all: a dry run never moves the arm |
 
-   Torque is released only where the arm is known to be at that pose. Anywhere else quackd turns
-   LeRobot's `disconnect()` flag off, leaves the arm holding itself up, and says so once:
+   Torque is released only where the arm is known to be at that pose, or at the edge of its
+   travel where the pose lies past it. Anywhere else quackd turns LeRobot's `disconnect()` flag
+   off, leaves the arm holding itself up, and says so once:
 
    ```
    the arm is not at its rest pose (...), so torque was left on and it will not fall as it

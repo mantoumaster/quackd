@@ -20,9 +20,9 @@ it stands. [ADR-0039](0039-an-arm-placed-by-hand.md)'s second amendment has the 
 
 The rest pose was written after the bench of 2026-09-15, where the arm fell at the end of every
 run, and it met an arm for the first time on 2026-09-23: the same SO-101, `arm-01`, on lerobot
-0.6.1 and Windows, with a pose recorded under its registered name. Almost none of that
-afternoon's 26 runs moved the arm, for five separate reasons, and the rest pose was the first
-of them.
+0.6.1 and Windows, with a pose recorded under its registered name. Nineteen of that
+afternoon's 26 runs never moved the arm at a pilot's request, most of them for one of five
+separate reasons, and the rest pose was the first of them.
 
 The recorded pose had `shoulder_lift` at -104.7. The travel `joint_ranges()` read off the
 arm's calibration, written on 2026-09-15, was ±84.2 for that joint: `range_min` 1180 and
@@ -41,27 +41,39 @@ to 276 at 0.6.1). `_unnormalize` bounds nothing in DEGREES mode (`motors/motors_
 907), so the tick it computes goes to the servo as it is. And the STS3215 clamps
 `Goal_Position` to its two limits. The runs show it from both sides. Driven down from above,
 the shoulder stopped at tick 1181, one inside its floor. Starting from the fold, every goal
-written below the reading moved the arm **up**, to ticks 1139 to 1152, about -87 degrees: the
-limit, less what a P-only controller sags under the arm's weight.
+written past the floor, the reading itself included, moved the arm **up**, to between -86 and
+-88 degrees by every reading taken once it had stopped: the limit, less what a P-only
+controller sags under the arm's weight.
 
 What followed, all of it in that afternoon's traces:
 
-- The rest move's stall check (`STALL_TICKS`) fired about 17 degrees short of the recorded
-  angle, so a run that started away from the fold aborted with `the arm did not reach its rest
-  pose` before its first model call. Five runs ended that way.
-- A run that got as far as its end ran the same move again, missed the same way, and `close()`
-  kept torque on with `TORQUE_LEFT_ON`. Every one of those runs ended at the power switch.
+- The rest move's stall check (`STALL_TICKS`) fired 17 to 20 degrees short of the recorded
+  angle, so every run that did not start within `TOL_DEG` of the recorded pose aborted with
+  `the arm did not reach its rest pose` before its first model call. Six runs ended that way:
+  four whose shoulder started above the fold, and two whose shoulder started further into it
+  than the recorded angle, where the clamp moved it up past that angle just the same. The
+  other sixteen that reached the rest move started at the fold and were `already at the rest
+  pose`.
+- Every run that reached its close, 21 of them, ended on `TORQUE_LEFT_ON`. The six above missed
+  the same move again at their end. Of the fifteen that got past their start, six ran the move
+  at their end and missed it at the limit, and nine found the shoulder still folded and
+  `already at the rest pose` a moment after the teardown's `stop` had set it rising, so that
+  `close()`, 0.3 to 0.6 s after that stop, read it at the limit (the next point). Every one of
+  those runs ended at the power switch.
 - `_hold()`, which every `stop` and every teardown reaches, wrote each body joint's present
   position as its goal, unclipped. For a shoulder folded past its floor the servo clamped that
   goal to the limit and drove there at full speed. In one run the final state, recorded 15 ms
-  after the run's last stop, read the shoulder at -107.6, and the close note 0.34 s later read
-  it at -87, with no clamp warning from LeRobot in between because the goal quackd wrote was
-  the reading itself, well inside the step cap. The stop was what moved it.
-- A pilot shown `shoulder_lift` at -108 beside a prompt line giving its travel as -84.2 to
-  84.2, with nothing to reconcile the two, refused to move an arm in a state it could not
-  explain.
-- Holding at about -87 against a goal clamped at -84.2 kept the shoulder's servo pushing all
-  afternoon, and it went from 38 °C to 45 °C.
+  after the run's last stop, read the shoulder at -107.6, and the close note, 0.34 s after that
+  stop, read it at -87, with no clamp warning from LeRobot in between because the goal quackd
+  wrote was the reading itself, well inside the step cap. The stop was what moved it.
+- Three pilots shown `shoulder_lift` past its travel, at -104, -102 and -108, beside a prompt
+  line giving that travel as -84.2 to 84.2, with nothing to reconcile the two, gave it as a
+  reason not to move an arm in a state they could not explain.
+- Holding at about -87 against a goal clamped at -84.2 kept the shoulder's servo pushing
+  whenever torque was on. Its temperature, as quackd reads it off the bus, was 34 °C and 35 °C
+  on the first three runs of the afternoon and 37 °C to 40 °C on the runs after them, apart
+  from one reading of 45 °C at the end of the second to last run and a single reading of 67 °C
+  that the next one, 0.17 s later, put back at 37 °C.
 
 Those numbers are one arm's, on one calibration, and they are here as the record of what
 happened. Nothing below uses them. Every figure the code works with is read off the arm it is

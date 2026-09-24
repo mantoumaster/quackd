@@ -1051,7 +1051,7 @@ under torque: it must not sag and it must not carry on. Plug it back in and reco
 the next step.
 
 **5. Ctrl-C mid move.** quackd's kill switch sends `stop`, which re-sends the present
-position as the goal. The arm should freeze where it is rather than sag, and rather than
+position as the goal of every body joint inside its travel. The arm should freeze where it is rather than sag, and rather than
 finish the motion it was in the middle of. `q` at the terminal does the same thing. Then watch
 what follows, because Ctrl-C is an exit path like any other: the arm goes to its rest pose
 before quackd lets go of it, and if it cannot get there it stays energised and says so rather
@@ -2184,8 +2184,8 @@ kept.
 **Start the server with the contract already loaded.** `lerobot-lookout` allows `report_state`
 and `stop` and nothing else, so no verb the model can call moves a joint even if it talks
 itself into trying, which is what you want the first time. `stop` is not quite nothing: on an
-arm that is already energised it re-sends the present position as the goal, so the arm holds
-where it is. It does not energise a limp arm. Writing a goal to a servo whose torque is off
+arm that is already energised it re-sends the present position as the goal of every body joint
+inside its travel, so the arm holds where it is. It does not energise a limp arm. Writing a goal to a servo whose torque is off
 changes nothing, and the only thing in quackd that turns torque back on is the hand-off in
 [section 07](#or-start-from-a-pose-you-set-by-hand), which belongs to `quackd run` and has no
 MCP equivalent. Add `--duckfile lerobot-lookout` to the args you registered in
@@ -2531,7 +2531,8 @@ all the same, `step 1/40`, so a rehearsal costs the same budget a real session d
 > closing, and the teardown is a `stop` and then the close, with no rest move between them. A
 > rehearsal therefore leaves the arm exactly where it found it, and the close is what decides
 > whether it is still held: torque stays on only where the arm is not at the recorded rest pose,
-> and then the server says so on its way out. At the rest pose, or on a server started against
+> where a joint recorded past its travel counts as there at the edge of that travel or anywhere
+> beyond it, and then the server says so on its way out. At the rest pose, or on a server started against
 > an arm with no rest pose recorded at all, the close releases torque where the arm stands and
 > says nothing. [M07](#m07-record-the-rest-pose) has that line and what to do about it, which is
 > to hold the arm and run `quackd robot release arm-01` at a terminal once the session has
@@ -2741,8 +2742,8 @@ says the arm did not reach its rest pose.
 **5. Stopping, and the three ways there are.** There is no Ctrl-C here. Part 1's kill switch is a
 terminal running `quackd run`, and an MCP session has no terminal of its own:
 
-- **Ask for `robot_run_verb(verb="stop")`.** It re-sends the present position as the goal, so the
-  arm holds where it is rather than sagging. It answers `stopped (velocity zeroed)` on the mock.
+- **Ask for `robot_run_verb(verb="stop")`.** It re-sends the present position as the goal of every
+  body joint inside its travel, so the arm holds where it is rather than sagging. It answers `stopped (velocity zeroed)` on the mock.
   **It is not a mid-move brake.** Part 1's Ctrl-C is: the kill switch sets the executor's abort,
   which cancels the verb that is running. The `stop` verb sets nothing, cancels nothing, and a
   `move_joints` already in flight sends its next goal ten times a second, so it overwrites the

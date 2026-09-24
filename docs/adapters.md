@@ -303,6 +303,12 @@ holding itself up, with one line saying so ([safety.md](safety.md)). That is the
 other body would have to take to earn a `go_to_rest()`: a pose the body holds with the power
 off, checked before anything is released, and a refusal to release when it is not there.
 
+The other exception is a person holding the arm who asks. `quackd run --by-hand` releases a
+LeRobot arm at its rest pose so the person can set the start, and `quackd robot release`, or
+Enter at the offer a run makes when its last rest move missed, releases it wherever it stands.
+None of them is a verb, an MCP tool or a method on the `RobotAdapter` protocol, so no pilot can
+reach them ([adapters/lerobot.md](adapters/lerobot.md#the-torque-rule)).
+
 ### If you speak a wire
 
 You own the framing, so you own the failure modes that come with it.
