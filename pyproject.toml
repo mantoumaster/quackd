@@ -11,12 +11,13 @@ license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 authors = [{ name = "Rok Benko" }]
 keywords = [
-  "microduck", "open-duck-mini", "lerobot", "xlerobot", "alohamini", "toddlerbot", "humanoid", "ros", "rosbridge",
+  "microduck", "open-duck-mini", "lerobot", "so-101", "xlerobot", "alohamini", "toddlerbot", "humanoid", "ros", "ros2", "rosbridge",
   # "robot-fleet" is a PyPI search term people type, and the one place the retired word stays on purpose.
   "robotics", "embodied-ai", "physical-ai", "llm-agents", "multi-robot", "robot-fleet",
-  "mcp", "model-context-protocol", "reinforcement-learning", "sim2real",
+  "mcp", "model-context-protocol", "mujoco",
   "claude", "openai", "gemini", "grok", "mistral", "deepseek", "cohere", "qwen", "kimi", "glm", "meta",
-  "ollama", "vllm", "llama-cpp", "local-llm",
+  "jev", "kev", "von", "openjev", "opendecision", "laya",
+  "ollama", "vllm", "llama-cpp", "local-llm", "jetson",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
