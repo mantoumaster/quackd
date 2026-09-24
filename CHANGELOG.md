@@ -31,7 +31,7 @@ it counts.
 - **quackd has a path onto an NVIDIA Jetson, and a Jetson is a host rather than a body.**
   There is no adapter, no extra and no `--robot jetson:...`: the board runs the quackd
   process the way a laptop does, and everything interesting is about what runs beside it.
-  [`deploy/jetson/`](deploy/jetson/README.md) is a Dockerfile that builds quackd from the
+  [`deploy/jetson/`](https://github.com/rokbenko/quackd/tree/v0.13.0/deploy/jetson) is a Dockerfile that builds quackd from the
   checkout you build it in, with its third-party Python packages pinned by `uv.lock`, onto a
   plain Debian Python image with no CUDA in it at all, and a compose file that gives the GPU
   to Ollama and nothing to quackd. The quackd service is behind a profile with

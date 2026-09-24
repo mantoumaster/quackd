@@ -173,7 +173,7 @@ von serve --host 127.0.0.1 --port 8000     # --decision-llm von already looks he
 ```
 
 `laya` is the awkward one here rather than the easy one. It runs inside quackd's own process
-and pulls torch with it, the image in [`deploy/jetson/`](../deploy/jetson/README.md) carries
+and pulls torch with it, the image in [`deploy/jetson/`](https://github.com/rokbenko/quackd/tree/v0.13.0/deploy/jetson) carries
 no torch on purpose, and torch on a Jetson wants NVIDIA's own wheel rather than the one PyPI
 serves. Treat that combination as unbuilt rather than merely uninstalled.
 
@@ -229,7 +229,7 @@ gives the model back whatever the graphical session was holding, and
 
 ## In a container
 
-[`deploy/jetson/`](../deploy/jetson/README.md) holds a Dockerfile and a compose file. The
+[`deploy/jetson/`](https://github.com/rokbenko/quackd/tree/v0.13.0/deploy/jetson) holds a Dockerfile and a compose file. The
 Dockerfile builds quackd from the checkout you build it in, uncommitted edits included, with its
 third-party Python packages pinned by `uv.lock`, onto a plain Debian Python image, and there is
 no CUDA in it at all.

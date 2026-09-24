@@ -964,6 +964,44 @@ def test_every_body_carries_its_own_numbers_on_its_own_page() -> None:
             assert amount in page, f"{path.name} does not say {label} is {amount}"
 
 
+def test_the_jetpack_table_matches_the_one_doctor_reads() -> None:
+    """Two copies of a version table drift, and the copy people paste into an issue is the one
+    nobody re-reads. The page's table is the documentation; `_JETPACK_FOR_L4T` is what the
+    command prints. They are the same fact and this is the only thing holding them together.
+
+    It lived beside the Jetson container's checks until the container was removed. The table
+    outlived it because it describes the board rather than the image, so it sits here with the
+    other pages that have to agree with the code."""
+    from quackd import doctor
+
+    page = (REPO / "docs" / "jetson.md").read_text(encoding="utf-8")
+    rows = dict(re.findall(r"^\| `r(\d[\w.]*)` \| ([\w.]+) \|", page, flags=re.M))
+    assert rows, "no L4T table found in docs/jetson.md, or its shape changed"
+    assert rows == doctor._JETPACK_FOR_L4T, (
+        "docs/jetson.md and quackd/doctor.py disagree about which JetPack an L4T release is:\n"
+        f"  page:   {sorted(rows.items())}\n"
+        f"  doctor: {sorted(doctor._JETPACK_FOR_L4T.items())}"
+    )
+
+
+def test_the_page_says_no_jetson_has_run_this() -> None:
+    """The claim the Jetson page turns on, and the one a well meaning edit would soften. It is
+    spelled this way rather than any of the phrasings `_RETIRED_HARDWARE_CLAIMS` bans, because
+    an SO-101 arm has run quackd and a Jetson has not.
+
+    It moved here with the JetPack table when the Jetson container was removed. The container's
+    README said it too and went with the container, which leaves the page as the only place
+    that says it."""
+    page = (REPO / "docs" / "jetson.md").read_text(encoding="utf-8")
+    # the whole sentence, because the negation is in the first word: the substring
+    # "run on a Jetson by this project" is just as true of a page claiming the opposite
+    for sentence in (
+        "Nothing here has been run on a Jetson by this project",
+        "Nothing on this page has been run on a Jetson by this project",
+    ):
+        assert sentence in page, f"docs/jetson.md no longer says: {sentence}"
+
+
 def test_the_registry_is_documented_where_it_is_configured() -> None:
     """Two files under a directory an env var moves, holding a robot's token. Every one of
     those facts has a place it has to be findable from, or somebody loses a robot or a secret.

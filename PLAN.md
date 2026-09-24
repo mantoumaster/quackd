@@ -69,7 +69,7 @@ flip that backend's row, and not before.
   it is a net loss.
 
 - ⬜ **Nobody has run quackd on a Jetson.** [docs/jetson.md](docs/jetson.md) and
-  [`deploy/jetson/`](deploy/jetson/README.md) were written from NVIDIA's own documentation on
+  [`deploy/jetson/`](https://github.com/rokbenko/quackd/tree/v0.13.0/deploy/jetson) were written from NVIDIA's own documentation on
   a Windows laptop, and the image was built for arm64 and run under emulation there, then
   built and run again on a native arm64 runner with no GPU, green on 2026-09-23. What
   those runs are worth is not the board: they prove quackd runs on aarch64 Linux, and
