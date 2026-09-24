@@ -927,6 +927,30 @@ def test_a_yes_and_a_no_do_not_come_out_looking_like_each_other() -> None:
     assert said_no.startswith("⚠  asked") and said_no.endswith("-> no")
 
 
+def test_a_refused_hold_is_not_logged_as_held() -> None:
+    """A take-hold is recorded under the stage it was trying for, `held`, whatever came of it,
+    and the line used to print that stage as its first word. So a take-hold that left torque off
+    under a joint placed past its travel came out as "held: ..., so quackd left torque off", to
+    a person holding the arm and reading the first word. A refused hold and a refused release
+    say so in that word, and a hold that took is unchanged."""
+    joints = {"wrist_flex": 12.0}
+    (refused,) = render_events(
+        LogEvent(
+            "hand_off", 0.0, {"stage": "held", "how": "refused", "reason": "r", "joints": joints}
+        )
+    )
+    assert refused.body == "hold refused: r (wrist_flex 12)", refused.body
+    assert refused.style == "yellow"
+    (release,) = render_events(
+        LogEvent("hand_off", 0.0, {"stage": "released", "how": "refused", "reason": "r"})
+    )
+    assert release.body == "release refused: r", release.body
+    (held,) = render_events(
+        LogEvent("hand_off", 0.0, {"stage": "held", "how": "held", "reason": "r", "joints": joints})
+    )
+    assert (held.body, held.style) == ("held: r (wrist_flex 12)", "cyan")
+
+
 def test_the_system_prompt_is_still_the_one_thing_drawn_as_a_rule() -> None:
     """The label was narrowed and the branch left alone, so the run still opens with the
     rule, the block and the rule that closes it, and nothing else in the run gets one."""

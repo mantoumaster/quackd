@@ -36,6 +36,7 @@ from quackd_lerobot.verbs import (
     Clip,
     at_rest,
     past_reach,
+    placed_past_travel,
     range_refusal,
     reachable_rest_goal,
     released_by_the_close,
@@ -143,7 +144,14 @@ class LeRobotMock(MockTransport):
         """Set to a reason and the release goes out with nothing to read it back, as on the real
         backend when its read-back fails, and that reason is why the read did not answer. The
         arm is in a hand, its torque is unknown, and the close says so in the real close's words
-        (`UNREAD_IN_HAND`), which an in-memory release that always reads back cannot."""
+        (`UNREAD_IN_HAND`), which an in-memory release that always reads back cannot.
+
+        That is the real close's ending only where no read of its own answers either. On an arm
+        with a rest pose the real close reads the arm before it decides, and when that read
+        answers it says what it found, `LIMP_IN_HAND` or the joints still on by name, rather
+        than that nothing read the release back. This close takes no read of its own, so what
+        it rehearses is the arm with no rest pose, or one whose every read after the release
+        went unanswered."""
         self.release_read_back = False
         """A read of the torque register answered for the last release, as on the real backend:
         the close names what it found only then."""
@@ -308,6 +316,13 @@ class LeRobotMock(MockTransport):
             result = RestResult("stalled", self.rest_fails)
         elif at_rest(goal, self.joints, recorded):
             result = RestResult("already", "already at the rest pose")
+        elif not self.torque:
+            # a limp servo takes a goal into its register and does not move to it, so the real
+            # rest move over an arm nothing has taken hold of stalls where the arm is. That is
+            # the arm a teardown meets after `take_hold` refused one placed past its travel,
+            # and a rehearsal that folded it would skip the ending the arm reaches
+            why = shortfall(goal, self.joints, recorded)
+            result = RestResult("stalled", f"{why}, and it has stopped moving")
         else:
             # a joint folded past its limit is left out, as on the arm: the limit is the one
             # goal it would take, and that goal hauls it up out of its fold
@@ -399,16 +414,27 @@ class LeRobotMock(MockTransport):
         )
 
     async def take_hold(self) -> HandResult:
-        """Hold wherever a test left the joints, and record the goal that pins them there."""
+        """Hold wherever a test left the joints, and record the goal that pins them there.
+
+        Refused, in the real backend's words and before anything is written, when a body joint
+        was placed outside `MOCK_RANGES`: torque stays off and the arm stays in a hand, because
+        on the arm neither a goal written there (pulled to the limit) nor none (the last goal
+        the servo had) keeps that joint where it was put. A rehearsal that took hold of it
+        would teach the one ending the arm refuses."""
         self.sequence.append("take_hold")
         placed = dict(self.joints)
+        outside = {
+            j: v
+            for j, v in placed.items()
+            if j in JOINTS and j != "gripper" and self._outside_travel(j, v)
+        }
+        if outside:
+            return HandResult(
+                "refused", placed_past_travel(outside, self.joint_range_deg), joints=placed
+            )
         # the real backend writes the present position as the goal before torque comes on and
-        # again after, and an in-memory arm is already exactly where it is told to be. A joint
-        # placed outside its travel is left out, as on the arm: `_goto` clamps like the servo,
-        # so writing it would drag it to the limit
-        self._goto(
-            {j: v for j, v in placed.items() if j in JOINTS and not self._outside_travel(j, v)}
-        )
+        # again after, and an in-memory arm is already exactly where it is told to be
+        self._goto({j: v for j, v in placed.items() if j in JOINTS})
         self.torque = True
         # torque is on, so the arm holds itself whatever else went wrong: the real backend
         # clears this here and for the same reason, before it judges the pose

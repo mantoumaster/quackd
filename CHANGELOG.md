@@ -61,7 +61,8 @@ Known limitations, below, lists the bench steps that would say whether it works.
   the release itself is caught, and what the person is told turns on the arm's backend saying
   which side of the send it landed: once the release has gone out, that the arm may be limp,
   and before it did, on the read the release begins with, that nothing was sent and torque is
-  as it was. The close, `run_end` and the summary still happen either way. The exchange is a
+  as the rest move left it, with whether the arm holds itself up left to the close's own line.
+  The close, `run_end` and the summary still happen either way. The exchange is a
   `prompt` row and a new `release` event whose `stage` and `reason` say how it ended. Never on
   a dry run, an MCP session or a flock member, and never over an arm whose rest move left a
   call that never came back, a goal write or the hold a stalled move ends with, since that arm
@@ -96,13 +97,25 @@ Known limitations, below, lists the bench steps that would say whether it works.
   out.** Every `stop` and every teardown wrote each body joint's present position as its goal,
   and for a joint folded past its floor the servo clamped that to the limit and drove there,
   which is how the stop at the end of a run hauled the shoulder up out of its fold. Such a
-  joint is now left out of the hold, and out of both writes of `--by-hand`'s take-hold, and the
-  stop's summary adds, for example, `shoulder_lift reads past its travel, so no goal was
-  written for it`, with `not_held` in its data. If every body joint reads past its travel,
-  nothing is sent and the stop is still a stop. What the skip cannot do is halt a joint a move
-  has already started lifting out of a fold, because every goal past the travel reaches the
-  servo as the limit: the power switch is the only stop for that stretch
-  ([docs/safety.md](docs/safety.md)).
+  joint is now left out of the hold, and the stop's summary adds, for example, `shoulder_lift
+  reads past its travel, so no goal was written for it`, with `not_held` in its data. If every
+  body joint reads past its travel, nothing is sent and the stop is still a stop. What the skip
+  cannot do is halt a joint a move has already started lifting out of a fold, because every
+  goal written past the travel reaches the servo as the limit: the power switch is the only stop
+  for that stretch ([docs/safety.md](docs/safety.md)).
+- **`--by-hand` will not take hold of an arm with a joint placed past its travel.** Its
+  take-hold wrote that joint's reading as its goal, which the servo clamps to the limit, so
+  torque hauled the joint there under the person's hand. Leaving the joint out instead would
+  leave its servo the last goal it was written, the rest move's, which can be the far end of the
+  travel. Neither keeps the joint where it was put, so the take-hold now refuses before it
+  writes anything: torque stays off, and the refusal names each such joint, where it reads and
+  its travel, and asks for it to be moved inside. The run ends there and says so to the person
+  at once, and its teardown treats the arm as limp in their hands: no question about a gripper
+  "holding where it ended", no offer to release an arm nothing is holding up, and a close that
+  ends on the line for an arm in somebody's hands. The log line for a refused take-hold or
+  release reads `hold refused` or `release refused` rather than `held` or `released`
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#placing-it-by-hand),
+  [ADR-0045](docs/adr/0045-a-rest-pose-the-calibration-cannot-reach.md), amended).
 - **`move_joints` takes the time it is asked for.** `duration_s` was how long a move could take
   before it gave up, and every move ran at the step cap whatever it said. A move is now walked
   from where the arm is to its goal across `duration_s`, one target a tick at 10 Hz, and judged
@@ -112,9 +125,11 @@ Known limitations, below, lists the bench steps that would say whether it works.
   only move sent whole is one with nothing to walk, every joint already within a tenth of a
   degree of its goal. A goal outside the travel the manifest publishes, now rounded inward to a
   tenth, is refused by the verb before it reads the arm or sends anything, in the sentence both
-  backends refuse with, which now gives the goal and the travel to a tenth: in whole degrees it
-  could name a refused goal inside the range it gave, `85 is outside -85..85`. A gripper named in
-  `move_joints` is walked like any joint, and the `gripper` verb is not
+  backends refuse with. That sentence now gives the travel to a tenth, rounded inward, and the
+  goal to a tenth unless a tenth would round it onto that travel, in which case as it was given:
+  in whole degrees it could name a refused goal inside the range it gave,
+  `85 is outside -85..85`, and so would a tenth for a goal a few hundredths past an edge. A
+  gripper named in `move_joints` is walked like any joint, and the `gripper` verb is not
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md),
   [ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md), amended).
 - **The line an arm left holding itself up ends on names the ways out, and puts holding it
@@ -217,8 +232,9 @@ Known limitations, below, lists the bench steps that would say whether it works.
   4. The `e116-slow-raise` task: whether the model passes a `duration_s` near ten seconds and
      the shoulder takes about that long, with no refusal over the arm's state.
   5. `--by-hand` with the pen, once with a joint placed past its travel: whether a dropped
-     packet is tried again, the hand-off releases at the reachable pose, and a slip refusal
-     names the travel.
+     packet is tried again, the hand-off releases at the reachable pose, and the take-hold
+     leaves torque off, names the joint and its travel, and leaves the arm limp in your hand
+     until you put it down.
   6. A run made to miss its rest pose with a hand in the way: whether the Enter offer
      appears, Enter releases, and left alone the arm keeps torque after 60 s.
   7. Separately, and only if you want to: `lerobot-calibrate` with the shoulder folded all the
@@ -226,9 +242,9 @@ Known limitations, below, lists the bench steps that would say whether it works.
      gone. That moves `shoulder_lift`'s zero, so a task or a remembered note that names an
      angle means a different pose afterwards.
 - **What only the arm can say.** Whether a joint released at the edge of its travel settles
-  onto its fold, and gently, and whether one folded past its ceiling settles at all. Whether a
-  joint the take-hold wrote no goal for stays put when torque comes on
-  (`TORQUE_ENABLE_HOLDS_PRESENT`, still UNVERIFIED). What an SO-101 does when a release
+  onto its fold, and gently, and whether one folded past its ceiling settles at all. What a
+  servo does with the goal it holds when torque comes back on (`TORQUE_ENABLE_HOLDS_PRESENT`,
+  still UNVERIFIED). What an SO-101 does when a release
   reaches it away from its fold, how fast a shoulder held out drops, and whether one hand
   catches it. Whether a servo following a goal that moves every tenth of a second looks like
   one motion, how far past its walk a loaded joint needs to settle, and that a joint blocked

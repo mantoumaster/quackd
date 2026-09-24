@@ -288,6 +288,21 @@ def published_travel(lo: float, hi: float) -> list[float]:
     return [low / 10.0 + 0.0, high / 10.0 + 0.0]
 
 
+def said_past(value: float, shown_lo: float, shown_hi: float) -> str:
+    """A number outside a travel printed as `shown_lo..shown_hi`, as the sentence saying so
+    prints it: to a tenth, unless a tenth would round it onto that travel, and then as it is.
+
+    A value a few hundredths past an edge is outside it, and its tenth is the edge itself, so a
+    sentence printing the tenth would name a number inside the range it says the value lies
+    outside. The travel printed beside it is `published_travel`, rounded inward, which is never
+    wider than the travel the value was judged against, so the value as it is always lies
+    outside what is printed."""
+    said = f"{float(value):.1f}"
+    if shown_lo <= float(said) <= shown_hi:
+        said = repr(float(value))
+    return said
+
+
 def range_refusal(goals: Mapping[str, float], travel: Mapping[str, Any]) -> str | None:
     """Why a joint goal cannot be sent, in the first joint's words, or None when every joint
     with a known travel has its goal inside it.
@@ -307,8 +322,8 @@ def range_refusal(goals: Mapping[str, float], travel: Mapping[str, Any]) -> str 
     is printed rounded inward (`published_travel`), the promise the manifest makes, so on the
     verb's side it is the published travel exactly and on a backend's it is never wider than
     what that backend takes. The goal is printed to a tenth unless a tenth would round it onto
-    the range it is refused from, and then as it was given: a goal a few hundredths past an
-    edge is refused, and its tenth would be the edge itself."""
+    the range it is refused from, and then as it was given (`said_past`): a goal a few
+    hundredths past an edge is refused, and its tenth would be the edge itself."""
     for joint, goal in sorted(goals.items()):
         span = travel.get(joint)
         if not span:
@@ -316,9 +331,7 @@ def range_refusal(goals: Mapping[str, float], travel: Mapping[str, Any]) -> str 
         lo, hi = float(span[0]), float(span[1])
         if not lo <= float(goal) <= hi:
             shown_lo, shown_hi = published_travel(lo, hi)
-            said = f"{float(goal):.1f}"
-            if shown_lo <= float(said) <= shown_hi:
-                said = repr(float(goal))
+            said = said_past(goal, shown_lo, shown_hi)
             return (
                 f"{joint}={said} is outside this arm's calibrated range "
                 f"{shown_lo:.1f}..{shown_hi:.1f}; LeRobot does not clamp a degrees goal, so "
@@ -708,6 +721,44 @@ True)`). Not the shortfall from the rest pose, which is what the close would oth
 there: that sentence ends "nothing moved it there" when no rest move ran, which is false of an
 arm a person is holding, and the person already knows where it stands, having just asked for
 it to be let go of there."""
+
+
+def placed_past_travel(outside: Mapping[str, float], travel: Mapping[str, Any]) -> str:
+    """Why `take_hold` left torque off: the body joints a person placed outside their
+    calibrated travel, each with its reading and its travel in this arm's numbers, and what to
+    do about it. Every joint in `outside` has its travel in `travel`, since that is how it was
+    found to be outside it.
+
+    It says why in the person's terms because the person is holding the arm and has just been
+    told it would be taken from them. Nothing quackd can do keeps such a joint where it was
+    put. A goal written where it is lies past the travel, and the servo pulls every goal to the
+    end of its travel (`upstream_api.POSITION_LIMITS_CLAMP_GOALS`). With no goal written, the
+    servo keeps the last one it was given, which after a hand-off is the rest move's, written
+    before the arm was lifted and possibly the far end of the travel from where it was placed,
+    and whether torque coming on holds the joint where it is instead is unverified (the row the
+    real backend's `take_hold` cites). Either way the joint may move with a hand on it.
+
+    Each reading is `said_past` beside `published_travel`, as the range refusal prints a goal,
+    so a joint a hair past an edge is never named inside the travel the sentence gives."""
+    joints = list(outside)
+    readings: list[str] = []
+    spans: list[str] = []
+    for joint in joints:
+        span = travel[joint]
+        lo, hi = published_travel(float(span[0]), float(span[1]))
+        readings.append(f"{joint} reads {said_past(outside[joint], lo, hi)}")
+        spans.append(f"{lo:.1f}..{hi:.1f}")
+    one = len(joints) == 1
+    its, which = ("its", "that joint") if one else ("their", "those joints")
+    last = "the last goal it was given" if one else "the last goals they were given"
+    return (
+        f"{_listed(readings)}, outside {its} calibrated travel of {_listed(spans)}, so quackd "
+        f"left torque off: the servo pulls any goal written for {which} to the end of {its} "
+        f"travel, and with none written it may drive {'it' if one else 'them'} to {last}, with "
+        f"a hand on the arm either way. Move {_listed(joints)} inside {its} travel before the "
+        "arm is taken hold of"
+    )
+
 
 NO_DRIVABLE_JOINT = (
     "the recorded rest pose names no joint this arm drives ({named}). A pose is only kept "

@@ -720,10 +720,11 @@ TORQUE_ENABLE_HOLDS_PRESENT = UpstreamRef(
     "hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back "
     "to it would happen with somebody's fingers in the way. quackd writes the present "
     "position as the goal BEFORE enabling torque, writes it again after, and reads the arm "
-    "back to check it stayed: the assumption is never relied on in either direction. The one "
-    "exception is a joint placed past its calibrated travel, which gets no goal at all, "
-    "because the servo would clamp it to the limit (POSITION_LIMITS_CLAMP_GOALS). For that "
-    "joint this row is all there is, and the read-back is what says whether it moved",
+    "back to check it stayed: the assumption is never relied on in either direction. A joint "
+    "placed past its calibrated travel is where that cannot work: a goal written there is "
+    "clamped to the limit (POSITION_LIMITS_CLAMP_GOALS), and no goal leaves the servo the "
+    "last one it had, the rest move's, which only this row could say it ignores. So "
+    "take_hold() leaves torque off and refuses while any body joint reads outside its travel",
 )
 GRIPPER_OPEN_VALUE = UpstreamRef(
     "GRIPPER_OPEN_VALUE",

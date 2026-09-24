@@ -646,7 +646,11 @@ What happens, in order, and the order is the whole of the feature:
    press Enter.**
 5. **quackd takes hold of what you left.** It writes the position the arm is in as the goal
    *before* it enables torque, writes it again afterwards, waits a tick, reads back, and tells
-   you that you can let go.
+   you that you can let go. Only if every joint you placed is inside its calibrated travel,
+   though. A joint past it would be pulled to the end of its travel by any goal written for it,
+   or driven to the last goal its servo had by none, so quackd leaves torque off, names the joint,
+   where it reads and its travel, and ends the run with the arm still in your hands. A fold that
+   lies past the travel counts, so lift every joint out of it before you press Enter.
 6. **The pilot runs**, from your pose rather than from the fold. The budget clock restarts
    here, so the time you spent finding the pencil is not taken out of the model's minutes.
 7. **At the end the arm holds where it ended**, and quackd asks you to take out whatever is in
@@ -1067,7 +1071,9 @@ hands, Ctrl-C ends the run before the pilot has had a turn, and the teardown beg
 `stop`, which on a released arm means taking hold of it again. Torque comes back on where you
 are standing holding it, the arm then travels to its rest pose, and only there does torque
 drop. Keep hold of it until it has stopped, and keep your fingers out of the jaws, because from
-the arm's side that is an ordinary teardown and nothing about it is slower for being one.
+the arm's side that is an ordinary teardown and nothing about it is slower for being one. With a
+joint outside its travel none of that happens: torque stays off, the arm stays limp in your
+hands, and the last line says so.
 **Inside the end-of-run hand-back**, where quackd is asking you to take whatever is in the
 gripper, a second Ctrl-C means skip the gripper rather than abandon the run. The jaws stay
 where they are, the arm still parks at its rest pose, the transport still closes properly, and

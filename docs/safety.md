@@ -293,7 +293,10 @@ it.** That state takes a Ctrl-C during the wait, a heartbeat that died, or a `ta
 refused, and the way out of it is the `stop` every teardown opens with: on an arm that is in
 somebody's hand that stop takes hold first, at wherever your hand has it, and the rest move then
 puts it down from there. Sending a goal to a limp servo would have been a stop that stopped
-nothing. If even that did not take, the close says so in the one line that is worth reading:
+nothing. It never takes while a joint reads outside its calibrated travel, because a goal written
+there is pulled to the end of the travel and none leaves the servo the last goal it had, so
+torque stays off and the refusal names the joint. If that take-hold did not take, the close says
+so in the one line that is worth reading:
 
 ```
 the arm is limp and in your hands (...): put it down before you let go of it, because nothing is holding it up
@@ -392,9 +395,9 @@ the arm as though nothing holds it, put it down, and cut its power to be sure.
   failed verb never drops what is held. It also writes no goal for a joint that reads past its
   calibrated travel, because the servo would clamp "stay here" to its limit and drive the joint
   there at full speed, and its summary names each joint it left alone. That skip avoids
-  starting a rise out of a fold and cannot halt one already under way: for a joint past its
-  travel, any goal quackd has written is the limit to the servo, so a joint a move had begun
-  lifting keeps rising to that limit whatever the stop does. The power switch is the only stop
+  starting a rise out of a fold and cannot halt one already under way: any goal quackd writes
+  to a joint while it reads past its travel is the limit to the servo, so a joint a move had
+  begun lifting keeps rising to that limit whatever the stop does. The power switch is the only stop
   for that stretch.
 - **The arm falls when a session ends, unless you have recorded a rest pose.** LeRobot's own
   `disconnect()` disables torque by its default and quackd keeps that default, which is why the

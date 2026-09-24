@@ -66,6 +66,7 @@ from quackd_lerobot.verbs import (
     at_rest,
     lerobot_verbs,
     move_budget_s,
+    placed_past_travel,
     ramp_target,
     range_refusal,
     reachable_rest_goal,
@@ -1913,10 +1914,10 @@ async def test_a_stop_over_a_folded_arm_leaves_the_fold_alone() -> None:
 
 async def test_a_stop_with_every_body_joint_past_its_travel_sends_nothing_and_is_a_stop() -> None:
     """The branch where the skip leaves nothing to send. Nothing is written, and the stop is
-    not reported as undelivered, because it started nothing. That is all it can say: for a
-    joint past its travel any goal quackd has written is the limit to the servo, so a joint a
-    move had begun lifting out of its fold goes on rising to that limit whatever a stop does,
-    and only the power switch stops that stretch. What the stop owes the pilot is the list of
+    not reported as undelivered, because it started nothing. That is all it can say: any goal
+    quackd writes to a joint while it reads past its travel is the limit to the servo, so a
+    joint a move had begun lifting out of its fold goes on rising to that limit whatever a stop
+    does, and only the power switch stops that stretch. What the stop owes the pilot is the list of
     joints it wrote no goal for, which here is all five. A stop reported as undelivered over
     an arm lying still in its fold would send somebody for the switch for nothing."""
     arm = _spanned()
@@ -2328,16 +2329,6 @@ async def test_an_arm_folded_past_its_travel_is_at_rest_and_is_never_hauled_up_t
     assert arm.actions == [], "a folded arm was sent a goal"
     assert already.note is not None, "the note is about the pose, and a folded arm has it"
 
-    # `--by-hand` releases it there, since the fold is its rest pose, and takes hold again
-    # without writing either folded joint a goal: both are past their travel
-    released = await adapter.let_go()
-    assert released.how == "released", released.reason
-    held = await adapter.take_hold()
-    assert held.how == "held", held.reason
-    assert arm.actions, "the joints inside their travel were written where they were placed"
-    for action in arm.actions:
-        assert "shoulder_lift.pos" not in action and "elbow_flex.pos" not in action, action
-
     # the folds sag a little further and the pan is knocked away: only the pan is driven
     arm.positions["shoulder_lift"] -= 3.0
     arm.positions["elbow_flex"] += 2.0
@@ -2349,8 +2340,21 @@ async def test_an_arm_folded_past_its_travel_is_at_rest_and_is_never_hauled_up_t
     for action in arm.actions:
         assert "shoulder_lift.pos" not in action and "elbow_flex.pos" not in action, action
     assert {j: arm.positions[j] for j in folded} == folded, "a fold was moved"
+
+    # `--by-hand` releases it there, since the fold is its rest pose, and does not take hold
+    # again while the folds read past their travel: a goal for either is its limit, and no
+    # goal leaves it the last one its servo had (the take-hold tests below say why)
+    written = len(arm.actions)
+    released = await adapter.let_go()
+    assert released.how == "released", released.reason
+    refused = await adapter.take_hold()
+    assert refused.how == "refused", refused.reason
+    assert "shoulder_lift" in refused.reason and "elbow_flex" in refused.reason, refused.reason
+    assert len(arm.actions) == written and arm.torque is False, arm.timeline
+    assert {j: arm.positions[j] for j in folded} == folded, "a fold was moved"
     await adapter.close()
-    assert arm.torque is False and adapter.close_note is None
+    assert arm.torque is False
+    assert (adapter.close_note or "").startswith("the arm is limp and in your hands")
 
 
 async def test_a_joint_stopped_short_inside_its_travel_is_still_a_miss_and_keeps_torque() -> None:
@@ -2687,7 +2691,8 @@ async def test_the_mock_parks_a_pose_past_its_travel_and_lets_go_of_it_the_same_
     assert mock.torque is False and mock.close_note is None
 
     # folded past both limits, as the pose was recorded: already at rest, nothing sent, and
-    # neither the stop nor the hand-off drags it anywhere
+    # neither the stop nor the hand-off drags it anywhere. The hand-off releases it at the
+    # fold and will not take hold again while the folds read past their travel, as on the arm
     folded = LeRobotMock(rest_pose=pose)
     folded.joints.update(pose)
     held = LeRobotAdapter(folded)
@@ -2696,13 +2701,17 @@ async def test_the_mock_parks_a_pose_past_its_travel_and_lets_go_of_it_the_same_
     await folded.stop()
     released = await held.let_go()
     assert released.how == "released", released.reason
-    assert (await held.take_hold()).how == "held"
-    assert folded.actions[-1].keys().isdisjoint({"shoulder_lift", "elbow_flex"}), folded.actions
+    written = list(folded.actions)
+    refused = await held.take_hold()
+    assert refused.how == "refused", refused.reason
+    assert "shoulder_lift" in refused.reason and "elbow_flex" in refused.reason, refused.reason
+    assert folded.actions == written and folded.torque is False, folded.actions
     assert {j: folded.joints[j] for j in ("shoulder_lift", "elbow_flex")} == {
         j: pose[j] for j in ("shoulder_lift", "elbow_flex")
     }
     await held.close()
-    assert folded.torque is False and folded.close_note is None, "a fold is let go of"
+    assert folded.torque is False
+    assert (folded.close_note or "").startswith("the arm is limp and in your hands")
 
 
 async def test_the_mock_judges_its_own_rest_move_rather_than_assuming_it_arrived() -> None:
@@ -2875,24 +2884,24 @@ async def test_one_camera_keeps_its_default_name_and_the_health_shape_it_always_
 
 # ── handing the arm to a person: let go, placed by hand, taken hold of again ────────────
 
-PLACED_PAST_BY = 17.0
-"""How far past the default `FakeArm`'s floor the hand-placed shoulder sits. Any amount would
-do; what matters is that it is past the travel, not how far."""
+PLACED_PAST_BY = 9.0
+"""How far past a joint's travel a test places it by hand. Any amount would do; what matters is
+that it is past the travel, not how far, and that its tenth is not the edge."""
 
 HAND_PLACED = {
     "shoulder_pan": 0.0,
-    "shoulder_lift": -DEFAULT_TRAVEL_DEG / 2 - PLACED_PAST_BY,
+    "shoulder_lift": -DEFAULT_TRAVEL_DEG / 2 + PLACED_PAST_BY,
     "elbow_flex": 40.0,
     "wrist_flex": 15.0,
     "wrist_roll": 0.0,
     "gripper": 35.0,
 }
-"""Where a person left the arm, with the gripper closed on something.
+"""Where a person left the arm, with the gripper closed on something, and every body joint
+inside the travel of a plain `FakeArm`, the shoulder close to its floor.
 
-`shoulder_lift` is outside the travel the calibration recorded on purpose. A hand-placed arm
-easily is, the bench arm's own fold was, and the servo clamps any goal to its travel: a goal
-for that joint, clipped or not, is a goal at the limit, and writing it drags the arm out of
-the pose the person spent the wait setting. So that joint is written no goal at all."""
+That is the pose `take_hold` holds, written where it stands, unclipped. A pose with a joint
+placed past its travel is the other case, refused before torque comes on, and the tests of it
+build their poses from the calibration (`_past`)."""
 
 BY_HAND_POSE = {"shoulder_lift": -20.0, "elbow_flex": 40.0, "wrist_flex": 15.0, "gripper": 35.0}
 """The pose the operator set in the captured `--by-hand` run, for the mock's narrower ranges."""
@@ -2995,16 +3004,18 @@ async def test_take_hold_writes_the_pose_before_torque_comes_on_and_again_after(
     assert (await adapter.let_go()).how == "released"
     arm.positions.update(HAND_PLACED)  # a person lifts it and puts it where the run starts
 
+    assert all(
+        arm.travel(joint)[0] <= value <= arm.travel(joint)[1]
+        for joint, value in HAND_PLACED.items()
+        if joint != "gripper"
+    ), "every body joint is placed inside its travel, or this is the refusal's test"
+
     held = await adapter.take_hold()
     assert held.how == "held" and held.ok
     assert held.reason == "holding the pose you set"
     assert arm.timeline == ["disable_torque", "send", "enable_torque", "send"], arm.timeline
-    # every joint where it was placed, the gripper included, except the one placed past its
-    # travel: the servo would clamp that goal to the limit, so it is written none, clipped or
-    # otherwise, before torque or after
-    goal = {
-        f"{joint}.pos": value for joint, value in HAND_PLACED.items() if joint != "shoulder_lift"
-    }
+    # every joint where it was placed, the gripper included, before torque and after
+    goal = {f"{joint}.pos": value for joint, value in HAND_PLACED.items()}
     assert arm.actions == [goal, goal], arm.actions
     assert transport._range_clips == 0, "a hand-placed pose was walked back inside the travel"
     assert held.joints == HAND_PLACED and arm.positions == HAND_PLACED
@@ -3060,37 +3071,141 @@ async def test_a_joint_that_slipped_as_torque_arrived_is_refused_but_not_called_
     assert "limp and in your hands" not in note, note
 
 
-async def test_a_joint_placed_past_its_travel_that_moved_is_named_with_the_travel() -> None:
-    """The skip avoids writing a goal the servo would clamp, and that is all it does. What a
-    servo does with the goal it already has when torque comes back is not documented anywhere
-    quackd can read, so a joint placed past its travel can still move, and the read-back is
-    what finds out. When it is that joint, the person is told which, that it was past its
-    calibrated travel and where that ends, in this arm's own numbers, and by how much it
-    moved. Here it is a joint placed past its ceiling, on a calibration of several spans."""
+def _handed_over_far_from(arm: FakeArm, joint: str, by: float) -> LeRobotReal:
+    """The real backend over `arm`, resting at a pose whose `joint` lies near the end of its
+    travel *opposite* the one it is about to be placed past (`by`'s sign says which), which is
+    where a hand-off leaves its servo's last goal: the rest move's, written before the arm was
+    lifted. Every other joint rests in the middle of its travel."""
+    rest = {j: 0.0 for j in SPANS} | {joint: _inside(arm, joint, -0.8 if by > 0 else 0.8)}
+    arm.positions.update(rest)
+    return LeRobotReal("COM5", robot=arm, rest_pose=rest)
+
+
+@pytest.mark.parametrize("by", [-PLACED_PAST_BY, PLACED_PAST_BY], ids=["floor", "ceiling"])
+async def test_take_hold_leaves_torque_off_under_a_joint_placed_past_its_travel(by: float) -> None:
+    """What went wrong, twice. `take_hold` first wrote a hand-placed joint's present position
+    as its goal before torque came on, and past the travel the servo clamps that goal to the
+    limit, so torque hauled the joint to the near end with a hand on it. The fix skipped the
+    joint instead, and that was worse: the servo then keeps the last goal it was written, which
+    after a hand-off is the rest move's, written before the arm was lifted and here near the far
+    end of the travel, so a servo that drives to its stored goal when torque comes on
+    (`up.TORQUE_ENABLE_HOLDS_PRESENT`, unverified) swings the joint across the whole travel.
+
+    Neither keeps the joint where the person put it, so `take_hold` refuses before it writes
+    anything or switches torque on, the arm stays limp in their hands, and they are told which
+    joint, where it reads and where its travel is, in this arm's numbers, and to move it
+    inside. The `FakeArm` does not model a servo driving to its stored goal, so what this reads
+    is that no goal went out and `enable_torque` was never called. Past either end."""
     arm = _spanned()
-    arm.positions.update({joint: 0.0 for joint in SPANS})
-    transport = LeRobotReal("COM5", robot=arm, rest_pose={joint: 0.0 for joint in SPANS})
+    joint = "wrist_flex"
+    transport = _handed_over_far_from(arm, joint, by)
     adapter = LeRobotAdapter(transport)
     await adapter.connect()
     assert (await adapter.let_go()).how == "released"
-    placed = _past(arm, "wrist_flex", 9.0)
-    arm.positions["wrist_flex"] = placed
-    arm.slips = {"wrist_flex": -(TOL_DEG + 6.0)}  # it drops as the servos take the weight
+    placed = _past(arm, joint, by)
+    arm.positions[joint] = placed
 
     refused = await adapter.take_hold()
-    assert refused.how == "refused" and arm.torque is True
-    assert all("wrist_flex.pos" not in action for action in arm.actions), arm.actions
-    ceiling = transport.joint_range_deg["wrist_flex"][1]
-    reason = refused.reason
-    assert f"the arm moved as torque came on (wrist_flex by {TOL_DEG + 6.0:.0f} degrees)" in reason
-    assert f"wrist_flex was placed at {placed:.0f}, past the {round(ceiling, 1):g}" in reason
-    assert "calibrated travel" in reason, reason
+    assert refused.how == "refused" and not refused.ok
+    assert arm.timeline == ["disable_torque"], "a goal or a torque write reached a placed joint"
+    assert arm.torque is False and transport.in_hand is True, "the arm is still in the hand"
+    assert arm.positions[joint] == placed and refused.joints[joint] == placed
+    lo, hi = published_travel(*transport.joint_range_deg[joint])
+    assert refused.reason.startswith(
+        f"{joint} reads {placed:.1f}, outside its calibrated travel of {lo:.1f}..{hi:.1f}, so "
+        "quackd left torque off"
+    ), refused.reason
+    assert refused.reason.endswith(
+        f"Move {joint} inside its travel before the arm is taken hold of"
+    )
+
+    await adapter.close()
+    note = adapter.close_note or ""
+    assert note.startswith("the arm is limp and in your hands"), note
+    assert "torque was left on" not in note, note
+
+
+async def test_take_hold_names_every_joint_placed_past_its_travel_at_either_end() -> None:
+    """Two joints placed past opposite ends of their travel in one hand-off: both are named, in
+    the order the arm reports them, each with its own reading and its own travel, and the
+    sentence asks for both to be moved. A refusal naming only the first would send the person
+    back to the arm to fix one joint and be refused again over the other."""
+    arm = _spanned()
+    transport = _handed_over_far_from(arm, "elbow_flex", PLACED_PAST_BY)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    low = _past(arm, "shoulder_lift", -PLACED_PAST_BY)
+    high = _past(arm, "elbow_flex", PLACED_PAST_BY)
+    arm.positions |= {"shoulder_lift": low, "elbow_flex": high}
+
+    refused = await adapter.take_hold()
+    assert refused.how == "refused" and arm.timeline == ["disable_torque"], arm.timeline
+    shoulder = published_travel(*transport.joint_range_deg["shoulder_lift"])
+    elbow = published_travel(*transport.joint_range_deg["elbow_flex"])
+    assert refused.reason.startswith(
+        f"shoulder_lift reads {low:.1f} and elbow_flex reads {high:.1f}, outside their "
+        f"calibrated travel of {shoulder[0]:.1f}..{shoulder[1]:.1f} and "
+        f"{elbow[0]:.1f}..{elbow[1]:.1f}, so quackd left torque off"
+    ), refused.reason
+    assert "Move shoulder_lift and elbow_flex inside their travel" in refused.reason
+
+
+def test_a_joint_a_hair_past_its_travel_is_never_named_inside_it() -> None:
+    """The reading is printed the way the range refusal prints a goal (`said_past`): to a tenth
+    unless a tenth would put it on the travel the same sentence gives, and then as it is. A
+    joint a few hundredths past its ceiling read to a tenth is the ceiling itself, and "reads
+    65.0, outside its calibrated travel of -65.0..65.0" is a sentence that contradicts itself."""
+    hi = 50.0 + RAMP_RESOLUTION / 4  # a travel whose end is no tenth, so it is printed inward
+    reading = hi + RAMP_RESOLUTION / 4
+    said = placed_past_travel({"wrist_flex": reading}, {"wrist_flex": (-hi, hi)})
+    lo_shown, hi_shown = published_travel(-hi, hi)
+    printed = float(said.split(" reads ", 1)[1].split(",", 1)[0])
+    assert not lo_shown <= printed <= hi_shown, said
+    assert f"{lo_shown:.1f}..{hi_shown:.1f}" in said, said
+
+
+async def test_a_teardown_over_a_joint_placed_past_its_travel_leaves_the_arm_limp() -> None:
+    """The teardown a refused take-hold leads into, on the real backend: it begins with a stop,
+    and a stop over an arm in a hand takes hold of it first. That take-hold refuses for the same
+    joint, so the stop sends no torque write and says it held nothing, the rest move after it
+    moves nothing a limp servo would follow and takes no hold either, and the close ends on the
+    note for an arm in somebody's hands. The torque-left-on line there would tell the person
+    holding a limp arm that it holds itself up."""
+    clock = SteppedClock()
+    arm = _spanned()
+    joint = "elbow_flex"
+    transport = _handed_over_far_from(arm, joint, -PLACED_PAST_BY)
+    transport.clock = clock
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    placed = _past(arm, joint, -PLACED_PAST_BY)
+    arm.positions[joint] = placed
+
+    await transport.stop()
+    assert "enable_torque" not in arm.timeline, arm.timeline
+    assert arm.torque is False and transport.in_hand is True
+    assert (transport.stop_error or "").startswith(
+        f"the arm is limp in somebody's hands: {joint} reads {placed:.1f}"
+    ), transport.stop_error
+
+    rested = await adapter.go_to_rest()
+    assert not rested.reached, rested
+    assert "enable_torque" not in arm.timeline and arm.torque is False, arm.timeline
+    assert arm.positions[joint] == placed, "a limp joint was moved"
+
+    await adapter.close()
+    note = adapter.close_note or ""
+    assert note.startswith("the arm is limp and in your hands"), note
+    assert "torque was left on" not in note and "holding itself up" not in note, note
 
 
 async def test_a_stop_while_the_arm_is_in_a_hand_picks_it_up_before_it_sends_anything() -> None:
     """Every teardown begins with a stop, so this is what a Ctrl-C during the wait reaches. A
     stop is "stay where you are", and a goal written to a limp servo stops nothing: the arm is
-    energised where the hand has it, and the rest move that follows can then put it down."""
+    energised where the hand has it, and the rest move that follows can then put it down. Every
+    body joint here is inside its travel, which is the only pose `take_hold` energises."""
     arm, transport = _handover_arm()
     adapter = LeRobotAdapter(transport)
     await adapter.connect()
@@ -3100,11 +3215,10 @@ async def test_a_stop_while_the_arm_is_in_a_hand_picks_it_up_before_it_sends_any
     await transport.stop()
     assert arm.timeline == ["disable_torque", "send", "enable_torque", "send", "send"]
     assert arm.torque is True and transport._in_hand is False
-    # the hold is the body joints and not the gripper, and not the joint placed past its
-    # travel either: a goal for that one is the limit, and the servo would haul it there
-    body = {f"{joint}.pos" for joint in JOINTS if joint not in ("gripper", "shoulder_lift")}
-    assert set(arm.actions[-1]) == body, "the hold re-sent the gripper or the placed shoulder"
-    assert all("shoulder_lift.pos" not in action for action in arm.actions), arm.actions
+    # the hold is the body joints and not the gripper, which would drop what it is holding
+    body = {f"{joint}.pos" for joint in JOINTS if joint != "gripper"}
+    assert set(arm.actions[-1]) == body, "the hold re-sent the gripper and dropped the object"
+    assert arm.actions[-1]["shoulder_lift.pos"] == HAND_PLACED["shoulder_lift"]
     assert arm.positions == HAND_PLACED, "the stop moved the arm out of the pose it was given"
     assert transport.stop_error is None
 
@@ -3163,6 +3277,36 @@ async def test_a_mock_stop_over_an_arm_in_a_hand_takes_hold_before_it_stops() ->
     await mock.stop()
     assert mock.sequence == ["let_go", "take_hold", "stop"], mock.sequence
     assert mock.torque is True and mock.in_hand is False
+
+
+async def test_the_mock_leaves_torque_off_under_a_joint_placed_past_its_travel() -> None:
+    """The real `take_hold`'s refusal offline, in the same words and with nothing written: the
+    mock used to skip such a joint and take hold of the rest, which rehearsed an ending the arm
+    no longer has. Its teardown then meets a limp arm the way the real one does: the stop takes
+    hold of nothing, the rest move stalls where the arm is instead of folding a limp arm, and
+    the close says the arm is in somebody's hands."""
+    mock = LeRobotMock(rest_pose=dict(REST))
+    adapter = LeRobotAdapter(mock)
+    await adapter.connect()
+    assert (await adapter.let_go()).how == "released"
+    placed = MOCK_RANGES["wrist_flex"][1] + PLACED_PAST_BY
+    mock.joints["wrist_flex"] = placed
+    written = list(mock.actions)
+
+    refused = await adapter.take_hold()
+    assert refused.how == "refused" and not refused.ok
+    assert refused.reason == placed_past_travel({"wrist_flex": placed}, MOCK_RANGES)
+    assert mock.actions == written, "a goal was written for an arm that was refused"
+    assert mock.torque is False and mock.in_hand is True
+
+    await mock.stop()
+    assert mock.torque is False and mock.in_hand is True
+    rested = await adapter.go_to_rest()
+    assert rested.how == "stalled", rested
+    assert mock.joints["wrist_flex"] == placed, "the rest move folded a limp arm"
+    await adapter.close()
+    assert (mock.close_note or "").startswith("the arm is limp and in your hands"), mock.close_note
+    assert mock.sequence == ["let_go", "take_hold", "take_hold", "stop", "rest", "close"]
 
 
 async def test_a_mock_arm_that_slipped_as_torque_came_on_refuses_and_is_not_in_a_hand() -> None:

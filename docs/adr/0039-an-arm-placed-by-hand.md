@@ -7,13 +7,19 @@ recorded rest pose" in the first decision below now means that pose as far as th
 calibration lets the servo be driven toward it. A joint recorded past its calibrated travel is
 at rest within `TOL_DEG` of the edge of that travel or anywhere beyond it on the side of its
 fold, and `let_go()` still asks exactly what `close()` asks, so `--by-hand` releases an arm
-parked at the edge and one already folded past it. The second decision loses one joint:
-`take_hold()` writes no goal for a joint the person placed outside its travel, because the servo
-would clamp that goal to the limit and drive the joint there under their hand. That joint is
-left to whatever its servo does when torque comes on, which is `TORQUE_ENABLE_HOLDS_PRESENT` and
-still unverified, and the read-back still catches it: when it is the joint that moved, the
-refusal says it was placed past its travel and gives the numbers. The stop that picks an arm up
-out of a hand skips such a joint for the same reason.
+parked at the edge and one already folded past it. The second decision gains a refusal ahead of
+it: `take_hold()` does not switch torque on while any body joint the person placed reads outside
+its travel. A goal written for that joint is clamped to the limit and drives the joint there
+under their hand. No goal leaves the servo the last one it was written, which after a hand-off
+is the rest move's, possibly the far end of the travel, and whether torque coming on holds the
+joint where it is instead is `TORQUE_ENABLE_HOLDS_PRESENT`, still unverified. Neither keeps the
+joint where it was put, so nothing is written, torque stays off, the arm stays in their hands,
+and the refusal names each joint, its reading and its travel and asks for it to be moved
+inside. The run ends there, and the stop that picks an arm up out of a hand meets the same
+refusal, so its teardown closes on the note for an arm in somebody's hands, never on the one
+about torque left on. (This amendment first said the joint was left out of both writes and left
+to its servo, with the read-back to catch it, and that could be the larger of the two motions.
+ADR-0045 has the whole of it.)
 
 **Amended again 2026-09-23, by `quackd robot release`:** the rest pose is no longer the only
 place quackd releases an arm. A person at the arm can now ask for its torque by name, wherever

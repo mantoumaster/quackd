@@ -772,10 +772,16 @@ def render_events(
         stage = str(d.get("stage", ""))
         reason = str(d.get("reason", ""))
         joints = d.get("joints") or {}
-        text = f"{stage}: {reason}" if reason else stage
+        refused = d.get("how") == "refused"
+        # A refused release or hold is recorded under the stage it was trying for, and is said
+        # as a refusal. "held:" over a take-hold that left torque off told the person holding
+        # the arm, in the one word they read first, that something now holds it.
+        label = {"released": "release refused", "held": "hold refused"}.get(stage, stage)
+        said = label if refused else stage
+        text = f"{said}: {reason}" if reason else said
         if joints:
             text += " (" + ", ".join(f"{j} {float(v):.0f}" for j, v in sorted(joints.items())) + ")"
-        colour = "yellow" if stage in ("released", "skipped") else "cyan"
+        colour = "yellow" if refused or stage in ("released", "skipped") else "cyan"
         return [LogLine("hand", text, colour, mark="note")]
     if k == "release":
         # the end-of-run offer to a person holding an arm that missed its rest pose: said in

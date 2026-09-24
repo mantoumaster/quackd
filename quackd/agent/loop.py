@@ -511,6 +511,25 @@ class AgentLoop:
     pencil still in the jaws can drive that pencil into the bench, and the person who put it
     there is the one who should take it out."""
 
+    NOT_TAKEN_HOLD = (
+        "quackd did not take hold of the arm, so the run stops here and the arm is still in your "
+        "hands"
+    )
+    """Said to the person the moment `take_hold` refuses while the arm is still in their hands
+    (`in_hand`), ahead of its reason, and the run aborts with the same line. They pressed Enter
+    holding the arm and are waiting to hear they can let go, and "the arm is not holding the
+    pose you set", the refusal for an arm that slipped as torque came on, reads as though
+    something is holding it. Here nothing may be: a joint placed past its travel is refused
+    before torque comes on at all, and a servo that never took torque back is still limp."""
+
+    STILL_IN_YOUR_HANDS = (
+        "quackd never took hold of the arm, so it does not open the gripper for you: take out "
+        "whatever is in it by hand, and keep hold of the arm"
+    )
+    """The end of a `--by-hand` run whose arm nothing took hold of, in place of `HAND_IT_BACK`,
+    which begins "the arm is holding where it ended" and asks for Enter to open a gripper that a
+    limp servo would not open."""
+
     HAND_BACK_S = 120.0
     """How long the arm waits to be unloaded at the end. It is holding its pose meanwhile, so
     the cost of waiting is an energised arm and the cost of not waiting is a jam. Bounded
@@ -542,13 +561,19 @@ class AgentLoop:
     and not others, and the only safe reading of that is the limp one."""
 
     RELEASE_NOT_SENT = (
-        "the release was interrupted before anything was sent, so torque is as it was and the "
-        "arm still holds itself up where it stopped"
+        "the release was interrupted before anything was sent, so torque is as the rest move "
+        "left it"
     )
     """Said when a Ctrl-C lands on the release after Enter and before it went out, on the read
     the release begins with: the arm's own backend says so (`in_hand` still False). Nothing
-    reached a motor, so the arm is the one the offer described, holding itself up, and the
-    close's own line about torque follows."""
+    reached a motor, which is all this line knows, so it says that and no more.
+
+    It used to go on to say the arm "still holds itself up", and nothing read after the
+    interrupt said so. On the arm the read the Ctrl-C landed on can still be out on the bus when
+    the close comes straight after it, and then the close's own read is refused and its line
+    says quackd cannot tell whether the arm is holding itself up: two lines in a row saying
+    opposite things to a person deciding whether to let go. Whether the arm holds itself up is
+    the close's line to say, from its own read, and it follows this one."""
 
     async def _hand_over(self) -> bool:
         """Let go of the arm, wait for somebody to place it, then hold what they left.
@@ -556,8 +581,9 @@ class AgentLoop:
         Returns whether the arm is now holding a pose a person chose. False is an abort, and
         the caller raises: there is no sensible run from here, because the arm is either limp
         in somebody's hand or holding a pose nobody picked. Every way out of here still goes
-        through the run's own teardown, which stops (picking a released arm back up), folds
-        the arm to its rest pose and lets go there."""
+        through the run's own teardown, which stops (picking a released arm back up, unless a
+        joint reads past its travel, and then the arm stays in the hand and the close says so),
+        folds the arm to its rest pose and lets go there."""
         hand = self.cfg.hand_off
         if hand is None or self.cfg.dry_run:
             return False
@@ -584,6 +610,15 @@ class AgentLoop:
         self._handed_over = True
         held = await self._take_hold()
         if not held.ok:
+            if getattr(self.cfg.transport, "in_hand", None) is True:
+                # Nothing took the arm from the person, who is holding it and waiting to be
+                # told they can let go, so they are told now and not only in the summary at the
+                # end: the teardown after this takes a while, and every line of it is about an
+                # arm they are still holding.
+                said = f"{self.NOT_TAKEN_HOLD}: {held.reason}"
+                with contextlib.suppress(Exception):
+                    hand.say(said)
+                raise Aborted(said)
             raise Aborted(f"the arm is not holding the pose you set: {held.reason}")
         hand.say(f"{held.reason}, you can let go. {_joints_line(held.joints)}")
         # The person's time is not the pilot's. `max_minutes` starts before the rest move, and
@@ -606,9 +641,19 @@ class AgentLoop:
         This sits between the run's `stop`, which is holding the arm where it ended, and the
         rest move, which folds it. Nothing here may raise: it is in the teardown, and a
         cancellation landing on the wait is a person pressing Ctrl-C again, which means "skip
-        this and finish" rather than "abandon the arm energised with no record written"."""
+        this and finish" rather than "abandon the arm energised with no record written".
+
+        An arm still in the person's hands is not asked about (`STILL_IN_YOUR_HANDS`): the
+        take-hold was refused, the stop that begins the teardown could not take hold either,
+        and the question would tell them the arm is holding where it ended."""
         hand = self.cfg.hand_off
         if hand is None or self.cfg.dry_run:
+            return
+        if getattr(self.cfg.transport, "in_hand", None) is True:
+            self._emit("hand_off", stage="skipped", reason="the arm is still in your hands")
+            self._note(self.STILL_IN_YOUR_HANDS)
+            with contextlib.suppress(Exception):
+                hand.say(self.STILL_IN_YOUR_HANDS)
             return
         try:
             unloaded = await hand.wait(
@@ -677,19 +722,27 @@ class AgentLoop:
         finish", and the close, `run_end` and the summary still have to happen. So is one
         landing on the release itself, after Enter: once the release has gone out, which is the
         one moment the arm may already be limp in part, the person is told so, and before it
-        went out, that nothing was sent and torque is as it was. Either way the teardown carries
-        on. Nothing here raises.
+        went out, that nothing was sent and torque is as the rest move left it. Either way the
+        teardown carries on. Nothing here raises.
 
         Only a miss the arm answered for gets the offer: a move that stalled or ran out of time,
         or one refused on a write after a read that came back (`RestResult.answered`). A move that
         failed because the arm stopped answering, which is what cutting the servo supply looks
         like, or on a call that never came back and left the bus wedged, is nothing quackd can
         say "holding itself up" of, and the release it would offer refuses at its first read
-        for as long as that stays so, after a person has been kept waiting for it."""
+        for as long as that stays so, after a person has been kept waiting for it.
+
+        Nor is it made over an arm still in somebody's hands (`in_hand`), which is where a
+        `--by-hand` run whose take-hold was refused ends: a joint placed past its travel, or a
+        servo that never took torque back. That arm is not holding itself up, the one thing
+        the offer begins by saying, and there is nothing to release. The close's own line
+        tells the person it is in their hands."""
         person = self.cfg.person
         if person is None or self.cfg.dry_run or parked is None:
             return
         if not parked.recorded or parked.reached or not parked.answered:
+            return
+        if getattr(self.cfg.transport, "in_hand", None) is True:
             return
         offer = self.RELEASE_OFFER.format(why=parked.reason, seconds=self.RELEASE_OFFER_S)
         try:
@@ -719,10 +772,11 @@ class AgentLoop:
             # A Ctrl-C after the Enter. Which side of the send it landed on is the arm's own
             # backend's to say (`in_hand`), because the backend marks the arm in a hand the
             # moment the release call goes out. Before that, on the read the release begins
-            # with, nothing was sent and torque is as it was, and "the arm may be limp" would
-            # send a person to hold up an arm that is holding itself. After it, part of the arm
-            # may already be limp in their hands, and the close says the same. A body that does
-            # not say gets the limp reading, which is the one that never drops an arm.
+            # with, nothing was sent and torque is as the rest move left it, and "the arm may be
+            # limp" would be said of a release that never happened: whether the arm holds itself
+            # up is the close's line, from its own read (`RELEASE_NOT_SENT`). After it, part of
+            # the arm may already be limp in their hands, and the close says the same. A body
+            # that does not say gets the limp reading, which is the one that never drops an arm.
             if getattr(self.cfg.transport, "in_hand", None) is False:
                 self._emit(
                     "release", stage="kept", reason="interrupted before the release was sent"

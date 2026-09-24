@@ -87,6 +87,7 @@ from quackd_lerobot.verbs import (
     Clip,
     at_rest,
     past_reach,
+    placed_past_travel,
     range_refusal,
     reachable_rest_goal,
     released_by_the_close,
@@ -734,9 +735,12 @@ class LeRobotReal:
         self._in_hand = False
         """This arm is limp in somebody's hands, because `let_go()` put it there.
 
-        Set only by a release that was read back off the arm, cleared only by a `take_hold()`
-        that confirmed torque came on. Every teardown begins with `stop`, which is what picks
-        the arm back up, so the window this is true in is the wait itself."""
+        Set the moment a release call goes out (`let_go`), cleared only by a release that every
+        motor refused and by a `take_hold()` that confirmed torque came on. Every teardown
+        begins with `stop`, which is what picks the arm back up, so the window this is true in
+        is the wait itself, and past it only where the take-hold was refused: a joint placed
+        past its travel, which it leaves torque off under, or a servo that never took torque
+        back. Then it holds to the close."""
         self._let_go_why: str | None = None
         """What the close says the arm was let go of for, when the last release said: set by
         the second door (`verbs.LET_GO_WHERE_IT_STOOD`), cleared by the first, which leaves the
@@ -1711,7 +1715,10 @@ class LeRobotReal:
         An arm somebody is holding is taken hold of first. Every teardown begins with a stop,
         so this is what a Ctrl-C during the hand-off wait reaches: the arm is energised where
         the person's hand has it, and the rest move that follows can then put it down. Sending
-        a goal to a limp servo instead would be a stop that stopped nothing.
+        a goal to a limp servo instead would be a stop that stopped nothing. Where a body joint
+        reads outside its travel `take_hold` leaves torque off and says why, the arm stays in
+        the hand, and this stop reports that it held nothing (`stop_error`), so the close that
+        follows ends on the note for an arm in somebody's hands.
 
         A joint reading outside its calibrated travel is left out of the goal too. The servo
         clamps every goal to its travel, so "stay where you are" written to a joint folded past
@@ -1720,10 +1727,10 @@ class LeRobotReal:
         nothing in the record saying the stop had moved it.
 
         Leaving it out avoids starting a rise, and that is all it can do: it does not stop one
-        already under way. For a joint reading past its travel, any goal quackd has written is
-        the limit to the servo. LeRobot caps each send to within a step of the reading
-        (`max_relative_target`), and a step from a reading past the travel is still past it,
-        so the servo clamps it to the limit and drives there at its own speed. A joint that a
+        already under way. For a joint reading past its travel, any goal quackd writes while it
+        reads there is the limit to the servo. LeRobot caps each send to within a step of the
+        reading (`max_relative_target`), and a step from a reading past the travel is still past
+        it, so the servo clamps it to the limit and drives there at its own speed. A joint that a
         move had started lifting out of its fold is therefore still rising when a stop lands,
         whatever the stop writes to it or leaves out, until it reaches the limit, and quackd
         has nothing that halts that stretch: the power switch is the only stop for it
@@ -1957,17 +1964,29 @@ class LeRobotReal:
         snap the arm back to the fold with a person's hand in it.
 
         It is written again afterwards, and read back, so the answer says whether the arm
-        actually stayed where it was put rather than assuming it. A refusal here leaves torque
-        on: the arm is holding *something*, and the caller is told what moved.
+        actually stayed where it was put rather than assuming it. A refusal after torque came on
+        leaves torque on: the arm is holding *something*, and the caller is told what moved.
 
-        A joint the person placed outside its calibrated travel is left out of both writes,
-        for `_hold()`'s reason: the servo clamps a goal to its travel, so writing where that
-        joint is would be writing its limit, and torque would then drive it there with the
-        person's hand on it. That is all the skip does. It avoids writing a goal the servo would
-        clamp; it does not make the joint stay put, because what the servo does with the goal
-        it already has when torque comes on is the unverified row above, and that goal may be
-        anywhere. The read-back is what finds out, and when it is that joint that moved, the
-        refusal says so."""
+        It refuses before any of that, with nothing written, torque still off and the arm still
+        in the person's hands, when a body joint reads outside its calibrated travel, because
+        nothing quackd can do then keeps that joint where it was put. Writing where it is writes
+        a goal past the travel, which the servo clamps to the limit
+        (`up.POSITION_LIMITS_CLAMP_GOALS`), so torque would haul the joint to that end with a
+        hand on it. Writing nothing leaves the servo the last goal it was given, and after a
+        hand-off that is the rest move's, written before the person lifted the arm and possibly
+        the far end of the travel from where they placed it: if the servo drives to its stored
+        goal when torque comes on, which is the unverified row above, the joint swings across
+        its whole travel. This method used to take that second way, a joint past its travel
+        left out of both writes, as the smaller motion, and it can be by far the larger. So the
+        person is told which joint, where it reads and where its travel is, and to move it
+        inside (`verbs.placed_past_travel`). `_in_hand` is left set, so everything after this
+        goes on treating the arm as limp in a hand: `_hold()` says the stop held nothing, and
+        `close()` ends on the note for an arm in somebody's hands.
+
+        The gripper is not in that check. LeRobot bounds a gripper reading into its 0..100 range
+        before quackd sees it (`_normalize`, the function `up.DEGREES_FORMULA` cites, bounds
+        every mode but degrees), so it cannot read outside its travel, and a goal for it is
+        bounded the same way (`up.DEGREES_NO_CLAMP`)."""
         if self._closed:
             return HandResult("refused", "the arm's transport is closed")
         try:
@@ -1976,6 +1995,15 @@ class LeRobotReal:
             placed = {j: v for j, v in self._joints.items() if j in JOINTS}
             if not placed:
                 return HandResult("refused", "the arm reported no joint to hold")
+            outside = {
+                j: v for j, v in placed.items() if j != "gripper" and self._outside_travel(j, v)
+            }
+            if outside:
+                # before a single write: a goal for such a joint and no goal for it both move
+                # it once torque comes on (the docstring says how), so torque stays off
+                return HandResult(
+                    "refused", placed_past_travel(outside, self.joint_range_deg), joints=placed
+                )
             # The gripper IS in that goal, which is the opposite of what `_hold()` and the rest
             # move do, for the reason they leave it out. They omit it because the squeeze the
             # gripper is holding is a goal somebody meant, and re-sending its measured position
@@ -1983,16 +2011,15 @@ class LeRobotReal:
             # fingers left them with no torque behind them, and the last goal this arm was
             # written may be from another session. Writing where they are is what pins the
             # pencil; omitting it hands the servo whatever stale goal it still had.
-            # Unclipped, because this is where the arm physically is; and a joint that reads
-            # outside its travel is not in it at all, clipped or not (`_hold()` says why).
-            body = {j: v for j, v in placed.items() if not self._outside_travel(j, v)}
-            await self._send(body, clip=False)
+            # Unclipped, because this is where the arm physically is, and every body joint of
+            # it is inside the travel by now.
+            await self._send(placed, clip=False)
             # up.BUS_ENABLE_TORQUE, retried like the release: one lost packet here refuses the
             # hold with the joints before it energised and the rest still limp in a hand
             await self._call(
                 functools.partial(self._robot.bus.enable_torque, num_retry=TORQUE_RETRIES)
             )
-            await self._send(body, clip=False)
+            await self._send(placed, clip=False)
             await self.clock.sleep(TICK_S)
             await self._probe()
         except Exception as e:
@@ -2025,16 +2052,6 @@ class LeRobotReal:
                 f"the arm moved as torque came on ({worst} by {moved[worst]:.0f} degrees), so "
                 "it is not holding the pose you set; it is holding where it is now"
             )
-            if worst not in body and (span := self.joint_range_deg.get(worst)) is not None:
-                # the joint nobody could write a goal for is the one that moved, so the person
-                # is told which, and that the travel is why, in this arm's own numbers
-                was = placed[worst]
-                limit = span[0] if was < span[0] else span[1]
-                why += (
-                    f". {worst} was placed at {was:.0f}, past the {round(limit, 1):g} its "
-                    "calibrated travel ends at, and the servo takes no goal beyond that, so "
-                    "quackd wrote it none: place it inside the travel to have it held there"
-                )
             return HandResult("refused", why, joints=held)
         return HandResult("held", "holding the pose you set", joints=held)
 

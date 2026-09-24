@@ -475,7 +475,9 @@ recorded
     those angles came off `lerobot:mock`, which holds whatever it is told. A joint that moved
     more than five degrees between the two reads is refused by name and the run ends before the
     model gets a turn, so anything quackd accepted moved less than that, and the angles it
-    printed are what to read against where you thought you left the arm.
+    printed are what to read against where you thought you left the arm. A joint you placed
+    outside its calibrated travel is refused before torque comes back on at all: the refusal
+    names it, where it reads and its travel, the arm stays limp in your hands, and the run ends.
 
     The pilot's clock starts when you press Enter rather than at the rest move, so a minute
     spent finding a pencil is not a minute out of `--max-minutes`.

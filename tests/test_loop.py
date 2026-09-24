@@ -36,7 +36,7 @@ from quackd.safety import Aborted
 from quackd.transport.base import CameraFrame, DuckState
 from quackd.transport.mock import MockTransport
 from quackd_lerobot import LeRobotAdapter
-from quackd_lerobot.mock import REST, LeRobotMock
+from quackd_lerobot.mock import MOCK_RANGES, REST, LeRobotMock
 from quackd_lerobot.verbs import GRIPPER_OPEN, TOL_DEG, rest_goal
 from quackd_microduck import MicroduckAdapter
 from quackd_open_duck import OpenDuckAdapter
@@ -3320,8 +3320,14 @@ async def test_a_ctrl_c_before_the_release_went_out_says_nothing_was_sent(
     had gone out: the person was sent to hold up an arm that was holding itself, and the close
     then said the release "did not take". The arm's own backend says which side of the send it
     was (`in_hand`, still False here), and before it the person is told nothing was sent and
-    torque is as it was, the record keeps torque on, and the close says what it says of any arm
-    left holding itself up."""
+    torque is as the rest move left it, the record keeps torque on, and the close says what it
+    says of any arm left holding itself up.
+
+    The line says that and no more. It used to go on "and the arm still holds itself up", which
+    no read after the interrupt had said: on the arm the interrupted read can still be out when
+    the close comes, and then the close cannot read and says quackd cannot tell, the line after
+    this one.
+    Whether the arm holds itself up is the close's to say."""
     mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
 
     async def interrupted(*, anywhere: bool = False) -> Any:
@@ -3333,6 +3339,9 @@ async def test_a_ctrl_c_before_the_release_went_out_says_nothing_was_sent(
     result = await run_duck(_missing_run(mock, tmp_path, person=person))
 
     assert person.said == [AgentLoop.RELEASE_NOT_SENT], person.said
+    said = AgentLoop.RELEASE_NOT_SENT
+    assert "before anything was sent" in said and "as the rest move left it" in said, said
+    assert "holds itself up" not in said and "holding itself up" not in said, said
     assert mock.torque is True and mock.in_hand is False
     assert mock.sequence[-1] == "close", "the close was skipped"
     note = mock.close_note or ""
@@ -3426,6 +3435,45 @@ async def test_a_by_hand_run_is_asked_its_two_questions_and_the_offer_only_after
     assert [e["stage"] for e in _offered(events)] == ["released"]
     assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "let_go", "close"]
     assert mock.in_hand is True
+
+
+async def test_an_arm_placed_past_its_travel_stays_in_your_hands_and_every_line_says_so(
+    tmp_path: Path,
+) -> None:
+    """A `--by-hand` run whose person placed a joint past its travel. `take_hold` leaves torque
+    off, since neither a goal written there nor none keeps that joint where it was put, so the
+    arm is still in their hands and every line after that is said to somebody holding it.
+
+    What went wrong before: the refusal reached the person only in the summary, as "the arm is
+    not holding the pose you set", which reads as though something holds it. The teardown's
+    stop cannot take hold either, and then the hand-back asked them to take what was in a
+    gripper "holding where it ended", and a fold that stalled over the limp arm was offered as
+    one "holding itself up", before the close said the opposite. Now the refusal is said to
+    them at once, with the joint and its travel, neither question is put, the rest move moves
+    nothing, and the close ends on the note for an arm in somebody's hands."""
+    mock = LeRobotMock(rest_pose=REST)
+    placed = MOCK_RANGES["wrist_flex"][1] + TOL_DEG
+    person = ScriptedPerson(mock, places=PLACED | {"wrist_flex": placed}, answers=[True])
+    cfg = _by_hand(mock, person, tmp_path)
+    cfg.person = person  # the one terminal, as the CLI wires it, so the offer could be made
+    result = await run_duck(cfg)
+
+    assert result.outcome == "aborted"
+    assert result.reason.startswith(f"{AgentLoop.NOT_TAKEN_HOLD}: wrist_flex reads"), result.reason
+    assert "Move wrist_flex inside its travel" in result.reason, result.reason
+    assert cfg.provider.calls == 0, "the model was asked something"  # type: ignore[attr-defined]
+    assert person.said == [result.reason, AgentLoop.STILL_IN_YOUR_HANDS], person.said
+    assert [ask[0] for ask in person.asked] == [AgentLoop.PLACE_IT], person.asked
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert _stages(events) == ["released", "held", "skipped"]
+    assert not _offered(events), "a limp arm was offered as holding itself up"
+    assert mock.sequence == ["rest", "let_go", "take_hold", "take_hold", "stop", "rest", "close"]
+    assert mock.torque is False and mock.in_hand is True
+    assert mock.joints["wrist_flex"] == placed, "something moved the placed joint"
+    note = mock.close_note or ""
+    assert note.startswith("the arm is limp and in your hands"), note
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert not any("holds itself up" in n or "holding itself up" in n for n in notes), notes
 
 
 # ── what a person was asked, and whether anybody was asked at all ───────────────────────
