@@ -22,7 +22,7 @@ be quicker than the arm allows ends later than asked.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -67,6 +67,10 @@ RAMP_DECIMALS = 1
 resolution the arm reports its readings in. One encoder tick of the servo is 360/4096 of a
 degree, so a finer target moves nothing further, and the record of a slow move is read by a
 person: a column of goals like 0.5000000000000002 says nothing a tenth does not."""
+RAMP_RESOLUTION = 10.0**-RAMP_DECIMALS
+"""The step a ramp's targets are rounded to, and so the least it can walk a joint by. A goal
+nearer than this to where the joint starts has no target between the two: a ramp would hold
+the start and then send the goal, which is a move with nothing to walk."""
 MOVE_SLACK_S = 2.0
 """Slack a move gets on top of the time its ramp and the step cap say it needs. The transport's
 clock runs on between ticks, because every send and every read is a bus transaction with its
@@ -255,13 +259,27 @@ def ramp_start(
     return start
 
 
-def outside_travel(goal: dict[str, float], travel: dict[str, Any]) -> list[str]:
-    """The goal joints asked for beyond the published travel, which the backend refuses."""
-    return sorted(
-        joint
-        for joint, value in goal.items()
-        if (span := travel.get(joint)) and not float(span[0]) <= value <= float(span[1])
-    )
+def range_refusal(goals: Mapping[str, float], travel: Mapping[str, Any]) -> str | None:
+    """Why a joint goal cannot be sent, in the first joint's words, or None when every joint
+    with a known travel has its goal inside it.
+
+    One sentence for every place that refuses a goal outside the travel: both backends, against
+    the travel they read off the calibration, and `move_joints`, against the travel the
+    manifest published, before anything moves. LeRobot does not clamp a degrees goal and the
+    servo clamps it silently (`upstream_api.POSITION_LIMITS_CLAMP_GOALS`), so a goal let through
+    would be one the arm quietly stops short of. Joints in name order, so the same goals are
+    always refused over the same joint."""
+    for joint, goal in sorted(goals.items()):
+        span = travel.get(joint)
+        if not span:
+            continue
+        lo, hi = float(span[0]), float(span[1])
+        if not lo <= float(goal) <= hi:
+            return (
+                f"{joint}={float(goal):.0f} is outside this arm's calibrated range "
+                f"{lo:.0f}..{hi:.0f}; LeRobot does not clamp a degrees goal, so quackd refuses it"
+            )
+    return None
 
 
 def ramp_target(start: dict[str, float], goal: dict[str, float], share: float) -> dict[str, float]:
@@ -794,21 +812,28 @@ async def move_joints(ctx: VerbContext, p: MoveJointsParams) -> VerbResult:
     Every tick's intent is `Intent.joint(target, duration_s)`, so the record of each send still
     carries the time the pilot asked for.
 
-    Two moves go out whole instead of ramped. A move whose every joint already reads within
-    tolerance of its goal is, as far as this verb can judge, already there: it is sent as one
-    goal and judged after one tick, as it always was. And a move that asks for a joint beyond
-    its published travel is sent as one goal so that the backend refuses it, in its own words,
-    before anything has moved: ramped, the arm would travel to the edge of its travel first and
-    be refused there, holding a pose nobody asked for."""
+    Every move is ramped, a small one included, and is judged arrived only once its ramp has
+    finished, like any other. A move of a few degrees used to go out whole and be judged after
+    one tick whenever every joint already read within the arrival tolerance of its goal, which
+    made `duration_s`, the one thing the pilot is told about pace, untrue for any move that
+    size, and with a lowered step cap left the joint a step along and reported it moved. The one
+    move still sent whole is one with nothing to walk: every joint already within a ramp's
+    resolution of its goal (`RAMP_RESOLUTION`), where a ramp could only hold the start and then
+    send the goal.
+
+    A goal outside the travel the pilot was shown, the manifest's published one, is refused
+    here, before the arm is read or anything is sent, in the words the backend's own refusal
+    uses (`range_refusal`). Ramped, the arm would travel to the edge first and be refused there,
+    holding a pose nobody asked for. And sent whole for the backend to refuse, a goal in the
+    sliver between the published edge, rounded inward, and the exact edge the backend checks
+    was never refused: it went out whole, at the step cap, whatever `duration_s` said."""
     goal = dict(p.positions)
     travel = _travel(ctx)
+    if (refusal := range_refusal(goal, travel)) is not None:
+        return VerbResult.fail(f"move_joints: {refusal}", goal=goal)
     joints = _joints_of(await ctx.transport.get_state())
     start = ramp_start(goal, joints, travel)
-    there = all(
-        joint in joints and abs(joints[joint] - value) <= _joint_tolerance(joint)
-        for joint, value in goal.items()
-    )
-    whole = there or bool(outside_travel(goal, travel))
+    whole = all(abs(goal[joint] - begin) < RAMP_RESOLUTION for joint, begin in start.items())
     distance = max((abs(goal[joint] - begin) for joint, begin in start.items()), default=0.0)
     step = ctx.manifest.limits.get("step_deg") if ctx.manifest is not None else None
     joints, _state, _how, why = await _drive(

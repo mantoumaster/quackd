@@ -1059,6 +1059,12 @@ async def test_a_pilot_hears_that_a_person_cleared_its_doubt(
     question somebody had already answered. It is told now who cleared it, and not to ask
     the same thing twice. A pilot that says feasible on its own is told nothing about a
     person, because nobody was asked."""
+
+    def says_go(_why: str) -> bool:
+        return True
+
+    says_go.asks_a_person = True  # type: ignore[attr-defined]
+
     transport = MockTransport()
     result = await run_duck(
         RunConfig(
@@ -1073,7 +1079,7 @@ async def test_a_pilot_hears_that_a_person_cleared_its_doubt(
             ),
             transport=transport,
             runs_dir=tmp_path,
-            decide=lambda _why: True,
+            decide=says_go,
         )
     )
     assert result.outcome == "success", result.reason
@@ -1091,6 +1097,52 @@ async def test_a_pilot_hears_that_a_person_cleared_its_doubt(
     assert any("a person read that and said go" in text for text in heard), "the pilot's ears"
     assert own["human"] is None and "a person" not in own["summary"]
     assert own["summary"].endswith("verbs that move the body now run")
+
+
+@pytest.mark.parametrize("standing", ["--yes", "a flock's standing answer"])
+async def test_a_pilot_cleared_without_asking_anybody_is_not_told_a_person_did(
+    hello_duck: DuckFile, tmp_path: Path, standing: str
+) -> None:
+    """`_assess` chose the "a person read that and said go" sentence on the answer alone, so a
+    run started with `--yes` (which `quackd record` always passes) or a flock's standing
+    answer told the pilot, and wrote into the assess event's summary, that a person had read its
+    doubt, while the same run rightly wrote no `prompt` row because nobody was asked. A record
+    that invents a witness is the one safety.md says is worse than none. The pilot is told the
+    run was started to go ahead without asking, and still not to raise the same doubt again."""
+    from quackd.cli import _yes_to_go
+
+    decide = _yes_to_go if standing == "--yes" else (lambda _q: True)
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see how heavy the thing is"),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                    ToolCall(name="declare_success", arguments={"reason": "walked"}),
+                ]
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+            decide=decide,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    (cleared,) = [e for e in events if e["kind"] == "assess"]
+    assert cleared["human"] == "go" and cleared["ok"] is True
+    assert not [e for e in events if e["kind"] == "prompt"], "nobody was asked"
+    assert "a person" not in cleared["summary"], cleared["summary"]
+    for said in (
+        "cannot see how heavy the thing is",
+        "this run was started to go ahead without asking anybody",
+        "verbs that move the body now run",
+        "Do not assess again on the same doubt, only on something new you see",
+    ):
+        assert said in cleared["summary"], said
+    heard = [e["text"] for e in events if e["kind"] == "observation"]
+    assert not any("a person" in text for text in heard), "the pilot's ears"
+    assert any("without asking anybody" in text for text in heard), "the pilot's ears"
 
 
 async def test_with_nobody_to_ask_the_pilot_is_told_to_decide_itself(

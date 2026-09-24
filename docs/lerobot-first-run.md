@@ -1022,9 +1022,10 @@ quackd run --goal "roll the wrist ten degrees and stop" --robot arm-01 \
 It takes as long as the model asks for in `duration_s`, which is five seconds when it names
 none, and then stops. However short the time asked for, the arm moves at most five degrees per
 action re-sent ten times a second, so fifty degrees a second and ten degrees in a fifth of a
-second, and `QUACKD_LEROBOT_MAX_STEP_DEG` lowers that if it looks fast in the room. Ten degrees
-is more than the five the verb calls arrived, so the goal is walked out a little further each
-tenth of a second rather than sent at once.
+second, and `QUACKD_LEROBOT_MAX_STEP_DEG` lowers that if it looks fast in the room. The goal is
+walked out a little further each tenth of a second rather than sent at once, and so is a smaller
+one: a nudge of two degrees asked to take three seconds takes the three seconds, where it used
+to take a tenth of one.
 
 **3. A goal outside the calibrated range.**
 
@@ -1275,6 +1276,8 @@ connect.
 | `connect failed 3 times: Could not connect on port ...` | wrong port, or something else already owns it | close any teleoperation, recording or serial monitor, then `lerobot-find-port` |
 | `connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' ...`, and the run carries on | the bus lost a packet on one of the torque writes (`Lock` or `Torque_Enable`) LeRobot's connect makes to every motor. quackd closed the port without writing anything and connected again, up to three attempts, and the run's transcript keeps the line | nothing, once. Support the arm while it connects, since each attempt drops torque for a moment. A joint named run after run is a cable to reseat |
 | `connect failed 3 times, the last on <joint> (id <N>): Failed to write ...` | every attempt lost a packet, and the arm may be left with some motors holding and others limp | keep a hand under the arm, check that joint's cable and connectors and the servo supply, make sure nothing else has the port open, then run again |
+| `connect failed 3 times, the last on <joint> (id <N>): ... Missing motor IDs: - <N> ...` | that servo never answered its ping: a cable out, no power to it, or an error such as an overload. Nothing had been written yet, so nothing is said about torque | check that joint's cable and connectors and the servo supply, then run again |
+| `connect failed: a LeRobot call (connect) has not come back; ...` and `keep a hand under the arm` | the connect ran past its deadline, and it may have stopped anywhere in the torque writes. It is not tried again | keep a hand under the arm, check the USB cable and that nothing else has the port, then run again |
 | `the arm is not calibrated` | the motors do not match a calibration | run `lerobot-calibrate` under the id quackd will use |
 | `the arm reports no calibration file` | there is no file for this id | the same fix, and check the path `doctor` prints |
 | `--camera-url ... did not open` | wrong index, or it will not open under this backend | try another index, add `?backend=msmf`, or drop a pinned size. The arm was not touched |
@@ -2676,7 +2679,7 @@ on each, as the heartbeat block in check 4 shows.
 should reach the arm:
 
 ```
-move_joints: joint refused: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it
+move_joints: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it
 ```
 
 **This is the check [Part 1](#11-prove-the-safety-net) could not make properly.** On a `--goal` run
@@ -2687,17 +2690,19 @@ answers, which is the clearest reason there is to be driving this arm from a cli
 `-100..100` is the mock's range, and a real arm's comes off the calibration file you wrote in
 [section M05](#m05-find-the-port-then-calibrate). Use any body joint except `wrist_roll`: upstream
 records a full turn for that one rather than anything you swept, so nothing you can name is outside
-it. The log shows what the chat does not, which is that a refused goal is followed by a `stop`.
-Its middle three lines:
+it. The log shows what the chat does not, which is that nothing went to the arm at all. Its middle
+two lines:
 
 ```
-->      joint(positions={'shoulder_pan': 170.0}, duration_s=5) REFUSED: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it
-->      stop
-<-      move_joints FAIL: move_joints: joint refused: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it (0.0 s, 2 intents)
+verb    move_joints(positions={'shoulder_pan': 170}) from mcp
+<-      move_joints FAIL: move_joints: shoulder_pan=170 is outside this arm's calibrated range -100..100; LeRobot does not clamp a degrees goal, so quackd refuses it (0.0 s, 0 intents)
 ```
 
-The `2 intents` counted on the `<-` line are the goal that was refused and the `stop` that followed
-it.
+There is no `->` line and the count is `0 intents`: the verb checks the goal against the travel the
+manifest publishes and refuses before it reads the arm or sends anything, in the same words the
+backend would refuse with. It used to send the goal for the backend to refuse and then hold the arm
+with a `stop`, and a goal less than a tenth of a degree past the published edge, which is
+rounded inward, got past the backend that way and went out unpaced.
 
 **4. Pull the USB cable mid move.** Start a longer motion, then unplug the arm. The heartbeat's
 round trip fails and the session is finished as a session: every later call gets this line back

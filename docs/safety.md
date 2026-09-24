@@ -156,6 +156,10 @@ sets that answer: the model asks you in the chat and records its own verdict aga
 **`--yes` answers that question with go**, the same way it answers a confirm gate, and
 `quackd record` always passes it. So a `--yes` in a script no longer only skips
 confirmations: it also clears the pilot's own doubt about whether the task suits the body.
+Its pilot, like one cleared by a flock's standing answer or a pipe, is not told a person read
+the doubt, because nobody did: it hears that the run was started to go ahead without asking
+anybody, and, as after a person's go, that the verbs that move the body now run and it should
+not assess the same doubt again.
 Over MCP there is no terminal and nothing clears it, so the verdict stays pending and the
 model is told to ask the person it is chatting with ([mcp.md](mcp.md)).
 
@@ -371,11 +375,13 @@ names the joints that still read torque on and ends on cutting the power.
 - **There is no e-stop and quackd cannot give it one.** Cutting the servo supply is the only
   thing that stops this arm in every case, the one where quackd itself has died included.
 - **A slow move is a long one.** `move_joints` takes the `duration_s` it is given, up to 12
-  seconds, and a joint that meets something partway is called stalled only when that time is
-  up, pushing against a goal one step ahead of it until then. Nothing moves faster than the step
-  cap, 50 degrees a second, whatever the time asked for; a joint that reads past its travel
-  first rises to the edge of it at the servo's own speed, before any pacing starts. Keep the
-  hand near the switch for the whole of a slow move, not only its start
+  seconds, a nudge of a few degrees included (only a goal the joint is already within a tenth
+  of a degree of goes out at once), and a joint that meets something partway is called stalled
+  only when that time is up, pushing against a goal one step ahead of it until then. A goal
+  outside the travel the pilot was shown is refused before anything moves. Nothing moves faster
+  than the step cap, 50 degrees a second, whatever the time asked for; a joint that reads past
+  its travel first rises to the edge of it at the servo's own speed, before any pacing starts.
+  Keep the hand near the switch for the whole of a slow move, not only its start
   ([adapters/lerobot.md](adapters/lerobot.md#the-manifest)).
 - `pick` hands the whole arm to a learned policy for up to a minute. It is confirm-gated
   for that reason. Watch it, and keep `stop` within reach.

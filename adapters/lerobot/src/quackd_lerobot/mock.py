@@ -34,6 +34,7 @@ from quackd_lerobot.verbs import (
     Clip,
     at_rest,
     past_reach,
+    range_refusal,
     reachable_rest_goal,
     released_by_the_close,
     rest_clip_note,
@@ -193,17 +194,8 @@ class LeRobotMock(MockTransport):
     # ── intents ─────────────────────────────────────────────────────────────────────
 
     def _refuse_out_of_range(self, goals: dict[str, float]) -> str | None:
-        for joint, goal in sorted(goals.items()):
-            span = self.joint_range_deg.get(joint)
-            if span is None:
-                continue
-            if not span[0] <= float(goal) <= span[1]:
-                return (
-                    f"{joint}={float(goal):.0f} is outside this arm's calibrated range "
-                    f"{span[0]:.0f}..{span[1]:.0f}; LeRobot does not clamp a degrees goal, "
-                    "so quackd refuses it"
-                )
-        return None
+        """The real backend's refusal, in the same one sentence (`range_refusal`)."""
+        return range_refusal(goals, self.joint_range_deg)
 
     @property
     def rest_reachable(self) -> dict[str, float]:

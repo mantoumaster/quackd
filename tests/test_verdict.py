@@ -633,7 +633,7 @@ def test_a_pilots_own_sheet_does_not_hold_an_unshown_working_height_against_it()
         assert own_sheet_objection(needs, bandless) is None
         assert missing_needs(needs, bandless, own_sheet=True) == []
         assert missing_needs(needs, bandless) == [f"work_height_m = {height:g} (not published)"]
-        assert "This body's own datasheet meets those needs" in solo_hint(needs, bandless)
+        assert "This body publishes no working height band" in solo_hint(needs, bandless)
         for _name, other, _lacking in bodies_that_could(needs):
             assert other.datasheet is not None
             assert other.datasheet.workspace_height_m is not None, "strict for a stranger"
@@ -726,6 +726,35 @@ def test_the_hint_says_so_when_this_body_already_meets_the_need() -> None:
     text = solo_hint({"payload_kg": 0.5, "manipulator": "gripper"}, cart)
     assert "This body's own datasheet meets those needs" in text
     assert "the pilot's judgement rather than a limit" in text
+
+
+def test_the_hint_says_a_sheet_meets_a_height_only_when_it_publishes_one_that_does() -> None:
+    """The hint's last sentence reads the pilot's own sheet as the gate does, and that reading
+    lets a working height through on a sheet with no working height band. It then said "This
+    body's own datasheet meets those needs" right after "No robot installed here meets needs
+    work_height_m=...", of a body installed here, for any height at all: a sheet that publishes
+    no band does not meet a height, it never said. That case now says the body publishes no
+    band and the height is the pilot's judgement; "meets" is left for a sheet whose published
+    band holds the height, or needs that turn on no height. Synthetic sheets and heights."""
+    band = Span(low=0.2, high=0.7, confidence="official", source="the docs")
+    banded = _still(datasheet=Datasheet(manipulator="gripper", arms=1, workspace_height_m=band))
+    bandless = _still(datasheet=Datasheet(manipulator="gripper", arms=1))
+    for height in (band.low, (band.low + band.high) / 2, band.high):
+        met = solo_hint({"work_height_m": height, "mobility": "none"}, banded)
+        assert "This body's own datasheet meets those needs" in met, met
+        assert "publishes no working height band" not in met, met
+    heights = (band.high / 2, band.high * 3, band.high * 30)
+    for height in heights:
+        said = solo_hint({"work_height_m": height, "mobility": "none"}, bandless)
+        assert "meets those needs" not in said, said
+        assert said.endswith(
+            " This body publishes no working height band, so whether it reaches that height "
+            "is the pilot's judgement."
+        ), said
+    # needs that name no height are met the strict way too, band or no band
+    for body in (banded, bandless):
+        said = solo_hint({"manipulator": "gripper", "mobility": "none"}, body)
+        assert "This body's own datasheet meets those needs" in said, said
 
 
 def test_bodies_that_could_reads_only_the_static_descriptions() -> None:

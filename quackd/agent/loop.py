@@ -854,6 +854,7 @@ class AgentLoop:
                 f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()
             )
             return VerbResult.fail(f"invalid assess_task: {msgs}"), None
+        asked = False  # whether a person answered the doubt, as against a standing answer
         if verdict.verdict == "uncertain":
             if self.cfg.decide is None:
                 self.executor.verdict = verdict  # recorded, and still not cleared
@@ -865,6 +866,7 @@ class AgentLoop:
                 # confirm gate reads it
                 answer = False
             verdict.human = "go" if answer else "no_go"
+            asked = a_person_was_asked(self.cfg.decide)
             self._ask_recorded("decide", verdict.question(), answer, self.cfg.decide)
         if verdict.verdict == "feasible":
             # The coordinator already holds another robot's bid to its datasheet, and nothing
@@ -898,11 +900,22 @@ class AgentLoop:
             # On the 2026-09-23 bench a pilot that a person had just said go to assessed the
             # same doubt again, as infeasible, and the run ended on the question it had already
             # asked and been answered. Something new it sees is still a reason to assess again.
+            #
+            # And it hears who cleared it only where somebody did. `--yes`, a flock's standing
+            # answer and a pipe all answer go without asking anyone, and the record and the
+            # pilot's ears are held to the same rule as a `prompt` row (`a_person_was_asked`):
+            # a witness nobody was is worse than none. Its doubt is settled all the same, so
+            # it is told not to raise it again either way.
+            cleared = (
+                "a person read that and said go"
+                if asked
+                else "this run was started to go ahead without asking anybody (--yes or a "
+                "flock's standing answer)"
+            )
             return (
                 VerbResult.success(
-                    f"recorded {verdict.summary()}; a person read that and said go, so verbs "
-                    "that move the body now run. Do not assess again on the same doubt, only "
-                    "on something new you see"
+                    f"recorded {verdict.summary()}; {cleared}, so verbs that move the body now "
+                    "run. Do not assess again on the same doubt, only on something new you see"
                 ),
                 None,
             )

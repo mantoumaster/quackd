@@ -42,6 +42,16 @@ there at its own speed whatever is sent. `gripper` is not ramped. The comparison
 measurement every tick, the failure that says where a joint stopped, and the tolerance all
 stand.
 
+**Amended 2026-09-24:** the ramp first kept two moves whole. A move whose every joint already
+read within the arrival tolerance went out at once and was judged after one tick, which made
+`duration_s` untrue for any move of a few degrees, so it is walked like any other now, and
+only a move with nothing to walk (every joint within a tenth of a degree of its goal, the
+ramp's own resolution) goes out at once. And a goal outside the travel went out whole for the
+backend's range refusal to answer before anything moved; the manifest publishes the travel
+rounded inward, so a goal in the sliver between the published and the exact edge was neither
+refused nor paced. `move_joints` refuses a goal outside the published travel itself now, before
+anything is sent, in the one sentence both backends refuse with.
+
 ## Context
 
 The LeRobot adapter drives an SO-101 follower through the `Robot` interface of

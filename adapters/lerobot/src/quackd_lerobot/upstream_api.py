@@ -345,9 +345,16 @@ BUS_DISCONNECT = UpstreamRef(
     "rest pose gets instead of falling. The same call closes the port between two connect "
     "attempts (CONFIGURE_TORQUE_WRITES_ONCE), because the follower's own disconnect() would "
     "first switch torque off on every motor, five tries a write, on a bus that has just lost "
-    "a packet. The concrete method is at lines 546 to 562 in lerobot 0.6.1 (torque off at "
-    "559, only under the flag; closePort at 561) and is check_if_not_connected, so it raises "
-    "on a port that never opened, which quackd ignores: that port is already shut",
+    "a packet. The concrete method is at lines 546 to 562 in lerobot 0.6.1 (clearPort and "
+    "port_handler.is_using = False at 557 and 558, then the torque off at 559, all three only "
+    "under the flag; closePort at 561) and is check_if_not_connected, so it raises on a port "
+    "that never opened, which quackd ignores: that port is already shut. The busy flag is the "
+    "servo SDK's: its txPacket returns COMM_PORT_BUSY while it is set and sets it before a "
+    "packet goes out (scservo_sdk protocol_packet_handler.py lines 73 to 75), and a serial "
+    "error raised between that and the reply leaves it set, which neither closePort nor the "
+    "next openPort clears. MotorsBus declares it on its PortHandler protocol (line 199). So "
+    "quackd clears it after its own close, as the skipped branch would have, and writes nothing "
+    "to any motor doing so. Read in lerobot 0.6.1, the same lines at the pin",
 )
 BUS_MOTORS = UpstreamRef(
     "MotorsBus.motors: name -> Motor(id, model, norm_mode)",
@@ -368,6 +375,34 @@ BUS_WRITE_ERROR_NAMES_THE_ID = UpstreamRef(
     "motor the same way, on id_=<N> (line 1020). The id is the servo's bus address, and quackd "
     "names the joint through BUS_MOTORS. sync_read and sync_write say ids= and ids_values=, "
     "several servos at once, and quackd names no joint for those. Read in lerobot 0.6.1",
+)
+BUS_HANDSHAKE = UpstreamRef(
+    "_handshake",
+    "VERIFIED",
+    src(_BUS, 543),
+    "MotorsBus.connect() opens the port and then runs _handshake() (line 535), which on a "
+    "Feetech bus is _assert_motors_exist() and then _assert_same_firmware() (feetech.py lines "
+    "155 to 157): a ping per motor, then two firmware reads per motor, and not one write. "
+    "configure(), where every write of a connect is, runs only once bus.connect() has returned "
+    "(so_follower.py lines 98 and 108). So a connect that fails in the handshake has left every "
+    "motor's torque as it found it. A failure raised in it has this frame in its traceback; "
+    "_connect re-raises a serial error or an OSError from in there (a failed read is a "
+    "ConnectionError, which is one) as its own port error, from the original (lines 530 to "
+    "540), so for those the frame is in the traceback of the __cause__. Read in lerobot 0.6.1, "
+    "the same lines at the pin",
+)
+HANDSHAKE_NAMES_THE_ID = UpstreamRef(
+    "Missing motor IDs: / Motors with incorrect model numbers: - <N> (...)",
+    "VERIFIED",
+    src(_BUS, 465),
+    "the RuntimeError _assert_motors_exist() raises (lines 465 to 502), headed 'motor check "
+    "failed on port': a line '  - <N> (expected model: <M>)' per motor that did not answer its "
+    "ping, and a line '  - <N> (<joint>): expected <M>, found <K>' per motor that answered as "
+    "another model, each list under its own heading. ping() returns None for a servo that "
+    "answers with an error bit set as it does for one that does not answer (lines 967 to 976), "
+    "so an overloaded servo is listed as missing too. The id is the bus address, and quackd names "
+    "the joint through BUS_MOTORS as for a write. Read in lerobot 0.6.1, the same lines at the "
+    "pin",
 )
 SO_CONNECT_REFUSES_WHILE_OPEN = UpstreamRef(
     "SOFollower.connect() refuses while the port is open",

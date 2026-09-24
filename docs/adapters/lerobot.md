@@ -258,13 +258,25 @@ short for the distance is neither refused nor obeyed: the goal runs ahead of the
 clips every send to one step from where the joint is, and the joint travels at the cap until it
 is there, later than asked. `QUACKD_LEROBOT_MAX_STEP_DEG` lowers the ceiling.
 
+A small move is walked like a long one: a nudge of three degrees asked to take four seconds
+takes the four seconds. Until 2026-09-24 a move whose every joint already read within 5 degrees
+of its goal went out whole and was judged after one tick, a tenth of a second whatever
+`duration_s` said, and with a lowered step cap the one send moved the joint a step and the verb
+still said it had moved.
+
 Four exceptions, each on purpose:
 
-- **A move whose every joint is already within 5 degrees of its goal is sent whole** and
-  judged after one tick, as it always was, however long `duration_s` is. There is nothing to
-  pace.
-- **A goal outside the travel is sent whole**, so the range refusal answers before anything has
-  moved. Ramped, the arm would travel to the edge of its travel and be refused there.
+- **A move with nothing to walk goes out at once.** When every joint is already within a tenth
+  of a degree of its goal (a tenth of a unit on the gripper), the resolution the ramp's targets
+  are sent in, there is no target between where it is and where it was asked to be. The goal is
+  sent once and judged after one tick.
+- **A goal outside the travel is refused before anything moves.** The verb checks every goal
+  against the travel the manifest published, which is the travel the pilot was shown, and
+  refuses one outside it in the words the backend refuses with, before it reads the arm or sends
+  anything. Ramped, the arm would travel to the edge of its travel and be refused there. The
+  published travel is rounded inward to a tenth, so a goal less than a tenth of a degree past
+  its edge is refused too, although the backend's exact travel would take it: it used to be
+  sent whole for the backend to refuse, and the backend let it through at the step cap, unpaced.
 - **A joint that reads past its travel starts its ramp at the edge of it.** The servo clamps
   every goal to the travel its calibration wrote into it, so such a joint first rises to that
   edge at the servo's own speed, whatever quackd sends, and is paced from there. That first
@@ -738,7 +750,17 @@ quackd, side by side, is [safety.md](../safety.md).
   talker there is how packets get lost. Every attempt runs `configure()` again, so the limp
   moment above happens once per attempt. When the last attempt fails too, the port is closed
   the same way and the refusal says the arm may be left half energised
-  ([When it will not work](#when-it-will-not-work)).
+  ([When it will not work](#when-it-will-not-work)), if any attempt can have written torque:
+  one that failed on a write or after the handshake, or a connect that ends on a timeout. A
+  servo that does not answer its ping is refused by LeRobot's handshake, before `configure()`
+  has written anything (`up.BUS_HANDSHAKE`), so that refusal names the joint
+  (`up.HANDSHAKE_NAMES_THE_ID`) and says nothing about torque.
+
+  A serial error in the middle of a packet, a USB glitch rather than a lost reply, leaves the
+  servo SDK's busy flag raised, and reopening the port does not lower it, so the next attempt
+  would be answered "port in use" before a byte went out and refused as every motor missing.
+  quackd lowers the flag when it closes the port between attempts, which upstream's own
+  disconnect does too, and which writes nothing to a motor (`up.BUS_DISCONNECT`).
 - **`pick` is confirm-gated**: a learned policy moves the whole arm. Its actions go through
   the same step cap and range check as a verb's.
 
@@ -1411,6 +1433,8 @@ touched by anything in the first block: these all happen before or during connec
 | `lerobot real: connect failed 3 times: Could not connect on port ...` | the port is wrong, or something else already owns it. It is tried three times like any connect failure, since a port busy for a moment is as passing as a lost packet | LeRobot's own words come through, and they name `lerobot-find-port`, which is the way to be sure. The Feetech bus has one owner at a time, so close any teleoperation, recording or serial monitor still holding it, and on Linux check that your user can open the port (upstream's own line is `sudo chmod 666 /dev/ttyACM0`; the port's group, usually `dialout`, is the version that survives a reboot). No attempt opened the port, so nothing was written to a motor and the message says nothing about torque |
 | `connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' on id_=<N> ...`, and the session carries on | the bus lost a status packet on one of the torque writes LeRobot's connect makes (`Lock` or `Torque_Enable`), and quackd closed the port without writing anything and connected again. Seen three times on 2026-09-23, each on the first connect after the power had been off | nothing, once. The same joint named session after session is a cable to reseat: the one into that servo, and its connectors |
 | `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to write ...` | every attempt failed, the last one on that servo. The torque writes may have stopped part way, so some motors can be holding and others limp, which the message says | keep a hand under the arm. Check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again. A message that names no joint says to check the arm's cables and power instead |
+| `lerobot real: connect failed 3 times, the last on <joint> (id <N>): FeetechMotorsBus motor check failed on port ...: Missing motor IDs: - <N> ...` | the servo at that address did not answer its ping on any attempt: a cable out, a servo with no power, or one answering with an error such as an overload, which LeRobot lists as missing too. `Motors with incorrect model numbers` in the same place is a servo that answered as another model. LeRobot's handshake reports it before anything is written, so the message says nothing about torque unless an earlier attempt got as far as writing | check that joint's cable and connectors and that the servo supply is on, then connect again |
+| `lerobot real: connect failed: a LeRobot call (connect) has not come back; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
 | `lerobot real: the arm is not calibrated; run LeRobot's calibration first` | LeRobot read the motors back and they do not match a calibration | run `lerobot-calibrate` under the id quackd will use, and see [the id section](#the-name-you-give-the-arm-is-its-calibration-id) |
 | `lerobot real: the arm reports no calibration file, so nothing knows how far each joint travels` | there is no file for this id | the same fix, and check the path `doctor` prints |
 | `lerobot real: only so101_follower is wired` / `this robot has no motors bus` | the config is not an SO-101 follower | quackd drives this one body; an SO-100 shares the calibration directory but is not wired here |
@@ -1525,9 +1549,11 @@ If you hit one of these, or fail to, that is exactly what the
 | `no deadman: nothing stops the arm when the client goes quiet` | the class has no thread, timer or timeout; a goal stands until the next write |
 | `MotorsBus.disable_torque()` | never called on quackd's own initiative. The one call is `let_go()`, and it has two doors, each opened by a person at a terminal. `let_go()` is `quackd run --by-hand`'s, and refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to decide that letting go will not drop it. `let_go(anywhere=True)` is `quackd robot release`'s and the end-of-run offer's, after each has told the person to hold the arm, and releases wherever the arm stands, with or without a rest pose recorded. No verb reaches either and no model can ask for it. On a Feetech bus it writes `Torque_Enable` 0 then `Lock` 0 per motor, and quackd asks for `num_retry=5`, the count upstream's own `disconnect()` uses |
 | `MotorsBus.enable_torque()` | called by `take_hold()`, to pick up an arm a person has just placed, with `num_retry=5` as for the release. It writes `Torque_Enable` 1 **and then `Lock` 1** per motor, two writes a motor rather than one |
-| `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling, and how the port is closed between two connect attempts without a write to any motor |
+| `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling, and how the port is closed between two connect attempts without a write to any motor. The same branch clears the port handler's busy flag (`port_handler.is_using = False`, motors_bus.py lines 557 and 558), which a serial error in the middle of a packet leaves set and which reopening the port does not clear, so quackd clears it after its own close: without that, every packet of the next attempt is answered "port in use" and the connect is refused as every motor missing |
 | `MotorsBus.motors: name -> Motor(id, model, norm_mode)` | the table that gives each servo its bus address; a bus error's id is turned into a joint through it, never through an assumed order |
 | `Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>` | what a single write or read that failed raises. quackd reads the id out of it to name the joint; a sync read or write names several and quackd names none |
+| `_handshake` | what `MotorsBus.connect()` runs once the port is open: a ping per motor and the firmware reads, and no write. `configure()`, where every write of a connect is, comes after it, so a connect refused in the handshake left every motor's torque as it was, and its refusal does not tell you to keep a hand under the arm. quackd tells the two apart by this frame in the error's traceback |
+| `Missing motor IDs: / Motors with incorrect model numbers: - <N> (...)` | what the handshake raises for a servo that did not answer its ping, or answered as another model: one line per motor. A servo answering with its error bit set, an overload say, is listed as missing too. quackd names the joint of the first id listed, through the bus's motor table |
 | `MotorsBus.is_connected is port_handler.is_open` | a port flag, not a reply: why the heartbeat reads the arm |
 | `FeetechMotorsBus.is_calibrated reads the motors back` | a missing, stale or foreign file all read as not calibrated |
 | `write_calibration() is reached only through calibrate()` | quackd cannot move an arm's zero by accident |

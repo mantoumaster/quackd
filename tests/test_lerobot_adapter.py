@@ -10,6 +10,8 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Mapping, Sequence
+from pprint import pformat
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,6 +32,7 @@ from quackd_lerobot.real import (
     CONNECT_ATTEMPTS,
     ENCODER_TICKS,
     MAX_STEP_DEG,
+    SPLIT_TORQUE,
     STEP_ENV,
     TORQUE_RETRIES,
     LeRobotReal,
@@ -50,6 +53,7 @@ from quackd_lerobot.verbs import (
     MOVE_MIN_S,
     MOVE_SETTLE_S,
     RAMP_DECIMALS,
+    RAMP_RESOLUTION,
     REST_MAX_S,
     REST_MIN_S,
     STALL_TICKS,
@@ -61,6 +65,7 @@ from quackd_lerobot.verbs import (
     lerobot_verbs,
     move_budget_s,
     ramp_target,
+    range_refusal,
     reachable_rest_goal,
     rest_budget_s,
     rest_goal,
@@ -196,11 +201,13 @@ async def test_mock_arm_runs_every_verb_through_the_executor() -> None:
 async def test_the_mock_refuses_a_goal_outside_the_calibrated_range() -> None:
     """The schema bound is plus or minus 180; the arm's own travel is narrower, and on a
     real arm LeRobot writes an unclamped degrees goal straight to the servo."""
-    adapter = LeRobotAdapter(LeRobotMock())
+    mock = LeRobotMock()
+    adapter = LeRobotAdapter(mock)
     manifest = await adapter.connect()
     ex = _executor(adapter, manifest)
     out = await ex.run_verb("move_joints", {"positions": {"shoulder_pan": 150}})
     assert not out.ok and "calibrated range" in out.summary and "-100..100" in out.summary
+    assert out.summary == f"move_joints: {mock._refuse_out_of_range({'shoulder_pan': 150.0})}"
     turn = await ex.run_verb("move_joints", {"positions": {"wrist_roll": 150}, "duration_s": 2})
     assert turn.ok, turn.summary  # wrist_roll is the full-turn joint
 
@@ -274,6 +281,10 @@ class FakeBus:
         )
         """name -> something with an `.id`, the one field of a `Motor` quackd reads. A test
         about naming the joint in an error builds its own table, in no particular order."""
+        self.port_handler = SimpleNamespace(is_using=False)
+        """The servo SDK's port handler, for its busy flag (`up.BUS_DISCONNECT`): raised before
+        every packet and lowered once the reply is in, so a serial error in between leaves it
+        raised, and while it is raised every packet is answered "port in use" unsent."""
 
     @property
     def is_connected(self) -> bool:
@@ -281,7 +292,8 @@ class FakeBus:
         return self.arm.connected
 
     def disconnect(self, disable_torque: bool = True) -> None:
-        """`MotorsBus.disconnect`: torque off first only when asked, then the port shut.
+        """`MotorsBus.disconnect`: the busy flag cleared and torque off first, only when asked,
+        then the port shut.
 
         It refuses a port that is not open, as upstream's `check_if_not_connected` does, which
         is the call a retry makes after an attempt that never got the port open."""
@@ -289,8 +301,20 @@ class FakeBus:
         if not self.arm.connected:
             raise ConnectionError("FeetechMotorsBus is not connected. Run `.connect()` first.")
         if disable_torque:
+            self.port_handler.is_using = False  # motors_bus.py line 558, under the same flag
             self.disable_torque(num_retry=5)  # upstream's own count (motors_bus.py line 559)
         self.arm.connected = False
+
+    def _handshake(self) -> None:
+        """`up.BUS_HANDSHAKE`, under upstream's own name, because the name is how quackd tells
+        a failure in here from one in `configure()`: pings and reads, and no write.
+
+        A busy flag left raised answers every ping "port in use", so every motor is missing,
+        as upstream reports it. Otherwise the next of `arm.handshake_errors` is raised."""
+        if self.port_handler.is_using:
+            raise _motor_check_failed(missing=[motor.id for motor in self.motors.values()])
+        if self.arm.handshake_errors and (refused := self.arm.handshake_errors.pop(0)):
+            raise refused
 
     def sync_read(
         self, data_name: str, motors: Any = None, *, normalize: bool = True, num_retry: int = 0
@@ -399,6 +423,11 @@ class FakeArm:
         self.port_errors: list[BaseException | None] = []
         """The same, raised before the port opens: a port that is wrong, or owned by something
         else, so the attempt never reached a motor. None is a port that opens."""
+        self.handshake_errors: list[BaseException | None] = []
+        """The same, raised by the bus's handshake once the port is open and before anything is
+        written: a servo that did not answer its ping, or answered as another model. An
+        `OSError` among them comes out as LeRobot's port error, raised from it, as upstream's
+        `_connect` does. None is a handshake that passes."""
         self.torque_retries: list[tuple[str, int]] = []
         """Every torque call on the bus and the `num_retry` it was given, in order."""
         self.temperature: dict[str, float] = dict.fromkeys(JOINTS, 30.0)
@@ -440,8 +469,8 @@ class FakeArm:
 
     def connect(self, calibrate: bool = True) -> None:
         """`SOFollower.connect` in upstream's order: refused while the port is open
-        (`up.SO_CONNECT_REFUSES_WHILE_OPEN`), then the port, then `configure()`, and nothing
-        closes the port again when that last part raises."""
+        (`up.SO_CONNECT_REFUSES_WHILE_OPEN`), then the port, then the bus's handshake, then
+        `configure()`, and nothing closes the port again when either of the last two raises."""
         self.calls.append(("connect", calibrate))
         if self.connected:
             # DeviceAlreadyConnectedError is a ConnectionError upstream
@@ -449,6 +478,13 @@ class FakeArm:
         if self.port_errors and (refused := self.port_errors.pop(0)) is not None:
             raise refused
         self.connected = True
+        try:
+            self.bus._handshake()
+        except OSError as e:  # MotorsBus._connect, motors_bus.py lines 536 to 540
+            raise ConnectionError(
+                "\nCould not connect on port 'COM7'. Make sure you are using the correct port."
+                "\nTry running `lerobot-find-port`\n"
+            ) from e
         if self.connect_errors and (lost := self.connect_errors.pop(0)) is not None:
             raise lost
 
@@ -955,36 +991,114 @@ def test_the_published_travel_never_promises_a_degree_the_backend_refuses() -> N
 async def test_the_edge_the_pilot_is_shown_is_an_edge_it_can_ask_for() -> None:
     """The pilot's prompt prints the published travel, and a careful pilot asks for exactly its
     end. Rounded to nearest, a travel could be published a twentieth of a degree wider than the
-    one the backend checks against, and then that goal was refused as outside it."""
+    one the backend checks against, and then that goal was refused as outside it. A goal at the
+    edge is inside the travel, so it is walked there like any other."""
     arm = _spanned()
     adapter, ex, _clock = await _paced(arm)
     published = adapter.manifest.extras["joint_range_deg"]  # type: ignore[union-attr]
     for joint, end in (("shoulder_lift", 0), ("elbow_flex", 1)):
         edge = published[joint][end]
+        began, sent = arm.positions[joint], len(arm.actions)
         moved = await ex.run_verb("move_joints", {"positions": {joint: edge}, "duration_s": 1.2})
         assert moved.ok, moved.summary
+        _walked(_sent(arm.actions[sent:], joint), began, edge, 1.2)
+
+
+async def test_a_goal_in_the_sliver_past_the_published_edge_is_refused_before_it_moves() -> None:
+    """The manifest publishes each travel rounded inward and the backend refuses against the
+    exact one, and the verb sent any goal past the published edge whole so that the backend's
+    refusal would answer before anything moved. A goal in the sliver between the two edges was
+    not refused by anything: it went out whole, at the step cap, however long `duration_s` was.
+    The verb now refuses a goal outside the travel the pilot was shown itself, before the arm
+    is read or anything is sent, in the backend's own words."""
+    arm = _spanned(step=MAX_STEP_DEG)
+    adapter, ex, clock = await _paced(arm)
+    transport = adapter.transport
+    assert isinstance(transport, LeRobotReal)
+    published = adapter.manifest.extras["joint_range_deg"]  # type: ignore[union-attr]
+    slivers = []
+    for joint, (lo, hi) in published.items():
+        exact_lo, exact_hi = transport.joint_range_deg[joint]
+        slivers += [(joint, (lo + exact_lo) / 2)] if exact_lo < lo else []
+        slivers += [(joint, (hi + exact_hi) / 2)] if exact_hi > hi else []
+    assert slivers, "no joint here has a sliver between its edges, so this proves nothing"
+    for joint, goal in slivers:
+        assert transport._refuse_out_of_range({joint: goal}) is None, "the backend takes it"
+        sent, t0 = len(arm.actions), clock.t
+        moved = await ex.run_verb("move_joints", {"positions": {joint: goal}, "duration_s": 8.0})
+        assert not moved.ok, f"{joint}={goal} went out: {moved.summary}"
+        assert moved.summary == f"move_joints: {range_refusal({joint: goal}, published)}"
+        assert "is outside this arm's calibrated range" in moved.summary
+        assert len(arm.actions) == sent and clock.t == t0, "something moved before the refusal"
 
 
 @pytest.mark.parametrize(
-    ("joint", "off", "duration_s"),
+    ("joint", "off", "duration_s", "step"),
     [
-        pytest.param("shoulder_pan", TOL_DEG - 1.0, MOVE_MAX_S, id="just inside, the longest"),
-        pytest.param("wrist_flex", -(TOL_DEG - 2.5), 4.4, id="the other way"),
-        pytest.param("gripper", -(TOL_DEG - 0.5), MOVE_MIN_S, id="the gripper"),
+        pytest.param("shoulder_pan", TOL_DEG - 1.0, 6.0, MAX_STEP_DEG, id="just inside"),
+        pytest.param("wrist_flex", -(TOL_DEG - 2.5), 4.4, MAX_STEP_DEG, id="the other way"),
+        pytest.param("gripper", -(TOL_DEG - 0.5), MOVE_MIN_S, MAX_STEP_DEG, id="the gripper"),
+        pytest.param("elbow_flex", TOL_DEG - 1.0, 6.0, (TOL_DEG - 1.0) / 8, id="a lowered cap"),
     ],
 )
-async def test_a_joint_already_where_it_was_asked_to_be_is_arrived_at_once(
-    joint: str, off: float, duration_s: float
+async def test_a_move_inside_the_arrival_tolerance_is_walked_across_its_time_too(
+    joint: str, off: float, duration_s: float, step: float
 ) -> None:
-    """A goal within the tolerance the verb calls arrived is a move already over, whatever
-    `duration_s` says: it goes out whole and the verb returns after one tick, as it always did,
-    rather than spend the whole time walking a few degrees."""
-    arm = _spanned()
-    _adapter, ex, clock = await _paced(arm)
-    goal = arm.positions[joint] + off
+    """A move whose every joint already read within the tolerance the verb calls arrived went
+    out whole and was judged after one tick, whatever `duration_s` said, although the pilot is
+    told every joint travels across that time: a slow nudge of a few degrees near something
+    arrived in a tenth of a second. With a lowered step cap it was worse: the one send moved the
+    joint a step, the goal register stayed there, and the verb still said it had moved. Now it
+    is walked like any other move and judged once the ramp is done, where it has arrived."""
+    arm = _spanned(step=step)
+    _adapter, ex, clock = await _paced(arm, step=step)
+    began = arm.positions[joint]
+    goal = began + off
     moved = await ex.run_verb("move_joints", {"positions": {joint: goal}, "duration_s": duration_s})
     assert moved.ok, moved.summary
-    assert _sent(arm.actions, joint) == [goal] and clock.t == pytest.approx(TICK_S)
+    _walked(_sent(arm.actions, joint), began, goal, duration_s)
+    assert arm.positions[joint] == pytest.approx(goal), "it stopped short of its goal"
+    assert duration_s <= clock.t <= duration_s + 3 * TICK_S, clock.t
+
+
+async def test_a_small_move_on_the_mock_is_walked_across_its_time_too() -> None:
+    """The same on the mock, whose goals land at once: a rehearsal of a nudge takes the time
+    asked for and its record shows the walk, as the arm's would."""
+    mock = LeRobotMock()
+    adapter = LeRobotAdapter(mock)
+    ex = _executor(adapter, await adapter.connect())
+    began = mock.joints["wrist_flex"]
+    goal, duration_s = began - (TOL_DEG - 1.5), 3.7
+    t0 = mock.now()
+    moved = await ex.run_verb(
+        "move_joints", {"positions": {"wrist_flex": goal}, "duration_s": duration_s}
+    )
+    assert moved.ok, moved.summary
+    _walked(_sent(mock.actions, "wrist_flex"), began, goal, duration_s)
+    assert duration_s <= mock.now() - t0 <= duration_s + 3 * TICK_S
+
+
+@pytest.mark.parametrize(
+    "off",
+    [
+        pytest.param(0.0, id="the goal is the reading"),
+        pytest.param(RAMP_RESOLUTION / 2, id="under a tenth above it"),
+        pytest.param(-RAMP_RESOLUTION / 3, id="under a tenth below it"),
+    ],
+)
+async def test_a_move_with_nothing_to_walk_goes_out_at_once(off: float) -> None:
+    """The one move still sent whole: every joint already nearer its goal than a ramp's
+    resolution, where the ramp has no target between the two and could only hold the start
+    for the whole time and then send the goal. It goes out once and is judged after a tick."""
+    arm = _spanned()
+    _adapter, ex, clock = await _paced(arm)
+    goal = {"shoulder_pan": arm.positions["shoulder_pan"] + off}
+    goal["elbow_flex"] = arm.positions["elbow_flex"] - off
+    moved = await ex.run_verb("move_joints", {"positions": goal, "duration_s": MOVE_MAX_S})
+    assert moved.ok, moved.summary
+    for joint, value in goal.items():
+        assert _sent(arm.actions, joint) == [value], arm.actions
+    assert clock.t == pytest.approx(TICK_S)
 
 
 def test_the_move_budget_always_ends_inside_the_executor_s_timeout() -> None:
@@ -1066,14 +1180,19 @@ async def test_the_rest_move_and_the_hold_wait_on_the_backend_s_own_clock() -> N
 
 
 async def test_a_goal_outside_the_calibrated_range_is_refused_with_the_range() -> None:
+    """Refused by the verb before anything is sent, in the words the backend refuses with, so
+    a pilot hears one sentence for the one rule wherever it is enforced."""
     arm = FakeArm()
-    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
+    transport = LeRobotReal("COM5", robot=arm)
+    adapter = LeRobotAdapter(transport)
     manifest = await adapter.connect()
     ex = _executor(adapter, manifest)
+    sent = len(arm.actions)
     out = await ex.run_verb("move_joints", {"positions": {"elbow_flex": 170}})
     assert not out.ok and "-100..100" in out.summary and "does not clamp" in out.summary
-    # the goal never reached the arm: what did is the hold that every failed verb ends with
-    assert all(action.get("elbow_flex.pos") != 170.0 for action in arm.actions)
+    backend = transport._refuse_out_of_range({"elbow_flex": 170.0})
+    assert backend is not None and out.summary == f"move_joints: {backend}"
+    assert len(arm.actions) == sent, "the verb sent something before refusing"
     assert arm.positions["elbow_flex"] == 0.0
 
 
@@ -3651,6 +3770,36 @@ def _lost_write(register: str, motor_id: int, value: int, result: str) -> Connec
     )
 
 
+SOME_MODEL = 4321
+"""A servo model number for a handshake's message. Made up: nothing quackd does reads it."""
+
+
+def _motor_check_failed(
+    missing: Sequence[int] = (),
+    wrong: Mapping[int, tuple[str, int]] | None = None,
+    port: str = "COM7",
+) -> RuntimeError:
+    """`_assert_motors_exist`'s own refusal, line for line (`up.HANDSHAKE_NAMES_THE_ID`), for
+    whatever ids a test picks: a line per motor that did not answer its ping, and one per motor
+    that answered as another model, given as `id -> (joint, the model it answered as)`."""
+    wrong = dict(wrong or {})
+    lines = [f"FeetechMotorsBus motor check failed on port '{port}':"]
+    if missing:
+        lines.append("\nMissing motor IDs:")
+        lines.extend(f"  - {n} (expected model: {SOME_MODEL})" for n in missing)
+    if wrong:
+        lines.append("\nMotors with incorrect model numbers:")
+        lines.extend(
+            f"  - {n} ({joint}): expected {SOME_MODEL}, found {found}"
+            for n, (joint, found) in wrong.items()
+        )
+    lines.append("\nFull expected motor list (id: model_number):")
+    lines.append(pformat(dict.fromkeys([*missing, *wrong], SOME_MODEL), indent=4))
+    lines.append("\nFull found motor list (id: model_number):")
+    lines.append(pformat({n: found for n, (_joint, found) in wrong.items()}, indent=4))
+    return RuntimeError("\n".join(lines))
+
+
 def _rewired(port: str = "COM7") -> tuple[FakeArm, FakeCamera, LeRobotReal]:
     """An arm on the `REWIRED` table with a camera open beside it, and no pause between
     attempts, because a test's clock is not the bench's."""
@@ -3761,7 +3910,11 @@ def test_the_joint_is_named_through_the_bus_s_own_table_and_never_by_position() 
     into a joint through the motor table that gave each servo its address, whatever register,
     value, try count or transaction result surrounds it, and read or write alike. An id the
     table does not know is still said, as a motor; a message that names several motors or none
-    names no joint, because a guess sends somebody to the wrong cable."""
+    names no joint, because a guess sends somebody to the wrong cable.
+
+    The handshake names its motors in lists instead, and only `id_=` was read, so a servo that
+    stopped answering its ping, the failure the connect retry says a further try will not fix,
+    was refused with "check the arm's cables and power" although LeRobot had said which one."""
     table = {joint: SimpleNamespace(id=n) for joint, n in REWIRED.items()}
     for joint, n in REWIRED.items():
         for message in (
@@ -3775,6 +3928,20 @@ def test_the_joint_is_named_through_the_bus_s_own_table_and_never_by_position() 
     said = f"Failed to write 'Lock' on id_={stranger} with '0' after 1 tries. {NOT_SENT}"
     assert motor_in_error(said, table) == (f"motor {stranger}", f"motor {stranger}")
     assert motor_in_error(said, None) == (f"motor {stranger}", f"motor {stranger}")
+    # the handshake lists the servos it could not find, or found as another model, one a line;
+    # the first listed is named, the missing one when there are both, raw or on one line
+    ids = list(REWIRED.values())
+    for n, joint in ((n, j) for j, n in REWIRED.items()):
+        others = [m for m in ids if m != n]
+        for check in (
+            _motor_check_failed(missing=[n, *others[:2]]),
+            _motor_check_failed(wrong={n: (joint, SOME_MODEL + 1), others[0]: ("x", 0)}),
+            _motor_check_failed(missing=[n], wrong={others[0]: ("x", SOME_MODEL + 2)}),
+        ):
+            for message in (str(check), " ".join(str(check).split())):
+                assert motor_in_error(message, table) == (f"{joint} (id {n})", joint), message
+    lost = str(_motor_check_failed(missing=[stranger]))
+    assert motor_in_error(lost, table) == (f"motor {stranger}", f"motor {stranger}")
     for nameless in (
         f"Failed to sync read 'Present_Position' on ids=[7, 9, 17] after 3 tries. {NO_STATUS}",
         f"Failed to sync write 'Goal_Position' with ids_values={{72: 2048}} after 1 tries. "
@@ -3800,14 +3967,15 @@ async def test_a_failure_that_names_no_motor_is_retried_and_names_none(
     one, or one something else is holding) is as likely to be a passing moment as a lost
     packet, so it is tried again too, and its message names no motor, so the refusal names no
     joint and sends the person to the cables and the port. Whether it warns about torque turns
-    on whether any attempt opened the port: one that never did wrote to no motor, and one that
-    did, even once, may have left the motors in two states."""
+    on whether any attempt can have written it: one that never opened the port wrote to no
+    motor, and one that failed after the handshake, even once, may have left the motors in two
+    states. The nameless failure here is raised after the handshake, where `configure()` is."""
     arm = FakeArm()
     port_says = ConnectionError(
         "\nCould not connect on port 'COM3'. Make sure you are using the correct port."
         "\nTry running `lerobot-find-port`\n"
     )
-    nameless = RuntimeError("the servo table did not match what the bus found")
+    nameless = RuntimeError("the servo answered something configure() did not expect")
     if script == "port":
         arm.port_errors = [port_says] * CONNECT_ATTEMPTS
     elif script == "configure":
@@ -3879,6 +4047,168 @@ async def test_a_connect_that_timed_out_is_never_tried_again(how: str) -> None:
             assert not arm.is_connected, "a port nothing owns any more was left open"
     finally:
         release.set()
+
+
+@pytest.mark.parametrize(
+    ("script", "named", "torque_said"),
+    [
+        pytest.param("missing", True, False, id="a servo that never answers its ping"),
+        pytest.param("wrong model", True, False, id="a servo that answers as another model"),
+        pytest.param("serial", False, False, id="a serial error LeRobot calls a port error"),
+        pytest.param("wrote first", True, True, id="a lost write, then a servo that is gone"),
+        pytest.param("a write", True, True, id="a failed write, wherever it was raised"),
+        pytest.param("a lost write", False, True, id="a lost write LeRobot calls a port error"),
+    ],
+)
+async def test_a_connect_refused_in_the_handshake_names_the_servo_and_wrote_no_torque(
+    script: str, named: bool, torque_said: bool
+) -> None:
+    """A servo that stopped answering, or the cable to it that came out, is the failure a
+    further attempt will not fix, and LeRobot reports it from the handshake that opens every
+    connect: a list of the ids that did not answer their ping. quackd read only `id_=`, so the
+    refusal sent the person to "the arm's cables and power" although LeRobot had named the
+    servo, and told them to keep a hand under the arm because the port had opened, when the
+    handshake pings and reads and not one torque write had gone out.
+
+    Now the joint is named through the bus's own table, and the torque warning is given only
+    when an attempt can have written torque: a lost write earlier in the same connect still
+    earns it, because a later attempt that writes nothing leaves the motors where it found
+    them. A serial error in the handshake comes out as LeRobot's port error, raised from it,
+    and is placed by the error it was raised from. A failed write is the other sign torque can
+    have been written, read off the words and those of the error it was raised from, and it
+    warns wherever it was raised: the handshake at 0.6.1 writes nothing, and a LeRobot whose
+    handshake did would be one to warn about."""
+    arm, camera, transport = _rewired()
+    joint, n = next(iter(REWIRED.items()))
+    refused: BaseException = {
+        "missing": _motor_check_failed(missing=[n]),
+        "wrong model": _motor_check_failed(wrong={n: (joint, SOME_MODEL + 1)}),
+        "serial": OSError("ClearCommError failed (a synthetic glitch)"),
+        "wrote first": _motor_check_failed(missing=[n]),
+        "a write": RuntimeError(
+            f"Failed to write 'Lock' on id_={n} with '0' after 1 tries. [RxPacketError] "
+            "Overload error!"
+        ),
+        "a lost write": _lost_write("Lock", n, 0, NOT_SENT),
+    }[script]
+    arm.handshake_errors = [refused] * CONNECT_ATTEMPTS
+    if script == "wrote first":
+        arm.handshake_errors[0] = None
+        arm.connect_errors = [_lost_write("Torque_Enable", REWIRED["gripper"], 0, NO_STATUS)]
+    with pytest.raises(TransportError) as raised:
+        await LeRobotAdapter(transport).connect()
+
+    why = str(raised.value)
+    head = f"lerobot real: connect failed {CONNECT_ATTEMPTS} times"
+    assert why.startswith(f"{head}, the last on {joint} (id {n}): " if named else f"{head}: ")
+    assert (SPLIT_TORQUE in why) is torque_said, why
+    look = f"{joint}'s cable and connectors" if named else "the arm's cables and power"
+    assert f"Check {look}, and that nothing else has COM7 open" in why, why
+    assert arm.calls.count(("connect", False)) == CONNECT_ATTEMPTS
+    assert arm.timeline == [] and not arm.is_connected
+    assert camera.calls == ["connect", "disconnect"]
+    for note in transport.connect_notes:
+        assert "The port was closed without a write to any motor" in note, note
+
+
+@pytest.mark.parametrize(
+    ("script", "torque_said"),
+    [
+        pytest.param("hangs", True, id="the first attempt blows its deadline"),
+        pytest.param("times out", True, id="LeRobot raises TimeoutError"),
+        pytest.param("wrote, then hangs", True, id="a lost write, then the deadline"),
+        pytest.param("missing, then hangs", True, id="a servo missing, then the deadline"),
+        pytest.param("wrote, then the close hangs", True, id="a lost write, then a wedged bus"),
+        pytest.param("wedged", False, id="a wedged bus refused before anything went out"),
+    ],
+)
+async def test_a_connect_that_ends_on_a_timeout_says_hold_the_arm_when_torque_may_be_split(
+    script: str, torque_said: bool
+) -> None:
+    """The timeout exit raised a bare "connect failed" and never looked at what the attempts
+    before it had done. So a connect whose first attempt lost a torque write, leaving some
+    motors holding and others limp, and whose next attempt then blew its deadline, was refused
+    without the warning to keep a hand under the arm. A timeout earns the warning on its own
+    as well: an attempt still on the wire when quackd stopped waiting is somewhere in the
+    handshake or in `configure()` and nothing says which, and one LeRobot timed out itself
+    could have been in either. quackd's own refusal of a wedged bus says it when an earlier
+    attempt can have written torque (a close between attempts that did not come back wedges the
+    bus as any call does), and only then: with nothing written before it, it is the one exit
+    through here that sent nothing and says nothing about torque."""
+    release = threading.Event()
+    hang_on: set[int] = {1} if script == "hangs" else {2}
+
+    class Hangs(FakeArm):
+        def connect(self, calibrate: bool = True) -> None:
+            super().connect(calibrate)
+            if self.calls.count(("connect", False)) in hang_on:
+                release.wait(5.0)
+
+    class ClosesSlowly(FakeBus):
+        def disconnect(self, disable_torque: bool = True) -> None:
+            release.wait(5.0)
+            super().disconnect(disable_torque)
+
+    arm = Hangs()
+    if script == "times out":
+        arm.connect_errors = [TimeoutError("the port read timed out")]
+    elif script == "wrote, then hangs":
+        arm.connect_errors = [_lost_write("Lock", arm.bus.motors["wrist_roll"].id, 1, CORRUPT)]
+    elif script == "missing, then hangs":
+        arm.handshake_errors = [_motor_check_failed(missing=[arm.bus.motors["gripper"].id])]
+    elif script == "wrote, then the close hangs":
+        lost = _lost_write("Torque_Enable", arm.bus.motors["shoulder_pan"].id, 0, NO_STATUS)
+        arm.connect_errors = [lost]
+        arm.bus = ClosesSlowly(arm)
+    transport = LeRobotReal("COM7", robot=arm)
+    transport.connect_deadline_s = 0.2
+    transport.port_close_deadline_s = 0.2
+    transport.connect_pause_s = 0.0
+    if script == "wedged":
+        transport._wedged = asyncio.get_running_loop().create_future()
+        transport.stop_error = "a LeRobot call (send_action) has not come back"
+    try:
+        with pytest.raises(TransportError, match="lerobot real: connect failed: ") as raised:
+            await transport.connect()
+        why = str(raised.value)
+        assert (SPLIT_TORQUE in why) is torque_said, why
+        assert why.count(SPLIT_TORQUE) <= 1 and ".." not in why, why
+        if script == "wedged":
+            assert arm.calls == [], "a wedged transport put something on the bus"
+        if script == "wrote, then the close hangs":
+            assert "a LeRobot call (disconnect) has not come back" in why, why
+            assert arm.calls.count(("connect", False)) == 1, "a wedged bus was connected again"
+    finally:
+        release.set()
+
+
+async def test_a_serial_error_that_left_the_port_busy_does_not_fail_the_next_attempt() -> None:
+    """The servo SDK raises its port handler's busy flag before every packet and lowers it when
+    the reply is in, so a serial error in between (a USB glitch in a write) leaves it raised,
+    and reopening the port does not lower it. quackd closed the port between attempts without
+    the torque-off, and upstream clears the flag only inside that same branch, so every packet
+    of the next attempts was answered "port in use" unsent: the handshake found no motor, and
+    the retry built for a passing fault failed in the one it should have absorbed, blaming
+    every motor. The close now lowers the flag itself, and writes nothing doing so."""
+
+    class Glitch(FakeArm):
+        def connect(self, calibrate: bool = True) -> None:
+            super().connect(calibrate)
+            if self.calls.count(("connect", False)) == 1:
+                self.bus.port_handler.is_using = True  # raised for a packet, never lowered
+                raise OSError("WriteFile failed (a synthetic glitch)")
+
+    arm = Glitch()
+    transport = LeRobotReal("COM7", robot=arm)
+    transport.connect_pause_s = 0.0
+    await transport.connect()
+
+    assert arm.is_connected and arm.bus.port_handler.is_using is False
+    assert arm.calls.count(("connect", False)) == 2, "the attempt after the glitch failed"
+    assert ("bus.disconnect", False) in arm.calls and ("bus.disconnect", True) not in arm.calls
+    assert arm.timeline == [] and arm.torque_retries == [], "torque was written between them"
+    (note,) = transport.connect_notes
+    assert "WriteFile failed" in note, note
 
 
 async def test_the_release_and_the_hold_give_each_torque_write_upstream_s_own_retries() -> None:

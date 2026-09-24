@@ -232,7 +232,8 @@ def missing_needs_in(
     height band is not refused: the prompt never lists a working height as a gap
     (`Datasheet.FIGURES` leaves it out on purpose), so the pilot had no way to know it was one
     and is judging a height against the height and reach it was shown. The verdict gate
-    (`own_sheet_objection`) and `solo_hint`'s "this body meets those needs" read it that way.
+    (`own_sheet_objection`) and `solo_hint`'s last sentence about the pilot's own body read it
+    that way.
     Everything that names a body to hand a task to reads it strictly, which is the default:
     `bodies_that_could`, the MCP `could` list, a flock role and the coordinator judging a bid.
     There an unknown is not a yes, and a body that never said how high it works is not the one
@@ -449,7 +450,15 @@ def solo_hint(needs: Mapping[str, Any], here: RobotManifest | None) -> str:
 
     The last sentence is about the pilot's own body and reads its sheet the way the verdict
     gate does (`own_sheet`), so it cannot say "does not meet" of a verdict the gate let
-    through. The list of bodies that could stays strict: it names bodies to hand a task to."""
+    through. The list of bodies that could stays strict: it names bodies to hand a task to.
+
+    The two readings differ in one place only, a working height on a sheet that publishes no
+    working height band, and there the last sentence says that rather than "meets". Said as
+    "meets those needs" it followed "No robot installed here meets needs work_height_m=..." about
+    a body that is installed here, and said the sheet met a height several times the body's own
+    when the sheet had only never published a band. So "meets" is kept for a sheet the strict
+    reading passes too, and a sheet the lenient reading alone passes is said to publish no band,
+    which leaves whether the body reaches that height to the pilot, as the gate does."""
     if not needs:
         return ""
     from quackd.adapters.factory import bodies_that_could
@@ -465,10 +474,16 @@ def solo_hint(needs: Mapping[str, Any], here: RobotManifest | None) -> str:
         if best := _best_numeric(needs):
             sentence = sentence[:-1] + f": {best}."
     if here is not None and not missing_needs(needs, here, own_sheet=True):
-        sentence += (
-            " This body's own datasheet meets those needs, so the verdict is the pilot's "
-            "judgement rather than a limit."
-        )
+        if not missing_needs(needs, here):
+            sentence += (
+                " This body's own datasheet meets those needs, so the verdict is the pilot's "
+                "judgement rather than a limit."
+            )
+        else:
+            sentence += (
+                " This body publishes no working height band, so whether it reaches that "
+                "height is the pilot's judgement."
+            )
     return sentence
 
 
