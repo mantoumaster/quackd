@@ -734,13 +734,15 @@ read of the torque register found every motor off.
 and here the arm is down. It is where a placement wait that ended unanswered or on a Ctrl-C
 leaves an arm whose fold lies past its travel: the take-hold at the start of the teardown is
 refused over the folded joint, and the close then ended the run telling somebody who may never
-have touched the arm, lying in its fold, that it was in their hands. Only after the first door,
-which releases nowhere but the rest pose: an arm a person asked to have released where it
-stood (`LET_GO_WHERE_IT_STOOD`) was released into their hands on purpose, since `quackd robot
-release` and the end-of-run offer both tell them to hold it before it goes, and it keeps the
-line for one. Nothing here claims what no read said: the pose and the torque are both this
-close's own readings, and whether somebody lifted the arm and put it back is not a thing quackd
-says."""
+have touched the arm, lying in its fold, that it was in their hands. It is where Enter pressed
+over that fold leaves it too, and the take-hold at Enter is refused in the same terms
+(`unlifted_from_rest`), so no line before this one tells the person the arm is up and needs
+holding. Only after the first door, which releases nowhere but the rest pose: an arm a person
+asked to have released where it stood (`LET_GO_WHERE_IT_STOOD`) was released into their hands
+on purpose, since `quackd robot release` and the end-of-run offer both tell them to hold it
+before it goes, and it keeps the line for one. Nothing here claims what no read said: the pose
+and the torque are both this close's own readings, and whether somebody lifted the arm and put
+it back is not a thing quackd says."""
 
 IN_HAND_NOT_MOVED = "the arm is in a person's hands, so it is not moved"
 """The rest move's refusal while the arm is in somebody's hands (`in_hand`), which writes
@@ -776,6 +778,20 @@ torque write rather than after a release: `LET_GO_TO_PLACE` would say the arm wa
 hold of again" in the same sentence that names joints holding."""
 
 
+def held_in_part(on: tuple[str, ...]) -> str:
+    """Why a take-hold refused an arm whose read after the torque write found `on` holding and
+    every other motor off: torque came back on in part, so the arm is still in a hand, and those
+    joints hold in it.
+
+    The motors are joined the way every other sentence here joins them (`_listed`). They used
+    to be joined with commas and then run straight into ", and the rest of the arm still reads
+    off", which with two of them read as three things on a list, the last of them the whole
+    rest of the arm."""
+    return (
+        f"torque came back on only on {_listed(list(on))}, and the rest of the arm still reads off"
+    )
+
+
 def placed_past_travel(outside: Mapping[str, float], travel: Mapping[str, Any]) -> str:
     """Why `take_hold` left torque off: the body joints a person placed outside their
     calibrated travel, each with its reading and its travel in this arm's numbers, and what to
@@ -805,13 +821,6 @@ def placed_past_travel(outside: Mapping[str, float], travel: Mapping[str, Any]) 
     Each reading is `said_past` beside `published_travel`, as the range refusal prints a goal,
     so a joint a hair past an edge is never named inside the travel the sentence gives."""
     joints = list(outside)
-    readings: list[str] = []
-    spans: list[str] = []
-    for joint in joints:
-        span = travel[joint]
-        lo, hi = published_travel(float(span[0]), float(span[1]))
-        readings.append(f"{joint} reads {said_past(outside[joint], lo, hi)}")
-        spans.append(f"{lo:.1f}..{hi:.1f}")
     one = len(joints) == 1
     its, them = ("its", "it") if one else ("their", "them")
     written = (
@@ -821,12 +830,48 @@ def placed_past_travel(outside: Mapping[str, float], travel: Mapping[str, Any]) 
     )
     last = "the last goal it was given" if one else "the last goals they were given"
     return (
-        f"{_listed(readings)}, outside {its} calibrated travel of {_listed(spans)}, so quackd "
-        f"left torque off: {written} past {its} travel and the servo would pull {them} to the "
-        f"end of {its} travel, and with none written the servo may drive {them} to {last}, with "
-        f"a hand on the arm either way. quackd takes hold of the arm only with "
-        f"{_listed(joints)} inside {its} travel"
+        f"{_read_outside(outside, travel)}, so quackd left torque off: {written} past {its} "
+        f"travel and the servo would pull {them} to the end of {its} travel, and with none "
+        f"written the servo may drive {them} to {last}, with a hand on the arm either way. "
+        f"quackd takes hold of the arm only with {_listed(joints)} inside {its} travel"
     )
+
+
+def unlifted_from_rest(outside: Mapping[str, float], travel: Mapping[str, Any]) -> str:
+    """Why `take_hold` left torque off over an arm its own read found lying at its rest pose,
+    by the half-line rule, with every motor off: the joints outside their travel are a fold
+    recorded past it that nobody lifted the arm out of before pressing Enter.
+
+    `placed_past_travel` is said to somebody holding a joint they put past its travel, and it
+    is about that hand: what torque would do to the joint under it. Here there is no such hand
+    to speak to. The arm lies where the placing release let it go, the same fold every run
+    ends in, and telling the person it is in their hands and to keep hold of it tells them it
+    is up and needs holding, which no read said. So this names each folded joint with its
+    reading and its travel, in this arm's numbers and printed as `placed_past_travel` prints
+    them, and says what quackd needs before it takes hold: every one of them lifted inside."""
+    joints = list(outside)
+    one = len(joints) == 1
+    return (
+        f"{_read_outside(outside, travel)}, and quackd takes hold of the arm only once "
+        f"{_listed(joints)} {'is' if one else 'are'} lifted inside {'its' if one else 'their'} "
+        "travel"
+    )
+
+
+def _read_outside(outside: Mapping[str, float], travel: Mapping[str, Any]) -> str:
+    """Each joint in `outside` with its reading, then the travel they are outside of: the
+    opening clause of both take-hold refusals over joints outside their travel. Every joint
+    in `outside` has its travel in `travel`, since that is how it was found to be outside it."""
+    joints = list(outside)
+    readings: list[str] = []
+    spans: list[str] = []
+    for joint in joints:
+        span = travel[joint]
+        lo, hi = published_travel(float(span[0]), float(span[1]))
+        readings.append(f"{joint} reads {said_past(outside[joint], lo, hi)}")
+        spans.append(f"{lo:.1f}..{hi:.1f}")
+    its = "its" if len(joints) == 1 else "their"
+    return f"{_listed(readings)}, outside {its} calibrated travel of {_listed(spans)}"
 
 
 NO_DRIVABLE_JOINT = (

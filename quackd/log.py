@@ -779,12 +779,17 @@ def render_events(
         label = {"released": "release refused", "held": "hold refused"}.get(stage, stage)
         said = label if refused else stage
         text = f"{said}: {reason}" if reason else said
-        # Not after a refused hold, whose reason carries the readings that matter, each printed
-        # so it is never inside the travel the same sentence gives (`said_past`). Whole degrees
-        # beside it named a joint a hair past its ceiling at the ceiling itself, inside the
-        # travel the line said it was outside, and a tenth would do the same a hundredth past
-        # an edge. The joints stay in the record's event.
-        if joints and not (refused and stage == "held"):
+        # Not after a hold refused over joints outside their travel (`outside`), whose reason
+        # carries the readings that matter, each printed so it is never inside the travel the
+        # same sentence gives (`said_past`). Whole degrees beside it named a joint a hair past
+        # its ceiling at the ceiling itself, inside the travel the line said it was outside,
+        # and a tenth would do the same a hundredth past an edge. Only there: a refusal whose
+        # reason names no readings, an arm that moved as torque came on, which says "it is
+        # holding where it is now" and names one joint, keeps the list that says where that
+        # is. It was left out of every refused hold for a while, and a slip's line then said
+        # the arm held "where it is now" and nowhere said where. The joints stay in the
+        # record's event either way.
+        if joints and not d.get("outside"):
             text += " (" + ", ".join(f"{j} {float(v):.0f}" for j, v in sorted(joints.items())) + ")"
         colour = "yellow" if refused or stage in ("released", "skipped") else "cyan"
         return [LogLine("hand", text, colour, mark="note")]

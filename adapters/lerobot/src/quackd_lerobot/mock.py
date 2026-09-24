@@ -48,6 +48,7 @@ from quackd_lerobot.verbs import (
     shortfall,
     still_holding_in_hand,
     torque_left_on,
+    unlifted_from_rest,
     worth_saying,
 )
 
@@ -452,6 +453,12 @@ class LeRobotMock(MockTransport):
         self.hold_refusal = held if not held.ok and self.in_hand else None
         return held
 
+    @property
+    def refused_hold(self) -> HandResult | None:
+        """The real backend's `refused_hold`, which is this mock's `hold_refusal`: what the run
+        reads after its teardown's stop, to say a take-hold that stop made and was refused."""
+        return self.hold_refusal
+
     def _take_hold(self) -> HandResult:
         placed = dict(self.joints)
         outside = {
@@ -460,11 +467,24 @@ class LeRobotMock(MockTransport):
             if j in JOINTS and j != "gripper" and self._outside_travel(j, v)
         }
         if outside:
+            # the real backend's two refusals over a joint outside its travel: an arm that
+            # reads at its rest pose with every motor off after the release was never lifted
+            # out of a fold recorded past its travel, and it is said that way
+            goal = self.rest_reachable
+            resting = (
+                bool(goal)
+                and at_rest(goal, placed, rest_goal(self.rest_pose or {}))
+                and self.release_read_back
+                and not self.holding_in_hand
+            )
+            refusal = unlifted_from_rest if resting else placed_past_travel
             return HandResult(
                 "refused",
-                placed_past_travel(outside, self.joint_range_deg),
+                refusal(outside, self.joint_range_deg),
                 joints=placed,
                 energised=False,
+                outside=tuple(outside),
+                resting=resting,
             )
         # the real backend writes the present position as the goal before torque comes on and
         # again after, and an in-memory arm is already exactly where it is told to be

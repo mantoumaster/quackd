@@ -401,6 +401,16 @@ class LeRobotAdapter:
         held = getattr(self.transport, "in_hand", None)
         return None if held is None else bool(held)
 
+    @property
+    def refused_hold(self) -> HandResult | None:
+        """The take-hold the backend refused since the last release that left the arm in a
+        hand, or None. Proxied for `close_note`'s reason: the run reads it off this adapter
+        after the stop that opens its teardown, to say a refusal that stop made, and to know
+        which arm the person is holding when an interrupt kept the run's own take-hold from
+        telling it."""
+        refused = getattr(self.transport, "refused_hold", None)
+        return refused if isinstance(refused, HandResult) else None
+
     def set_stop_check(self, check: Callable[[], bool] | None) -> None:
         """Hand the backend a way to hear that a stop was asked for while it connects, or take
         it away. Passed on to a backend that retries its connect (`LeRobotReal`), and a no-op

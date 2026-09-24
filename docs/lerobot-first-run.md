@@ -653,9 +653,12 @@ What happens, in order, and the order is the whole of the feature:
    travel, and ends the run with the arm still in your hands. Nothing takes hold of it after
    that, even once you move the joint back inside, and nothing folds it: put it down, and run
    again. A fold that lies past the travel counts, so lift every joint out of it before you
-   press Enter. If quackd asked for torque and could not read back what came of it, it says it
-   cannot confirm whether the arm has torque instead: hold the arm as though it may move or
-   drop, and cut its power to be sure.
+   press Enter: press it with the arm still lying there and quackd says the arm is still limp
+   at its rest pose and which joint to lift. If quackd asked for torque and could not read back
+   what came of it, it says it cannot confirm whether the arm has torque instead: hold the arm
+   as though it may move or drop, and cut its power to be sure. If the read found some motors
+   on and the rest off, it names the joints that hold, says the rest is limp, and tells you to
+   keep hold of the arm and cut its power.
 6. **The pilot runs**, from your pose rather than from the fold. The budget clock restarts
    here, so the time you spent finding the pencil is not taken out of the model's minutes.
 7. **At the end the arm holds where it ended**, and quackd asks you to take out whatever is in
@@ -719,7 +722,9 @@ from that moment the arm reports it as held.
 means the teardown picks the arm back up before it folds it: torque comes on where you are
 holding it, the arm travels to its rest pose, and only there does torque drop. Keep hold of it
 and keep your fingers clear of the jaws until it has stopped. The run is recorded as aborted
-and the pilot never gets a turn. [Section 11](#11-prove-the-safety-net) has this window and the
+and the pilot never gets a turn. With a joint outside its travel, a fold you never lifted it
+out of included, none of that happens: quackd tells you it did not take hold, naming the joint,
+and leaves the arm as it is. [Section 11](#11-prove-the-safety-net) has this window and the
 other new one in full.
 
 **Five things `--by-hand` refuses**, none of which leave a run directory behind. The first
@@ -1077,10 +1082,11 @@ hands, Ctrl-C ends the run before the pilot has had a turn, and the teardown beg
 are standing holding it, the arm then travels to its rest pose, and only there does torque
 drop. Keep hold of it until it has stopped, and keep your fingers out of the jaws, because from
 the arm's side that is an ordinary teardown and nothing about it is slower for being one. With a
-joint outside its travel none of that happens: torque stays off, nothing is written to the arm
-and nothing folds it, even if you then move the joint back inside, and the last line says what
-quackd read: the arm limp in your hands, or limp at its rest pose where the joint outside its
-travel is a fold you never lifted it out of.
+joint outside its travel none of that happens: you are told once that quackd did not take hold
+and which joint reads where, torque stays off, nothing is written to the arm and nothing folds
+it, even if you then move the joint back inside, and the last line says what quackd read: the
+arm limp in your hands, or limp at its rest pose where the joint outside its travel is a fold
+you never lifted it out of.
 **Inside the end-of-run hand-back**, where quackd is asking you to take whatever is in the
 gripper, a second Ctrl-C means skip the gripper rather than abandon the run. The jaws stay
 where they are, the arm still parks at its rest pose, the transport still closes properly, and

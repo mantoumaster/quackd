@@ -530,10 +530,17 @@ class AgentLoop:
     pencil still in the jaws can drive that pencil into the bench, and the person who put it
     there is the one who should take it out."""
 
-    NOT_TAKEN_HOLD = (
-        "quackd did not take hold of the arm, so the run stops here and the arm is still in your "
-        "hands"
-    )
+    RUN_STOPS = ", so the run stops here"
+    """Where the lines for a refused take-hold say what became of the run, when the refusal is
+    the take-hold at Enter, which ends the run with the same line."""
+
+    RUN_STOPPED = " when the run stopped"
+    """The same place in those lines, when the refusal is the take-hold the teardown's stop
+    made, after a Ctrl-C in the placement wait. That run was already ending, and "so the run
+    stops here" would give the refusal as the reason it ended."""
+
+    _NOT_TAKEN = "quackd did not take hold of the arm{stops} and the arm is still in your hands"
+    NOT_TAKEN_HOLD = _NOT_TAKEN.format(stops=RUN_STOPS)
     """Said to the person the moment `take_hold` refuses while the arm is still in their hands
     (`in_hand`) and switched nothing on (`energised` False), ahead of its reason, and the run
     aborts with the same line. They pressed Enter holding the arm and are waiting to hear they
@@ -544,17 +551,49 @@ class AgentLoop:
 
     Only then. A take-hold refused after its torque write, a register that did not answer or a
     call that raised with the write on the wire, may have left the arm energised, and "did not
-    take hold ... still in your hands" said of it is a claim nothing read (`HOLD_UNCONFIRMED`)."""
+    take hold ... still in your hands" said of it is a claim nothing read (`HOLD_UNCONFIRMED`).
+    One whose read found some motors on is said by what it found (`HELD_IN_PART`), and one over
+    an arm its read found still lying at its rest pose is said that way (`NOT_TAKEN_AT_REST`).
+    A take-hold the teardown's stop made is said in the same words, with `RUN_STOPPED` in
+    place of `RUN_STOPS`."""
 
-    HOLD_UNCONFIRMED = (
-        "quackd could not confirm whether the arm has torque ({why}), so the run stops here: "
-        "keep hold of the arm as though it may move or drop, and cut its power to be sure"
+    _NOT_TAKEN_AT_REST = (
+        "quackd did not take hold of the arm{stops} and the arm is still limp at its rest pose"
+    )
+    NOT_TAKEN_AT_REST = _NOT_TAKEN_AT_REST.format(stops=RUN_STOPS)
+    """`NOT_TAKEN_HOLD` for a take-hold whose own read found the whole arm at its rest pose with
+    every motor off (`HandResult.resting`): the person pressed Enter without lifting the arm out
+    of a fold recorded past its travel, and its reason names the folded joints and says quackd
+    takes hold only once they are lifted inside. On the bench arm, whose shoulder folds past its
+    travel, a person who loaded the gripper and pressed Enter was told the arm was still in
+    their hands and to keep hold of it, and the close then said it was lying at its rest pose
+    with no torque: the two lines before the last told them the arm was up and needed holding,
+    which no read said."""
+
+    HELD_IN_PART = (
+        "quackd did not take hold of the arm{stops}: torque came on for {joints} only, so "
+        "{holds} and the rest of the arm is limp. Keep hold of the arm, and cut its power to let "
+        "go of {them}"
     )
     """Said, and the run aborted with it, when `take_hold` refuses with the arm still in the
-    person's hands and its torque write may have gone out (`energised` None, or True for motors
-    that read on beside others that read off). The person is holding an arm that may be limp,
-    energised, or both in parts, so they are told to hold it against either and given the one
-    way to be certain, the switch. Nothing after this writes to the arm or folds it."""
+    person's hands and a read after its torque write found some motors on and the rest off
+    (`energised` True, those motors in `torque_on`). It used to be `HOLD_UNCONFIRMED`, which
+    opens on quackd not being able to confirm whether the arm has torque, in front of a
+    parenthesis in which the read confirmed it motor by motor. The read did confirm it, and the
+    person holding the arm is told what it found: which joints hold, that the rest is limp, and
+    that the switch is what lets go of the ones that hold. Nothing after this writes to the arm
+    or folds it."""
+
+    _HOLD_UNCONFIRMED = (
+        "quackd could not confirm whether the arm has torque ({why}){stops}: keep hold of the "
+        "arm as though it may move or drop, and cut its power to be sure"
+    )
+    HOLD_UNCONFIRMED = _HOLD_UNCONFIRMED.format(why="{why}", stops=RUN_STOPS)
+    """Said, and the run aborted with it, when `take_hold` refuses with the arm still in the
+    person's hands and its torque write may have gone out with nothing read back since
+    (`energised` None). The person is holding an arm that may be limp, energised, or both in
+    parts, so they are told to hold it against either and given the one way to be certain, the
+    switch. Nothing after this writes to the arm or folds it."""
 
     STILL_IN_YOUR_HANDS = (
         "quackd never took hold of the arm, so it does not open the gripper for you: take out "
@@ -572,7 +611,26 @@ class AgentLoop:
     )
     """`STILL_IN_YOUR_HANDS` for the arm `HOLD_UNCONFIRMED` was said of. "Take out whatever is
     in it by hand" is an invitation to put fingers into jaws that may be energised, so the power
-    comes first."""
+    comes first. Said too where this run does not know which arm it is: a refusal nothing kept."""
+
+    STILL_IN_PART = (
+        "quackd did not take hold of the arm, and torque came on for {joints} only, so it does "
+        "not open the gripper or fold the arm: keep hold of it, and cut its power before you "
+        "take out whatever is in the gripper"
+    )
+    """`STILL_IN_YOUR_HANDS` for the arm `HELD_IN_PART` was said of: the read named the joints
+    that hold, so this names them again rather than say quackd could not tell. The gripper may
+    be one of them, so the power still comes before anybody's fingers go into its jaws."""
+
+    STILL_AT_REST = (
+        "quackd never took hold of the arm, which is still limp at its rest pose, so it does not "
+        "open the gripper for you: take out whatever is in it by hand. quackd takes hold of the "
+        "arm only once {joints} {are} lifted inside {its} travel"
+    )
+    """`STILL_IN_YOUR_HANDS` for the arm `NOT_TAKEN_AT_REST` was said of, lying in its fold with
+    torque off. "Keep hold of the arm" would tell somebody to hold up an arm that is down, and
+    the close that follows reads it at its rest pose and says so. What it does say is the one
+    thing to do differently next time: lift the folded joints inside their travel before Enter."""
 
     NOT_FOLDED = "the arm is in your hands, so it is not folded"
     """The teardown's one line in place of the rest move's two, for an arm a refused take-hold
@@ -665,12 +723,9 @@ class AgentLoop:
                 # told they can let go, so they are told now and not only in the summary at the
                 # end: the teardown after this takes a while, and every line of it is about an
                 # arm they are still holding. Told as what it is: an arm nothing switched on
-                # under, or one whose torque write went out and nothing confirmed.
-                said = (
-                    f"{self.NOT_TAKEN_HOLD}: {held.reason}"
-                    if held.energised is False
-                    else self.HOLD_UNCONFIRMED.format(why=held.reason)
-                )
+                # under, one still lying at its rest pose, one a read found holding in part,
+                # or one whose torque write went out and nothing confirmed.
+                said = self._not_taken_line(held, self.RUN_STOPS)
                 with contextlib.suppress(Exception):
                     hand.say(said)
                 raise Aborted(said)
@@ -686,12 +741,104 @@ class AgentLoop:
         """Hold whatever pose the arm is in now, narrated, and remember a refusal that left the
         arm in the person's hands (`_not_taken`)."""
         held = await take_hold_if_any(self.cfg.transport)
-        self._emit("hand_off", stage="held", how=held.how, reason=held.reason, joints=held.joints)
+        self._held(held)
+        if not held.ok and getattr(self.cfg.transport, "in_hand", None) is True:
+            self._not_taken = held
+        return held
+
+    def _held(self, held: HandResult) -> None:
+        """A take-hold on the record: its `hand_off` event, and a note when it was refused.
+
+        The joints a refusal was made over because each read outside its travel go into the
+        event as `outside` where there are any, which is how the log line knows its reason
+        already names them with their readings and leaves its own whole-degree list out."""
+        extra: dict[str, Any] = {"outside": list(held.outside)} if held.outside else {}
+        self._emit(
+            "hand_off",
+            stage="held",
+            how=held.how,
+            reason=held.reason,
+            joints=held.joints,
+            **extra,
+        )
         if not held.ok:
             self._note(f"the arm did not take hold: {held.reason}")
-            if getattr(self.cfg.transport, "in_hand", None) is True:
-                self._not_taken = held
-        return held
+
+    def _not_taken_line(self, held: HandResult, stops: str) -> str:
+        """What the person holding the arm is told when a take-hold was refused with the arm
+        still in their hands, by what the refusal found (`HandResult.energised`, `resting`,
+        `torque_on`), with `stops` saying what became of the run (`RUN_STOPS` at Enter,
+        `RUN_STOPPED` for the teardown's stop).
+
+        Four arms, four lines. One lying at its rest pose with every motor off, never lifted
+        out of its fold (`NOT_TAKEN_AT_REST`). One nothing switched on under (`NOT_TAKEN_HOLD`).
+        One a read after the torque write found holding in part, named joint by joint
+        (`HELD_IN_PART`). And one whose torque write went out with nothing read back, or that
+        says it holds in part without saying where (`HOLD_UNCONFIRMED`), since only a read may
+        tell the person which joints hold."""
+        if held.resting:
+            return f"{self._NOT_TAKEN_AT_REST.format(stops=stops)}: {held.reason}"
+        if held.energised is False:
+            return f"{self._NOT_TAKEN.format(stops=stops)}: {held.reason}"
+        if held.energised and held.torque_on:
+            one = len(held.torque_on) == 1
+            return self.HELD_IN_PART.format(
+                stops=stops,
+                joints=_listed(held.torque_on),
+                holds="that joint holds" if one else "those joints hold",
+                them="it" if one else "them",
+            )
+        return self._HOLD_UNCONFIRMED.format(why=held.reason, stops=stops)
+
+    def _still_line(self, refused: HandResult | None) -> str:
+        """The hand-back's one line over an arm still in the person's hands, by what the refusal
+        that left it there found, or `STILL_UNCONFIRMED` where no refusal is known at all."""
+        if refused is None:
+            return self.STILL_UNCONFIRMED
+        if refused.resting:
+            one = len(refused.outside) == 1
+            return self.STILL_AT_REST.format(
+                joints=_listed(refused.outside),
+                are="is" if one else "are",
+                its="its" if one else "their",
+            )
+        if refused.energised is False:
+            return self.STILL_IN_YOUR_HANDS
+        if refused.energised and refused.torque_on:
+            return self.STILL_IN_PART.format(joints=_listed(refused.torque_on))
+        return self.STILL_UNCONFIRMED
+
+    def _refused_in_the_stop(self) -> None:
+        """Say, once, a take-hold the teardown's stop made and was refused.
+
+        The stop that opens every teardown takes hold of an arm in a person's hands when no
+        take-hold has been refused since the release, which is a Ctrl-C in the placement wait
+        (ADR-0039). Where that take-hold is refused, over a joint placed past its travel or a
+        fold nobody lifted, the stop swallowed it: the refusal went into `stop_error`, which
+        only the pilot's `stop` verb reads, so the person who expected the arm to be taken from
+        them and folded heard only that it was not folded, and the record said nothing of which
+        joint or why. It is read off the body (`refused_hold`) and said the way the take-hold at
+        Enter is: the `hand_off` event, the note, and the line to the person, naming the joint.
+
+        Only where this run has not said a refusal already (`_not_taken`), since the stop sends
+        nothing after one and the body's refusal is then the same one. And it becomes this
+        run's own (`_not_taken`), so the hand-back that may follow says which arm the person is
+        holding by it, rather than assume the worst where an interrupt kept the take-hold at
+        Enter from ever telling the run."""
+        if self._not_taken is not None or self.cfg.dry_run:
+            return
+        transport = self.cfg.transport
+        if getattr(transport, "in_hand", None) is not True:
+            return
+        refused = getattr(transport, "refused_hold", None)
+        if not isinstance(refused, HandResult):
+            return
+        self._not_taken = refused
+        self._held(refused)
+        hand = self.cfg.hand_off
+        if hand is not None:
+            with contextlib.suppress(Exception):
+                hand.say(self._not_taken_line(refused, self.RUN_STOPPED))
 
     async def _hand_back(self) -> None:
         """Ask before the gripper opens, at the end of a run the arm was handed over for.
@@ -704,17 +851,33 @@ class AgentLoop:
         An arm still in the person's hands is not asked about: the take-hold was refused, the
         stop that begins the teardown sent it nothing, and the question would tell them the arm
         is holding where it ended. They are told what they are holding instead, and nothing is
-        written to open the gripper: `STILL_IN_YOUR_HANDS` for an arm nothing switched on
-        under, and `STILL_UNCONFIRMED` for one whose torque write went out unconfirmed, or
-        when this run does not know which, which may be energised and is given the switch
-        before anybody's fingers go into its jaws."""
+        written to open the gripper (`_still_line`): `STILL_IN_YOUR_HANDS` for an arm nothing
+        switched on under, `STILL_AT_REST` for one still lying in its fold, `STILL_IN_PART`
+        for one a read found holding in part, and `STILL_UNCONFIRMED` for one whose torque
+        write went out unconfirmed, which may be energised and is given the switch before
+        anybody's fingers go into its jaws.
+
+        Which refusal that is comes from this run's own record (`_not_taken`), and where an
+        interrupt landed on the take-hold at Enter and left none, from the body's
+        (`refused_hold`), which knows which it was. It used to assume the worst there, and tell
+        somebody holding an arm nothing had switched on that quackd could not confirm whether
+        it had torque, straight before the close said, from its own read, that it was limp.
+        `STILL_UNCONFIRMED` is left for a refusal neither knows."""
         hand = self.cfg.hand_off
         if hand is None or self.cfg.dry_run:
             return
         if getattr(self.cfg.transport, "in_hand", None) is True:
-            limp = self._not_taken is not None and self._not_taken.energised is False
-            said = self.STILL_IN_YOUR_HANDS if limp else self.STILL_UNCONFIRMED
-            self._emit("hand_off", stage="skipped", reason="the arm is still in your hands")
+            refused = self._not_taken or getattr(self.cfg.transport, "refused_hold", None)
+            known = refused if isinstance(refused, HandResult) else None
+            said = self._still_line(known)
+            # the record's word for why nothing was asked, which for an arm still lying in its
+            # fold is not that it is in somebody's hands
+            why = (
+                "the arm is still limp at its rest pose"
+                if known is not None and known.resting
+                else "the arm is still in your hands"
+            )
+            self._emit("hand_off", stage="skipped", reason=why)
             self._note(said)
             with contextlib.suppress(Exception):
                 hand.say(said)
@@ -1740,6 +1903,10 @@ class AgentLoop:
             with contextlib.suppress(Exception):
                 # the run's last intent, narrated like every other one
                 await self.executor.logged_transport().stop()
+            with contextlib.suppress(Exception):
+                # a take-hold that stop made over an arm in a person's hands, and was refused,
+                # said to them and put on the record, which the stop itself does neither of
+                self._refused_in_the_stop()
             if self._handed_over:
                 # between the stop, which is holding the arm where the run left it, and the
                 # rest move, which folds it: the one moment where opening the gripper is
@@ -1853,6 +2020,13 @@ def _joints_line(joints: Mapping[str, float]) -> str:
     if not joints:
         return "the arm reported no joint"
     return "It is at " + ", ".join(f"{j} {v:.0f}" for j, v in sorted(joints.items()))
+
+
+def _listed(names: Sequence[str]) -> str:
+    """Joint names as a sentence lists them, "a", "a and b", "a, b and c", the way the arm's
+    own lines join them, so the person holding it hears one list the same way twice."""
+    items = list(names)
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
 async def run_duck(cfg: RunConfig) -> RunResult:

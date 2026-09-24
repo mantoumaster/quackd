@@ -113,8 +113,10 @@ Known limitations, below, lists the bench steps that would say whether it works.
   would pull the joint to the end of it, and says the arm is taken hold of only with the joint
   inside. The run ends there and says so to the person at once. The log line for a refused
   take-hold or release reads `hold refused` or `release refused` rather than `held` or
-  `released`, and a refused take-hold's line ends on its reason, with no joint list after it that
-  could round a joint a hair past its travel onto the edge the reason says it is past
+  `released`, and a take-hold refused over a joint outside its travel ends its line on the
+  reason, with no joint list after it that could round a joint a hair past its travel onto the
+  edge the reason says it is past. A refusal whose reason names no reading, an arm that moved as
+  torque came on, keeps the list that says where it is holding
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#placing-it-by-hand),
   [ADR-0045](docs/adr/0045-a-rest-pose-the-calibration-cannot-reach.md), amended).
 - **After a refused take-hold, nothing touches the arm, and the person is told which arm they
@@ -125,20 +127,33 @@ Known limitations, below, lists the bench steps that would say whether it works.
   after the take-hold's torque write was told as quackd never having taken hold, the stop sent
   the torque write again, the person was told to reach into the gripper and keep hold of the arm,
   and the rest move then folded the energised arm under their hands. Now a take-hold says
-  whether it may have left torque on (`HandResult.energised`). One that switched nothing on,
-  refused before its torque write or read off on every motor after it, is told as before, and
-  one whose torque write may have taken, with nothing read back or some motors read on, is told
-  as quackd not being able to confirm whether the arm has torque, with the person asked to hold
-  it as though it may move or drop and to cut its power to be sure. After either, the stop takes
-  no second hold and sends nothing, the hand-back is not asked, the rest move writes nothing and
-  the run says once that the arm is in their hands and not folded, and no release is offered.
-  The close says what its own read found:
+  whether it may have left torque on (`HandResult.energised`), for every take-hold since the
+  release. One that switched nothing on, refused before its torque write or read off on every
+  motor after it, is told as before, and one refused over a fold nobody lifted before pressing
+  Enter, whose own read found the whole arm at its rest pose with every motor off, is told that
+  the arm is still limp at its rest pose and which joint to lift inside its travel, rather than
+  to keep hold of it. One whose torque write may have taken with nothing read back is told as
+  quackd not being able to confirm whether the arm has torque, with the person asked to hold it
+  as though it may move or drop and to cut its power to be sure, and one whose read found some
+  motors on is told which joints hold and that the rest is limp, to keep hold of the arm and to
+  cut its power, where it used to be told the same could-not-confirm in front of a read that
+  confirmed it motor by motor. After any of them, the stop takes no second hold and sends
+  nothing, the hand-back is not asked and says which arm the person is holding, from the body's
+  own refusal where an interrupt kept the run's from it, the rest move writes nothing and the run
+  says once that the arm is in their hands and not folded, and no release is offered. The close
+  says what its own read found, and a read speaks for the arm only when the bus carried it after
+  the last torque write: a heartbeat read that got the bus between a take-hold's goal write and
+  its torque write let the close tell somebody holding an energised arm that nothing held it up.
+  The close's lines are:
   quackd cannot tell whether the arm has torque where nothing read the torque write back, the
   joints that read on by name, the arm limp in their hands, let go of for them to place, rather
   than the rest move's shortfall said twice, and, for an arm the placing release let go of at its
   rest pose that still reads there with every motor off, that it is limp at its rest pose rather
   than in anybody's hands. A Ctrl-C in the placement wait with no take-hold refused yet still
-  takes hold where the hand has it and folds the arm, as it always did
+  takes hold where the hand has it and folds the arm, as it always did, and where that stop's
+  take-hold is refused, over a joint placed past its travel or a fold nobody lifted, the person
+  is now told so once, naming the joint, and it is recorded, where it used to go no further than
+  the stop's own error
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#placing-it-by-hand),
   [ADR-0039](docs/adr/0039-an-arm-placed-by-hand.md), amended).
 - **`move_joints` takes the time it is asked for.** `duration_s` was how long a move could take

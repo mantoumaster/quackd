@@ -288,21 +288,26 @@ power switch was the only other way to put down an arm a run had left energised,
 that got to its end that afternoon finished there
 ([adapters/lerobot.md](adapters/lerobot.md#the-torque-rule)).
 
-**If a run ends while the arm is still limp in your hands, quackd picks it up before it folds
-it.** That state takes a Ctrl-C during the wait, a heartbeat that died, or a `take_hold` the arm
-refused, and the way out of it is the `stop` every teardown opens with: on an arm that is in
-somebody's hand that stop takes hold first, at wherever your hand has it, and the rest move then
-puts it down from there. Sending a goal to a limp servo would have been a stop that stopped
-nothing. It never takes while a joint reads outside its calibrated travel, because a goal written
-where that joint is lies past the travel and is pulled to the end of it, and none leaves the
-servo the last goal it had, so torque stays off and the refusal names the joint. Once a
-take-hold has been refused, at the end of the placement wait or in that stop, quackd leaves the
-arm alone for the rest of the run: no second take-hold, even after you move the joint back
-inside, no goal and no fold, because the arm is in your hands. A take-hold refused after it
-asked for torque, with nothing read back, may have left the arm energised, so you are told
-quackd cannot confirm whether it has torque, to hold it as though it may move or drop, and to
-cut its power to be sure, and the close says the same. Where the take-hold switched nothing on,
-the close says so in the one line that is worth reading:
+**If a run ends while the arm is still limp in your hands and no take-hold has been refused,
+quackd picks it up before it folds it.** That state takes a Ctrl-C during the placement wait or a
+heartbeat that died there, and the way out of it is the `stop` every teardown opens with: on an
+arm that is in somebody's hand that stop takes hold first, at wherever your hand has it, and the
+rest move then puts it down from there. Sending a goal to a limp servo would have been a stop that
+stopped nothing. It never takes while a joint reads outside its calibrated travel, because a goal
+written where that joint is lies past the travel and is pulled to the end of it, and none leaves
+the servo the last goal it had, so torque stays off, and you are told at once, as the take-hold
+at Enter tells you, which joint and where it reads, and it goes on the record. Once a take-hold
+has been refused, at the end of the placement wait or in that stop, quackd leaves the arm alone
+for the rest of the run: no second take-hold, even after you move the joint back inside, no goal
+and no fold, because the arm is in your hands. What you are told is what a read found. An arm
+still lying at its rest pose with every motor off, because you pressed Enter without lifting it
+out of a fold recorded past its travel, is said to be still limp at its rest pose, with the
+joint to lift inside its travel before quackd takes hold. A take-hold whose read found some
+motors on names the joints that hold and says the rest is limp, and to keep hold of the arm and
+cut its power. One that asked for torque with nothing read back may have left the arm
+energised, so you are told quackd cannot confirm whether it has torque, to hold it as though it
+may move or drop, and to cut its power to be sure, and the close says the same. Where the
+take-hold switched nothing on, the close says so in the one line that is worth reading:
 
 ```
 the arm is limp and in your hands (...): put it down before you let go of it, because nothing is holding it up
@@ -315,7 +320,10 @@ left some motors energised, "nothing is holding it up" would be the wrong one to
 names the joints that still read torque on and ends on cutting the power. And where nothing read
 the release back at all, a release that raised part way or that a Ctrl-C landed on, the close
 says exactly that, since the motors after the one a release stopped at keep their torque: hold
-the arm as though nothing holds it, put it down, and cut its power to be sure.
+the arm as though nothing holds it, put it down, and cut its power to be sure. A read speaks for
+the arm only when the bus carried it after the last torque write, release or take-hold, because
+the run's heartbeat reads the arm on its own clock and a read of its that got the bus just before
+a write used to be taken for the read that confirmed it.
 
 **An XLeRobot (a 12 kg dual-arm cart):**
 

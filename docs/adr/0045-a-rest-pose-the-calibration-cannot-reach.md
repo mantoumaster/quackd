@@ -161,15 +161,21 @@ outside its travel, before any goal or torque write: torque stays off, `_in_hand
 the refusal (`verbs.placed_past_travel`) names each such joint, its reading and its travel, says
 that a goal written where the joint is lies past its travel and the servo would pull the joint
 to the end of it, and says the arm is taken hold of only with the joint inside. A `--by-hand`
-run ends there and tells the person at once that the arm is still in their hands. After that
-nothing in the run touches the arm: the stop that opens its teardown takes no second hold and
+run ends there and tells the person at once that the arm is still in their hands, or, where the
+take-hold's own read finds the whole arm at its rest pose with every motor off, a fold recorded
+past the travel that nobody lifted before pressing Enter, that it is still limp at its rest pose
+and taken hold of only once the folded joint is lifted inside its travel
+(`verbs.unlifted_from_rest`, `HandResult.resting`). The same refusal met by the stop that opens
+the teardown of a Ctrl-C in the placement wait is said to the person once and recorded, in the
+same words. After that nothing in the run touches the arm: the stop takes no second hold and
 sends nothing (`_refused_hold`), the hand-back is not asked, the rest move reads the arm and
 writes it nothing (`IN_HAND_NOT_MOVED`), and the run says once that the arm is in their hands
 and not folded. No release is offered over it either. The close ends on the note for an arm in
 somebody's hands, let go of for them to place, or, where its own read finds the arm still at
-its rest pose with every motor off, which is a fold recorded past the travel that a Ctrl-C in
-the placement wait left unlifted, on the note for an arm limp at its rest pose
-(`LIMP_AT_REST`). The gripper is not in the check, because LeRobot bounds a gripper reading into
+its rest pose with every motor off, which is a fold recorded past the travel that nobody lifted
+the arm out of, whether the placement wait ended on Enter, on a Ctrl-C or unanswered, on the note
+for an arm limp at its rest pose (`LIMP_AT_REST`). The gripper is not in the check, because
+LeRobot bounds a gripper reading into
 its 0..100 range before quackd sees it. (This decision first said `take_hold()` left such a
 joint out of both its writes, and that the goal it kept was the limit. That holds for a goal
 written while the joint read past its travel and not for the rest move's, and the skip it

@@ -25,25 +25,38 @@ switch its torque on again on its own, and it tells the person torque is off onl
 was sent or a read said so. A take-hold refused before its torque write went out (a joint
 placed past its travel, a closed transport, nothing to hold), or one whose read after that
 write found every motor off, left the arm as the release did, limp, and the person is told
-quackd did not take hold and the arm is still in their hands. One refused after it (a torque
-register that did not answer, a torque call that raised, motors that read on beside others that
-read off) may have left the arm energised, and the person is told quackd could not confirm
-whether it has torque, to hold it as though it may move or drop, and to cut its power to be
-sure (`HandResult.energised` says which). After either, the teardown's stop takes no second
-hold and sends nothing, the hand-back is not asked, the rest move writes nothing and the run
-says the arm is not folded (or, where a read finds it at its rest pose, that it is already
-there), and the close says what its own read found: an unconfirmed torque write as unconfirmed,
-joints read on by name, an arm the placing release let go of that still reads at its rest pose
-with every motor off as limp at that pose, and otherwise the arm limp in their hands, let go of
-for them to place. The stop still picks an arm up out of a hand, as the decision below on the
-stop says, where no take-hold has been refused since the release, which is a Ctrl-C during the
-placement wait: it energises the arm where the hand has it and the rest move folds it. The
+quackd did not take hold and the arm is still in their hands, or, where the take-hold's own read
+found the whole arm at its rest pose with every motor off, that it is still limp at its rest
+pose and which joints to lift inside their travel for quackd to take hold. One refused after it
+(a torque register that did not answer, a torque call that raised) may have left the arm
+energised, and the person is told quackd could not confirm whether it has torque, to hold it as
+though it may move or drop, and to cut its power to be sure, and one whose read found motors on
+beside others off is told which joints hold and that the rest is limp, to keep hold of the arm
+and to cut its power (`HandResult.energised` says which, `torque_on` which motors). That
+speaks for every take-hold since the release: one refused before its own write after an earlier
+one an interrupt cut off past its write says what the reads since that write say. A read speaks
+for the arm only when the bus carried it after the last torque write, since the run's heartbeat
+reads on its own clock. After any refusal, the teardown's stop takes no second hold and sends
+nothing, the hand-back is not asked, the rest move writes nothing and the run says the arm is
+not folded (or, where a read finds it at its rest pose, that it is already there), and the close
+says what its own read found: an unconfirmed torque write as unconfirmed, joints read on by
+name, an arm the placing release let go of that still reads at its rest pose with every motor
+off as limp at that pose, and otherwise the arm limp in their hands, let go of for them to
+place. The stop still picks an arm up out of a hand, as the decision below on the stop says,
+where no take-hold has been refused since the release, which is a Ctrl-C during the placement
+wait: it energises the arm where the hand has it and the rest move folds it. Where that
+take-hold is refused, the person is told so once and it is recorded, as the one at Enter is. The
 amendment above said the teardown after a refusal "closes on the note for an arm in somebody's
 hands, never on the one about torque left on", and a person who moved the joint back inside its
 travel had torque switched on under their hand by the stop or by the stall of the rest move,
 with nothing said, and the run closed on torque left on. And a torque register that did not
 answer at Enter was told as quackd never having taken hold, and the rest move then folded the
-energised arm under the hands it had just told to keep hold of it.
+energised arm under the hands it had just told to keep hold of it. (The first version of this
+amendment told an Enter over a fold nobody lifted as an arm in the person's hands to keep hold
+of, and a read that found motors on in part as one that could not be confirmed. It left the
+stop's own refusal unsaid, in `stop_error`, and judged a read by where the coroutines were, so a
+heartbeat read that got the bus ahead of the torque write let the close call an energised arm
+limp.)
 
 **Amended again 2026-09-23, by `quackd robot release`:** the rest pose is no longer the only
 place quackd releases an arm. A person at the arm can now ask for its torque by name, wherever

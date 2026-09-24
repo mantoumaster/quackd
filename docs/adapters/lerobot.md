@@ -1008,10 +1008,15 @@ The order below is the whole of the feature, and none of it is a step you can sk
    names each such joint, where it reads and its travel, in this arm's numbers, and says the arm
    is taken hold of only with it inside. A fold that lies past the travel
    ([A pose past the travel](#a-pose-past-the-travel)) counts, so lift every joint out of it
-   before you press Enter. A take-hold refused after torque was asked for, because the torque
+   before you press Enter. Press Enter with the arm still lying in that fold and you are told it
+   is still limp at its rest pose, with the joint to lift inside its travel, rather than that it
+   is in your hands. A take-hold refused after torque was asked for, because the torque
    register did not answer or the call failed on the way, is a different arm: it may be holding
    itself up, all of it or part of it, and you are told quackd could not confirm whether it has
-   torque, to hold it as though it may move or drop, and to cut its power to be sure.
+   torque, to hold it as though it may move or drop, and to cut its power to be sure. Where the
+   read after the torque write found some motors on and the rest off, you are told what it
+   found instead: which joints hold, that the rest of the arm is limp, and to keep hold of it
+   and cut its power.
 5. **The pilot runs from those angles.** The step cap, the range refusal, the heat gate and the
    budgets are all the ones any other run gets. The minutes clock restarts the moment the arm
    is holding your pose, so the time you spent looking for a pencil is not taken out of the
@@ -1072,21 +1077,30 @@ goes into is built for exactly that arm. Every teardown starts with a `stop`, an
 an arm somebody is holding takes hold of it first: the arm is re-energised where your hand has
 it, and only then does the rest move fold it. A `stop` that sent a goal to a limp servo would
 stop nothing, and the fold after it would be a fold of an arm that is not listening. Not while
-a joint reads outside its travel: the take-hold refuses there as it does in step 4, and then
-nothing is written to the arm and nothing folds it. The close says what its own read finds,
-the arm limp in your hands, or, where the joint outside its travel is a fold nobody lifted the
-arm out of, the arm limp at its rest pose (captured on `lerobot:mock` registered as `arm-03`,
-its pose's `shoulder_lift` recorded at -110, past the mock's -100, with the capture script
-letting the joint settle there once torque was off, as a fold past the travel does, and
-pressing Ctrl-C in the wait, with the invitation, the kill switch's own line and the record of
-the question left out):
+a joint reads outside its travel: the take-hold refuses there as it does in step 4, you are
+told so once, naming the joint, and then nothing is written to the arm and nothing folds it. The close says what its own read finds, the arm limp in your hands, or,
+where the joint outside its travel is a fold nobody lifted the arm out of, the arm limp at its
+rest pose (captured on `lerobot:mock` registered as `arm-03`, its pose's `shoulder_lift`
+recorded at -110, past the mock's -100, with the capture script letting the joint settle there
+once torque was off, as a fold past the travel does, and pressing Ctrl-C in the wait, with the
+invitation, the kill switch's own line and the record of the question left out):
 
 ```
 ·  hand    released: torque is off at the rest pose
 →  send    stop
+·  hand    hold refused: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes hold of the arm only once shoulder_lift is lifted inside its travel
+·  note    the arm did not take hold: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes hold of the arm only once shoulder_lift is lifted inside its travel
+quackd did not take hold of the arm when the run stopped and the arm is still limp at its rest
+pose: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes
+hold of the arm only once shoulder_lift is lifted inside its travel
 ·  note    already at the rest pose
 ·  note    the arm is limp at its rest pose, where it was let go of for you to place and where it still reads: it rests there with no torque, as it does at the end of every run
 ```
+
+With the arm lifted and a joint placed past its travel, the line said to you at the stop gives
+the joint, its reading and its travel in the same words as the refusal at Enter below, after
+`quackd did not take hold of the arm when the run stopped and the arm is still in your hands:`,
+and the close is the one for an arm limp in your hands.
 
 A wait that ends any other way lands in the same teardown and says so rather than blaming a
 key nobody touched. There is no clock on the first wait, so that ending means the keyboard
@@ -1174,10 +1188,36 @@ takes hold of the arm again after a refusal until it is released again, because 
 on under your hand with nothing said is the one thing the lines above told you would not
 happen. Put the arm down, and run again with every joint inside its travel.
 
+**Enter pressed over a fold nobody lifted** is refused the same way and said as what it is. The
+take-hold's own read finds the whole arm at its rest pose with every motor off, so you are told
+the arm is still limp at its rest pose and which joint to lift inside its travel, not that it is
+in your hands and to keep hold of it, and the close's own read says the same. Captured on
+`lerobot:mock` registered as `arm-03`, as in the Ctrl-C capture above, with Enter pressed and
+nothing lifted, and with the log's copies of the lines said to you left out:
+
+```
+·  hand    hold refused: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes hold of the arm only once shoulder_lift is lifted inside its travel
+·  note    the arm did not take hold: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes hold of the arm only once shoulder_lift is lifted inside its travel
+quackd did not take hold of the arm, so the run stops here and the arm is still limp at its rest
+pose: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes
+hold of the arm only once shoulder_lift is lifted inside its travel
+→  send    stop
+·  hand    skipped: the arm is still limp at its rest pose
+quackd never took hold of the arm, which is still limp at its rest pose, so it does not open the
+gripper for you: take out whatever is in it by hand. quackd takes hold of the arm only once
+shoulder_lift is lifted inside its travel
+·  note    already at the rest pose
+·  note    the arm is limp at its rest pose, where it was let go of for you to place and where it still reads: it rests there with no torque, as it does at the end of every run
+```
+
 **A take-hold refused after torque was asked for** ends the same way and is said differently,
 because that arm may be holding itself up: the torque register did not answer the read after
 the torque write, or the call raised with the write on the wire. Nothing folds it and nothing is
-written to it, and the close says what a read found, or that none did. Captured on
+written to it, and the close says what a read found, or that none did. A read after the torque
+write that found some motors on and the rest off is said by what it found: that those joints
+hold and the rest of the arm is limp, to keep hold of the arm, and to cut its power. A read
+counts only when the bus carried it after the torque write, so a heartbeat read that got the
+bus just before the write never answers for it. Captured on
 `lerobot:mock` registered as `arm-01`, placed inside its travel, with the capture script
 standing in for a torque register that does not answer, and with the log's copy of the second
 line said to you left out:

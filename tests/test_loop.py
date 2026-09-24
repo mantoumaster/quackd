@@ -3479,6 +3479,9 @@ async def test_an_arm_placed_past_its_travel_stays_in_your_hands_and_every_line_
     assert [ask[0] for ask in person.asked] == [AgentLoop.PLACE_IT], person.asked
     events = Transcript.read(result.run_dir / "transcript.jsonl")
     assert _stages(events) == ["released", "held", "skipped"]
+    # the refusal names the joint with its reading, so its log line ends on it (`outside`)
+    (held,) = [e for e in events if e["kind"] == "hand_off" and e["stage"] == "held"]
+    assert held.get("outside") == ["wrist_flex"], held
     assert not _offered(events), "a limp arm was offered as holding itself up"
     assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
     assert mock.actions == [], "a goal was written to an arm in somebody's hands"
@@ -3625,6 +3628,68 @@ async def test_a_ctrl_c_in_the_placement_wait_over_a_fold_past_the_travel_leaves
     events = Transcript.read(result.run_dir / "transcript.jsonl")
     notes = [e["text"] for e in events if e["kind"] == "note"]
     assert notes[-1] == LIMP_AT_REST and AgentLoop.NOT_FOLDED not in notes, notes
+    # the stop's refusal is said once, as the arm it is about: lying at its rest pose
+    stopped = "quackd did not take hold of the arm when the run stopped and the arm is still limp"
+    assert len(person.said) == 1 and person.said[0].startswith(stopped), person.said
+
+
+async def test_enter_over_a_fold_nobody_lifted_is_told_as_an_arm_still_at_its_rest_pose(
+    tmp_path: Path,
+) -> None:
+    """An arm whose fold lies past its travel, released at the fold, and the person pressed
+    Enter without lifting it out. The take-hold is refused over the folded joint, and the
+    person was told the arm was still in their hands and to keep hold of it, and then, by the
+    close's own read, that it lay at its rest pose with no torque. The mock says what the arm
+    says now: still limp at its rest pose, and taken hold of only once that joint is lifted
+    inside its travel."""
+    joint = "shoulder_lift"
+    pose = dict(REST) | {joint: MOCK_RANGES[joint][0] - TOL_DEG * 2}
+    mock = LeRobotMock(rest_pose=pose)
+    mock.joints.update(pose)
+    person = ScriptedPerson(mock, places={"gripper": PLACED["gripper"]}, answers=[True])
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+
+    assert result.reason.startswith(f"{AgentLoop.NOT_TAKEN_AT_REST}: {joint} reads"), result.reason
+    back = AgentLoop.STILL_AT_REST.format(joints=joint, are="is", its="its")
+    assert person.said == [result.reason, back], person.said
+    assert not any("in your hands" in said or "keep hold" in said for said in person.said)
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    skipped = [e["reason"] for e in events if e["kind"] == "hand_off" and e["stage"] == "skipped"]
+    assert skipped == ["the arm is still limp at its rest pose"], skipped
+    assert mock.actions == [] and mock.torque is False, "something was written to the fold"
+    assert mock.close_note == LIMP_AT_REST, mock.close_note
+
+
+async def test_a_ctrl_c_in_the_placement_wait_over_a_joint_past_its_travel_is_said_once(
+    tmp_path: Path,
+) -> None:
+    """A Ctrl-C while the person holds the arm up with a joint placed past its travel. The
+    teardown's stop makes the run's first take-hold, which is refused over that joint, and the
+    refusal stayed inside the stop: the person, expecting the arm to be taken from them and
+    folded, heard nothing, and the record never said which joint or why. It is said and noted
+    once now, naming the joint, the way the take-hold at Enter is."""
+    joint = "wrist_flex"
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, answers=[False])
+    loop = AgentLoop(_by_hand(mock, person, tmp_path))
+
+    def lifts_it_past_and_presses_ctrl_c(_person: ScriptedPerson) -> None:
+        mock.joints.update(PLACED | {joint: MOCK_RANGES[joint][1] + TOL_DEG})
+        loop.executor.abort.set()
+
+    person.on_wait = lifts_it_past_and_presses_ctrl_c
+    result = await loop.run()
+
+    assert result.reason == "kill switch"
+    stopped = "quackd did not take hold of the arm when the run stopped and the arm is still in"
+    assert len(person.said) == 1, person.said
+    assert person.said[0].startswith(f"{stopped} your hands: {joint} reads"), person.said
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert len([n for n in notes if n.startswith(f"the arm did not take hold: {joint}")]) == 1
+    assert _stages(events) == ["released", "held"], _stages(events)
+    assert mock.actions == [] and mock.torque is False and mock.in_hand is True
+    assert mock.close_note == LIMP_IN_HAND.format(why=LET_GO_TO_PLACE), mock.close_note
 
 
 # ── what a person was asked, and whether anybody was asked at all ───────────────────────

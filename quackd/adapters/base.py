@@ -115,7 +115,9 @@ class HandResult:
     torque_on: tuple[str, ...] | None = None
     """The joints whose torque register read on straight after a release, in the bus's order:
     empty when every one read off, and None when nothing was read back at all, which is every
-    result but a release that got as far as the read.
+    result but a release that got as far as the read. A take-hold refused with some motors read
+    on (`energised` True) carries those motors here too, so the line said to the person holding
+    the arm can name which joints hold, rather than say it could not tell.
 
     A person holding an arm is owed which of those three it was, and `how` cannot say it: a
     release whose read-back failed is still `released`, on purpose (`let_go`), and a release
@@ -133,7 +135,33 @@ class HandResult:
     release did, limp in their hands, and they can be told so. One refused after the torque
     write (a register that did not answer, a call that raised, a motor that stayed off) may be
     energised, all of it or part of it, and "quackd did not take hold, torque is off" said of it
-    is a claim nothing read, made to somebody with a hand on an arm that may move."""
+    is a claim nothing read, made to somebody with a hand on an arm that may move.
+
+    It speaks for every take-hold since the release, not only this one. A take-hold an
+    interrupt landed on after its torque write went out records no refusal of its own, and the
+    next one, refused before its own write, has not switched anything on itself while the arm it
+    refused may still be energised by the last. So a refusal before its own write is False only
+    where no take-hold's torque write has gone out since the release, or a read since the last
+    one found every motor off."""
+    outside: tuple[str, ...] = ()
+    """The body joints a take-hold refused over because each read outside its calibrated
+    travel, in the arm's order: empty for every other result.
+
+    The refusal's `reason` names each of them with its reading and its travel, printed so the
+    reading is never inside the travel the same sentence gives. A log line that lists the
+    joints in whole degrees after it would round a joint a hair past its travel onto the edge
+    of it, inside the travel the reason just put it outside, so the line leaves its own list
+    out where this is set, and only there: a refusal whose reason carries no readings, such as
+    an arm that moved as torque came on, keeps the list."""
+    resting: bool = False
+    """A take-hold refused over joints outside their travel (`outside`) whose own read found
+    the whole arm at its rest pose, by the rule the rest move uses, with every motor off.
+
+    That is a person who pressed Enter without lifting the arm out of a fold recorded past its
+    travel. The arm is lying in its fold with no torque, as the placing release left it, and
+    telling them it is in their hands and to keep hold of it tells them it is up and needs
+    holding, which no read said. They are told it is still limp at its rest pose instead, and
+    which joints to lift inside their travel for quackd to take hold."""
 
     @property
     def ok(self) -> bool:

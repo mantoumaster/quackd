@@ -513,6 +513,10 @@ recorded
     first: torque comes back on where your hand has it rather than where it was released,
     because a goal sent to a limp servo would be a stop that stopped nothing. Then the arm
     folds to its rest pose and lets go there, which is the same motion step 14 ends with.
+    Only with every joint lifted inside its travel. With one outside it, a fold recorded past
+    the travel that you did not lift the arm out of included, the stop does not take hold:
+    you are told so once, naming the joint and where it reads, torque stays off, nothing
+    folds, and the arm is yours to put down.
 
     > [!WARNING]
     > The arm energises under your fingers and then drives itself down. **Keep hold of it
@@ -523,7 +527,8 @@ recorded
     The fold drives the five body joints and never the gripper, so whatever you closed the jaws
     on folds up with the arm: take it out before you press Ctrl-C rather than after. The run is
     recorded as an abort like any other, with one `hand` line in its log saying the arm was
-    released and nothing after it saying anybody took it.
+    released and nothing after it saying anybody took it, or, where the stop's take-hold was
+    refused, a second saying so.
 
 ## The gripper, and only then a policy
 

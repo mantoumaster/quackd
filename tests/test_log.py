@@ -939,7 +939,7 @@ def test_a_refused_hold_is_not_logged_as_held() -> None:
             "hand_off", 0.0, {"stage": "held", "how": "refused", "reason": "r", "joints": joints}
         )
     )
-    assert refused.body == "hold refused: r", refused.body
+    assert refused.body.startswith("hold refused: r"), refused.body
     assert refused.style == "yellow"
     (release,) = render_events(
         LogEvent("hand_off", 0.0, {"stage": "released", "how": "refused", "reason": "r"})
@@ -956,15 +956,37 @@ def test_a_refused_hold_never_prints_a_joint_inside_the_travel_its_reason_puts_i
     inside the travel the same sentence gives: a hundredth past an edge is printed as it is,
     because its tenth is the edge. The line then went on to list every joint in whole degrees,
     which put that joint at the edge, inside the travel its own reason had just said it was
-    outside. A refused hold's line ends on its reason; the joints stay in the event. The
-    travel and the reading here are made up for this test."""
+    outside. A hold refused over joints outside their travel (`outside` in the event) ends on
+    its reason; the joints stay in the event. The travel and the reading here are made up for
+    this test."""
     edge = 40.0
     reading = edge + 0.04
     reason = f"wrist_flex reads {reading!r}, outside its calibrated travel of -{edge}..{edge}"
-    event = {"stage": "held", "how": "refused", "reason": reason, "joints": {"wrist_flex": reading}}
+    event = {
+        "stage": "held",
+        "how": "refused",
+        "reason": reason,
+        "joints": {"wrist_flex": reading},
+        "outside": ["wrist_flex"],
+    }
     (line,) = render_events(LogEvent("hand_off", 0.0, event))
     assert line.body == f"hold refused: {reason}", line.body
     assert f"wrist_flex {edge:.0f}" not in line.body, line.body
+
+
+def test_a_hold_refused_because_the_arm_moved_still_says_where_it_is_holding() -> None:
+    """An arm that moved as torque came on is refused with a reason that names the joint that
+    moved furthest and by how much, and ends "it is holding where it is now". It names no
+    reading, so the joint list after it is the only place the line says where "now" is. The
+    list was dropped from every refused hold, this one too, to keep a joint read a hair past
+    its travel from being rounded onto the edge; that happens only where the reason carries
+    readings, which the event says with `outside`, and a slip has none. Poses and reason are
+    made up for this test."""
+    joints = {"elbow_flex": 31.6, "wrist_flex": -7.2}
+    reason = "the arm moved as torque came on (elbow_flex by 9 degrees), so it holds where it is"
+    event = {"stage": "held", "how": "refused", "reason": reason, "joints": joints}
+    (line,) = render_events(LogEvent("hand_off", 0.0, event))
+    assert line.body == f"hold refused: {reason} (elbow_flex 32, wrist_flex -7)", line.body
 
 
 def test_the_system_prompt_is_still_the_one_thing_drawn_as_a_rule() -> None:
