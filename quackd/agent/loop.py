@@ -134,7 +134,13 @@ class HandOff(Protocol):
     async def wait(
         self, text: str, *, timeout_s: float | None = None, until_abort: bool = True
     ) -> bool:
-        """Say `text`, then wait for Enter. True if it came, False if anything else ended it."""
+        """Say `text`, then wait for Enter. True if it came, False if anything else ended it.
+
+        A person who can say *what* else ended it sets `ended` after each wait (the CLI's
+        `_TerminalHandOff` does: `enter`, `kill switch`, `no keys`, `stopped` or `timeout`),
+        and the loop reads it with `getattr`, so a person that cannot say is still a
+        `HandOff`. It is not a member here because this protocol is runtime-checkable, and a
+        member would be one more thing every stand-in for a person had to carry."""
         ...
 
 
@@ -165,6 +171,17 @@ class RunConfig:
     while they put it where they want it, holds whatever pose they left, and hands it back the
     same way at the end. Only a body whose adapter declares `supports_hand_off` is offered
     this, and the CLI refuses the flag before connecting where it is not."""
+    person: HandOff | None = None
+    """Somebody at a terminal, for the one question any run may put at its very end: the rest
+    move missed, torque is being kept on an arm holding itself up, and would they like it
+    released while they hold it (`AgentLoop.RELEASE_OFFER`).
+
+    Separate from `hand_off` on purpose, and never a way to read "this is a by-hand run": the
+    loop takes `hand_off is not None` to mean exactly that, and a run with a person at the
+    keyboard is not a run whose arm is to be handed over. The CLI sets it whenever it can
+    prompt and the run is not a dry one, to the same object as `hand_off` when there is one.
+    None is an MCP session, a flock member, a test and a terminal-less run, and those keep
+    torque on at a missed rest pose exactly as they always have."""
     task_images: Sequence[NamedPng] = ()
     """Pictures handed to the task by `quackd run --image`, already PNG and already sized
     (`quackd.agent.images`). They ride on the first observation and are never trimmed, so a
@@ -327,6 +344,9 @@ class AgentLoop:
         # the pilot is handed an `assess_task` tool, so the executor holds it to the answer
         self.executor.require_verdict = True
         self.history: list[Exchange] = []
+        self._rest_note_said = False
+        """Whether the rest move's note about the pose itself has been said this run. The
+        rest move runs at both ends, and the note is about the pose rather than the move."""
         self.usage = Usage()
         self.llm_latency_s = 0.0
         """Seconds this run spent waiting on the model, every call including the ones that
@@ -345,6 +365,12 @@ class AgentLoop:
         differ and the difference is the jam: an arm that sagged as torque returned refuses the
         hold, ends the run, and still has the pencil in it. The teardown reads this to decide
         whether to ask for it back before the fold."""
+        self._not_taken: HandResult | None = None
+        """The take-hold that ended the placement wait, when it was refused and the arm is still
+        in the person's hands, else None. The teardown reads its `energised` to say which arm
+        they are holding: one nothing switched torque on under, which is still exactly as the
+        release left it, or one whose torque write went out and was not confirmed, which may
+        move or drop."""
         self.stepped: list[str] = []
         """Verbs the discrete stepper chose since the model was last asked, in the words the
         model will be given.
@@ -386,8 +412,8 @@ class AgentLoop:
         record. The CLI marks the ones that reach a terminal with `asks_a_person`.
 
         The consequence of the answer is already written down elsewhere (`gate.answer` for a
-        confirm, `assess.human` for a verdict, the `hand_off` stages for an arm). This is the
-        exchange itself, which nothing held."""
+        confirm, `assess.human` for a verdict, the `hand_off` stages for an arm, the `release`
+        stages for the end-of-run offer). This is the exchange itself, which nothing held."""
         if not a_person_was_asked(asker):
             return
         self._emit("prompt", what=what, question=question, answer=answer)
@@ -449,16 +475,35 @@ class AgentLoop:
 
         Called directly on the transport rather than through the executor: this runs at the
         end of every run including the one a person ended with Ctrl-C, and by then the
-        executor's abort is set and would cancel the move that puts the arm down."""
+        executor's abort is set and would cancel the move that puts the arm down.
+
+        An arm still in a person's hands (`in_hand`), which is where a refused take-hold leaves
+        it, is not folded, and the one line said about it is that (`NOT_FOLDED`). The body's
+        own rest move writes it nothing either (the LeRobot arm answers `already` where it
+        reads at its rest pose, and refuses otherwise), and this is what keeps the narration
+        honest over it. It used to say "moving to the rest pose" and then that the arm did not
+        reach it "and it has stopped moving", of an arm that never moved, straight after the
+        person holding it was told to keep hold of it: two lines that read as the arm about to
+        move under their hand."""
         cfg = self.cfg
         if cfg.dry_run or getattr(cfg.transport, "rest_pose", None) is None:
             return None
-        self._note("moving to the rest pose")
+        in_hand = getattr(cfg.transport, "in_hand", None) is True
+        if not in_hand:
+            self._note("moving to the rest pose")
         parked = await go_to_rest_if_any(cfg.transport)
         if parked.reached:
             self._note(
                 "already at the rest pose" if parked.how == "already" else "at the rest pose"
             )
+            if parked.note and not self._rest_note_said:
+                # the body's own sentence about the pose it parked in, which is the same at
+                # both ends of a run: said the first time, so the record carries it once and
+                # the person reads it before the run starts rather than after it has ended
+                self._rest_note_said = True
+                self._note(parked.note)
+        elif in_hand:
+            self._note(self.NOT_FOLDED)
         else:
             self._note(f"the arm did not reach its rest pose: {parked.reason}")
         return parked
@@ -485,10 +530,158 @@ class AgentLoop:
     pencil still in the jaws can drive that pencil into the bench, and the person who put it
     there is the one who should take it out."""
 
+    RUN_STOPS = ", so the run stops here"
+    """Where the lines for a refused take-hold say what became of the run, when the refusal is
+    the take-hold at Enter, which ends the run with the same line."""
+
+    RUN_STOPPED = " when the run stopped"
+    """The same place in those lines, when the refusal is the take-hold the teardown's stop
+    made, after a Ctrl-C in the placement wait. That run was already ending, and "so the run
+    stops here" would give the refusal as the reason it ended."""
+
+    _NOT_TAKEN = "quackd did not take hold of the arm{stops} and the arm is still in your hands"
+    NOT_TAKEN_HOLD = _NOT_TAKEN.format(stops=RUN_STOPS)
+    """Said to the person the moment `take_hold` refuses while the arm is still in their hands
+    (`in_hand`) and switched nothing on (`energised` False), ahead of its reason, and the run
+    aborts with the same line. They pressed Enter holding the arm and are waiting to hear they
+    can let go, and "the arm is not holding the pose you set", the refusal for an arm that
+    slipped as torque came on, reads as though something is holding it. Here nothing is: a
+    joint placed past its travel is refused before any torque write goes out, and a servo that
+    read off after it is still limp.
+
+    Only then. A take-hold refused after its torque write, a register that did not answer or a
+    call that raised with the write on the wire, may have left the arm energised, and "did not
+    take hold ... still in your hands" said of it is a claim nothing read (`HOLD_UNCONFIRMED`).
+    One whose read found some motors on is said by what it found (`HELD_IN_PART`), and one over
+    an arm its read found still lying at its rest pose is said that way (`NOT_TAKEN_AT_REST`).
+    A take-hold the teardown's stop made is said in the same words, with `RUN_STOPPED` in
+    place of `RUN_STOPS`."""
+
+    _NOT_TAKEN_AT_REST = (
+        "quackd did not take hold of the arm{stops} and the arm is still limp at its rest pose"
+    )
+    NOT_TAKEN_AT_REST = _NOT_TAKEN_AT_REST.format(stops=RUN_STOPS)
+    """`NOT_TAKEN_HOLD` for a take-hold whose own read found the whole arm at its rest pose with
+    every motor off (`HandResult.resting`): the person pressed Enter without lifting the arm out
+    of a fold recorded past its travel, and its reason names the folded joints and says quackd
+    takes hold only once they are lifted inside. On the bench arm, whose shoulder folds past its
+    travel, a person who loaded the gripper and pressed Enter was told the arm was still in
+    their hands and to keep hold of it, and the close then said it was lying at its rest pose
+    with no torque: the two lines before the last told them the arm was up and needed holding,
+    which no read said."""
+
+    HELD_IN_PART = (
+        "quackd did not take hold of the arm{stops}: torque came on for {joints}, so {holds} "
+        "and any joint not named is limp. Keep hold of the arm, and cut its power to let go of "
+        "{them}"
+    )
+    """Said, and the run aborted with it, when `take_hold` refuses with the arm still in the
+    person's hands and a read after its torque write found motors on (`energised` True, those
+    motors in `torque_on`): some of them, or every one, which is why it names the joints that
+    hold and says only that a joint it does not name is limp. It used to be `HOLD_UNCONFIRMED`,
+    which opens on quackd not being able to confirm whether the arm has torque, in front of a
+    parenthesis in which the read confirmed it motor by motor. The read did confirm it, and the
+    person holding the arm is told what it found: which joints hold, that any other is limp, and
+    that the switch is what lets go of the ones that hold. Nothing after this writes to the arm
+    or folds it."""
+
+    _HOLD_UNCONFIRMED = (
+        "quackd could not confirm whether the arm has torque ({why}){stops}: keep hold of the "
+        "arm as though it may move or drop, and cut its power to be sure"
+    )
+    HOLD_UNCONFIRMED = _HOLD_UNCONFIRMED.format(why="{why}", stops=RUN_STOPS)
+    """Said, and the run aborted with it, when `take_hold` refuses with the arm still in the
+    person's hands and its torque write may have gone out with nothing read back since
+    (`energised` None). The person is holding an arm that may be limp, energised, or both in
+    parts, so they are told to hold it against either and given the one way to be certain, the
+    switch. Nothing after this writes to the arm or folds it."""
+
+    STILL_IN_YOUR_HANDS = (
+        "quackd never took hold of the arm, so it does not open the gripper for you: take out "
+        "whatever is in it by hand, and keep hold of the arm"
+    )
+    """The end of a `--by-hand` run whose arm nothing took hold of and nothing switched torque
+    on under, in place of `HAND_IT_BACK`, which begins "the arm is holding where it ended" and
+    asks for Enter to open a gripper that a limp servo would not open. No fold follows it: the
+    arm is in their hands (`NOT_FOLDED`)."""
+
+    STILL_UNCONFIRMED = (
+        "quackd could not confirm whether the arm has torque, so it does not open the gripper "
+        "or fold the arm: keep hold of it as though it may move or drop, and cut its power "
+        "before you take out whatever is in the gripper"
+    )
+    """`STILL_IN_YOUR_HANDS` for the arm `HOLD_UNCONFIRMED` was said of. "Take out whatever is
+    in it by hand" is an invitation to put fingers into jaws that may be energised, so the power
+    comes first. Said too where this run does not know which arm it is: a refusal nothing kept."""
+
+    STILL_IN_PART = (
+        "quackd did not take hold of the arm, and torque came on for {joints}, so it does not "
+        "open the gripper or fold the arm: keep hold of it, and cut its power before you take "
+        "out whatever is in the gripper"
+    )
+    """`STILL_IN_YOUR_HANDS` for the arm `HELD_IN_PART` was said of: the read named the joints
+    that hold, so this names them again rather than say quackd could not tell. The gripper may
+    be one of them, so the power still comes before anybody's fingers go into its jaws."""
+
+    STILL_AT_REST = (
+        "quackd never took hold of the arm, which is still limp at its rest pose, so it does not "
+        "open the gripper for you: take out whatever is in it by hand. quackd takes hold of the "
+        "arm only once {joints} {are} lifted inside {its} travel"
+    )
+    """`STILL_IN_YOUR_HANDS` for the arm `NOT_TAKEN_AT_REST` was said of, lying in its fold with
+    torque off. "Keep hold of the arm" would tell somebody to hold up an arm that is down, and
+    the close that follows reads it at its rest pose and says so. What it does say is the one
+    thing to do differently next time: lift the folded joints inside their travel before Enter."""
+
+    NOT_FOLDED = "the arm is in your hands, so it is not folded"
+    """The teardown's one line in place of the rest move's two, for an arm a refused take-hold
+    left in a person's hands. Said once, because a fold that does not happen has nothing more to
+    report."""
+
     HAND_BACK_S = 120.0
     """How long the arm waits to be unloaded at the end. It is holding its pose meanwhile, so
     the cost of waiting is an energised arm and the cost of not waiting is a jam. Bounded
     because a run must still end when the room is empty."""
+
+    RELEASE_OFFER = (
+        "the arm did not reach its rest pose ({why}), so it is holding itself up. Hold it and "
+        "press Enter to release torque now. Leave it, and after {seconds:.0f} s it stays that "
+        "way"
+    )
+    """Put to a person at the end of a run whose rest move missed, before the close keeps
+    torque on. Without it the only ways to take torque off such an arm were `quackd robot
+    release` in another terminal and the power switch, and on the bench of 2026-09-23 every
+    run that got to its end finished at the switch. It asks the person to hold the arm first,
+    because the release lets it fall from wherever it stands."""
+
+    RELEASE_OFFER_S = 60.0
+    """How long the offer waits for Enter. Bounded for `HAND_BACK_S`'s reason, a run must end
+    when the room is empty, and shorter than it, because what the wait costs is an arm holding
+    itself up against a pose it could not reach, and nothing is lost by not answering: the arm
+    is left exactly as a run without the offer leaves it."""
+
+    RELEASE_INTERRUPTED = (
+        "the release was interrupted while it was going out, so the arm may be limp, all of it "
+        "or part of it: hold it as though nothing holds it, and put it down"
+    )
+    """Said when a Ctrl-C lands on the release after Enter, once it has gone out. The person
+    pressed Enter because they were holding the arm, the release may have reached some motors
+    and not others, and the only safe reading of that is the limp one."""
+
+    RELEASE_NOT_SENT = (
+        "the release was interrupted before anything was sent, so torque is as the rest move "
+        "left it"
+    )
+    """Said when a Ctrl-C lands on the release after Enter and before it went out, on the read
+    the release begins with: the arm's own backend says so (`in_hand` still False). Nothing
+    reached a motor, which is all this line knows, so it says that and no more.
+
+    It used to go on to say the arm "still holds itself up", and nothing read after the
+    interrupt said so. On the arm the read the Ctrl-C landed on can still be out on the bus when
+    the close comes straight after it, and then the close's own read is refused and its line
+    says quackd cannot tell whether the arm is holding itself up: two lines in a row saying
+    opposite things to a person deciding whether to let go. Whether the arm holds itself up is
+    the close's line to say, from its own read, and it follows this one."""
 
     async def _hand_over(self) -> bool:
         """Let go of the arm, wait for somebody to place it, then hold what they left.
@@ -496,8 +689,10 @@ class AgentLoop:
         Returns whether the arm is now holding a pose a person chose. False is an abort, and
         the caller raises: there is no sensible run from here, because the arm is either limp
         in somebody's hand or holding a pose nobody picked. Every way out of here still goes
-        through the run's own teardown, which stops (picking a released arm back up), folds
-        the arm to its rest pose and lets go there."""
+        through the run's own teardown, which stops (picking a released arm back up), folds the
+        arm to its rest pose and lets go there. Except where a take-hold was refused with the
+        arm still in the person's hands, here or in the stop: then nothing picks it up, nothing
+        folds it and nothing is written to it, and the close says which arm they are holding."""
         hand = self.cfg.hand_off
         if hand is None or self.cfg.dry_run:
             return False
@@ -524,6 +719,17 @@ class AgentLoop:
         self._handed_over = True
         held = await self._take_hold()
         if not held.ok:
+            if self._not_taken is not None:
+                # Nothing took the arm from the person, who is holding it and waiting to be
+                # told they can let go, so they are told now and not only in the summary at the
+                # end: the teardown after this takes a while, and every line of it is about an
+                # arm they are still holding. Told as what it is: an arm nothing switched on
+                # under, one still lying at its rest pose, one a read found holding in part,
+                # or one whose torque write went out and nothing confirmed.
+                said = self._not_taken_line(held, self.RUN_STOPS)
+                with contextlib.suppress(Exception):
+                    hand.say(said)
+                raise Aborted(said)
             raise Aborted(f"the arm is not holding the pose you set: {held.reason}")
         hand.say(f"{held.reason}, you can let go. {_joints_line(held.joints)}")
         # The person's time is not the pilot's. `max_minutes` starts before the rest move, and
@@ -533,12 +739,107 @@ class AgentLoop:
         return True
 
     async def _take_hold(self) -> HandResult:
-        """Hold whatever pose the arm is in now, narrated."""
+        """Hold whatever pose the arm is in now, narrated, and remember a refusal that left the
+        arm in the person's hands (`_not_taken`)."""
         held = await take_hold_if_any(self.cfg.transport)
-        self._emit("hand_off", stage="held", how=held.how, reason=held.reason, joints=held.joints)
+        self._held(held)
+        if not held.ok and getattr(self.cfg.transport, "in_hand", None) is True:
+            self._not_taken = held
+        return held
+
+    def _held(self, held: HandResult) -> None:
+        """A take-hold on the record: its `hand_off` event, and a note when it was refused.
+
+        The joints a refusal was made over because each read outside its travel go into the
+        event as `outside` where there are any, which is how the log line knows its reason
+        already names them with their readings and leaves its own whole-degree list out."""
+        extra: dict[str, Any] = {"outside": list(held.outside)} if held.outside else {}
+        self._emit(
+            "hand_off",
+            stage="held",
+            how=held.how,
+            reason=held.reason,
+            joints=held.joints,
+            **extra,
+        )
         if not held.ok:
             self._note(f"the arm did not take hold: {held.reason}")
-        return held
+
+    def _not_taken_line(self, held: HandResult, stops: str) -> str:
+        """What the person holding the arm is told when a take-hold was refused with the arm
+        still in their hands, by what the refusal found (`HandResult.energised`, `resting`,
+        `torque_on`), with `stops` saying what became of the run (`RUN_STOPS` at Enter,
+        `RUN_STOPPED` for the teardown's stop).
+
+        Four arms, four lines. One lying at its rest pose with every motor off, never lifted
+        out of its fold (`NOT_TAKEN_AT_REST`). One nothing switched on under (`NOT_TAKEN_HOLD`).
+        One a read after the torque write found holding in part, named joint by joint
+        (`HELD_IN_PART`). And one whose torque write went out with nothing read back, or that
+        says it holds in part without saying where (`HOLD_UNCONFIRMED`), since only a read may
+        tell the person which joints hold."""
+        if held.resting:
+            return f"{self._NOT_TAKEN_AT_REST.format(stops=stops)}: {held.reason}"
+        if held.energised is False:
+            return f"{self._NOT_TAKEN.format(stops=stops)}: {held.reason}"
+        if held.energised and held.torque_on:
+            one = len(held.torque_on) == 1
+            return self.HELD_IN_PART.format(
+                stops=stops,
+                joints=_listed(held.torque_on),
+                holds="that joint holds" if one else "those joints hold",
+                them="it" if one else "them",
+            )
+        return self._HOLD_UNCONFIRMED.format(why=held.reason, stops=stops)
+
+    def _still_line(self, refused: HandResult | None) -> str:
+        """The hand-back's one line over an arm still in the person's hands, by what the refusal
+        that left it there found, or `STILL_UNCONFIRMED` where no refusal is known at all."""
+        if refused is None:
+            return self.STILL_UNCONFIRMED
+        if refused.resting:
+            one = len(refused.outside) == 1
+            return self.STILL_AT_REST.format(
+                joints=_listed(refused.outside),
+                are="is" if one else "are",
+                its="its" if one else "their",
+            )
+        if refused.energised is False:
+            return self.STILL_IN_YOUR_HANDS
+        if refused.energised and refused.torque_on:
+            return self.STILL_IN_PART.format(joints=_listed(refused.torque_on))
+        return self.STILL_UNCONFIRMED
+
+    def _refused_in_the_stop(self) -> None:
+        """Say, once, a take-hold the teardown's stop made and was refused.
+
+        The stop that opens every teardown takes hold of an arm in a person's hands when no
+        take-hold has been refused since the release, which is a Ctrl-C in the placement wait
+        (ADR-0039). Where that take-hold is refused, over a joint placed past its travel or a
+        fold nobody lifted, the stop swallowed it: the refusal went into `stop_error`, which
+        only the pilot's `stop` verb reads, so the person who expected the arm to be taken from
+        them and folded heard only that it was not folded, and the record said nothing of which
+        joint or why. It is read off the body (`refused_hold`) and said the way the take-hold at
+        Enter is: the `hand_off` event, the note, and the line to the person, naming the joint.
+
+        Only where this run has not said a refusal already (`_not_taken`), since the stop sends
+        nothing after one and the body's refusal is then the same one. And it becomes this
+        run's own (`_not_taken`), so the hand-back that may follow says which arm the person is
+        holding by it, rather than assume the worst where an interrupt kept the take-hold at
+        Enter from ever telling the run."""
+        if self._not_taken is not None or self.cfg.dry_run:
+            return
+        transport = self.cfg.transport
+        if getattr(transport, "in_hand", None) is not True:
+            return
+        refused = getattr(transport, "refused_hold", None)
+        if not isinstance(refused, HandResult):
+            return
+        self._not_taken = refused
+        self._held(refused)
+        hand = self.cfg.hand_off
+        if hand is not None:
+            with contextlib.suppress(Exception):
+                hand.say(self._not_taken_line(refused, self.RUN_STOPPED))
 
     async def _hand_back(self) -> None:
         """Ask before the gripper opens, at the end of a run the arm was handed over for.
@@ -546,9 +847,41 @@ class AgentLoop:
         This sits between the run's `stop`, which is holding the arm where it ended, and the
         rest move, which folds it. Nothing here may raise: it is in the teardown, and a
         cancellation landing on the wait is a person pressing Ctrl-C again, which means "skip
-        this and finish" rather than "abandon the arm energised with no record written"."""
+        this and finish" rather than "abandon the arm energised with no record written".
+
+        An arm still in the person's hands is not asked about: the take-hold was refused, the
+        stop that begins the teardown sent it nothing, and the question would tell them the arm
+        is holding where it ended. They are told what they are holding instead, and nothing is
+        written to open the gripper (`_still_line`): `STILL_IN_YOUR_HANDS` for an arm nothing
+        switched on under, `STILL_AT_REST` for one still lying in its fold, `STILL_IN_PART`
+        for one a read found holding in part, and `STILL_UNCONFIRMED` for one whose torque
+        write went out unconfirmed, which may be energised and is given the switch before
+        anybody's fingers go into its jaws.
+
+        Which refusal that is comes from this run's own record (`_not_taken`), and where an
+        interrupt landed on the take-hold at Enter and left none, from the body's
+        (`refused_hold`), which knows which it was. It used to assume the worst there, and tell
+        somebody holding an arm nothing had switched on that quackd could not confirm whether
+        it had torque, straight before the close said, from its own read, that it was limp.
+        `STILL_UNCONFIRMED` is left for a refusal neither knows."""
         hand = self.cfg.hand_off
         if hand is None or self.cfg.dry_run:
+            return
+        if getattr(self.cfg.transport, "in_hand", None) is True:
+            refused = self._not_taken or getattr(self.cfg.transport, "refused_hold", None)
+            known = refused if isinstance(refused, HandResult) else None
+            said = self._still_line(known)
+            # the record's word for why nothing was asked, which for an arm still lying in its
+            # fold is not that it is in somebody's hands
+            why = (
+                "the arm is still limp at its rest pose"
+                if known is not None and known.resting
+                else "the arm is still in your hands"
+            )
+            self._emit("hand_off", stage="skipped", reason=why)
+            self._note(said)
+            with contextlib.suppress(Exception):
+                hand.say(said)
             return
         try:
             unloaded = await hand.wait(
@@ -564,8 +897,20 @@ class AgentLoop:
             return
         self._ask_recorded("hand_off", self.HAND_IT_BACK, unloaded, hand)
         if not unloaded:
-            self._emit("hand_off", stage="skipped", reason="nobody answered")
-            self._note("nobody unloaded the gripper, so it stays shut and the arm folds up")
+            # why the wait ended, where the person can say (`_TerminalHandOff.ended`), for
+            # `_offer_release`'s reason: this wait watches a fresh key press and not the abort
+            # flag, so a first Ctrl-C (or `q`) ends it with False and no exception, exactly as
+            # the room being empty does, and "nobody answered" is not what happened
+            ended = getattr(hand, "ended", None)
+            if ended == "kill switch":
+                self._emit("hand_off", stage="skipped", reason="interrupted while waiting")
+                self._note("the gripper was left as it is, and the arm still folds up")
+            elif ended == "no keys":
+                self._emit("hand_off", stage="skipped", reason="no key could be read")
+                self._note("no key could be read, so the gripper stays shut and the arm folds up")
+            else:
+                self._emit("hand_off", stage="skipped", reason="nobody answered")
+                self._note("nobody unloaded the gripper, so it stays shut and the arm folds up")
             return
         # through the logged transport, so the record has the intent like every other one.
         # Not through the executor: its abort is set on every run a person ended, and this runs
@@ -584,6 +929,130 @@ class AgentLoop:
             self._note(f"the gripper did not open: {ack.reason}; take what is in it by hand")
             return
         self._emit("hand_off", stage="unloaded", reason="opening the gripper")
+
+    async def _offer_release(self, parked: RestResult | None) -> None:
+        """Offer the person at the terminal torque off, when the run's last rest move missed.
+
+        This sits between the teardown's rest move and the close. When the move reached the
+        pose there is nothing to offer, because the close lets go there anyway; when it missed,
+        the close keeps torque on and the arm stands holding itself up at whatever pose it
+        stopped in, which is right for an empty room and a dead end for a person standing next
+        to it. So a person, and only a person (`cfg.person`: never MCP, never a flock member,
+        never a dry run, which moved nothing), is told to hold the arm and asked for Enter.
+
+        Enter releases through `let_go_if_any(..., anywhere=True)`, the transport's own second
+        door, and the close then says the arm is limp in their hands. Anything else leaves the
+        arm exactly as a run without the offer would: a wait that ran out, no key thread to
+        read one, and a Ctrl-C. The wait watches a fresh key press rather than the abort flag
+        (`until_abort=False`), for `_hand_back`'s reason: the flag is already set on every run a
+        person ended, which are the runs most likely to have missed their fold. And a second
+        Ctrl-C landing on it is caught here for the same reason too: it means "skip this and
+        finish", and the close, `run_end` and the summary still have to happen. So is one
+        landing on the release itself, after Enter: once the release has gone out, which is the
+        one moment the arm may already be limp in part, the person is told so, and before it
+        went out, that nothing was sent and torque is as the rest move left it. Either way the
+        teardown carries on. Nothing here raises.
+
+        Only a miss the arm answered for gets the offer: a move that stalled or ran out of time,
+        or one refused on a write after a read that came back (`RestResult.answered`). A move that
+        failed because the arm stopped answering, which is what cutting the servo supply looks
+        like, or on a call that never came back and left the bus wedged, is nothing quackd can
+        say "holding itself up" of, and the release it would offer refuses at its first read
+        for as long as that stays so, after a person has been kept waiting for it.
+
+        Nor is it made over an arm still in somebody's hands (`in_hand`), which is where a
+        `--by-hand` run whose take-hold was refused ends: a joint placed past its travel, a
+        servo that never took torque back, or a torque write nothing read back. Nothing read
+        says that arm is holding itself up, the one thing the offer begins by saying, and it
+        is in a person's hands already. The close's own line says which arm they are holding."""
+        person = self.cfg.person
+        if person is None or self.cfg.dry_run or parked is None:
+            return
+        if not parked.recorded or parked.reached or not parked.answered:
+            return
+        if getattr(self.cfg.transport, "in_hand", None) is True:
+            return
+        offer = self.RELEASE_OFFER.format(why=parked.reason, seconds=self.RELEASE_OFFER_S)
+        try:
+            agreed = await person.wait(offer, timeout_s=self.RELEASE_OFFER_S, until_abort=False)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            self._emit("release", stage="kept", reason="interrupted while waiting")
+            self._note("torque stays on, and the arm holds itself up where it stopped")
+            return
+        self._ask_recorded("release", offer, agreed, person)
+        if not agreed:
+            # why the wait ended, where the person can say (`_TerminalHandOff.ended`): a first
+            # Ctrl-C ends it without raising, and "nobody pressed Enter" is not what happened
+            ended = getattr(person, "ended", None)
+            if ended == "kill switch":
+                self._emit("release", stage="kept", reason="interrupted while waiting")
+                self._note("torque stays on, and the arm holds itself up where it stopped")
+            elif ended == "no keys":
+                self._emit("release", stage="kept", reason="no key could be read")
+                self._note("no key could be read, so torque stays on and the arm holds itself up")
+            else:
+                self._emit("release", stage="kept", reason="nobody pressed Enter")
+                self._note("nobody pressed Enter, so torque stays on and the arm holds itself up")
+            return
+        try:
+            released = await let_go_if_any(self.cfg.transport, anywhere=True)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            # A Ctrl-C after the Enter. Which side of the send it landed on is the arm's own
+            # backend's to say (`in_hand`), because the backend marks the arm in a hand the
+            # moment the release call goes out. Before that, on the read the release begins
+            # with, nothing was sent and torque is as the rest move left it, and "the arm may be
+            # limp" would be said of a release that never happened: whether the arm holds itself
+            # up is the close's line, from its own read (`RELEASE_NOT_SENT`). After it, part of
+            # the arm may already be limp in their hands, and the close says the same. A body
+            # that does not say gets the limp reading, which is the one that never drops an arm.
+            if getattr(self.cfg.transport, "in_hand", None) is False:
+                self._emit(
+                    "release", stage="kept", reason="interrupted before the release was sent"
+                )
+                said = self.RELEASE_NOT_SENT
+            else:
+                self._emit("release", stage="interrupted", reason="interrupted during the release")
+                said = self.RELEASE_INTERRUPTED
+            self._note(said)
+            with contextlib.suppress(Exception):
+                person.say(said)
+            return
+        self._emit(
+            "release",
+            stage="released",
+            how=released.how,
+            reason=released.reason,
+            joints=released.joints,
+            torque_on=list(released.torque_on) if released.torque_on is not None else None,
+        )
+        # Said to the person rather than only logged, like the offer itself: they are holding
+        # the arm and act on this line, and a run with its log off prints no note at all. The
+        # close's own line follows in the log where there is one.
+        if released.ok and released.torque_on:
+            person.say(
+                f"{released.reason}: the arm is in your hands, so put it down before you let "
+                "go of it, and cut its power to let go of what still holds"
+            )
+        elif released.ok:
+            person.say(
+                f"{released.reason}: the arm is in your hands, so put it down before you let "
+                "go of it"
+            )
+        elif released.torque_on:
+            # read back: every motor said torque on, so the arm holding itself up is a reading
+            self._note(f"torque was not released: {released.reason}")
+            person.say(
+                f"torque was not released ({released.reason}): the arm is still holding itself "
+                "up, so keep hold of it and cut its power"
+            )
+        else:
+            # nothing was read back, so nothing is known about torque either way: an arm whose
+            # supply was cut reads exactly like one whose cable came out in front of live servos
+            self._note(f"torque was not released: {released.reason}")
+            person.say(
+                f"torque was not released ({released.reason}), and quackd cannot tell whether "
+                "torque is on: keep holding the arm, and cut its power"
+            )
 
     async def _observe(
         self,
@@ -701,6 +1170,7 @@ class AgentLoop:
                 f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()
             )
             return VerbResult.fail(f"invalid assess_task: {msgs}"), None
+        asked = False  # whether a person answered the doubt, as against a standing answer
         if verdict.verdict == "uncertain":
             if self.cfg.decide is None:
                 self.executor.verdict = verdict  # recorded, and still not cleared
@@ -712,6 +1182,7 @@ class AgentLoop:
                 # confirm gate reads it
                 answer = False
             verdict.human = "go" if answer else "no_go"
+            asked = a_person_was_asked(self.cfg.decide)
             self._ask_recorded("decide", verdict.question(), answer, self.cfg.decide)
         if verdict.verdict == "feasible":
             # The coordinator already holds another robot's bid to its datasheet, and nothing
@@ -737,6 +1208,32 @@ class AgentLoop:
             return (
                 VerbResult.fail("a human was asked and said no"),
                 f"the pilot was unsure ({verdict.reason}) and the human said no",
+            )
+        if verdict.human == "go":
+            # The pilot has to hear who cleared it. It used to be told only "recorded
+            # uncertain: ...; verbs that move the body now run", which reads the same as its
+            # own feasible, and the prompt invites it to assess again when it changes its mind.
+            # On the 2026-09-23 bench a pilot that a person had just said go to assessed the
+            # same doubt again, as infeasible, and the run ended on the question it had already
+            # asked and been answered. Something new it sees is still a reason to assess again.
+            #
+            # And it hears who cleared it only where somebody did. `--yes`, a flock's standing
+            # answer and a pipe all answer go without asking anyone, and the record and the
+            # pilot's ears are held to the same rule as a `prompt` row (`a_person_was_asked`):
+            # a witness nobody was is worse than none. Its doubt is settled all the same, so
+            # it is told not to raise it again either way.
+            cleared = (
+                "a person read that and said go"
+                if asked
+                else "this run was started to go ahead without asking anybody (--yes, a "
+                "flock's standing answer or a pipe)"
+            )
+            return (
+                VerbResult.success(
+                    f"recorded {verdict.summary()}; {cleared}, so verbs that move the body now "
+                    "run. Do not assess again on the same doubt, only on something new you see"
+                ),
+                None,
             )
         return (
             VerbResult.success(f"recorded {verdict.summary()}; verbs that move the body now run"),
@@ -870,7 +1367,21 @@ class AgentLoop:
         # connect FIRST: an adapter answers with its manifest, and the vocabulary (tools,
         # prompt, allowlist universe) is built from that, not hardcoded (ADR-0017)
         connect_started = time.perf_counter()
-        connected = await cfg.transport.connect()
+        # A body that tries its connect again when the bus loses a packet (the LeRobot arm) is
+        # told how to hear a stop while it does. The kill switch's first press only sets the
+        # abort flag and cancels nothing, so without this a Ctrl-C during a connect that was
+        # failing got every attempt still to come, each one switching torque off and on again
+        # on every motor, and a later one that connected went on into the start of the run.
+        # Read with `getattr`, so a body with no such thing is called exactly as it always was,
+        # and taken back once the connect is over: it is the connect's and nothing else's.
+        stop_check = getattr(cfg.transport, "set_stop_check", None)
+        if callable(stop_check):
+            stop_check(self.executor.abort.is_set)
+        try:
+            connected = await cfg.transport.connect()
+        finally:
+            if callable(stop_check):
+                stop_check(None)
         # Everything from here to the first step can raise: a task that needs a verb this
         # build does not have, a person who would not confirm they were watching, a state
         # read that timed out. The arm is connected and holding by then, and the run's own
@@ -878,6 +1389,12 @@ class AgentLoop:
         # arm energised, away from any pose anybody chose, and nothing said about it.
         try:
             connect_s = round(time.perf_counter() - connect_started, 3)
+            # What the body had to do to get connected, in its own words: a connect it tried
+            # again after the bus lost a packet (the LeRobot arm's `connect_notes`). The body
+            # logged each one as it happened; this is what puts them in the run's record, so a
+            # joint whose cable drops a packet every session shows up across transcripts.
+            for note in getattr(cfg.transport, "connect_notes", ()) or ():
+                self._note(str(note))
             manifest = connected if isinstance(connected, RobotManifest) else None
             if manifest is not None:
                 # a v2 task file corrects the body's own sheet for the build in front of it, and it
@@ -1387,17 +1904,26 @@ class AgentLoop:
             with contextlib.suppress(Exception):
                 # the run's last intent, narrated like every other one
                 await self.executor.logged_transport().stop()
+            with contextlib.suppress(Exception):
+                # a take-hold that stop made over an arm in a person's hands, and was refused,
+                # said to them and put on the record, which the stop itself does neither of
+                self._refused_in_the_stop()
             if self._handed_over:
                 # between the stop, which is holding the arm where the run left it, and the
                 # rest move, which folds it: the one moment where opening the gripper is
                 # neither fighting a verb nor happening after the arm has already folded up
                 with contextlib.suppress(Exception):
                     await self._hand_back()
+            folded: RestResult | None = None
             with contextlib.suppress(Exception):
                 # after the stop and before the close: the stop holds the arm where it is,
                 # and the close is what releases torque, so this is the only window in which
                 # putting it down changes whether it falls
-                await self._rest()
+                folded = await self._rest()
+            with contextlib.suppress(Exception):
+                # and where it could not be put down, the person at the terminal may take
+                # torque off while they hold it, before the close keeps it on
+                await self._offer_release(folded)
             final_state: dict[str, Any] = {}
             with contextlib.suppress(Exception):
                 final_state = (await cfg.transport.get_state()).model_dump()
@@ -1495,6 +2021,13 @@ def _joints_line(joints: Mapping[str, float]) -> str:
     if not joints:
         return "the arm reported no joint"
     return "It is at " + ", ".join(f"{j} {v:.0f}" for j, v in sorted(joints.items()))
+
+
+def _listed(names: Sequence[str]) -> str:
+    """Joint names as a sentence lists them, "a", "a and b", "a, b and c", the way the arm's
+    own lines join them, so the person holding it hears one list the same way twice."""
+    items = list(names)
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
 async def run_duck(cfg: RunConfig) -> RunResult:

@@ -99,21 +99,34 @@ worded alike ([manifest-spec.md](manifest-spec.md#the-datasheet)).
 
 | Key | How it is checked |
 |---|---|
-| `payload_kg`, `reach_m`, `arms` | minimums. The body must publish at least this much. A minimum of `0` asks for nothing and is always met. |
+| `payload_kg`, `reach_m`, `arms` | minimums. The body must publish at least this much. |
 | `endurance_min` | a minimum, except on a mains-powered body (`tethered: true`), which has nothing to run down and passes. |
 | `work_height_m` | **not** a minimum: a height the hands must be able to reach, so it must fall inside the body's `workspace_height_m` band. Asking for 0.4 m fails a body that reaches 0.5 to 1.25 m, because that is below it. |
-| `manipulator`, `mobility` | must match the body's own word, or be `any`, which accepts anything except `none`. |
-| `terrain` | a floor, not a match: `indoor_flat` < `indoor` < `outdoor`, and a body rated for more than the task asks passes. A body that publishes no terrain meets `indoor_flat` and nothing above it, because that is what the prompt tells such a body to assume about itself, and only where the prompt says so: a body with no datasheet at all, or one that does not move, meets none of them. |
+| `manipulator`, `mobility` | must match the body's own word. `any` accepts any word but `none`, so it means some kind: a body that does not move fails `mobility: any`. `none` asks for nothing: a task that goes nowhere names `mobility: none`, and every body meets it, one with legs or wheels too. |
+| `terrain` | a floor, not a match: `indoor_flat` < `indoor` < `outdoor`, and a body rated for more than the task asks passes. A body that publishes no terrain meets `indoor_flat` and nothing above it, because that is what the prompt tells such a body to assume about itself. A body that does not move meets `indoor_flat` too, and anything above it fails as `(it does not move)`, which is what its prompt says where a moving body's names a terrain. A body with no datasheet at all meets none of them. |
+
+Any number given as `0`, and `none` for `manipulator` or `mobility`, asks for nothing and is
+always met. That includes `work_height_m`: `0` means the task does not turn on a height, not
+that the hands work on the floor, and a task that does work at floor level says so with a
+small height above zero. The pilot is told the same in the `assess_task` schema: name only
+what the task turns on, and leave a field out, or give `0` or `none`, when it does not.
 
 **A figure the maker never published counts as not met**, because a robot that cannot say
-what it carries is not the one to ask to carry something. The two exceptions are in the table
-above, and both exist so that an honest answer is not refused: a minimum of zero, and the
-floor a body with no published terrain is already told to assume. The words are
-`manipulator: beak · gripper · arms · any`, `mobility: legged · wheeled · any` and
-`terrain: indoor_flat · indoor · outdoor`. Of those, `terrain` is the one to be careful
-with: five shipped bodies are rated `indoor_flat` and two publish nothing, so a role asking
-for `indoor` or `outdoor` can be filled by no robot quackd ships today
+what it carries is not the one to ask to carry something. There are four exceptions, and all
+of them exist so that an honest answer is not refused: a zero, a `none`, the floor a body with
+no published terrain is already told to assume, and the flat indoor floor a body that does not
+move stands on. The words are `manipulator: none · beak · gripper · arms · any`,
+`mobility: none · legged · wheeled · any` and `terrain: indoor_flat · indoor · outdoor`. Of
+those, `terrain` is the one to be careful with: five shipped bodies are rated `indoor_flat`,
+the SO-101 does not move, and the rosbridge body publishes nothing, so a role asking for
+`indoor` or `outdoor` can be filled by no robot quackd ships today
 ([manifest-spec.md](manifest-spec.md#the-datasheet)).
+
+A role is read strictly on one point where a pilot's own verdict is not. A pilot judging its
+own body is not refused for a `work_height_m` its sheet publishes no band for, because its
+prompt never lists a working height as missing and it had no way to know. A role, the
+coordinator judging a bid and the list of other bodies that could do a task all refuse it,
+because a body that never said how high it works is not the one to offer a task at a height.
 
 ### `abort_when` — what is enforced
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
@@ -17,6 +18,7 @@ from quackd import __version__
 from quackd import cli as cli_mod
 from quackd.agent.providers.factory import CLOUD_NAMES, default_model_for, model_ids
 from quackd.cli import EXIT_INFEASIBLE, app
+from quackd_lerobot.verbs import JOINTS as JOINT_NAMES
 
 from .conftest import DUCKS
 from .conftest import help_text as _help
@@ -1471,6 +1473,493 @@ def test_by_hand_hands_the_arm_over_and_asks_for_it_back(
     events = Transcript.read(next(runs.rglob("transcript.jsonl")))
     stages = [e["stage"] for e in events if e["kind"] == "hand_off"]
     assert stages == ["released", "held", "unloaded"], stages
+    # the Enter faked above answers every wait, and the end-of-run offer is one: it must not
+    # have been put at all, because this arm folded up and was let go of at its pose
+    assert not [e for e in events if e["kind"] == "release"], "an offer nobody needed was made"
+    assert "the arm did not reach its rest pose" not in flat
+
+
+# ── quackd robot release: torque off where the arm stands, for a person holding it ──────
+#
+# The second door ADR-0039's first one does not replace: `--by-hand` releases at the rest pose
+# and nowhere else, and this releases wherever the arm is, because a person asked for it at a
+# terminal after being told to hold the arm. On 2026-09-23 the only way to take torque off an
+# arm a run had left holding itself up was the power switch.
+
+
+def _registered_arm(tmp_path: Path, name: str) -> Path:
+    """A registry with one `lerobot:mock` arm under `name` and its rest pose recorded, built
+    through the CLI as a person would."""
+    reg = tmp_path / "registry"
+    added = runner.invoke(app, ["robot", "add", name, "lerobot:mock", "--registry-dir", str(reg)])
+    assert added.exit_code == 0, added.output
+    recorded = runner.invoke(app, ["robot", "rest-pose", name, "--yes", "--registry-dir", str(reg)])
+    assert recorded.exit_code == 0, recorded.output
+    return reg
+
+
+def _release(reg: Path, name: str, *flags: str, answer: str | None = None) -> Any:
+    return runner.invoke(
+        app, ["robot", "release", name, "--registry-dir", str(reg), *flags], input=answer
+    )
+
+
+def _watch(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The order of the two things a person must see happen in order: being asked, and the
+    arm being connected, which is the first thing that takes its torque off."""
+    import typer
+
+    from quackd_lerobot.mock import LeRobotMock
+
+    seen: list[str] = []
+    asked, connected = typer.confirm, LeRobotMock.connect
+
+    def confirm(*args: Any, **kwargs: Any) -> Any:
+        seen.append("asked")
+        return asked(*args, **kwargs)
+
+    async def connect(self: Any) -> Any:
+        seen.append("connected")
+        return await connected(self)
+
+    monkeypatch.setattr(typer, "confirm", confirm)
+    monkeypatch.setattr(LeRobotMock, "connect", connect)
+    return seen
+
+
+@pytest.mark.parametrize("name", ["lab-arm", "bench-2"])
+def test_release_warns_then_asks_and_only_then_connects_and_reads_torque_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """Connecting is the first thing that takes an arm's torque off, because LeRobot configures
+    its motors with torque off, so a warning printed after the connect arrives after the arm
+    has already been limp once. The warning comes first, then the question with the arm's
+    name in it, then the connect, the joints where the person is holding it, what torque read
+    back, and the close's own line: the arm is limp in your hands, put it down."""
+    monkeypatch.setattr("quackd.cli._can_prompt", lambda: True)
+    reg = _registered_arm(tmp_path, name)
+    seen = _watch(monkeypatch)
+    result = _release(reg, name, answer="y\n")
+    assert result.exit_code == 0, result.output
+    assert seen == ["asked", "connected"], seen
+
+    flat = " ".join(result.output.split())
+    order = [
+        flat.index("connecting takes torque off every motor for a moment"),
+        flat.index("hold it now"),
+        flat.index(f"release torque on {name}? [y/N]"),
+        flat.index(f"{name} (lerobot:mock) is at"),
+        flat.index(f"torque reads off on every joint of {name}"),
+        flat.index("the arm is limp and in your hands"),
+    ]
+    assert order == sorted(order), flat
+    assert "shoulder_lift -90.0" in flat and "elbow_flex 90.0" in flat, "the joints it was at"
+    assert "(torque was taken off where it stood, because you asked for it)" in flat, flat
+    assert "put it down before you let go of it" in flat
+
+
+def test_release_with_yes_warns_and_connects_without_asking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--yes` skips the question and nothing else: the warning still comes before the
+    connect, which is why its help says to hold the arm before running it. No terminal is
+    needed, since nothing is asked."""
+    reg = _registered_arm(tmp_path, "arm-07")
+    seen = _watch(monkeypatch)
+    result = _release(reg, "arm-07", "--yes")
+    assert result.exit_code == 0, result.output
+    assert seen == ["connected"], "a question was put, or the arm was never connected"
+    flat = " ".join(result.output.split())
+    assert "[y/N]" not in flat
+    assert flat.index("hold it now") < flat.index("arm-07 (lerobot:mock) is at")
+    assert "torque reads off on every joint of arm-07" in flat
+
+
+@pytest.mark.parametrize(
+    "away", [{"shoulder_pan": 35.0}, {"elbow_flex": 40.0, "wrist_flex": -25.0}], ids=["1", "2"]
+)
+def test_release_lets_go_of_an_arm_away_from_its_rest_pose(
+    tmp_path: Path, away: dict[str, float]
+) -> None:
+    """The arm this command exists for is one a run could not fold, so it is somewhere other
+    than its recorded pose, which is the one place `--by-hand`'s door opens. The registered pose
+    here is moved off where the mock arm stands, so a release through the first door would be
+    refused and this one is not."""
+    from quackd.registry import Registry
+    from quackd_lerobot.mock import REST
+
+    reg = _registered_arm(tmp_path, "arm-02")
+    Registry(reg).update_robot("arm-02", {"rest_pose": dict(REST) | away})
+    result = _release(reg, "arm-02", "--yes")
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "torque reads off on every joint of arm-02" in flat, flat
+    assert "(torque was taken off where it stood, because you asked for it)" in flat
+    assert "the arm is not at its rest pose" not in flat, "the rest-pose rule was applied"
+
+
+def test_release_with_no_terminal_and_no_yes_refuses_before_anything_connects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the runner stdin is not a terminal, which is the situation itself: a pipe or a
+    script cannot answer "hold the arm", so it is told to pass --yes and the arm is never
+    connected, which would have been the first thing to take its torque off."""
+    reg = _registered_arm(tmp_path, "arm-01")
+    seen = _watch(monkeypatch)
+    result = _release(reg, "arm-01", answer="y\n")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "no terminal to ask on: pass --yes to release it" in flat, flat
+    assert "quackd robot release arm-01 --yes" in flat
+    assert seen == [], "the arm was connected with nobody to ask"
+    assert "hold it now" not in flat, "a person was told to hold an arm nothing was going to touch"
+
+
+def test_release_answered_no_never_connects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("quackd.cli._can_prompt", lambda: True)
+    reg = _registered_arm(tmp_path, "arm-01")
+    seen = _watch(monkeypatch)
+    result = _release(reg, "arm-01", answer="n\n")
+    assert result.exit_code == 0, result.output
+    assert seen == ["asked"], seen
+    assert "nothing was connected, and the arm is as it was" in " ".join(result.output.split())
+
+
+def test_release_refuses_a_body_that_is_not_the_arm(tmp_path: Path) -> None:
+    """A walking duck with its torque off is a duck on the floor, and six bodies of seven are
+    never handed to a person at all: `supports_hand_off` is the arm's alone."""
+    reg = tmp_path / "registry"
+    added = runner.invoke(
+        app, ["robot", "add", "duck", "microduck:mock", "--registry-dir", str(reg)]
+    )
+    assert added.exit_code == 0, added.output
+    result = _release(reg, "duck", "--yes")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "duck (microduck:mock) is not a body quackd takes torque off" in flat, flat
+    assert "only the LeRobot arm is" in flat and "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("how", "torque_on", "said"),
+    [
+        (
+            "refused",
+            ("shoulder_pan", "elbow_flex"),
+            "torque still reads on for shoulder_pan, elbow_flex: cut the power",
+        ),
+        ("released", ("wrist_roll",), "torque still reads on for wrist_roll: cut the power"),
+        ("released", None, "torque was taken off and could not be read back"),
+        ("refused", None, "nothing was released"),
+    ],
+    ids=["all still on", "one still on", "never read back", "never sent"],
+)
+def test_release_exits_non_zero_unless_every_motor_read_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    how: str,
+    torque_on: tuple[str, ...] | None,
+    said: str,
+) -> None:
+    """ "Torque reads off" is said only when the register was read and every motor said 0. A
+    motor still on, a release nobody read back and a release never sent each exit 1 and say
+    which, because a script, and a person, act on the exit code."""
+    from quackd.adapters.base import HandResult
+    from quackd_lerobot.mock import LeRobotMock
+
+    async def let_go(self: Any, *, anywhere: bool = False) -> HandResult:
+        assert anywhere, "the command asked for the rest-pose rule"
+        return HandResult(how, "the arm's own reason", torque_on=torque_on)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(LeRobotMock, "let_go", let_go)
+    reg = _registered_arm(tmp_path, "arm-01")
+    result = _release(reg, "arm-01", "--yes")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert said in flat, flat
+    assert "torque reads off" not in flat
+
+
+def test_release_whose_connect_fails_exits_non_zero_and_says_keep_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quackd.transport.base import TransportError
+    from quackd_lerobot.mock import LeRobotMock
+
+    async def connect(self: Any) -> Any:
+        raise TransportError("the port went away")
+
+    reg = _registered_arm(tmp_path, "arm-01")
+    monkeypatch.setattr(LeRobotMock, "connect", connect)
+    result = _release(reg, "arm-01", "--yes")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "lerobot:mock: the port went away" in flat, flat
+    assert "keep hold of the arm" in flat
+
+
+def _missed_rest_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    stopped: dict[str, float],
+    why: str,
+) -> Any:
+    """A run on a registered mock arm whose rest move misses, stopping with the joints in
+    `stopped`, which aborts it before the pilot and leaves the teardown's rest move missing
+    too. The arm really is away from its pose afterwards, so the close judges it as one."""
+    from quackd.adapters.base import RestResult
+    from quackd_lerobot.mock import LeRobotMock
+
+    async def misses(self: Any) -> RestResult:
+        self.sequence.append("rest")
+        self.joints.update(stopped)
+        return RestResult("stalled", why)
+
+    reg = _registered_arm(tmp_path, name)
+    monkeypatch.setattr(LeRobotMock, "go_to_rest", misses)
+    runs = tmp_path / "runs"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "lerobot-lookout",
+            "--llm",
+            "fake",
+            "--robot",
+            name,
+            "--registry-dir",
+            str(reg),
+            "--runs-dir",
+            str(runs),
+            "--no-gif",
+            # the log on: the close's own line is a note, and a run with the log off prints
+            # no note at all
+            "--log",
+        ],
+    )
+    return result, runs
+
+
+def test_a_run_whose_rest_move_missed_offers_the_person_at_the_terminal_torque_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The offer end to end: the CLI wires the terminal into the run whenever it can prompt,
+    binds it to the kill switch, and Enter releases the arm and ends on the limp line."""
+    from quackd.agent.transcript import Transcript
+    from quackd.safety import KillSwitch
+
+    async def pressed(self: KillSwitch, *, timeout_s: float | None = None, **_: Any) -> bool:
+        return True
+
+    monkeypatch.setattr("quackd.cli._can_prompt", lambda: True)
+    monkeypatch.setattr(KillSwitch, "wait_for_enter", pressed)
+    why = "wrist_flex is at 33 with a goal of 0, and it has stopped moving"
+    result, runs = _missed_rest_run(tmp_path, monkeypatch, "arm-03", {"wrist_flex": 33.0}, why)
+    assert result.exit_code == 1, result.output  # the run aborted: it never reached its pose
+    flat = " ".join(result.output.split())
+    assert f"the arm did not reach its rest pose ({why}), so it is holding itself up" in flat
+    assert "Hold it and press Enter to release torque now" in flat, flat
+    # the log's line for the event, said to the person whether or not the log is on, and then
+    # the close's own line
+    assert "release released: torque is off where the arm stands" in flat, flat
+    assert "torque is off where the arm stands: the arm is in your hands, so put it down" in flat
+    assert "the arm is limp and in your hands" in flat
+    assert "torque was left on" not in flat
+
+    events = Transcript.read(next(runs.rglob("transcript.jsonl")))
+    assert [e["stage"] for e in events if e["kind"] == "release"] == ["released"]
+    assert [e["what"] for e in events if e["kind"] == "prompt"] == ["release"]
+
+
+@pytest.mark.parametrize("name", ["lab-arm", "bench-2"])
+def test_a_run_with_nobody_at_the_terminal_keeps_torque_and_names_the_arm_s_way_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """No terminal, no offer, and torque kept, as before. What changed is the line: it names
+    the command that releases the arm and the one that parks it, with the name the arm was
+    registered under, which is the name those commands take, and it puts holding the arm
+    before all of them, because both commands begin by connecting."""
+    result, _runs = _missed_rest_run(
+        tmp_path, monkeypatch, name, {"elbow_flex": 12.0}, "elbow_flex is at 12 with a goal of 90"
+    )
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert "Hold it and press Enter" not in flat, "an offer was made to nobody"
+    assert "so torque was left on and it will not fall as it stands" in flat, flat
+    assert (
+        "hold it first, because connecting takes torque off every motor for a moment, then run "
+        f"quackd robot release {name}, or quackd doctor --robot {name} to park it, or cut its "
+        "power"
+    ) in flat, flat
+
+
+# ── what a person is told at the arm, matched to what quackd did ─────────────────────────
+
+
+@pytest.mark.parametrize("ending", ["enter", "kill switch", "no keys", "stopped", "timeout"])
+async def test_the_terminal_hand_off_says_how_each_wait_ended(ending: str) -> None:
+    """The wait answers with a bool, and a Ctrl-C, a terminal nobody can type into and an
+    empty room all answered False, so the end-of-run offer filed a person's Ctrl-C as
+    "nobody pressed Enter". The terminal now says which ending it was (`ended`), the bool is
+    unchanged for the two `--by-hand` waits that need nothing more, and the saved terminal
+    names the ending too."""
+    from quackd.cli import _TerminalHandOff
+    from quackd.safety import KillSwitch
+
+    abort = asyncio.Event()
+    switch = KillSwitch(abort)
+    loop = asyncio.get_running_loop()
+    switch._loop = loop  # what `install()` sets, without taking the process's SIGINT
+    person = _TerminalHandOff()
+    person.bind(switch)
+    if ending == "enter":
+        loop.call_later(0.05, switch.entered.set)
+    elif ending == "kill switch":
+        loop.call_later(0.05, switch._fire, "Ctrl-C")
+    elif ending == "no keys":
+        switch.keys_ended.set()
+    elif ending == "stopped":
+        loop.call_later(0.05, abort.set)
+    came = await person.wait(
+        "hold it", timeout_s=0.3 if ending == "timeout" else 5.0, until_abort=ending == "stopped"
+    )
+    assert came is (ending == "enter")
+    assert person.ended == ending
+
+
+def _holding_out(monkeypatch: pytest.MonkeyPatch, holdouts: tuple[str, ...]) -> None:
+    """The mock arm's release keeps these motors on, as the real read-back can find them."""
+    from quackd_lerobot.mock import LeRobotMock
+
+    release = LeRobotMock.let_go
+
+    async def let_go(self: LeRobotMock, *, anywhere: bool = False) -> Any:
+        self.release_holdouts = holdouts
+        return await release(self, anywhere=anywhere)
+
+    monkeypatch.setattr(LeRobotMock, "let_go", let_go)
+
+
+@pytest.mark.parametrize(
+    ("holdouts", "away", "last"),
+    [
+        (
+            JOINT_NAMES,
+            {"shoulder_pan": 35.0},
+            "the release did not take, so torque was left on and it will not fall as it "
+            "stands: hold it and cut its power",
+        ),
+        (
+            JOINT_NAMES,
+            {},
+            "the release did not take, and the close then took torque off at the rest pose, as "
+            "every close there does, with nothing to read it back: hold the arm, and cut its "
+            "power if it still holds itself up",
+        ),
+        (
+            ("elbow_flex",),
+            {"shoulder_pan": 35.0},
+            "but elbow_flex still reads torque on and holds: keep hold of the arm, put it down, "
+            "and cut its power to let go of it",
+        ),
+    ],
+    ids=["refused away from rest", "refused at rest", "one motor held out"],
+)
+def test_release_ends_on_a_line_that_matches_what_happened(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    holdouts: tuple[str, ...],
+    away: dict[str, float],
+    last: str,
+) -> None:
+    """The command's last line is the close's, and three endings used to contradict what came
+    before it. Every motor still on, away from the rest pose: the torque note sent the person
+    to `quackd robot release`, the command that had just failed one line up. Every motor
+    still on at the rest pose: the close let go of the arm without a word, after "cut the
+    power". One motor still on: "nothing is holding it up", over a joint that was. Each now
+    ends on a line that says what quackd did, and all three still exit 1."""
+    from quackd.registry import Registry
+    from quackd_lerobot.mock import REST
+
+    reg = _registered_arm(tmp_path, "arm-04")
+    Registry(reg).update_robot("arm-04", {"rest_pose": dict(REST) | away})
+    _holding_out(monkeypatch, holdouts)
+    result = _release(reg, "arm-04", "--yes")
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    assert f"torque still reads on for {', '.join(holdouts)}: cut the power" in flat, flat
+    assert flat.endswith(last), flat
+    assert "quackd robot release" not in flat, "sent back to the command that just failed"
+    assert "nothing is holding it up" not in flat
+
+
+def test_doctor_builds_a_registered_arm_under_its_name_and_warns_before_it_connects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two things `doctor --robot NAME` got wrong about an arm left holding itself up, which
+    is exactly the arm its torque note sends a person to it with.
+
+    It dropped the name: a registered name was resolved to the bare spec, so the arm was built
+    with the default id, and a real one looked up the calibration of that id whatever it was
+    registered as, and every line it wrote said NAME. It is built under its name now, as a run
+    builds it. And it connected without a word, though connecting takes torque off every
+    motor for a moment: the warning `quackd robot release` prints is printed here too, before
+    the connect, and only for a body that is handed to people."""
+    import quackd_lerobot
+    from quackd import cli, doctor
+    from quackd.adapters.base import RestResult
+    from quackd_lerobot.mock import LeRobotMock
+
+    monkeypatch.setattr(doctor, "_probe_models", lambda url, timeout_s=1.5: ("down", "not running"))
+    reg = _registered_arm(tmp_path, "bench-2")
+    built: list[str | None] = []
+    make = quackd_lerobot.make
+
+    def recording(backend: str, **kwargs: Any) -> Any:
+        built.append(kwargs.get("robot_id"))
+        return make(backend, **kwargs)
+
+    monkeypatch.setattr(quackd_lerobot, "make", recording)
+    seen: list[str] = []
+    warning = cli._doctor_warning
+
+    def warned() -> str:
+        seen.append("warned")
+        return warning()
+
+    monkeypatch.setattr(cli, "_doctor_warning", warned)
+    connected = LeRobotMock.connect
+
+    async def connect(self: LeRobotMock) -> Any:
+        seen.append("connected")
+        return await connected(self)
+
+    async def misses(self: LeRobotMock) -> RestResult:
+        # the rest move stops short, so the close keeps torque and says so, with the name
+        self.sequence.append("rest")
+        self.joints["wrist_flex"] = 33.0
+        return RestResult("stalled", "wrist_flex stopped 33 deg short")
+
+    monkeypatch.setattr(LeRobotMock, "connect", connect)
+    monkeypatch.setattr(LeRobotMock, "go_to_rest", misses)
+    result = runner.invoke(
+        app, ["doctor", "--robot", "bench-2", "--address", "mock://arm", "--registry-dir", str(reg)]
+    )
+    flat = " ".join(result.output.split())
+    assert built == ["bench-2"], built
+    assert seen == ["warned", "connected"], seen
+    assert (
+        "connecting takes torque off every motor for a moment, because LeRobot configures them "
+        "with it off: support the arm until doctor has finished with it"
+    ) in flat, flat
+    assert "quackd robot release bench-2" in flat and "doctor --robot bench-2" in flat, flat
+    assert "release NAME" not in flat, "the arm was built without the name it was asked for by"
+
+    duck = runner.invoke(app, ["doctor", "--robot", "microduck:mock", "--address", "mock://x"])
+    assert "connecting takes torque off" not in " ".join(duck.output.split()), duck.output
 
 
 # ── --run-name and --price: what the run is called, and what it cost ────────────────────

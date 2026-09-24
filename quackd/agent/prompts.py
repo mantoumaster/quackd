@@ -111,14 +111,15 @@ ASSESS_TASK = {
                 "type": "object",
                 "description": (
                     "What the task requires, in the datasheet's own field names. Numbers are "
-                    "minimums (payload_kg: 3 means at least 3 kg). A matcher reads this to say "
-                    "which other body could do the task, so fill it in even when the verdict "
-                    "is feasible. It is also read back against this body's own datasheet: a "
-                    "feasible verdict naming a need the sheet does not meet, or does not "
-                    "publish, is refused and told which need, so name what the task turns on "
-                    "and nothing it does not: a need this task does not actually rest on is "
-                    "what gets a good verdict refused. A minimum of 0 asks for nothing and is "
-                    "always met."
+                    "minimums (payload_kg: 3 means at least 3 kg), except work_height_m, which "
+                    "is a height the hands must reach. A matcher reads this to say which other "
+                    "body could do the task, so fill it in even when the verdict is feasible. "
+                    "It is also read back against this body's own datasheet: a feasible "
+                    "verdict naming a need the sheet does not meet, or does not publish, is "
+                    "refused and told which need. Name only what the task turns on; leave a "
+                    "field out, or give 0 or none, when the task does not need it: a need this "
+                    "task does not actually rest on is what gets a good verdict refused. A 0 "
+                    "or a none asks for nothing and is always met."
                 ),
                 "properties": needs_properties(),
                 "additionalProperties": False,
@@ -369,8 +370,14 @@ def body_lines(manifest: RobotManifest) -> list[str]:
     lines += [f"- {label}: {fig.text(unit)}" for label, fig, unit in ds.known()]
     lines.append(f"- Manipulator: {_hands(ds)}.")
     if unknown := ds.unknown():
+        # It used to say "Decline any task that hinges on any of them", and on an arm whose
+        # reach nobody had published that forbids reaching for anything, which is the whole of
+        # what an arm does. An unpublished figure is a question for a person, which is what
+        # `uncertain` asks, and the verdict gate already refuses a `feasible` that names one.
+        which = "it" if len(unknown) == 1 else "one of them"
         lines.append(
-            f"- Not published: {', '.join(unknown)}. Decline any task that hinges on any of them."
+            f"- Not published: {', '.join(unknown)}. Where a task turns on {which}, say "
+            "uncertain and name it rather than guessing; do not decline on it alone."
         )
     lines.append(f"- {_power_and_ground(ds, mobile=mobile)}.")
     limits = dict(manifest.limits)
@@ -383,9 +390,13 @@ def body_lines(manifest: RobotManifest) -> list[str]:
         lines.append(f"- quackd clamps you to {clamps}.")
     if ranges:
         travel = ", ".join(f"{joint} {lo:g} to {hi:g}" for joint, (lo, hi) in ranges.items())
+        # the second sentence is the servo's rule, and it is here because a reading past the
+        # travel beside this line is otherwise a contradiction a careful pilot refuses to move on
         lines.append(
             f"- Each joint's travel in degrees, read from its own calibration, and the only "
-            f"goals quackd will send: {travel}."
+            f"goals quackd will send: {travel}. A joint can read past its travel when it was "
+            "folded or placed there with torque off, which is where a rest pose usually is; "
+            "goals are still limited to the travel."
         )
     if manifest.sensors:
         lines.append(f"- Senses: {', '.join(manifest.sensors)}.")

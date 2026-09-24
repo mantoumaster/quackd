@@ -772,11 +772,36 @@ def render_events(
         stage = str(d.get("stage", ""))
         reason = str(d.get("reason", ""))
         joints = d.get("joints") or {}
-        text = f"{stage}: {reason}" if reason else stage
-        if joints:
+        refused = d.get("how") == "refused"
+        # A refused release or hold is recorded under the stage it was trying for, and is said
+        # as a refusal. "held:" over a take-hold that left torque off told the person holding
+        # the arm, in the one word they read first, that something now holds it.
+        label = {"released": "release refused", "held": "hold refused"}.get(stage, stage)
+        said = label if refused else stage
+        text = f"{said}: {reason}" if reason else said
+        # Not after a hold refused over joints outside their travel (`outside`), whose reason
+        # carries the readings that matter, each printed so it is never inside the travel the
+        # same sentence gives (`said_past`). Whole degrees beside it named a joint a hair past
+        # its ceiling at the ceiling itself, inside the travel the line said it was outside,
+        # and a tenth would do the same a hundredth past an edge. Only there: a refusal whose
+        # reason names no readings, an arm that moved as torque came on, which says "it is
+        # holding where it is now" and names one joint, keeps the list that says where that
+        # is. It was left out of every refused hold for a while, and a slip's line then said
+        # the arm held "where it is now" and nowhere said where. The joints stay in the
+        # record's event either way.
+        if joints and not d.get("outside"):
             text += " (" + ", ".join(f"{j} {float(v):.0f}" for j, v in sorted(joints.items())) + ")"
-        colour = "yellow" if stage in ("released", "skipped") else "cyan"
+        colour = "yellow" if refused or stage in ("released", "skipped") else "cyan"
         return [LogLine("hand", text, colour, mark="note")]
+    if k == "release":
+        # the end-of-run offer to a person holding an arm that missed its rest pose: said in
+        # yellow either way, because both endings leave somebody something to do with the arm
+        stage = str(d.get("stage", ""))
+        reason = str(d.get("reason", ""))
+        text = f"{stage}: {reason}" if reason else stage
+        if d.get("how") == "refused":
+            text += " (the arm refused)"
+        return [LogLine("release", text, "yellow", mark="note")]
     if k == "note":
         return [LogLine("note", str(d.get("text", "")), "dim", multiline=True, mark="note")]
     if (caption := flock_caption(k, d)) is not None:

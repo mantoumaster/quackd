@@ -79,9 +79,35 @@ from quackd.verbs.registry import (
     default_registry,
     registry_from_manifest,
 )
-from quackd.verdict import BEFORE_VERDICT, Verdict, missing_needs, own_sheet_objection
+from quackd.verdict import (
+    BEFORE_VERDICT,
+    MANIPULATOR_WORDS,
+    MOBILITY_WORDS,
+    TERRAIN_ORDER,
+    Verdict,
+    missing_needs,
+    own_sheet_objection,
+)
 
 logger = logging.getLogger("quackd.mcp")
+
+
+def _either(words: Sequence[str]) -> str:
+    return ", ".join(words[:-1]) + f" or {words[-1]}"
+
+
+NEEDS_WORDS_TEXT = (
+    f"mobility is {_either(MOBILITY_WORDS)}: none means the task needs no locomotion, so an "
+    "arm on a table is fine, and any means some kind. "
+    f"manipulator is {_either(MANIPULATOR_WORDS)}, and none means the task touches nothing. "
+    f"terrain is {_either(TERRAIN_ORDER)}, least demanding first, and a body that does not "
+    "move meets indoor_flat. work_height_m is a height the hands must reach, not a minimum."
+)
+"""The words `robot_assess_task` takes, spelled out in its description.
+
+MCP types `needs` as a bare dict, so a client is shown no enum at all and the loop's schema
+descriptions (`needs_properties`) never reach it. Built from the same tuples the checker reads,
+so the two cannot drift: when `none` joined the vocabulary it reached this text by itself."""
 
 TOOL_NAMES = (
     "robot_list",
@@ -297,6 +323,9 @@ class RobotSession:
         if not self.executor.dry_run and getattr(self.transport, "rest_pose", None) is not None:
             parked = await go_to_rest_if_any(self.transport)
             logger.info("%s: %s", self.name, parked.reason)
+            if parked.note:
+                # the body's sentence about the pose it parks in; said once, at the start
+                logger.info("%s: %s", self.name, parked.note)
             if not parked.reached:
                 with contextlib.suppress(Exception):
                     await self.transport.close()
@@ -907,9 +936,11 @@ def build_fleet_server(
             "by itself one of those. Ask the person you are chatting with, then answer again. "
             "Fill "
             "in `needs` (payload_kg, reach_m, manipulator, mobility, ...) even when feasible, "
-            "because that is what names the robots that could. A feasible whose needs that "
-            "robot's own datasheet does not meet is refused before it is recorded, and names "
-            "the need."
+            "because that is what names the robots that could, and name only what the task "
+            "turns on: leave a field out, or give 0 or none, when the task does not need it. "
+            + NEEDS_WORDS_TEXT
+            + " A feasible whose needs that robot's own datasheet does not meet is refused "
+            "before it is recorded, and names the need."
         )
     )
     async def robot_assess_task(

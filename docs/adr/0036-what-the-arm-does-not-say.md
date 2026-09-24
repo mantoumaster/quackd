@@ -15,6 +15,47 @@ sentence is untouched and still holds: the adapter never calibrates, still refus
 no calibration file because that file is where the joint ranges come from, and still keeps
 LeRobot's default of dropping torque on `disconnect()` rather than overriding it.
 
+**Amended 2026-09-23 by [ADR-0045](0045-a-rest-pose-the-calibration-cannot-reach.md):** the
+Context below leaves open what the firmware does with a goal past a joint's calibrated travel,
+and an SO-101 has answered it. LeRobot's calibration writes that travel into each servo as its
+two position limits, and the servo clamps every goal to them. A reading is not clamped, so a
+joint folded with torque off can sit past either end. The range refusal below stands, and has a
+second reason now: a goal it let through would be one the arm silently stops short of. The
+decision that `stop` holds the five body joints now holds each one that reads inside its travel
+and writes nothing for one that reads past it, because the only goal the servo would take for
+that joint is its limit, and it drives there at full speed. The rest pose the amendment above
+names is now driven clipped into the travel, and a joint recorded past the travel is at rest at
+its edge or anywhere beyond it.
+
+**Amended 2026-09-23, the same afternoon:** the decision below that made `duration_s` a budget
+is reversed, because a budget left the step cap as the only pace the arm had, and a model on
+the bench asked to raise the arm slowly read the verb's text correctly and declined.
+`duration_s` is now how long the motion should take: `move_joints` reads the arm once and walks
+its goal from there to the goal across that time, one target a tick, then sends the goal itself
+until the joints arrive. The step cap is unchanged and is now a ceiling rather than the speed:
+a time too short for the distance runs at the cap and ends later than asked. Arrival and stalls
+are judged once the ramp is over, since a slow ramp moves a joint less per tick than the stall
+threshold. The verb's budget is the time asked for or the time the cap needs, whichever is
+longer, plus a settle, and ends inside the executor's timeout for the verb, which is the same
+constant. A joint reading past its travel ramps from the edge of it, because the servo takes it
+there at its own speed whatever is sent. `gripper` is not ramped. The comparison of goal and
+measurement every tick, the failure that says where a joint stopped, and the tolerance all
+stand.
+
+**Amended 2026-09-24:** the ramp first kept two moves whole. A move whose every joint already
+read within the arrival tolerance went out at once and was judged after one tick, which made
+`duration_s` untrue for any move of a few degrees, so it is walked like any other now, and
+only a move with nothing to walk (every joint within a tenth of a degree of its goal, the
+ramp's own resolution) goes out at once. And a goal outside the travel went out whole for the
+backend's range refusal to answer before anything moved; the manifest publishes the travel
+rounded inward, so a goal in the sliver between the published and the exact edge was neither
+refused nor paced. `move_joints` refuses a goal outside the published travel itself now, before
+anything is sent, in the one sentence both backends refuse with. That sentence gives the travel
+to a tenth, rounded inward, so the verb quotes the published travel exactly, and the goal to a
+tenth unless a tenth would round it onto that travel, in which case as it was given: in whole
+degrees a goal in that sliver was named inside the range the same sentence gave, and so would a
+tenth name a goal a few hundredths past an edge.
+
 ## Context
 
 The LeRobot adapter drives an SO-101 follower through the `Robot` interface of

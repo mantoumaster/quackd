@@ -242,3 +242,55 @@ def test_missing_needs_reads_a_bids_own_words() -> None:
     assert missing_needs_in({"mobility": "wheeled"}, facts, "legged") == [
         "mobility = wheeled (has legged)"
     ]
+
+
+def test_a_body_that_does_not_move_now_fills_a_role_on_a_flat_indoor_floor() -> None:
+    """A behaviour change, on purpose. A role asking `terrain: indoor_flat` used to refuse a
+    body that does not move and publishes no terrain, as "(not published)", because the
+    exception for an unpublished terrain stopped at bodies that move. The pilot of such a body
+    is shown "it does not move" where a moving one is shown its terrain, and was refused the
+    same way for naming the floor its table stands on. The reader is shared, so the fix reaches
+    a flock too: such a body now meets `indoor_flat` at the member before it bids and at the
+    coordinator judging the bid, and a role asking for more is refused as "(it does not
+    move)". A bid that carried no datasheet still qualifies for nothing.
+
+    A role's working height stays strict. The kinder reading of an unpublished working height
+    is for a pilot judging its own body, which the prompt never showed the gap; a coordinator
+    offering a task at a height to a body that never said how high it works is guessing."""
+    sheet = _sheet(tethered=True)
+    still = RobotManifest(
+        id="arm-01",
+        vendor="acme",
+        model="arm",
+        embodiment="arm",
+        mobility="none",
+        intents=["joint"],
+        verbs=[VerbSpec(name="observe"), VerbSpec(name="stop", core=True)],
+        datasheet=sheet,
+    )
+    roles = {
+        "spotter": FlockRole(requires=["observe"], needs={"terrain": "indoor_flat"}),
+        "kicker": FlockRole(requires=["observe"], needs={"terrain": "indoor"}),
+    }
+    assert eligible_roles(roles, ["observe"], still) == ["spotter"]
+
+    facts = sheet.model_dump(mode="json")
+    assert missing_needs_in({"terrain": "indoor_flat"}, facts, "none") == []
+    assert missing_needs_in({"terrain": "indoor"}, facts, "none") == [
+        "terrain = indoor (it does not move)"
+    ]
+    assert missing_needs_in({"terrain": "indoor_flat"}, {}, "none") == [
+        "terrain = indoor_flat (not published)"
+    ], "a bid with no datasheet said nothing"
+
+    # `none` is a need a role can name, and a body with legs meets it as well as one without
+    idle = {"spotter": FlockRole(requires=["observe"], needs={"mobility": "none"})}
+    walker = _robot(_sheet(), mobility="legged")
+    assert eligible_roles(idle, ["observe"], still) == ["spotter"]
+    assert eligible_roles(idle, ["observe"], walker) == ["spotter"]
+
+    for height in (0.2, 0.75):
+        assert missing_needs_in({"work_height_m": height}, facts, "none") == [
+            f"work_height_m = {height:g} (not published)"
+        ]
+        assert missing_needs({"work_height_m": height}, still) != []

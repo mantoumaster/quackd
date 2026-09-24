@@ -45,9 +45,12 @@ flip that backend's row, and not before.
 - ✅ **An SO-101 arm**, on 2026-09-15: calibrated with upstream's own tool, then
   `lerobot-lookout` and twelve free-form goals, on a USB webcam at `opencv://2`, piloted by
   `gpt-6-astra`. What that afternoon left open, each a bring-up of its own: the rest pose,
-  written after that day and driven on no arm; `pick` and `load_policy()`, because no policy
-  was loaded; the registry path, because the arm was reached by `--address` and never by a
-  registered name; and that checklist's *What to report*, six things still chosen against
+  written after that day, which first met the arm on 2026-09-23 and could not reach a fold that
+  lay past the calibrated travel
+  ([ADR-0045](docs/adr/0045-a-rest-pose-the-calibration-cannot-reach.md)); `pick` and
+  `load_policy()`, because no policy was loaded; the registry path, because the arm was
+  reached by `--address` and never by a registered name, which it was on 2026-09-23 when its
+  rest pose was recorded; and that checklist's *What to report*, six things still chosen against
   Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
 - ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
   with neither a lookout task nor a checklist. A coordinator flock across two machines needs a

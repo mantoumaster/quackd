@@ -43,7 +43,7 @@ at all, every command that needs a body refuses and names all seven.
 | | `microduck:jsonrpc` | 🧪 experimental: every method VERIFIED, never run on a duck | [`adapters/microduck/src/quackd_microduck/upstream_api.py`](../adapters/microduck/src/quackd_microduck/upstream_api.py) | |
 | | `microduck:websocket` | ⏳ stub: raises with a link until upstream ships it | | |
 | LeRobot | `lerobot:mock` | ✅ | | [adapters/lerobot.md](adapters/lerobot.md) |
-| | `lerobot:real` | ✅ **run on a real arm on 2026-09-15**, the only row here that has been: an SO-101 follower calibrated as `arm-01` and reached as `--robot lerobot:real --address COM3` with no registered name, on Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0, piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, once with `--llm fake` as well. Free-form `--goal` runs waved the wrist roll about plus or minus 27 degrees, reached wider with `shoulder_lift` -39 and `elbow_flex` 24 to 30, opened and closed the gripper (commanded 100, reported 98 open and 3 closed with the jaws nearly touching), and one of them mimed a duck quacking with the gripper. A USB webcam answered at `opencv://1`, and at `opencv://2` after a replug, 640x480, with no `?backend=` key needed. **The arm fell at the end of every run**, which is the fault the rest pose was written to fix and has not yet been tried on that arm. Every LeRobot name is still VERIFIED at a pinned commit, and still exercised with a fake arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`adapters/lerobot/src/quackd_lerobot/upstream_api.py`](../adapters/lerobot/src/quackd_lerobot/upstream_api.py) | |
+| | `lerobot:real` | ✅ **run on a real arm on 2026-09-15**, the only row here that has been: an SO-101 follower calibrated as `arm-01` and reached as `--robot lerobot:real --address COM3` with no registered name, on Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0, piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, once with `--llm fake` as well. Free-form `--goal` runs waved the wrist roll about plus or minus 27 degrees, reached wider with `shoulder_lift` -39 and `elbow_flex` 24 to 30, opened and closed the gripper (commanded 100, reported 98 open and 3 closed with the jaws nearly touching), and one of them mimed a duck quacking with the gripper. A USB webcam answered at `opencv://1`, and at `opencv://2` after a replug, 640x480, with no `?backend=` key needed. **The arm fell at the end of every run**, which is the fault the rest pose was written to fix. The rest pose first met that arm on 2026-09-23 and could not reach a fold that lay past the travel its calibration recorded, which is [ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md). Every LeRobot name is still VERIFIED at a pinned commit, and still exercised with a fake arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`adapters/lerobot/src/quackd_lerobot/upstream_api.py`](../adapters/lerobot/src/quackd_lerobot/upstream_api.py) | |
 | rosbridge | `rosbridge:mock` | ✅ | | [adapters/rosbridge.md](adapters/rosbridge.md) |
 | | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics and fake services, including reading the robot's own description off the bridge, never run against a bridge | [`adapters/rosbridge/src/quackd_rosbridge/upstream_api.py`](../adapters/rosbridge/src/quackd_rosbridge/upstream_api.py) | |
 | Open Duck Mini v2 | `open_duck:sim2d` | ✅ `open-duck-scout` 10 of 10 seeds | | [adapters/open_duck.md](adapters/open_duck.md) |
@@ -151,14 +151,16 @@ And what it cannot do whatever the task says, which is the half a refusal usuall
 - climb or descend a step
 - hold a heading for long without a landmark: the IMU has no magnetometer, so heading drifts
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](duck-spec.md)).
 
 ### What we do not touch
 
 `robot.init` (moves every joint), `robot.relax` (the robot collapses), `system.*`, `net.*`,
 `update.*`. The gamepad (`padd`) keeps authority on hardware; quackd does not arbitrate.
-The same principle holds on every adapter: `disable_torque` is never sent to an arm, and a
-base over rosbridge gets a zero Twist, not silence.
+The same principle holds on every adapter: quackd never sends `disable_torque` to an arm of
+its own accord, and a base over rosbridge gets a zero Twist, not silence. A LeRobot arm is let
+go of only at its rest pose, or as near it as its calibration lets the servos go, where
+upstream's own `disconnect()` does it, or when a person holding it asks ([adapters/lerobot.md](adapters/lerobot.md#the-torque-rule)).
 On an Open Duck the guarantee is stronger than a promise: the bridge protocol has no word
 that reaches torque, so going limp is unreachable rather than merely forbidden.
 

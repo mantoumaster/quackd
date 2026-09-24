@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from quackd.adapters.base import AdapterError
+from quackd.adapters.base import AdapterError, RestResult
 from quackd.agent.images import load_task_images
 from quackd.agent.loop import AgentLoop, RunConfig, run_duck
 from quackd.agent.providers import pricing
@@ -36,8 +36,16 @@ from quackd.safety import Aborted
 from quackd.transport.base import CameraFrame, DuckState
 from quackd.transport.mock import MockTransport
 from quackd_lerobot import LeRobotAdapter
-from quackd_lerobot.mock import REST, LeRobotMock
-from quackd_lerobot.verbs import GRIPPER_OPEN, TOL_DEG, rest_goal
+from quackd_lerobot.mock import MOCK_RANGES, REST, LeRobotMock
+from quackd_lerobot.verbs import (
+    GRIPPER_OPEN,
+    LET_GO_TO_PLACE,
+    LIMP_AT_REST,
+    LIMP_IN_HAND,
+    TOL_DEG,
+    UNCONFIRMED_IN_HAND,
+    rest_goal,
+)
 from quackd_microduck import MicroduckAdapter
 from quackd_open_duck import OpenDuckAdapter
 from quackd_open_duck.mock import OpenDuckMock
@@ -1049,6 +1057,114 @@ async def test_a_person_who_says_go_clears_the_gate(hello_duck: DuckFile, tmp_pa
     assert next(e for e in events if e["kind"] == "assess")["human"] == "go"
 
 
+async def test_a_pilot_hears_that_a_person_cleared_its_doubt(
+    hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """On the 2026-09-23 bench a pilot answered `uncertain`, a person at the terminal said go,
+    and all it heard back was "recorded uncertain: ...; verbs that move the body now run",
+    which reads like its own feasible. The prompt invites it to assess again when it changes
+    its mind, so it assessed the same doubt again, as infeasible, and the run ended on a
+    question somebody had already answered. It is told now who cleared it, and not to ask
+    the same thing twice. A pilot that says feasible on its own is told nothing about a
+    person, because nobody was asked."""
+
+    def says_go(_why: str) -> bool:
+        return True
+
+    says_go.asks_a_person = True  # type: ignore[attr-defined]
+
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see how heavy the thing is"),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                    _verdict_call("feasible", "looked again: it is a tennis ball"),
+                    ToolCall(name="declare_success", arguments={"reason": "walked"}),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+            decide=says_go,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    cleared, own = [e for e in events if e["kind"] == "assess"]
+    assert cleared["human"] == "go" and cleared["ok"] is True
+    for said in (
+        "cannot see how heavy the thing is",
+        "a person read that and said go",
+        "verbs that move the body now run",
+        "Do not assess again on the same doubt, only on something new you see",
+    ):
+        assert said in cleared["summary"], said
+    heard = [e["text"] for e in events if e["kind"] == "observation"]
+    assert any("a person read that and said go" in text for text in heard), "the pilot's ears"
+    assert own["human"] is None and "a person" not in own["summary"]
+    assert own["summary"].endswith("verbs that move the body now run")
+
+
+@pytest.mark.parametrize("standing", ["--yes", "a flock's standing answer", "a pipe"])
+async def test_a_pilot_cleared_without_asking_anybody_is_not_told_a_person_did(
+    hello_duck: DuckFile, tmp_path: Path, standing: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_assess` chose the "a person read that and said go" sentence on the answer alone, so a
+    run started with `--yes` (which `quackd record` always passes) or a flock's standing
+    answer told the pilot, and wrote into the assess event's summary, that a person had read its
+    doubt, while the same run rightly wrote no `prompt` row because nobody was asked. A record
+    that invents a witness is the one safety.md says is worse than none. The pilot is told the
+    run was started to go ahead without asking, and still not to raise the same doubt again.
+
+    And the sentence named `--yes` or a flock's standing answer as the cause whatever it was,
+    so a run whose question a pipe answered (`yes | quackd run`, the CLI's own prompt with no
+    terminal under it) was told of two things that had not happened. It names all three now."""
+    from quackd import cli
+
+    if standing == "a pipe":
+        monkeypatch.setattr(cli, "_can_prompt", lambda: False)  # stdin is not a terminal
+        monkeypatch.setattr(cli, "_ask", lambda _question: True)  # and the pipe says y
+    decide = {
+        "--yes": cli._yes_to_go,
+        "a flock's standing answer": lambda _q: True,
+        "a pipe": cli._decide_prompt,
+    }[standing]
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see how heavy the thing is"),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                    ToolCall(name="declare_success", arguments={"reason": "walked"}),
+                ]
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+            decide=decide,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    (cleared,) = [e for e in events if e["kind"] == "assess"]
+    assert cleared["human"] == "go" and cleared["ok"] is True
+    assert not [e for e in events if e["kind"] == "prompt"], "nobody was asked"
+    assert "a person" not in cleared["summary"], cleared["summary"]
+    for said in (
+        "cannot see how heavy the thing is",
+        "this run was started to go ahead without asking anybody (--yes, a flock's standing "
+        "answer or a pipe)",
+        "verbs that move the body now run",
+        "Do not assess again on the same doubt, only on something new you see",
+    ):
+        assert said in cleared["summary"], said
+    heard = [e["text"] for e in events if e["kind"] == "observation"]
+    assert not any("a person" in text for text in heard), "the pilot's ears"
+    assert any("without asking anybody" in text for text in heard), "the pilot's ears"
+
+
 async def test_with_nobody_to_ask_the_pilot_is_told_to_decide_itself(
     hello_duck: DuckFile, tmp_path: Path
 ) -> None:
@@ -1578,6 +1694,99 @@ async def test_an_arm_the_run_left_elsewhere_is_driven_home_before_the_torque_dr
     assert notes[-1] == "at the rest pose", notes
     assert mock.torque is False, "and only an arm that is down has its torque released"
     assert mock.close_note is None
+
+
+async def test_a_rest_pose_past_the_travel_is_explained_once_and_the_old_notes_stand(
+    tmp_path: Path,
+) -> None:
+    """A rest pose recorded past the arm's travel is parked at the edge of it and let go of
+    there, and the person hears why once per run, at the first rest move, in the arm's own
+    numbers. Not at both ends: the pose did not change during the run. And the three notes the
+    rest move has always said are said exactly as before, because scripts and people read
+    them."""
+    from quackd_lerobot.mock import MOCK_RANGES
+
+    floor = MOCK_RANGES["shoulder_lift"][0]
+    pose = dict(ARM_REST) | {"shoulder_lift": floor - 2 * TOL_DEG - 3.0}
+    mock = LeRobotMock(rest_pose=pose)
+    script = [ToolCall(name="declare_success", arguments={"reason": "parked twice"})]
+    result = await run_duck(
+        RunConfig(
+            duck=_arm_duck(),
+            provider=FakeProvider(script=script),
+            transport=LeRobotAdapter(mock),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    said = [note for note in notes if "lerobot-calibrate" in note]
+    assert len(said) == 1, notes
+    assert f"recorded at {pose['shoulder_lift']:.0f}" in said[0], said[0]
+    assert f"driven to {floor:.0f} and no further" in said[0], said[0]
+    rest_notes = [note for note in notes if "rest pose" in note and note not in said]
+    assert rest_notes == [
+        "moving to the rest pose",
+        "at the rest pose",
+        "moving to the rest pose",
+        "already at the rest pose",
+    ], notes
+    assert notes.index(said[0]) == notes.index("at the rest pose") + 1, "said at the start"
+    start = next(e for e in events if e["kind"] == "run_start")
+    clipped = start["robot"]["extras"]["rest_pose_clipped"]
+    assert clipped == {
+        "shoulder_lift": {"recorded": round(pose["shoulder_lift"], 1), "reachable": floor}
+    }, "the record opens with the clipped joint"
+    assert mock.torque is False and mock.close_note is None
+
+
+class _ConnectedOnRetry(LeRobotMock):
+    """A mock arm whose connect had to be made again, reported the way the real backend
+    reports it: a `connect_notes` list, filled by the connect that just happened."""
+
+    def __init__(self, notes: Sequence[str], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._retries = list(notes)
+        self.connect_notes: list[str] = []
+
+    async def connect(self) -> Any:
+        connected = await super().connect()
+        self.connect_notes = list(self._retries)
+        return connected
+
+
+async def test_a_connect_the_body_had_to_make_again_is_in_the_run_s_record(
+    tmp_path: Path,
+) -> None:
+    """Bench, 2026-09-23: runs of the arm ended at connect on one lost packet, before the run
+    had a record to put anything in. The real backend now closes the port and tries again, and
+    logs each retry as it happens, but a log line lives on a terminal and is gone with it. So the
+    run puts every retry the body reports into its transcript, in the body's own words, in
+    order, before anything else the run says about the arm: a joint whose cable loses a packet
+    every session then shows up across the records rather than in nobody's scrollback. The
+    loop reads the list off whatever it connected to, so it knows nothing about LeRobot."""
+    said = [
+        "the bus lost a packet on wrist_flex while connecting, and connect ran again",
+        "and again on the gripper, and the third connect went through",
+    ]
+    mock = _ConnectedOnRetry(said, rest_pose=ARM_REST)
+    script = [ToolCall(name="declare_success", arguments={"reason": "connected on a retry"})]
+    result = await run_duck(
+        RunConfig(
+            duck=_arm_duck(),
+            provider=FakeProvider(script=script),
+            transport=LeRobotAdapter(mock),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert notes[: len(said)] == said, notes
+    kinds = [e["kind"] for e in events]
+    first = next(i for i, e in enumerate(events) if e.get("text") == said[0])
+    assert first < kinds.index("run_start"), "said before the run it happened ahead of"
 
 
 async def test_a_dry_run_never_moves_the_arm_to_its_rest_pose(tmp_path: Path) -> None:
@@ -2685,6 +2894,56 @@ async def test_a_cancellation_in_the_hand_back_still_finishes_the_teardown(
     assert (result.run_dir / "summary.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("ended", "reason", "note"),
+    [
+        (
+            "kill switch",
+            "interrupted while waiting",
+            "the gripper was left as it is, and the arm still folds up",
+        ),
+        (
+            "no keys",
+            "no key could be read",
+            "no key could be read, so the gripper stays shut and the arm folds up",
+        ),
+        (
+            "timeout",
+            "nobody answered",
+            "nobody unloaded the gripper, so it stays shut and the arm folds up",
+        ),
+    ],
+)
+async def test_the_hand_back_records_why_its_wait_ended(
+    tmp_path: Path, ended: str, reason: str, note: str
+) -> None:
+    """The hand-back watches a fresh key press, not the abort flag, so a first Ctrl-C there, on
+    a run nobody had interrupted, ends the wait with False and no exception, as an empty room
+    does. It was recorded as "nobody answered", with the note that nobody unloaded the gripper,
+    right under the saved terminal's own line that the kill switch had ended the wait, and the
+    same over a terminal with no keys to read. The terminal says how the wait ended
+    (`_TerminalHandOff.ended`), and the hand-back reads it as the end-of-run offer does. The
+    gripper stays shut and the arm folds up in every case."""
+    mock = LeRobotMock(rest_pose=REST)
+
+    def says_why(person: ScriptedPerson) -> None:
+        if person.waits == 2:  # the hand-back, not the wait that placed the arm
+            person.ended = ended  # type: ignore[attr-defined]
+
+    person = ScriptedPerson(mock, places=PLACED, answers=[True, False], on_wait=says_why)
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+    assert result.outcome == "success", result.reason
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    skipped = [e for e in events if e["kind"] == "hand_off" and e["stage"] == "skipped"]
+    assert [e["reason"] for e in skipped] == [reason], skipped
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert note in notes, notes
+    assert not [e for e in events if e["kind"] == "intent" and e["intent"] == "gripper"]
+    assert mock.joints["gripper"] == PLACED["gripper"], "the gripper stayed shut"
+    assert {j: mock.joints[j] for j in rest_goal(REST)} == rest_goal(REST), "and it folded up"
+
+
 async def test_a_dry_run_never_takes_torque_off_an_arm(tmp_path: Path) -> None:
     """The CLI refuses the two flags together, because they ask for opposite things: one
     takes torque off the arm and the other moves nothing. This is the loop holding the same
@@ -2799,6 +3058,638 @@ async def test_a_terminal_that_goes_away_mid_wait_ends_the_run_instead_of_hangin
     assert "nobody placed the arm" in result.reason
     assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
     assert mock.torque is False and mock.close_note is None, "and it is down and let go of"
+
+
+# ── the offer at the end of a run whose rest move missed ────────────────────────────────
+#
+# A run that cannot fold its arm keeps torque on, so the arm stands holding itself up at
+# whatever pose the rest move stopped in. On 2026-09-23 that was every run that got to its end,
+# and each one finished at the power switch. So a person at the terminal (`RunConfig.person`,
+# which the CLI wires and nothing else does) is told to hold the arm and offered torque off:
+# Enter releases it where it stands, and anything else leaves it exactly as before. The mock's
+# `rest_fails` is the miss, in reasons made up for these tests.
+
+MISSES = [
+    "shoulder_lift is at -12 with a goal of -40, and it has stopped moving",
+    "elbow_flex is at 61 with a goal of 20 when the time ran out (4 s)",
+]
+
+
+def _missing_run(mock: LeRobotMock, runs: Path, **extra: Any) -> RunConfig:
+    """The arm task on a mock arm, with a pilot that would declare success if it were ever
+    asked. A mock told to fail its rest move fails the first one too, so these runs end before
+    the pilot, and the offer is the teardown's."""
+    declare = ToolCall(name="declare_success", arguments={"reason": "up"})
+    return RunConfig(
+        duck=_arm_duck(),
+        provider=FakeProvider(script=[declare]),
+        transport=LeRobotAdapter(mock),
+        runs_dir=runs,
+        **extra,
+    )
+
+
+def _offered(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in events if e["kind"] == "release"]
+
+
+def _offer(why: str) -> str:
+    return AgentLoop.RELEASE_OFFER.format(why=why, seconds=AgentLoop.RELEASE_OFFER_S)
+
+
+@pytest.mark.parametrize("why", MISSES)
+async def test_enter_at_the_offer_releases_the_arm_and_the_close_says_it_is_in_a_hand(
+    tmp_path: Path, why: str
+) -> None:
+    """The ending the bench did not have. The rest move missed, so the close was going to keep
+    torque on and tell somebody to cut the power; instead they are told to hold the arm, press
+    Enter, and the arm is released where it stands through the transport's second door. The
+    close then says the arm is limp in their hands, which is the line that keeps it from being
+    dropped: put it down before you let go of it.
+
+    The offer names why the move missed, is bounded, and waits on a fresh key press rather than
+    the abort flag, which is already set on every run a person ended."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=why)
+    person = ScriptedPerson(mock, answers=[True])
+    person.asks_a_person = True
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+    assert result.outcome == "aborted", result.reason
+
+    assert person.asked == [(_offer(why), AgentLoop.RELEASE_OFFER_S, False)]
+    assert why in person.asked[0][0] and "Hold it and press Enter" in person.asked[0][0]
+    assert person.said == [
+        "torque is off where the arm stands: the arm is in your hands, so put it down before "
+        "you let go of it"
+    ], "told to the person, whatever the log is doing"
+    assert mock.sequence == ["rest", "stop", "rest", "let_go", "close"], mock.sequence
+    assert mock.torque is False and mock.in_hand is True
+    note = mock.close_note or ""
+    assert "the arm is limp and in your hands" in note and "put it down" in note, note
+    assert "torque was left on" not in note
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    offered = _offered(events)
+    assert [(e["stage"], e["how"]) for e in offered] == [("released", "released")], offered
+    assert offered[0]["torque_on"] == [], "every motor read off, and the record says so"
+    assert _prompts(events) == [("release", _offer(why), True)]
+    assert note in [e["text"] for e in events if e["kind"] == "note"]
+    assert events[-1]["kind"] == "run_end"
+
+
+async def test_an_offer_nobody_answers_leaves_torque_on_exactly_as_before(tmp_path: Path) -> None:
+    """The wait ran out, or there was no key to read: the arm is left as a run without the
+    offer leaves it, holding itself up with the torque note said, and the record says the
+    offer was made and why nothing came of it."""
+    why = MISSES[0]
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=why)
+    person = ScriptedPerson(mock, answers=[False])
+    person.asks_a_person = True
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    assert person.waits == 1
+    assert "let_go" not in mock.sequence and mock.torque is True and mock.in_hand is False
+    assert (mock.close_note or "").startswith("the arm is not at its rest pose"), mock.close_note
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [(e["stage"], e["reason"]) for e in _offered(events)] == [
+        ("kept", "nobody pressed Enter")
+    ]
+    assert _prompts(events) == [("release", _offer(why), False)]
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert "nobody pressed Enter, so torque stays on and the arm holds itself up" in notes
+
+
+@pytest.mark.parametrize("press", [KeyboardInterrupt, asyncio.CancelledError])
+async def test_a_ctrl_c_on_the_offer_keeps_torque_and_the_record_still_ends(
+    tmp_path: Path, press: type[BaseException]
+) -> None:
+    """A second Ctrl-C lands on this wait on exactly the runs a person ended, and it means
+    "skip this and finish", as it does on the hand-back. Raised through, it would skip the
+    close, `run_end` and the summary with the arm energised; caught, the arm keeps its torque
+    and says so, and the record ends."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[1])
+
+    def interrupt(_person: ScriptedPerson) -> None:
+        raise press
+
+    person = ScriptedPerson(mock, answers=[True], on_wait=interrupt)
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    assert "let_go" not in mock.sequence and mock.torque is True
+    assert mock.sequence[-1] == "close", "the close still ran"
+    assert (mock.close_note or "").startswith("the arm is not at its rest pose")
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [(e["stage"], e["reason"]) for e in _offered(events)] == [
+        ("kept", "interrupted while waiting")
+    ]
+    assert events[-1]["kind"] == "run_end", "the record still ends"
+    assert (result.run_dir / "summary.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("ended", "reason"),
+    [
+        ("kill switch", "interrupted while waiting"),
+        ("no keys", "no key could be read"),
+        ("timeout", "nobody pressed Enter"),
+    ],
+)
+async def test_the_offer_records_why_its_wait_ended(
+    tmp_path: Path, ended: str, reason: str
+) -> None:
+    """A first Ctrl-C at the offer, on a run nobody had interrupted, ends the wait without
+    raising: the kill switch sets its flag and the wait returns False, exactly as a timeout
+    does. So the record said "nobody pressed Enter" over a person who had pressed Ctrl-C, and
+    the same over a terminal that could not be read at all. A person who can say why the wait
+    ended (`_TerminalHandOff.ended`) now has it recorded, and torque stays on in every case."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+
+    def says_why(asked: ScriptedPerson) -> None:
+        asked.ended = ended  # type: ignore[attr-defined]
+
+    person = ScriptedPerson(mock, answers=[False], on_wait=says_why)
+    person.asks_a_person = True
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    assert "let_go" not in mock.sequence and mock.torque is True
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [(e["stage"], e["reason"]) for e in _offered(events)] == [("kept", reason)]
+    assert events[-1]["kind"] == "run_end"
+
+
+@pytest.mark.parametrize("answered", [False, True], ids=["stopped answering", "a write was lost"])
+async def test_the_offer_is_made_only_over_an_arm_that_answered(
+    tmp_path: Path, answered: bool
+) -> None:
+    """A rest move refused because the arm stopped answering is what cutting the servo supply
+    looks like, and the offer used to follow it anyway: "so it is holding itself up. Hold it
+    and press Enter", over an arm nothing had been read from, then a 60 s wait for a release
+    that refuses at its first read. No offer over an arm that did not answer. One refused after
+    a read came back (a lost write) still gets it, because that arm answered."""
+    why = "the hold did not reach the arm: a reason made up for this test"
+    mock = LeRobotMock(rest_pose=ARM_REST)
+
+    async def refused() -> RestResult:
+        mock.sequence.append("rest")
+        return RestResult("refused", why, answered=answered)
+
+    mock.go_to_rest = refused  # type: ignore[method-assign]
+    person = ScriptedPerson(mock, answers=[False])
+    person.asks_a_person = True
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    if answered:
+        assert person.asked == [(_offer(why), AgentLoop.RELEASE_OFFER_S, False)]
+        assert [e["stage"] for e in _offered(events)] == ["kept"]
+    else:
+        assert person.asked == [], "an arm that did not answer was said to hold itself up"
+        assert not _offered(events) and _prompts(events) == []
+    assert "let_go" not in mock.sequence and mock.sequence[-1] == "close"
+
+
+@pytest.mark.parametrize(
+    ("torque_on", "said", "never"),
+    [
+        (
+            None,
+            "quackd cannot tell whether torque is on: keep holding the arm, and cut its power",
+            "holding itself up",
+        ),
+        (
+            ("shoulder_pan", "elbow_flex"),
+            "the arm is still holding itself up, so keep hold of it and cut its power",
+            "cannot tell",
+        ),
+    ],
+    ids=["nothing read back", "every motor read on"],
+)
+async def test_a_refused_release_at_the_offer_says_only_what_was_read(
+    tmp_path: Path, torque_on: tuple[str, ...] | None, said: str, never: str
+) -> None:
+    """After Enter, a release refused before anything was read back used to be told to the
+    person holding the arm as "the arm is still holding itself up", which nobody had read: a
+    bus that went quiet between the offer and the release, the switch included. Only a refusal
+    that read every motor on says the arm holds itself up; one that read nothing says quackd
+    cannot tell, and both say what to do, which is to cut the power."""
+    from quackd.adapters.base import HandResult
+
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+
+    async def let_go(*, anywhere: bool = False) -> HandResult:
+        mock.sequence.append("let_go")
+        return HandResult("refused", "a reason made up for this test", torque_on=torque_on)
+
+    mock.let_go = let_go  # type: ignore[method-assign]
+    person = ScriptedPerson(mock, answers=[True])
+    await run_duck(_missing_run(mock, tmp_path, person=person))
+    assert len(person.said) == 1, person.said
+    assert said in person.said[0], person.said
+    assert never not in person.said[0], person.said
+
+
+@pytest.mark.parametrize("press", [KeyboardInterrupt, asyncio.CancelledError])
+async def test_a_ctrl_c_on_the_release_itself_still_ends_the_record(
+    tmp_path: Path, press: type[BaseException]
+) -> None:
+    """Only the wait was guarded. A Ctrl-C after Enter, while the release was on the wire, went
+    through the teardown's `suppress(Exception)` and took the close, `run_end` and the summary
+    with it, and the person holding the arm was told nothing. It is caught like the one on the
+    wait: recorded as interrupted, the person told the arm may be limp, and the teardown goes
+    on. The mock's release takes before the interrupt lands, so its close says the arm is in a
+    hand, which is what the real backend now says of a release a Ctrl-C landed on."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+    release = mock.let_go
+
+    async def interrupted(*, anywhere: bool = False) -> Any:
+        await release(anywhere=anywhere)
+        raise press
+
+    mock.let_go = interrupted  # type: ignore[method-assign]
+    person = ScriptedPerson(mock, answers=[True])
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    assert person.said == [AgentLoop.RELEASE_INTERRUPTED], person.said
+    assert mock.sequence[-1] == "close", "the close was skipped"
+    assert (mock.close_note or "").startswith("the arm is limp and in your hands"), mock.close_note
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [(e["stage"], e["reason"]) for e in _offered(events)] == [
+        ("interrupted", "interrupted during the release")
+    ]
+    assert events[-1]["kind"] == "run_end", "the record still ends"
+    assert (result.run_dir / "summary.json").exists()
+
+
+@pytest.mark.parametrize("press", [KeyboardInterrupt, asyncio.CancelledError])
+async def test_a_ctrl_c_before_the_release_went_out_says_nothing_was_sent(
+    tmp_path: Path, press: type[BaseException]
+) -> None:
+    """A Ctrl-C after Enter used to be told as a release "interrupted while it was going out, so
+    the arm may be limp" wherever it landed, and on the read the release begins with nothing
+    had gone out: the person was sent to hold up an arm that was holding itself, and the close
+    then said the release "did not take". The arm's own backend says which side of the send it
+    was (`in_hand`, still False here), and before it the person is told nothing was sent and
+    torque is as the rest move left it, the record keeps torque on, and the close says what it
+    says of any arm left holding itself up.
+
+    The line says that and no more. It used to go on "and the arm still holds itself up", which
+    no read after the interrupt had said: on the arm the interrupted read can still be out when
+    the close comes, and then the close cannot read and says quackd cannot tell, the line after
+    this one.
+    Whether the arm holds itself up is the close's to say."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+
+    async def interrupted(*, anywhere: bool = False) -> Any:
+        mock.sequence.append("let_go")
+        raise press  # on the read, before anything is sent
+
+    mock.let_go = interrupted  # type: ignore[method-assign]
+    person = ScriptedPerson(mock, answers=[True])
+    result = await run_duck(_missing_run(mock, tmp_path, person=person))
+
+    assert person.said == [AgentLoop.RELEASE_NOT_SENT], person.said
+    said = AgentLoop.RELEASE_NOT_SENT
+    assert "before anything was sent" in said and "as the rest move left it" in said, said
+    assert "holds itself up" not in said and "holding itself up" not in said, said
+    assert mock.torque is True and mock.in_hand is False
+    assert mock.sequence[-1] == "close", "the close was skipped"
+    note = mock.close_note or ""
+    assert note.startswith("the arm is not at its rest pose") and "torque was left on" in note
+    assert "the release did not take" not in note and "limp" not in note, note
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert [(e["stage"], e["reason"]) for e in _offered(events)] == [
+        ("kept", "interrupted before the release was sent")
+    ]
+    assert events[-1]["kind"] == "run_end", "the record still ends"
+
+
+async def test_no_offer_is_made_without_a_person_or_to_the_by_hand_asker(tmp_path: Path) -> None:
+    """Nobody at a terminal: an MCP session, a flock member, a test, a piped run. The arm keeps
+    torque as it always has, and nothing waits. And `hand_off` is not a person for this: the
+    loop reads it as "this run was handed over", so the offer asks `person` and nothing else."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+    result = await run_duck(_missing_run(mock, tmp_path / "nobody"))
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert not _offered(events) and "let_go" not in mock.sequence
+    assert mock.torque is True
+
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[1])
+    hand = ScriptedPerson(mock, answers=[True])
+    result = await run_duck(_by_hand(mock, hand, tmp_path / "by-hand"))
+    assert hand.asked == [], "the by-hand asker was put a question it was never given"
+    assert not _offered(Transcript.read(result.run_dir / "transcript.jsonl"))
+    assert "let_go" not in mock.sequence and mock.torque is True
+
+
+async def test_no_offer_is_made_on_a_dry_run_or_after_a_rest_move_that_arrived(
+    tmp_path: Path,
+) -> None:
+    """A dry run moves nothing at either end, so it has no rest move to miss and must never
+    take torque off anything. A run that folded its arm lets go at the fold anyway, and asking
+    would be asking a person to act on an arm that needs nothing."""
+    mock = LeRobotMock(rest_pose=ARM_REST, rest_fails=MISSES[0])
+    person = ScriptedPerson(mock, answers=[True])
+    await run_duck(_missing_run(mock, tmp_path / "dry", person=person, dry_run=True))
+    assert person.asked == [] and "let_go" not in mock.sequence and "rest" not in mock.sequence
+    # and the offer holds the line itself, not only because a dry run's rest move never ran:
+    # handed a miss on a dry run, it still asks nobody and releases nothing
+    dry = AgentLoop(_missing_run(mock, tmp_path / "dry-offer", person=person, dry_run=True))
+    await dry._offer_release(RestResult("stalled", MISSES[1]))
+    dry.transcript.close()
+    assert person.asked == [] and "let_go" not in mock.sequence
+
+    mock = LeRobotMock(rest_pose=ARM_REST)
+    person = ScriptedPerson(mock, answers=[True])
+    result = await run_duck(_missing_run(mock, tmp_path / "folded", person=person))
+    assert result.outcome == "success", result.reason
+    assert person.asked == [] and "let_go" not in mock.sequence
+    assert mock.torque is False and mock.close_note is None, "folded and let go, as always"
+
+
+async def test_a_by_hand_run_is_asked_its_two_questions_and_the_offer_only_after_a_missed_fold(
+    tmp_path: Path,
+) -> None:
+    """The CLI hands the same terminal to `hand_off` and to `person`, so a by-hand run reads
+    Enter through one reader. Its two questions keep their order and their meaning, and the
+    offer is a third only when the fold after them missed. A run that folds is asked twice."""
+
+    def both(mock: LeRobotMock, person: ScriptedPerson, runs: Path) -> RunConfig:
+        cfg = _by_hand(mock, person, runs)
+        cfg.person = person  # the one terminal, as the CLI wires it
+        return cfg
+
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, places=PLACED, answers=[True, False])
+    folded = await run_duck(both(mock, person, tmp_path / "folds"))
+    assert folded.outcome == "success", folded.reason
+    assert [ask[0] for ask in person.asked] == [AgentLoop.PLACE_IT, AgentLoop.HAND_IT_BACK]
+    assert not _offered(Transcript.read(folded.run_dir / "transcript.jsonl"))
+
+    why = MISSES[1]
+    mock = LeRobotMock(rest_pose=REST)
+
+    def the_fold_misses(asked: ScriptedPerson) -> None:
+        if asked.waits == 2:  # the hand-back: the run is over, and the fold comes next
+            mock.rest_fails = why
+
+    person = ScriptedPerson(mock, places=PLACED, answers=[True], on_wait=the_fold_misses)
+    missed = await run_duck(both(mock, person, tmp_path / "misses"))
+    assert [ask[0] for ask in person.asked] == [
+        AgentLoop.PLACE_IT,
+        AgentLoop.HAND_IT_BACK,
+        _offer(why),
+    ]
+    events = Transcript.read(missed.run_dir / "transcript.jsonl")
+    assert _stages(events) == ["released", "held", "unloaded"], "the hand-off is unchanged"
+    assert [e["stage"] for e in _offered(events)] == ["released"]
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "let_go", "close"]
+    assert mock.in_hand is True
+
+
+async def test_an_arm_placed_past_its_travel_stays_in_your_hands_and_every_line_says_so(
+    tmp_path: Path,
+) -> None:
+    """A `--by-hand` run whose person placed a joint past its travel. `take_hold` leaves torque
+    off, since neither a goal written there nor none keeps that joint where it was put, so the
+    arm is still in their hands and every line after that is said to somebody holding it.
+
+    What went wrong before: the refusal reached the person only in the summary, as "the arm is
+    not holding the pose you set", which reads as though something holds it. The teardown's
+    stop cannot take hold either, and then the hand-back asked them to take what was in a
+    gripper "holding where it ended", and a fold that stalled over the limp arm was offered as
+    one "holding itself up", before the close said the opposite. Now the refusal is said to
+    them at once, with the joint and its travel, neither question is put, and the close ends on
+    the note for an arm in somebody's hands.
+
+    And the teardown leaves the arm alone. It used to take hold again in the stop and narrate a
+    fold: "moving to the rest pose", then that the arm "has stopped moving", of an arm that never
+    moved, to a person just told to keep hold of it. The stop takes no second hold, nothing is
+    written, and the one line about the fold is that there is none (`NOT_FOLDED`)."""
+    mock = LeRobotMock(rest_pose=REST)
+    placed = MOCK_RANGES["wrist_flex"][1] + TOL_DEG
+    person = ScriptedPerson(mock, places=PLACED | {"wrist_flex": placed}, answers=[True])
+    cfg = _by_hand(mock, person, tmp_path)
+    cfg.person = person  # the one terminal, as the CLI wires it, so the offer could be made
+    result = await run_duck(cfg)
+
+    assert result.outcome == "aborted"
+    assert result.reason.startswith(f"{AgentLoop.NOT_TAKEN_HOLD}: wrist_flex reads"), result.reason
+    assert "only with wrist_flex inside its travel" in result.reason, result.reason
+    assert cfg.provider.calls == 0, "the model was asked something"  # type: ignore[attr-defined]
+    assert person.said == [result.reason, AgentLoop.STILL_IN_YOUR_HANDS], person.said
+    assert [ask[0] for ask in person.asked] == [AgentLoop.PLACE_IT], person.asked
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert _stages(events) == ["released", "held", "skipped"]
+    # the refusal names the joint with its reading, so its log line ends on it (`outside`)
+    (held,) = [e for e in events if e["kind"] == "hand_off" and e["stage"] == "held"]
+    assert held.get("outside") == ["wrist_flex"], held
+    assert not _offered(events), "a limp arm was offered as holding itself up"
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+    assert mock.actions == [], "a goal was written to an arm in somebody's hands"
+    assert mock.torque is False and mock.in_hand is True
+    assert mock.joints["wrist_flex"] == placed, "something moved the placed joint"
+    assert mock.close_note == LIMP_IN_HAND.format(why=LET_GO_TO_PLACE), mock.close_note
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert not any("holds itself up" in n or "holding itself up" in n for n in notes), notes
+    after = notes[notes.index(AgentLoop.STILL_IN_YOUR_HANDS) :]
+    assert AgentLoop.NOT_FOLDED in after, after
+    assert not any("rest pose" in n and "limp" not in n for n in after), after
+
+
+async def test_a_hold_nothing_read_back_is_never_called_limp_and_the_arm_is_left_alone(
+    tmp_path: Path,
+) -> None:
+    """The take-hold at Enter sent its torque write and the torque register did not answer, so
+    the arm may be energised, all of it or part of it. It was told to the person as quackd
+    never having taken hold and the arm "still in your hands", the teardown's stop sent the
+    torque write again, the hand-back told them to take out whatever was in the gripper by
+    hand, and the rest move then folded the arm with nobody asked, under the hands it had just
+    told to keep hold of it.
+
+    Now they are told quackd cannot say whether the arm has torque, to hold it as though it may
+    move or drop, and to cut its power; nothing takes hold again, nothing is written, nothing
+    folds, and the close says the same. The mock's arm takes the write, as a servo that
+    answered nothing may have, and keeps it past the close."""
+    mock = LeRobotMock(rest_pose=REST)
+    why = "a reason made up for this test"
+    mock.hold_unread = why
+    person = ScriptedPerson(mock, places=PLACED, answers=[True])
+    cfg = _by_hand(mock, person, tmp_path)
+    cfg.person = person
+    result = await run_duck(cfg)
+
+    assert result.outcome == "aborted"
+    assert result.reason.startswith("quackd could not confirm whether the arm has torque ("), (
+        result.reason
+    )
+    assert why in result.reason, result.reason
+    assert person.said == [result.reason, AgentLoop.STILL_UNCONFIRMED], person.said
+    assert not any("limp" in said or "never took hold" in said for said in person.said)
+    assert [ask[0] for ask in person.asked] == [AgentLoop.PLACE_IT], person.asked
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+    assert len(mock.actions) == 1, "only the take-hold's own write, where the hand had it"
+    assert {j: mock.joints[j] for j in PLACED} == PLACED, "the arm was folded in a hand"
+    assert mock.torque is True and mock.in_hand is True
+    assert mock.close_note == UNCONFIRMED_IN_HAND, mock.close_note
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assert not _offered(events)
+    assert AgentLoop.NOT_FOLDED in [e["text"] for e in events if e["kind"] == "note"]
+
+
+@pytest.mark.parametrize(
+    "when", ["as the refusal is said", "as the hand-back line is said"], ids=["stop", "rest"]
+)
+async def test_a_joint_moved_back_inside_after_a_refused_hold_is_not_taken_hold_of(
+    tmp_path: Path, when: str
+) -> None:
+    """The refusal tells the person which joint is past its travel, and a person who then
+    moves it back inside is doing the obvious thing. The teardown's stop took hold of the arm
+    again as soon as they had: torque came on under their hand with nothing said, straight
+    after they were told quackd had not taken hold and the arm was still theirs. Nothing takes
+    hold after a refusal now, whatever the joints do, until the arm is released again: not
+    the stop, when the joint is back inside before the teardown begins, and not the rest move,
+    when it comes back inside after the stop and before the fold that no longer happens."""
+    mock = LeRobotMock(rest_pose=REST)
+    placed = MOCK_RANGES["wrist_flex"][1] + TOL_DEG
+    person = ScriptedPerson(mock, places=PLACED | {"wrist_flex": placed}, answers=[True])
+    inside = PLACED["wrist_flex"]
+    line = (
+        AgentLoop.NOT_TAKEN_HOLD
+        if when == "as the refusal is said"
+        else AgentLoop.STILL_IN_YOUR_HANDS
+    )
+
+    def moves_it_back(said: str) -> None:
+        person.said.append(said)
+        if said.startswith(line):
+            mock.joints["wrist_flex"] = inside
+
+    person.say = moves_it_back  # type: ignore[method-assign]
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+
+    assert result.reason.startswith(AgentLoop.NOT_TAKEN_HOLD), result.reason
+    assert person.said == [result.reason, AgentLoop.STILL_IN_YOUR_HANDS], person.said
+    assert mock.sequence.count("take_hold") == 1, mock.sequence
+    assert mock.torque is False and mock.in_hand is True, "torque came on under the hand"
+    assert mock.actions == [], "a goal was written to an arm in somebody's hands"
+    assert mock.joints["wrist_flex"] == inside
+    assert mock.close_note == LIMP_IN_HAND.format(why=LET_GO_TO_PLACE), mock.close_note
+
+
+async def test_a_ctrl_c_in_the_placement_wait_still_takes_hold_where_the_hand_has_it(
+    tmp_path: Path,
+) -> None:
+    """ADR-0039's ending, which the rule against taking hold after a refusal leaves alone: a
+    Ctrl-C while the person holds the arm up, with no take-hold refused yet, reaches the
+    teardown's stop, which takes hold of the arm where their hand has it, and the rest move
+    folds it, narrated as a fold. The first take-hold of the run is that one."""
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, answers=[False])
+    loop = AgentLoop(_by_hand(mock, person, tmp_path))
+
+    def lifts_it_and_presses_ctrl_c(_person: ScriptedPerson) -> None:
+        mock.joints.update(PLACED)
+        loop.executor.abort.set()
+
+    person.on_wait = lifts_it_and_presses_ctrl_c
+    result = await loop.run()
+
+    assert result.reason == "kill switch"
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+    assert {j: mock.joints[j] for j in rest_goal(REST)} == rest_goal(REST), "it was not folded"
+    assert mock.torque is False and mock.in_hand is False and mock.close_note is None
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert notes.count("moving to the rest pose") == 2 and "at the rest pose" in notes, notes
+    assert AgentLoop.NOT_FOLDED not in notes
+
+
+async def test_a_ctrl_c_in_the_placement_wait_over_a_fold_past_the_travel_leaves_it_lying_there(
+    tmp_path: Path,
+) -> None:
+    """The same Ctrl-C on an arm whose fold lies past its travel, and nobody lifted it. The
+    stop's take-hold is refused over the folded joint, so nothing is written, the rest move
+    finds the arm already at rest and sends nothing, and the close reads it lying in its fold
+    with torque off. It used to end the run telling somebody who never touched the arm that it
+    was limp in their hands and to put it down."""
+    pose = dict(REST) | {"shoulder_lift": MOCK_RANGES["shoulder_lift"][0] - TOL_DEG * 2}
+    mock = LeRobotMock(rest_pose=pose)
+    mock.joints.update(pose)
+    person = ScriptedPerson(mock, answers=[False])
+    loop = AgentLoop(_by_hand(mock, person, tmp_path))
+    person.on_wait = lambda _person: loop.executor.abort.set()
+    result = await loop.run()
+
+    assert result.reason == "kill switch"
+    assert mock.sequence == ["rest", "let_go", "take_hold", "stop", "rest", "close"]
+    assert mock.actions == [], "a goal was written over the fold"
+    assert mock.joints == dict(REST) | pose, "the fold was moved"
+    assert mock.torque is False and mock.in_hand is True
+    assert mock.close_note == LIMP_AT_REST, mock.close_note
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert notes[-1] == LIMP_AT_REST and AgentLoop.NOT_FOLDED not in notes, notes
+    # the stop's refusal is said once, as the arm it is about: lying at its rest pose
+    stopped = "quackd did not take hold of the arm when the run stopped and the arm is still limp"
+    assert len(person.said) == 1 and person.said[0].startswith(stopped), person.said
+
+
+async def test_enter_over_a_fold_nobody_lifted_is_told_as_an_arm_still_at_its_rest_pose(
+    tmp_path: Path,
+) -> None:
+    """An arm whose fold lies past its travel, released at the fold, and the person pressed
+    Enter without lifting it out. The take-hold is refused over the folded joint, and the
+    person was told the arm was still in their hands and to keep hold of it, and then, by the
+    close's own read, that it lay at its rest pose with no torque. The mock says what the arm
+    says now: still limp at its rest pose, and taken hold of only once that joint is lifted
+    inside its travel."""
+    joint = "shoulder_lift"
+    pose = dict(REST) | {joint: MOCK_RANGES[joint][0] - TOL_DEG * 2}
+    mock = LeRobotMock(rest_pose=pose)
+    mock.joints.update(pose)
+    person = ScriptedPerson(mock, places={"gripper": PLACED["gripper"]}, answers=[True])
+    result = await run_duck(_by_hand(mock, person, tmp_path))
+
+    assert result.reason.startswith(f"{AgentLoop.NOT_TAKEN_AT_REST}: {joint} reads"), result.reason
+    back = AgentLoop.STILL_AT_REST.format(joints=joint, are="is", its="its")
+    assert person.said == [result.reason, back], person.said
+    assert not any("in your hands" in said or "keep hold" in said for said in person.said)
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    skipped = [e["reason"] for e in events if e["kind"] == "hand_off" and e["stage"] == "skipped"]
+    assert skipped == ["the arm is still limp at its rest pose"], skipped
+    assert mock.actions == [] and mock.torque is False, "something was written to the fold"
+    assert mock.close_note == LIMP_AT_REST, mock.close_note
+
+
+async def test_a_ctrl_c_in_the_placement_wait_over_a_joint_past_its_travel_is_said_once(
+    tmp_path: Path,
+) -> None:
+    """A Ctrl-C while the person holds the arm up with a joint placed past its travel. The
+    teardown's stop makes the run's first take-hold, which is refused over that joint, and the
+    refusal stayed inside the stop: the person, expecting the arm to be taken from them and
+    folded, heard nothing, and the record never said which joint or why. It is said and noted
+    once now, naming the joint, the way the take-hold at Enter is."""
+    joint = "wrist_flex"
+    mock = LeRobotMock(rest_pose=REST)
+    person = ScriptedPerson(mock, answers=[False])
+    loop = AgentLoop(_by_hand(mock, person, tmp_path))
+
+    def lifts_it_past_and_presses_ctrl_c(_person: ScriptedPerson) -> None:
+        mock.joints.update(PLACED | {joint: MOCK_RANGES[joint][1] + TOL_DEG})
+        loop.executor.abort.set()
+
+    person.on_wait = lifts_it_past_and_presses_ctrl_c
+    result = await loop.run()
+
+    assert result.reason == "kill switch"
+    stopped = "quackd did not take hold of the arm when the run stopped and the arm is still in"
+    assert len(person.said) == 1, person.said
+    assert person.said[0].startswith(f"{stopped} your hands: {joint} reads"), person.said
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    notes = [e["text"] for e in events if e["kind"] == "note"]
+    assert len([n for n in notes if n.startswith(f"the arm did not take hold: {joint}")]) == 1
+    assert _stages(events) == ["released", "held"], _stages(events)
+    assert mock.actions == [] and mock.torque is False and mock.in_hand is True
+    assert mock.close_note == LIMP_IN_HAND.format(why=LET_GO_TO_PLACE), mock.close_note
 
 
 # ── what a person was asked, and whether anybody was asked at all ───────────────────────

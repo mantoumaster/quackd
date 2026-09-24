@@ -315,16 +315,26 @@ BUS_DISABLE_TORQUE = UpstreamRef(
     "MotorsBus.disable_torque()",
     "VERIFIED",
     src(_BUS, 118),
-    "NEVER called on quackd's own initiative. The one call is `let_go()`, which a person asks "
-    "for with `quackd run --by-hand` and which refuses anywhere but the arm's recorded rest "
-    "pose, the same condition `close()` uses to decide that letting go will not drop it. No "
-    "verb reaches it and no model can ask for it",
+    "NEVER called on quackd's own initiative. The one call is `let_go()`, and it has two "
+    "doors, each opened by a person at a terminal. `let_go()` is `quackd run --by-hand`'s, and "
+    "refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to "
+    "decide that letting go will not drop it. `let_go(anywhere=True)` is `quackd robot "
+    "release`'s and the end-of-run offer's, after each has told the person to hold the arm, "
+    "and releases wherever the arm stands, with or without a rest pose recorded. No verb "
+    "reaches either and no model can ask for it. On a Feetech bus it writes Torque_Enable 0 "
+    "and then Lock 0 to each motor in turn (feetech.py lines 291 to 294), each write tried "
+    "num_retry + 1 times; num_retry defaults to 0 and quackd passes 5, the count upstream's "
+    "own disconnect() gives the same call (motors_bus.py line 559)",
 )
 BUS_ENABLE_TORQUE = UpstreamRef(
     "MotorsBus.enable_torque()",
     "VERIFIED",
     src(_BUS, 113),
-    "called by `take_hold()`, to pick up an arm a person has just placed",
+    "called by `take_hold()`, to pick up an arm a person has just placed, with num_retry=5 "
+    "as for the release. On a Feetech bus it writes Torque_Enable 1 and then Lock 1 to each "
+    "motor in turn (feetech.py lines 302 to 305, the same in the installed lerobot 0.6.1): "
+    "two writes a motor, not one, and connect() makes this same call with no retry at all "
+    "(CONFIGURE_TORQUE_WRITES_ONCE)",
 )
 BUS_DISCONNECT = UpstreamRef(
     "MotorsBus.disconnect(disable_torque=True)",
@@ -332,7 +342,98 @@ BUS_DISCONNECT = UpstreamRef(
     src(_BUS, 82),
     "the disable_torque call is inside `if disable_torque`, so False closes the port and "
     "leaves every motor holding the goal it was last written: what an arm that missed its "
-    "rest pose gets instead of falling",
+    "rest pose gets instead of falling. The same call closes the port between two connect "
+    "attempts (CONFIGURE_TORQUE_WRITES_ONCE), because the follower's own disconnect() would "
+    "first switch torque off on every motor, five tries a write, on a bus that has just lost "
+    "a packet. The concrete method is at lines 546 to 562 in lerobot 0.6.1 (clearPort and "
+    "port_handler.is_using = False at 557 and 558, then the torque off at 559, all three only "
+    "under the flag; closePort at 561) and is check_if_not_connected, so it raises on a port "
+    "that never opened, which quackd ignores: that port is already shut. The busy flag is the "
+    "servo SDK's: its txPacket returns COMM_PORT_BUSY while it is set and sets it before a "
+    "packet goes out (scservo_sdk protocol_packet_handler.py lines 73 to 75), and a serial "
+    "error raised between that and the reply leaves it set, which neither closePort nor the "
+    "next openPort clears. MotorsBus declares it on its PortHandler protocol (line 199). So "
+    "quackd clears it after its own close, as the skipped branch would have, and writes nothing "
+    "to any motor doing so. Read in lerobot 0.6.1, the same lines at the pin",
+)
+BUS_MOTORS = UpstreamRef(
+    "MotorsBus.motors: name -> Motor(id, model, norm_mode)",
+    "VERIFIED",
+    src(_BUS, 185),
+    "the table the bus addresses every servo through (kept at line 73), which the SO follower "
+    "fills at so_follower.py lines 53 to 60. quackd reads a Motor's id to name the joint a bus "
+    "error is about, and looks it up there rather than assume the order SO_MOTORS lists, "
+    "because the table is what gave each servo its address",
+)
+BUS_WRITE_ERROR_NAMES_THE_ID = UpstreamRef(
+    "Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>",
+    "VERIFIED",
+    src(_BUS, 1096),
+    "the message MotorsBus.write() raises: a ConnectionError ending in the transaction's "
+    "[TxRxResult] text when no good status packet came back (line 1121), a RuntimeError ending "
+    "in the servo's own status text when one reported an error (line 1123). read() names its "
+    "motor the same way, on id_=<N> (line 1020). The id is the servo's bus address, and quackd "
+    "names the joint through BUS_MOTORS. sync_read and sync_write say ids= and ids_values=, "
+    "several servos at once, and quackd names no joint for those. Read in lerobot 0.6.1",
+)
+BUS_HANDSHAKE = UpstreamRef(
+    "_handshake",
+    "VERIFIED",
+    src(_BUS, 543),
+    "MotorsBus.connect() opens the port and then runs _handshake() (line 535), which on a "
+    "Feetech bus is _assert_motors_exist() and then _assert_same_firmware() (feetech.py lines "
+    "155 to 157): a ping per motor, then two firmware reads per motor, and not one write. "
+    "configure(), where every write of a connect is, runs only once bus.connect() has returned "
+    "(so_follower.py lines 98 and 108). Between the two, line 99 is `if not self.is_calibrated "
+    "and calibrate:`, whose left side is evaluated first, so the calibration check "
+    "(BUS_IS_CALIBRATED) runs on every connect, calibrate=False included: it reads every motor "
+    "and writes to none. So a connect that fails in the handshake or in that check has left every "
+    "motor's torque as it found it. A failure raised in it has this frame in its traceback; "
+    "_connect re-raises a serial error or an OSError from in there (a failed read is a "
+    "ConnectionError, which is one) as its own port error, from the original (lines 530 to "
+    "540), so for those the frame is in the traceback of the __cause__. Read in lerobot 0.6.1, "
+    "the same lines at the pin",
+)
+HANDSHAKE_NAMES_THE_ID = UpstreamRef(
+    "Missing motor IDs: / Motors with incorrect model numbers: - <N> (...)",
+    "VERIFIED",
+    src(_BUS, 465),
+    "the RuntimeError _assert_motors_exist() raises (lines 465 to 502), headed 'motor check "
+    "failed on port': a line '  - <N> (expected model: <M>)' per motor that did not answer its "
+    "ping, and a line '  - <N> (<joint>): expected <M>, found <K>' per motor that answered as "
+    "another model, each list under its own heading. ping() returns None for a servo that "
+    "answers with an error bit set as it does for one that does not answer (lines 967 to 976), "
+    "so an overloaded servo is listed as missing too. The id is the bus address, and quackd names "
+    "the joint through BUS_MOTORS as for a write. Read in lerobot 0.6.1, the same lines at the "
+    "pin",
+)
+SO_CONNECT_REFUSES_WHILE_OPEN = UpstreamRef(
+    "SOFollower.connect() refuses while the port is open",
+    "VERIFIED",
+    src(_SO, 91),
+    "it is check_if_already_connected (utils/decorators.py lines 34 to 41), which raises "
+    "DeviceAlreadyConnectedError while is_connected is True, and is_connected is the bus's "
+    "port flag and every camera's (SO_IS_CONNECTED; quackd's follower has no camera). connect() "
+    "opens the port first (line 98) and configures last (line 108), and nothing closes the "
+    "port when configure() raises, so after one failed connect every later connect() is "
+    "refused until the port is shut. MotorsBus.connect() carries the same decorator "
+    "(motors_bus.py line 513). quackd closes the port with MotorsBus.disconnect(False) between "
+    "attempts (BUS_DISCONNECT). Read in lerobot 0.6.1, the same lines at the pin",
+)
+CONFIGURE_TORQUE_WRITES_ONCE = UpstreamRef(
+    "configure() switches torque off and on again with no retry",
+    "VERIFIED",
+    src(_BUS, 676),
+    "SOFollower.configure() (so_follower.py line 159) runs inside torque_disabled(), which "
+    "calls disable_torque() on the way in and enable_torque() in its finally (lines 687 and "
+    "691), both with num_retry left at 0. Each writes Torque_Enable and then Lock to one motor "
+    "after another (feetech.py lines 291 to 305), and each write is one transaction that raises "
+    "when its status packet does not come back (lines 1111 to 1121). So one lost packet fails "
+    "the whole connect, with the port left open and the motors before that write in one torque "
+    "state and the rest in the other. On 2026-09-23 an SO-101 failed three connects this way, "
+    "each on a Lock write to a different motor, and the next connect went through each time. "
+    "quackd tries again (CONNECT_ATTEMPTS in real.py) instead of giving up on the first packet, "
+    "and says which joint each failure named. Read in lerobot 0.6.1, the same lines at the pin",
 )
 BUS_IS_CONNECTED = UpstreamRef(
     "MotorsBus.is_connected is port_handler.is_open",
@@ -347,14 +448,39 @@ BUS_IS_CALIBRATED = UpstreamRef(
     src(_FEETECH, 228),
     "it reads Min_Position_Limit, Max_Position_Limit and Homing_Offset off every motor and "
     "compares them with the cached file. A missing file, a stale file, and the file of a "
-    "different arm all come back False, which is the check quackd refuses on",
+    "different arm all come back False, which is the check quackd refuses on. The reads are "
+    "read_calibration() (line 247), each a read() with num_retry left at 0 (motors_bus.py lines "
+    "995 to 1001), and a lost status packet in one raises \"Failed to read '<register>' on id_=<N> "
+    'after 1 tries" (line 1020). SOFollower.connect() makes this check itself, between the '
+    "handshake and configure() (so_follower.py line 99, BUS_HANDSHAKE), so a connect can fail "
+    "in it having written nothing, and quackd places such a failure by the is_calibrated and "
+    "read_calibration frames in its traceback. Read in lerobot 0.6.1",
 )
 BUS_WRITE_CALIBRATION = UpstreamRef(
     "write_calibration() is reached only through calibrate()",
     "VERIFIED",
     src(_FEETECH, 268),
     "it writes the limits and the homing offset into the motors; connect(calibrate=False) "
-    "never calls it, so quackd cannot move an arm's zero even by accident",
+    "never calls it, so quackd cannot move an arm's zero even by accident. The limits are "
+    "each motor's calibrated range_min and range_max, written into its Min_Position_Limit and "
+    "Max_Position_Limit registers (POSITION_LIMITS_CLAMP_GOALS says what the servo does with "
+    "them)",
+)
+POSITION_LIMITS_CLAMP_GOALS = UpstreamRef(
+    "write_calibration() writes Min_Position_Limit and Max_Position_Limit, and the servo "
+    "clamps Goal_Position to them",
+    "VERIFIED",
+    src(_FEETECH, 268),
+    "lines 268 to 276, the same in the installed lerobot 0.6.1: each motor's range_min and "
+    "range_max go into its own EEPROM as Min_Position_Limit and Max_Position_Limit. The "
+    "STS3215 firmware then clamps every Goal_Position write to those two registers, which no "
+    "LeRobot source says (DEGREES_NO_CLAMP bounds nothing) and an SO-101 showed on 2026-09-23: "
+    "a joint driven down from above stopped one encoder tick inside its floor, and every goal "
+    "written below the floor moved a joint folded past it up to it. A reading is not clamped: "
+    "with torque off an arm folds wherever a hand or its weight puts it, past either limit. "
+    "So quackd drives a rest pose clipped into the travel, judges a joint folded past its "
+    "limit as at rest, and never writes a goal for a joint that reads past its travel, "
+    "because the one goal the servo would take there is the limit and it hauls the joint to it",
 )
 BUS_SYNC_READ = UpstreamRef(
     "MotorsBus.sync_read(data_name, motors=None, normalize=True, num_retry=0)",
@@ -391,8 +517,11 @@ DEGREES_NO_CLAMP = UpstreamRef(
     src(_BUS, 904),
     "_unnormalize bounds the RANGE_0_100 and RANGE_M100_100 modes and does not bound "
     "DEGREES: the tick it computes is written to Goal_Position as-is. So the gripper is "
-    "clamped by LeRobot and the five body joints are not, and what the firmware does with a "
-    "tick outside Min_Position_Limit is Feetech's. quackd refuses the goal instead",
+    "clamped by LeRobot and the five body joints are not. The firmware clamps them instead, to "
+    "the Min_Position_Limit and Max_Position_Limit calibration wrote into it "
+    "(POSITION_LIMITS_CLAMP_GOALS, seen on an arm on 2026-09-23), so a goal past the travel is "
+    "one the arm silently stops short of. quackd refuses a pilot's goal there rather than let "
+    "it be quietly rewritten",
 )
 STS3215_RESOLUTION = UpstreamRef(
     "sts3215 resolution 4096",
@@ -584,13 +713,18 @@ TORQUE_ENABLE_HOLDS_PRESENT = UpstreamRef(
     "UNVERIFIED",
     src(_BUS, 113),
     "what a servo does with its goal when torque is switched back on. `enable_torque()` "
-    "writes the Torque_Enable register and nothing else, so whether the motor then holds "
+    "writes Torque_Enable and then Lock on each motor (feetech.py lines 302 to 305 at 0.6.1), "
+    "neither of them a goal, so whether the motor then holds "
     "where it is or drives to the goal it was last written is the firmware's business and is "
     "documented nowhere quackd can read. It matters because the goal last written before a "
     "hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back "
     "to it would happen with somebody's fingers in the way. quackd writes the present "
     "position as the goal BEFORE enabling torque, writes it again after, and reads the arm "
-    "back to check it stayed: the assumption is never relied on in either direction",
+    "back to check it stayed: the assumption is never relied on in either direction. A joint "
+    "placed past its calibrated travel is where that cannot work: a goal written there is "
+    "clamped to the limit (POSITION_LIMITS_CLAMP_GOALS), and no goal leaves the servo the "
+    "last one it had, the rest move's, which only this row could say it ignores. So "
+    "take_hold() leaves torque off and refuses while any body joint reads outside its travel",
 )
 GRIPPER_OPEN_VALUE = UpstreamRef(
     "GRIPPER_OPEN_VALUE",
@@ -643,7 +777,10 @@ JOINT_RANGES = UpstreamRef(
     "the reachable range of each joint is whatever calibration recorded, and no vendor "
     "publishes what it ought to be. quackd computes each joint's travel from the calibration "
     "file and refuses a goal outside it rather than writing a tick LeRobot will not clamp "
-    "(DEGREES_NO_CLAMP); whether that travel is the real mechanical limit is unverified",
+    "(DEGREES_NO_CLAMP) and the servo will (POSITION_LIMITS_CLAMP_GOALS). The travel is not "
+    "the mechanical limit on every arm: a calibration that never saw a joint folded all the "
+    "way leaves the fold past it, which is why a rest pose is clipped into the travel. "
+    "Whether it is the mechanical limit on any given arm is unverified",
 )
 SERIAL_PORT = UpstreamRef(
     "SERIAL_PORT",

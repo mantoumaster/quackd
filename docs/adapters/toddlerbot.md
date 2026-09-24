@@ -111,7 +111,7 @@ And what it cannot do whatever the task says, which is the half a refusal usuall
 - carry more than about 1.5 kg with both arms together, or an unknown weight in one
 - keep going for more than about twenty minutes: past that the servos heat up and balance suffers
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The verbs this robot brings
 
