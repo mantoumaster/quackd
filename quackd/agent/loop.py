@@ -134,7 +134,13 @@ class HandOff(Protocol):
     async def wait(
         self, text: str, *, timeout_s: float | None = None, until_abort: bool = True
     ) -> bool:
-        """Say `text`, then wait for Enter. True if it came, False if anything else ended it."""
+        """Say `text`, then wait for Enter. True if it came, False if anything else ended it.
+
+        A person who can say *what* else ended it sets `ended` after each wait (the CLI's
+        `_TerminalHandOff` does: `enter`, `kill switch`, `no keys`, `stopped` or `timeout`),
+        and the loop reads it with `getattr`, so a person that cannot say is still a
+        `HandOff`. It is not a member here because this protocol is runtime-checkable, and a
+        member would be one more thing every stand-in for a person had to carry."""
         ...
 
 
@@ -527,6 +533,14 @@ class AgentLoop:
     itself up against a pose it could not reach, and nothing is lost by not answering: the arm
     is left exactly as a run without the offer leaves it."""
 
+    RELEASE_INTERRUPTED = (
+        "the release was interrupted while it was going out, so the arm may be limp, all of it "
+        "or part of it: hold it as though nothing holds it, and put it down"
+    )
+    """Said when a Ctrl-C lands on the release after Enter. The person pressed Enter because
+    they were holding the arm, the release may have reached some motors and not others, and
+    the only safe reading of that is the limp one."""
+
     async def _hand_over(self) -> bool:
         """Let go of the arm, wait for somebody to place it, then hold what they left.
 
@@ -639,12 +653,20 @@ class AgentLoop:
         (`until_abort=False`), for `_hand_back`'s reason: the flag is already set on every run a
         person ended, which are the runs most likely to have missed their fold. And a second
         Ctrl-C landing on it is caught here for the same reason too: it means "skip this and
-        finish", and the close, `run_end` and the summary still have to happen. Nothing here
-        raises."""
+        finish", and the close, `run_end` and the summary still have to happen. So is one
+        landing on the release itself, after Enter, which is the one moment the arm may already
+        be limp in part: the person is told so, and the teardown carries on. Nothing here
+        raises.
+
+        Only a miss the arm answered for gets the offer: a move that stalled or ran out of time,
+        or one refused after a read came back (`RestResult.answered`). A move that failed
+        because the arm stopped answering, which is what cutting the servo supply looks like,
+        is nothing quackd can say "holding itself up" of, and the release it would offer
+        refuses at its first read anyway, after a person has been kept waiting for it."""
         person = self.cfg.person
         if person is None or self.cfg.dry_run or parked is None:
             return
-        if not parked.recorded or parked.reached:
+        if not parked.recorded or parked.reached or not parked.answered:
             return
         offer = self.RELEASE_OFFER.format(why=parked.reason, seconds=self.RELEASE_OFFER_S)
         try:
@@ -655,10 +677,30 @@ class AgentLoop:
             return
         self._ask_recorded("release", offer, agreed, person)
         if not agreed:
-            self._emit("release", stage="kept", reason="nobody pressed Enter")
-            self._note("nobody pressed Enter, so torque stays on and the arm holds itself up")
+            # why the wait ended, where the person can say (`_TerminalHandOff.ended`): a first
+            # Ctrl-C ends it without raising, and "nobody pressed Enter" is not what happened
+            ended = getattr(person, "ended", None)
+            if ended == "kill switch":
+                self._emit("release", stage="kept", reason="interrupted while waiting")
+                self._note("torque stays on, and the arm holds itself up where it stopped")
+            elif ended == "no keys":
+                self._emit("release", stage="kept", reason="no key could be read")
+                self._note("no key could be read, so torque stays on and the arm holds itself up")
+            else:
+                self._emit("release", stage="kept", reason="nobody pressed Enter")
+                self._note("nobody pressed Enter, so torque stays on and the arm holds itself up")
             return
-        released = await let_go_if_any(self.cfg.transport, anywhere=True)
+        try:
+            released = await let_go_if_any(self.cfg.transport, anywhere=True)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            # A Ctrl-C after the Enter, while the release is on the wire. The release was sent,
+            # or was about to be, so part of the arm may already be limp in the person's hands;
+            # the arm's own backend takes it to be in a hand, so the close says the same.
+            self._emit("release", stage="interrupted", reason="interrupted during the release")
+            self._note(self.RELEASE_INTERRUPTED)
+            with contextlib.suppress(Exception):
+                person.say(self.RELEASE_INTERRUPTED)
+            return
         self._emit(
             "release",
             stage="released",
@@ -670,15 +712,30 @@ class AgentLoop:
         # Said to the person rather than only logged, like the offer itself: they are holding
         # the arm and act on this line, and a run with its log off prints no note at all. The
         # close's own line follows in the log where there is one.
-        if released.ok:
+        if released.ok and released.torque_on:
+            person.say(
+                f"{released.reason}: the arm is in your hands, so put it down before you let "
+                "go of it, and cut its power to let go of what still holds"
+            )
+        elif released.ok:
             person.say(
                 f"{released.reason}: the arm is in your hands, so put it down before you let "
                 "go of it"
             )
-        else:
+        elif released.torque_on:
+            # read back: every motor said torque on, so the arm holding itself up is a reading
             self._note(f"torque was not released: {released.reason}")
             person.say(
-                f"torque was not released ({released.reason}): the arm is still holding itself up"
+                f"torque was not released ({released.reason}): the arm is still holding itself "
+                "up, so keep hold of it and cut its power"
+            )
+        else:
+            # nothing was read back, so nothing is known about torque either way: an arm whose
+            # supply was cut reads exactly like one whose cable came out in front of live servos
+            self._note(f"torque was not released: {released.reason}")
+            person.say(
+                f"torque was not released ({released.reason}), and quackd cannot tell whether "
+                "torque is on: keep holding the arm, and cut its power"
             )
 
     async def _observe(

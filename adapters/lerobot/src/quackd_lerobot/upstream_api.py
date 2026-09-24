@@ -315,10 +315,13 @@ BUS_DISABLE_TORQUE = UpstreamRef(
     "MotorsBus.disable_torque()",
     "VERIFIED",
     src(_BUS, 118),
-    "NEVER called on quackd's own initiative. The one call is `let_go()`, which a person asks "
-    "for with `quackd run --by-hand` and which refuses anywhere but the arm's recorded rest "
-    "pose, the same condition `close()` uses to decide that letting go will not drop it. No "
-    "verb reaches it and no model can ask for it. On a Feetech bus it writes Torque_Enable 0 "
+    "NEVER called on quackd's own initiative. The one call is `let_go()`, and it has two "
+    "doors, each opened by a person at a terminal. `let_go()` is `quackd run --by-hand`'s, and "
+    "refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to "
+    "decide that letting go will not drop it. `let_go(anywhere=True)` is `quackd robot "
+    "release`'s and the end-of-run offer's, after each has told the person to hold the arm, "
+    "and releases wherever the arm stands, with or without a rest pose recorded. No verb "
+    "reaches either and no model can ask for it. On a Feetech bus it writes Torque_Enable 0 "
     "and then Lock 0 to each motor in turn (feetech.py lines 291 to 294), each write tried "
     "num_retry + 1 times; num_retry defaults to 0 and quackd passes 5, the count upstream's "
     "own disconnect() gives the same call (motors_bus.py line 559)",

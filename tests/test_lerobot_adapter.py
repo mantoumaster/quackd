@@ -1702,7 +1702,12 @@ async def test_a_stop_over_a_folded_arm_leaves_the_fold_alone() -> None:
     folded shoulder up out of its fold, and the record said only that it had stopped.
 
     A joint reading past its travel is left out of the hold, either way past it. The joints
-    inside their travel are held as they always were, and nothing moves."""
+    inside their travel are held as they always were, and nothing moves.
+
+    And the stop says which it left alone. It used to answer "stopped (velocity zeroed)" over
+    a hold of three joints out of five in the same words as a hold of all five, so neither
+    the pilot nor the record could tell that two joints had been written no goal. A stop over
+    an arm back inside its travel says nothing more, because the list is the last hold's."""
     arm = _spanned()
     transport = LeRobotReal("COM5", robot=arm)
     adapter = LeRobotAdapter(transport)
@@ -1719,14 +1724,41 @@ async def test_a_stop_over_a_folded_arm_leaves_the_fold_alone() -> None:
     assert set(arm.actions[-1]) == {"shoulder_pan.pos", "wrist_flex.pos", "wrist_roll.pos"}
     assert arm.actions[-1]["wrist_flex.pos"] == before["wrist_flex"]
     assert arm.positions == before, "the stop moved the arm"
+    assert adapter.stop_skipped == ("shoulder_lift", "elbow_flex")
+    assert stopped.summary == (
+        "stopped (velocity zeroed); shoulder_lift and elbow_flex read past their travel, so no "
+        "goal was written for them"
+    ), stopped.summary
+    assert stopped.data["not_held"] == ["shoulder_lift", "elbow_flex"]
+
+    # a hold that never read the arm cannot say what it left alone, and must not repeat the
+    # list of one that did
+    arm.dead = True
+    await adapter.stop()
+    assert adapter.stop_error is not None, "the hold never read the arm"
+    assert adapter.stop_skipped == (), "a failed hold kept the last hold's list"
+    arm.dead = False
+
+    arm.positions["elbow_flex"] = _inside(arm, "elbow_flex", 0.2)
+    one = await ex.run_verb("stop")
+    assert one.summary.endswith(
+        "shoulder_lift reads past its travel, so no goal was written for it"
+    ), one.summary
+
+    arm.positions["shoulder_lift"] = _inside(arm, "shoulder_lift", -0.2)
+    again = await ex.run_verb("stop")
+    assert again.ok and again.summary == "stopped (velocity zeroed)", again.summary
+    assert adapter.stop_skipped == (), "the last hold's list outlived it"
 
 
 async def test_a_stop_with_every_body_joint_past_its_travel_sends_nothing_and_is_a_stop() -> None:
     """The branch where the skip leaves nothing to send. Nothing is written, and the stop is
-    still a stop and still says so: every servo keeps the goal it already has, which is within
-    a step of where it stands, and a joint past its travel is not being driven anywhere. A
-    stop reported as undelivered here would send somebody for the power switch over an arm
-    that is lying still in its fold."""
+    not reported as undelivered, because it started nothing. That is all it can say: for a
+    joint past its travel any goal quackd has written is the limit to the servo, so a joint a
+    move had begun lifting out of its fold goes on rising to that limit whatever a stop does,
+    and only the power switch stops that stretch. What the stop owes the pilot is the list of
+    joints it wrote no goal for, which here is all five. A stop reported as undelivered over
+    an arm lying still in its fold would send somebody for the switch for nothing."""
     arm = _spanned()
     transport = LeRobotReal("COM5", robot=arm)
     adapter = LeRobotAdapter(transport)
@@ -1741,6 +1773,10 @@ async def test_a_stop_with_every_body_joint_past_its_travel_sends_nothing_and_is
     assert adapter.stop_error is None
     assert arm.actions == [], "a goal was written to a joint past its travel"
     assert arm.positions == before
+    assert stopped.data["not_held"] == list(SPANS), stopped.data
+    assert "shoulder_pan, shoulder_lift, elbow_flex, wrist_flex and wrist_roll read past" in (
+        stopped.summary
+    ), stopped.summary
 
 
 async def test_a_slow_camera_release_never_costs_the_arm_its_disconnect() -> None:
@@ -3129,7 +3165,12 @@ async def test_a_motor_that_kept_its_torque_through_the_release_is_named_and_nev
     asks the other one, and read through `_torque` a motor that kept its torque was simply part
     of an arm reported released: "torque reads off" over a joint still holding in the hands of
     somebody told it is limp. The result names the motors that read on, in the bus's order, and
-    the arm is still in a hand, because the rest of it is limp."""
+    the arm is still in a hand, because the rest of it is limp.
+
+    And the close's last line names them too. It used to end every release on `LIMP_IN_HAND`,
+    "nothing is holding it up", which `quackd robot release` printed right after "torque still
+    reads on for elbow_flex: cut the power", as the last thing a person holding the arm read,
+    over a joint still energised and kept so past the close."""
     arm = _spanned()
     arm.positions.update({j: _inside(arm, j, -0.4) for j in SPANS})
     arm.torque_holdouts = set(holdouts)
@@ -3143,10 +3184,39 @@ async def test_a_motor_that_kept_its_torque_through_the_release_is_named_and_nev
     assert f"except on {', '.join(in_order)}, which still read on" in released.reason
     assert transport._in_hand is True
 
+    await transport.close()
+    note = transport.close_note or ""
+    named = in_order[0] if len(in_order) == 1 else f"{', '.join(in_order[:-1])} and {in_order[-1]}"
+    assert note.startswith(f"the arm is in your hands ({LET_GO_WHERE_IT_STOOD}), but {named} "), (
+        note
+    )
+    assert "torque on" in note and "cut its power" in note, note
+    assert "nothing is holding it up" not in note, "a joint that holds was said to hold nothing"
+    assert arm.config.disable_torque_on_disconnect is False, "the close dropped a partly limp arm"
+
+
+async def test_the_mock_names_a_joint_its_release_left_holding() -> None:
+    """The mock's twin of the partial release, so a rehearsal of `quackd robot release` and of
+    the end-of-run offer ends on the line the arm would: its in-memory release used to take on
+    every motor, so its close could only ever say nothing held the arm."""
+    mock = LeRobotMock(rest_pose=dict(REST))
+    mock.release_holdouts = ("wrist_roll",)
+    released = await mock.let_go(anywhere=True)
+    assert released.how == "released" and released.torque_on == ("wrist_roll",), released
+    assert "except on wrist_roll, which still read on" in released.reason
+    await mock.close()
+    note = mock.close_note or ""
+    assert "but wrist_roll still reads torque on and holds" in note, note
+    assert "cut its power to let go of it" in note and "nothing is holding it up" not in note
+
 
 async def test_an_arm_that_kept_torque_on_every_motor_was_not_released_and_is_in_no_hand() -> None:
     """Nothing let go, so nothing is in anybody's hands, and the close treats it as the arm
-    holding itself up that it is: away from its pose, torque is kept and said to be kept."""
+    holding itself up that it is: away from its pose, torque is kept and said to be kept.
+
+    In words that do not send the person back to the release that just failed. The close
+    used to end on `TORQUE_LEFT_ON`, which names `quackd robot release`, printed by that very
+    command one line below its own failure; the one way out left is the switch."""
     arm = _spanned()
     recorded, reading = _stopped_short(arm)
     arm.positions.update(reading)
@@ -3159,7 +3229,39 @@ async def test_an_arm_that_kept_torque_on_every_motor_was_not_released_and_is_in
     assert refused.torque_on == JOINTS
     assert transport._in_hand is False
     await transport.close()
-    assert (transport.close_note or "").startswith(TORQUE_LEFT_ON.split("(")[0])
+    note = transport.close_note or ""
+    assert note.startswith(TORQUE_LEFT_ON.split("(")[0]), note
+    assert "the release did not take" in note and note.endswith("hold it and cut its power")
+    assert "quackd robot release" not in note, "sent back to the command that just failed"
+    assert arm.config.disable_torque_on_disconnect is False and arm.torque_disabled == 0
+
+
+@pytest.mark.parametrize("pose", ["recorded", "none"], ids=["at the rest pose", "no rest pose"])
+async def test_a_refused_release_the_close_then_let_go_of_says_the_close_did(pose: str) -> None:
+    """The other half. An arm at its rest pose, or with none recorded, is let go of by the
+    close's disconnect, as every such session ends, and that used to happen without a word
+    after `quackd robot release` had just printed "torque still reads on: cut the power".
+    What the person was told then no longer matched what quackd did: the same `Torque_Enable`
+    0 went out again, and nothing read it back. It is said now, with what to do if it did not
+    take this time either. A close with no refused release before it still says nothing."""
+    arm = _spanned()
+    arm.torque_holdouts = set(JOINTS)
+    rest = {j: arm.positions[j] for j in SPANS} if pose == "recorded" else None
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=rest)
+    await transport.connect()
+    assert (await transport.let_go(anywhere=True)).how == "refused"
+    await transport.close()
+    note = transport.close_note or ""
+    where = "at the rest pose" if pose == "recorded" else "where the arm stands"
+    assert note.startswith(f"the release did not take, and the close then took torque off {where}")
+    assert "cut its power if it still holds itself up" in note, note
+    assert arm.torque_disabled == 1, "the close did not let go"
+
+    quiet = _spanned()
+    plain = LeRobotReal("COM5", robot=quiet, rest_pose=rest)
+    await plain.connect()
+    await plain.close()
+    assert plain.close_note is None, "an ordinary close at rest said something"
 
 
 @pytest.mark.parametrize("fault", ["the read-back", "the release call"])
@@ -3257,7 +3359,14 @@ async def test_the_torque_note_names_the_ways_out_under_the_name_the_arm_was_reg
     bench every run that got that far ended at the switch. It now names the command that
     releases the arm and the one that parks it, spelled with this arm's own name: the registry
     builds a robot with its name as the id (`make(robot_id=...)`), and a command with the wrong
-    name in it fails, or reaches another arm."""
+    name in it fails, or reaches another arm.
+
+    And the hold comes before every one of them, with the reason. Both commands connect, and
+    connecting takes torque off every motor for a moment, so an arm held up by torque alone
+    is limp for that moment whichever of them reaches it. The note once tied the hold to the
+    release alone and offered `doctor` beside it as though the arm could be left to hold
+    itself while `doctor` connected, and said "it will not fall" of an arm about to be let
+    go of by the connect: it is said now of the arm as it stands, and no further."""
     mock = make("mock", robot_id=name, rest_pose=dict(REST))
     await mock.connect()
     assert (await mock.send_intent(Intent.joint({"shoulder_pan": 30.0}, 1.0))).accepted
@@ -3273,15 +3382,20 @@ async def test_the_torque_note_names_the_ways_out_under_the_name_the_arm_was_reg
 
     for note in (mock.close_note or "", transport.close_note or ""):
         assert note.startswith(TORQUE_LEFT_ON.split("(")[0]), note
-        assert f"hold the arm and run quackd robot release {name}" in note, note
-        assert f"run quackd doctor --robot {name} to park it" in note, note
-        assert note.endswith("or cut its power"), note
+        assert "it will not fall as it stands" in note, note
+        hold = note.index("hold it first, because connecting takes torque off every motor")
+        release = note.index(f"quackd robot release {name}")
+        doctor = note.index(f"quackd doctor --robot {name} to park it")
+        power = note.index("or cut its power")
+        assert hold < release < doctor < power, "the hold does not come before every way out"
+        assert "hold" not in note[release:], "a way out stands after the hold as its own route"
 
 
 async def test_an_arm_built_without_a_name_says_name_rather_than_its_default_id() -> None:
-    """`doctor` builds a registered arm from its bare spec, and the real backend's id then
-    defaults to the id a calibration is looked up under. That is not necessarily the name
-    anybody registered, so the note says NAME, which a person can see is a placeholder."""
+    """A bare spec (`doctor --robot lerobot:real`) or a backend called directly builds the arm
+    with no name, and the real backend's id then defaults to the id a calibration is looked up
+    under. That is not necessarily the name anybody registered, so the note says NAME, which
+    a person can see is a placeholder."""
     mock = make("mock", rest_pose=dict(REST))
     await mock.connect()
     assert (await mock.send_intent(Intent.joint({"elbow_flex": 40.0}, 1.0))).accepted
@@ -3298,7 +3412,124 @@ async def test_an_arm_built_without_a_name_says_name_rather_than_its_default_id(
         assert transport.robot_id not in note, "the default id was offered as the name"
 
 
-# ── what an adversarial pass found in the hand-off, once each ───────────────────────────
+@pytest.mark.parametrize("name", ["lab-arm", None], ids=["registered", "unnamed"])
+async def test_the_clip_note_names_the_arm_as_the_torque_note_does(name: str | None) -> None:
+    """The two sentences a clipped pose and a missed one end on both give a person a command
+    to type, and only one of them used to spell it with the arm's name: the clip note said
+    `quackd robot rest-pose NAME` in a run on a registered arm, and in `quackd robot
+    rest-pose <name>` itself, one line above a hint that used the name. Both now take the name
+    the arm was built with, and both fall back to the same visible placeholder without one.
+    Asked of the real backend's rest move, the mock's, and the adapter's own `rest_pose_note`,
+    which is what `quackd robot rest-pose` prints."""
+    shown = name or "NAME"
+    arm = _spanned(step=60.0)
+    pose = dict.fromkeys(SPANS, 0.0) | {"elbow_flex": _past(arm, "elbow_flex", 17.0)}
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=pose, registered_name=name)
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    parked = await adapter.go_to_rest()
+    assert parked.reached and parked.note, parked
+
+    ceiling = MOCK_RANGES["elbow_flex"][1]
+    mock = LeRobotMock(rest_pose=dict(REST) | {"elbow_flex": ceiling + 11.0}, registered_name=name)
+    rehearsed = await mock.go_to_rest()
+    assert rehearsed.reached and rehearsed.note, rehearsed
+
+    for note in (parked.note, rehearsed.note, adapter.rest_pose_note(pose) or ""):
+        assert f"(quackd robot rest-pose {shown}) to make the fold reachable" in note, note
+    await adapter.close()
+
+
+# ── an arm that did not answer, and a release a Ctrl-C landed on ────────────────────────
+
+
+async def test_a_rest_move_the_arm_stopped_answering_says_so_and_a_lost_write_does_not() -> None:
+    """The end-of-run offer tells a person "it is holding itself up. Hold it and press Enter",
+    and it used to say so after any missed rest move, including one refused because the arm
+    stopped answering: which is what cutting the servo supply looks like, the one e-stop the
+    safety page names. Nothing had been read that says the arm holds anything. The result now
+    carries whether the arm answered the move's last read, which a write lost after a good
+    read does not change: that arm answered, and is holding whatever it last read."""
+    arm, transport = _handover_arm()
+    transport.rest_pose = dict.fromkeys(SPANS, 0.0) | {"elbow_flex": 30.0}
+    await transport.connect()
+    arm.send_fails = True
+    lost = await transport.go_to_rest()
+    assert lost.how == "refused" and lost.answered, lost
+
+    arm.send_fails = False
+    arm.dead = True
+    silent = await transport.go_to_rest()
+    assert silent.how == "refused" and not silent.answered, silent
+    assert "Present_Position" in silent.reason, silent.reason
+
+
+async def test_the_close_of_an_arm_that_did_not_answer_never_says_it_holds_itself_up() -> None:
+    """The close keeps what torque there may be when its own read of the joints fails, which
+    is right, and it used to say "torque was left on and it will not fall" over that arm. An
+    arm that stopped answering is as often one whose supply was cut at the switch, limp in
+    somebody's hands, as one whose cable came out in front of live servos, and quackd cannot
+    tell them apart. So it says it cannot, and what to do either way: hold it, cut its power.
+    `robot list --probe` keeps which way round the note is when it shortens it."""
+    from quackd.registry import _torque_phrase
+
+    arm, transport = _handover_arm()
+    await transport.connect()
+    arm.dead = True
+    await transport.close()
+    note = transport.close_note or ""
+    assert note.startswith("quackd cannot tell whether the arm is holding itself up"), note
+    assert "Present_Position" in note and "cut its power" in note, note
+    assert "will not fall" not in note and "torque was left on" not in note, note
+    assert arm.config.disable_torque_on_disconnect is False, "whatever torque there is, is kept"
+    assert _torque_phrase(note) == "torque unknown: the arm did not answer the close"
+
+
+class SlowRelease(FakeBus):
+    """A bus whose release write sits on the wire until the test lets it go, which is where a
+    Ctrl-C after Enter lands: the call has been issued and its thread is still writing."""
+
+    def __init__(self, arm: FakeArm) -> None:
+        super().__init__(arm)
+        self.writing = threading.Event()
+        self.done = threading.Event()
+
+    def disable_torque(self, motors: Any = None, num_retry: int = 0) -> None:
+        self.writing.set()
+        self.done.wait(timeout=5.0)
+        super().disable_torque(motors, num_retry=num_retry)
+
+
+async def test_a_release_a_ctrl_c_landed_on_is_an_arm_in_a_hand() -> None:
+    """`let_go` takes the arm to be in somebody's hands from the moment the release is sent,
+    because the other reading ends with the close telling a person holding a limp arm that it
+    holds itself up. It did so only for a release that returned or raised an `Exception`: a
+    cancellation landing while the write was on the wire, which is a Ctrl-C after Enter at
+    the end-of-run offer, left the flag off while the thread went on and made the arm limp.
+    The interrupt still goes on up, since it is not `let_go`'s to swallow."""
+    arm = _spanned()
+    recorded, reading = _stopped_short(arm)
+    arm.positions.update(reading)
+    arm.bus = SlowRelease(arm)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=recorded)
+    await transport.connect()
+
+    release = asyncio.ensure_future(transport.let_go(anywhere=True))
+    assert await asyncio.to_thread(arm.bus.writing.wait, 5.0), "the release never went out"
+    release.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await release
+    assert transport._in_hand is True, "a release on the wire left the arm in nobody's hands"
+
+    arm.bus.done.set()
+    for _ in range(50):
+        if arm.torque is False and transport._wedged is not None and transport._wedged.done():
+            break
+        await asyncio.sleep(0.02)
+    await transport.close()
+    note = transport.close_note or ""
+    assert note == LIMP_IN_HAND.format(why=LET_GO_WHERE_IT_STOOD), note
+    assert arm.config.disable_torque_on_disconnect is False
 
 
 class OneRegisterDown(FakeBus):

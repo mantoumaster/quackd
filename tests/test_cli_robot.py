@@ -189,7 +189,10 @@ def test_rest_pose_warns_about_a_fold_past_the_travel_and_still_records_it(
         f"shoulder_lift at {REST['shoulder_lift']:.0f} and elbow_flex at {REST['elbow_flex']:.0f}"
     ) in said, said
     assert f"driven to {floor:.0f} and {ceiling:.0f} and no further" in said, said
-    assert "lerobot-calibrate" in said and "quackd robot rest-pose NAME" in said, said
+    # the name just typed, not NAME: the clip note spells its command the way the hint under
+    # it and the torque note do, and used to say NAME one line above a hint that had the name
+    assert "lerobot-calibrate" in said and "quackd robot rest-pose arm-01)" in said, said
+    assert "rest-pose NAME" not in said, said
     assert said.index("lerobot-calibrate") < said.index("recorded arm-01's rest pose")
     assert Registry(tmp_path).robot("arm-01").rest_pose == {
         joint: round(value, 1) for joint, value in REST.items()

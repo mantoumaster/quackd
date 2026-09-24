@@ -822,8 +822,24 @@ class _TerminalHandOff:
     that decides it; it is here so the loop does not have to know which of its callables
     reaches a terminal."""
 
+    WAIT_ENDED = {
+        "enter": "(Enter)",
+        "kill switch": "(the kill switch ended the wait, without an Enter)",
+        "no keys": "(no key could be read, so the wait ended without an Enter)",
+        "stopped": "(the run was stopped, which ended the wait without an Enter)",
+        "timeout": "(nobody answered: the wait ran out without an Enter)",
+    }
+    """What the saved terminal says about each way a wait ends, since none of them printed."""
+
     def __init__(self) -> None:
         self.switch: KillSwitch | None = None
+        self.ended: str | None = None
+        """How the last wait ended: `enter`, `kill switch` (a Ctrl-C, or `q`), `no keys` (no
+        key thread, or stdin finished), `stopped` (an abort nobody pressed, on a wait that
+        watches the abort flag) or `timeout`. `wait` still answers with a bool, which is
+        all `--by-hand`'s two waits need; the end-of-run offer reads this as well, because a
+        record that files a Ctrl-C under "nobody pressed Enter" says the room was empty when
+        somebody in it pressed a key."""
 
     def bind(self, switch: KillSwitch) -> None:
         """The switch is built from the loop's own abort event, which does not exist until the
@@ -840,10 +856,26 @@ class _TerminalHandOff:
         if self.switch is None:  # `bind` runs before the loop does, so this is a bug if hit
             raise RuntimeError("the hand-off has no kill switch to read Enter from")
         self.say(text)
+        self.ended = None
+        # counted rather than read off `pressed`, which the wait itself clears on the way in: a
+        # press is counted on the signal's own thread before the loop is told of it, so one
+        # that ended this wait has always been counted by the time it returns
+        presses = self.switch.presses
         came = await self.switch.wait_for_enter(timeout_s=timeout_s, until_abort=until_abort)
+        if came:
+            self.ended = "enter"
+        elif self.switch.presses > presses:
+            self.ended = "kill switch"
+        elif self.switch.keys_ended.is_set():
+            self.ended = "no keys"
+        elif until_abort and self.switch.abort.is_set():
+            # a heartbeat that failed, or a flock stopping its members: an abort nobody pressed
+            self.ended = "stopped"
+        else:
+            self.ended = "timeout"
         # Enter is a keystroke nobody printed, and not pressing it is the more interesting
         # half: a hand-off that timed out is why the arm was left where it was.
-        ui.note("(Enter)" if came else "(nobody answered: the wait ended without an Enter)")
+        ui.note(self.WAIT_ENDED[self.ended])
         return came
 
 
@@ -2718,6 +2750,7 @@ def doctor(
         _fail("--address needs --robot, so quackd knows what it is connecting to")
         return
     rest_pose: dict[str, float] | None = None
+    name: str | None = None
     if robot:
         # a registered name is a robot too, and it brings the address you registered it with.
         # Only a name that resolves is substituted: anything else stays exactly as typed, so
@@ -2728,7 +2761,11 @@ def doctor(
         with contextlib.suppress(RegistryError):
             entry = Registry(registry_dir).get_robot(robot)
             if entry is not None:
-                robot = entry.key
+                # The spec for the report, and the name for the body, which is built under it
+                # as a run builds it (`entry.robot_spec`): an arm looks its calibration up by
+                # that id, and every line it writes names it. The name used to be dropped here,
+                # so a probe of `arm-02` read the default id's calibration.
+                robot, name = entry.key, entry.name
                 where = entry.adapter_kwargs(address=address, camera_url=camera_url, token=token)
                 address, camera_url, token = (
                     where["address"],
@@ -2738,9 +2775,24 @@ def doctor(
                 # only a robot you registered has one, because a rest pose is read off the arm
                 # and kept under its name rather than typed on a command line
                 rest_pose = where["rest_pose"]
+
+    def warn(adapter: Any) -> None:
+        # Before the connect, and only for a body that is handed to people, which is the one
+        # whose connect takes torque off: the arm's close note sends a person here when it is
+        # holding itself up away from its fold. On stderr under --json, whose stdout is one
+        # JSON document and nothing else.
+        if getattr(adapter, "supports_hand_off", False):
+            (ui.err_console if as_json else ui.console).print(_warn_line(_doctor_warning()))
+
     if as_json:
         report = collect(
-            robot, address=address, camera_url=camera_url, token=token, rest_pose=rest_pose
+            robot,
+            address=address,
+            camera_url=camera_url,
+            token=token,
+            rest_pose=rest_pose,
+            robot_name=name,
+            before_connect=warn,
         )
         print(json.dumps(report.to_dict()))
         raise typer.Exit(code=0 if report.ok else 1)
@@ -2755,6 +2807,8 @@ def doctor(
             token=token,
             rest_pose=rest_pose,
             progress=say,
+            robot_name=name,
+            before_connect=warn,
         )
     render(ui.console, report)
     if not report.ok:
@@ -3327,15 +3381,33 @@ def robot_rest_pose(
     )
 
 
-RELEASE_WARNING = (
-    "connecting takes torque off every motor for a moment, because LeRobot configures them "
-    "with it off, and the release then lets the arm fall from wherever it is: hold it now, "
-    "and keep hold of it until it is down"
-)
-"""Said before anything connects, and before the question, because both halves happen to an
-arm a person has to be holding already. The first is upstream's (`configure()` runs inside
-`torque_disabled()`), and it is the reason this cannot wait until after the connect: by then
-the arm has already been limp once."""
+def _connect_warning() -> str:
+    """What connecting does to a body that is handed to a person, and why, in the one wording
+    `quackd robot release`, `quackd doctor` and the arm's own close note share
+    (`adapters.base.CONNECTING_TAKES_TORQUE_OFF`). Imported here rather than at the top, like
+    every other `quackd.adapters` import in this file, so `quackd --help` stays quick."""
+    from quackd.adapters.base import CONNECTING_TAKES_TORQUE_OFF
+
+    return f"{CONNECTING_TAKES_TORQUE_OFF}, because LeRobot configures them with it off"
+
+
+def _release_warning() -> str:
+    """Said before anything connects, and before the question, because both halves happen to
+    an arm a person has to be holding already. The first is upstream's (`configure()` runs
+    inside `torque_disabled()`), and it is the reason this cannot wait until after the
+    connect: by then the arm has already been limp once."""
+    return (
+        f"{_connect_warning()}, and the release then lets the arm fall from wherever it is: "
+        "hold it now, and keep hold of it until it is down"
+    )
+
+
+def _doctor_warning() -> str:
+    """`_release_warning`'s first half, for `doctor --robot` on a body handed to people. A
+    probe connects, and an arm left holding itself up, which is when its close note sends a
+    person to `doctor`, is limp for that moment like any other, so the person is told to
+    support it before the connect rather than finding out during it."""
+    return f"{_connect_warning()}: support the arm until doctor has finished with it"
 
 
 @robot_app.command("release")
@@ -3394,7 +3466,7 @@ def robot_release(
         return
     # Before anything connects: connecting is the first thing that takes torque off, so a
     # warning printed after it would arrive after the arm had already been limp once.
-    ui.console.print(_warn_line(RELEASE_WARNING))
+    ui.console.print(_warn_line(_release_warning()))
     if not yes:
         with ui.pause_status():
             if not typer.confirm(f"release torque on {name}?"):

@@ -68,6 +68,15 @@ class RestResult:
     say: what `clipped` means and how to make the pose reachable. Written by the body, which
     knows its own calibration, and said once by whoever narrates the rest move. Never a
     failure: a result carrying it reached the reachable pose."""
+    answered: bool = True
+    """Whether the body answered the last thing the move asked it. False only for a move that
+    ended because the body stopped answering, or could not be asked at all (a wedged bus, a
+    closed transport), which is the one miss where nothing it last said about its pose or its
+    torque can be believed: the servo supply cut at the switch looks exactly like this, and so
+    does a pulled cable in front of servos that are still holding. A caller about to tell a
+    person that the body is holding itself up reads this first, because that is a thing only
+    a body that answered can be said to be doing. True for every body that never fails this
+    way, which is why it has a default."""
 
     @property
     def reached(self) -> bool:
@@ -148,6 +157,16 @@ async def take_hold_if_any(transport: Any) -> HandResult:
         return await hold()
     except Exception as e:
         return HandResult("refused", f"{type(e).__name__}: {e}")
+
+
+CONNECTING_TAKES_TORQUE_OFF = "connecting takes torque off every motor for a moment"
+"""What connecting does to a body that is handed to a person (`supports_hand_off`), in the
+words every line that warns about it uses: the close note of an arm left holding itself up,
+`quackd robot release` before it connects, and `quackd doctor` before it connects such a
+body. Kept as one copy, because three copies that drifted apart would read to somebody holding
+an arm as three different facts. The LeRobot arm, the one such body, configures its motors
+inside `torque_disabled()` on every connect, so an arm held up by torque alone is limp for that
+moment whatever else is true of it."""
 
 
 async def go_to_rest_if_any(transport: Any) -> RestResult:

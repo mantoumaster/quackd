@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from quackd.adapters.base import CONNECTING_TAKES_TORQUE_OFF
 from quackd.transport.base import DuckState, Intent
 from quackd.verbs.core import send_or_fail
 from quackd.verbs.registry import NoParams, Precondition, Verb, VerbContext, VerbResult
@@ -383,9 +384,9 @@ REST_MAX_S = 30.0
 would take minutes, and an arm nobody is watching must not hold a run open that long."""
 
 TORQUE_LEFT_ON = (
-    "the arm is not at its rest pose ({why}), so torque was left on and it will not fall: "
-    "hold the arm and run quackd robot release {name}, or run quackd doctor --robot {name} to "
-    "park it, or cut its power"
+    "the arm is not at its rest pose ({why}), so torque was left on and it will not fall as it "
+    f"stands: hold it first, because {CONNECTING_TAKES_TORQUE_OFF}, then run quackd robot "
+    "release {name}, or quackd doctor --robot {name} to park it, or cut its power"
 )
 """Said once, by whichever caller closed the arm. The transport records it and prints
 nothing itself: a library that writes to a terminal has picked one, and quackd has four.
@@ -397,23 +398,77 @@ torque off where the arm stands while a person holds it; `quackd doctor --robot`
 tries the rest move again from wherever the arm now is, and lets go at the pose if it gets
 there. Both are said with the name the arm was registered under, through `torque_left_on`,
 because a command with the wrong name in it is a command that fails or, worse, reaches another
-arm."""
+arm.
+
+The hold comes before all three, and "it will not fall" is said of the arm as it stands and
+no further. Both commands begin by connecting, and connecting takes torque off every motor
+while LeRobot configures them (`CONNECTING_TAKES_TORQUE_OFF`), so an arm held up by torque
+alone is limp for that moment whichever command reaches it. The line used to tie the hold to
+the release alone and offer `doctor` as a separate route, which read as though the arm could
+be left to hold itself while `doctor` connected to it: the one moment it cannot."""
 
 UNNAMED = "NAME"
-"""What `torque_left_on` says in place of a name nobody told the transport. A placeholder a
-person can see is one, rather than a guess at the name that reads like the right one."""
+"""What `torque_left_on` and `rest_clip_note` say in place of a name nobody told the
+transport. A placeholder a person can see is one, rather than a guess at the name that reads
+like the right one."""
 
 
 def torque_left_on(why: str, name: str | None) -> str:
     """`TORQUE_LEFT_ON` for this arm, with its registered name where the caller knew it.
 
     The name is the one the arm was built with (`make(robot_id=...)`), which is the registered
-    name on every path quackd builds an arm with a rest pose on: a run, an MCP session and a
-    flock resolve a registered robot to a spec carrying its name. `doctor` resolves the name to
-    the bare spec and builds the arm with no name at all, and so does anything that calls the
-    backend directly, and those get `NAME` rather than an id that may not be what the arm is
-    registered under."""
+    name on every path quackd builds a registered arm on: a run, an MCP session, a flock,
+    `doctor --robot` and the `robot` commands resolve a registered robot to a spec carrying its
+    name. Anything that calls the backend directly, or names a bare spec such as
+    `lerobot:real`, builds the arm with no name, and those get `NAME` rather than an id that
+    may not be what the arm is registered under."""
     return TORQUE_LEFT_ON.format(why=why, name=name or UNNAMED)
+
+
+TORQUE_KEPT_AFTER_REFUSAL = (
+    "the arm is not at its rest pose ({why}) and the release did not take, so torque was left "
+    "on and it will not fall as it stands: hold it and cut its power"
+)
+"""The close's line for an arm a person just asked to have released, and whose release was
+refused: every motor still read torque on afterwards, or the arm did not answer before it.
+
+`TORQUE_LEFT_ON` would be wrong here in the one clause that matters. It sends the person to
+`quackd robot release`, which is the command that has just failed, or which is what the
+end-of-run offer they just answered does, in the same output. So this names the one way out
+the arm has not already refused, which is the switch, and the hold that has to come first."""
+
+
+def released_by_the_close(at_rest: bool) -> str:
+    """The close's line for an arm whose release was refused and which the close then let go.
+
+    A close lets go of an arm at its rest pose, or of one with no rest pose recorded, by
+    LeRobot's own `disconnect()` default, and says nothing, because that is every session's
+    ending. After a refused release it is not every session's ending: the person was just told
+    the release did not take, and the same `Torque_Enable` 0 then went out again with the
+    disconnect, with nothing to read it back. What they were told has to match what quackd did,
+    so it is said, with the one thing they can do if the servos ignored it a second time."""
+    where = (
+        "at the rest pose, as every close there does"
+        if at_rest
+        else "where the arm stands, as every close does on an arm with no rest pose recorded"
+    )
+    return (
+        f"the release did not take, and the close then took torque off {where}, with nothing "
+        "to read it back: hold the arm, and cut its power if it still holds itself up"
+    )
+
+
+TORQUE_UNKNOWN_AT_CLOSE = (
+    "quackd cannot tell whether the arm is holding itself up ({why}), so it kept whatever "
+    "torque the arm has: hold it, and cut its power"
+)
+"""The close's line for an arm that did not answer the read the close decides by.
+
+`TORQUE_LEFT_ON` says the arm will not fall, which is a thing only an arm that answered can be
+said to be doing. An arm that stopped answering is, as often as not, one whose servo supply was
+cut at the switch, which is the stop `docs/safety.md` names, and that arm is limp; one whose
+cable came out is still holding. The close cannot tell them apart, so it keeps what torque
+there may be, which costs nothing on a limp arm, and says it does not know."""
 
 
 def rest_goal(rest_pose: dict[str, float]) -> dict[str, float]:
@@ -479,14 +534,17 @@ def _listed(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def rest_clip_note(clipped: tuple[Clip, ...]) -> str | None:
+def rest_clip_note(clipped: tuple[Clip, ...], name: str | None = None) -> str | None:
     """What a clipped rest pose means, in the numbers of this arm, or None when nothing was.
 
     One sentence that the rest move's narrator, `doctor` and `quackd robot rest-pose` all say,
     so a person hears the same thing wherever they first meet it. It says what happens rather
     than what went wrong, because nothing did: the arm parks at the edge of its travel, torque
     is released there, and the joint is free to settle toward the fold on its own. And it says
-    how to make the fold itself reachable, which is a calibration that saw the arm folded."""
+    how to make the fold itself reachable, which is a calibration that saw the arm folded.
+
+    The command in it carries the name the arm was registered under, for `torque_left_on`'s
+    reason, and `NAME` where the caller built the arm without one."""
     if not clipped:
         return None
     if len(clipped) == 1:
@@ -505,7 +563,7 @@ def rest_clip_note(clipped: tuple[Clip, ...]) -> str | None:
     return (
         f"{said} and is let go of there, free to settle the rest of the way on its own. "
         "Calibrate again with the arm folded (lerobot-calibrate) and record the pose again "
-        "(quackd robot rest-pose NAME) to make the fold reachable"
+        f"(quackd robot rest-pose {name or UNNAMED}) to make the fold reachable"
     )
 
 
@@ -534,7 +592,26 @@ tell them the arm is holding itself up while it hangs off their hand.
 
 The other way here is on purpose: `quackd robot release`, and the offer a run makes when its
 rest move missed, end every release they make with this line, because it is the right last
-thing to tell somebody holding an arm with nothing else holding it up."""
+thing to tell somebody holding an arm with nothing else holding it up. Except where something
+else is: a release some motors ignored ends on `still_holding_in_hand` instead."""
+
+
+def still_holding_in_hand(holding: tuple[str, ...], why: str) -> str:
+    """`LIMP_IN_HAND` for an arm limp in part: the last read of its torque register, after the
+    release went out, found `holding` still on.
+
+    `LIMP_IN_HAND` ends "nothing is holding it up", and here something is. Said as the last
+    line to somebody holding the arm it tells them the one thing that is not so, over a joint
+    that is still energised and stays energised past the close, which keeps whatever torque
+    there is rather than drop it on a partly limp arm. So it names those joints, in the bus's
+    order, and says that the switch is what lets go of them."""
+    one = len(holding) == 1
+    return (
+        f"the arm is in your hands ({why}), but {_listed(list(holding))} still "
+        f"{'reads' if one else 'read'} torque on and {'holds' if one else 'hold'}: keep hold of "
+        f"the arm, put it down, and cut its power to let go of {'it' if one else 'them'}"
+    )
+
 
 LET_GO_TO_PLACE = "it was let go of for you to place and never taken hold of again"
 """`LIMP_IN_HAND`'s parenthesis after a `--by-hand` release, when nothing more specific is

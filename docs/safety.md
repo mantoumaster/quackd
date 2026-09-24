@@ -297,7 +297,9 @@ the arm is limp and in your hands (...): put it down before you let go of it, be
 
 That line and the "torque was left on" one under "A LeRobot arm" below are opposites on purpose,
 and quackd has to pick the right one. Whoever reads this one is holding the arm, and being told
-instead that it is holding itself up is the sentence that gets an arm dropped.
+instead that it is holding itself up is the sentence that gets an arm dropped. Where a release
+left some motors energised, "nothing is holding it up" would be the wrong one too, so that close
+names the joints that still read torque on and ends on cutting the power.
 
 **An XLeRobot (a 12 kg dual-arm cart):**
 
@@ -380,7 +382,11 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
 - `stop` holds position and never releases, and it leaves the gripper's goal alone so a
   failed verb never drops what is held. It also writes no goal for a joint that reads past its
   calibrated travel, because the servo would clamp "stay here" to its limit and drive the joint
-  there at full speed.
+  there at full speed, and its summary names each joint it left alone. That skip avoids
+  starting a rise out of a fold and cannot halt one already under way: for a joint past its
+  travel, any goal quackd has written is the limit to the servo, so a joint a move had begun
+  lifting keeps rising to that limit whatever the stop does. The power switch is the only stop
+  for that stretch.
 - **The arm falls when a session ends, unless you have recorded a rest pose.** LeRobot's own
   `disconnect()` disables torque by its default and quackd keeps that default, which is why the
   arm fell at the end of every run on 2026-09-15. Fold the arm by hand while nothing is
@@ -414,19 +420,23 @@ instead that it is holding itself up is the sentence that gets an arm dropped.
   LeRobot's flag off for that one case, leaves the arm holding itself up, and prints one line:
 
   ```
-  the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and run quackd robot release NAME, or run quackd doctor --robot NAME to park it, or cut its power
+  the arm is not at its rest pose (...), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release NAME, or quackd doctor --robot NAME to park it, or cut its power
   ```
 
   The brackets name the joint furthest from where it was asked to be, what it reads, and why
   nothing put it there. That is a joint stopped short *inside* its travel: one parked at the
   edge of its travel, or folded past it, has reached the pose. `NAME` is the name the arm was
   registered under wherever quackd knows it, and stays `NAME` where it does not, which is a
-  `doctor` probe. Do one of the three things the line says. The arm is energised, the run is
-  over, and nothing is going to put it down on its own. Holding it and running
-  `quackd robot release` lets it go into your hands; `quackd doctor --robot` tries the rest move
-  again from wherever it now is and lets go at the pose if it gets there; the power switch
-  works when neither of those can reach the arm. A run at a terminal offers the first of them
-  itself, before the line is printed.
+  bare spec such as `doctor --robot lerobot:real`. Hold the arm first, then do one of the three
+  things the line says. The arm is energised, the run is over, and nothing is going to put it
+  down on its own, but "it will not fall" is true of the arm as it stands and of nothing that
+  connects to it: `quackd robot release` lets it go into your hands, `quackd doctor --robot`
+  tries the rest move again from wherever it now is and lets go at the pose if it gets there,
+  and both begin with a connect that takes torque off every motor for a moment. The power
+  switch works when neither of those can reach the arm. A run at a terminal offers the first of
+  them itself, before the line is printed, and only over an arm that answered: an arm that went
+  quiet, which is what cutting its supply looks like, gets a line that says quackd cannot tell
+  whether it is holding itself up, and to hold it and cut its power.
 - **A probe and a dry run now leave torque on where they used to drop it.** A dry run never
   moves the arm and `quackd robot list --probe` never moves it either, so on an arm away from
   its recorded rest pose both end with torque on: the dry run prints the line above, and the

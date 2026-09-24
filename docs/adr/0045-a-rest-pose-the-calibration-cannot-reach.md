@@ -9,9 +9,11 @@ last rest move missed, which is the genuine miss this ADR keeps torque on for. T
 below is unchanged for everything quackd does on its own initiative. A genuine miss still keeps
 torque on, and taking it off is now a person's call, made after being told to hold the arm,
 where before the only call left to them was the power switch. The line a genuine miss ends on,
-`TORQUE_LEFT_ON`, names the ways out with the name the arm was registered under: hold the arm
-and run `quackd robot release`, or run `quackd doctor --robot` to try the rest move again, or cut
-its power. [ADR-0039](0039-an-arm-placed-by-hand.md)'s second amendment has the rest.
+`TORQUE_LEFT_ON`, names the ways out with the name the arm was registered under, and puts the
+hold before all of them, because both commands connect and connecting takes torque off every
+motor for a moment: hold the arm first, then run `quackd robot release`, or run `quackd doctor
+--robot` to try the rest move again, or cut its power. "It will not fall" is said of the arm as
+it stands. [ADR-0039](0039-an-arm-placed-by-hand.md)'s second amendment has the rest.
 
 ## Context
 
@@ -115,12 +117,18 @@ the one that fell short.
 strictly outside its travel (`_outside_travel`). Written to that joint, "stay where you are"
 arrives as "go to the limit" once the servo has clamped it, which is what hauled the shoulder
 up. What it costs is that the joint keeps whatever goal its servo already holds instead of a
-fresh one. When that goal is one quackd wrote, it is within one step of where the joint was when
-it was written, because every goal quackd writes is within `max_relative_target` of the reading
-it was written against. After a fresh connect it is whatever the servo holds once torque comes
-back on, which is the question `TORQUE_ENABLE_HOLDS_PRESENT` asks and nothing has answered. If
-every body joint reads outside its travel, nothing is sent, `stop_error` stays None, and the
-stop is still a stop, since every servo keeps the goal it already has. In `take_hold()` the skip
+fresh one, and for a joint past its travel that goal is the limit whenever quackd wrote it: a
+step from a reading past the travel is still past it, and the servo clamps it. So the skip
+avoids starting a rise out of a fold and cannot halt one already under way. A joint a move had
+begun lifting keeps rising to its limit at the servo's own speed whatever a stop writes or
+leaves out, and the power switch is the only stop for that stretch. (This paragraph first said
+the joint's goal was within a step of where it stood, which is true only inside the travel.)
+After a fresh connect the goal is whatever the servo holds once torque comes back on, which is
+the question `TORQUE_ENABLE_HOLDS_PRESENT` asks and nothing has answered. If every body joint
+reads outside its travel, nothing is sent and `stop_error` stays None: the stop started nothing,
+which is all it could do. The joints the hold left out are kept on the transport
+(`stop_skipped`), and the core `stop` verb names them and says they read past their travel. In
+`take_hold()` the skip
 avoids writing a goal the servo would clamp and does no more than that: when the joint that
 moved as torque came on is one it wrote no goal for, the refusal says so, names the end of the
 travel in this arm's numbers, and asks for the joint to be placed inside it.
@@ -181,10 +189,9 @@ reason the old behaviour passed.
   at the edge. Whether a joint `take_hold()` wrote no goal for stays where it was placed when
   torque comes on is `TORQUE_ENABLE_HOLDS_PRESENT`, still UNVERIFIED; the read-back catches it
   when it does not.
-- **Some readers do not say it yet.** The core `stop` verb's summary is unchanged when the hold
-  sent nothing, and does not say which joints it left alone. `quackd robot show` prints the pose
-  as recorded and not the reachable one, because it does not connect and so has no calibration
-  to clip against. A flock member's rest move does not narrate the note.
+- **Some readers do not say it yet.** `quackd robot show` prints the pose as recorded and not
+  the reachable one, because it does not connect and so has no calibration to clip against. A
+  flock member's rest move does not narrate the note.
 - [ADR-0036](0036-what-the-arm-does-not-say.md) and [ADR-0039](0039-an-arm-placed-by-hand.md)
   are amended rather than reversed, and each carries the amendment. The range refusal, the step
   cap and the rule that torque comes off only at the rest pose all stand. What changed is what

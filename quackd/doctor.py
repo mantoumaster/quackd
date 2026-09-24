@@ -22,7 +22,7 @@ import platform
 import re
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,14 +34,15 @@ from rich.text import Text
 from quackd import __version__, ui
 from quackd.adapters.base import AdapterError, RestResult, go_to_rest_if_any
 from quackd.adapters.factory import (
-    _module as _adapter_module,
-)
-from quackd.adapters.factory import (
+    RobotSpec,
     adapter_names,
     describe,
     is_installed,
     list_adapters,
     parse_robot_spec,
+)
+from quackd.adapters.factory import (
+    _module as _adapter_module,
 )
 from quackd.agent.providers.base import ProviderError
 from quackd.agent.providers.factory import (
@@ -489,6 +490,9 @@ def probe(
     camera_url: str | Sequence[str] | None,
     token: str | None,
     rest_pose: dict[str, float] | None = None,
+    *,
+    name: str | None = None,
+    before_connect: Callable[[Any], None] | None = None,
 ) -> ProbeReport:
     """Connect, and report what the robot itself said.
 
@@ -497,7 +501,14 @@ def probe(
     to see the difference before a run does.
 
     It is also the one command that moves the arm without being given a task, because a probe
-    that dropped torque wherever the arm stood is how the arm fell."""
+    that dropped torque wherever the arm stood is how the arm fell.
+
+    `name` is the name the robot was registered under, when it was asked for by one, and the
+    body is built with it as a run builds it (`RobotSpec.robot_id`): an arm finds its
+    calibration file under that id, and every line it writes names it. Without it, a probe of a
+    registered arm read the calibration of the default id, whatever the arm was registered as.
+    `before_connect` is handed the built body just before it connects, which is the caller's
+    one chance to say something to a person holding it (`cli._doctor_warning`)."""
     import asyncio
 
     from quackd.adapters.factory import make_adapter
@@ -506,13 +517,16 @@ def probe(
     async def go() -> tuple[
         Any, Any, dict[str, Any] | None, dict[str, Any], RestResult, str | None, list[str]
     ]:
+        parsed = parse_robot_spec(spec)
         adapter = make_adapter(
-            parse_robot_spec(spec),
+            RobotSpec(parsed.adapter, parsed.backend, name) if name else parsed,
             address=address,
             camera_url=camera_url,
             token=token,
             rest_pose=rest_pose,
         )
+        if before_connect is not None:
+            before_connect(adapter)
         live = await adapter.connect()
         # the connect attempts a body had to make again, read here and not after the close:
         # the list belongs to the connect that just happened
@@ -926,11 +940,17 @@ def collect(
     token: str | None = None,
     rest_pose: dict[str, float] | None = None,
     progress: Progress = None,
+    robot_name: str | None = None,
+    before_connect: Callable[[Any], None] | None = None,
 ) -> DoctorReport:
     """Every question doctor asks, answered as data.
 
     Nothing in here decides what anything looks like, which is what lets `--json` exist and
-    what keeps `render` honest about where its numbers came from."""
+    what keeps `render` honest about where its numbers came from.
+
+    `robot_name` is the registered name `robot` was resolved from, when it was, and the robot
+    is described and built under it, as a run builds it; `before_connect` goes to `probe`.
+    Not `name`, which this function's own loops over providers and presets rebind."""
 
     def say(message: str) -> None:
         if progress is not None:
@@ -1065,7 +1085,10 @@ def collect(
     if robot is not None:
         say(f"describing {robot}")
         try:
-            manifest = describe(parse_robot_spec(robot))
+            parsed = parse_robot_spec(robot)
+            manifest = describe(
+                RobotSpec(parsed.adapter, parsed.backend, robot_name) if robot_name else parsed
+            )
         except AdapterError as e:
             report.robot = RobotReport(spec=robot, error=str(e))
         else:
@@ -1083,8 +1106,18 @@ def collect(
                 ],
             )
             if address:
-                say(f"connecting to {robot} at {address}")
-                report.robot.probe = probe(robot, manifest, address, camera_url, token, rest_pose)
+                shown = f"{robot_name} ({robot})" if robot_name else robot
+                say(f"connecting to {shown} at {address}")
+                report.robot.probe = probe(
+                    robot,
+                    manifest,
+                    address,
+                    camera_url,
+                    token,
+                    rest_pose,
+                    name=robot_name,
+                    before_connect=before_connect,
+                )
 
     # An adapter that has backends worth probing on this machine says so itself. The
     # Microduck's are the only ones today: whether robotd's socket is where it should be, and

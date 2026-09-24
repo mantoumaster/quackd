@@ -473,8 +473,8 @@ gripper        100.0
 > [!NOTE]
 > That last line has one exception, and it is a flag rather than a fault. `--by-hand` starts a
 > run from a pose you set with your own hands instead of from the recorded one. The recorded
-> pose is still where the arm goes first, because it is the only place quackd will let go of
-> it, and it is still where the arm folds back to at the end. [Or start from a pose you set by
+> pose is still where the arm goes first, because it is the only place `--by-hand` will let go
+> of it, and it is still where the arm folds back to at the end. [Or start from a pose you set by
 > hand](#or-start-from-a-pose-you-set-by-hand), below, is the whole of it.
 
 Without `--yes` the same joint table appears and then the question, and nothing is written
@@ -503,7 +503,9 @@ naming the joint, the angle you folded it to and the edge of its travel, and rec
 all the same. From then on quackd parks the arm at the edge of the travel, counts that as
 reaching the pose, lets go of it there, and says once per run which joint is free to settle
 the rest of the way ([the table below](#what-a-run-then-does-with-it)). A `stop` never writes a
-goal for a joint that reads past its travel, so it cannot haul a folded joint up again. The fix
+goal for a joint that reads past its travel, so it does not start a folded joint rising again,
+and it says which joints it left alone. It cannot stop a rise a move has already started, since
+any goal past the travel is the limit to the servo: that stretch is the power switch's. The fix
 is still a calibration that saw the fold.
 
 **Calibrating again makes the pose stale.** A joint's zero in degrees is the middle of the
@@ -533,9 +535,9 @@ while you hold it, run something that can put it down, or cut its power.
 The line when it could not get there reads:
 
 ```
-the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the
-arm and run quackd robot release arm-01, or run quackd doctor --robot arm-01 to park it, or
-cut its power
+the arm is not at its rest pose (...), so torque was left on and it will not fall as it
+stands: hold it first, because connecting takes torque off every motor for a moment, then
+run quackd robot release arm-01, or quackd doctor --robot arm-01 to park it, or cut its power
 ```
 
 Something is in the way, or a servo tripped. A fold past the calibrated travel is no longer
@@ -573,8 +575,9 @@ Keep holding it until it is down: the warning's first half is true of a real arm
 connect takes torque off every motor for a moment, and the mock only prints it. The command
 exits 1 unless every motor read torque off, and names the ones that did not. `quackd doctor
 --robot arm-01` is the other way out: it tries the rest move again from wherever the arm now is
-and lets go at the pose if it gets there. The power switch is for when neither of them can
-reach the arm. What each outcome means is in
+and lets go at the pose if it gets there. Hold the arm for that one too, because it connects as
+well, and it says so before it does. The power switch is for when neither of them can reach the
+arm. What each outcome means is in
 [adapters/lerobot.md](adapters/lerobot.md#releasing-it-where-it-stands).
 
 Two details worth knowing before they surprise you:
@@ -591,7 +594,7 @@ Two details worth knowing before they surprise you:
   ```
   ·  note    moving to the rest pose
   ·  note    at the rest pose
-  ·  note    shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose NAME) to make the fold reachable
+  ·  note    shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose arm-01) to make the fold reachable
   ```
 
   Whether a real joint let go at the edge settles onto its fold, and gently, is one of the
@@ -1288,8 +1291,8 @@ And once it is running:
 | `the arm's torque is off` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so this points at a tripped servo or the supply |
 | the run ends saying the arm did not answer | the heartbeat's round trip failed | the cable, the power, or a tripped servo. The arm holds its last goal under torque. Seen once on 2026-09-15, in a dry run, and not since |
 | the arm sags when the run ends | no rest pose is recorded, so torque drops where the arm stands | `quackd robot rest-pose arm-01`, with the arm folded by hand first |
-| `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose`, and at a terminal it offered to release the arm first | hold the arm and run `quackd robot release arm-01`, which lets it go into your hands, then clear whatever stopped it and run again. `quackd doctor --robot arm-01` tries the fold again instead, and the power switch is for when neither can reach the arm. It stays energised until you do one of them. If you calibrated again since you recorded the pose, record it again: the old angles name a different shape now |
-| `torque still reads on for <joints>: cut the power` | `quackd robot release` sent the release and those motors kept their torque | hold the arm and cut its power, or run the command again. The motors not named are limp |
+| `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose`, and at a terminal it offered to release the arm first | hold the arm first, whichever way out you take, because both commands connect and connecting takes torque off every motor for a moment. Then run `quackd robot release arm-01`, which lets it go into your hands, then clear whatever stopped it and run again. `quackd doctor --robot arm-01` tries the fold again instead, and the power switch is for when neither can reach the arm. It stays energised until you do one of them. If you calibrated again since you recorded the pose, record it again: the old angles name a different shape now |
+| `torque still reads on for <joints>: cut the power` | `quackd robot release` sent the release and those motors kept their torque | hold the arm and cut its power. The motors not named are limp, and the line after it says what the close did: kept torque, or took it off at the rest pose |
 | `... is recorded at ... in the rest pose and this calibration lets its servo be driven to ... and no further` | the fold you recorded lies past the travel your calibration recorded. The arm parks at the edge of the travel and is let go of there, and the run carries on | nothing needs doing today. To make the fold itself reachable, calibrate again with every joint taken all the way into it, then record the pose again |
 
 [adapters/lerobot.md](adapters/lerobot.md) has the full table, including the failures SO-101
@@ -2018,12 +2021,11 @@ quackd doctor --robot arm-01
 ```
 
 The second should print what the first probe printed, with the address coming from the registry
-instead of from your hand. What it does not check is the name. `doctor` resolves a registered
-name to its spec and then probes under the adapter's own default id `arm-01`, whatever you
-registered it as, while an MCP session connects under the registered name. Register as `arm-01`,
-as above, and those are the same id. Register as `lab-arm` and this probe still reads `arm-01`,
-refusing or reading some other arm's travel, while the MCP server you are about to configure
-reads `lab-arm`.
+instead of from your hand. It checks the name as well: `doctor` builds a registered arm under
+the name it was registered as, which is the id an MCP session connects under, so a probe of an
+arm registered as `lab-arm` loads `lab-arm`'s calibration, exactly as the MCP server you are
+about to configure will. The probe of `lerobot:real` before it had no name to go by and used the
+adapter's default id, `arm-01`, which is why this page registers the arm under that name.
 
 **`--llm` is optional on `quackd robot add` here, and an MCP session ignores it.** The
 registry's stored pilot only matters to `quackd run`. In MCP mode quackd picks no model and reads
@@ -2083,7 +2085,7 @@ between the park and the line that says it is up. Captured on the mock arm regis
 
 ```
 quackd-mcp INFO arm-01: moved to the rest pose
-quackd-mcp INFO arm-01: shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose NAME) to make the fold reachable
+quackd-mcp INFO arm-01: shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose arm-01) to make the fold reachable
 quackd-mcp INFO quackd MCP server up: robot=arm-01 transport=mock dry_run=False
 ```
 
@@ -2114,7 +2116,7 @@ The arm is left where it stood, on the mock still `shoulder_pan` 45, and its tor
 [M10](#m10-rehearse-with---dry-run) keeping its promise rather than a fault:
 
 ```
-quackd-mcp WARNING arm-01: the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall: hold the arm and run quackd robot release arm-01, or run quackd doctor --robot arm-01 to park it, or cut its power
+quackd-mcp WARNING arm-01: the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release arm-01, or quackd doctor --robot arm-01 to park it, or cut its power
 ```
 
 **When the arm cannot reach the pose, the session never starts.** The server raises before it
@@ -2126,7 +2128,7 @@ stalls names the joint and both numbers, in the form `shoulder_lift is at -50 wi
 `when the time ran out` and the seconds:
 
 ```
-arm-01: the arm did not reach its rest pose: shoulder_lift stopped 40 deg short. the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall: hold the arm and run quackd robot release arm-01, or run quackd doctor --robot arm-01 to park it, or cut its power
+arm-01: the arm did not reach its rest pose: shoulder_lift stopped 40 deg short. the arm is not at its rest pose (shoulder_pan is at 45 with a goal of 0), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release arm-01, or quackd doctor --robot arm-01 to park it, or cut its power
 ```
 
 The same warning reaches the server's stderr, under one line carrying the mock's scripted

@@ -318,7 +318,8 @@ class LeRobotAdapter:
         sentence is the one the run and `doctor` say about the same pose."""
         ranges = dict(getattr(self.transport, "joint_range_deg", None) or {})
         _, clipped = reachable_rest_goal(pose, ranges)
-        return rest_clip_note(worth_saying(clipped))
+        name = getattr(self.transport, "registered_name", None)
+        return rest_clip_note(worth_saying(clipped), name)
 
     async def disconnect(self) -> None:
         await self.transport.close()
@@ -421,6 +422,13 @@ class LeRobotAdapter:
         verb reads this and refuses to say "stopped" over a hold that never got there."""
         error = getattr(self.transport, "stop_error", None)
         return str(error) if error else None
+
+    @property
+    def stop_skipped(self) -> tuple[str, ...]:
+        """The body joints the last stop wrote no goal for, because each read past its travel.
+        Proxied for `stop_error`'s reason: the core `stop` verb reads it off whatever it was
+        handed, which is this adapter, and says which joints the hold left alone."""
+        return tuple(str(j) for j in getattr(self.transport, "stop_skipped", ()) or ())
 
     async def heartbeat(self) -> None:
         await self.transport.heartbeat()

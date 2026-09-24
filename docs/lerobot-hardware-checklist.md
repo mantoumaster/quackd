@@ -187,18 +187,19 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    LeRobot's `disconnect()` flag off, leaves the arm holding itself up, and says so once:
 
    ```
-   the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the
-   arm and run quackd robot release arm-01, or run quackd doctor --robot arm-01 to park it, or
-   cut its power
+   the arm is not at its rest pose (...), so torque was left on and it will not fall as it
+   stands: hold it first, because connecting takes torque off every motor for a moment, then
+   run quackd robot release arm-01, or quackd doctor --robot arm-01 to park it, or cut its power
    ```
 
    > [!WARNING]
    > That is a change in behaviour and it is the one to read twice. A probe or a dry run on an
    > arm away from its recorded rest pose now leaves torque **on** where it used to drop it.
-   > The arm will not fall, and it will also not let go until you hold it and run
+   > The arm will not fall as it stands, and it will also not let go until you hold it and run
    > `quackd robot release arm-01`, until a run or `doctor` puts it back, or until you cut its
-   > power. A run at a terminal whose rest move missed asks you first: hold the arm and press
-   > Enter.
+   > power. Hold it for every one of those, not only the first: a run, `doctor` and the release
+   > all begin by connecting, and connecting takes torque off every motor for a moment. A run at
+   > a terminal whose rest move missed asks you first: hold the arm and press Enter.
 
 
    The `rest pose` row in `doctor` says which of four things happened:
@@ -404,12 +405,17 @@ means, and which moments move the arm without anybody asking for it.
     finish the motion it was in the middle of. Then, with a rest pose recorded in step 6, the
     freeze is not the end of it: quackd folds the arm back to that pose and lets go there,
     because that is the one place letting go is safe. Expect that motion, and keep the hand on
-    the switch through it.
+    the switch through it. The one joint the freeze does not hold is one the move was lifting
+    out of a fold past its travel: every goal past the travel is the edge to the servo, so that
+    joint keeps rising to the edge whatever the stop does, and the switch is the only thing that
+    stops it there.
 
 ## Handing the arm over, and taking it back
 
-`--by-hand` is the one thing in quackd that takes torque off a robot, and it takes it off at
-the one pose the arm is known to hold without any: the fold you recorded in step 6. Everything
+`--by-hand` is one of the two ways a person can have quackd take torque off a robot, and it
+takes it off at the one pose the arm is known to hold without any: the fold you recorded in
+step 6. The other, `quackd robot release` and the offer at the end of a run that missed its
+fold, takes it off wherever the arm stands, and only after telling you to hold the arm. Everything
 below rests on that pose being right, which is why these two steps come after the ones that
 drove the arm there and back rather than before them. The flag wants the registered name from
 step 6 with a pose against it, and a terminal, because somebody has to press Enter. Without the
@@ -438,7 +444,10 @@ recorded
     instead. The one expected exception is a joint the run named as recorded past its travel:
     it is let go at the edge of the travel rather than in the fold, and it is free to drop the
     rest of the way, so have your hand under that joint in particular. This is the only moment
-    quackd will ever release it, because the release is refused anywhere but that pose.
+    a `--by-hand` run releases it, because its release is refused anywhere but that pose. The
+    other way to have torque taken off is one you ask for by name while you hold the arm,
+    wherever it stands: `quackd robot release arm-01`, or Enter at the offer a run at a terminal
+    makes when its last rest move missed (step 6).
 
     Then it waits for you, and says what it is waiting for:
 

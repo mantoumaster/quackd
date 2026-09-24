@@ -848,9 +848,12 @@ def _torque_phrase(note: str) -> str:
 
     `robot list --probe` has a line per robot, not a paragraph, so the note is shortened here
     rather than printed whole. What may not be lost in the shortening is the direction: held
-    up, or let go."""
+    up, let go, or not known, which is an arm that did not answer the close's own read and so
+    may be limp at the switch rather than holding itself up."""
     if "could not keep torque on" in note:
         return "torque could NOT be kept: the arm was released where it stood"
+    if "cannot tell whether" in note:
+        return "torque unknown: the arm did not answer the close"
     return "torque left on: not at its rest pose"
 
 

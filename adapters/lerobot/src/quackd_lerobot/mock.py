@@ -30,13 +30,16 @@ from quackd_lerobot.verbs import (
     LET_GO_WHERE_IT_STOOD,
     LIMP_IN_HAND,
     TOL_DEG,
+    TORQUE_KEPT_AFTER_REFUSAL,
     Clip,
     at_rest,
     past_reach,
     reachable_rest_goal,
+    released_by_the_close,
     rest_clip_note,
     rest_goal,
     shortfall,
+    still_holding_in_hand,
     torque_left_on,
     worth_saying,
 )
@@ -126,6 +129,16 @@ class LeRobotMock(MockTransport):
         self.hold_slips: dict[str, float] | None = None
         """Set to joint offsets and `take_hold` finds the arm somewhere else than where it
         was read, which is how an offline arm stands in for one that moved as torque came on."""
+        self.release_holdouts: tuple[str, ...] = ()
+        """Motors that take the release and keep their torque anyway, as the real backend's
+        read-back can find them: some of them is an arm limp in part and still in a hand, all
+        of them is a release that was refused. A rehearsal of either ending says what the arm
+        would, which an in-memory release that always takes cannot."""
+        self.holding_in_hand: tuple[str, ...] = ()
+        """The motors the last release left on, in the bus's order, for the close to name."""
+        self.release_refused = False
+        """The last release a person asked for through the second door was refused, as on the
+        real backend: the close then does not send them back to it."""
         self.sequence: list[str] = []
         """`stop`, `rest` and `close` in the order they were called. A run's teardown is an
         order as much as a set, and this is what a test reads to check it."""
@@ -309,7 +322,7 @@ class LeRobotMock(MockTransport):
                 why = shortfall(goal, self.joints, recorded)
                 result = RestResult("stalled", f"{why}, and it has stopped moving")
         if clipped := worth_saying(self.rest_clipped):
-            note = rest_clip_note(clipped) if result.reached else None
+            note = rest_clip_note(clipped, self.registered_name) if result.reached else None
             result = RestResult(result.how, result.reason, clipped, note)
         return result
 
@@ -319,8 +332,10 @@ class LeRobotMock(MockTransport):
         `anywhere` is the real backend's second door, opened the same way: the two refusals
         about the pose are skipped and the arm is released where it stands, in the same words,
         so a rehearsal of `quackd robot release` or of the end-of-run offer says what the arm
-        would. An in-memory release always takes, so every motor reads off afterwards."""
+        would. An in-memory release takes wherever `release_holdouts` does not say otherwise,
+        and those motors read on afterwards in the real backend's words."""
         self.sequence.append("let_go")
+        self.release_refused = anywhere
         if not anywhere and self.rest_pose is None:
             return HandResult(
                 "refused",
@@ -338,10 +353,28 @@ class LeRobotMock(MockTransport):
                 f"the arm is not at its rest pose ({shortfall(goal, self.joints, recorded)}), "
                 "and an arm held up by torque alone falls when torque goes",
             )
+        where = "at the rest pose" if resting else "where the arm stands"
+        holding = tuple(j for j in JOINTS if j in self.release_holdouts)
+        if holding == JOINTS:
+            # every motor kept its torque, so nothing was released and nobody holds anything
+            return HandResult(
+                "refused",
+                "the arm still reports torque on, so it was not released",
+                joints=dict(self.joints),
+                torque_on=holding,
+            )
+        self.release_refused = False
         self.torque = False
         self.in_hand = True
+        self.holding_in_hand = holding
         self.let_go_why = LET_GO_WHERE_IT_STOOD if anywhere else None
-        where = "at the rest pose" if resting else "where the arm stands"
+        if holding:
+            return HandResult(
+                "released",
+                f"torque is off {where} except on {', '.join(holding)}, which still read on",
+                joints=dict(self.joints),
+                torque_on=holding,
+            )
         return HandResult(
             "released", f"torque is off {where}", joints=dict(self.joints), torque_on=()
         )
@@ -377,21 +410,35 @@ class LeRobotMock(MockTransport):
 
     async def close(self) -> None:
         """Torque drops only where the arm can be let go of, as it does on a real one: at the
-        reachable rest pose or past it on a clipped joint's side, with nothing to say about it."""
+        reachable rest pose or past it on a clipped joint's side, with nothing to say about it.
+
+        And the real close's words for the endings a person drove: an arm in a hand that a
+        release left partly energised names what still holds, and an arm whose release was
+        just refused is neither sent back to that release nor let go of without a word."""
         self.sequence.append("close")
         self.close_note = None
         recorded = rest_goal(self.rest_pose or {})
         goal = self.rest_reachable
         if self.in_hand:
-            self.close_note = LIMP_IN_HAND.format(why=self.let_go_why or LET_GO_TO_PLACE)
+            limp = self.let_go_why or LET_GO_TO_PLACE
+            self.close_note = (
+                still_holding_in_hand(self.holding_in_hand, limp)
+                if self.holding_in_hand
+                else LIMP_IN_HAND.format(why=limp)
+            )
         elif self.rest_pose and not goal:
             self.close_note = torque_left_on(
                 "the recorded pose names no joint this arm drives", self.registered_name
             )
         elif goal and not at_rest(goal, self.joints, recorded):
-            self.close_note = torque_left_on(
-                shortfall(goal, self.joints, recorded), self.registered_name
+            why = shortfall(goal, self.joints, recorded)
+            self.close_note = (
+                TORQUE_KEPT_AFTER_REFUSAL.format(why=why)
+                if self.release_refused
+                else torque_left_on(why, self.registered_name)
             )
         else:
             self.torque = False
+            if self.release_refused:
+                self.close_note = released_by_the_close(at_rest=self.rest_pose is not None)
         await super().close()

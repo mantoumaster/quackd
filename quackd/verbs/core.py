@@ -241,6 +241,20 @@ async def stop(ctx: VerbContext, _: NoParams) -> VerbResult:
             f"stop could not be delivered: {undelivered}. If this robot has a deadman it is "
             "what stops the legs now; otherwise use the hardware switch."
         )
+    # A body that left joints out of its hold says which (the arm, for a joint read past its
+    # travel, where "stay here" would reach the servo as "go to the limit"). Without the clause
+    # a stop that held every joint and one that held none read the same, to the pilot and in
+    # the record. Read with getattr, so every body that holds all of itself is unchanged.
+    skipped = [str(j) for j in getattr(ctx.transport, "stop_skipped", ()) or ()]
+    if skipped:
+        one = len(skipped) == 1
+        named = skipped[0] if one else ", ".join(skipped[:-1]) + " and " + skipped[-1]
+        return VerbResult.success(
+            f"stopped (velocity zeroed); {named} {'reads' if one else 'read'} past "
+            f"{'its' if one else 'their'} travel, so no goal was written for "
+            f"{'it' if one else 'them'}",
+            not_held=skipped,
+        )
     return VerbResult.success("stopped (velocity zeroed)")
 
 
