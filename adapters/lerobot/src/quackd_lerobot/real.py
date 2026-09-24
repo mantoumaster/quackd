@@ -72,9 +72,12 @@ from quackd_lerobot import upstream_api as up
 from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
+    HOLD_NOT_CONFIRMED,
+    IN_HAND_NOT_MOVED,
     JOINTS,
     LET_GO_TO_PLACE,
     LET_GO_WHERE_IT_STOOD,
+    LIMP_AT_REST,
     LIMP_IN_HAND,
     STALL_DEG,
     STALL_TICKS,
@@ -83,6 +86,7 @@ from quackd_lerobot.verbs import (
     TORQUE_COULD_NOT_BE_KEPT,
     TORQUE_KEPT_AFTER_REFUSAL,
     TORQUE_UNKNOWN_AT_CLOSE,
+    UNCONFIRMED_IN_HAND,
     UNREAD_IN_HAND,
     Clip,
     at_rest,
@@ -699,12 +703,15 @@ class LeRobotReal:
         asks; a release asks the other one, whether any still does, because a motor that kept
         its torque is a joint still holding in the hands of somebody told it is limp."""
         self._torque_read_back = False
-        """A torque read has answered since the last release went out, so `_torque_on` says
-        something about the arm as it is now rather than as it was before the release. The
-        close of an arm in a hand reads `_torque_on` only when this is so: from a read that
-        predates the release, every motor would be named, over an arm that may be limp. When it
-        is not so, the close says nothing read the release back (`verbs.UNREAD_IN_HAND`),
-        rather than either of the two things a read could have said."""
+        """A torque read has answered since the last torque write went out, the release's or a
+        take-hold's, so `_torque_on` says something about the arm as it is now rather than as
+        it was before that write. The close of an arm in a hand reads `_torque_on` only when
+        this is so: from a read that predates the release, every motor would be named, over an
+        arm that may be limp, and from one that predates a take-hold's torque write, none
+        would, over an arm that may be energised. When it is not so, the close says nothing
+        read the write back (`verbs.UNREAD_IN_HAND` after a release,
+        `verbs.UNCONFIRMED_IN_HAND` after a take-hold), rather than either of the two things a
+        read could have said."""
         self._answered = True
         """The last read of the arm came back. Cleared as each read starts and set again when it
         returns, so after a failure it says whether the arm itself stopped answering or
@@ -738,9 +745,24 @@ class LeRobotReal:
         Set the moment a release call goes out (`let_go`), cleared only by a release that every
         motor refused and by a `take_hold()` that confirmed torque came on. Every teardown
         begins with `stop`, which is what picks the arm back up, so the window this is true in
-        is the wait itself, and past it only where the take-hold was refused: a joint placed
-        past its travel, which it leaves torque off under, or a servo that never took torque
-        back. Then it holds to the close."""
+        is the wait itself, and past it only where the take-hold was refused
+        (`_refused_hold`): a joint placed past its travel, which it leaves torque off under, a
+        servo that never took torque back, or a torque write nothing read back. Then it holds
+        to the close, because nothing after a refused take-hold tries again: the stop sends the
+        arm nothing, the rest move refuses to move it, and no other call takes hold."""
+        self._refused_hold: HandResult | None = None
+        """The take-hold refused since the last release that left the arm in a hand, or None.
+
+        Set by a `take_hold()` that refused with `_in_hand` still set, cleared by one that took
+        hold and by the next release that goes out. `_hold()` reads it to leave the arm alone:
+        it took hold of an arm in a hand only while nothing had refused, which is a Ctrl-C in
+        the placement wait (ADR-0039), and never again after a refusal. A retry is what put
+        torque on silently under a person who had just been told quackd never took hold and to
+        keep hold of the arm, the moment they moved a joint back inside its travel, and a goal
+        written to a limp servo instead stops nothing and stays in its register for the next
+        torque write to drive to. The close reads its `energised` to say which kind of arm is
+        in the person's hands: one the take-hold switched nothing on under, or one its torque
+        write may have energised."""
         self._let_go_why: str | None = None
         """What the close says the arm was let go of for, when the last release said: set by
         the second door (`verbs.LET_GO_WHERE_IT_STOOD`), cleared by the first, which leaves the
@@ -1287,7 +1309,11 @@ class LeRobotReal:
         failed, and the close's own read made none or was refused, it says exactly that
         (`UNREAD_IN_HAND`): the release went out, nothing read it back, so hold the arm as
         though nothing holds it and cut its power to be sure. "Nothing is holding it up" there
-        would be the unread claim, over motors that may still hold.
+        would be the unread claim, over motors that may still hold. After a take-hold that was
+        refused once its torque write went out, the same silence is an arm that may be
+        energised, and it is said that way (`UNCONFIRMED_IN_HAND`). And an arm the placing
+        release let go of at its rest pose that this close reads still there, every motor off,
+        is said to be limp at its rest pose (`LIMP_AT_REST`), not in somebody's hands.
 
         Three more cases say something of their own, because the usual line would tell the
         person something quackd did not do or does not know. An arm that did not answer the
@@ -1309,11 +1335,28 @@ class LeRobotReal:
         if self._in_hand:
             # Whoever is reading this has the arm in their hand. The torque note below would
             # tell them it is holding itself up, which is the one thing it may not be.
-            limp = self._let_go_why or why or LET_GO_TO_PLACE
+            #
+            # Why it is limp, as the mock says it: why it was let go of. It used to fall back
+            # on the rest shortfall (`why`), which `_not_resting` builds by joining the shortfall
+            # to the rest move's reason, and that reason begins with the same shortfall, so the
+            # person holding the arm read it twice and never read that it was let go of for
+            # them to place and never taken hold of again.
+            limp = self._let_go_why or LET_GO_TO_PLACE
+            # a take-hold's torque write went out and was refused: the arm may be energised,
+            # and only a torque read since that write says whether it is
+            wrote = self._refused_hold is not None and self._refused_hold.energised is not False
             if not self._torque_read_back:
-                self.close_note = UNREAD_IN_HAND.format(why=limp)
+                self.close_note = UNCONFIRMED_IN_HAND if wrote else UNREAD_IN_HAND.format(why=limp)
             elif self._torque_on:
-                self.close_note = still_holding_in_hand(self._torque_on, limp)
+                self.close_note = still_holding_in_hand(
+                    self._torque_on, HOLD_NOT_CONFIRMED if wrote else limp
+                )
+            elif why is None and answered and self.rest_pose is not None and not self._let_go_why:
+                # this close's own read found it at its rest pose, and a torque read found every
+                # motor off: a first-door release, which lets go only at that pose, left it
+                # there, and telling the person to put down an arm lying in its fold is telling
+                # them it was lifted, which no read said
+                self.close_note = LIMP_AT_REST
             else:
                 self.close_note = LIMP_IN_HAND.format(why=limp)
             with contextlib.suppress(Exception):
@@ -1715,10 +1758,18 @@ class LeRobotReal:
         An arm somebody is holding is taken hold of first. Every teardown begins with a stop,
         so this is what a Ctrl-C during the hand-off wait reaches: the arm is energised where
         the person's hand has it, and the rest move that follows can then put it down. Sending
-        a goal to a limp servo instead would be a stop that stopped nothing. Where a body joint
-        reads outside its travel `take_hold` leaves torque off and says why, the arm stays in
-        the hand, and this stop reports that it held nothing (`stop_error`), so the close that
-        follows ends on the note for an arm in somebody's hands.
+        a goal to a limp servo instead would be a stop that stopped nothing.
+
+        That is the one take-hold a stop makes, and only while nothing has refused one since
+        the release (`_refused_hold`). Where `take_hold` refuses, here or at the end of the
+        placement wait, the arm stays in the person's hands and this stop sends it nothing at
+        all: no second take-hold and no goal. It reports that it held nothing (`stop_error`).
+        A second take-hold is what switched torque on without a word under a person who had
+        just been told quackd never took hold, once they did as the refusal asked and moved a
+        joint back inside its travel. A goal is what a limp servo keeps in its register and
+        drives to the next time torque comes on, which is the stale goal the refusal was about,
+        and over an arm the refused take-hold may have energised it is a command to an arm in
+        somebody's hands. The close that follows says which arm they are holding.
 
         A joint reading outside its calibrated travel is left out of the goal too. The servo
         clamps every goal to its travel, so "stay where you are" written to a joint folded past
@@ -1740,9 +1791,19 @@ class LeRobotReal:
         nothing and was never going to halt what it skipped."""
         self.stop_skipped = ()
         await self._cancel_policy()
-        retaken: HandResult | None = None
-        if self._in_hand:
-            retaken = await self.take_hold()
+        if self._in_hand and self._refused_hold is None:
+            await self.take_hold()
+        if self._in_hand and self._refused_hold is not None:
+            # Still in a hand, because a take-hold was refused, this one or the one before it:
+            # whatever this sent would go to a limp servo, or to one the refused take-hold may
+            # have energised with a person holding it, so it sends nothing, and it is not a
+            # stop. A take-hold that refused because the arm slipped did energise it, cleared
+            # `_in_hand`, and that arm is held below like any other.
+            self.stop_error = (
+                "the arm is in somebody's hands, so the stop sent it nothing: "
+                f"{self._refused_hold.reason}"
+            )
+            return
         try:
             await self._probe()
             body = {
@@ -1763,13 +1824,6 @@ class LeRobotReal:
             if self.stop_error is None:
                 self.stop_error = f"the hold did not reach the arm: {type(e).__name__}: {e}"
             raise
-        if retaken is not None and not retaken.ok and self._in_hand:
-            # whatever went out above went to a limp servo and moved nothing, and if every
-            # joint read past its travel nothing went out at all, so this is not a stop.
-            # Only where the arm is still in a hand: a `take_hold` that refused because the
-            # arm slipped did energise it, and that arm is holding itself perfectly well.
-            self.stop_error = f"the arm is limp in somebody's hands: {retaken.reason}"
-            return
         self.stop_error = None
 
     async def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:  # type: ignore[override]
@@ -1877,9 +1931,11 @@ class LeRobotReal:
         where = "at the rest pose" if resting else "where the arm stands"
         before = dict(self._joints)
         self._let_go_why = LET_GO_WHERE_IT_STOOD if anywhere else None
-        # from here the release is going out, so no read from before it speaks for the arm
+        # from here the release is going out, so no read from before it speaks for the arm, and
+        # no take-hold refused before it speaks for the hand it is going into
         self._release_refused = False
         self._torque_read_back = False
+        self._refused_hold = None
         try:
             # up.BUS_DISABLE_TORQUE, with the retries upstream's own disconnect gives the same
             # writes: without them one lost packet releases the motors before it and not the
@@ -1978,23 +2034,44 @@ class LeRobotReal:
         goal when torque comes on, which is the unverified row above, the joint swings across
         its whole travel. This method used to take that second way, a joint past its travel
         left out of both writes, as the smaller motion, and it can be by far the larger. So the
-        person is told which joint, where it reads and where its travel is, and to move it
-        inside (`verbs.placed_past_travel`). `_in_hand` is left set, so everything after this
-        goes on treating the arm as limp in a hand: `_hold()` says the stop held nothing, and
-        `close()` ends on the note for an arm in somebody's hands.
+        person is told which joint, where it reads and where its travel is
+        (`verbs.placed_past_travel`). `_in_hand` is left set, so everything after this goes on
+        treating the arm as in a hand: `_hold()` sends it nothing, the rest move does not move
+        it, and `close()` ends on the note for an arm in somebody's hands.
+
+        Every refusal says which of two kinds it is (`HandResult.energised`), because the
+        person holding the arm acts on it. One made before the torque write went out, over a
+        joint past its travel, a closed transport, an arm that reported nothing, or a failure
+        on the way there, switched nothing on: the arm is as the release left it
+        (`energised=False`). One made after it may have left torque on, all of it or part of
+        it: a register that did not answer (`None`, and `_torque_read_back` is cleared as the
+        write goes out, so no read from before it speaks for the arm), a call that raised with
+        the write on the wire (`None`), motors that read on while others read off (`True`),
+        or an arm that slipped as torque came on (`True`). Only a read that found every motor
+        off after it is `False` again. Every refusal that leaves the arm in a hand is kept
+        (`_refused_hold`), and nothing takes hold again until the next release.
 
         The gripper is not in that check. LeRobot bounds a gripper reading into its 0..100 range
         before quackd sees it (`_normalize`, the function `up.DEGREES_FORMULA` cites, bounds
         every mode but degrees), so it cannot read outside its travel, and a goal for it is
         bounded the same way (`up.DEGREES_NO_CLAMP`)."""
+        held = await self._take_hold()
+        # the one place the rule `_hold()` and `close()` read is kept: a refusal that left the
+        # arm in a hand, or nothing, since a hold that took and a slip both energised the arm
+        self._refused_hold = held if not held.ok and self._in_hand else None
+        return held
+
+    async def _take_hold(self) -> HandResult:
+        """`take_hold` itself; the caller keeps what a refusal left behind."""
         if self._closed:
-            return HandResult("refused", "the arm's transport is closed")
+            return HandResult("refused", "the arm's transport is closed", energised=False)
+        enabling = False
         try:
             await self._cancel_policy()
             await self._probe()
             placed = {j: v for j, v in self._joints.items() if j in JOINTS}
             if not placed:
-                return HandResult("refused", "the arm reported no joint to hold")
+                return HandResult("refused", "the arm reported no joint to hold", energised=False)
             outside = {
                 j: v for j, v in placed.items() if j != "gripper" and self._outside_travel(j, v)
             }
@@ -2002,7 +2079,10 @@ class LeRobotReal:
                 # before a single write: a goal for such a joint and no goal for it both move
                 # it once torque comes on (the docstring says how), so torque stays off
                 return HandResult(
-                    "refused", placed_past_travel(outside, self.joint_range_deg), joints=placed
+                    "refused",
+                    placed_past_travel(outside, self.joint_range_deg),
+                    joints=placed,
+                    energised=False,
                 )
             # The gripper IS in that goal, which is the opposite of what `_hold()` and the rest
             # move do, for the reason they leave it out. They omit it because the squeeze the
@@ -2014,6 +2094,10 @@ class LeRobotReal:
             # Unclipped, because this is where the arm physically is, and every body joint of
             # it is inside the travel by now.
             await self._send(placed, clip=False)
+            # From here the torque write may reach a motor, so no torque read from before it
+            # says anything about the arm, and a refusal from here on may leave it energised.
+            enabling = True
+            self._torque_read_back = False
             # up.BUS_ENABLE_TORQUE, retried like the release: one lost packet here refuses the
             # hold with the joints before it energised and the rest still limp in a hand
             await self._call(
@@ -2023,7 +2107,11 @@ class LeRobotReal:
             await self.clock.sleep(TICK_S)
             await self._probe()
         except Exception as e:
-            return HandResult("refused", self.stop_error or f"{type(e).__name__}: {e}")
+            return HandResult(
+                "refused",
+                self.stop_error or f"{type(e).__name__}: {e}",
+                energised=None if enabling else False,
+            )
         # Nothing but a torque register that came back and said "on" gets past here. This is
         # the one place in the adapter where an unread register must refuse rather than be
         # assumed past: `let_go()` takes the opposite reading of the same silence on purpose,
@@ -2033,11 +2121,23 @@ class LeRobotReal:
             return HandResult(
                 "refused",
                 f"the arm did not say whether torque came back on ({self._torque_error}), and "
-                "a hold nothing confirmed is not a hold: keep hold of the arm",
+                "a hold nothing confirmed is not a hold",
+                energised=None,
             )
         if not self._torque:
-            # still limp, so still in somebody's hands, and `close()` should still say so
-            return HandResult("refused", "the arm still reports torque off, so nothing holds it")
+            # still limp, all of it or the motors that read off, so still in somebody's hands,
+            # and `close()` should still say so. Motors that did read on are named: "nothing
+            # holds it" said over them would be the one thing the read did not say
+            if self._torque_on:
+                return HandResult(
+                    "refused",
+                    f"torque came back on only on {', '.join(self._torque_on)}, and the rest "
+                    "of the arm still reads off",
+                    energised=True,
+                )
+            return HandResult(
+                "refused", "the arm still reports torque off, so nothing holds it", energised=False
+            )
         # Torque is on, and read back rather than assumed, so the arm is holding itself up and
         # is no longer hanging off a hand. The refusal below is about the *pose* and not about
         # that: an arm reported limp in somebody's hands while it is energised sends them to
@@ -2052,8 +2152,8 @@ class LeRobotReal:
                 f"the arm moved as torque came on ({worst} by {moved[worst]:.0f} degrees), so "
                 "it is not holding the pose you set; it is holding where it is now"
             )
-            return HandResult("refused", why, joints=held)
-        return HandResult("held", "holding the pose you set", joints=held)
+            return HandResult("refused", why, joints=held, energised=True)
+        return HandResult("held", "holding the pose you set", joints=held, energised=True)
 
     async def go_to_rest(self) -> RestResult:
         """Drive the arm to the pose it was recorded resting in. Never raises.
@@ -2067,7 +2167,15 @@ class LeRobotReal:
         (`verbs.at_rest` with the recorded pose), so an arm folded past its travel is
         `already` at rest, and one driven down to the edge of it has `arrived`. Either way the
         result names the joints recorded further past their travel than a reached pose may
-        miss by, and carries the one sentence a person should hear about them."""
+        miss by, and carries the one sentence a person should hear about them.
+
+        An arm in somebody's hands (`in_hand`) is read and sent nothing: it is `already` at
+        rest where the read finds it there, and refused otherwise (`verbs.IN_HAND_NOT_MOVED`).
+        It is only still in a hand this late because a take-hold was refused, and a rest move
+        over it wrote goals into limp servos, which stay in their registers for the next torque
+        write to drive to, over an arm whose take-hold may have left it energised, which is a
+        fold under a person's hands. Its stall, taken as a stop, took hold of the arm the
+        moment a joint came back inside its travel, with nothing said. So none of that runs."""
         if self.rest_pose is None:
             return RestResult.none("no rest pose is recorded for this arm")
         if self._closed:
@@ -2085,6 +2193,8 @@ class LeRobotReal:
             await self._probe()
             if at_rest(goal, self._joints, recorded):
                 result = RestResult("already", "already at the rest pose")
+            elif self._in_hand:
+                result = RestResult("refused", IN_HAND_NOT_MOVED)
             else:
                 result = await self._drive_to_rest(goal, recorded)
         except Exception as e:

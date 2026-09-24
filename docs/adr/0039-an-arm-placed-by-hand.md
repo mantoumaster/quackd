@@ -8,18 +8,42 @@ calibration lets the servo be driven toward it. A joint recorded past its calibr
 at rest within `TOL_DEG` of the edge of that travel or anywhere beyond it on the side of its
 fold, and `let_go()` still asks exactly what `close()` asks, so `--by-hand` releases an arm
 parked at the edge and one already folded past it. The second decision gains a refusal ahead of
-it: `take_hold()` does not switch torque on while any body joint the person placed reads outside
-its travel. A goal written for that joint is clamped to the limit and drives the joint there
-under their hand. No goal leaves the servo the last one it was written, which after a hand-off
-is the rest move's, possibly the far end of the travel, and whether torque coming on holds the
-joint where it is instead is `TORQUE_ENABLE_HOLDS_PRESENT`, still unverified. Neither keeps the
-joint where it was put, so nothing is written, torque stays off, the arm stays in their hands,
-and the refusal names each joint, its reading and its travel and asks for it to be moved
-inside. The run ends there, and the stop that picks an arm up out of a hand meets the same
-refusal, so its teardown closes on the note for an arm in somebody's hands, never on the one
-about torque left on. (This amendment first said the joint was left out of both writes and left
-to its servo, with the read-back to catch it, and that could be the larger of the two motions.
-ADR-0045 has the whole of it.)
+it: `take_hold()` does not switch torque on while any body joint the person placed reads
+outside its travel. A goal written where that joint reads lies past the travel, is clamped to
+the limit and drives the joint there under their hand. No goal leaves the servo the last one it
+was written, which after a hand-off is the rest move's, possibly the far end of the travel, and
+whether torque coming on holds the joint where it is instead is `TORQUE_ENABLE_HOLDS_PRESENT`,
+still unverified. Neither keeps the joint where it was put, so nothing is written, torque stays
+off, the arm stays in their hands, and the refusal names each joint, its reading and its
+travel. The run ends there. (This amendment first said the joint was left out of both writes
+and left to its servo, with the read-back to catch it, and that could be the larger of the two
+motions. ADR-0045 has the whole of it.)
+
+**Amended 2026-09-24:** the rule for an arm a take-hold refused, whatever refused it. While an
+arm is, or may be, in a person's hands, quackd writes it no goal, does not move it and does not
+switch its torque on again on its own, and it tells the person torque is off only where nothing
+was sent or a read said so. A take-hold refused before its torque write went out (a joint
+placed past its travel, a closed transport, nothing to hold), or one whose read after that
+write found every motor off, left the arm as the release did, limp, and the person is told
+quackd did not take hold and the arm is still in their hands. One refused after it (a torque
+register that did not answer, a torque call that raised, motors that read on beside others that
+read off) may have left the arm energised, and the person is told quackd could not confirm
+whether it has torque, to hold it as though it may move or drop, and to cut its power to be
+sure (`HandResult.energised` says which). After either, the teardown's stop takes no second
+hold and sends nothing, the hand-back is not asked, the rest move writes nothing and the run
+says the arm is not folded (or, where a read finds it at its rest pose, that it is already
+there), and the close says what its own read found: an unconfirmed torque write as unconfirmed,
+joints read on by name, an arm the placing release let go of that still reads at its rest pose
+with every motor off as limp at that pose, and otherwise the arm limp in their hands, let go of
+for them to place. The stop still picks an arm up out of a hand, as the decision below on the
+stop says, where no take-hold has been refused since the release, which is a Ctrl-C during the
+placement wait: it energises the arm where the hand has it and the rest move folds it. The
+amendment above said the teardown after a refusal "closes on the note for an arm in somebody's
+hands, never on the one about torque left on", and a person who moved the joint back inside its
+travel had torque switched on under their hand by the stop or by the stall of the rest move,
+with nothing said, and the run closed on torque left on. And a torque register that did not
+answer at Enter was told as quackd never having taken hold, and the rest move then folded the
+energised arm under the hands it had just told to keep hold of it.
 
 **Amended again 2026-09-23, by `quackd robot release`:** the rest pose is no longer the only
 place quackd releases an arm. A person at the arm can now ask for its torque by name, wherever

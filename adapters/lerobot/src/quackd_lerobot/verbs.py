@@ -722,6 +722,59 @@ there: that sentence ends "nothing moved it there" when no rest move ran, which 
 arm a person is holding, and the person already knows where it stands, having just asked for
 it to be let go of there."""
 
+LIMP_AT_REST = (
+    "the arm is limp at its rest pose, where it was let go of for you to place and where it "
+    "still reads: it rests there with no torque, as it does at the end of every run"
+)
+"""The close's line for an arm a `--by-hand` release let go of at its rest pose and nothing
+took hold of again, when the close's own read finds it at that pose by the half-line rule and a
+read of the torque register found every motor off.
+
+`LIMP_IN_HAND` says "put it down before you let go of it, because nothing is holding it up",
+and here the arm is down. It is where a placement wait that ended unanswered or on a Ctrl-C
+leaves an arm whose fold lies past its travel: the take-hold at the start of the teardown is
+refused over the folded joint, and the close then ended the run telling somebody who may never
+have touched the arm, lying in its fold, that it was in their hands. Only after the first door,
+which releases nowhere but the rest pose: an arm a person asked to have released where it
+stood (`LET_GO_WHERE_IT_STOOD`) was released into their hands on purpose, since `quackd robot
+release` and the end-of-run offer both tell them to hold it before it goes, and it keeps the
+line for one. Nothing here claims what no read said: the pose and the torque are both this
+close's own readings, and whether somebody lifted the arm and put it back is not a thing quackd
+says."""
+
+IN_HAND_NOT_MOVED = "the arm is in a person's hands, so it is not moved"
+"""The rest move's refusal while the arm is in somebody's hands (`in_hand`), which writes
+nothing to it. Past a hand-off the arm is only still in a hand because a take-hold was refused,
+and then a rest move has nothing good to do. Over a limp arm it folds nothing: a limp servo
+takes a goal into its register and does not move to it, and that goal is still there when
+torque next comes on, which is the very stale goal the take-hold refused to leave. Over an arm
+whose take-hold was refused after its torque write, which may be energised, it is a fold under
+somebody's hands. An arm already at its rest pose is answered `already`, which it is, and is
+still sent nothing."""
+
+UNCONFIRMED_IN_HAND = (
+    "the arm is in your hands, and quackd asked its motors for torque to take hold of it and "
+    "nothing read back what they did, so it may hold itself up or be limp, all of it or part of "
+    "it: keep hold of it as though it may move or drop, and cut its power to be sure"
+)
+"""The close's line for an arm in a person's hands whose take-hold was refused after its torque
+write went out, when no read of the torque register has answered since: a register that did
+not answer, or a call that raised with the write on the wire.
+
+`UNREAD_IN_HAND` is the same silence after a release, and it tells the person to hold the arm as
+though nothing holds it, which is the safe reading of a release: the motors it reached are
+limp. After a torque write the motors it reached may be energised, and "nothing holds it" is
+the claim the take-hold refused to confirm. So this says quackd does not know which, to hold
+the arm against both, and the switch, which settles it. The close keeps whatever torque there
+is, as every close of an arm in a hand does."""
+
+HOLD_NOT_CONFIRMED = (
+    "quackd asked its motors for torque to take hold of it, and the hold was refused"
+)
+"""`still_holding_in_hand`'s parenthesis when the joints it names read on after a take-hold's
+torque write rather than after a release: `LET_GO_TO_PLACE` would say the arm was "never taken
+hold of again" in the same sentence that names joints holding."""
+
 
 def placed_past_travel(outside: Mapping[str, float], travel: Mapping[str, Any]) -> str:
     """Why `take_hold` left torque off: the body joints a person placed outside their
@@ -731,12 +784,23 @@ def placed_past_travel(outside: Mapping[str, float], travel: Mapping[str, Any]) 
 
     It says why in the person's terms because the person is holding the arm and has just been
     told it would be taken from them. Nothing quackd can do keeps such a joint where it was
-    put. A goal written where it is lies past the travel, and the servo pulls every goal to the
-    end of its travel (`upstream_api.POSITION_LIMITS_CLAMP_GOALS`). With no goal written, the
-    servo keeps the last one it was given, which after a hand-off is the rest move's, written
-    before the arm was lifted and possibly the far end of the travel from where it was placed,
-    and whether torque coming on holds the joint where it is instead is unverified (the row the
-    real backend's `take_hold` cites). Either way the joint may move with a hand on it.
+    put. A goal written where it is lies past the travel, and the servo clamps a goal past the
+    travel to the end of it (`upstream_api.POSITION_LIMITS_CLAMP_GOALS`), so torque would pull
+    the joint there. With no goal written, the servo keeps the last one it was given, which
+    after a hand-off is the rest move's, written before the arm was lifted and possibly the far
+    end of the travel from where it was placed, and whether torque coming on holds the joint
+    where it is instead is unverified (the row the real backend's `take_hold` cites). Either way
+    the joint may move with a hand on it.
+
+    The sentence names the goal it means, the one written where the joint reads. It used to say
+    the servo pulls "any goal written for that joint" to the end of its travel, and a goal
+    inside the travel is not clamped at all: the clause after it is about exactly such a goal.
+
+    It ends on the rule and not on a promise. It used to end "before the arm is taken hold of",
+    which read as a take-hold still to come once the joint was moved, and nothing in the run
+    that meets this refusal takes hold again: its teardown writes nothing to an arm in a hand
+    (`LeRobotReal._hold`), so a person who moved the joint inside and waited would be waiting
+    for nothing.
 
     Each reading is `said_past` beside `published_travel`, as the range refusal prints a goal,
     so a joint a hair past an edge is never named inside the travel the sentence gives."""
@@ -749,14 +813,19 @@ def placed_past_travel(outside: Mapping[str, float], travel: Mapping[str, Any]) 
         readings.append(f"{joint} reads {said_past(outside[joint], lo, hi)}")
         spans.append(f"{lo:.1f}..{hi:.1f}")
     one = len(joints) == 1
-    its, which = ("its", "that joint") if one else ("their", "those joints")
+    its, them = ("its", "it") if one else ("their", "them")
+    written = (
+        "a goal written where that joint is lies"
+        if one
+        else "goals written where those joints are lie"
+    )
     last = "the last goal it was given" if one else "the last goals they were given"
     return (
         f"{_listed(readings)}, outside {its} calibrated travel of {_listed(spans)}, so quackd "
-        f"left torque off: the servo pulls any goal written for {which} to the end of {its} "
-        f"travel, and with none written it may drive {'it' if one else 'them'} to {last}, with "
-        f"a hand on the arm either way. Move {_listed(joints)} inside {its} travel before the "
-        "arm is taken hold of"
+        f"left torque off: {written} past {its} travel and the servo would pull {them} to the "
+        f"end of {its} travel, and with none written the servo may drive {them} to {last}, with "
+        f"a hand on the arm either way. quackd takes hold of the arm only with "
+        f"{_listed(joints)} inside {its} travel"
     )
 
 

@@ -294,9 +294,15 @@ refused, and the way out of it is the `stop` every teardown opens with: on an ar
 somebody's hand that stop takes hold first, at wherever your hand has it, and the rest move then
 puts it down from there. Sending a goal to a limp servo would have been a stop that stopped
 nothing. It never takes while a joint reads outside its calibrated travel, because a goal written
-there is pulled to the end of the travel and none leaves the servo the last goal it had, so
-torque stays off and the refusal names the joint. If that take-hold did not take, the close says
-so in the one line that is worth reading:
+where that joint is lies past the travel and is pulled to the end of it, and none leaves the
+servo the last goal it had, so torque stays off and the refusal names the joint. Once a
+take-hold has been refused, at the end of the placement wait or in that stop, quackd leaves the
+arm alone for the rest of the run: no second take-hold, even after you move the joint back
+inside, no goal and no fold, because the arm is in your hands. A take-hold refused after it
+asked for torque, with nothing read back, may have left the arm energised, so you are told
+quackd cannot confirm whether it has torque, to hold it as though it may move or drop, and to
+cut its power to be sure, and the close says the same. Where the take-hold switched nothing on,
+the close says so in the one line that is worth reading:
 
 ```
 the arm is limp and in your hands (...): put it down before you let go of it, because nothing is holding it up

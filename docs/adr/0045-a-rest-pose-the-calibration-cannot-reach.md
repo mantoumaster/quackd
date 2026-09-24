@@ -18,7 +18,10 @@ it stands. [ADR-0039](0039-an-arm-placed-by-hand.md)'s second amendment has the 
 **Amended 2026-09-24:** `take_hold()` no longer skips a joint placed past its travel. It refuses
 before it writes anything, torque stays off and the arm stays in the person's hands, because the
 goal a skipped joint keeps after a hand-off is the rest move's and not the limit. The decision on
-the take-hold below says why, and what the teardown then says.
+the take-hold below says why, and what the teardown then does, which is to leave the arm alone:
+nothing takes hold of it again, nothing writes it a goal, and nothing folds it, whatever the
+person does with the joint afterwards ([ADR-0039](0039-an-arm-placed-by-hand.md)'s amendment of
+the same day has the rule for every refused take-hold).
 
 ## Context
 
@@ -155,16 +158,28 @@ clamped to the near limit and haul it there, and no goal at all leaves the servo
 one, which it drives to on re-enable if `TORQUE_ENABLE_HOLDS_PRESENT` goes the wrong way.
 Neither keeps the joint where it was put. So `take_hold()` refuses whenever a body joint reads
 outside its travel, before any goal or torque write: torque stays off, `_in_hand` stays set, and
-the refusal (`verbs.placed_past_travel`) names each such joint, its reading and its travel, and
-asks for it to be moved inside. A `--by-hand` run ends there and tells the person at once that
-the arm is still in their hands. The stop that opens its teardown meets the same refusal and
-says it held nothing, the hand-back and the end-of-run offer are not put to an arm nothing is
-holding up, and the close ends on the note for an arm in somebody's hands. The gripper is not in
-the check, because LeRobot bounds a gripper reading into its 0..100 range before quackd sees it.
-(This decision first said `take_hold()` left such a joint out of both its writes, and that the
-goal it kept was the limit. That holds for a goal written while the joint read past its travel
-and not for the rest move's, and the skip it justified could turn a haul of a few degrees into
-a swing across the travel with a hand on the arm.)
+the refusal (`verbs.placed_past_travel`) names each such joint, its reading and its travel, says
+that a goal written where the joint is lies past its travel and the servo would pull the joint
+to the end of it, and says the arm is taken hold of only with the joint inside. A `--by-hand`
+run ends there and tells the person at once that the arm is still in their hands. After that
+nothing in the run touches the arm: the stop that opens its teardown takes no second hold and
+sends nothing (`_refused_hold`), the hand-back is not asked, the rest move reads the arm and
+writes it nothing (`IN_HAND_NOT_MOVED`), and the run says once that the arm is in their hands
+and not folded. No release is offered over it either. The close ends on the note for an arm in
+somebody's hands, let go of for them to place, or, where its own read finds the arm still at
+its rest pose with every motor off, which is a fold recorded past the travel that a Ctrl-C in
+the placement wait left unlifted, on the note for an arm limp at its rest pose
+(`LIMP_AT_REST`). The gripper is not in the check, because LeRobot bounds a gripper reading into
+its 0..100 range before quackd sees it. (This decision first said `take_hold()` left such a
+joint out of both its writes, and that the goal it kept was the limit. That holds for a goal
+written while the joint read past its travel and not for the rest move's, and the skip it
+justified could turn a haul of a few degrees into a swing across the travel with a hand on the
+arm. It then said the teardown's stop "meets the same refusal", which it did only while the
+joint still read past its travel: a person who moved it back inside, as the refusal asked, had
+the stop, or the stall of a rest move writing goals into the limp servos, take hold of the arm
+under their hand with nothing said, and the run closed on torque left on. The refusal's own
+sentence said the servo pulls "any goal written for that joint" to the end of its travel, which
+is true only of a goal written past the travel.)
 
 **The note travels on the rest result, never on `close_note`.** `RestResult` gains `clipped`
 and `note`, both with defaults, so the six other bodies, which only ever build

@@ -26,12 +26,15 @@ from quackd.transport.mock import MockTransport
 from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
+    IN_HAND_NOT_MOVED,
     JOINTS,
     LET_GO_TO_PLACE,
     LET_GO_WHERE_IT_STOOD,
+    LIMP_AT_REST,
     LIMP_IN_HAND,
     TOL_DEG,
     TORQUE_KEPT_AFTER_REFUSAL,
+    UNCONFIRMED_IN_HAND,
     UNREAD_IN_HAND,
     Clip,
     at_rest,
@@ -153,8 +156,20 @@ class LeRobotMock(MockTransport):
         it rehearses is the arm with no rest pose, or one whose every read after the release
         went unanswered."""
         self.release_read_back = False
-        """A read of the torque register answered for the last release, as on the real backend:
-        the close names what it found only then."""
+        """A read of the torque register answered for the last torque write, the release's or a
+        take-hold's, as on the real backend: the close names what it found only then."""
+        self.hold_unread: str | None = None
+        """Set to a reason and `take_hold` sends its torque write with nothing to read it back,
+        as on the real backend when the torque register does not answer after it, and that
+        reason is why. The arm is still in a hand and may be energised, so the take-hold is
+        refused with `energised=None`, and the close says quackd cannot tell which
+        (`UNCONFIRMED_IN_HAND`). The in-memory arm does take the write, since a servo that
+        answers nothing may well have: the rehearsal of this ending is of an arm that is
+        energised while quackd says it does not know."""
+        self.hold_refusal: HandResult | None = None
+        """The take-hold refused since the last release that left the arm in a hand: the real
+        backend's `_refused_hold`. The stop takes hold of an arm in a hand only while this is
+        None, and the close reads its `energised`."""
         self.release_refused = False
         """The last release a person asked for through the second door was refused, as on the
         real backend: the close then does not send them back to it."""
@@ -288,9 +303,11 @@ class LeRobotMock(MockTransport):
         return ack
 
     async def stop(self) -> None:
-        if self.in_hand:
+        if self.in_hand and self.hold_refusal is None:
             # the real `_hold()`'s order: an arm somebody is holding is picked up before it is
-            # told to stay where it is, because a goal to a limp servo stops nothing
+            # told to stay where it is, because a goal to a limp servo stops nothing. Only
+            # while no take-hold has been refused since the release: after one, the real stop
+            # sends the arm nothing and takes no second hold, and neither does this
             await self.take_hold()
         await super().stop()
         self.sequence.append("stop")
@@ -302,7 +319,13 @@ class LeRobotMock(MockTransport):
 
         The same reachable goal and the same half-line rule as the real backend, and arrival
         is judged rather than assumed: `_goto` clamps like the servo, so a goal it could not
-        land is one this reads back and reports, the way the arm's own rest move would."""
+        land is one this reads back and reports, the way the arm's own rest move would.
+
+        An arm in somebody's hands is moved by nothing here, as on the arm: `already` where it
+        is at its rest pose, refused in the real backend's words otherwise. It used to stall
+        over a limp arm and say "it has stopped moving" of an arm that never moved, to a
+        person just told to keep hold of it, and the real rest move wrote goals into its limp
+        servos meanwhile."""
         self.sequence.append("rest")
         if self.rest_pose is None:
             return RestResult.none("no rest pose is recorded for this arm")
@@ -312,17 +335,16 @@ class LeRobotMock(MockTransport):
             # the real arm's answer, for the same reason: a pose that drives nothing is a
             # reason to keep holding, not a reason to behave as though none was recorded
             return RestResult("refused", "the recorded pose names no joint this arm drives")
-        if self.rest_fails is not None:
+        if self.in_hand:
+            result = (
+                RestResult("already", "already at the rest pose")
+                if at_rest(goal, self.joints, recorded)
+                else RestResult("refused", IN_HAND_NOT_MOVED)
+            )
+        elif self.rest_fails is not None:
             result = RestResult("stalled", self.rest_fails)
         elif at_rest(goal, self.joints, recorded):
             result = RestResult("already", "already at the rest pose")
-        elif not self.torque:
-            # a limp servo takes a goal into its register and does not move to it, so the real
-            # rest move over an arm nothing has taken hold of stalls where the arm is. That is
-            # the arm a teardown meets after `take_hold` refused one placed past its travel,
-            # and a rehearsal that folded it would skip the ending the arm reaches
-            why = shortfall(goal, self.joints, recorded)
-            result = RestResult("stalled", f"{why}, and it has stopped moving")
         else:
             # a joint folded past its limit is left out, as on the arm: the limit is the one
             # goal it would take, and that goal hauls it up out of its fold
@@ -388,6 +410,7 @@ class LeRobotMock(MockTransport):
         self.release_refused = False
         self.torque = holding == JOINTS
         self.in_hand = True
+        self.hold_refusal = None
         self.let_go_why = LET_GO_WHERE_IT_STOOD if anywhere else None
         if self.release_unread is not None:
             # sent, and nothing read it back: the real backend's words for a read-back whose
@@ -420,8 +443,16 @@ class LeRobotMock(MockTransport):
         was placed outside `MOCK_RANGES`: torque stays off and the arm stays in a hand, because
         on the arm neither a goal written there (pulled to the limit) nor none (the last goal
         the servo had) keeps that joint where it was put. A rehearsal that took hold of it
-        would teach the one ending the arm refuses."""
+        would teach the one ending the arm refuses.
+
+        Every result says whether it may have left torque on (`HandResult.energised`), as the
+        real one does, and a refusal that leaves the arm in a hand is kept (`hold_refusal`)."""
         self.sequence.append("take_hold")
+        held = self._take_hold()
+        self.hold_refusal = held if not held.ok and self.in_hand else None
+        return held
+
+    def _take_hold(self) -> HandResult:
         placed = dict(self.joints)
         outside = {
             j: v
@@ -430,12 +461,25 @@ class LeRobotMock(MockTransport):
         }
         if outside:
             return HandResult(
-                "refused", placed_past_travel(outside, self.joint_range_deg), joints=placed
+                "refused",
+                placed_past_travel(outside, self.joint_range_deg),
+                joints=placed,
+                energised=False,
             )
         # the real backend writes the present position as the goal before torque comes on and
         # again after, and an in-memory arm is already exactly where it is told to be
         self._goto({j: v for j, v in placed.items() if j in JOINTS})
         self.torque = True
+        if self.hold_unread is not None:
+            # the torque write went out and no read came back: the real backend's words, the
+            # arm still taken to be in a hand, and no read from before the write speaking for it
+            self.release_read_back = False
+            return HandResult(
+                "refused",
+                f"the arm did not say whether torque came back on ({self.hold_unread}), and a "
+                "hold nothing confirmed is not a hold",
+                energised=None,
+            )
         # torque is on, so the arm holds itself whatever else went wrong: the real backend
         # clears this here and for the same reason, before it judges the pose
         self.in_hand = False
@@ -450,8 +494,11 @@ class LeRobotMock(MockTransport):
                     f"{abs(self.hold_slips[worst]):.0f} degrees), so it is not holding the "
                     "pose you set; it is holding where it is now",
                     joints=dict(self.joints),
+                    energised=True,
                 )
-        return HandResult("held", "holding the pose you set", joints=dict(self.joints))
+        return HandResult(
+            "held", "holding the pose you set", joints=dict(self.joints), energised=True
+        )
 
     async def close(self) -> None:
         """Torque drops only where the arm can be let go of, as it does on a real one: at the
@@ -459,18 +506,24 @@ class LeRobotMock(MockTransport):
 
         And the real close's words for the endings a person drove: an arm in a hand that a
         release left partly energised names what still holds, one whose release nothing read
-        back says so and to cut its power to be sure, and an arm whose release was just refused
-        is neither sent back to that release nor let go of without a word."""
+        back says so and to cut its power to be sure, one whose take-hold sent its torque write
+        with nothing to read it back says quackd cannot tell whether it has torque, one the
+        placing release left at its rest pose is limp there rather than in anybody's hands, and
+        an arm whose release was just refused is neither sent back to that release nor let go
+        of without a word."""
         self.sequence.append("close")
         self.close_note = None
         recorded = rest_goal(self.rest_pose or {})
         goal = self.rest_reachable
         if self.in_hand:
             limp = self.let_go_why or LET_GO_TO_PLACE
+            wrote = self.hold_refusal is not None and self.hold_refusal.energised is not False
             if not self.release_read_back:
-                self.close_note = UNREAD_IN_HAND.format(why=limp)
+                self.close_note = UNCONFIRMED_IN_HAND if wrote else UNREAD_IN_HAND.format(why=limp)
             elif self.holding_in_hand:
                 self.close_note = still_holding_in_hand(self.holding_in_hand, limp)
+            elif goal and at_rest(goal, self.joints, recorded) and not self.let_go_why:
+                self.close_note = LIMP_AT_REST
             else:
                 self.close_note = LIMP_IN_HAND.format(why=limp)
         elif self.rest_pose and not goal:

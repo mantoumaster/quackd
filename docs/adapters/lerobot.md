@@ -1002,12 +1002,16 @@ The order below is the whole of the feature, and none of it is a step you can sk
    first observation is a lie. A joint you placed past its calibrated travel is refused before
    any of that: nothing is written, torque stays off, and the run ends with the arm still in
    your hands. Nothing quackd can do would keep that joint where you put it. A goal written
-   there is pulled to the end of the travel, so torque would drive the joint to it under your
-   hand, and with no goal written its servo keeps the last one it had, the rest move's, which
-   can be the far end of the travel from where you put it. The refusal names each such joint,
-   where it reads and its travel, in this arm's numbers, and asks you to move it inside. A fold
-   that lies past the travel ([A pose past the travel](#a-pose-past-the-travel)) counts, so lift
-   every joint out of it before you press Enter.
+   where it is lies past the travel and is pulled to the end of it, so torque would drive the
+   joint there under your hand, and with no goal written its servo keeps the last one it had,
+   the rest move's, which can be the far end of the travel from where you put it. The refusal
+   names each such joint, where it reads and its travel, in this arm's numbers, and says the arm
+   is taken hold of only with it inside. A fold that lies past the travel
+   ([A pose past the travel](#a-pose-past-the-travel)) counts, so lift every joint out of it
+   before you press Enter. A take-hold refused after torque was asked for, because the torque
+   register did not answer or the call failed on the way, is a different arm: it may be holding
+   itself up, all of it or part of it, and you are told quackd could not confirm whether it has
+   torque, to hold it as though it may move or drop, and to cut its power to be sure.
 5. **The pilot runs from those angles.** The step cap, the range refusal, the heat gate and the
    budgets are all the ones any other run gets. The minutes clock restarts the moment the arm
    is holding your pose, so the time you spent looking for a pencil is not taken out of the
@@ -1066,15 +1070,29 @@ squeeze the person left and cannot be tightened.
 **Ctrl-C in the first wait** ends the run with the arm limp in your hands, and the teardown it
 goes into is built for exactly that arm. Every teardown starts with a `stop`, and a `stop` on
 an arm somebody is holding takes hold of it first: the arm is re-energised where your hand has
-it, and only then does the rest move fold it. Not while a joint reads outside its travel: the
-take-hold refuses there as it does in step 4, the arm stays limp in your hands, and the close
-says so. A `stop` that sent a goal to a limp servo would
-stop nothing, and the fold after it would be a fold of an arm that is not listening. A wait
-that ends any other way lands in the same teardown and says so rather than blaming a key
-nobody touched. There is no clock on the first wait, so that ending means the keyboard itself
-went away: the terminal was closed, or the input it was reading finished. quackd notices,
-because a wait for a keystroke that nothing can deliver has to end rather than hold an arm
-limp for ever (captured on `lerobot:mock`, where nobody had moved the arm out of the fold
+it, and only then does the rest move fold it. A `stop` that sent a goal to a limp servo would
+stop nothing, and the fold after it would be a fold of an arm that is not listening. Not while
+a joint reads outside its travel: the take-hold refuses there as it does in step 4, and then
+nothing is written to the arm and nothing folds it. The close says what its own read finds,
+the arm limp in your hands, or, where the joint outside its travel is a fold nobody lifted the
+arm out of, the arm limp at its rest pose (captured on `lerobot:mock` registered as `arm-03`,
+its pose's `shoulder_lift` recorded at -110, past the mock's -100, with the capture script
+letting the joint settle there once torque was off, as a fold past the travel does, and
+pressing Ctrl-C in the wait, with the invitation, the kill switch's own line and the record of
+the question left out):
+
+```
+·  hand    released: torque is off at the rest pose
+→  send    stop
+·  note    already at the rest pose
+·  note    the arm is limp at its rest pose, where it was let go of for you to place and where it still reads: it rests there with no torque, as it does at the end of every run
+```
+
+A wait that ends any other way lands in the same teardown and says so rather than blaming a
+key nobody touched. There is no clock on the first wait, so that ending means the keyboard
+itself went away: the terminal was closed, or the input it was reading finished. quackd
+notices, because a wait for a keystroke that nothing can deliver has to end rather than hold an
+arm limp for ever (captured on `lerobot:mock`, where nobody had moved the arm out of the fold
 either, so the rest move had nothing to do):
 
 ```
@@ -1127,42 +1145,65 @@ Walking away and pressing nothing at all is the same ending by a different route
 ```
 
 **A joint placed past its travel ends the run with the arm in your hands**, as step 4 says. You
-are told at once, not only in the summary, and the teardown after it treats the arm as what it
-is: its stop cannot take hold either, the gripper is left for you to empty by hand rather than
-asked about, the rest move cannot move a limp arm and says it did not get there, no release is
-offered over an arm nothing is holding up, and the close ends on the line for an arm in your
-hands. Captured on `lerobot:mock` registered as `arm-01`, with your hand stood in for by the
-capture script, which set `wrist_flex` to 112, past the mock's 100, before the Enter, and with
-the log's copy of the second line said to you left out:
+are told at once, not only in the summary, and from then on nothing touches the arm: the stop
+that begins the teardown takes no second hold and writes nothing, the gripper is left for you to
+empty by hand rather than asked about, the rest move writes nothing either and the run says once
+that the arm is not folded, no release is offered over an arm in your hands, and the close ends
+on the line for an arm in your hands. Captured on `lerobot:mock` registered as `arm-01`, with
+your hand stood in for by the capture script, which set `wrist_flex` to 112, past the mock's
+100, before the Enter, and with the log's copy of the second line said to you left out:
 
 ```
-·  hand    hold refused: wrist_flex reads 112.0, outside its calibrated travel of -100.0..100.0, so quackd left torque off: the servo pulls any goal written for that joint to the end of its travel, and with none written it may drive it to the last goal it was given, with a hand on the arm either way. Move wrist_flex inside its travel before the arm is taken hold of (elbow_flex 40, gripper 35, shoulder_lift -20, shoulder_pan 0, wrist_flex 112, wrist_roll 0)
-·  note    the arm did not take hold: wrist_flex reads 112.0, outside its calibrated travel of -100.0..100.0, so quackd left torque off: the servo pulls any goal written for that joint to the end of its travel, and with none written it may drive it to the last goal it was given, with a hand on the arm either way. Move wrist_flex inside its travel before the arm is taken hold of
+·  hand    hold refused: wrist_flex reads 112.0, outside its calibrated travel of -100.0..100.0, so quackd left torque off: a goal written where that joint is lies past its travel and the servo would pull it to the end of its travel, and with none written the servo may drive it to the last goal it was given, with a hand on the arm either way. quackd takes hold of the arm only with wrist_flex inside its travel
+·  note    the arm did not take hold: wrist_flex reads 112.0, outside its calibrated travel of -100.0..100.0, so quackd left torque off: a goal written where that joint is lies past its travel and the servo would pull it to the end of its travel, and with none written the servo may drive it to the last goal it was given, with a hand on the arm either way. quackd takes hold of the arm only with wrist_flex inside its travel
 quackd did not take hold of the arm, so the run stops here and the arm is still in your hands:
 wrist_flex reads 112.0, outside its calibrated travel of -100.0..100.0, so quackd left torque off:
-the servo pulls any goal written for that joint to the end of its travel, and with none written it
-may drive it to the last goal it was given, with a hand on the arm either way. Move wrist_flex
-inside its travel before the arm is taken hold of
+a goal written where that joint is lies past its travel and the servo would pull it to the end of
+its travel, and with none written the servo may drive it to the last goal it was given, with a hand
+on the arm either way. quackd takes hold of the arm only with wrist_flex inside its travel
 →  send    stop
 ·  hand    skipped: the arm is still in your hands
 quackd never took hold of the arm, so it does not open the gripper for you: take out whatever is in
 it by hand, and keep hold of the arm
-·  note    moving to the rest pose
-·  note    the arm did not reach its rest pose: wrist_flex is at 112 with a goal of 0, and it has stopped moving
+·  note    the arm is in your hands, so it is not folded
 ·  note    the arm is limp and in your hands (it was let go of for you to place and never taken hold of again): put it down before you let go of it, because nothing is holding it up
 ```
 
-On the arm, if every joint reads inside its travel by the time the rest move gives up, which it
-does sooner while the arm lies still than while you are moving it, the teardown takes hold of the
-arm where your hand has it, as after a Ctrl-C in the first wait, and from then on it is an arm
-holding itself up.
+Moving the joint back inside its travel changes none of that, on the arm or on the mock. Nothing
+takes hold of the arm again after a refusal until it is released again, because torque coming
+on under your hand with nothing said is the one thing the lines above told you would not
+happen. Put the arm down, and run again with every joint inside its travel.
+
+**A take-hold refused after torque was asked for** ends the same way and is said differently,
+because that arm may be holding itself up: the torque register did not answer the read after
+the torque write, or the call raised with the write on the wire. Nothing folds it and nothing is
+written to it, and the close says what a read found, or that none did. Captured on
+`lerobot:mock` registered as `arm-01`, placed inside its travel, with the capture script
+standing in for a torque register that does not answer, and with the log's copy of the second
+line said to you left out:
+
+```
+·  hand    hold refused: the arm did not say whether torque came back on (RuntimeError: Incorrect status packet!), and a hold nothing confirmed is not a hold
+·  note    the arm did not take hold: the arm did not say whether torque came back on (RuntimeError: Incorrect status packet!), and a hold nothing confirmed is not a hold
+quackd could not confirm whether the arm has torque (the arm did not say whether torque came back
+on (RuntimeError: Incorrect status packet!), and a hold nothing confirmed is not a hold), so the
+run stops here: keep hold of the arm as though it may move or drop, and cut its power to be sure
+→  send    stop
+·  hand    skipped: the arm is still in your hands
+quackd could not confirm whether the arm has torque, so it does not open the gripper or fold the
+arm: keep hold of it as though it may move or drop, and cut its power before you take out whatever
+is in the gripper
+·  note    the arm is in your hands, so it is not folded
+·  note    the arm is in your hands, and quackd asked its motors for torque to take hold of it and nothing read back what they did, so it may hold itself up or be limp, all of it or part of it: keep hold of it as though it may move or drop, and cut its power to be sure
+```
 
 > [!WARNING]
 > There is one window in which you are holding an arm that nothing is holding up, and it runs
 > from the release to the moment quackd takes hold again. A run that ends inside it goes into
-> a teardown that tries to pick the arm back up first, and where that does not work, the close
-> says so in its own words rather than printing the line about torque being left on, which
-> would tell somebody with a limp arm in their hand that it is holding itself up.
+> a teardown that tries to pick the arm back up once, and only where no take-hold has been
+> refused since the release. Where one has, nothing touches the arm again, and the close says
+> what it reads in its own words rather than printing the line about torque being left on,
+> which would tell somebody with a limp arm in their hand that it is holding itself up.
 >
 > ```
 > the arm is limp and in your hands (...): put it down before you let go of it, because

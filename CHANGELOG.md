@@ -109,13 +109,38 @@ Known limitations, below, lists the bench steps that would say whether it works.
   leave its servo the last goal it was written, the rest move's, which can be the far end of the
   travel. Neither keeps the joint where it was put, so the take-hold now refuses before it
   writes anything: torque stays off, and the refusal names each such joint, where it reads and
-  its travel, and asks for it to be moved inside. The run ends there and says so to the person
-  at once, and its teardown treats the arm as limp in their hands: no question about a gripper
-  "holding where it ended", no offer to release an arm nothing is holding up, and a close that
-  ends on the line for an arm in somebody's hands. The log line for a refused take-hold or
-  release reads `hold refused` or `release refused` rather than `held` or `released`
+  its travel, says that a goal written where the joint is lies past its travel and the servo
+  would pull the joint to the end of it, and says the arm is taken hold of only with the joint
+  inside. The run ends there and says so to the person at once. The log line for a refused
+  take-hold or release reads `hold refused` or `release refused` rather than `held` or
+  `released`, and a refused take-hold's line ends on its reason, with no joint list after it that
+  could round a joint a hair past its travel onto the edge the reason says it is past
   ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#placing-it-by-hand),
   [ADR-0045](docs/adr/0045-a-rest-pose-the-calibration-cannot-reach.md), amended).
+- **After a refused take-hold, nothing touches the arm, and the person is told which arm they
+  are holding.** The teardown's stop took hold again on its own, so a person who moved the
+  joint back inside its travel, as the refusal asked, had torque switched on under their hand
+  with nothing said, by the stop or by the stall of a rest move writing goals into the limp
+  servos, and the run closed on "torque was left on". And a torque register that did not answer
+  after the take-hold's torque write was told as quackd never having taken hold, the stop sent
+  the torque write again, the person was told to reach into the gripper and keep hold of the arm,
+  and the rest move then folded the energised arm under their hands. Now a take-hold says
+  whether it may have left torque on (`HandResult.energised`). One that switched nothing on,
+  refused before its torque write or read off on every motor after it, is told as before, and
+  one whose torque write may have taken, with nothing read back or some motors read on, is told
+  as quackd not being able to confirm whether the arm has torque, with the person asked to hold
+  it as though it may move or drop and to cut its power to be sure. After either, the stop takes
+  no second hold and sends nothing, the hand-back is not asked, the rest move writes nothing and
+  the run says once that the arm is in their hands and not folded, and no release is offered.
+  The close says what its own read found:
+  quackd cannot tell whether the arm has torque where nothing read the torque write back, the
+  joints that read on by name, the arm limp in their hands, let go of for them to place, rather
+  than the rest move's shortfall said twice, and, for an arm the placing release let go of at its
+  rest pose that still reads there with every motor off, that it is limp at its rest pose rather
+  than in anybody's hands. A Ctrl-C in the placement wait with no take-hold refused yet still
+  takes hold where the hand has it and folds the arm, as it always did
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#placing-it-by-hand),
+  [ADR-0039](docs/adr/0039-an-arm-placed-by-hand.md), amended).
 - **`move_joints` takes the time it is asked for.** `duration_s` was how long a move could take
   before it gave up, and every move ran at the step cap whatever it said. A move is now walked
   from where the arm is to its goal across `duration_s`, one target a tick at 10 Hz, and judged
@@ -234,7 +259,8 @@ Known limitations, below, lists the bench steps that would say whether it works.
   5. `--by-hand` with the pen, once with a joint placed past its travel: whether a dropped
      packet is tried again, the hand-off releases at the reachable pose, and the take-hold
      leaves torque off, names the joint and its travel, and leaves the arm limp in your hand
-     until you put it down.
+     until you put it down, with nothing moving it or putting torque on it after that line, not
+     even once the joint is moved back inside its travel.
   6. A run made to miss its rest pose with a hand in the way: whether the Enter offer
      appears, Enter releases, and left alone the arm keeps torque after 60 s.
   7. Separately, and only if you want to: `lerobot-calibrate` with the shoulder folded all the

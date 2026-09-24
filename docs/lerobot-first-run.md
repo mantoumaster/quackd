@@ -647,10 +647,15 @@ What happens, in order, and the order is the whole of the feature:
 5. **quackd takes hold of what you left.** It writes the position the arm is in as the goal
    *before* it enables torque, writes it again afterwards, waits a tick, reads back, and tells
    you that you can let go. Only if every joint you placed is inside its calibrated travel,
-   though. A joint past it would be pulled to the end of its travel by any goal written for it,
-   or driven to the last goal its servo had by none, so quackd leaves torque off, names the joint,
-   where it reads and its travel, and ends the run with the arm still in your hands. A fold that
-   lies past the travel counts, so lift every joint out of it before you press Enter.
+   though. A goal written where a joint past it is lies past the travel too, so torque would
+   pull the joint to the end of its travel, and with no goal written its servo may drive it to
+   the last goal it had, so quackd leaves torque off, names the joint, where it reads and its
+   travel, and ends the run with the arm still in your hands. Nothing takes hold of it after
+   that, even once you move the joint back inside, and nothing folds it: put it down, and run
+   again. A fold that lies past the travel counts, so lift every joint out of it before you
+   press Enter. If quackd asked for torque and could not read back what came of it, it says it
+   cannot confirm whether the arm has torque instead: hold the arm as though it may move or
+   drop, and cut its power to be sure.
 6. **The pilot runs**, from your pose rather than from the fold. The budget clock restarts
    here, so the time you spent finding the pencil is not taken out of the model's minutes.
 7. **At the end the arm holds where it ended**, and quackd asks you to take out whatever is in
@@ -1072,8 +1077,10 @@ hands, Ctrl-C ends the run before the pilot has had a turn, and the teardown beg
 are standing holding it, the arm then travels to its rest pose, and only there does torque
 drop. Keep hold of it until it has stopped, and keep your fingers out of the jaws, because from
 the arm's side that is an ordinary teardown and nothing about it is slower for being one. With a
-joint outside its travel none of that happens: torque stays off, the arm stays limp in your
-hands, and the last line says so.
+joint outside its travel none of that happens: torque stays off, nothing is written to the arm
+and nothing folds it, even if you then move the joint back inside, and the last line says what
+quackd read: the arm limp in your hands, or limp at its rest pose where the joint outside its
+travel is a fold you never lifted it out of.
 **Inside the end-of-run hand-back**, where quackd is asking you to take whatever is in the
 gripper, a second Ctrl-C means skip the gripper rather than abandon the run. The jaws stay
 where they are, the arm still parks at its rest pose, the transport still closes properly, and

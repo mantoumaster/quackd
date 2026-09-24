@@ -478,6 +478,11 @@ recorded
     printed are what to read against where you thought you left the arm. A joint you placed
     outside its calibrated travel is refused before torque comes back on at all: the refusal
     names it, where it reads and its travel, the arm stays limp in your hands, and the run ends.
+    Check on the arm that nothing after that line moves it or puts torque on it, not the stop,
+    not the fold, and not moving the joint back inside while the teardown runs, and that the
+    last line says it is limp in your hands. If the refusal instead says quackd could not
+    confirm whether the arm has torque, hold the arm as though it may move or drop and cut its
+    power; nothing folds it then either.
 
     The pilot's clock starts when you press Enter rather than at the rest move, so a minute
     spent finding a pencil is not a minute out of `--max-minutes`.

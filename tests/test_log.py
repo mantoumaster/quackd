@@ -939,7 +939,7 @@ def test_a_refused_hold_is_not_logged_as_held() -> None:
             "hand_off", 0.0, {"stage": "held", "how": "refused", "reason": "r", "joints": joints}
         )
     )
-    assert refused.body == "hold refused: r (wrist_flex 12)", refused.body
+    assert refused.body == "hold refused: r", refused.body
     assert refused.style == "yellow"
     (release,) = render_events(
         LogEvent("hand_off", 0.0, {"stage": "released", "how": "refused", "reason": "r"})
@@ -949,6 +949,22 @@ def test_a_refused_hold_is_not_logged_as_held() -> None:
         LogEvent("hand_off", 0.0, {"stage": "held", "how": "held", "reason": "r", "joints": joints})
     )
     assert (held.body, held.style) == ("held: r (wrist_flex 12)", "cyan")
+
+
+def test_a_refused_hold_never_prints_a_joint_inside_the_travel_its_reason_puts_it_outside() -> None:
+    """The refusal for a joint placed past its travel prints the reading so that it is never
+    inside the travel the same sentence gives: a hundredth past an edge is printed as it is,
+    because its tenth is the edge. The line then went on to list every joint in whole degrees,
+    which put that joint at the edge, inside the travel its own reason had just said it was
+    outside. A refused hold's line ends on its reason; the joints stay in the event. The
+    travel and the reading here are made up for this test."""
+    edge = 40.0
+    reading = edge + 0.04
+    reason = f"wrist_flex reads {reading!r}, outside its calibrated travel of -{edge}..{edge}"
+    event = {"stage": "held", "how": "refused", "reason": reason, "joints": {"wrist_flex": reading}}
+    (line,) = render_events(LogEvent("hand_off", 0.0, event))
+    assert line.body == f"hold refused: {reason}", line.body
+    assert f"wrist_flex {edge:.0f}" not in line.body, line.body
 
 
 def test_the_system_prompt_is_still_the_one_thing_drawn_as_a_rule() -> None:

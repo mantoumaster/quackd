@@ -121,6 +121,19 @@ class HandResult:
     release whose read-back failed is still `released`, on purpose (`let_go`), and a release
     that some motors ignored is limp in part and energised in part. `quackd robot release`
     prints "torque reads off" only for the empty tuple."""
+    energised: bool | None = None
+    """Whether a take-hold may have left the arm with torque on, as far as anything read:
+    False when it switched nothing on, because it refused before its torque write went out or
+    a read of the torque register afterwards said off; True when such a read said on, on every
+    motor or on some; None when the torque write went out and nothing read back what it did,
+    and for every result that is not a take-hold's.
+
+    A person holding an arm whose take-hold was refused acts on which of those it was, and
+    `how` and `reason` cannot say it. A refusal that wrote nothing leaves the arm exactly as the
+    release did, limp in their hands, and they can be told so. One refused after the torque
+    write (a register that did not answer, a call that raised, a motor that stayed off) may be
+    energised, all of it or part of it, and "quackd did not take hold, torque is off" said of it
+    is a claim nothing read, made to somebody with a hand on an arm that may move."""
 
     @property
     def ok(self) -> bool:

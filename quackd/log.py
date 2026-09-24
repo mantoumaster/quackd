@@ -779,7 +779,12 @@ def render_events(
         label = {"released": "release refused", "held": "hold refused"}.get(stage, stage)
         said = label if refused else stage
         text = f"{said}: {reason}" if reason else said
-        if joints:
+        # Not after a refused hold, whose reason carries the readings that matter, each printed
+        # so it is never inside the travel the same sentence gives (`said_past`). Whole degrees
+        # beside it named a joint a hair past its ceiling at the ceiling itself, inside the
+        # travel the line said it was outside, and a tenth would do the same a hundredth past
+        # an edge. The joints stay in the record's event.
+        if joints and not (refused and stage == "held"):
             text += " (" + ", ".join(f"{j} {float(v):.0f}" for j, v in sorted(joints.items())) + ")"
         colour = "yellow" if refused or stage in ("released", "skipped") else "cyan"
         return [LogLine("hand", text, colour, mark="note")]
