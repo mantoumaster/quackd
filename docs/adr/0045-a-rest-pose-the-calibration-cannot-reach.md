@@ -170,7 +170,8 @@ the teardown of a Ctrl-C in the placement wait is said to the person once and re
 same words. After that nothing in the run touches the arm: the stop takes no second hold and
 sends nothing (`_refused_hold`), the hand-back is not asked, the rest move reads the arm and
 writes it nothing (`IN_HAND_NOT_MOVED`), and the run says once that the arm is in their hands
-and not folded. No release is offered over it either. The close ends on the note for an arm in
+and not folded, or, where that read finds the arm still at its rest pose, that it is already
+there. No release is offered over it either. The close ends on the note for an arm in
 somebody's hands, let go of for them to place, or, where its own read finds the arm still at
 its rest pose with every motor off, which is a fold recorded past the travel that nobody lifted
 the arm out of, whether the placement wait ended on Enter, on a Ctrl-C or unanswered, on the note

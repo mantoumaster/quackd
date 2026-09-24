@@ -571,16 +571,17 @@ class AgentLoop:
     which no read said."""
 
     HELD_IN_PART = (
-        "quackd did not take hold of the arm{stops}: torque came on for {joints} only, so "
-        "{holds} and the rest of the arm is limp. Keep hold of the arm, and cut its power to let "
-        "go of {them}"
+        "quackd did not take hold of the arm{stops}: torque came on for {joints}, so {holds} "
+        "and any joint not named is limp. Keep hold of the arm, and cut its power to let go of "
+        "{them}"
     )
     """Said, and the run aborted with it, when `take_hold` refuses with the arm still in the
-    person's hands and a read after its torque write found some motors on and the rest off
-    (`energised` True, those motors in `torque_on`). It used to be `HOLD_UNCONFIRMED`, which
-    opens on quackd not being able to confirm whether the arm has torque, in front of a
+    person's hands and a read after its torque write found motors on (`energised` True, those
+    motors in `torque_on`): some of them, or every one, which is why it names the joints that
+    hold and says only that a joint it does not name is limp. It used to be `HOLD_UNCONFIRMED`,
+    which opens on quackd not being able to confirm whether the arm has torque, in front of a
     parenthesis in which the read confirmed it motor by motor. The read did confirm it, and the
-    person holding the arm is told what it found: which joints hold, that the rest is limp, and
+    person holding the arm is told what it found: which joints hold, that any other is limp, and
     that the switch is what lets go of the ones that hold. Nothing after this writes to the arm
     or folds it."""
 
@@ -614,9 +615,9 @@ class AgentLoop:
     comes first. Said too where this run does not know which arm it is: a refusal nothing kept."""
 
     STILL_IN_PART = (
-        "quackd did not take hold of the arm, and torque came on for {joints} only, so it does "
-        "not open the gripper or fold the arm: keep hold of it, and cut its power before you "
-        "take out whatever is in the gripper"
+        "quackd did not take hold of the arm, and torque came on for {joints}, so it does not "
+        "open the gripper or fold the arm: keep hold of it, and cut its power before you take "
+        "out whatever is in the gripper"
     )
     """`STILL_IN_YOUR_HANDS` for the arm `HELD_IN_PART` was said of: the read named the joints
     that hold, so this names them again rather than say quackd could not tell. The gripper may

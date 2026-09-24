@@ -3904,7 +3904,7 @@ async def test_a_take_hold_some_motors_took_is_told_by_which_joints_hold(tmp_pat
 
     assert result.reason == (
         f"quackd did not take hold of the arm, so the run stops here: torque came on for {first} "
-        f"and {second} only, so those joints hold and the rest of the arm is limp. Keep hold of "
+        f"and {second}, so those joints hold and any joint not named is limp. Keep hold of "
         "the arm, and cut its power to let go of them"
     ), result.reason
     back = AgentLoop.STILL_IN_PART.format(joints=f"{first} and {second}")
@@ -4073,6 +4073,56 @@ async def test_a_take_hold_an_interrupt_landed_on_is_told_by_what_the_arm_says(
         assert hands.said[1:] == [AgentLoop.STILL_UNCONFIRMED], hands.said
         assert transport.close_note == UNCONFIRMED_IN_HAND, transport.close_note
     assert arm.timeline.count("enable_torque") == (0 if before else 1), arm.timeline
+
+
+async def test_a_take_hold_refused_over_an_arm_read_on_throughout_names_every_joint(
+    tmp_path: Any,
+) -> None:
+    """A second Ctrl-C lands after the take-hold at Enter sent its torque write, so the whole
+    arm is energised, and the teardown's stop makes the next take-hold, which reads every motor
+    on and is then refused at its own goal write. The refusal used to carry the joints that
+    read on only where some read off, so a read that found the whole arm on fell through to
+    "quackd could not confirm whether the arm has torque", said twice, before the close named
+    every motor as holding. A read that found every motor on confirmed the torque, and the
+    lines say what it found. The joint, the pose and the faults are synthetic."""
+    from quackd.agent.loop import AgentLoop, _listed, run_duck
+
+    arm = _spanned()
+    joint = "elbow_flex"
+    transport = _handed_over_far_from(arm, joint, PLACED_PAST_BY)
+    transport.clock = SteppedClock()
+    placed = {joint: _inside(arm, joint, 0.5), "gripper": HAND_PLACED["gripper"]}
+    armed = False
+    tick = transport.clock.sleep
+
+    async def interrupted_tick(seconds: float) -> None:
+        nonlocal armed
+        if armed:
+            armed = False
+            arm.send_fails = True  # so the stop's take-hold is refused at its goal write
+            raise KeyboardInterrupt  # after the torque write, on the pause before its read-back
+        await tick(seconds)
+
+    transport.clock.sleep = interrupted_tick  # type: ignore[method-assign]
+
+    def enter(_hands: _Hands) -> None:
+        nonlocal armed
+        armed = True
+
+    hands = _Hands(arm, placed, on_wait=enter)
+    with pytest.raises(KeyboardInterrupt):
+        await run_duck(_by_hand_run(transport, hands, tmp_path))
+
+    refused = transport.refused_hold
+    assert refused is not None and refused.energised is True, refused
+    assert arm.torque is True, "the whole arm took the torque write"
+    assert set(refused.torque_on or ()) == set(JOINTS), refused.torque_on
+    assert not any("could not confirm" in said for said in hands.said), hands.said
+    assert "torque came on for" in hands.said[0], hands.said
+    assert "any joint not named is limp" in hands.said[0], hands.said
+    assert hands.said[1:] == [
+        AgentLoop.STILL_IN_PART.format(joints=_listed(tuple(refused.torque_on or ())))
+    ], hands.said
 
 
 # ── a person at the arm asks for torque off, wherever it stands ─────────────────────────

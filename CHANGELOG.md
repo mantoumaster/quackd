@@ -134,14 +134,16 @@ Known limitations, below, lists the bench steps that would say whether it works.
   the arm is still limp at its rest pose and which joint to lift inside its travel, rather than
   to keep hold of it. One whose torque write may have taken with nothing read back is told as
   quackd not being able to confirm whether the arm has torque, with the person asked to hold it
-  as though it may move or drop and to cut its power to be sure, and one whose read found some
-  motors on is told which joints hold and that the rest is limp, to keep hold of the arm and to
-  cut its power, where it used to be told the same could-not-confirm in front of a read that
-  confirmed it motor by motor. After any of them, the stop takes no second hold and sends
-  nothing, the hand-back is not asked and says which arm the person is holding, from the body's
-  own refusal where an interrupt kept the run's from it, the rest move writes nothing and the run
-  says once that the arm is in their hands and not folded, and no release is offered. The close
-  says what its own read found, and a read speaks for the arm only when the bus carried it after
+  as though it may move or drop and to cut its power to be sure, and one whose read found motors
+  on, some or all of them, is told which joints hold and that any it does not name is limp, to
+  keep hold of the arm and to cut its power, where it used to be told the same could-not-confirm
+  in front of a read that confirmed it motor by motor. After any of them, the stop takes no
+  second hold and sends nothing, the hand-back is not asked and says which arm the person is
+  holding, from the body's own refusal where an interrupt kept the run's from it, the rest move
+  writes nothing and the run says once that the arm is in their hands and not folded, or, where
+  its read finds the arm still at its rest pose, that it is already there, and no release is
+  offered. The close says what its own read found, and a read speaks for the arm only when the
+  bus carried it after
   the last torque write: a heartbeat read that got the bus between a take-hold's goal write and
   its torque write let the close tell somebody holding an energised arm that nothing held it up.
   The close's lines are:
@@ -160,8 +162,9 @@ Known limitations, below, lists the bench steps that would say whether it works.
   before it gave up, and every move ran at the step cap whatever it said. A move is now walked
   from where the arm is to its goal across `duration_s`, one target a tick at 10 Hz, and judged
   once the walk is done. The step cap, 5 degrees a tick unless you lower it, is the ceiling, so
-  a time too short for the distance still runs at the cap. The default is still 5 seconds, which now means a
-  move given no time takes five seconds where it used to take as long as the cap needed. The
+  a time too short for the distance still runs at the cap. The default is still 5 seconds,
+  which now means a move given no time takes five seconds where it used to take as long as the
+  cap needed. The
   only move sent whole is one with nothing to walk, every joint already within a tenth of a
   degree of its goal. A goal outside the travel the manifest publishes, now rounded inward to a
   tenth, is refused by the verb before it reads the arm or sends anything, in the sentence both
@@ -227,9 +230,9 @@ Known limitations, below, lists the bench steps that would say whether it works.
   supply that is switched off looks, names no joint and says to check the arm's cables and
   power. A Ctrl-C during a connect that is failing ends it: the run hands the arm a way to hear
   its kill switch, and the connect is refused as stopped rather than making another attempt,
-  each of which switches torque off every motor and on again. The busy flag is lowered inside the port's
-  close itself, so only once the port has shut. `let_go` and the take-hold pass `num_retry` 5
-  to their torque writes (`TORQUE_RETRIES`, upstream's own disconnect count).
+  each of which switches torque off every motor and on again. The busy flag is lowered inside
+  the port's close itself, so only once the port has shut. `let_go` and the take-hold pass
+  `num_retry` 5 to their torque writes (`TORQUE_RETRIES`, upstream's own disconnect count).
 - **`quackd doctor --robot NAME` probed a registered arm under the default calibration id,
   `arm-01`, whatever name it was registered under.** It builds the arm under its registered
   name now, as a run does, so it reads that arm's calibration and its lines name it.

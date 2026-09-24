@@ -1014,9 +1014,9 @@ The order below is the whole of the feature, and none of it is a step you can sk
    register did not answer or the call failed on the way, is a different arm: it may be holding
    itself up, all of it or part of it, and you are told quackd could not confirm whether it has
    torque, to hold it as though it may move or drop, and to cut its power to be sure. Where the
-   read after the torque write found some motors on and the rest off, you are told what it
-   found instead: which joints hold, that the rest of the arm is limp, and to keep hold of it
-   and cut its power.
+   read after the torque write found motors on, some of them or every one, you are told what
+   it found instead: which joints hold, that any joint it does not name is limp, and to keep
+   hold of it and cut its power.
 5. **The pilot runs from those angles.** The step cap, the range refusal, the heat gate and the
    budgets are all the ones any other run gets. The minutes clock restarts the moment the arm
    is holding your pose, so the time you spent looking for a pencil is not taken out of the
@@ -1214,8 +1214,9 @@ shoulder_lift is lifted inside its travel
 because that arm may be holding itself up: the torque register did not answer the read after
 the torque write, or the call raised with the write on the wire. Nothing folds it and nothing is
 written to it, and the close says what a read found, or that none did. A read after the torque
-write that found some motors on and the rest off is said by what it found: that those joints
-hold and the rest of the arm is limp, to keep hold of the arm, and to cut its power. A read
+write that found motors on, some of them or every one, is said by what it found: that those
+joints hold and any joint it does not name is limp, to keep hold of the arm, and to cut its
+power. A read
 counts only when the bus carried it after the torque write, so a heartbeat read that got the
 bus just before the write never answers for it. Captured on
 `lerobot:mock` registered as `arm-01`, placed inside its travel, with the capture script

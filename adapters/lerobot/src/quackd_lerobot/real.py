@@ -2163,16 +2163,16 @@ class LeRobotReal:
         and then the teardown's stop makes this one. So it is `False` only where no take-hold's
         torque write has gone out since the release (`_hold_written`), or a torque read since
         the last one found every motor off. A read since that found motors on is `True`, and
-        no read since is `None`. The motors go with a `True` only where the rest read off
-        (`torque_on`), since that is what the line said over it claims: those joints hold and
-        the rest of the arm is limp."""
+        no read since is `None`. The motors that read on always go with a `True` (`torque_on`),
+        every one of them where the whole arm read on: the line said over it names the joints
+        that hold, and a read that found every motor on confirmed the torque as surely as one
+        that found some, so it must not be told as a torque nobody could confirm."""
         if not self._hold_written:
             return HandResult("refused", reason, energised=False, **kw)
         if not self._torque_read_back:
             return HandResult("refused", reason, energised=None, **kw)
         on = self._torque_on
-        part = on if on and not self._torque else None
-        return HandResult("refused", reason, energised=bool(on), torque_on=part, **kw)
+        return HandResult("refused", reason, energised=bool(on), torque_on=on or None, **kw)
 
     async def _take_hold(self) -> HandResult:
         """`take_hold` itself; the caller keeps what a refusal left behind."""
