@@ -25,9 +25,10 @@ The defaults describe one plausible board, and every one of them is a plain attr
 may replace: a Tegra (an Orin Nano developer kit) with a camera (62.2 degrees, 640x480 at 5 fps)
 and a YOLO detector on CUDA. The snapshot is a grey 640x480 frame with an orange ball whose box
 is exactly the default `/detect` reply's, in the orange the colour detector looks for, so a test
-that runs either detector on it sees the same ball. The board texts are the ones
-`tests/test_doctor_and_stub.py` builds its tree from, with the NULs already removed, as the
-daemon removes them.
+that runs either detector on it sees the same ball. The board texts are imported from
+`tests/jetson_fixtures.py`, the one fake board every test reads, with the NULs removed where
+the daemon removes them, so this fake cannot come to describe a different board from the one
+the daemon's own tests build as files.
 
 What it proves is that quackd reads the protocol as written. What it cannot prove is anything
 about a Jetson, which no test here has seen.
@@ -49,29 +50,27 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from tests import jetson_fixtures as board_files
+from tests.jetson_fixtures import (
+    MEMINFO,
+    NUL,
+    NVPMODEL_Q,
+    ORIN_NANO,
+    RELEASE_36_4_3,
+    TEGRASTATS_LINE,
+    ZRAM_SWAPS,
+)
+
 HOSTD_VERSION = "0.1.0"
 PROTOCOL = "quackd-jetson-hostd"
 PROTOCOL_VERSION = 1
 TOKEN_HEADER = "X-Quackd-Token"
 MAX_JPEG_BYTES = 8 * 1024 * 1024
 
-ORIN_NANO = "NVIDIA Jetson Orin Nano Developer Kit"
-#: The device tree's compatible list with its NUL separators removed, as `/board` sends it.
-COMPATIBLE = "nvidia,p3768-0000+p3767-0005nvidia,p3767-0005nvidia,tegra234"
-RELEASE_36_4_3 = (
-    "# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64, "
-    "DATE: Wed Jan  8 01:51:37 UTC 2025"
-)
-MEMINFO = "MemTotal:        7650336 kB\nMemAvailable:    5123456 kB\nSwapTotal:       1017852 kB\n"
-ZRAM_SWAPS = (
-    "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0\tpartition\t1017852\t0\t5\n"
-)
-NVPMODEL_15W = "NV Fan Mode:quiet\nNV Power Mode: 15W\n0\n"
-TEGRASTATS_LINE = (
-    "09-24-2026 10:00:00 RAM 2448/7620MB (lfb 2x4MB) SWAP 0/3810MB (cached 0MB) "
-    "CPU [2%@729,1%@729,0%@729,0%@729,0%@729,0%@729] GR3D_FREQ 0% cpu@47.5C soc2@46.2C "
-    "gpu@46.5C tj@47.5C VDD_IN 4012mW/4012mW VDD_CPU_GPU_CV 480mW/480mW VDD_SOC 1284mW/1284mW"
-)
+#: The device tree's compatible list with its NUL separators removed, as `/board` sends it. The
+#: model name needs no such step: the NUL is its file's terminator, which `tegra_tree` adds.
+COMPATIBLE = board_files.COMPATIBLE.replace(NUL, "")
+
 
 FRAME_SIZE = (640, 480)
 #: The default ball's box, in the default frame's pixels: the default `/detect` reply names it.
@@ -157,7 +156,7 @@ def default_board() -> dict[str, Any]:
             "/proc/swaps": ZRAM_SWAPS,
         },
         "nodes": {"/dev/nvgpu/igpu0": True, "/dev/nvhost-ctrl-gpu": False, "/dev/nvidia0": False},
-        "commands": {"nvpmodel -q": NVPMODEL_15W, "tegrastats": TEGRASTATS_LINE},
+        "commands": {"nvpmodel -q": NVPMODEL_Q, "tegrastats": TEGRASTATS_LINE},
         "errors": {},
     }
 

@@ -2788,19 +2788,26 @@ def doctor(
     ),
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
+    host: str | None = _HOST,
+    host_token: str | None = _HOST_TOKEN,
     registry_dir: str | None = _REGISTRY_DIR,
     as_json: bool = _JSON,
 ) -> None:
     """Check the environment: keys, optional extras, adapters, upstream assumptions.
 
     With `--robot X --address Y` it also connects, which is the only way to see what a
-    robot actually reports before a run does."""
-    from quackd.doctor import collect, render
+    robot actually reports before a run does. With `--host` it asks the daemon on that board
+    what it is, reads the board's health over the network, and probes the local model
+    presets there."""
+    from quackd.doctor import HostReport, collect, refused_host, render
+    from quackd.host import HOST_ENV, HostChoice, resolve_host
+    from quackd.registry import RobotEntry
 
     if address and not robot:
         _fail("--address needs --robot, so quackd knows what it is connecting to")
         return
     rest_pose: dict[str, float] | None = None
+    entry: RobotEntry | None = None
     if robot:
         # a registered name is a robot too, and it brings the address you registered it with.
         # Only a name that resolves is substituted: anything else stays exactly as typed, so
@@ -2821,10 +2828,39 @@ def doctor(
                 # only a robot you registered has one, because a rest pose is read off the arm
                 # and kept under its name rather than typed on a command line
                 rest_pose = where["rest_pose"]
+    # The board by the ladder `run` climbs, settled by the same function so the two cannot
+    # disagree about which board a robot uses: the flag, then the host registered with the
+    # robot --robot names, then QUACKD_HOST. A value that is no machine, or a token no header
+    # can carry, is reported with the place it came from rather than refused as `run` refuses
+    # it: doctor is where a person comes to find a bad setting, one in QUACKD_HOST is there
+    # without anybody having typed --host, and --json stays one document, as it does for a bad
+    # --robot above. Nothing is asked of it, and it fails the report as a dead daemon does.
+    stored = entry.host_kwargs() if entry is not None else {"host": None, "host_token": None}
+    unusable: HostReport | None = None
+    try:
+        board = resolve_host(
+            host,
+            stored["host"],
+            token=host_token,
+            stored_token=stored["host_token"],
+            robot=entry.name if entry is not None else None,
+        )
+    except ValueError as e:
+        # the ladder stops at the first value that is not blank, so that is the one refused
+        named = (host, stored["host"], os.environ.get(HOST_ENV))
+        text = next((t.strip() for t in named if t and t.strip()), "")
+        board, unusable = HostChoice(), refused_host(text, str(e))
     if as_json:
         report = collect(
-            robot, address=address, camera_url=camera_url, token=token, rest_pose=rest_pose
+            robot,
+            address=address,
+            camera_url=camera_url,
+            token=token,
+            rest_pose=rest_pose,
+            host=board.host,
+            host_token=board.token,
         )
+        report.host = unusable or report.host
         print(json.dumps(report.to_dict()))
         raise typer.Exit(code=0 if report.ok else 1)
     ui.install_logging()
@@ -2837,8 +2873,11 @@ def doctor(
             camera_url=camera_url,
             token=token,
             rest_pose=rest_pose,
+            host=board.host,
+            host_token=board.token,
             progress=say,
         )
+    report.host = unusable or report.host
     render(ui.console, report)
     if not report.ok:
         raise typer.Exit(code=1)

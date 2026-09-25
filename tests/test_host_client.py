@@ -7,6 +7,7 @@ says, what urllib does with a redirect. What none of it proves is anything about
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import socket
@@ -43,7 +44,7 @@ from tests.fake_jetson_hostd import (
     BALL_BOX,
     COMPATIBLE,
     MEMINFO,
-    NVPMODEL_15W,
+    NVPMODEL_Q,
     ORIN_NANO,
     RELEASE_36_4_3,
     SIM_ORANGE,
@@ -480,6 +481,52 @@ def test_no_message_and_no_repr_ever_carries_the_token(hostd: FakeHostd) -> None
     assert TOKEN not in str(client.camera_health())
 
 
+def test_no_reply_the_client_returns_carries_the_token(hostd: FakeHostd) -> None:
+    """A daemon that echoes its token in an answer rather than a refusal: in a hostname, a
+    capability's name, a health reason, a board file, the name of a board error and its text, a
+    box and a model. Each comes back with `<token>` in its place, because whatever shows a reply
+    would show the token with it: `doctor` prints the hello, the health and the board, and
+    carries them in --json."""
+    hostd.token = TOKEN
+    hostd.hello["hostname"] = f"orin-{TOKEN}"
+    hostd.hello["capabilities"][TOKEN] = True
+    hostd.healthz["reason"] = f"token {TOKEN}"
+    hostd.board["files"]["/proc/swaps"] = f"/swapfile {TOKEN}"
+    hostd.board["errors"][TOKEN] = f"said {TOKEN}"
+    hostd.detect_reply["boxes"][0]["name"] = f"ball {TOKEN}"
+    hostd.detect_reply["model"] = f"yolo-{TOKEN}"
+    client = HostClient(hostd.address, token=TOKEN)
+    replies = json.dumps(
+        [
+            client.hello().to_dict(),
+            client.healthz(),
+            dataclasses.asdict(client.board()),
+            dataclasses.asdict(client.detect(jpeg_bytes())),
+        ]
+    )
+    assert TOKEN not in replies
+    assert replies.count("<token>") == 8, "every echo is still there, as <token>"
+
+
+def test_a_name_with_no_address_is_unresolved_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one failure that says nothing else at that name can be reached either, which is
+    what lets `doctor` skip the model servers there. The lookup is refused here rather than
+    made, because a real one for a missing name can take seconds to fail."""
+    real = socket.getaddrinfo
+
+    def lookup(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if host == "nosuch-jetson.invalid":
+            raise socket.gaierror(socket.EAI_NONAME, "no such name")
+        return real(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    error = _raises(HostClient("nosuch-jetson.invalid").hello)
+    assert error.unresolved is True
+    assert "no machine by that name could be found" in str(error)
+
+
 # ── /snapshot.jpg ───────────────────────────────────────────────────────────────────────
 
 
@@ -675,7 +722,7 @@ def test_board_returns_the_raw_texts_untouched(hostd: FakeHostd) -> None:
         "/dev/nvhost-ctrl-gpu": False,
         "/dev/nvidia0": False,
     }
-    assert board.commands == {"nvpmodel -q": NVPMODEL_15W, "tegrastats": TEGRASTATS_LINE}
+    assert board.commands == {"nvpmodel -q": NVPMODEL_Q, "tegrastats": TEGRASTATS_LINE}
     assert board.errors == {}
 
 
@@ -940,6 +987,7 @@ def test_a_daemon_that_is_down_is_a_host_error_within_the_timeout() -> None:
     assert elapsed < HELLO_TIMEOUT_S + 1.5
     assert address in str(error) and "hostd" in str(error)
     assert error.status is None
+    assert error.unresolved is False, "a machine that is there and refused is not a missing name"
 
 
 def test_a_daemon_that_hangs_costs_one_timeout_window(hostd: FakeHostd) -> None:

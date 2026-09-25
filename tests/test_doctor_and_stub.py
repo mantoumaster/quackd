@@ -8,11 +8,16 @@ not know anything the report does not hold.
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import platform
+import re
+import socket
 import sys
-import time
+import threading
+from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +28,27 @@ from typer.testing import CliRunner
 from quackd import doctor
 from quackd.agent.providers.factory import CLOUD_NAMES, KEY_ENV, PROVIDER_NAMES
 from quackd.cli import app
+from quackd.doctor import PlacementRow
+from quackd.host import HostBoard, HostClient
+from quackd.registry import Registry, RobotEntry
 from quackd.transport.base import CameraFrame, TransportError
 from quackd_lerobot import LeRobotAdapter
 from quackd_lerobot.mock import REST, LeRobotMock
 from quackd_microduck.transports.websocket_stub import WebSocketTransport
+from tests.fake_jetson_hostd import CannedReply, FakeHostd, dead_address, default_board
+from tests.jetson_fixtures import (
+    COMPATIBLE,
+    MEMINFO,
+    NL,
+    NO_SWAPS,
+    NUL,
+    NVME_SWAPS,
+    NVPMODEL_Q,
+    ORIN_NANO,
+    RELEASE_36_4_3,
+    TEGRASTATS_LINE,
+    ZRAM_SWAPS,
+)
 
 
 def test_doctor_runs() -> None:
@@ -81,11 +103,37 @@ async def test_websocket_stub_points_at_upstream() -> None:
 # ── the report, and the renderer that is not allowed to know anything it does not ───────
 
 
+_REAL_PROBE_MODELS = doctor._probe_models
+_REAL_PROBE_PLACEMENT = doctor._probe_placement
+"""Captured before `_no_network` replaces them. A few tests below are about these two functions
+rather than about a report, and without this they would assert against the stubs and pass
+whatever the functions did."""
+
+
+class _NoBoard:
+    """`doctor._host_client` in every test that did not ask for a daemon. A board reached by
+    accident is a test failing loudly, never one quietly waiting on the network or, worse,
+    passing against a real board on somebody's desk."""
+
+    def __init__(self, host: str, *, token: str | None = None) -> None:
+        raise AssertionError(f"this test reached for a board at {host} without FakeHostd")
+
+
+def _no_placement(root_url: str, timeout_s: float = 1.5) -> Any:
+    raise AssertionError(f"this test asked an Ollama at {root_url} where its models are")
+
+
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """doctor probes five local servers at 1.5 s each. Nothing here is about whether one is
-    running, and a suite that waits eight seconds to find out is a suite nobody runs."""
+    """doctor probes five local servers at 1.5 s each, asks an Ollama that is up where its
+    models are, and reaches the daemon on a board when one is named. Nothing here is about
+    whether any of those is running on the machine the suite runs on, and a suite that waits
+    eight seconds to find out is a suite nobody runs. The placement probe and the board raise
+    rather than answer, so a test that meant to fake one and forgot cannot pass by reaching a
+    real one."""
     monkeypatch.setattr(doctor, "_probe_models", lambda url, timeout_s=1.5: ("down", "not running"))
+    monkeypatch.setattr(doctor, "_probe_placement", _no_placement)
+    monkeypatch.setattr(doctor, "_host_client", _NoBoard)
 
 
 def test_collect_answers_in_data_with_no_styling_in_it() -> None:
@@ -192,158 +240,210 @@ def test_the_progress_callback_names_the_slow_questions() -> None:
     assert any("extras" in line for line in said)
 
 
-# ── the board underneath, when somebody runs this on a Jetson ───────────────────────────
+# ── the board --host names, read over the network ───────────────────────────────────────
 #
-# Every one of these builds a board out of files in a tmp_path, because the thing being tested
-# is the reading and not the hardware. The one fact no fixture can supply is whether a real
-# Orin's files look like these; `docs/jetson.md` says so and says what to send back.
+# doctor reads no board of its own any more. quackd never runs on a Jetson, so the section
+# appears only for a board named with --host, read through the daemon quackd ships for it. The
+# dumps here are built from `tests/jetson_fixtures.py`, the one fake board every test reads,
+# with the NULs removed where the daemon removes them, and the daemon is
+# `tests/fake_jetson_hostd.py` on loopback. What none of it can say is whether a real Orin's
+# files look like these; `docs/jetson.md` says so and says what to send back.
 
-NUL = chr(0)
-TAB = chr(9)
+TOKEN = "63d92f8974c051832d52dd04c78f314b01ef7436cc00e4a3805b9711e5318421"
+"""Shaped like `openssl rand -hex 32`, the token bridge/jetson/README.md tells people to make."""
 
-_REAL_RUN_QUIET = doctor._run_quiet
-"""Captured before `_no_board` replaces it. Two tests below are about that function rather
-than about a board, and without this they would assert against the stub and pass whatever it
-did."""
+WIRE_COMPATIBLE = COMPATIBLE.replace(NUL, "")
+"""The compatible list as `/board` sends it: the device tree separates its strings with NULs,
+and the daemon strips them."""
 
-ORIN_NANO = "NVIDIA Jetson Orin Nano Developer Kit"
-COMPATIBLE = NUL.join(("nvidia,p3768-0000+p3767-0005", "nvidia,p3767-0005", "nvidia,tegra234"))
-RELEASE_36_4_3 = (
-    "# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64, "
-    "DATE: Wed Jan  8 01:51:37 UTC 2025"
-)
-MEMINFO = "MemTotal:        7650336 kB\nMemAvailable:    5123456 kB\nSwapTotal:       1017852 kB\n"
-NL = chr(10)
+GIB = 1024**3
 
 
-def _swap_line(*fields: str) -> str:
-    return TAB.join(fields) + NL
-
-
-SWAPS_HEADER = _swap_line("Filename", "", "", "", "Type", "", "Size", "", "Used", "", "Priority")
-ZRAM_SWAPS = SWAPS_HEADER + _swap_line("/dev/zram0", "partition", "1017852", "0", "5")
-NVME_SWAPS = SWAPS_HEADER + _swap_line("/ssd/16GB.swap", "file", "16777212", "0", "-2")
-NO_SWAPS = SWAPS_HEADER
-
-
-def _write(root: Path, rel: str, text: str) -> None:
-    path = root / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-
-
-def _tegra_tree(
-    root: Path,
+def _dump_json(
     *,
     release: str | None = RELEASE_36_4_3,
-    swaps: str = ZRAM_SWAPS,
+    swaps: str | None = ZRAM_SWAPS,
     gpu_node: bool = True,
     device_tree: bool = True,
-) -> Path:
-    """A board, as files. The NUL terminators are real: `/proc/device-tree/*` are the device
-    tree's own bytes, and the first version of this reader put one in a Rich cell."""
-    if device_tree:
-        _write(root, "proc/device-tree/model", ORIN_NANO + NUL)
-        _write(root, "proc/device-tree/compatible", COMPATIBLE + NUL)
-    if release is not None:
-        _write(root, "etc/nv_tegra_release", release)
-    _write(root, "proc/meminfo", MEMINFO)
-    _write(root, "proc/swaps", swaps)
-    if gpu_node:
-        (root / "dev/nvgpu/igpu0").mkdir(parents=True)
-    return root
+    nvpmodel: str | None = NVPMODEL_Q,
+    tegrastats: str | None = TEGRASTATS_LINE,
+) -> dict[str, Any]:
+    """`/board`'s reply for a board made of the shared fixtures, with a reason under every null
+    the way the daemon gives one."""
+    files: dict[str, str | None] = {
+        "/proc/device-tree/model": ORIN_NANO if device_tree else None,
+        "/proc/device-tree/compatible": WIRE_COMPATIBLE if device_tree else None,
+        "/etc/nv_tegra_release": release,
+        "/proc/meminfo": MEMINFO,
+        "/proc/swaps": swaps,
+    }
+    commands = {"nvpmodel -q": nvpmodel, "tegrastats": tegrastats}
+    errors = {path: "No such file or directory" for path, text in files.items() if text is None}
+    errors.update({name: "not on PATH" for name, out in commands.items() if out is None})
+    return {
+        "ok": True,
+        "files": files,
+        "nodes": {
+            "/dev/nvgpu/igpu0": gpu_node,
+            "/dev/nvhost-ctrl-gpu": False,
+            "/dev/nvidia0": False,
+        },
+        "commands": commands,
+        "errors": errors,
+    }
 
 
-@pytest.fixture(autouse=True)
-def _no_board(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """No test in this file may depend on what the machine running it is.
+def _board(reply: dict[str, Any]) -> HostBoard:
+    """A `/board` reply as the client hands it to doctor."""
+    return HostBoard(
+        files=reply["files"],
+        nodes=reply["nodes"],
+        commands=reply["commands"],
+        errors=reply["errors"],
+    )
 
-    Without this the suite reads a different report on a Jetson than on a laptop, and the one
-    place that would show up is somebody else's machine."""
-    monkeypatch.setattr(doctor, "_HOST_ROOT", tmp_path / "not-a-board")
-    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: None)
+
+def _dump(**changes: Any) -> HostBoard:
+    return _board(_dump_json(**changes))
+
+
+def _rendered(report: doctor.DoctorReport) -> str:
+    """The report as a person reads it, with Rich's line wrapping undone, so a needle that
+    happens to straddle a wrap is still found."""
+    buf = io.StringIO()
+    doctor.render(Console(file=buf, width=200), report)
+    return " ".join(buf.getvalue().split())
+
+
+def _host_section(out: str) -> str:
+    """The host section of a `_rendered` report: from its title to the next section's."""
+    start = min(i for i in (out.find("Jetson at"), out.find("host at")) if i >= 0)
+    return out[start : out.index(" core ", start)]
 
 
 @pytest.fixture
-def fake_tegra(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    root = _tegra_tree(tmp_path / "board")
-    monkeypatch.setattr(doctor, "_HOST_ROOT", root)
-    return root
+def hostd(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeHostd]:
+    """A daemon on loopback describing the shared fake Orin, and doctor allowed to reach it."""
+    monkeypatch.setattr(doctor, "_host_client", HostClient)
+    with FakeHostd() as fake:
+        fake.board = _dump_json()
+        yield fake
 
 
-def test_a_machine_that_is_not_a_tegra_says_nothing_about_one() -> None:
+def test_the_fake_daemon_serves_the_one_fake_board() -> None:
+    """One board, not two that happen to agree: the fake daemon's default dump is this file's
+    dump of `tests/jetson_fixtures.py`, which is also what the real daemon's tests write out
+    as files."""
+    assert default_board() == _dump_json()
+
+
+def test_no_host_means_no_board_section_and_no_jetson_key() -> None:
+    """A laptop is never read as a board. Without a host there is no section at all, and the
+    top-level `jetson` of 0.13 has moved under `host`."""
     report = doctor.collect()
-    assert report.jetson is None
-    assert report.to_dict()["jetson"] is None
-    buf = io.StringIO()
-    doctor.render(Console(file=buf, width=200), report)
-    assert "Jetson" not in buf.getvalue()
+    assert report.host is None
+    payload = report.to_dict()
+    assert payload["host"] is None and "jetson" not in payload
+    out = _rendered(report)
+    assert "Jetson" not in out and "host at" not in out
 
 
-def test_a_tegra_tree_is_read_field_by_field(tmp_path: Path) -> None:
-    got = doctor._jetson(_tegra_tree(tmp_path))
+def test_doctor_reads_nothing_of_this_machine_to_find_a_board() -> None:
+    """The local probe is gone, and with it every way doctor had of reading this machine's
+    /proc or forking a command on it. Checked in the source, because a check at run time on a
+    laptop would only prove the laptop has no board."""
+    tree = ast.parse(Path(doctor.__file__).read_text(encoding="utf-8"))
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imported |= {
+        (node.module or "").split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+    }
+    assert not imported & {"subprocess", "shutil", "pathlib", "glob"}, imported
+    named = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "open" not in named
+    for gone in ("_HOST_ROOT", "_run_quiet", "_read_text", "_exists", "_jetson", "_GPU_NODES"):
+        assert not hasattr(doctor, gone), f"doctor.{gone} is back"
+
+
+def test_a_board_dump_is_read_field_by_field() -> None:
+    got = doctor._jetson_from_dump(_dump())
     assert got is not None
-    assert got.board == ORIN_NANO, "the NUL terminator is stripped, not carried into a cell"
+    assert got.board == ORIN_NANO
     assert (got.l4t, got.jetpack) == ("36.4.3", "6.2")
     assert got.mem_total_bytes == 7650336 * 1024
     assert got.mem_available_bytes == 5123456 * 1024
     assert got.swap_total_bytes == 1017852 * 1024
     assert got.swap_devices == ["/dev/zram0"] and got.swap_only_zram is True
     assert got.gpu_device == "/dev/nvgpu/igpu0"
-    assert got.power_mode is None and got.docker_default_runtime is None
+    assert got.power_mode == "15W"
+    assert got.gpu_busy_pct == 0 and got.tegrastats == TEGRASTATS_LINE
+    assert got.errors == {}
+    assert "docker_default_runtime" not in got.to_dict(), "meaningless on a board quackd is not on"
 
 
-def test_a_swapfile_on_the_ssd_is_not_zram(tmp_path: Path) -> None:
+def test_a_nul_a_daemon_left_in_never_reaches_a_cell() -> None:
+    """This daemon strips the device tree's NUL terminators. One of another version might not,
+    and the first version of this reader put one in a Rich cell."""
+    reply = _dump_json()
+    reply["files"]["/proc/device-tree/model"] = ORIN_NANO + NUL
+    reply["files"]["/proc/device-tree/compatible"] = COMPATIBLE + NUL
+    got = doctor._jetson_from_dump(_board(reply))
+    assert got is not None and got.board == ORIN_NANO
+
+
+def test_a_swapfile_on_the_ssd_is_not_zram() -> None:
     """The warning is about zram specifically, and a board that was set up properly must not
     read as one that was not."""
-    got = doctor._jetson(_tegra_tree(tmp_path, swaps=NVME_SWAPS))
+    got = doctor._jetson_from_dump(_dump(swaps=NVME_SWAPS))
     assert got is not None and got.swap_only_zram is False
     assert got.swap_devices == ["/ssd/16GB.swap"]
-    none = doctor._jetson(_tegra_tree(tmp_path / "b", swaps=NO_SWAPS))
+    none = doctor._jetson_from_dump(_dump(swaps=NO_SWAPS))
     assert none is not None and none.swap_total_bytes == 0 and none.swap_only_zram is False
+    unread = doctor._jetson_from_dump(_dump(swaps=None))
+    assert unread is not None and unread.swap_total_bytes is None, "unread is not the same as none"
 
 
-def test_a_release_file_it_cannot_parse_is_still_a_tegra(tmp_path: Path) -> None:
-    got = doctor._jetson(_tegra_tree(tmp_path, release="something nobody has seen"))
+def test_a_release_file_it_cannot_parse_is_still_a_tegra() -> None:
+    got = doctor._jetson_from_dump(_dump(release="something nobody has seen"))
     assert got is not None, "the device tree still said Tegra"
     assert got.l4t is None and got.jetpack is None
 
 
-def test_the_two_ways_l4t_can_be_unknown_read_differently(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A file that is not there and a file it cannot read are different facts about the
-
-    board, and the renderer used to assert the first for both. One of them means a
-    container; the other means a board this build has not met."""
-    missing = doctor._jetson(_tegra_tree(tmp_path / "a", release=None))
-    unreadable = doctor._jetson(_tegra_tree(tmp_path / "b", release="not a release line"))
-    assert missing is not None and unreadable is not None
-    assert missing.release_seen is False and unreadable.release_seen is True
-    assert missing.l4t is None and unreadable.l4t is None
-
-    monkeypatch.setattr(doctor, "_HOST_ROOT", tmp_path / "b")
-    buf = io.StringIO()
-    doctor.render(Console(file=buf, width=200), doctor.collect())
-    assert "is here and its first line is not one this build knows" in buf.getvalue()
-
-
-def test_a_device_tree_with_no_release_file_is_a_board_with_no_l4t(tmp_path: Path) -> None:
-    """A privileged container on a Jetson, or one started with `--security-opt
-    systempaths=unconfined`: the device tree is readable, because nothing masks `/sys/firmware`,
-    and `/etc/nv_tegra_release` is a file in the host's root filesystem that a plain Python image
-    has none of. Reporting the image's userspace as the board's would be the one wrong answer
-    available here. An ordinary container sees neither and gets no section."""
-    got = doctor._jetson(_tegra_tree(tmp_path, release=None))
+def test_a_device_tree_with_no_release_file_is_a_board_with_no_l4t() -> None:
+    """A daemon in a privileged container, or one started with `--security-opt
+    systempaths=unconfined`: the device tree is readable and the board's release file is not
+    in the image. Reporting the image's userspace as the board's would be the one wrong answer
+    available here."""
+    got = doctor._jetson_from_dump(_dump(release=None))
     assert got is not None and got.board == ORIN_NANO
-    assert got.l4t is None
+    assert got.l4t is None and got.release_seen is False
+    assert got.errors == {"/etc/nv_tegra_release": "No such file or directory"}
 
 
-def test_only_a_tegra_answers_at_all(tmp_path: Path) -> None:
-    (tmp_path / "proc").mkdir()
-    (tmp_path / "proc" / "device-tree").mkdir()
-    _write(tmp_path, "proc/device-tree/compatible", "raspberrypi,4-model-b" + NUL + "brcm,bcm2711")
-    assert doctor._jetson(tmp_path) is None
+def test_a_release_file_alone_is_a_tegra_too() -> None:
+    """The second of the two ways in: a masked device tree and the board's own release file."""
+    got = doctor._jetson_from_dump(_dump(device_tree=False))
+    assert got is not None and got.board is None
+    assert (got.l4t, got.jetpack) == ("36.4.3", "6.2")
+
+
+def test_only_a_tegra_answers_at_all() -> None:
+    reply = _dump_json(release=None)
+    reply["files"]["/proc/device-tree/model"] = "Raspberry Pi 4 Model B Rev 1.4"
+    reply["files"]["/proc/device-tree/compatible"] = "raspberrypi,4-model-bbrcm,bcm2711"
+    assert doctor._jetson_from_dump(_board(reply)) is None
+    nothing = _dump_json(release=None, device_tree=False)
+    assert doctor._jetson_from_dump(_board(nothing)) is None
 
 
 @pytest.mark.parametrize(
@@ -370,125 +470,739 @@ def test_the_jetpack_table_names_exact_releases_and_the_major_for_the_rest(
     assert doctor._jetpack_for(l4t) == jetpack
 
 
-def test_the_quiet_runner_answers_none_for_anything_that_did_not_work() -> None:
-    """It is the first subprocess in this file, and doctor is what people run when something is
-    already wrong: a probe that raises there is worse than a probe that says nothing."""
-    assert _REAL_RUN_QUIET(["quackd-no-such-binary-anywhere", "-q"]) is None
-    assert _REAL_RUN_QUIET([sys.executable, "-c", "raise SystemExit(3)"]) is None
-    assert _REAL_RUN_QUIET([sys.executable, "-c", "print('hello')"]).strip() == "hello"
-
-
-def test_the_quiet_runner_gives_up_rather_than_hanging() -> None:
-    """Against a 30 second sleep, so returning at all is the assertion.
-
-    The bound is generous rather than tight because this machine may be building a
-    container next to the suite, and a flaky timing test is worse than a loose one. The
-    second case is the only thing pinning the 3.0 second default the code actually ships."""
-    started = time.monotonic()
-    assert _REAL_RUN_QUIET([sys.executable, "-c", "import time; time.sleep(30)"], 1.0) is None
-    assert time.monotonic() - started < 10, "the timeout did not fire"
-
-    started = time.monotonic()
-    assert _REAL_RUN_QUIET([sys.executable, "-c", "import time; time.sleep(30)"]) is None
-    assert time.monotonic() - started < 15, "the default timeout is not the 3.0 s claimed"
-
-
-def test_a_power_mode_line_with_no_colon_is_none_rather_than_a_traceback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_a_power_mode_line_with_no_colon_is_none_rather_than_a_traceback() -> None:
     """`split(":", 1)[1]` raised IndexError here, on a machine already having a bad day."""
-    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: "NV Power Mode" + NL)
-    got = doctor._jetson(_tegra_tree(tmp_path))
+    assert doctor._power_mode("NV Power Mode" + NL) is None
+    got = doctor._jetson_from_dump(_dump(nvpmodel="NV Power Mode" + NL))
     assert got is not None and got.power_mode is None
 
 
-def test_the_subprocess_answers_are_parsed_and_an_absent_binary_is_none(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    answers = {
-        "nvpmodel": "NV Fan Mode:quiet\nNV Power Mode: MAXN_SUPER\n2\n",
-        "docker": "nvidia\n",
-    }
-    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: answers.get(argv[0]))
-    got = doctor._jetson(_tegra_tree(tmp_path))
-    assert got is not None
-    assert got.power_mode == "MAXN_SUPER"
-    assert got.docker_default_runtime == "nvidia"
+def test_the_command_answers_are_parsed_and_an_absent_one_is_none_with_its_reason() -> None:
+    got = doctor._jetson_from_dump(
+        _dump(nvpmodel="NV Fan Mode:quiet\nNV Power Mode: MAXN_SUPER\n2\n")
+    )
+    assert got is not None and got.power_mode == "MAXN_SUPER"
+    absent = doctor._jetson_from_dump(_dump(nvpmodel=None, tegrastats=None))
+    assert absent is not None
+    assert absent.power_mode is None and absent.gpu_busy_pct is None and absent.tegrastats is None
+    assert absent.errors == {"nvpmodel -q": "not on PATH", "tegrastats": "not on PATH"}
 
 
-def test_the_jetson_section_warns_about_zram_and_a_runtime_that_is_not_nvidia(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(doctor, "_HOST_ROOT", _tegra_tree(tmp_path, gpu_node=False))
-    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: "runc\n")
-    buf = io.StringIO()
-    doctor.render(Console(file=buf, width=200), doctor.collect())
-    out = buf.getvalue()
+@pytest.mark.parametrize(
+    ("line", "busy"),
+    [
+        (TEGRASTATS_LINE, 0),
+        ("RAM 3100/7471MB CPU [9%@1510] GR3D_FREQ 37%@[1020] cpu@52C", 37),
+        ("RAM 2100/3964MB CPU [4%@1479] GR3D_FREQ 99%@921 PLL@40C", 99),
+        ("RAM 3100/7471MB CPU [9%@1510] cpu@52C", None),
+        ("RAM 3100/7471MB GR3D_FREQ off", None),
+    ],
+)
+def test_the_gpu_load_is_read_off_the_tegrastats_line(line: str, busy: int | None) -> None:
+    """Orin prints the GPU clock after the load in brackets, older boards without them, and a
+    line with no load at all has none to report rather than a guessed zero."""
+    got = doctor._jetson_from_dump(_dump(tegrastats=line))
+    assert got is not None and got.gpu_busy_pct == busy and got.tegrastats == line
+
+
+def test_the_gpu_device_is_the_first_node_the_daemon_found() -> None:
+    reply = _dump_json(gpu_node=False)
+    reply["nodes"]["/dev/nvhost-ctrl-gpu"] = True
+    reply["nodes"]["/dev/nvidia0"] = True
+    got = doctor._jetson_from_dump(_board(reply))
+    assert got is not None and got.gpu_device == "/dev/nvhost-ctrl-gpu"
+    none = doctor._jetson_from_dump(_dump(gpu_node=False))
+    assert none is not None and none.gpu_device is None
+
+
+def test_the_host_section_reads_the_board_over_the_network(hostd: FakeHostd) -> None:
+    report = doctor.collect(host=hostd.address)
+    assert report.host is not None and report.host.ok is True and report.ok is True
+    assert [r.path for r in hostd.requests] == ["/hello", "/healthz", "/board"]
+    section = _host_section(_rendered(report))
     for needle in (
-        "Jetson",
+        f"Jetson at {hostd.address} (the board the daemon runs on)",
+        "daemon quackd-jetson-hostd 0.1.0, protocol 1, on orin-nano",
+        "camera 640x480 at 5 fps from csi, field of view 62.2 degrees",
+        "detector yolov8n.pt on cuda",
+        "health ok",
         ORIN_NANO,
         "36.4.3 (JetPack 6.2)",
         "shared with the GPU",
-        "all zram",
-        "quackd never asks for one",
-        "--runtime nvidia",
+        "1.0 GiB, all zram: it compresses RAM rather than adding any (docs/jetson.md)",
+        "GPU device /dev/nvgpu/igpu0",
+        "power mode 15W (nvpmodel -q)",
+        "GPU busy 0% (GR3D_FREQ in tegrastats)",
+        "GR3D_FREQ 0%@[305]",
     ):
-        assert needle in out, needle
+        assert needle in section, needle
 
 
-def test_a_board_where_docker_does_not_answer_says_so_rather_than_dropping_the_row(
-    fake_tegra: Path,
+def test_the_board_rows_describe_the_board_and_never_this_machine(hostd: FakeHostd) -> None:
+    """The section used to be about the machine doctor ran on, and said "here" to mean it. Read
+    over the network, "here" is the laptop, which is the one thing the section is not about."""
+    hostd.board = _dump_json(gpu_node=False, release=None, nvpmodel=None, tegrastats=None)
+    section = _host_section(_rendered(doctor.collect(host=hostd.address)))
+    assert not re.search(r"\bhere\b", section), section
+    assert "this machine" not in section and "this is running on" not in section
+    assert "none the daemon could see" in section and "quackd never asks for one" in section
+    assert "could not read /etc/nv_tegra_release (No such file or directory)" in section
+    assert "nvpmodel -q gave nothing (not on PATH)" in section
+    assert "tegrastats gave nothing (not on PATH)" in section
+
+
+def test_the_two_ways_l4t_can_be_unknown_read_differently(hostd: FakeHostd) -> None:
+    """A file that is not there and a file it cannot read are different facts about the board,
+    and the renderer once asserted the first for both. One of them is a daemon that cannot see
+    the board's files; the other is a board this build has not met."""
+    hostd.board = _dump_json(release="not a release line")
+    unreadable = _host_section(_rendered(doctor.collect(host=hostd.address)))
+    assert (
+        "/etc/nv_tegra_release is on the board and its first line is not one this build knows"
+        in (unreadable)
+    )
+    hostd.board = _dump_json(release=None)
+    missing = _host_section(_rendered(doctor.collect(host=hostd.address)))
+    assert "unknown: the daemon could not read /etc/nv_tegra_release" in missing
+    assert "not one this build knows" not in missing
+
+
+def test_a_daemon_on_a_machine_that_is_not_a_jetson_is_not_called_one(hostd: FakeHostd) -> None:
+    """The daemon runs on a laptop for a test with `--camera fake`, and answers honestly that
+    it is not a Tegra. A section titled Jetson there would be the one lie on the screen."""
+    hostd.hello["capabilities"]["tegra"] = False
+    hostd.hello["board_model"] = None
+    hostd.board = _dump_json(release=None, device_tree=False, gpu_node=False)
+    report = doctor.collect(host=hostd.address)
+    assert report.ok is True and report.host is not None
+    assert report.host.jetson is None and report.host.is_tegra is False
+    title = doctor._host_title(report.host)
+    assert title == f"host at {hostd.address} (the machine the daemon runs on)"
+    assert "Jetson" not in title
+    out = _rendered(report)
+    assert "Jetson at" not in out and title in out
+    assert "not a Jetson: no Tegra in its device tree, no /etc/nv_tegra_release" in out
+
+
+def test_a_host_that_is_down_fails_the_report_with_a_row_saying_what_was_tried(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The row people are sent here to read, on a board where `docker info` gives no answer.
+    """The one thing about a board that can fail doctor: its daemon not answering, which is
+    what refuses a run with --host too. It says where it looked as well as what went wrong.
 
-    That is a board on the page's native route, which installs no Docker, or a user outside the
-    docker group, and the renderer used to drop the row entirely. Three documents tell a reader
-    to check this setting with this command, so silence there is the one unacceptable answer."""
-    buf = io.StringIO()
-    doctor.render(Console(file=buf, width=200), doctor.collect())
-    out = buf.getvalue()
-    assert "docker default runtime" in out
-    assert "docker did not answer here, because it is not installed" in out
+    A real closed port rather than a stub, so the sentence is the client's own. On Windows a
+    refused loopback connect takes about the whole two-second window, which is the cost."""
+    monkeypatch.setattr(doctor, "_host_client", HostClient)
+    address = dead_address()
+    report = doctor.collect(host=address)
+    assert report.ok is False and report.host is not None and report.host.ok is False
+    assert report.host.tried == f"http://{address}/hello"
+    assert report.host.error is not None and address in report.host.error
+    assert report.host.hello is None and report.host.jetson is None
+    assert [s.state for s in report.host.servers] == ["down"] * 4, (
+        "a daemon that is down still has the board's model servers asked: one can be up without it"
+    )
+    out = _rendered(report)
+    assert f"host at {address}" in out and "Jetson at" not in out
+    assert f"tried GET http://{address}/hello" in out
+    assert "FAILURE" in out and " ".join(report.host.error.split()) in out
 
 
-def test_the_jetson_section_survives_a_codepage_that_cannot_carry_it(
-    monkeypatch: pytest.MonkeyPatch, fake_tegra: Path
+def test_a_board_name_that_finds_no_address_has_no_model_server_asked_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Four rows of "not running" under a host row saying no machine by that name exists would
+    say the machine is there with its servers off, and each would wait on the same failed lookup
+    first. So the presets there are reported as not asked. The lookup is refused here rather
+    than made, because a real one for a missing name can take seconds to fail."""
+    real = socket.getaddrinfo
+
+    def lookup(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if host == "nosuch-jetson.invalid":
+            raise socket.gaierror(socket.EAI_NONAME, "no such name")
+        return real(host, *args, **kwargs)
+
+    probed: list[str] = []
+
+    def probe(url: str, timeout_s: float = 1.5) -> tuple[str, str]:
+        probed.append(url)
+        return "down", "not running"
+
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    monkeypatch.setattr(doctor, "_host_client", HostClient)
+    monkeypatch.setattr(doctor, "_probe_models", probe)
+    monkeypatch.delenv("QUACKD_BASE_URL", raising=False)
+    report = doctor.collect(host="nosuch-jetson.invalid")
+    assert report.ok is False and report.host is not None
+    assert "no machine by that name could be found" in (report.host.error or "")
+    assert probed == [], "nothing is asked at a machine with no address"
+    not_asked = "not asked: nosuch-jetson.invalid has no address"
+    assert [(s.preset, s.url, s.state, s.detail) for s in report.host.servers] == [
+        ("ollama", "http://nosuch-jetson.invalid:11434/v1", "skipped", not_asked),
+        ("vllm", "http://nosuch-jetson.invalid:8000/v1", "skipped", not_asked),
+        ("llamacpp", "http://nosuch-jetson.invalid:8080/v1", "skipped", not_asked),
+        ("lmstudio", "http://nosuch-jetson.invalid:1234/v1", "skipped", not_asked),
+    ]
+    out = _rendered(report)
+    start = out.index("LLM servers, the presets on nosuch-jetson.invalid")
+    servers = out[start : out.index(" adapters (--robot", start)]
+    assert servers.count(not_asked) == 4 and "not running" not in servers
+
+
+def test_a_daemon_that_wants_a_token_fails_the_report_until_it_has_one(hostd: FakeHostd) -> None:
+    hostd.token = TOKEN
+    refused = doctor.collect(host=hostd.address)
+    assert refused.ok is False and refused.host is not None
+    assert "--host-token" in (refused.host.error or "")
+    given = doctor.collect(host=hostd.address, host_token=TOKEN)
+    assert given.ok is True and given.host is not None and given.host.jetson is not None
+    for report in (refused, given):
+        assert TOKEN not in json.dumps(report.to_dict())
+        assert TOKEN not in _rendered(report)
+
+
+def test_a_token_the_daemon_echoes_back_reaches_neither_the_screen_nor_json(
+    hostd: FakeHostd,
+) -> None:
+    """The client replaces the token in every reply as well as in every error, so a daemon that
+    echoes it in the strings doctor prints, or in the ones --json carries whole, shows `<token>`
+    there and never the token itself."""
+    hostd.token = TOKEN
+    hostd.without_camera(f"camera said {TOKEN}")
+    hostd.without_detector(f"detector said {TOKEN}")
+    hostd.hello["hostname"] = f"orin-{TOKEN}"
+    hostd.healthz["ok"] = False
+    hostd.healthz["reason"] = f"refused a client with token {TOKEN}"
+    hostd.board = _dump_json(release=None, tegrastats=f"RAM 1/2MB {TOKEN} GR3D_FREQ 5%@[305]")
+    hostd.board["errors"]["/etc/nv_tegra_release"] = f"no release file, token {TOKEN}"
+    report = doctor.collect(host=hostd.address, host_token=TOKEN)
+    assert report.ok is True and report.host is not None and report.host.jetson is not None
+    shown, carried = _rendered(report), json.dumps(report.to_dict())
+    for said in (
+        "camera said <token>",
+        "detector said <token>",
+        "orin-<token>",
+        "refused a client with token <token>",
+        "RAM 1/2MB <token> GR3D_FREQ 5%",
+        "no release file, token <token>",
+    ):
+        assert said in shown and said in carried, said
+    assert TOKEN not in shown and TOKEN not in carried
+
+
+def test_nothing_the_board_reports_changes_the_verdict(hostd: FakeHostd) -> None:
+    """Once the daemon has answered, everything else is information. A board with no swap, no
+    GPU node, no release file, a stopped camera and a detector on its CPU is a board this
+    command has advice for, and a run with --host would still start on it."""
+    hostd.board = _dump_json(
+        swaps=NO_SWAPS, gpu_node=False, release=None, nvpmodel=None, tegrastats=None
+    )
+    hostd.healthz["ok"] = False
+    hostd.healthz["reason"] = "the camera's last frame is 3.2s old (stale after 1.5s)"
+    hostd.hello["detect"]["device"] = "cpu"
+    report = doctor.collect(host=hostd.address)
+    assert report.host is not None and report.host.jetson is not None
+    assert report.host.jetson.swap_total_bytes == 0
+    assert report.ok is True
+    out = _rendered(report)
+    assert "SUCCESS" in out
+    for warning in (
+        "swap none. A model that does not fit in memory cannot load",
+        "health the camera's last frame is 3.2s old",
+        "yolov8n.pt on cpu: the board's torch sees no CUDA",
+    ):
+        assert warning in out, warning
+
+
+def test_a_board_or_health_that_fails_after_hello_is_a_warning_not_a_failure(
+    hostd: FakeHostd,
+) -> None:
+    """`/hello` is what a run needs. A daemon that answered it and then failed the board dump
+    or its own health is a daemon a run would still use, so the report says what failed and
+    keeps its verdict."""
+    hostd.replies["/board"] = CannedReply(500, b'{"ok": false, "reason": "the board is on fire"}')
+    hostd.replies["/healthz"] = CannedReply(200, b"[1, 2, 3]")
+    report = doctor.collect(host=hostd.address)
+    assert report.ok is True and report.host is not None and report.host.ok is True
+    assert report.host.jetson is None
+    assert "the board is on fire" in (report.host.board_error or "")
+    assert report.host.healthz_error
+    out = _host_section(_rendered(report))
+    assert f"Jetson at {hostd.address}" in out, "the daemon still said Tegra"
+    assert "board could not be read" in out and "health could not be read" in out
+
+
+def test_what_the_board_says_is_flattened_before_it_reaches_a_terminal(hostd: FakeHostd) -> None:
+    """The daemon is another machine on the network, and an escape sequence in its hostname
+    would be a command to whatever terminal prints this."""
+    hostd.hello["hostname"] = "orin\x1b[2Jnano"
+    hostd.board = _dump_json(tegrastats="RAM 1/2MB \x1b]0;owned\x07 GR3D_FREQ 5%@[305]")
+    out = _rendered(doctor.collect(host=hostd.address))
+    assert "\x1b" not in out and "\x07" not in out
+    assert "orin [2Jnano" in out and "GPU busy 5%" in out
+
+
+def test_doctor_json_carries_the_board_under_host(hostd: FakeHostd) -> None:
+    result = CliRunner().invoke(app, ["doctor", "--json", "--host", hostd.address])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert "jetson" not in payload, "the top-level key of 0.13 moved under host"
+    for key in (
+        "ok",
+        "version",
+        "python",
+        "platform",
+        "api_version",
+        "core",
+        "bundled_ducks",
+        "providers",
+        "llm_env_error",
+        "steppers",
+        "servers",
+        "adapters",
+        "transports",
+        "extras",
+        "assumptions",
+        "pins",
+        "robot",
+    ):
+        assert key in payload, key
+    host = payload["host"]
+    assert host["ok"] is True and host["error"] is None and host["address"] == hostd.address
+    assert host["tried"] == f"http://{hostd.address}/hello"
+    assert host["hello"]["hostname"] == "orin-nano"
+    assert host["hello"]["capabilities"] == {"camera": True, "detect": True, "tegra": True}
+    assert host["healthz"]["ok"] is True
+    jetson = host["jetson"]
+    assert jetson["board"] == ORIN_NANO
+    assert jetson["l4t"] == "36.4.3" and jetson["jetpack"] == "6.2"
+    assert jetson["swap_only_zram"] is True
+    assert jetson["gpu_busy_pct"] == 0 and jetson["tegrastats"] == TEGRASTATS_LINE
+    assert "docker_default_runtime" not in jetson
+
+
+def test_doctor_json_with_a_refused_token_is_one_document_and_exit_code_one(
+    hostd: FakeHostd,
+) -> None:
+    hostd.token = TOKEN
+    result = CliRunner().invoke(app, ["doctor", "--json", "--host", hostd.address])
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is False and payload["host"]["ok"] is False
+    assert "--host-token" in payload["host"]["error"] and payload["host"]["jetson"] is None
+    given = CliRunner().invoke(
+        app, ["doctor", "--json", "--host", hostd.address, "--host-token", TOKEN]
+    )
+    assert given.exit_code == 0, given.output
+    assert TOKEN not in given.output
+
+
+def test_doctor_finds_the_board_where_run_does(
+    hostd: FakeHostd, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The flag, then the host of the robot --robot names, then QUACKD_HOST: the ladder a run
+    climbs, settled by the same function, so the two cannot disagree about a robot's board. The
+    robot's token rides with its own board."""
+    hostd.token = TOKEN
+    Registry(tmp_path).add_robot(
+        RobotEntry(name="jet", spec="microduck:mock", host=hostd.address, host_token=TOKEN)
+    )
+
+    def host_of(*args: str) -> dict[str, Any]:
+        result = CliRunner().invoke(
+            app, ["doctor", "--json", "--registry-dir", str(tmp_path), *args]
+        )
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output)["host"]
+
+    stored = host_of("--robot", "jet")
+    assert stored["address"] == hostd.address and stored["ok"] is True
+    with FakeHostd() as other:
+        assert host_of("--robot", "jet", "--host", other.address)["address"] == other.address
+        monkeypatch.setenv("QUACKD_HOST", other.address)
+        assert host_of("--robot", "jet")["address"] == hostd.address, "the robot beats the env"
+        assert host_of()["address"] == other.address
+
+
+def test_a_host_setting_that_is_no_machine_is_reported_and_nothing_is_asked_of_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Doctor is where a person comes to find a bad setting, and one in QUACKD_HOST is there
+    without anybody having typed --host. So it is a failed host row in a whole report, and in
+    the one document --json prints, as a bad --robot is. `_NoBoard` fails this test if anything
+    is asked of it, and the presets stay on this machine. The refused value itself is never
+    quoted back, since it can hold a secret written before an @, or an escape sequence: only a
+    machine whose token was the trouble is named."""
+    typed = CliRunner().invoke(app, ["doctor", "--host", "http://jetson.local:9874"])
+    assert typed.exit_code == 1
+    flat = " ".join(typed.output.split())
+    assert "--host takes a machine, not a URL" in flat
+    assert "bundled ducks" in flat, "the rest of the report is still there"
+    assert "http://jetson.local:9874" not in flat and "host at" not in flat
+
+    monkeypatch.setenv("QUACKD_HOST", "jetson.local/path")
+    result = CliRunner().invoke(app, ["doctor", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False and payload["core"] and payload["providers"]
+    host = payload["host"]
+    assert (host["host"], host["address"], host["ok"]) == ("", "", False)
+    assert host["error"].startswith("QUACKD_HOST: --host takes a machine with no path")
+    assert all("jetson.local" not in s["url"] for s in payload["servers"])
+    monkeypatch.delenv("QUACKD_HOST")
+
+    for args in (["--json"], []):
+        secret = CliRunner().invoke(app, ["doctor", *args, "--host", f"{TOKEN}@jetson.local"])
+        assert secret.exit_code == 1 and TOKEN not in secret.output
+        assert "--host-token" in " ".join(secret.output.split())
+    escaped = CliRunner().invoke(app, ["doctor", "--host", "orin\x1b[2Jnano"])
+    assert escaped.exit_code == 1 and "\x1b" not in escaped.output
+
+    monkeypatch.setenv("QUACKD_HOST_TOKEN", f"{TOKEN[:8]}\t{TOKEN[8:]}")
+    bad_token = CliRunner().invoke(app, ["doctor", "--json", "--host", "jetson.local"])
+    assert bad_token.exit_code == 1
+    host = json.loads(bad_token.output)["host"]
+    assert (host["host"], host["ok"]) == ("jetson.local", False)
+    assert host["error"].startswith("QUACKD_HOST_TOKEN: the host token has a character")
+    assert TOKEN[:8] not in bad_token.output and TOKEN[8:] not in bad_token.output
+
+
+def test_the_servers_table_asks_the_presets_on_the_host(
+    hostd: FakeHostd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a board named, the four presets are where a run with --host would reach them, and
+    `local` keeps meaning QUACKD_BASE_URL. A password in that URL is probed with and never
+    shown, because this screen and its spinner are pasted into issues."""
+    probed: list[str] = []
+
+    def probe(url: str, timeout_s: float = 1.5) -> tuple[str, str]:
+        probed.append(url)
+        return "down", "not running"
+
+    monkeypatch.setattr(doctor, "_probe_models", probe)
+    monkeypatch.setenv("QUACKD_BASE_URL", "http://me:hunter2@gpu-box:8000/v1")
+    said: list[str] = []
+    report = doctor.collect(host=hostd.address, progress=said.append)
+    assert {s.preset: s.url for s in report.servers} == {
+        "local": "http://me:***@gpu-box:8000/v1",
+        "ollama": "http://127.0.0.1:11434/v1",
+        "vllm": "http://127.0.0.1:8000/v1",
+        "llamacpp": "http://127.0.0.1:8080/v1",
+        "lmstudio": "http://127.0.0.1:1234/v1",
+    }
+    assert probed[0] == "http://me:hunter2@gpu-box:8000/v1", "the real URL is the one probed"
+    assert report.host is not None
+    assert [s.preset for s in report.host.servers] == ["ollama", "vllm", "llamacpp", "lmstudio"], (
+        "the board's block holds what was asked on the board, and QUACKD_BASE_URL is not that"
+    )
+    out = _rendered(report)
+    assert "LLM servers, the presets on 127.0.0.1" in out
+    for shown in (out, json.dumps(report.to_dict()), " ".join(said)):
+        assert "hunter2" not in shown
+
+    probed.clear()
+    doctor.collect()
+    assert probed[1:] == [
+        "http://localhost:11434/v1",
+        "http://localhost:8000/v1",
+        "http://localhost:8080/v1",
+        "http://localhost:1234/v1",
+    ], "without a board, the presets stay on this machine"
+
+
+def test_the_progress_callback_names_each_network_step(hostd: FakeHostd) -> None:
+    said: list[str] = []
+    doctor.collect(host=hostd.address, progress=said.append)
+    for step in ("asking the daemon at", "reading the health of", "reading the board at"):
+        assert any(step in line and hostd.address in line for line in said), step
+
+
+def test_the_host_section_survives_a_codepage_that_cannot_carry_it(
+    monkeypatch: pytest.MonkeyPatch, hostd: FakeHostd
 ) -> None:
     """The same bar the rest of this command clears, on the section most likely to be pasted
     into an issue by somebody whose terminal is not UTF-8."""
     monkeypatch.setattr(sys, "platform", "linux")
     raw = io.BytesIO()
     console = Console(file=io.TextIOWrapper(raw, encoding="cp1252", errors="strict"), width=120)
-    doctor.render(console, doctor.collect())
+    doctor.render(console, doctor.collect(host=hostd.address))
     console.file.flush()
     out = raw.getvalue().decode("cp1252")
     assert out.isascii()
-    assert "Jetson" in out and ORIN_NANO in out
+    assert "Jetson at" in out and ORIN_NANO in out
 
 
-def test_doctor_json_carries_the_board(fake_tegra: Path) -> None:
-    result = CliRunner().invoke(app, ["doctor", "--json"])
-    assert result.exit_code == 0, result.output
-    jetson = json.loads(result.output)["jetson"]
-    assert jetson["board"] == ORIN_NANO
-    assert jetson["l4t"] == "36.4.3" and jetson["jetpack"] == "6.2"
-    assert jetson["swap_only_zram"] is True
+# ── where Ollama put its models ─────────────────────────────────────────────────────────
+
+ALL_GPU = PlacementRow("qwen3:8b", 5 * GIB, 5 * GIB)
+PARTIAL = PlacementRow("llama3.3:70b", 40 * GIB, 15 * GIB)
+ON_CPU = PlacementRow("tinyllama", GIB, 0)
 
 
-def test_nothing_a_jetson_reports_can_change_the_verdict(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def _ollama_up(
+    monkeypatch: pytest.MonkeyPatch, rows: list[PlacementRow], note: str = ""
+) -> list[str]:
+    """An Ollama that answers wherever the ollama preset points, and what it has loaded. The
+    list it returns fills with every root the placement probe is asked about."""
+    asked: list[str] = []
+
+    def models(url: str, timeout_s: float = 1.5) -> tuple[str, str]:
+        return ("up", "qwen3:8b") if ":11434/" in url else ("down", "not running")
+
+    def placement(root: str, timeout_s: float = 1.5) -> tuple[list[PlacementRow], str]:
+        asked.append(root)
+        return rows, note
+
+    monkeypatch.setattr(doctor, "_probe_models", models)
+    monkeypatch.setattr(doctor, "_probe_placement", placement)
+    return asked
+
+
+def test_ollama_on_the_jetson_says_where_each_model_sits(
+    hostd: FakeHostd, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The whole section is informational. quackd is CPU Python here exactly as it is on a
-    laptop, so a board with no swap, no GPU node and the wrong docker runtime is a board this
-    command has advice for, not a machine that cannot run anything."""
-    monkeypatch.setattr(doctor, "_HOST_ROOT", _tegra_tree(tmp_path, swaps=NO_SWAPS, gpu_node=False))
-    monkeypatch.setattr(doctor, "_run_quiet", lambda argv, timeout_s=3.0: "runc\n")
+    """All on the GPU, a share of it, or on the CPU with the fix the Jetson page gives for the
+    commonest cause: the generic arm64 build, which has no Tegra CUDA."""
+    asked = _ollama_up(monkeypatch, [ALL_GPU, PARTIAL, ON_CPU])
+    report = doctor.collect(host=hostd.address)
+    assert asked == ["http://127.0.0.1:11434"], "Ollama's own API is at the root, not under /v1"
+    ollama = next(s for s in report.servers if s.preset == "ollama")
+    assert ollama.placement is not None
+    assert [(p.where, p.gpu_pct) for p in ollama.placement] == [
+        ("gpu", 100),
+        ("partial", 37),
+        ("cpu", 0),
+    ]
+    out = _rendered(report)
+    for needle in (
+        "where ollama put its models (GET /api/ps)",
+        "qwen3:8b all on the GPU, 5.0 GiB",
+        "llama3.3:70b 37% on the GPU, the rest on the CPU",
+        "tinyllama on the CPU: the generic arm64 build of Ollama has no Tegra CUDA, and the "
+        "official installer picks the JetPack build (docs/jetson.md)",
+    ):
+        assert needle in out, needle
+    assert report.ok is True, "a model on the CPU is slow, not broken"
+    payload = report.to_dict()
+    row = next(s for s in payload["servers"] if s["preset"] == "ollama")
+    assert [p["where"] for p in row["placement"]] == ["gpu", "partial", "cpu"]
+    assert row["placement"][1] == {
+        "model": "llama3.3:70b",
+        "size": 40 * GIB,
+        "size_vram": 15 * GIB,
+        "gpu_pct": 37,
+        "where": "partial",
+    }
+    on_board = {s["preset"]: s for s in payload["host"]["servers"]}
+    assert set(on_board) == {"ollama", "vllm", "llamacpp", "lmstudio"}, "local is not the board's"
+    assert on_board["ollama"] == row, "the board's block carries the same placement rows"
+
+
+def test_ollama_on_this_machine_on_its_cpu_is_a_note_not_the_jetson_pitfall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked = _ollama_up(monkeypatch, [ON_CPU])
+    out = _rendered(doctor.collect())
+    assert asked == ["http://localhost:11434"]
+    assert "tinyllama on the CPU: this Ollama put none of it on a GPU" in out
+    assert "Tegra" not in out
+
+
+def test_an_ollama_with_nothing_loaded_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ollama_up(monkeypatch, [], "nothing loaded yet: Ollama loads a model on its first request")
     report = doctor.collect()
-    assert report.jetson is not None
     assert report.ok is True
-    buf = io.StringIO()
-    Console(file=buf, width=200).print(doctor.verdict(report))
-    assert "SUCCESS" in buf.getvalue()
+    assert "loaded nothing loaded yet: Ollama loads a model on its first request" in _rendered(
+        report
+    )
+
+
+def test_a_model_ollama_did_not_place_is_named_and_flattened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The note can name what another machine's Ollama sent, so it is flattened like every other
+    string from there before it reaches a terminal."""
+    note = "llama\x1b[2J3b is loaded, and /api/ps did not say how much of it is on the GPU"
+    _ollama_up(monkeypatch, [], note)
+    out = _rendered(doctor.collect())
+    assert "\x1b" not in out
+    assert "loaded llama [2J3b is loaded, and /api/ps did not say" in out
+
+
+def test_a_server_that_is_down_is_never_asked_where_its_models_are() -> None:
+    """The placement probe raises in this file unless a test fakes it, so reaching this line
+    means it was not called for an ollama row that is down."""
+    report = doctor.collect()
+    assert all(s.placement is None for s in report.servers)
+
+
+@pytest.mark.parametrize(
+    ("size", "vram", "where", "pct"),
+    [
+        (100, 100, "gpu", 100),
+        (100, 150, "gpu", 100),
+        (100, 99, "partial", 99),
+        (1000, 999, "partial", 99),
+        (1000, 1, "partial", 1),
+        (100, 0, "cpu", 0),
+    ],
+)
+def test_a_split_never_rounds_into_all_or_nothing(
+    size: int, vram: int, where: str, pct: int
+) -> None:
+    """99.9% is not all on the GPU and 0.1% is not all on the CPU: each is a model split
+    across both, which is the case worth a warning."""
+    got = PlacementRow("m", size, vram)
+    assert (got.where, got.gpu_pct) == (where, pct)
+
+
+@pytest.mark.parametrize(
+    ("url", "root"),
+    [
+        ("http://localhost:11434/v1", "http://localhost:11434"),
+        ("http://jetson.local:11434/v1/", "http://jetson.local:11434"),
+        ("http://[::1]:11434/v1", "http://[::1]:11434"),
+        ("http://gpu-box:11434", "http://gpu-box:11434"),
+    ],
+)
+def test_ollamas_own_api_is_the_preset_without_v1(url: str, root: str) -> None:
+    assert doctor._ollama_root(url) == root
+
+
+# ── the two probes against a real socket ────────────────────────────────────────────────
+
+
+@pytest.fixture
+def canned() -> Iterator[Callable[..., str]]:
+    """A loopback server that answers one path with one body, for the two probes that read
+    whatever a model server sends. `canned(path, body, status=200)` returns its root URL."""
+    routes: dict[str, tuple[int, bytes]] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            status, body = routes.get(self.path, (404, b"404 page not found"))
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
+    thread.start()
+
+    def serve(path: str, body: bytes, status: int = 200) -> str:
+        routes[path] = (status, body)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        yield serve
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize(
+    ("body", "state", "detail"),
+    [
+        (
+            b'{"object": "list", "data": [{"id": "qwen3:8b"}, {"id": "gemma3:4b"}]}',
+            "up",
+            "qwen3:8b, gemma3:4b",
+        ),
+        (b'{"object": "list", "data": null}', "up", "no models loaded"),
+        (b'{"object": "list"}', "up", "no models loaded"),
+        (b'[{"id": "qwen3:8b"}]', "http", "not a list of models"),
+        (b'{"data": "qwen3:8b"}', "http", "not a list of models"),
+        (b'"hello"', "http", "not a list of models"),
+        (b"<html>it works</html>", "down", "not running"),
+    ],
+)
+def test_a_models_reply_of_any_shape_is_a_row_and_never_an_exception(
+    canned: Callable[..., str], body: bytes, state: str, detail: str
+) -> None:
+    """`payload.get("data", [])` sat outside the try, so a JSON list, or `"data": null` from an
+    Ollama with nothing pulled, raised out of `collect()` and took the whole report with it. A
+    body that is not JSON keeps the row it always had: a dev web server's index page on 8000 or
+    8080 is no model server there."""
+    root = canned("/v1/models", body)
+    got_state, got_detail = _REAL_PROBE_MODELS(f"{root}/v1")
+    assert got_state == state and detail in got_detail
+
+
+def test_a_list_reply_on_a_real_socket_leaves_the_report_standing(
+    canned: Callable[..., str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The crash was in `collect()`, so the fix is shown there too: the local row points at a
+    server that answers with a JSON list, and the report is a report."""
+    root = canned("/v1/models", b"[]")
+    monkeypatch.setenv("QUACKD_BASE_URL", f"{root}/v1")
+
+    def only_the_canned_one(url: str, timeout_s: float = 1.5) -> tuple[str, str]:
+        return _REAL_PROBE_MODELS(url) if url.startswith(root) else ("down", "not running")
+
+    monkeypatch.setattr(doctor, "_probe_models", only_the_canned_one)
+    report = doctor.collect()
+    local = next(s for s in report.servers if s.preset == "local")
+    assert local.state == "http" and "not a list of models" in local.detail
+    assert report.ok is True
+
+
+def test_the_placement_probe_reads_ollamas_own_api(canned: Callable[..., str]) -> None:
+    body = {
+        "models": [
+            {"name": "qwen3:8b", "model": "qwen3:8b", "size": 6 * GIB, "size_vram": 6 * GIB},
+            {"model": "llama3.3:70b", "size": 40 * GIB, "size_vram": 15 * GIB},
+            {"name": "tinyllama", "size": GIB, "size_vram": 0},
+            {"name": "broken", "size": "big", "size_vram": 0},
+            {"name": "empty", "size": 0, "size_vram": 0},
+            {"name": "flagged", "size": True, "size_vram": True},
+            "not a model",
+        ]
+    }
+    root = canned("/api/ps", json.dumps(body).encode())
+    rows, note = _REAL_PROBE_PLACEMENT(root)
+    assert [(r.model, r.where) for r in rows] == [
+        ("qwen3:8b", "gpu"),
+        ("llama3.3:70b", "partial"),
+        ("tinyllama", "cpu"),
+    ]
+    assert note == ""
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "note"),
+    [
+        (200, b'{"models": []}', "nothing loaded yet"),
+        (200, b'{"models": null}', "nothing loaded yet"),
+        (200, b"[]", "not Ollama's list"),
+        (200, b'{"models": "qwen3:8b"}', "not Ollama's list"),
+        (
+            200,
+            b'{"models": [{"name": "llama3.2:3b", "size": 3000000000}]}',
+            "llama3.2:3b is loaded, and /api/ps did not say how much of it is on the GPU",
+        ),
+        (
+            200,
+            b'{"models": [{"name": "qwen:0.5b", "size": 0, "size_vram": 0}, {"model": "phi3"}]}',
+            "qwen:0.5b, phi3 are loaded, and /api/ps did not say how much of them is on the GPU",
+        ),
+        (200, b"<html>", "not JSON"),
+        (404, b"404 page not found", "HTTP 404"),
+    ],
+)
+def test_the_placement_probe_says_why_it_has_no_rows_and_never_raises(
+    canned: Callable[..., str], status: int, body: bytes, note: str
+) -> None:
+    root = canned("/api/ps", body, status)
+    rows, said = _REAL_PROBE_PLACEMENT(root)
+    assert rows == [] and note in said
 
 
 def test_the_header_names_the_architecture() -> None:

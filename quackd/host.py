@@ -22,8 +22,9 @@ it on every invocation and neither should pay more than that to learn a board is
 
 The token rides in one header and nowhere else. Not in a URL, because URLs are what proxies,
 access logs and pasted error messages keep; not in any error this module raises, its message
-or its payload; not in a repr. Proxies are bypassed and redirects are refused for the same
-reason: either one would hand the header to a machine that is not the board.
+or its payload; not in any reply it hands back, where a daemon that echoed it would put it on
+a screen or in `doctor --json`; not in a repr. Proxies are bypassed and redirects are refused
+for the same reason: either one would hand the header to a machine that is not the board.
 
 Nothing in this module has been run against a Jetson by this project. Its tests drive it against
 a fake of the protocol on loopback (`tests/fake_jetson_hostd.py`), which proves quackd reads the
@@ -103,7 +104,9 @@ class HostError(RuntimeError):
     One type, so the consumers inside a run catch exactly this and let a programming error
     through. `status` is the HTTP status when the daemon answered at all, which is how `doctor`
     tells "nothing is listening" from "something is listening and said no", and `payload` is the
-    JSON object that came with a refusal, when there was one."""
+    JSON object that came with a refusal, when there was one. `unresolved` is True when the
+    board's name found no address, so nothing else at that name can be reached either: `doctor`
+    then asks no model server there, since each would wait on the same failed lookup."""
 
     def __init__(
         self,
@@ -111,10 +114,12 @@ class HostError(RuntimeError):
         *,
         status: int | None = None,
         payload: dict[str, Any] | None = None,
+        unresolved: bool = False,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.payload = payload
+        self.unresolved = unresolved
 
 
 # ── the address ─────────────────────────────────────────────────────────────────────────
@@ -791,8 +796,8 @@ class HostClient:
         return hello
 
     def healthz(self) -> dict[str, Any]:
-        """The daemon's own health, as it sent it. Always a 200 with `ok` in it, so an unhealthy
-        board is an answer here, not an error."""
+        """The daemon's own health, as it sent it but for the token. Always a 200 with `ok` in
+        it, so an unhealthy board is an answer here, not an error."""
         return self._json("GET", "/healthz", timeout_s=HELLO_TIMEOUT_S)
 
     def board(self) -> HostBoard:
@@ -879,7 +884,12 @@ class HostClient:
     # ── the wire ────────────────────────────────────────────────────────────────────────
 
     def _fail(
-        self, message: str, *, status: int | None = None, payload: dict[str, Any] | None = None
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        payload: dict[str, Any] | None = None,
+        unresolved: bool = False,
     ) -> HostError:
         """Every HostError this client raises is built here, so the token is kept out of all of
         them in one place: replaced in the message, and in every string of the payload, keys
@@ -893,7 +903,7 @@ class HostClient:
         if self._token:
             message = message.replace(self._token, "<token>")
             payload = self._scrub(payload)
-        return HostError(message, status=status, payload=payload)
+        return HostError(message, status=status, payload=payload, unresolved=unresolved)
 
     def _scrub(self, value: Any) -> Any:
         """A copy of `value` with the token replaced by `<token>` in every string in it, keys
@@ -992,7 +1002,11 @@ class HostClient:
                 f"{self.address} answered {path} with {_kind(payload)} where {PROTOCOL} sends a "
                 "JSON object"
             )
-        return payload
+        # Every reply, not only the refusals `_fail` sees: a daemon that echoed the token in a
+        # hostname, a reason or a board file would otherwise hand it to whatever shows the
+        # reply, and `doctor` shows all of it, on the screen and in --json.
+        scrubbed: dict[str, Any] = self._scrub(payload)
+        return scrubbed
 
     def _exchange(
         self,
@@ -1058,7 +1072,8 @@ class HostClient:
         if isinstance(reason, socket.gaierror):
             return self._fail(
                 f"{self.address}: no machine by that name could be found "
-                f"({reason.strerror or reason})"
+                f"({reason.strerror or reason})",
+                unresolved=True,
             )
         said = _clip(str(reason), token=self._token) if str(reason) else type(reason).__name__
         return self._fail(f"{self.address} could not be reached for {path}: {said}")
