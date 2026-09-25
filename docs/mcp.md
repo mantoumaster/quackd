@@ -220,14 +220,17 @@ else (`mcp.run(transport="stdio")` in `quackd/mcp_server.py`), so the client spa
 subprocess on the same machine and talks to it over stdin and stdout. It lives exactly as
 long as that process does.
 
-A container is still that same machine. If quackd lives in the Jetson image
-([jetson.md](jetson.md)), the command a client spawns is `docker compose run --rm -T quackd
-serve-mcp --robot microduck:sim2d`: `compose run` hands the container its stdin and stdout, and
-`-T` keeps it from asking for a terminal no client is going to give it. That command was
-checked on 2026-09-22: the server answered an `initialize` handshake through it and
-returned the duck's own instructions. What has not happened is a real client driving a
-robot that way, and the compose file was written for `quackd run` rather than for this.
-The `QUACKD_LLM` it sets is ignored here like every other way of naming a model.
+A Jetson does not change where the server runs. quackd never runs on the board: the client
+spawns `serve-mcp` on your laptop as always, and `--host` names the board, the way it does for
+`quackd run` ([jetson.md](jetson.md)). `serve-mcp` takes `--host`, `--host-token` and
+`--detector` as `run` does, so the board's camera joins the robot and the board's detector can
+read its frames, and `robot_list` and the server's startup log name the detector in use. A
+board whose daemon does not answer refuses the server before it starts. `--host` and
+`--detector` are for one robot: with `--robots` or `--flock` either is refused, because one
+board is one camera and one detector and a flock has several bodies. On 2026-09-25
+`quackd serve-mcp --robot microduck:sim2d --host 127.0.0.1:19874` answered an `initialize`
+handshake against quackd's daemon serving a board made of files, not a Jetson, and
+`robot_list` named `color_blob`, the detector a simulator keeps.
 
 Reaching it from the Claude mobile app would need a different shape: a remote connector,
 which is a server that runs persistently somewhere reachable over the network, with its own

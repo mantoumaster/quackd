@@ -25,17 +25,61 @@ for naming something the catalogue has not heard of.
 
 | Preset (`--llm`) | Default address | Override |
 |---|---|---|
-| `ollama` | `http://localhost:11434/v1` | `--base-url` or `QUACKD_BASE_URL` |
+| `ollama` | `http://localhost:11434/v1` | `--base-url` or `QUACKD_BASE_URL`, or `--host` to move it to another machine |
 | `vllm` | `http://localhost:8000/v1` | same |
 | `llamacpp` | `http://localhost:8080/v1` | same |
 | `lmstudio` | `http://localhost:1234/v1` | same |
-| `local` | none, you must pass one | same |
+| `local` | none, you must pass one | `--base-url` or `QUACKD_BASE_URL`, never `--host` |
 
 `quackd doctor` probes all four default addresses and prints which servers are up and what
-they serve.
+they serve. An Ollama that answers is also asked where it put each loaded model
+(`GET /api/ps`): all on the GPU, a share of it, or on the CPU.
 
-The server and quackd can share one small board. An NVIDIA Jetson is the case this project
-has written up, the model on the GPU and quackd on the CPU beside it, in [jetson.md](jetson.md).
+**The server can live on another machine, and `--host` moves a preset there.** An NVIDIA
+Jetson is the case this project has written up ([jetson.md](jetson.md)): the model runs on the
+board's GPU and quackd stays on your laptop. `--host jetson.local` replaces a preset's
+`localhost` with that machine and keeps the preset's own port and path, so `--llm ollama` then
+asks `http://jetson.local:11434/v1`. The port in `--host` is the one quackd's daemon on the
+board listens on, 9874 unless you changed it, and never the model server's. A cloud vendor's
+address is never moved. Where a local server is, the first rung that answers wins:
+
+1. `--base-url`: a URL given for this run is used exactly as given.
+2. `--host`, or the host a registered robot was stored with: the preset's address moved to that
+   machine, port and path kept.
+3. `QUACKD_BASE_URL`, used exactly as given.
+4. `OPENAI_BASE_URL`, used exactly as given.
+5. `QUACKD_HOST`: the preset's address moved to that machine.
+6. The preset's own address, on localhost.
+
+A URL given anywhere is used as given, and a host only ever moves a preset. That is why
+`--llm local`, which has no preset address, refuses a host on its own and asks for
+`--base-url`. The two hosts sit on different rungs on purpose. One typed for this run or
+registered with this robot is a decision about this run, and beats a `.env` line naming a
+model server's URL. `QUACKD_HOST` is the board you usually use, and does not.
+
+`--host` asks more of the board than its model server. It names the machine quackd's own
+daemon runs on, for its camera, its detector and its health, and a run whose daemon does not
+answer is refused before anything connects. For the model alone,
+`--base-url http://jetson.local:11434/v1` asks nothing of the daemon. `quackd doctor --host`
+probes the four presets on that machine instead of this one, which is the quickest way to see
+where a run will look:
+
+```
+LLM servers, the presets on 127.0.0.1 (GET /v1/models, 1.5 s timeout) ─────────────────────────────
+┌──────────┬───────────────────────────────────┬─────────────┐
+│ preset   │ base url                          │ status      │
+├──────────┼───────────────────────────────────┼─────────────┤
+│ local    │ set QUACKD_BASE_URL or --base-url │             │
+│ ollama   │ http://127.0.0.1:11434/v1         │ not running │
+│ vllm     │ http://127.0.0.1:8000/v1          │ not running │
+│ llamacpp │ http://127.0.0.1:8080/v1          │ not running │
+│ lmstudio │ http://127.0.0.1:1234/v1          │ not running │
+└──────────┴───────────────────────────────────┴─────────────┘
+```
+
+That came from `quackd doctor --host 127.0.0.1:19874` on Windows, against quackd's daemon
+started with `--camera fake --port 19874` and serving a board made of files, not a Jetson.
+Each preset kept its own port, and the 19874 went to the daemon alone.
 
 > [!NOTE]
 > **A decision LLM is not one of these, and this is the page where that is easiest to get
@@ -46,9 +90,10 @@ has written up, the model on the GPU and quackd on the CPU beside it, in [jetson
 > [the hub's table](decision-llms.md#the-ones-quackd-names). They are still not the same kind
 > of thing: a System One server speaks `POST /v1/systemone` rather than
 > OpenAI's Chat Completions, so `--base-url` is not how you reach one. `--decision-url` is, and
-> `--decision-llm` names which one. It sits in front of whichever provider you did pick, for
-> the turns whose answer is a choice rather than a number, and it is off unless you name one:
-> [decision-llms.md](decision-llms.md).
+> `--decision-llm` names which one. `--host` does not move one either, so one running on a
+> Jetson is reached with `--decision-url` too. It sits in front of whichever provider you did
+> pick, for the turns whose answer is a choice rather than a number, and it is off unless you
+> name one: [decision-llms.md](decision-llms.md).
 
 ## Server setup
 
@@ -163,6 +208,8 @@ parts, and a text only model is still a text only model with it on.
 |---|---|---|
 | `--llm PRESET:MODEL` / `QUACKD_LLM` | any id the server serves after the colon, checked against no catalogue | first entry of `/v1/models` |
 | `--base-url` / `QUACKD_BASE_URL` | `http://host:port/v1` | the preset's address |
+| `--host` / `QUACKD_HOST` | `HOST` or `HOST:PORT`, the machine quackd's daemon runs on ([jetson.md](jetson.md)). Moves a preset's `localhost` there, port kept, at the rung shown above | no host, the preset's own `localhost` |
+| `--host-token` / `QUACKD_HOST_TOKEN` | the token that daemon was started with, sent to the daemon and never to the model server | no token |
 | `--api-key` / `LOCAL_API_KEY` | any string | `not-needed` (servers ignore it) |
 | `QUACKD_TOOL_CHOICE` | `auto`, `required`, `none` | `auto` (`none` omits the field for servers that reject it) |
 | `--vision` / `QUACKD_VISION` | on, off | off |

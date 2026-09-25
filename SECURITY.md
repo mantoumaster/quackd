@@ -27,10 +27,11 @@ layer (verb allowlists, confirm gates, budgets, the heartbeat, the kill switch)
 security-relevant, not just a convenience. A bug that lets an LLM or an MCP client bypass
 it is a security issue.
 
-quackd also ships code that runs **on a robot**, which is a different kind of
-surface from everything above. Everything under `bridge/` is in scope in its own right:
-two daemons for an Open Duck Mini v2's Raspberry Pi, a host wrapper for an AlohaMini, and
-a daemon that walks a ToddlerBot.
+quackd also ships code that runs **on a robot**, or on the board beside one, which is a
+different kind of surface from everything above. Everything under `bridge/` is in scope in
+its own right: two daemons for an Open Duck Mini v2's Raspberry Pi, a host wrapper for an
+AlohaMini, a daemon that walks a ToddlerBot, and a daemon for an NVIDIA Jetson that quackd
+reaches with `--host` and never runs on.
 
 Also in scope:
 
@@ -45,10 +46,10 @@ Also in scope:
   `summary.json`, and the first line of `terminal.txt`. A flock root has no `run_start`, so
   both flock runners write `command` and `version` into the root `summary.json` themselves,
   and the root `terminal.txt` opens with the same line; a pilot flock's members each keep a
-  `run_start` of their own besides. The values of `--api-key` and `--token` are replaced with
-  `***` everywhere that line is written, so a reader sees that a key was passed and never
-  what it was. The four flags that take a URL, `--base-url`, `--address`, `--camera-url` and
-  `--decision-url`, keep the half a reader needs and lose the half that has to be rotated:
+  `run_start` of their own besides. The values of `--api-key`, `--token` and `--host-token`
+  are replaced with `***` everywhere that line is written, so a reader sees that a key was passed
+  and never what it was. The four flags that take a URL, `--base-url`, `--address`, `--camera-url`
+  and `--decision-url`, keep the half a reader needs and lose the half that has to be rotated:
   the scheme, the host, the port, the path and the username stay, a password in the URL
   becomes `***`, and so does any query parameter named like a credential (`api_key`, `token`,
   `sig` and the rest of `SECRET_QUERY_KEYS`). `--extra-body`, and `QUACKD_EXTRA_BODY` behind
@@ -61,8 +62,8 @@ Also in scope:
   a credential a vendor asked for under a name these lists do not carry. A key handed to the
   provider through its own environment variable, which is the normal way and the right one, is
   in no part of the record, and `QUACKD_EXTRA_BODY` is the one environment variable that
-  reaches it at all. What would be a security issue: the value of either secret flag reaching
-  any of the places above, a password or a named credential surviving a URL flag, a
+  reaches it at all. What would be a security issue: the value of any of the three secret flags
+  reaching any of the places above, a password or a named credential surviving a URL flag, a
   credential-named key surviving `extra_body`, or a new flag that takes a secret and is in
   neither `SECRET_FLAGS` nor `URL_FLAGS` (`quackd/command.py`).
 - **What the discrete stepper is sent** (`quackd run --decision-llm`, off unless you name one,
@@ -95,13 +96,15 @@ Also in scope:
   in another robot's prompt, or the file escaping the directory `--memory-dir` names.
   `--no-memory` writes nothing at all, and `quackd memory clear` deletes the file.
 - **The robot registry** (`~/.quackd/robots.json`, `~/.quackd/flocks.json`). `quackd robot
-  add --token ...` writes that token to disk **in plain text**, which is the honest trade for
-  not having it in shell history on every run. It is a file in your home directory, not a
-  secret store: if that is not good enough for your robot, keep passing `--token` on the line
-  or through `QUACKD_DUCK_TOKEN`. quackd masks it in everything it prints, `--json` included,
-  which reports only whether one is set. What would be a security issue: a token reaching a
-  transcript, a log line, a run directory or an MCP tool result, or either file escaping the
-  directory `--registry-dir` names.
+  add --token ...` writes that token to disk **in plain text**, and `--host-token ...` does the
+  same with a board's, which is the honest trade for not having either in shell history on
+  every run. It is a file in your home directory, not a secret store: if that is not good
+  enough for your robot, keep passing `--token` on the line or through `QUACKD_DUCK_TOKEN`,
+  and `--host-token` or `QUACKD_HOST_TOKEN` for a board. quackd masks both in everything it
+  prints, `--json` included, which reports only whether each is set (`token_set` and
+  `host_token_set`). What would be a security issue: a token reaching a transcript, a log
+  line, a run directory or an MCP tool result, or either file escaping the directory
+  `--registry-dir` names.
 - The MCP server executing verbs a loaded `.duck` contract does not allow.
 - Anything that lets a `.duck` file (untrusted input — people will share them) execute
   code, read files, or reach the network.
@@ -159,23 +162,31 @@ Also in scope:
   to anything on the network, and the MQTT flock bus carries messages that command robots
   with no authentication of its own. Both are off by default and neither has a threat model
   yet, so treat them as trusted-network only.
-- **The Jetson container and its compose file** (`deploy/jetson/`,
-  [docs/jetson.md](docs/jetson.md)). Three things in there are security decisions rather than
-  deployment taste. The model server is pinned to `OLLAMA_HOST: 127.0.0.1:11434` because the
-  image's own default is every interface, and under `network_mode: host` that default would put
-  a server with no authentication of any kind on whatever network the board is on: reach it from
-  a laptop with `ssh -L 11434:127.0.0.1:11434`, the way you reach a robot's bridge. Host
-  networking is also what makes the loopback presets true, so the container is on the board's
-  loopback rather than isolated from it, and `~/.quackd` is mounted in, which hands the process
-  inside the plain text tokens in `robots.json` and every robot's memory file. The compose file
-  runs it as uid 1000 rather than as root. That is the access a natively installed quackd already
-  has, and it is still worth knowing before you give that mount to an image somebody else built.
-  Then `.dockerignore`, which is not housekeeping: the build copies the repository root, a key
-  copied into a layer is in the build cache on that machine even after a later layer deletes it,
-  and `**/.env` rather than `.env` is what covers `deploy/jetson/.env`, the file the compose file
-  reads provider keys from. What would be a security issue: an `.env` reaching a layer, the model
-  server binding wider than loopback, or the container being handed anything the compose file
-  does not name. None of it has been run on a Jetson, so treat the arrangement as reviewed rather
+- **The Jetson host daemon** (`bridge/jetson/quackd_jetson_hostd.py`,
+  [docs/jetson.md](docs/jetson.md)), an HTTP server on port 9874 on a board that quackd
+  reaches with `--host` and never runs on. It serves a live view from a camera on the board,
+  runs YOLO on any JPEG it is sent, and hands out the board's own files, the output of
+  `nvpmodel -q` and one line of `tegrastats`. It binds loopback by default and warns when it is
+  bound wider with no token. A token, once one is configured, is required on every path, read
+  from the `X-Quackd-Token` header and never from the query string, and compared with
+  `hmac.compare_digest`. A `--token-file` that is named and missing, unreadable or empty refuses
+  to start rather than run with authentication off. It is plain HTTP, so the token and every
+  frame cross the network in the clear unless a tunnel carries them. There is no control path
+  in it: it answers GET, and POST on `/detect` alone, and a test fails if that changes. So the
+  worst a peer the daemon lets in can do is watch the room and keep the board busy, and
+  `POST /detect` is that second thing: it spends the board's GPU on whatever it is sent, for
+  anyone who can reach the port when there is no token, and on a robot's own board that is the
+  GPU and the memory its control loop shares. On the laptop, quackd never puts the token in a
+  URL, a transcript, a run's command line or `--json`, it scrubs the token out of every reply
+  before an error or `quackd doctor` can repeat it, and it ignores `HTTP_PROXY` and follows no
+  redirect, since either would carry the token header somewhere other than the board. The
+  model server that `--host` also reaches is your own install on the board and authenticates
+  nothing: keep Ollama's `OLLAMA_HOST` on `127.0.0.1:11434` and reach it and the daemon from
+  the laptop with `ssh -L 9874:127.0.0.1:9874 -L 11434:127.0.0.1:11434`, the way you reach a
+  robot's bridge. What would be a security issue: a way to move anything through the daemon, a
+  request served without the token when one is configured, the token reaching a URL or any
+  record on the laptop, or a password in a camera pipeline reaching a reply or a log. None of
+  it has been run on a Jetson by this project, so treat the arrangement as reviewed rather
   than proven.
 - **The bridge daemon** (`bridge/open_duck/quackd_duck_bridge.py`), a TCP listener on port
   9871 that walks a 42 cm biped. It binds loopback by default and compares a token with
@@ -198,19 +209,22 @@ Also in scope:
   going limp is unreachable by construction and must stay that way, and here it matters
   more: torque off on this body means the robot falls over.
 - The recommended deployment for all of them is an ssh tunnel
-  (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 -L 9873:127.0.0.1:9873`) rather than
-  exposing any of these ports.
+  (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 -L 9873:127.0.0.1:9873 -L 9874:127.0.0.1:9874`)
+  rather than exposing any of these ports.
 
 ## Supported versions
 
 Only the latest released minor version receives fixes.
 
-The on-robot artifacts carry their own versions and live on someone else's computer, so
-they can drift from the quackd that talks to them: `BRIDGE_VERSION` and `CAMD_VERSION`
-on an Open Duck Mini's Raspberry Pi, `VERSION` in the ToddlerBot daemon on its Jetson,
-and the AlohaMini host wrapper's `quackd_host_version` field. The two daemons' handshakes carry a
-protocol version and refuse a mismatch rather than guessing (the AlohaMini wrapper only
-stamps its version into every observation, and quackd does not read it yet), but a daemon
-you installed months ago is a daemon that has not had your fixes. `quackd doctor --robot
-<adapter>:<backend> --address ...` connects and shows what the robot reports about itself,
-though none of these version strings is in that table yet.
+The artifacts quackd ships for a robot or a board carry their own versions and live on
+someone else's computer, so they can drift from the quackd that talks to them:
+`BRIDGE_VERSION` and `CAMD_VERSION` on an Open Duck Mini's Raspberry Pi, `VERSION` in the
+ToddlerBot daemon on its Jetson, `HOSTD_VERSION` in the host daemon on a Jetson that
+`--host` names, and the AlohaMini host wrapper's `quackd_host_version` field. The two robot
+daemons' handshakes carry a protocol version and refuse a mismatch rather than guessing, and
+so does the host daemon's `/hello` (the AlohaMini wrapper only stamps its version into every
+observation, and quackd does not read it yet), but a daemon you installed months ago is a
+daemon that has not had your fixes. `quackd doctor --robot <adapter>:<backend> --address ...`
+connects and shows what the robot reports about itself, though none of the robot side's
+version strings is in that table yet. `quackd doctor --host` does show the host daemon's, in
+its `daemon` row.

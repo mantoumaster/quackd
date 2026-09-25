@@ -104,6 +104,76 @@ JetPack installs for it is built with GStreamer and the CSI camera needs GStream
 `Nice=10` with `MemoryMax=2G` and `OOMScoreAdjust=500`, so it is the process the board loses
 first (see the ToddlerBot note below).
 
+## From the laptop
+
+`--host` is how the quackd on your laptop names this daemon, on `quackd doctor`, `quackd run`
+and `quackd serve-mcp`, and on `quackd robot add` and `edit`, which keep it with a robot. Leave
+the port off and it is 9874. Without the flag a command uses the host the robot keeps, then
+`QUACKD_HOST`, and the token comes from `--host-token`, the robot's own, then
+`QUACKD_HOST_TOKEN`. One board is one camera and one detector, so `--host` is refused for a
+fleet: `--robots`, `--flock` or a flock duck.
+
+**`quackd doctor --host <board>`** reads `/hello`, `/healthz` and `/board`, parses the board's
+files on the laptop, and probes the four local model presets on the board rather than on the
+laptop:
+
+```
+Jetson at 127.0.0.1:61332 (the board the daemon runs on) ──────────────────────────────────
+✓ daemon      quackd-jetson-hostd 0.1.0, protocol 1, on orin-nano
+✓ camera      640x480 at 5 fps from csi, field of view 62.2 degrees
+✓ detector    yolov8n.pt on cuda
+✓ health      ok
+· board       NVIDIA Jetson Orin Nano Developer Kit
+· L4T         36.4.3 (JetPack 6.2)
+· memory      7.3 GiB, 4.9 GiB available, shared with the GPU
+⚠ swap        1.0 GiB, all zram: it compresses RAM rather than adding any (docs/jetson.md)
+· GPU device  /dev/nvgpu/igpu0
+· power mode  15W (nvpmodel -q)
+· GPU busy    0% (GR3D_FREQ in tegrastats)
+· tegrastats  09-24-2026 10:15:32 RAM 2467/7471MB (lfb 2x4MB) SWAP 0/994MB (cached 0MB) CPU
+              [2%@729,1%@729,0%@729,0%@729,1%@729,0%@729] EMC_FREQ 0%@2133 GR3D_FREQ
+              0%@[305] NVDEC off NVJPG off NVJPG1 off VIC off OFA off APE 200 cpu@47.5C
+              soc2@46.8C soc0@46.4C gpu@46.2C tj@47.5C soc1@46.6C VDD_IN 4462mW/4462mW
+              VDD_CPU_GPU_CV 480mW/480mW VDD_SOC 1400mW/1400mW
+```
+
+That is the board's section of `quackd doctor --host 127.0.0.1:61332`, whole, run against
+quackd's test fake of this daemon, `tests/fake_jetson_hostd.py`. The fake serves the board
+files the daemon's own tests build, and an `nvpmodel` answer and a `tegrastats` line written to
+the shape of published ones rather than captured from a board. It is not a Jetson. The last row
+is the raw `tegrastats` line the GPU load was read from. Against this daemon itself, started on
+Windows with `--camera fake` and a board made of files, the section read the same board and
+said what that machine lacked: no field of view given, no detector because ultralytics is not
+installed, health not ok for that reason, and the power mode and GPU load unknown because
+`nvpmodel` and `tegrastats` are not on its PATH. `--json` carries all of it under `host`, the
+board's facts under `host.jetson`. A daemon that does not answer fails the report, and nothing
+the board reports changes the verdict.
+
+**`quackd run --host <board>`** asks `/hello` before anything connects, and refuses the run when
+the daemon does not answer. The camera joins whatever body the run drives. It is the primary
+view for a body with no camera of its own, and otherwise an extra view named `host`, which the
+model is shown and the detector does not read. The detector is this daemon's YOLO, `yolo@host`,
+on a real body when `/hello` says `detect`, and never on a simulator by itself.
+`--detector color` keeps the colour detector on the laptop, and `--detector yolo` runs YOLO on
+the laptop instead. `--detector host` asks for this one by name, even on a simulator, and is
+refused before anything connects when the daemon cannot detect. A call to `/detect` that fails
+gives that frame no detections and a note in the run's log, and the run never switches
+detector. The header names both:
+
+```
+┌─ 🦆 find-and-kick ──────────────────────────────────────────────────────────────────────┐
+│ provider  fake (scripted:find-and-kick)                                                 │
+│ robot     microduck:sim2d                                                               │
+│ detector  color_blob on this machine                                                    │
+│ host      127.0.0.1:19874  daemon 0.1.0  camera as an extra view, tegra                 │
+└─ Ctrl-C or q stops the duck. Press it twice to quit at once. ───────────────────────────┘
+```
+
+That was the cartoon duck against this daemon started with `--camera fake` on Windows, with a
+board made of files and no ultralytics. A simulator keeps the colour detector, and the duck has
+a camera of its own, so the board's is an extra view. `quackd serve-mcp` takes `--host`,
+`--host-token` and `--detector` the same way, for one robot.
+
 ## Try it on a laptop first
 
 No board, no camera, no GPU:
@@ -123,9 +193,10 @@ detector sees. It needs no OpenCV, and without Pillow it serves a 2 by 2 grey JP
 
 - **`--camera csi` is untested.** It opens an `nvarguscamerasrc` pipeline through GStreamer and
   asks for 1640 by 1232, the IMX219's binned full-sensor mode, so that the frame keeps the
-  lens's whole field of view rather than a crop of its middle. It needs `nvargus-daemon` running and JetPack's own OpenCV. A pip `opencv-python` is
-  built without GStreamer, and the daemon says so in `camera_error` when it can tell. Any other
-  sensor or mode is a pipeline string passed to `--camera` directly.
+  lens's whole field of view rather than a crop of its middle. It needs `nvargus-daemon`
+  running and JetPack's own OpenCV. A pip `opencv-python` is built without GStreamer, and the
+  daemon says so in `camera_error` when it can tell. Any other sensor or mode is a pipeline
+  string passed to `--camera` directly.
 - **A USB camera is its index**: `--camera 0` is `/dev/video0` through V4L2. The service user is
   in the `video` group for this.
 - **The daemon reads one frame at start**, so a camera that opens and delivers nothing is
@@ -163,9 +234,11 @@ licence before you build a service on it.
 
 On a ToddlerBot the Jetson is the robot's own computer, and quackd's ToddlerBot daemon
 ([`bridge/toddlerbot/`](../toddlerbot/README.md)) runs the fifty hertz loop there and owns the
-robot's cameras. Run this one with `--camera none` beside it. quackd, on the laptop, still gets
-frames from the robot's daemon and can send them here to be detected, and the board's health
-still comes from here.
+robot's cameras. Run this one with `--camera none` beside it, which means changing the unit's
+`--camera csi` before you install it. quackd, on the laptop, still gets frames from the robot's
+daemon and sends them here to be detected, by itself, because a ToddlerBot is a real body.
+`--detector color` keeps the colour detector on the laptop instead. The board's health still
+comes from here.
 
 What to watch is contention. A model server or a detector saturating this board can starve
 the control loop, and nobody has measured by how much. That is why the unit runs this daemon at
@@ -182,11 +255,13 @@ Six commands you can read replace a script you would have to.
 
 ## Status
 
-Nothing here has been run on a Jetson by this project.
+Nothing on this page has been run on a Jetson by this project.
 
 What was exercised: `tests/test_jetson_hostd.py` drives the real server in-process, in
 quackd's test suite, against a board built from files, a fake ultralytics and torch (with CUDA
 and without), a stubbed OpenCV capture, and a Python one-liner standing in for `tegrastats`.
+`tests/test_jetson_host_contract.py` runs quackd's own client and `quackd doctor` against the
+real server on the same kind of board, which is what catches the two sides drifting apart.
 Never opened: the CSI pipeline, a USB camera, CUDA, a real model. The source is parsed with
 Python 3.10's grammar and checked for names 3.10 lacks, but it has not been executed on 3.10:
 quackd's own floor is 3.11.

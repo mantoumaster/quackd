@@ -7,10 +7,13 @@ This robot is not a duck. It weighs about 3 kg, it cannot get up if it falls, an
 own shutdown path disables torque with no lowering and no ramp. Read
 [adapters/toddlerbot.md](adapters/toddlerbot.md) before you start.
 
-Drive it from your laptop the first time. The Jetson on the robot's back can hold the daemon, a
-model server and quackd all at once ([jetson.md](jetson.md)), and a model server saturating that
-board is exactly the load that can starve the fifty hertz loop. Bring the robot up with nothing
-else running on it, and try the crowded board once these steps have passed.
+quackd runs on your laptop and never on the robot. The Jetson on the robot's back holds
+quackd's ToddlerBot daemon, and it can also hold a model server and quackd's host daemon, which
+`--host` reaches from the laptop ([jetson.md](jetson.md)). The host daemon runs there with
+`--camera none`, because the ToddlerBot daemon owns the robot's cameras. A model server or a
+detector saturating that board is exactly the load that can starve the fifty hertz loop, so
+bring the robot up with nothing else running on it, and add the others once these steps have
+passed.
 
 ## Before you power anything
 
@@ -29,7 +32,9 @@ else running on it, and try the crowded board once these steps have passed.
 5. `python quackd_toddlerbot_bridge.py --robot toddlerbot_2xc --fake` and, from your laptop,
    `uv run quackd doctor --robot toddlerbot:bridge --address tcp://<host>:9873`. The daemon
    binds loopback by default, so `<host>` here and below is `127.0.0.1` through the ssh
-   tunnel SECURITY.md recommends, unless you started it with `--host`.
+   tunnel SECURITY.md recommends, unless you started it with `--host`. That is the daemon's
+   own flag, the address it binds, and not quackd's `--host`, which names a board's host
+   daemon.
    Confirms the socket, the handshake, the token and the version check, still with no robot.
 
 ## The daemon, on the robot, not moving
@@ -61,13 +66,7 @@ script that ignores it.
 11. **Pull the network cable mid-move.** The daemon's deadman should slew the robot to the
     safe pose and hold it there. It must not go limp and it must not freeze mid-pose. This is
     the single most important thing to confirm, because on this body silence means hold
-    forever and quackd's daemon is the only thing that makes it mean anything else. If quackd
-    is on the robot's own board instead, there is no cable to pull: `kill -STOP` its
-    process, which stops the keepalives without closing the socket. **Do not resume it.**
-    `bot.keepalive` feeds the deadman on its own and the daemon clears the trip on the first
-    one it sees, so a `kill -CONT` hands the body straight back to the verb that was in
-    flight, while your hands are on it. Kill that process outright and start a fresh run
-    once the robot has settled.
+    forever and quackd's daemon is the only thing that makes it mean anything else.
 12. **Send the daemon `SIGTERM`.** It should settle to the safe pose first and only then
     release. Upstream's own exit path does not do this, which is why the daemon exists.
 

@@ -98,6 +98,26 @@ A task pings `transport.heartbeat()` every 500 ms (`robot.health` on a Microduck
 backend's own health call elsewhere, a liveness check in sim). One failure → `stop` intent → abort flag → the loop ends with
 `outcome: aborted`. Upstream's own rationale: "LLMs stall mid-inference".
 
+## A detector on another machine
+
+With `--host`, the detections can come from YOLO on a Jetson rather than from this process
+([jetson.md](jetson.md)), and a board can stop answering in the middle of a run. That is never
+a reason to change detector. A call that fails gives that frame no detections, and the run
+keeps the detector it started with. The colour detector does not label the same things on a
+real camera, so a quiet switch would change what `go_to` steers at with nothing in the record
+saying so, and the header would name a detector the run had stopped using.
+
+No detections is a shape every verb already handles. `go_to` turns toward where it last saw the
+target, and after more than thirty frames in a row with nothing, or once its own timeout runs
+out, it stops the body and fails. `observe` reports nothing seen with the board's reason beside
+it, and a `quackd run` writes a `note` to its log when the board's detector stops answering and
+another when it answers again.
+
+The board's camera never takes over a body's own view. Its frame is the primary view only for
+a body with no camera of its own, because a body's bearings are calibrated for its own lens and
+a board on a bench says nothing about which way the robot faces. A snapshot that fails or goes
+stale costs that picture and never the run.
+
 ## Kill switch
 
 Ctrl-C and `q` (when stdin is a terminal) set the same abort flag; the loop's `finally`
@@ -119,13 +139,9 @@ alone, so a third press lands somewhere without one and quits at once, on the te
 paragraph above.
 
 **SIGTERM is not one of them.** quackd installs a handler for SIGINT and for nothing else, so a
-bare `kill`, a systemd unit's default stop and a `docker compose stop` against a service that
-names no `stop_signal` all end a run without the `finally` above ever running: outside a
-container the process dies where it is, and inside one, where quackd is PID 1 with no handler
-for it, the signal is ignored until Docker's SIGKILL arrives. Neither path sends the robot a
-`stop`, which is why `deploy/jetson/compose.yml` sets `stop_signal: SIGINT` and gives the
-teardown twenty seconds, so there it is the clean path rather than one of the killers. Anything
-else you wrap `quackd run` in should send SIGINT. The Open Duck Mini's bridge and the ToddlerBot
+bare `kill` and a systemd unit's default stop both end a run without the `finally` above ever
+running, and the process dies where it is. Neither sends the robot a `stop`, so anything you
+wrap `quackd run` in should send SIGINT instead. The Open Duck Mini's bridge and the ToddlerBot
 daemon are the other way round and settle on both, which is what a daemon has to do: one is
 started by a unit this repository ships, and the other is started by hand and stopped by
 somebody typing `kill`.
@@ -367,12 +383,15 @@ write says nothing about what that write did.
   this body torque off is a fall.
 - **quackd owns the control loop here**, which is true of no other body. Upstream's own
   `step()` is a no-op, so nothing times out and nothing re-arms without the daemon.
-- **A model on the same board competes with that loop.** This robot carries a Jetson, and
-  quackd's daemon, a model server and quackd itself all fit on it ([jetson.md](jetson.md)). A
-  server saturating the CPU and the memory bus is the load that starves a fifty hertz loop, and
-  here a starved loop is a fall. Nobody has measured that contention on any board: keep the
-  robot on a stand the first time, watch `tegrastats` while a model answers, and consider
-  pinning the model server off the cores the loop runs on.
+- **A model server or a detector on the same board competes with that loop.** This robot
+  carries a Jetson, and quackd stays on your laptop, but the board can hold a model server and
+  quackd's host daemon beside quackd's ToddlerBot daemon ([jetson.md](jetson.md)). A model
+  server or a YOLO detector saturating the CPU and the memory bus is the load that starves a
+  fifty hertz loop, and here a starved loop is a fall. Nobody has measured that contention on
+  any board: keep the robot on a stand the first time, watch `tegrastats` while a model answers
+  and the detector runs, and consider pinning the model server off the cores the loop runs on.
+  The host daemon's unit already yields, at `Nice=10`, under `MemoryMax=2G` and first in line
+  for the OOM killer.
 - A good first contract is the shipped `toddlerbot-lookout`: it moves no leg, no arm and
   no waist.
 

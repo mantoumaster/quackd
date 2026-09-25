@@ -81,19 +81,21 @@ before.
   a result: the break-even there is a stepper answering in under 1.40 seconds, and below that
   it is a net loss.
 
-- ⬜ **Nobody has run quackd on a Jetson.** [docs/jetson.md](docs/jetson.md) and
-  [`deploy/jetson/`](https://github.com/rokbenko/quackd/tree/v0.13.0/deploy/jetson) were written from NVIDIA's own documentation on
-  a Windows laptop, and the image was built for arm64 and run under emulation there, then
-  built and run again on a native arm64 runner with no GPU, green on 2026-09-23. What
-  those runs are worth is not the board: they prove quackd runs on aarch64 Linux, and
-  nothing else. Unmeasured is everything that makes a Jetson one: Ollama on the
-  Orin GPU, the NVIDIA container runtime, what the doctor section reads off real files, how
-  much memory a model actually takes beside quackd, and the one that matters near a robot,
-  whether a model server and a fifty hertz control loop can share a board without the loop
-  suffering, which on a humanoid is a fall. A ToddlerBot carries the only Jetson any of the
-  seven bodies has, so that is where it gets answered. The page says what to send: the
-  `jetson` block out of `quackd doctor --json`, a terminal and a transcript from a real run,
-  and one `tegrastats` line captured while the model was answering.
+- ⬜ **Nobody has run the host daemon on a Jetson.** quackd no longer runs on the board. It
+  reaches one from the laptop with `--host`, through `bridge/jetson/quackd_jetson_hostd.py`
+  ([docs/jetson.md](docs/jetson.md)). The daemon, the client, `quackd doctor --host`, the
+  board's camera and its detector were all exercised in-process against fakes: a board made of
+  files, a fake ultralytics and torch, and a fake of the protocol on loopback. That proves
+  quackd reads the protocol as written, and says nothing about a board. Unmeasured is everything
+  that makes a Jetson one: whether the CSI camera opens through its GStreamer pipeline, whether
+  ultralytics on JetPack detects on CUDA, how long a snapshot and a detection take over a
+  robot's Wi-Fi inside `go_to`'s steering loop, which re-sends its last twist for 0.3 s while it
+  waits and no longer, what the doctor section reads off a real board's files, and the one that
+  matters near a robot, whether a model server and the detector on a robot's own board leave its
+  fifty hertz control loop alone, which on a humanoid is a fall if they do not. A ToddlerBot
+  carries the only Jetson any of the seven bodies has, so that is where the last one gets
+  answered. What to send back from a board is listed at the end of
+  [docs/jetson.md](docs/jetson.md#status).
 
 - ⬜ **No `cost_usd` quackd reports has been checked against an invoice.** Every rate in
   `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand, most

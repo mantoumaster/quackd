@@ -165,11 +165,16 @@ The daemon also reads the loaded checkpoint's own `command_range` at startup and
 velocity envelope it was really trained on, which is what quackd's `limits` narrow to. An
 envelope with nothing left on any axis is treated as no locomotion at all.
 
-**The board it runs on can hold the whole loop.** This robot carries a Jetson, which is a
-computer rather than a body, so the daemon, a model server and quackd between them can be three
-processes on that one board talking over `127.0.0.1` ([jetson.md](../jetson.md)). Nobody has
-measured what a model server saturating that board does to the fifty hertz loop beside it, and
-on this body a starved loop is a fall.
+**The board it runs on can lend quackd its GPU, and quackd stays on the laptop.** This robot
+carries a Jetson, which is a computer rather than a body. Beside the daemon it can hold a model
+server and quackd's host daemon, and `--host` reaches both from the laptop
+([jetson.md](../jetson.md)). The host daemon runs with `--camera none`, because this daemon
+owns the robot's cameras. A ToddlerBot is a real body, so when the host daemon can detect, the
+run uses the board's YOLO by itself: the frames this daemon's camera sends reach the laptop and
+go back to the board as JPEGs to be detected, a round trip nobody has timed. `--detector color`
+keeps the colour detector on the laptop instead. Nobody has measured what a model server or a
+detector saturating that board does to the fifty hertz loop beside it either, and on this body
+a starved loop is a fall.
 
 ## The contract job, and what a green one means
 

@@ -1,6 +1,16 @@
 # ADR-0008: Features, not frames — a colour-blob detector by default
 
-**Status:** accepted · **Date:** 2026-08-28
+**Status:** accepted, amended · **Date:** 2026-08-28
+
+**Amended 2026-09-25 by [ADR-0046](0046-the-jetson-is-reached-not-run-on.md):** a `Detector`
+whose model runs on another machine arrived before `mediad`'s feature stream did, and it is not
+that stream. `HostDetector` (`quackd/perception/host.py`) still takes the image. It sends the
+primary frame to the board `--host` names as one JPEG and turns the boxes it gets back into
+detections with the geometry `YoloDetector` uses, so the protocol is unchanged. The `Detector`
+that reads a socket instead of an image, which *Consequences* below anticipates, is still
+unbuilt. `HostDetector` waits on the network, so quackd runs it in a worker thread, and a
+steering verb keeps re-sending its last twist while the board answers, for one deadman window
+and no longer.
 
 ## Context
 

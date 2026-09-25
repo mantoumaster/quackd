@@ -1227,10 +1227,12 @@ so treat it as a rough guess rather than a measurement.
 > for a look as a deliberate act needs an MCP client, which is
 > [M09](#m09-add-the-camera).
 
-There is a real person detector behind the `yolo` extra, and today it is reachable only from
-Python by constructing `YoloDetector()` and passing it in. No CLI flag selects it. The same
-is true of tuning the colour ranges to your own shirt, which [the FAQ](faq.md) covers as a
-Python constructor.
+There is a real person detector behind the `yolo` extra, and `--detector yolo` selects it:
+YOLO in quackd's own process on the laptop, which reads a person as `person` whatever they are
+wearing. Without the extra the run is refused before anything connects, with
+`YoloDetector needs ultralytics: uv pip install 'quackd[yolo]'`. Give it `--fov-deg` for your
+webcam, or its distances are a guess and the run says so once. Tuning the colour ranges to
+your own shirt has no flag: [the FAQ](faq.md) covers it as a Python constructor.
 
 #### Give it a picture
 

@@ -5,6 +5,176 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+quackd no longer runs on an NVIDIA Jetson. It runs on the laptop, and `--host` names the board.
+quackd reaches the board through `bridge/jetson/quackd_jetson_hostd.py`, one small daemon it
+ships for it, and gets four things from it: the model on its GPU, through the local presets, the
+board's health in `quackd doctor`, frames from a camera on it, and YOLO detections computed on
+its GPU. 0.13.0 went the other way and put quackd in a container on the board beside a model
+server. That was the wrong direction. The board on its own is already a robot's computer and
+GPU, and what quackd adds is using it, and its data, from the laptop. The arrangement the image
+existed for, a model server, a robot's control daemon and quackd on one board, was also the
+risky one, because a model server can starve a fifty hertz control loop. So the container, its
+workflow and doctor's reading of the machine it runs on are removed, which breaks anything that
+built the image or read doctor's top-level `jetson` key
+([ADR-0046](docs/adr/0046-the-jetson-is-reached-not-run-on.md), which supersedes
+[ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)). Nothing here has been run on a
+Jetson by this project. The daemon, the client, doctor, the camera and the detector were
+exercised in-process against fakes, and Known limitations, below, says what that leaves
+unmeasured.
+
+### Added
+
+- **`--host HOST[:PORT]` names a board quackd uses and never runs on.** `--robot` still names
+  the body, and the flag is the same whatever the body is. It is on `quackd run`, `serve-mcp`,
+  `doctor`, `robot add` and `robot edit`, with `--host-token` beside it, and its port is the
+  daemon's, 9874 unless you changed it. `QUACKD_HOST` and `QUACKD_HOST_TOKEN` are the rung
+  below, and `.env.example` lists them. The board is settled once, the same way for every
+  command: the flag, then the host a registered robot stores, then `QUACKD_HOST`. The token
+  climbs a ladder of its own, so `--host 127.0.0.1` through an ssh tunnel still carries a
+  registered robot's token, and a robot's token is sent only when that robot stores a board.
+  `--host` takes a machine and not a URL, which is `--base-url`'s job, and refuses anything with
+  an `@` in it, because a token has a flag of its own. `--host-token` joins `--api-key` and
+  `--token` among the flags whose value never reaches a run record. `run` and `serve-mcp` ask
+  the daemon for its `/hello` before anything is built, and a board that does not answer refuses
+  the run while nothing is powered, with a hint that says how to run without it
+  ([docs/jetson.md](docs/jetson.md)).
+- **A registered robot can keep its board.** `robots.json` gains `host` and `host_token`, set
+  with `quackd robot add` and `robot edit`, and `quackd robot edit NAME --clear host` forgets
+  both. A host token needs a host. `robot show` and its `--json` print the host and only whether
+  a token is set (`host_token_set`), and `robot list` gains a `host` column when some robot has
+  one. Both fields are left out of the file while they are empty, so a registry that never named
+  a board stays readable by 0.13, which refuses unknown keys
+  ([docs/registry.md](docs/registry.md)).
+- **The host daemon, `bridge/jetson/quackd_jetson_hostd.py`, is what answers on the board.** It
+  serves HTTP on port 9874, binds loopback by default, warns when it is bound anywhere else with
+  no token, and checks an optional token in the `X-Quackd-Token` header, in constant time, on
+  every path. `/hello` says what started, a camera, a detector and whether the board is a Tegra,
+  and why anything did not. `/healthz` is the camera's age and the detector's last call.
+  `/board` is five of the board's files, three device nodes, the output of `nvpmodel -q` and one
+  `tegrastats` line, as raw text for quackd to parse. `/snapshot.jpg` is the Open Duck camera
+  daemon's contract, staleness and all, and `POST /detect` takes a JPEG and returns YOLO's pixel
+  boxes and the device they ran on. It is written for Python 3.10, JetPack 6's system Python,
+  imports nothing from quackd and has no control path. A named token file that is missing or
+  empty refuses to start rather than running open. Its systemd unit runs it at `Nice=10`, under
+  `MemoryMax=2G` and first in line for the OOM killer (`OOMScoreAdjust=500`), because on a
+  robot's own board it is the process to lose before the control loop or the model server. It
+  ships in the sdist and the repository, never in the wheel
+  ([bridge/jetson/README.md](bridge/jetson/README.md)).
+- **`quackd doctor --host` reads the board over the network.** With a host named, by the flag,
+  by the robot `--robot` names or by `QUACKD_HOST`, doctor asks the daemon for its hello, its
+  health and its raw board files, and shows a section for the board: the daemon, its camera, its
+  detector and the device the detector runs on, its health, and, parsed with the parsers doctor
+  already had, the board's model, the L4T release and which JetPack that is, the memory it
+  shares with the GPU, whether the only swap is zram, the GPU device node, the power mode and
+  the GPU's load from `GR3D_FREQ` in one `tegrastats` line. The four local presets are probed at
+  the host rather than on this machine. A daemon on a machine that is not a Tegra is not called
+  a Jetson. A host that does not answer fails the report the way a bad `--address` does, and
+  nothing the board reports ever changes the verdict.
+- **`quackd doctor` asks an Ollama that answers where its models sit.** From Ollama's own
+  `GET /api/ps`, for each loaded model: all on the GPU, a share of it, or on the CPU. On a Tegra
+  a model on the CPU is the generic arm64 build's pitfall, and the row says that the official
+  installer picks the JetPack build. None of it touches the verdict.
+- **A camera on the board joins whatever body the run drives.** When the daemon has a camera,
+  `run` and `serve-mcp` add the board's frames to the body before the task file is judged, so a
+  camera task on a blind body is not refused for a camera the run is about to have. The board's
+  frame is the primary view only for a body with no camera of its own, which then gains `camera`
+  and the core verbs a camera unlocks for it: `observe` always, and `go_to`, `search_scan` and
+  `approach_and` where its mobility and intents allow them. A body with a camera keeps its
+  primary, because its bearings are calibrated for that lens, and the board's frame is an extra
+  view named `host` that the model is shown. A frame older than two seconds is dropped, and a
+  snapshot that fails costs the picture and never the run. doctor, given a robot and a host,
+  lists the board's camera with its role.
+- **YOLO on the board's GPU reads a real body's frames, and `--detector` chooses.** `yolo@host`
+  sends the primary frame to the board as one JPEG and turns the boxes that come back into
+  detections with `detections_from_boxes`, the function the in-process `YoloDetector` now uses
+  too, so the same boxes are the same detections on either machine. With no `--detector`, a run
+  uses it on a real body when the daemon can detect, and never on a simulator or a mock, which
+  keep the colour detector they are tuned for. `--detector color|host|yolo` is on `run` and
+  `serve-mcp`. `color` opts out. `host` asks for the board's by name, on a simulator too, and is
+  refused before anything connects when no board is named or its daemon cannot detect, with what
+  the daemon said. `yolo` is YOLO in this process, which needs `quackd[yolo]` and had no flag
+  before. A detection that fails gives that frame no detections, and the run keeps the detector
+  rather than switching to the colour one, which would change what `go_to` steers at with
+  nothing in the record saying so. `observe` puts the reason beside "nothing detected", and the
+  log gets one `note` per outage rather than one per frame. The call runs in a worker thread, so
+  `go_to` keeps re-sending its last twist while the board answers, for 0.3 s and no longer.
+  `--detector` is refused for a fleet.
+- **A run names its detector.** The run header gains a `detector` row, the board's with its
+  address, model and device or the colour one "on this machine", and, with a board, a `host` row
+  with the daemon's version and what it has. `run_start` gains `detector` and, with a board, a
+  `host` object with the role the board's camera took at connect. The log's run line names the
+  detector only when it is not the colour one, so every line written before, and every simulator
+  run, reads as it did. `serve-mcp`'s startup line and `robot_list` name the detector too.
+
+### Changed
+
+- **A local preset's model server moves to the board.** `--llm ollama`, `vllm`, `llamacpp` and
+  `lmstudio` keep their own port and path, and their `localhost` becomes the machine the host
+  names. The port in `--host` is the daemon's, and it is dropped. The address ladder is now
+  `--base-url`, then a host named for this run or stored with the robot, then `QUACKD_BASE_URL`,
+  then `OPENAI_BASE_URL`, then `QUACKD_HOST`, then the preset's own address, where it was
+  `--base-url`, then the two variables, then the preset. A URL is used as given wherever it
+  comes from, and a host only ever moves a preset, so `--llm local` still needs `--base-url`,
+  and with a host alone it is refused with a hint naming that flag. `QUACKD_HOST` sits below the
+  two URL variables on purpose: it is the board you usually use, and a `.env` line naming a
+  model server's exact address must win over it. No vendor and no decision LLM is moved, and
+  `--decision-url` already reaches a server on the board
+  ([docs/local-llms.md](docs/local-llms.md)).
+- **Breaking. `quackd doctor --json` carries the board under `host`.** The `host` key holds the
+  hello, the health, the presets asked at the host as `host.servers` and the parsed board as
+  `host.jetson`. The top-level `jetson` key 0.13.0 added is gone, and so is its
+  `docker_default_runtime`, which means nothing from a laptop. A malformed `QUACKD_HOST` is a
+  row in the report rather than a line of prose, so `--json` still prints one document.
+
+### Removed
+
+- **Breaking. quackd's Jetson container, the workflow that built it and its `.dockerignore`.**
+  The Dockerfile, the compose file and their README went with their directory,
+  [`deploy/jetson/`](https://github.com/rokbenko/quackd/tree/v0.13.0/deploy/jetson), linked here
+  at the `v0.13.0` tag, where the files still are. The arm64 image workflow,
+  `.github/workflows/jetson-image.yml`, went with them, and so did `.dockerignore`, whose only
+  consumer was that Dockerfile. `tests/test_deploy_jetson.py` is removed too, and its two tests
+  about the page rather than the image, the JetPack table held equal to the one doctor reads and
+  the sentence saying no Jetson has run this, moved to `tests/test_docs.py`.
+- **Breaking. `quackd doctor`'s reading of the board it runs on.** It read `/proc/device-tree`,
+  `/etc/nv_tegra_release`, `/proc/meminfo` and `/proc/swaps` on its own machine, ran `nvpmodel`
+  and asked Docker for its default runtime. doctor now opens none of this machine's `/proc` and
+  runs no subprocess, and a test that parses `doctor.py` keeps it that way. The board is read
+  with `--host` instead, above.
+
+### Known limitations
+
+- **Nothing here has been run on a Jetson by this project.** The daemon was driven in-process in
+  the test suite, against a board made of files, a fake ultralytics and torch with CUDA and
+  without, a stubbed OpenCV capture and a one-line stand-in for `tegrastats`, and its source is
+  parsed with Python 3.10's grammar without having run under 3.10. The client, doctor, the host
+  camera and the host detector were driven against a fake of the protocol on loopback, and one
+  test runs the real daemon against the real client and doctor. That proves quackd reads the
+  protocol as written, and nothing about a board.
+- **What a board would say is unmeasured.** Whether `--camera csi` opens the CSI camera and
+  delivers the IMX219's whole field of view. Whether ultralytics on JetPack, with NVIDIA's
+  torch, detects on CUDA, and how long a detection takes there. How long a snapshot and a
+  detection take over a robot's Wi-Fi inside `go_to`'s steering loop, which re-sends its last
+  twist for 0.3 s while it waits and no longer, so a slower round trip lets the body stop
+  between frames. Whether a model server and the detector on a robot's own board leave its fifty
+  hertz control loop alone. On a ToddlerBot, the one body with a Jetson, a starved loop is a
+  fall, and the daemon's lower priority, memory ceiling and OOM score are a precaution rather
+  than a measurement. And whether a real board's files and `tegrastats` line look like the
+  fixtures, which were written from NVIDIA's documentation. What to send back from a board that
+  can is listed at the end of [docs/jetson.md](docs/jetson.md#status).
+- **A fleet has no board.** `--host`, or a host stored with any member, is refused for
+  `--robots`, `--flock`, a task file with a `flock:` block and several robots alike, because one
+  host is one camera, one detector and one board's health. `QUACKD_HOST` is not refused, and for
+  a fleet it moves only the local presets' model server.
+- **Two waits on a board can outlast a call's timeout.** Every wait on the board's socket has a
+  timeout sized to what the call does, and these two are outside it. Looking the board's name up
+  comes before there is a socket, on the system resolver's own clock, so a name that stops
+  resolving can take longer than that to fail, and is paid again on every call. A reply trickled
+  in a byte at a time can take longer too, which only a hostile board would send. An address
+  given to `--host` is never looked up.
+
 ## [0.14.0] — 2026-09-25
 
 quackd has run on a real arm a second time, and this time the arm ran examples prepared for it.

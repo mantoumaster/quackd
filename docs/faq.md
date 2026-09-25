@@ -258,10 +258,10 @@ bridge and a camera server, and neither does any perception or inference of its 
 enough to swap the gamepad for a socket and to serve a JPEG ([`bridge/open_duck/`](../bridge/open_duck/README.md)). The Microduck's onboard
 computer works the same way, through `robotd`. Nothing here needs an NPU or a bigger board
 to keep up, because nothing model-shaped *has to* run on the robot's own board.
-When the robot's own computer is big enough, that server can be it. A ToddlerBot carries a
-Jetson, and quackd and a local model both fit beside its daemon on that board. They stay
-three separate processes with the same boundaries between them, and the network hop
-becomes loopback ([jetson.md](jetson.md)).
+When the robot's computer is an NVIDIA Jetson, as a ToddlerBot's is, quackd still stays on the
+laptop and uses the board from there: `--host` reaches the model server on its GPU, a camera on
+it, YOLO detections computed on that GPU, and the board's health in `quackd doctor`, all
+through one small daemon quackd ships for the board ([jetson.md](jetson.md)).
 
 **Does quackd use TOF or another depth sensor for obstacle avoidance?** Not yet. The only
 sensing input today is a single colour camera: an HSV threshold (or optionally YOLO) gives
@@ -277,7 +277,9 @@ build has no depth sensor at all.
 in OpenCV HSV (H 0–180). Photograph the ball under your light, sample its hue, give ±8, and
 pass `--fov-deg 62` to `quackd run` for the IMX219. Distance comes from apparent size:
 measure the pixel radius at 1 m once and adjust `size_m` until it reads 1.00. Or install
-`quackd[yolo]` and use `YoloDetector`.
+`quackd[yolo]` and pass `--detector yolo`, which runs YOLO in quackd's own process. A Jetson
+reached with `--host` runs the same YOLO on the board's GPU instead, and that one is
+`--detector host`.
 
 **Does it remember anything between runs?** Since 0.6, a little, per robot. Each
 `adapter:backend` has a JSONL file under `~/.quackd/memory/` holding two kinds of line: the
@@ -391,9 +393,12 @@ each binds loopback, and if a token is configured it checks one with `hmac.compa
 before accepting a
 handshake (`--token`, or `QUACKD_DUCK_TOKEN` for the duck and `QUACKD_TODDLERBOT_TOKEN` for the
 ToddlerBot). The duck's camera server has no authentication at
-all, so tunnel it. On a Microduck the physical gamepad preempts remote commands; on an Open
-Duck it does not, because quackd's daemon *replaces* the gamepad the walk loop reads, which
-makes the power switch the only thing that always wins ([safety.md](safety.md)).
+all, so tunnel it. The daemon quackd ships for a Jetson cannot move a robot at all. It binds
+loopback too, and with a token set (`--token`, `--token-file` or `QUACKD_HOST_TOKEN`) it checks
+it on every request the same way, because what it serves is a camera and a GPU. On a
+Microduck the physical gamepad preempts remote commands; on an Open Duck it does not, because
+quackd's daemon *replaces* the gamepad the walk loop reads, which makes the power switch the
+only thing that always wins ([safety.md](safety.md)).
 
 **What stops the model itself from doing something dangerous?** The executor, not the
 model's judgment: every verb call is checked against the loaded `.duck`'s allowlist,
@@ -478,10 +483,12 @@ no pull request to this repository. Writing one: [adapters.md](adapters.md).
 
 **Is a Jetson one of the seven?** No, and it is not an eighth. A Jetson is a computer, not a
 body: it has no manifest and no verbs, `quackd list-adapters` will never show it, there is no
-`--robot jetson:...`, and there is nothing to install for it. quackd runs there the way it runs
-on your laptop, and the GPU on that board belongs to a local model server it reaches over
-loopback, which is the arrangement *Does the robot need a powerful onboard computer?* above
-describes ([ADR-0044](adr/0044-a-jetson-is-a-host-not-a-body.md)).
+`--robot jetson:...`, and there is no adapter to install for it
+([ADR-0044](adr/0044-a-jetson-is-a-host-not-a-body.md)). quackd does not run on it either. It
+names the board with `--host` from the laptop, and uses the model server on its GPU, its camera,
+its detector and its health from there, which is the arrangement *Does the robot need a
+powerful onboard computer?* above describes ([jetson.md](jetson.md),
+[ADR-0046](adr/0046-the-jetson-is-reached-not-run-on.md)).
 
 **Why does `validate` say "requires kick, but arm-01 (lerobot-so101) does not provide
 it"?** Because it is true. A `.duck` lists what it needs (`requires`, or for a `duck: 0`
