@@ -75,6 +75,10 @@ def detections_from_boxes(
 
 class YoloDetector:
     name = "yolo"
+    lens_at_connect = False
+    """True on one `explicit_detector` built before the body connected, whose lens the loop and
+    the MCP server set again from what the body reported. One built anywhere else, such as a
+    `YoloDetector(fov_deg=70.0)` handed to a run from Python, keeps the lens it was built with."""
 
     def __init__(
         self,

@@ -466,10 +466,11 @@ Microducks on one desk shared one file. A registered robot keys by its name, so 
 `quackd run fetch --robot scout` uses Claude without a flag. `--llm` on the line still wins,
 and the stored one still beats `QUACKD_LLM`.
 
-**Endpoints come from it.** `--address`, `--token`, `--camera-url`, `--host` and `--host-token`
-on the line each override the stored one, field by field, because reaching the same robot
-through a tunnel today is not renaming it. `--camera-url` overrides as a set rather than one url at
-a time: pass it twice and the two you passed are the cameras for that run, stored ones included.
+**Endpoints come from it.** `--address`, `--token`, `--camera-url`, `--host` and
+`--host-token` on the line each override the stored one, field by field, because reaching the
+same robot through a tunnel today is not renaming it. `--camera-url` overrides as a set rather
+than one url at a time: pass it twice and the two you passed are the cameras for that run,
+stored ones included.
 
 **The rest pose does not.** There is no flag for it on `run`, `doctor` or `serve-mcp`. The
 others are addresses and their tokens, and an address is a route to the same robot; a rest

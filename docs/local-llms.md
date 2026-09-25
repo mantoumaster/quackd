@@ -35,13 +35,16 @@ for naming something the catalogue has not heard of.
 they serve. An Ollama that answers is also asked where it put each loaded model
 (`GET /api/ps`): all on the GPU, a share of it, or on the CPU.
 
-**The server can live on another machine, and `--host` moves a preset there.** An NVIDIA
-Jetson is the case this project has written up ([jetson.md](jetson.md)): the model runs on the
-board's GPU and quackd stays on your laptop. `--host jetson.local` replaces a preset's
-`localhost` with that machine and keeps the preset's own port and path, so `--llm ollama` then
-asks `http://jetson.local:11434/v1`. The port in `--host` is the one quackd's daemon on the
-board listens on, 9874 unless you changed it, and never the model server's. A cloud vendor's
-address is never moved. Where a local server is, the first rung that answers wins:
+**The server can live on another machine, and `--host` moves a preset there.** An NVIDIA Jetson
+is the case this project has written up ([jetson.md](jetson.md)): the model runs on the board's
+GPU and quackd stays on your laptop. `--host jetson.local` replaces a preset's `localhost` with
+that machine and keeps the preset's own port and path, so `--llm ollama` then asks
+`http://jetson.local:11434/v1`. That address answers only once Ollama on the board listens
+beyond its own loopback, which it does not by default, and quackd's daemon is the same, so the
+usual way in is an ssh tunnel and `--host 127.0.0.1` ([jetson.md](jetson.md#from-the-laptop)).
+The port in `--host` is the one quackd's daemon on the board listens on, 9874 unless you changed
+it, and never the model server's. A cloud vendor's address is never moved. Where a local server
+is, the first rung that is set wins, and nothing is probed:
 
 1. `--base-url`: a URL given for this run is used exactly as given.
 2. `--host`, or the host a registered robot was stored with: the preset's address moved to that
@@ -57,12 +60,11 @@ A URL given anywhere is used as given, and a host only ever moves a preset. That
 registered with this robot is a decision about this run, and beats a `.env` line naming a
 model server's URL. `QUACKD_HOST` is the board you usually use, and does not.
 
-`--host` asks more of the board than its model server. It names the machine quackd's own
-daemon runs on, for its camera, its detector and its health, and a run whose daemon does not
-answer is refused before anything connects. For the model alone,
-`--base-url http://jetson.local:11434/v1` asks nothing of the daemon. `quackd doctor --host`
-probes the four presets on that machine instead of this one, which is the quickest way to see
-where a run will look:
+`--host` asks more of the board than its model server. It names the machine quackd's own daemon
+runs on, for its camera, its detector and its health, and a run whose daemon does not answer is
+refused before anything connects. For the model alone, `--base-url http://127.0.0.1:11434/v1`
+through that tunnel asks nothing of the daemon. `quackd doctor --host` probes the four presets
+on that machine instead of this one, which is the quickest way to see where a run will look:
 
 ```
 LLM servers, the presets on 127.0.0.1 (GET /v1/models, 1.5 s timeout) ─────────────────────────────

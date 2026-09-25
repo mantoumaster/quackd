@@ -8,16 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 quackd no longer runs on an NVIDIA Jetson. It runs on the laptop, and `--host` names the board.
-quackd reaches the board through `bridge/jetson/quackd_jetson_hostd.py`, one small daemon it
-ships for it, and gets four things from it: the model on its GPU, through the local presets, the
-board's health in `quackd doctor`, frames from a camera on it, and YOLO detections computed on
-its GPU. 0.13.0 went the other way and put quackd in a container on the board beside a model
-server. That was the wrong direction. The board on its own is already a robot's computer and
-GPU, and what quackd adds is using it, and its data, from the laptop. The arrangement the image
-existed for, a model server, a robot's control daemon and quackd on one board, was also the
-risky one, because a model server can starve a fifty hertz control loop. So the container, its
-workflow and doctor's reading of the machine it runs on are removed, which breaks anything that
-built the image or read doctor's top-level `jetson` key
+quackd gets four things there. The model on its GPU comes from your own model server, which a
+local preset moves to the board. The board's health in `quackd doctor`, frames from a camera on
+it and YOLO detections computed on its GPU come from `bridge/jetson/quackd_jetson_hostd.py`, one
+small daemon quackd ships for it. 0.13.0 went the other way and put quackd in a container on the
+board beside a model server. That was the wrong direction. The board on its own is already a
+robot's computer and GPU, and what quackd adds is using it, and its data, from the laptop. The
+arrangement the image existed for, a model server, a robot's control daemon and quackd on one
+board, was also the risky one, because a model server can starve a fifty hertz control loop. So
+the container, its workflow and doctor's reading of the machine it runs on are removed, which
+breaks anything that built the image or read doctor's top-level `jetson` key
 ([ADR-0046](docs/adr/0046-the-jetson-is-reached-not-run-on.md), which supersedes
 [ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)). Nothing here has been run on a
 Jetson by this project. The daemon, the client, doctor, the camera and the detector were
@@ -38,15 +38,20 @@ unmeasured.
   an `@` in it, because a token has a flag of its own. `--host-token` joins `--api-key` and
   `--token` among the flags whose value never reaches a run record. `run` and `serve-mcp` ask
   the daemon for its `/hello` before anything is built, and a board that does not answer refuses
-  the run while nothing is powered, with a hint that says how to run without it
-  ([docs/jetson.md](docs/jetson.md)).
+  the run while nothing is powered, with a hint that says how to run without it. A refused
+  token is answered with how to change the one that was sent, which for a token the robot keeps
+  is `quackd robot edit NAME --host-token`. A `--host-token` typed where nothing names a board
+  refuses `run` and `serve-mcp` and fails `doctor`'s host section, and `QUACKD_HOST_TOKEN` with
+  no board to go to is left unread. `validate` and `list-verbs` ask no board, and say so for a
+  body described without a camera when a board is named for it ([docs/jetson.md](docs/jetson.md)).
 - **A registered robot can keep its board.** `robots.json` gains `host` and `host_token`, set
   with `quackd robot add` and `robot edit`, and `quackd robot edit NAME --clear host` forgets
   both. A host token needs a host. `robot show` and its `--json` print the host and only whether
   a token is set (`host_token_set`), and `robot list` gains a `host` column when some robot has
   one. Both fields are left out of the file while they are empty, so a registry that never named
-  a board stays readable by 0.13, which refuses unknown keys
-  ([docs/registry.md](docs/registry.md)).
+  a board stays readable by 0.12 to 0.14, which refuse unknown keys. One robot stored with a host
+  makes the whole file unreadable to them, every robot in it included, until this release runs
+  `quackd robot edit NAME --clear host` on it ([docs/registry.md](docs/registry.md)).
 - **The host daemon, `bridge/jetson/quackd_jetson_hostd.py`, is what answers on the board.** It
   serves HTTP on port 9874, binds loopback by default, warns when it is bound anywhere else with
   no token, and checks an optional token in the `X-Quackd-Token` header, in constant time, on
@@ -57,7 +62,11 @@ unmeasured.
   daemon's contract, staleness and all, and `POST /detect` takes a JPEG and returns YOLO's pixel
   boxes and the device they ran on. It is written for Python 3.10, JetPack 6's system Python,
   imports nothing from quackd and has no control path. A named token file that is missing or
-  empty refuses to start rather than running open. Its systemd unit runs it at `Nice=10`, under
+  empty refuses to start rather than running open. A request without the token is refused on
+  its headers alone, and what any client can make the board hold is bounded: 16 connections,
+  32 KB of headers, 10 seconds for a request to arrive whole and two `POST /detect` bodies at a
+  time. A camera password in a pipeline, in a URL, a query parameter or a property, is shown
+  as `***`. The daemon's systemd unit runs it at `Nice=10`, under
   `MemoryMax=2G` and first in line for the OOM killer (`OOMScoreAdjust=500`), because on a
   robot's own board it is the process to lose before the control loop or the model server. It
   ships in the sdist and the repository, never in the wheel
@@ -97,9 +106,12 @@ unmeasured.
   the daemon said. `yolo` is YOLO in this process, which needs `quackd[yolo]` and had no flag
   before. A detection that fails gives that frame no detections, and the run keeps the detector
   rather than switching to the colour one, which would change what `go_to` steers at with
-  nothing in the record saying so. `observe` puts the reason beside "nothing detected", and the
-  log gets one `note` per outage rather than one per frame. The call runs in a worker thread, so
-  `go_to` keeps re-sending its last twist while the board answers, for 0.3 s and no longer.
+  nothing in the record saying so. `go_to` and `search_scan` stop the body on the first frame
+  the board could not read and fail with its reason, rather than take it for the target out of
+  view and turn the body looking for it. `observe` puts the reason beside "nothing detected", and
+  the log gets one `note` per outage rather than one per frame. The call runs in a worker
+  thread, so `go_to` keeps re-sending its last twist while the board answers, for 0.3 s, and
+  then sends a zero twist, which stops a body with no deadman of its own too.
   `--detector` is refused for a fleet.
 - **A run names its detector.** The run header gains a `detector` row, the board's with its
   address, model and device or the colour one "on this machine", and, with a board, a `host` row
@@ -107,6 +119,10 @@ unmeasured.
   `host` object with the role the board's camera took at connect. The log's run line names the
   detector only when it is not the colour one, so every line written before, and every simulator
   run, reads as it did. `serve-mcp`'s startup line and `robot_list` name the detector too.
+  With the board's detector, each `observation` and `verb_end` record that sent the board a
+  frame gains `detect`: how many it sent, how many failed, the laptop's wait for each from
+  encoding it to reading the answer, and the board's own `ms` in the model, each as a mean and a
+  maximum, so a `go_to`'s record says what its steering loop waited for, however it ended.
 
 ### Changed
 

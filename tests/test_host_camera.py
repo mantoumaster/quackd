@@ -38,6 +38,7 @@ from quackd.cli import app
 from quackd.duckfile.parser import parse_duck_text
 from quackd.duckfile.validate import validate_duck
 from quackd.host import STALE_AFTER_S, HostClient, HostHello
+from quackd.perception import explicit_detector
 from quackd.perception.host import HostDetector
 from quackd.safety import Executor, allow_all
 from quackd.transport.base import DEFAULT_CAMERA_NAME, TransportError, camera_names_of, frames_of
@@ -311,11 +312,21 @@ async def test_the_agent_loop_runs_a_camera_task_on_a_blind_body_through_the_hos
 async def test_the_agent_loop_calibrates_the_boards_detector_at_connect(
     hostd: FakeHostd, tmp_path: Path
 ) -> None:
-    """The board's detector is built before the body connects, when nobody knows the lens yet.
-    The body's live manifest carries the board camera's field of view once the board's camera
-    is its only one, and the loop hands that to the detector it was given, which it keeps."""
+    """The board's detector is built before the body connects, when nobody knows yet which
+    camera the primary view comes through. The body's live manifest carries the board camera's
+    field of view once the board's camera is its only one, and the loop hands that to the
+    detector `explicit_detector` built, which it keeps."""
     body = _blind_toddlerbot(hostd)
-    detector = HostDetector(body.host, fov_deg=62.0, calibrated=False)
+    detector = explicit_detector(
+        "host",
+        client=body.host,
+        hello=body.host.hello(),
+        fov_deg=None,
+        backend=body.backend,
+        has_camera=False,
+    )
+    assert isinstance(detector, HostDetector)
+    assert (detector.fov_deg, detector.calibrated) == (90.0, True), "the simulator's, for now"
     duck = parse_duck_text(
         "---\nduck: 1\nname: look-for-the-ball\ndescription: d\nrequires: [observe]\n"
         "verbs:\n  allow: [observe, stop]\nsuccess: [x]\n---\n# Task\nLook.\n"

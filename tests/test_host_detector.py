@@ -13,7 +13,6 @@ import io
 import logging
 import sys
 import threading
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -24,6 +23,7 @@ from PIL import Image
 
 from quackd import host as host_module
 from quackd.adapters.factory import make_adapter
+from quackd.adapters.manifest import RobotManifest, VerbSpec
 from quackd.agent.loop import RunConfig, run_duck
 from quackd.agent.providers.base import ToolCall
 from quackd.agent.providers.fake import FakeProvider
@@ -35,9 +35,24 @@ from quackd.perception.base import Detection, detect_off_loop
 from quackd.perception.host import JPEG_QUALITY, HostDetector
 from quackd.perception.yolo import YoloDetector, detections_from_boxes
 from quackd.transport.base import Ack, Intent
-from quackd.verbs.core import HOLD_TTL_S, _see_holding
+from quackd.transport.mock import MockTransport
+from quackd.verbs.core import (
+    HOLD_TTL_S,
+    GoToParams,
+    SearchScanParams,
+    _see_holding,
+    go_to,
+    search_scan,
+)
 from quackd.verbs.registry import VerbContext
-from tests.fake_jetson_hostd import BALL_BOX, FRAME_SIZE, FakeHostd, dead_address, jpeg_bytes
+from tests.fake_jetson_hostd import (
+    BALL_BOX,
+    FRAME_SIZE,
+    FakeHostd,
+    dead_address,
+    default_detections,
+    jpeg_bytes,
+)
 
 Box = tuple[str, float, float, float, float, float]
 
@@ -318,18 +333,19 @@ async def test_the_loop_and_observe_run_a_blocking_detector_off_the_event_loop(
 
 
 class _Walking:
-    """A body that is walking: one frame to look at, and every intent sent to it timed on the
+    """A body that is walking: one frame to look at, and every twist sent to it timed on the
     event loop's clock, which is the clock `_see_holding` holds its twist by."""
 
     def __init__(self) -> None:
-        self.moves: list[float] = []
+        self.moves: list[tuple[float, tuple[float, float, float]]] = []
 
     async def get_frame(self) -> Image.Image:
         return _frame()
 
     async def send_intent(self, intent: Intent) -> Ack:
         if intent.kind == "move":
-            self.moves.append(self.now())
+            twist = (intent.params["vx"], intent.params["vy"], intent.params["wz"])
+            self.moves.append((self.now(), twist))
         return Ack()
 
     def now(self) -> float:
@@ -344,18 +360,140 @@ async def test_a_slow_board_does_not_starve_the_twist_go_to_holds_while_it_looks
     not stop the body. The board's detector used to run on the event loop, and a board that
     took 0.6 s held the loop for all of it: no twist went out, and a body with a 300 ms
     deadman stopped on every frame. In a worker thread the resends go out while the board is
-    still answering, and the detections still arrive."""
+    still answering, and the detections still arrive.
+
+    Past the window the twist is zeroed here, once, rather than left to the body's deadman. A
+    rosbridge base has no deadman, and a ToddlerBot's is fed by the adapter's own keepalive,
+    so both used to drive on the last twist until the frame came back, 0.6 s here and up to
+    three seconds through a board, on a decision made from a frame that old."""
     hostd.delays["/detect"] = 0.6
     body = _Walking()
     ctx = VerbContext(
         transport=body, detector=HostDetector(HostClient(hostd.address), fov_deg=62.2)
     )
-    started = time.monotonic()
+    started = asyncio.get_running_loop().time()
     _img, hits = await _see_holding(ctx, "ball", "go_to", (0.1, 0.0, 0.0))
-    assert time.monotonic() - started >= 0.5, "the board really was slow"
+    assert asyncio.get_running_loop().time() - started >= 0.5, "the board really was slow"
     assert [hit.label for hit in hits] == ["ball"]
-    assert len(body.moves) >= 2, body.moves
-    assert body.moves[-1] - body.moves[0] < HOLD_TTL_S, "held for one deadman window, no more"
+    held = [t for t, twist in body.moves if twist == (0.1, 0.0, 0.0)]
+    assert len(held) >= 2, body.moves
+    assert held[-1] - held[0] < HOLD_TTL_S, "held for one deadman window, no more"
+    last_at, last = body.moves[-1]
+    assert last == (0.0, 0.0, 0.0), f"the window closed and nothing zeroed the twist: {body.moves}"
+    assert last_at - started >= HOLD_TTL_S, "zeroed once the window closed, not before"
+    assert len(body.moves) == len(held) + 1, "one zero, and then silence until the frame"
+
+
+# ── a frame the board could not read stops the body ─────────────────────────────────────
+
+
+def _board_down(hostd: FakeHostd) -> HostDetector:
+    """The board's detector with its model gone: every `/detect` a 503 with the reason."""
+    hostd.detect_status = 503
+    hostd.detect_reply = {"ok": False, "reason": "detection is not available: CUDA out of memory"}
+    return HostDetector(HostClient(hostd.address), fov_deg=62.2)
+
+
+def _moved(body: MockTransport) -> list[Intent]:
+    return [i for i in body.intents_of("move") if any(i.params.values())]
+
+
+async def test_go_to_stops_the_body_on_the_first_frame_the_board_could_not_read(
+    hostd: FakeHostd,
+) -> None:
+    """A failed call is a frame with no detections, and `go_to` reads no detections as the
+    target out of view: it turned toward where it last saw it on every such frame and gave up
+    after thirty-one, a board that fails fast turning the body about 140 to 170 degrees blind
+    and saying `lost the ball; try search_scan`. A board that hangs costs each frame two
+    seconds, so the count never ran out and the body turned until the verb's own timeout. It
+    stops on the first frame instead, sends nothing that moves, and says the board failed."""
+    detector = _board_down(hostd)
+    body = MockTransport(frame_size=FRAME_SIZE)
+    result = await go_to(VerbContext(transport=body, detector=detector), GoToParams())
+    assert not result.ok
+    assert result.summary.startswith("go_to: yolo@host failed, so the body stopped: "), result
+    assert "CUDA out of memory" in result.summary and "search_scan" not in result.summary
+    assert result.data["detector_error"] == detector.error
+    assert len(hostd.requests_to("/detect")) == 1, "one frame, not thirty-one"
+    assert _moved(body) == [], "nothing that moves the body went out"
+    assert body.intents[-1].kind == "stop"
+
+
+class _SeesThenFails:
+    """The board's detector on a link that answers once, with the ball ahead and a metre and
+    a half away, and then fails."""
+
+    name = "yolo@host"
+    blocking = False
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.error: str | None = None
+
+    def detect(self, image: Image.Image) -> list[Detection]:
+        self.calls += 1
+        if self.calls == 1:
+            self.error = None
+            return [
+                Detection(
+                    label="ball", cx=0.5, cy=0.6, area=0.01, bearing_deg=5.0, est_distance_m=1.5
+                )
+            ]
+        self.error = "127.0.0.1:1 did not answer /detect within 2s"
+        return []
+
+
+async def test_go_to_walking_at_a_target_it_sees_stops_when_the_next_frame_fails() -> None:
+    """A flaky board answers and then does not. The frame it failed was read as the target
+    lost, and a lost target is a turn at 0.8 rad/s toward the side it was last seen on, three
+    times the rate the steering gives a ball five degrees off, so each failed frame swung the
+    body past a ball in plain view. The walk the good frame justified stops instead, and
+    nothing turns."""
+    body = MockTransport()
+    detector = _SeesThenFails()
+    result = await go_to(VerbContext(transport=body, detector=detector), GoToParams())
+    assert not result.ok and "did not answer /detect" in result.summary, result
+    assert detector.calls == 2
+    (walked,) = _moved(body)
+    assert walked.params["vx"] == pytest.approx(0.2), "the good frame walked toward the ball"
+    assert body.intents[-1].kind == "stop"
+
+
+async def test_search_scan_stops_rather_than_turn_a_blind_circle(hostd: FakeHostd) -> None:
+    """A scan that turned on a failed board went all the way round, eight turns of 45 degrees
+    with nothing looked at, and then said the ball was not in the room, which is what `go_to`'s
+    own failure sent the pilot to. It stops on the first frame and says the board failed."""
+    detector = _board_down(hostd)
+    body = MockTransport(frame_size=FRAME_SIZE)
+    result = await search_scan(VerbContext(transport=body, detector=detector), SearchScanParams())
+    assert not result.ok
+    assert result.summary.startswith("search_scan: yolo@host failed, so the scan stopped: ")
+    assert "not found" not in result.summary
+    assert len(hostd.requests_to("/detect")) == 1
+    assert _moved(body) == [], "not one turn"
+
+
+async def test_a_head_sweep_stops_on_a_failed_board_too(hostd: FakeHostd) -> None:
+    """A body that can only look sweeps its head instead, and read every look as empty in the
+    same way, then said the ball was not there."""
+    head = RobotManifest(
+        id="head-01",
+        vendor="acme",
+        model="fixed-cam",
+        embodiment="arm",
+        mobility="none",
+        intents=["gaze"],
+        sensors=["camera"],
+        verbs=[VerbSpec(name="search_scan", core=True)],
+    )
+    detector = _board_down(hostd)
+    body = MockTransport(frame_size=FRAME_SIZE)
+    ctx = VerbContext(transport=body, detector=detector, manifest=head)
+    result = await search_scan(ctx, SearchScanParams())
+    assert not result.ok
+    assert result.summary.startswith("search_scan: yolo@host failed, so the sweep stopped: ")
+    assert len(body.intents_of("look")) == 1, "one look, not the whole sweep"
+    assert len(hostd.requests_to("/detect")) == 1
 
 
 async def test_it_never_swaps_itself_for_the_colour_detector(
@@ -470,6 +608,93 @@ async def test_a_flaky_link_is_a_note_per_outage_and_per_kind_of_reason_not_per_
     assert notes[4] == "yolo@host answers again"
 
 
+# ── what the board cost ─────────────────────────────────────────────────────────────────
+
+
+def test_it_keeps_what_each_frame_cost_until_asked(hostd: FakeHostd) -> None:
+    """The laptop's wait for each frame and the board's own `ms`, as a mean and a maximum over
+    the frames the board answered, and the ones it did not counted beside them. Asking starts
+    the count again, so no frame is counted twice."""
+    hostd.delays["/detect"] = 0.05
+    detector = HostDetector(HostClient(hostd.address), fov_deg=62.2)
+    assert detector.take_timing() is None, "nothing sent yet"
+    detector.detect(_frame())
+    hostd.detect_reply = {**default_detections(), "ms": 40.0}
+    detector.detect(_frame())
+    hostd.detect_reply = {**default_detections(), "ms": None}
+    detector.detect(_frame())
+    hostd.detect_status = 503
+    hostd.detect_reply = {"ok": False, "reason": "detection is not available: CUDA out of memory"}
+    detector.detect(_frame())
+    times = detector.take_timing()
+    assert times is not None
+    assert times["calls"] == 4 and times["failed"] == 1
+    assert times["board_ms_mean"] == round((23.4 + 40.0) / 2, 1), "only answers that carry ms"
+    assert times["board_ms_max"] == 40.0
+    assert 0.05 <= times["round_trip_s_mean"] <= times["round_trip_s_max"] < 5.0
+    assert detector.take_timing() is None, "counted once"
+    detector.detect(_frame())
+    assert detector.take_timing() == {
+        "calls": 1,
+        "failed": 1,
+        "round_trip_s_mean": None,
+        "round_trip_s_max": None,
+        "board_ms_mean": None,
+        "board_ms_max": None,
+    }
+
+
+async def test_a_run_records_what_the_board_took_for_every_frame(
+    hostd: FakeHostd, tmp_path: Path
+) -> None:
+    """Whether the round trip to a board is fast enough inside a steering loop is the question a
+    board has to answer, and the transcript is what people send back. Each observation carries
+    its own frame's times and each `verb_end` the frames of its verb, so every look of a scan is
+    on the scan's record. That holds for the verb that ends the run too: here the scan fails,
+    `abort_when` ends the run on it, and the loop writes no `verb` record for it, so the frames
+    were lost when they were read from there. Every frame the board was sent is counted once."""
+    hostd.detect_reply = {**default_detections(), "w": 64, "h": 64, "boxes": [], "ms": 31.5}
+    hostd.delays["/detect"] = 0.02
+    detector = HostDetector(HostClient(hostd.address), fov_deg=62.2)
+    duck = parse_duck_text(
+        "---\nduck: 0\nname: scan\ndescription: d\nverbs:\n"
+        "  allow: [search_scan, observe, report_state, stop]\nsuccess: [x]\n"
+        "abort_when: [Same verb fails 1 times in a row]\n---\n# Task\nScan.\n"
+    )
+    verdict = {"verdict": "feasible", "reason": "a scan on a flat floor"}
+    result = await run_duck(
+        RunConfig(
+            duck=duck,
+            provider=FakeProvider(
+                script=[
+                    ToolCall(name="assess_task", arguments=verdict),
+                    ToolCall(name="observe", arguments={}),
+                    ToolCall(name="report_state", arguments={}),
+                    ToolCall(name="search_scan", arguments={"target": "ball"}),
+                    ToolCall(name="declare_success", arguments={"reason": "scanned"}),
+                ]
+            ),
+            transport=make_adapter("microduck:mock", seed=0),
+            detector=detector,
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "aborted" and "search_scan failed 1 times" in result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    observations = [e for e in events if e["kind"] == "observation"]
+    ended = {e["name"]: e for e in events if e["kind"] == "verb_end"}
+    assert observations and all(o["detect"]["calls"] == 1 for o in observations), observations
+    assert ended["search_scan"]["outcome"] == "aborted"
+    scan = ended["search_scan"]["detect"]
+    assert scan["calls"] > 1 and scan["failed"] == 0, scan
+    assert scan["board_ms_mean"] == scan["board_ms_max"] == 31.5
+    assert 0.02 <= scan["round_trip_s_mean"] <= scan["round_trip_s_max"]
+    assert ended["observe"]["detect"]["calls"] == 1
+    assert "detect" not in ended["report_state"], "a verb that looked at nothing"
+    recorded = sum(e["detect"]["calls"] for e in events if "detect" in e)
+    assert recorded == len(hostd.requests_to("/detect"))
+
+
 # ── the lens ────────────────────────────────────────────────────────────────────────────
 
 
@@ -501,9 +726,12 @@ def test_uncalibrated_when_nobody_said_the_fov(
     assert (detector.fov_deg, detector.calibrated) == (90.0, True)
 
 
-def test_a_confidence_floor_outside_nought_to_one_is_refused_when_it_is_built(
-    hostd: FakeHostd,
+@pytest.mark.parametrize("conf", [1.5, 0.0, -0.0])
+def test_a_confidence_floor_the_daemon_would_refuse_is_refused_when_it_is_built(
+    hostd: FakeHostd, conf: float
 ) -> None:
-    with pytest.raises(ValueError, match="from 0 to 1"):
-        HostDetector(HostClient(hostd.address), fov_deg=62.2, conf=1.5)
+    """A floor of 0 passed here would be refused by the daemon on every frame, and each refusal
+    would read as the board failing: a detector that ran blind for the whole run."""
+    with pytest.raises(ValueError, match="above 0 and at most 1"):
+        HostDetector(HostClient(hostd.address), fov_deg=62.2, conf=conf)
     assert hostd.requests_to("/detect") == []

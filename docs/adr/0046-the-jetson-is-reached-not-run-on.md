@@ -76,7 +76,7 @@ both through it. `bridge/jetson/README.md` has the line.
 names. The port in `--host` is the daemon's, and it is dropped. `LocalProvider`'s docstring is
 the order:
 
-> Where the server is, first rung that answers wins:
+> Where the server is, the first rung that is set wins, and nothing is probed:
 >
 > 1. `base_url`, which is `--base-url`: a URL given for this run is used exactly as given.
 > 2. `host`, which is `--host` or the host a registered robot was stored with: the preset's
@@ -118,11 +118,16 @@ detect. `--detector yolo` is YOLO in this process, which needs `quackd[yolo]`.
 A call that fails gives that frame no detections and keeps the reason, and the run keeps the
 detector. The colour detector does not label the same things on a real camera, so a quiet
 switch to it would change what `go_to` steers at with nothing in the record saying so, and the
-header would name a detector the run had stopped using. No detections is already a shape every
-verb handles: `go_to` counts its target as lost and stops the body, and `observe` reports
-nothing seen with the reason beside it. The loop writes one `note` per outage rather than one
-per frame. The call runs in a worker thread, so `go_to` keeps re-sending its last twist while
-the board answers, for one deadman window (`HOLD_TTL_S`, 0.3 s) and no longer.
+header would name a detector the run had stopped using. Nor is a frame the board could not read
+taken for an empty room. Read as the target out of view, it had `go_to` turn toward the last
+bearing on every such frame, and a board that hangs costs each frame two seconds, so the count
+of empty frames that would have stopped it never ran out before the verb's own timeout did.
+`go_to` and `search_scan` stop the body on the first such frame instead and fail with the
+board's reason, and `observe` reports nothing seen with the reason beside it. The loop writes
+one `note` per outage rather than one per frame. The call runs in a worker thread, so `go_to`
+keeps re-sending its last twist while the board answers, for one deadman window (`HOLD_TTL_S`,
+0.3 s), and then sends a zero twist: a rosbridge base has no deadman, and a ToddlerBot's is fed
+by its adapter's own keepalive, so neither would stop by itself.
 
 **A run says which detector it used.** The run header gains a `detector` row, which names the
 board's with its address, model and device, or the colour one "on this machine", and a `host`
@@ -219,7 +224,9 @@ ball. Asked for by name it runs, and the header row says it was asked for on a s
   health and the presets asked at the host. A script that read 0.13's top-level `jetson` key
   finds no such key.
 - **`robots.json` gains `host` and `host_token`,** written only while they hold something, so
-  a registry that never named a board stays readable by 0.13, which refuses unknown keys.
+  a registry that never named a board stays readable by 0.12 to 0.14, which refuse unknown
+  keys. One robot stored with a host makes the whole file unreadable to them, every robot in it
+  included, until this release clears it with `quackd robot edit NAME --clear host`.
   `--host-token` joins `--api-key` and `--token` among the flags whose value never reaches a
   run record's command line.
 - **A daemon on the board is a new surface.** Port 9874 joins 9871 and 9872 (the Open Duck

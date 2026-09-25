@@ -47,14 +47,14 @@ Also in scope:
   both flock runners write `command` and `version` into the root `summary.json` themselves,
   and the root `terminal.txt` opens with the same line; a pilot flock's members each keep a
   `run_start` of their own besides. The values of `--api-key`, `--token` and `--host-token`
-  are replaced with `***` everywhere that line is written, so a reader sees that a key was passed
-  and never what it was. The four flags that take a URL, `--base-url`, `--address`, `--camera-url`
-  and `--decision-url`, keep the half a reader needs and lose the half that has to be rotated:
-  the scheme, the host, the port, the path and the username stay, a password in the URL
-  becomes `***`, and so does any query parameter named like a credential (`api_key`, `token`,
-  `sig` and the rest of `SECRET_QUERY_KEYS`). `--extra-body`, and `QUACKD_EXTRA_BODY` behind
-  it, is a JSON object a vendor asked for and quackd never reads, which makes it exactly
-  where an `authorization` header ends up; it reaches the transcript's `run_start` as
+  are replaced with `***` everywhere that line is written, so a reader sees that a key was
+  passed and never what it was. The four flags that take a URL, `--base-url`, `--address`,
+  `--camera-url` and `--decision-url`, keep the half a reader needs and lose the half that has
+  to be rotated: the scheme, the host, the port, the path and the username stay, a password in
+  the URL becomes `***`, and so does any query parameter named like a credential (`api_key`,
+  `token`, `sig` and the rest of `SECRET_QUERY_KEYS`). `--extra-body`, and `QUACKD_EXTRA_BODY`
+  behind it, is a JSON object a vendor asked for and quackd never reads, which makes it
+  exactly where an `authorization` header ends up; it reaches the transcript's `run_start` as
   `extra_body`, and it is walked to the bottom on the way in with every credential-named key
   replaced. All of that is redaction **by name**, of flag names and of key names and nothing
   cleverer, which is worth stating plainly because it decides what is safe to paste into an
@@ -170,7 +170,10 @@ Also in scope:
   bound wider with no token. A token, once one is configured, is required on every path, read
   from the `X-Quackd-Token` header and never from the query string, and compared with
   `hmac.compare_digest`. A `--token-file` that is named and missing, unreadable or empty refuses
-  to start rather than run with authentication off. It is plain HTTP, so the token and every
+  to start rather than run with authentication off. A request without the token is refused on
+  its headers alone, and what any client can make the board hold is bounded: 16 connections at
+  once, 32 KB of headers, 10 seconds for a request to arrive whole, and two `POST /detect`
+  bodies at a time. It is plain HTTP, so the token and every
   frame cross the network in the clear unless a tunnel carries them. There is no control path
   in it: it answers GET, and POST on `/detect` alone, and a test fails if that changes. So the
   worst a peer the daemon lets in can do is watch the room and keep the board busy, and
@@ -184,7 +187,8 @@ Also in scope:
   nothing: keep Ollama's `OLLAMA_HOST` on `127.0.0.1:11434` and reach it and the daemon from
   the laptop with `ssh -L 9874:127.0.0.1:9874 -L 11434:127.0.0.1:11434`, the way you reach a
   robot's bridge. What would be a security issue: a way to move anything through the daemon, a
-  request served without the token when one is configured, the token reaching a URL or any
+  request served without the token when one is configured, a client without the token making
+  the daemon keep what it sent or a thread past those bounds, the token reaching a URL or any
   record on the laptop, or a password in a camera pipeline reaching a reply or a log. None of
   it has been run on a Jetson by this project, so treat the arrangement as reviewed rather
   than proven.

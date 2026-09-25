@@ -62,6 +62,11 @@ HOST_ENV = "QUACKD_HOST"
 #: environment once, for every command alike.
 TOKEN_ENV = "QUACKD_HOST_TOKEN"
 TOKEN_HEADER = "X-Quackd-Token"
+#: The refusal for a typed `--host-token` that no board takes, in `robot add`'s words.
+STRAY_TOKEN = (
+    "--host-token needs a board, and none is named by --host, the robot's stored host or "
+    f"{HOST_ENV}: give --host too, or drop --host-token"
+)
 
 HELLO_TIMEOUT_S = 2.0
 """`/hello` and `/healthz` answer from a dictionary the daemon already holds, so anything slower
@@ -212,11 +217,48 @@ class HostChoice:
     `robot NAME (robots.json)` or `QUACKD_HOST`.
 
     The token is left out of the repr, because an object like this ends up in a traceback
-    sooner or later and the token must not end up there with it."""
+    sooner or later and the token must not end up there with it. `token_source` is where the
+    token came from, in the same words (`--host-token`, the robot's entry, `QUACKD_HOST_TOKEN`),
+    and `robot` is the registered robot whose entry was read, so a refusal can say how to change
+    the token the run actually sends.
+
+    Both are here because the token's ladder is not the host's. A robot's stored token outranks
+    `QUACKD_HOST_TOKEN`, so "set QUACKD_HOST_TOKEN" is advice the run never reads for a robot
+    that stores one, and `quackd doctor --host` alone carries no stored token at all."""
 
     host: str | None = None
     source: str | None = None
     token: str | None = dataclasses.field(default=None, repr=False)
+    token_source: str | None = None
+    robot: str | None = None
+
+    @property
+    def named(self) -> str:
+        """The board as the reader named it, so a refusal points at the line they wrote: the
+        flag, the robot's entry in robots.json, or the environment."""
+        if self.source == "--host":
+            return f"--host {self.host}"
+        return f"the host {self.host} from {self.source}"
+
+    @property
+    def token_fix(self) -> str:
+        """What to do when the daemon refuses this token, for the place it came from."""
+        if self.token_source == "--host-token":
+            return "pass the token the daemon was started with as --host-token"
+        if self.token_source == TOKEN_ENV:
+            return f"set {TOKEN_ENV} to the token the daemon was started with, or pass --host-token"
+        if self.token_source is not None:
+            return (
+                f"quackd robot edit {self.robot or 'NAME'} --host-token TOKEN stores the one the "
+                "daemon was started with, or pass --host-token for one run"
+            )
+        return f"pass --host-token or set {TOKEN_ENV} to the token the daemon was started with"
+
+    @property
+    def token_stored(self) -> bool:
+        """Whether the token is the one the robot's entry in robots.json keeps. A command that
+        asks the same board again has to name the robot then, since no flag carries it."""
+        return self.token_source not in (None, "--host-token", TOKEN_ENV)
 
     @property
     def explicit(self) -> str | None:
@@ -262,8 +304,11 @@ def resolve_host(
     the robot stores a board. A host from `QUACKD_HOST` means the robot stores none, and the
     board it names is the environment's, whose token is `QUACKD_HOST_TOKEN`: sending the robot's
     token there would hand one board's credential to another and still be refused. With no
-    board there is no token: one with nowhere to go is dropped rather than refused, since
-    `QUACKD_HOST_TOKEN` in a `.env` must not make every run that names no host fail.
+    board there is no token. `QUACKD_HOST_TOKEN` with nowhere to go is dropped rather than
+    refused, since the variable in a `.env` must not make every run that names no host fail.
+    A typed `--host-token` with nowhere to go is a ValueError, as `robot add` refuses one
+    without `--host`: whoever typed it meant a board, and a run that quietly used none would
+    look like one that had.
 
     Blank counts as absent at every level. A host that is not one raises ValueError in
     `parse_host`'s words, with the place it came from in front when that was not the flag,
@@ -291,7 +336,9 @@ def resolve_host(
             cleaned = clean_token(chosen)
         except ValueError as e:
             raise ValueError(str(e) if came_from == "--host-token" else f"{came_from}: {e}") from e
-        return HostChoice(text, source, cleaned)
+        return HostChoice(text, source, cleaned, came_from, robot)
+    if _given(token) is not None:
+        raise ValueError(STRAY_TOKEN)
     return HostChoice()
 
 
@@ -305,8 +352,17 @@ def reach_host(choice: HostChoice) -> tuple[HostClient, HostHello] | None:
     `--base-url` for that, which asks nothing of the daemon."""
     if choice.host is None:
         return None
-    client = HostClient(choice.host, token=choice.token)
+    client = HostClient(choice.host, token=choice.token, token_fix=choice.token_fix)
     return client, client.hello()
+
+
+def unreached(choice: HostChoice, error: HostError) -> str:
+    """What `run` and `serve-mcp` refuse with when the board's `/hello` failed: the board as the
+    reader named it (the flag, the robot's entry, or the environment), and what happened. A
+    daemon that sent back a status answered, and is said to have, because "did not answer" in
+    front of a refused token sends the reader off to check the network."""
+    how = "did not answer" if error.status is None else f"answered with HTTP {error.status}"
+    return f"{choice.named} {how}: {error}"
 
 
 def _port(text: str) -> int:
@@ -343,6 +399,19 @@ def clean_token(token: str | None) -> str | None:
             "`openssl rand -hex 32` has none"
         )
     return cleaned
+
+
+def confidence_floor(conf: float) -> float:
+    """`conf` as a confidence floor the daemon takes, or a ValueError, which is a caller's
+    mistake and not the board's.
+
+    Above 0 and at most 1: the daemon's own rule for `?conf=` and `--conf`. A floor of 0 would
+    be sent and refused with a 400, and that refusal is a HostError, the type every consumer
+    reads as the board failing, so `HostDetector` would take a caller's bug for an outage and
+    run blind. NaN is refused, and so is a bool, which Python would otherwise read as 0 or 1."""
+    if isinstance(conf, bool) or not 0.0 < float(conf) <= 1.0:
+        raise ValueError(f"conf is a confidence floor above 0 and at most 1, not {conf!r}")
+    return float(conf)
 
 
 # ── what the daemon says ────────────────────────────────────────────────────────────────
@@ -763,19 +832,26 @@ class HostClient:
     own count of what `snapshot()` saw, in the shape `camera_health()` reports to `doctor`.
 
     What is not a request going wrong is not a HostError. A bad `host` or an unusable token is a
-    ValueError from the constructor, and a `conf` outside 0 to 1 is one from `detect`: those are
-    the caller's mistakes, found before anything is sent, and they are left to surface rather
-    than be caught with the board's failures. A caller that takes `conf` from configuration
-    checks it once, where it is configured, so a bad one is found before a run and not on
-    every frame of it."""
+    ValueError from the constructor, and a `conf` the daemon would refuse is one from `detect`
+    (`confidence_floor`): those are the caller's mistakes, found before anything is sent, and
+    they are left to surface rather than be caught with the board's failures. A caller that
+    takes `conf` from configuration checks it once, where it is configured, so a bad one is
+    found before a run and not on every frame of it.
 
-    def __init__(self, host: str, *, token: str | None = None) -> None:
+    `token_fix` is what a refused token's message tells the reader to do, from wherever the
+    token came from (`HostChoice.token_fix`); without it the message names both the flag and
+    the variable."""
+
+    def __init__(
+        self, host: str, *, token: str | None = None, token_fix: str | None = None
+    ) -> None:
         name, port = parse_host(host)
         self.host = host
         self.address = netloc(name, port)
         self.base_url = f"http://{self.address}"
         self.snapshot_url = f"{self.base_url}{SNAPSHOT_PATH}"
         self._token = clean_token(token)
+        self._token_fix = token_fix
         # No proxy, whatever the environment says: HTTP_PROXY is common on a corporate laptop,
         # and a proxy would see the token header and every frame of a board on the local
         # network, which it has no business seeing.
@@ -876,12 +952,11 @@ class HostClient:
     def detect(self, jpeg: bytes, *, conf: float | None = None) -> HostDetections:
         """Run the board's detector on one JPEG. `conf` overrides the daemon's confidence floor
         for this call only; the boxes come back in the pixels of the image that was sent. A
-        `conf` outside 0 to 1 is a ValueError, raised before anything is sent."""
+        `conf` the daemon would refuse is a ValueError, raised before anything is sent
+        (`confidence_floor`)."""
         query: dict[str, str] | None = None
         if conf is not None:
-            if isinstance(conf, bool) or not 0.0 <= float(conf) <= 1.0:
-                raise ValueError(f"conf is a confidence floor from 0 to 1, not {conf!r}")
-            query = {"conf": f"{float(conf):g}"}
+            query = {"conf": f"{confidence_floor(conf):g}"}
         body = bytes(jpeg)
         if len(body) > MAX_JPEG_BYTES:
             raise self._fail(
@@ -1126,10 +1201,9 @@ class HostClient:
                     f"{TOKEN_ENV}"
                 )
             else:
-                message = (
-                    f"{self.address} refused the token it was given: pass --host-token or set "
-                    f"{TOKEN_ENV} to the token the daemon was started with"
-                )
+                # a client built with no idea where its token came from names both places
+                fix = self._token_fix or HostChoice().token_fix
+                message = f"{self.address} refused the token it was given: {fix}"
         elif 300 <= e.code < 400:
             message = (
                 f"{self.address} answered {path} with a redirect, which {PROTOCOL} never sends, "

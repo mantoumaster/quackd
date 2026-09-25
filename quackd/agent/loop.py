@@ -63,7 +63,7 @@ from quackd.duckfile.schema import DuckFile
 from quackd.log import EventLog, Sink, a_person_was_asked, fmt_params
 from quackd.memory import RobotMemory
 from quackd.perception import detector_for
-from quackd.perception.base import Detection, Detector, detect_off_loop
+from quackd.perception.base import Detection, Detector, detect_off_loop, detect_times
 from quackd.safety import (
     Aborted,
     Budget,
@@ -1477,8 +1477,11 @@ class AgentLoop:
                     self.executor.registry = self.registry
                 self.executor.manifest = manifest
                 # the CLI guessed from the description; this is what the robot actually has.
-                # A detector the run was given is kept, and learns the lens the body reported
-                # (the board's, when the board's camera is the only one this body has).
+                # A detector the run was given is kept. One `explicit_detector` built before
+                # connect learns the lens the body reported (the board's, when the board's
+                # camera is the only one this body has). One handed in from Python is not
+                # touched: it keeps the lens it was built with, and `Detector` asks for no
+                # `calibrate`, so one of its own may mean something else.
                 lens_fov = cfg.fov_deg or manifest.limits.get("camera_fov_deg")
                 cfg.detector = detector_for(
                     manifest.sensors,
@@ -1490,7 +1493,11 @@ class AgentLoop:
                 # only a body with a camera has a lens to learn; one without keeps a detector
                 # that reads nothing, and a warning about its field of view would be about a
                 # camera it has not got
-                if callable(calibrate) and "camera" in manifest.sensors:
+                if (
+                    getattr(cfg.detector, "lens_at_connect", False) is True
+                    and callable(calibrate)
+                    and "camera" in manifest.sensors
+                ):
                     calibrate(lens_fov, backend=backend_name(cfg.transport))
                 self.executor.detector = cfg.detector
             registry = self.registry
@@ -1701,6 +1708,7 @@ class AgentLoop:
                     has_image=bool(obs.images),
                     features=obs.features,
                     elapsed_s=round(time.perf_counter() - observe_started, 3),
+                    **detect_times(self.cfg.detector),
                 )
 
                 # The stepper answers first where it can. It reads the same turn the model

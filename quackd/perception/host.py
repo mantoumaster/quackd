@@ -11,8 +11,9 @@ Its `detect` is synchronous, like every `Detector`, and says it blocks (`blockin
 verbs and the loop run it in a worker thread (`perception.base.detect_off_loop`): a round trip
 to a board must not hold up the event loop that re-sends a walking body's twist. That keeps the
 keepalives flowing, and no more: `go_to` holds its last twist for one deadman window
-(`verbs.core.HOLD_TTL_S`), so a board slower than that still lets the body stop between frames,
-which is the right thing for a steering loop that has stalled.
+(`verbs.core.HOLD_TTL_S`) and then sends a zero one, so a board slower than that stops the body
+between frames, a body with no deadman of its own included, which is the right thing for a
+steering loop that has stalled.
 
 Each wait on the board's socket is bounded by `quackd.host.DETECT_TIMEOUT_S`. Two waits are not,
 as `HostClient._exchange` says: a name that has stopped resolving is looked up on the system
@@ -24,9 +25,17 @@ A board that fails is not a reason to pick another detector. A failed call retur
 detections and keeps the reason in `error`, and the run goes on with this detector: the colour
 detector does not label the same things on a real camera, so switching to it quietly would
 change what `go_to` steers at with nothing in the record saying so, and the header would name a
-detector the run had stopped using. No detections is already a shape every verb handles: `go_to`
-counts the target as lost and stops the body, and `observe` reports nothing seen, with the
-reason beside it.
+detector the run had stopped using. Nor is a frame the board could not read taken for an empty
+room: a verb that steers on detections reads `error` after every frame, so `go_to` and
+`search_scan` stop the body on the first such frame and fail with the board's reason
+(`verbs.core.detector_failed`), and `observe` reports nothing seen, with the reason beside it.
+
+What each call cost is kept too, because whether that round trip is fast enough inside `go_to`'s
+steering loop is the question a board has to answer (`bridge/jetson/README.md`): how long the
+laptop waited from encoding the frame to reading the answer, and the `ms` the board says it
+spent in the model, which splits that wait into the GPU's share and the rest. `take_timing`
+hands them over and starts counting again, and the loop's observations and the executor's
+`verb_end` write them into the record (`perception.base.detect_times`).
 
 Nothing here has run against a Jetson. The tests drive it against the fake daemon in
 `tests/fake_jetson_hostd.py`, which proves the protocol is read as written and says nothing
@@ -37,10 +46,14 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any
 
 from PIL import Image
 
-from quackd.host import HostClient, HostError
+from quackd.host import HostClient, HostError, confidence_floor
 from quackd.perception.base import Detection
 from quackd.perception.yolo import detections_from_boxes
 
@@ -54,6 +67,35 @@ kilobytes on a robot's Wi-Fi rather than hundreds."""
 GUESSED_FOV_DEG = 62.0
 """The lens assumed when nobody said which one this is: a Pi Camera Module 2's, the same guess
 `YoloDetector` makes. Detections made with it carry `calibrated=False`."""
+
+
+@dataclass
+class _Tally:
+    """The detect calls since `take_timing` was last asked, as sums and maxima, so a session
+    that nobody asks keeps a few numbers and not one per frame."""
+
+    calls: int = 0
+    failed: int = 0
+    answered: int = 0
+    round_trip_sum_s: float = 0.0
+    round_trip_max_s: float = 0.0
+    timed: int = 0
+    board_sum_ms: float = 0.0
+    board_max_ms: float = 0.0
+
+    def event(self) -> dict[str, Any]:
+        """The `detect` block of the event that records these calls. A mean or maximum of
+        nothing is None, as for a stretch where every call failed or no answer carried `ms`."""
+        return {
+            "calls": self.calls,
+            "failed": self.failed,
+            "round_trip_s_mean": (
+                round(self.round_trip_sum_s / self.answered, 3) if self.answered else None
+            ),
+            "round_trip_s_max": round(self.round_trip_max_s, 3) if self.answered else None,
+            "board_ms_mean": round(self.board_sum_ms / self.timed, 1) if self.timed else None,
+            "board_ms_max": round(self.board_max_ms, 1) if self.timed else None,
+        }
 
 
 class HostDetector:
@@ -70,6 +112,10 @@ class HostDetector:
     name = "yolo@host"
     blocking = True
     """`detect` waits on the network, so `detect_off_loop` runs it in a worker thread."""
+    lens_at_connect = False
+    """True on one `explicit_detector` built before the body connected, whose lens the loop and
+    the MCP server set again from what the body reported. One built anywhere else keeps the
+    lens it was built with."""
 
     def __init__(
         self,
@@ -82,14 +128,17 @@ class HostDetector:
         # checked here, once, because `HostClient.detect` raises ValueError for a bad floor on
         # every call and a caller mistake should surface when the detector is built, not as the
         # first frame of a run failing
-        if conf is not None and (isinstance(conf, bool) or not 0.0 <= float(conf) <= 1.0):
-            raise ValueError(f"conf is a confidence floor from 0 to 1, not {conf!r}")
+        if conf is not None:
+            confidence_floor(conf)
         self.client = client
         self.fov_deg = fov_deg
         self.calibrated = calibrated
         self.conf = conf
         self.error: str | None = None
         self._told_lens = False
+        # `detect` runs in a worker thread and `take_timing` on the event loop's
+        self._timing_lock = threading.Lock()
+        self._tally = _Tally()
 
     def __repr__(self) -> str:
         return f"HostDetector({self.client.address!r}, fov_deg={self.fov_deg:g})"
@@ -135,18 +184,30 @@ class HostDetector:
         image the daemon decoded, which is the frame sent, so a reply that names another size
         describes some other image, and read against this frame its boxes would be bearings
         `go_to` steers at with nothing true about them."""
+        started = time.perf_counter()
         buf = io.BytesIO()
         image.convert("RGB").save(buf, format="JPEG", quality=JPEG_QUALITY)
         try:
             found = self.client.detect(buf.getvalue(), conf=self.conf)
         except HostError as e:
             return self._failed(str(e))
+        round_trip_s = time.perf_counter() - started
         sent = image.size
         if (found.w, found.h) != sent:
             return self._failed(
                 f"{self.client.address} answered for a {found.w}x{found.h} image, not the "
                 f"{sent[0]}x{sent[1]} frame it was sent"
             )
+        with self._timing_lock:
+            tally = self._tally
+            tally.calls += 1
+            tally.answered += 1
+            tally.round_trip_sum_s += round_trip_s
+            tally.round_trip_max_s = max(tally.round_trip_max_s, round_trip_s)
+            if found.ms is not None:
+                tally.timed += 1
+                tally.board_sum_ms += found.ms
+                tally.board_max_ms = max(tally.board_max_ms, found.ms)
         if self.error is not None:
             logger.warning("the host detector at %s answers again", self.client.address)
             self.error = None
@@ -158,9 +219,25 @@ class HostDetector:
             calibrated=self.calibrated,
         )
 
+    def take_timing(self) -> dict[str, Any] | None:
+        """What the frames sent to the board since the last call cost, and a fresh count from
+        here, or None when none was sent.
+
+        `calls` is every frame sent and `failed` the ones the board did not answer, or
+        answered for another image (`error` says why). Over the rest, `round_trip_s_mean` and
+        `round_trip_s_max` are the laptop's wait from encoding the frame to reading the answer,
+        which is what a steering loop pays per frame, and `board_ms_mean` and `board_ms_max`
+        the time the board says it spent in the model."""
+        with self._timing_lock:
+            tally, self._tally = self._tally, _Tally()
+        return tally.event() if tally.calls else None
+
     def _failed(self, reason: str) -> list[Detection]:
         """No detections for this frame, the reason kept in `error`, and one warning for the
         outage it starts."""
+        with self._timing_lock:
+            self._tally.calls += 1
+            self._tally.failed += 1
         if self.error is None:
             logger.warning(
                 "the host detector at %s failed, so this frame has no detections and the "

@@ -39,7 +39,7 @@ from quackd.agent.transcript import png_bytes
 from quackd.duckfile.parser import DuckParseError, load_duck
 from quackd.duckfile.schema import Budgets, DuckFile
 from quackd.duckfile.validate import validate_duck
-from quackd.host import HostChoice, HostError, reach_host, resolve_host
+from quackd.host import HostChoice, HostError, reach_host, resolve_host, unreached
 from quackd.log import (
     EventLog,
     LogEvent,
@@ -878,8 +878,10 @@ def build_fleet_server(
             # claims. `build_fleet_server` can only see a bare transport's backend.
             live = getattr(session.transport, "manifest", None)
             if live is not None:
-                # a detector the server was given is kept, and learns the lens the body
-                # reported: the board's, when the board's camera is the only one it has
+                # a detector the server was given is kept. One `explicit_detector` built
+                # before connect learns the lens the body reported: the board's, when the
+                # board's camera is the only one it has. One handed to `build_fleet_server`
+                # from Python keeps the lens it was built with, as `run_duck` keeps it.
                 lens_fov = live.limits.get("camera_fov_deg")
                 session.detector = detector_for(
                     live.sensors,
@@ -891,7 +893,11 @@ def build_fleet_server(
                 # only a body with a camera has a lens to learn; one without keeps a detector
                 # that reads nothing, and a warning about its field of view would be about
                 # a camera it has not got
-                if callable(calibrate) and "camera" in live.sensors:
+                if (
+                    getattr(session.detector, "lens_at_connect", False) is True
+                    and callable(calibrate)
+                    and "camera" in live.sensors
+                ):
                     calibrate(lens_fov, backend=live.backend)
                 session.executor.detector = session.detector
             logger.info(
@@ -1182,6 +1188,11 @@ def fleet_from_flags(
             "detector, and a fleet has several bodies: quackd robot edit "
             f"{hosted[0]} --clear host, or serve it on its own"
         )
+    if fleet and (host_token or "").strip():
+        raise SystemExit(
+            "--host-token is one board's token, and a fleet has several bodies and no board: "
+            "drop --host-token, or serve one robot"
+        )
     # The one place this server's board is settled, carried on the plan so everything that
     # uses the board reads this value rather than deriving its own.
     host_choice = HostChoice()
@@ -1200,7 +1211,7 @@ def fleet_from_flags(
             raise SystemExit(str(e)) from e
     if fleet and (detector or "").strip():
         raise SystemExit(
-            "--detector is for one robot, and this server has several: drop --detector, or "
+            "--detector is for one robot, and a fleet has several bodies: drop --detector, or "
             "serve one robot"
         )
     board = None
@@ -1208,12 +1219,7 @@ def fleet_from_flags(
     try:
         reached = reach_host(host_choice)
     except HostError as e:
-        board_named = (
-            f"--host {host_choice.host}"
-            if host_choice.source == "--host"
-            else f"the host {host_choice.host} from {host_choice.source}"
-        )
-        raise SystemExit(f"{board_named} did not answer: {e}") from e
+        raise SystemExit(unreached(host_choice, e)) from e
     if reached is not None:
         board, hello = reached
     manifests = {spec.name or describe(spec).id: describe(spec) for spec in specs}

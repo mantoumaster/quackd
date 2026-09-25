@@ -524,12 +524,12 @@ class Resolved:
         return {"host": host, "host_token": host_token}
 
 
-#: Fields `--host` added, written to robots.json only while they hold something. quackd 0.13
-#: reads the file with `extra="forbid"`, so a key it has never heard of refuses the whole file,
-#: even one that is null, and every write saves every robot. Leaving the empty ones out keeps a
-#: registry that never named a board readable by 0.13, which matters because two installs on
-#: one machine share one ~/.quackd. A robot that does name a board is a file 0.13 cannot read,
-#: and nothing short of dropping the board could change that.
+#: Fields `--host` added, written to robots.json only while they hold something. quackd 0.12
+#: to 0.14 read the file with `extra="forbid"`, so a key they have never heard of refuses the
+#: whole file, even one that is null, and every write saves every robot. Leaving the empty ones
+#: out keeps a registry that never named a board readable by them, which matters because two
+#: installs on one machine share one ~/.quackd. A robot that does name a board is a file they
+#: cannot read, and nothing short of dropping the board could change that.
 _OMITTED_WHEN_EMPTY = ("host", "host_token")
 
 

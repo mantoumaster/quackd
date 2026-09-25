@@ -11,6 +11,7 @@ The board is the fake daemon in `tests/fake_jetson_hostd.py`; nothing here has s
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
@@ -24,7 +25,11 @@ from typer.testing import CliRunner
 
 from quackd import host as host_module
 from quackd.adapters.host_camera import HostCameraAdapter
+from quackd.agent.loop import RunConfig, run_duck
+from quackd.agent.providers.base import ToolCall
+from quackd.agent.providers.fake import FakeProvider
 from quackd.cli import app
+from quackd.duckfile.parser import parse_duck_text
 from quackd.host import HOST_ENV, HostClient, HostHello
 from quackd.log import LogEvent, render_lines
 from quackd.mcp_server import build_fleet_server, fleet_from_flags
@@ -279,12 +284,19 @@ def test_a_detector_nobody_offers_is_refused(tmp_path: Path, nothing_connects: l
     assert nothing_connects == []
 
 
-def test_a_detector_is_for_one_robot(tmp_path: Path, nothing_connects: list[Any]) -> None:
+@pytest.mark.parametrize("robots", ["a=microduck:mock,b=microduck:mock", "a=microduck:mock"])
+def test_a_detector_is_for_one_robot(
+    tmp_path: Path, nothing_connects: list[Any], robots: str
+) -> None:
     """Every flock builds its members' detectors itself, so a choice here would be dropped
-    without a word; it is refused instead, as `--image` is."""
-    result = _run(tmp_path, "--robots", "a=microduck:mock,b=microduck:mock", "--detector", "color")
+    without a word; it is refused instead, as `--image` is.
+
+    `--robots` with one member is refused too. It is the fleet spelling, as it is for `--host`,
+    and `serve-mcp` serves it as a fleet and refuses it there: ADR-0046 and the CHANGELOG say
+    both commands refuse `--detector` for `--robots`, and `run` once took it from one member."""
+    result = _run(tmp_path, "--robots", robots, "--detector", "color")
     assert result.exit_code == 1, result.output
-    assert "--detector is for one robot, and this run has several" in _flat(result)
+    assert "--detector is for one robot, and a fleet has several bodies" in _flat(result)
     assert nothing_connects == []
 
 
@@ -315,6 +327,8 @@ def test_a_board_nobody_typed_is_refused_by_where_it_was_named(
     stored = _flat(_run(tmp_path, "--robot", "jet"))
     assert f"the host {dead} from robot jet (robots.json) did not answer" in stored, stored
     assert "quackd robot edit jet --clear host to run without it" in stored
+    # no stored token to carry, so the doctor it names asks the board and leaves the body alone
+    assert f"quackd doctor --host {dead} shows what the board says" in stored
     monkeypatch.setenv(HOST_ENV, dead)
     usual = _flat(_run(tmp_path, "--robot", "microduck:mock"))
     assert f"the host {dead} from {HOST_ENV} did not answer" in usual, usual
@@ -504,6 +518,80 @@ def test_a_body_with_nothing_to_look_at_is_told_nothing_about_a_lens(
     assert hostd.requests_to("/detect") == []
 
 
+def test_the_header_names_the_colour_detector_a_body_described_blind_gets_at_connect(
+    hostd: FakeHostd, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is chosen before connect for such a body when the colour detector is asked for,
+    when the board cannot detect, or when there is no board, and the loop builds the colour
+    detector at connect. The header used to have no detector row then, beside a host row that
+    says "detect", so a reader could not tell whether the board or the laptop read the frames.
+    With the board's camera the body sees from the start; with none, it waits for its own."""
+    _toddlerbot_on_its_bridge(monkeypatch, camera=True)
+    asked = _run(
+        tmp_path,
+        "--robot",
+        "toddlerbot:bridge",
+        "--host",
+        hostd.address,
+        "--detector",
+        "color",
+        "--yes",
+        task=_task(tmp_path, look=True),
+    )
+    assert asked.exit_code == 0, asked.output
+    flat = _flat(asked)
+    assert "detector color_blob on this machine" in flat, flat
+    assert "(once the body reports a camera)" not in flat
+    assert _start(tmp_path)["detector"] == "color_blob"
+    alone = _run(
+        tmp_path, "--robot", "toddlerbot:bridge", "--yes", task=_task(tmp_path, look=False)
+    )
+    assert alone.exit_code == 0, alone.output
+    assert "detector color_blob on this machine (once the body reports a camera)" in _flat(alone)
+
+
+# ── validate and list-verbs ask no board ────────────────────────────────────────────────
+
+
+def test_validate_and_list_verbs_say_the_boards_camera_is_not_counted(
+    hostd: FakeHostd, tmp_path: Path
+) -> None:
+    """A run adds the board's camera to a body described without one before it judges the
+    task. These two ask no board anything, so for a robot stored with a host they refuse a
+    camera task the run accepts and leave `observe` out. They still ask nothing, and now say
+    so, with the doctor that does ask. A body with a camera of its own is told nothing, since
+    the board's changes nothing in its vocabulary."""
+    reg = tmp_path / "reg"
+    Registry(reg).add_robot(RobotEntry(name="tb", spec="toddlerbot:bridge", host=hostd.address))
+    Registry(reg).add_robot(RobotEntry(name="duck", spec="microduck:mock", host=hostd.address))
+    look = _task(tmp_path, look=True)
+    note = (
+        f"does not ask the host {hostd.address} from robot tb (robots.json), so the board's "
+        "camera is not counted"
+    )
+
+    def cli(*args: str) -> Any:
+        return runner.invoke(app, [*args, "--registry-dir", str(reg)], env={"COLUMNS": "200"})
+
+    checked = cli("validate", look, "--robot", "tb")
+    assert checked.exit_code == 1, checked.output
+    flat = _flat(checked)
+    assert f"validate {note}" in flat, flat
+    assert f"quackd doctor --host {hostd.address} shows whether it does" in flat
+    (row,) = [
+        json.loads(line)
+        for line in cli("validate", look, "--robot", "tb", "--json").stdout.splitlines()
+    ]
+    assert row["notes"][0].startswith(f"validate {note}")
+    listed = cli("list-verbs", "--robot", "tb")
+    assert listed.exit_code == 0, listed.output
+    assert f"list-verbs {note}" in _flat(listed)
+    quiet = cli("list-verbs", "--robot", "tb", "--json")
+    assert all(json.loads(line) for line in quiet.stdout.splitlines()), "stdout stays JSON"
+    assert "does not ask" not in _flat(cli("list-verbs", "--robot", "duck"))
+    assert hostd.requests == [], "neither command asks the board anything"
+
+
 # ── serve-mcp ───────────────────────────────────────────────────────────────────────────
 
 
@@ -512,9 +600,13 @@ def test_serve_mcp_refuses_a_host_whose_daemon_does_not_answer(quick_hello: None
         fleet_from_flags(robot="microduck:mock", host=dead_address())
 
 
-def test_serve_mcp_refuses_a_detector_for_a_fleet(hostd: FakeHostd) -> None:
-    with pytest.raises(SystemExit, match="--detector is for one robot"):
-        fleet_from_flags(robots="a=microduck:mock,b=microduck:mock", detector="color")
+@pytest.mark.parametrize("robots", ["a=microduck:mock,b=microduck:mock", "a=microduck:mock"])
+def test_serve_mcp_refuses_a_detector_for_a_fleet(hostd: FakeHostd, robots: str) -> None:
+    """In `run`'s words, which count a one-member `--robots` as a fleet too."""
+    with pytest.raises(
+        SystemExit, match=r"^--detector is for one robot, and a fleet has several bodies"
+    ):
+        fleet_from_flags(robots=robots, detector="color")
 
 
 def test_serve_mcp_refuses_detector_host_without_detect(hostd: FakeHostd) -> None:
@@ -543,10 +635,13 @@ async def test_serve_mcp_serves_the_boards_camera_and_names_its_detector(
 
 
 class _FakeYOLO:
-    """`ultralytics.YOLO`, which is all `YoloDetector` builds; nothing here predicts."""
+    """`ultralytics.YOLO`, which is all `YoloDetector` builds. It sees nothing in any frame."""
 
     def __init__(self, model: str) -> None:
         self.model = model
+
+    def predict(self, image: Any, **kw: Any) -> list[Any]:
+        return []
 
 
 async def test_serve_mcp_gives_yolo_the_lens_of_the_body_that_connected(
@@ -614,3 +709,112 @@ def test_build_fleet_server_is_given_the_plans_detector(
     assert result.exit_code == 0, result.output
     assert isinstance(seen["detector"], HostDetector)
     assert build_fleet_server is not build
+
+
+# ── a detector handed in from Python ────────────────────────────────────────────────────
+
+
+def _toddlerbot(backend: str) -> ToddlerBotAdapter:
+    """A ToddlerBot with a camera and no field of view anybody gave: the mock as the simulator
+    it is, or on its bridge, which quackd treats as the real body it stands for."""
+    return ToddlerBotAdapter((_BridgeMock if backend == "bridge" else ToddlerBotMock)(camera=True))
+
+
+def _yolo_70(monkeypatch: pytest.MonkeyPatch) -> YoloDetector:
+    """`YoloDetector` built from Python with a lens of the caller's own, and no `--host`."""
+    module = ModuleType("ultralytics")
+    module.YOLO = _FakeYOLO  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ultralytics", module)
+    return YoloDetector(fov_deg=70.0)
+
+
+class _OwnDetector:
+    """Somebody's own detector. `Detector` asks for `name` and `detect` and nothing else, so it
+    may have a `calibrate` that has nothing to do with a lens."""
+
+    name = "own"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def calibrate(self) -> None:
+        self.calls += 1
+
+    def detect(self, image: Any) -> list[Any]:
+        return []
+
+
+async def _run_with(detector: Any, body: Any, tmp_path: Path) -> Any:
+    duck = parse_duck_text(
+        "---\nduck: 1\nname: look\ndescription: d\nrequires: [observe]\n"
+        "verbs:\n  allow: [observe, stop]\nsuccess: [x]\n---\n# Task\nLook.\n"
+    )
+    script = [
+        ToolCall(name="observe", arguments={}),
+        ToolCall(name="declare_success", arguments={"reason": "looked"}),
+    ]
+    return await run_duck(
+        RunConfig(
+            duck=duck,
+            provider=FakeProvider(script=script),
+            transport=body,
+            detector=detector,
+            runs_dir=tmp_path,
+        )
+    )
+
+
+@pytest.mark.parametrize("backend", ["mock", "bridge"])
+async def test_a_yolo_handed_to_a_run_from_python_keeps_the_lens_it_was_built_with(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    backend: str,
+) -> None:
+    """`YoloDetector(fov_deg=70.0)` in a `RunConfig` is how YOLO was reached before `--detector`
+    existed, and still is from Python. The loop told every detector it was given the lens it
+    found at connect, so this one's 70 degrees became the simulator's 90 on the mock and, on
+    the bridge, the 62-degree guess, uncalibrated, with a warning to pass --fov-deg to somebody
+    who never used the command line. Bearings and distances, which `go_to` steers by, changed
+    with no `--host` anywhere. Only a detector `explicit_detector` built is told the lens."""
+    caplog.set_level(logging.WARNING, logger="quackd.perception")
+    yolo = _yolo_70(monkeypatch)
+    result = await _run_with(yolo, _toddlerbot(backend), tmp_path)
+    assert result.outcome == "success", result.reason
+    assert (yolo.fov_deg, yolo.calibrated) == (70.0, True)
+    assert _lens_warnings(caplog) == []
+
+
+@pytest.mark.parametrize("backend", ["mock", "bridge"])
+async def test_a_yolo_handed_to_the_mcp_server_keeps_the_lens_it_was_built_with(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, backend: str
+) -> None:
+    """The server's side, where a caller of `build_fleet_server` had no way out at all: it
+    takes no field of view, so a real body without `camera_fov_deg` in its manifest always
+    replaced the caller's lens with the guess."""
+    caplog.set_level(logging.WARNING, logger="quackd.perception")
+    yolo = _yolo_70(monkeypatch)
+    async with connected({"toddler": _toddlerbot(backend)}, detector=yolo) as (_client, fleet):
+        (session,) = fleet.sessions.values()
+        assert session.detector is yolo
+        assert "camera" in session.transport.manifest.sensors
+    assert (yolo.fov_deg, yolo.calibrated) == (70.0, True)
+    assert _lens_warnings(caplog) == []
+
+
+async def test_a_detector_with_a_calibrate_of_its_own_is_not_called_at_connect(
+    tmp_path: Path,
+) -> None:
+    """The call at connect was duck-typed on any `calibrate`, and passed a lens and a backend
+    to it, so a detector of somebody's own whose `calibrate` takes neither stopped the run and
+    the server at connect with a TypeError, where both had run it before."""
+    own = _OwnDetector()
+    result = await _run_with(own, _toddlerbot("mock"), tmp_path)
+    assert result.outcome == "success", result.reason
+    # a server whose start-up raised never answers the client's hello, so this would wait for
+    # ever rather than fail
+    async with asyncio.timeout(20):
+        async with connected({"toddler": _toddlerbot("mock")}, detector=own) as (_client, fleet):
+            (session,) = fleet.sessions.values()
+            assert session.detector is own
+    assert own.calls == 0

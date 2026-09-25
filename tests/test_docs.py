@@ -1080,12 +1080,17 @@ def test_the_host_is_documented_where_it_is_configured() -> None:
 
     Each needle must not run on into a longer name: `--host` is inside `--host-token`, and
     `QUACKD_HOST` inside `QUACKD_HOST_TOKEN`, so a plain substring check would pass a page that
-    only ever names the token."""
+    only ever names the token.
+
+    The README and local-llms.md show `--host jetson.local`, and neither the daemon nor Ollama
+    answers there as installed: both listen on the board's own loopback. Both pages once gave
+    that spelling alone, so each has to name the way that works as installed as well, the
+    tunnel and `--host 127.0.0.1`, and the README the `--bind` that makes the other one work."""
     flags = ("--host", "--host-token", "QUACKD_HOST", "QUACKD_HOST_TOKEN")
     for path, needles in (
-        ("README.md", (*flags, "--detector")),
+        ("README.md", (*flags, "--detector", "--host 127.0.0.1", "--bind")),
         ("docs/jetson.md", (*flags, "--detector")),
-        ("docs/local-llms.md", flags),
+        ("docs/local-llms.md", (*flags, "loopback", "tunnel")),
         ("docs/registry.md", flags),
         (".env.example", ("QUACKD_HOST=", "QUACKD_HOST_TOKEN=")),
         ("SECURITY.md", ("9874", "X-Quackd-Token")),
@@ -1097,6 +1102,67 @@ def test_the_host_is_documented_where_it_is_configured() -> None:
             assert re.search(re.escape(needle) + r"(?![\w-])", text), (
                 f"{path} does not mention {needle!r}"
             )
+
+
+#: What the pages written for `--host` said and the code never did, each with what it does.
+#: Every one was copied into more than one file before anybody caught it.
+_HOST_CLAIMS_THE_CODE_NEVER_MADE = (
+    (
+        "readable by 0.13,",
+        "0.12, 0.13 and 0.14 all refuse a key they do not know, so a registry with no board is "
+        "readable by 0.12 to 0.14, and one robot with a host makes the whole file unreadable",
+    ),
+    (
+        "gets four things from it",
+        "the model comes from the person's own server, a preset moved to the board, and the "
+        "daemon has no route to it",
+    ),
+    (
+        "rung that answers",
+        "the local provider takes the first rung that is set and probes none of them, so a dead "
+        "QUACKD_BASE_URL beats a live QUACKD_HOST",
+    ),
+    (
+        "so the body's keepalives keep flowing",
+        "go_to holds its last twist for one deadman window (HOLD_TTL_S) and then sends a zero one",
+    ),
+)
+
+
+def test_no_page_repeats_a_host_claim_the_code_never_made() -> None:
+    """Four sentences about `--host` that read well and were wrong.
+
+    The CHANGELOG, ADR-0046 and the source are read along with the living documents. None of
+    these was ever true, so no record of the day has a reason to keep one, and the first and
+    third were a comment and a docstring before they were a page."""
+    sources = [
+        REPO / "CHANGELOG.md",
+        *sorted((REPO / "docs" / "adr").glob("0046-*.md")),
+        *sorted((REPO / "bridge").rglob("README.md")),
+        *sorted((REPO / "quackd").rglob("*.py")),
+    ]
+    for path in _living_docs() + sources:
+        text = _one_line(path.read_text(encoding="utf-8"), seams=path.suffix == ".py")
+        for wrong, true in _HOST_CLAIMS_THE_CODE_NEVER_MADE:
+            # pytest.fail rather than assert: pytest explains a failed `not in` by diffing the
+            # needle against the whole file, which takes minutes on a file this long
+            if wrong in text:
+                pytest.fail(f"{path.relative_to(REPO).as_posix()} says {wrong!r}: {true}")
+
+
+def test_what_to_send_back_from_a_board_is_one_list() -> None:
+    """The daemon's README and the Jetson page once asked for two different reports, and the one
+    the CHANGELOG links left out `/board`, the only thing that returns the board's own files: a
+    doctor `--json` carries what doctor parsed from them, so a parser wrong about a real board
+    could not be seen in it. The list lives on the Jetson page, and the README points there."""
+    page = (REPO / "docs" / "jetson.md").read_text(encoding="utf-8")
+    status = page.split("\n## Status\n", 1)[1]
+    for needle in ("--json", "/hello", "/board", "tegrastats", "transcript.jsonl"):
+        assert needle in status, f"the Status section of docs/jetson.md no longer asks for {needle}"
+    readme = (REPO / "bridge" / "jetson" / "README.md").read_text(encoding="utf-8")
+    assert "(../../docs/jetson.md#status)" in readme.split("\n## Status\n", 1)[1], (
+        "bridge/jetson/README.md should send a board owner to docs/jetson.md#status for the list"
+    )
 
 
 def test_every_command_is_named_in_the_readme_table_and_the_module_map() -> None:

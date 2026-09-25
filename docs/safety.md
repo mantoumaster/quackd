@@ -107,11 +107,15 @@ keeps the detector it started with. The colour detector does not label the same 
 real camera, so a quiet switch would change what `go_to` steers at with nothing in the record
 saying so, and the header would name a detector the run had stopped using.
 
-No detections is a shape every verb already handles. `go_to` turns toward where it last saw the
-target, and after more than thirty frames in a row with nothing, or once its own timeout runs
-out, it stops the body and fails. `observe` reports nothing seen with the board's reason beside
-it, and a `quackd run` writes a `note` to its log when the board's detector stops answering and
-another when it answers again.
+A frame the board could not read is not taken for an empty room. `go_to` and `search_scan` stop
+the body on the first one and fail with the board's reason, so neither turns the body blind,
+and the pilot is told the detector failed rather than that the target is gone. `observe`
+reports nothing seen with the board's reason beside it, and a `quackd run` writes a `note` to
+its log when the board's detector stops answering and another when it answers again. A board
+that answers slowly stops the body too. While `go_to` waits for a frame it re-sends its last
+twist for 0.3 s and then sends a zero one, so a body with no deadman of its own does not drive
+on in the meantime: a rosbridge base has none, and a ToddlerBot's is fed by its adapter's
+keepalive for as long as quackd is connected.
 
 The board's camera never takes over a body's own view. Its frame is the primary view only for
 a body with no camera of its own, because a body's bearings are calibrated for its own lens and

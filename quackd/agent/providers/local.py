@@ -156,7 +156,7 @@ def parse_tool_call_from_text(text: str, tool_names: set[str]) -> ToolCall | Non
 class LocalProvider(OpenAIProvider):
     """A model on a server you run: one of the four presets, or `local` at any address.
 
-    Where the server is, first rung that answers wins:
+    Where the server is, the first rung that is set wins, and nothing is probed:
 
     1. `base_url`, which is `--base-url`: a URL given for this run is used exactly as given.
     2. `host`, which is `--host` or the host a registered robot was stored with: the preset's

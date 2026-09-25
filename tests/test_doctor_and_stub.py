@@ -115,7 +115,9 @@ class _NoBoard:
     accident is a test failing loudly, never one quietly waiting on the network or, worse,
     passing against a real board on somebody's desk."""
 
-    def __init__(self, host: str, *, token: str | None = None) -> None:
+    def __init__(
+        self, host: str, *, token: str | None = None, token_fix: str | None = None
+    ) -> None:
         raise AssertionError(f"this test reached for a board at {host} without FakeHostd")
 
 
@@ -822,6 +824,38 @@ def test_doctor_finds_the_board_where_run_does(
         monkeypatch.setenv("QUACKD_HOST", other.address)
         assert host_of("--robot", "jet")["address"] == hostd.address, "the robot beats the env"
         assert host_of()["address"] == other.address
+
+
+def test_doctor_tells_a_robot_whose_stored_token_is_refused_to_store_a_new_one(
+    hostd: FakeHostd, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The robot's token outranks QUACKD_HOST_TOKEN, so the variable is set to the daemon's
+    token here and the report still fails. The advice is the one that changes the token doctor
+    and a run send, and never the variable, which told somebody to set what nothing reads."""
+    hostd.token = TOKEN
+    monkeypatch.setenv("QUACKD_HOST_TOKEN", TOKEN)
+    Registry(tmp_path).add_robot(
+        RobotEntry(name="jet", spec="microduck:mock", host=hostd.address, host_token="stale")
+    )
+    result = CliRunner().invoke(
+        app, ["doctor", "--json", "--registry-dir", str(tmp_path), "--robot", "jet"]
+    )
+    assert result.exit_code == 1, result.output
+    error = json.loads(result.output)["host"]["error"]
+    assert "refused the token it was given: quackd robot edit jet --host-token TOKEN" in error
+    assert "QUACKD_HOST_TOKEN" not in error
+    assert TOKEN not in result.output and "stale" not in error
+
+
+def test_a_typed_host_token_with_no_board_fails_the_report_and_nothing_is_asked() -> None:
+    """Dropped, it read as a healthy report with no host section at all, and exit 0. `_NoBoard`
+    fails this test if anything is asked, and --json stays one document."""
+    result = CliRunner().invoke(app, ["doctor", "--json", "--host-token", TOKEN])
+    assert result.exit_code == 1, result.output
+    host = json.loads(result.output)["host"]
+    assert (host["host"], host["ok"]) == ("", False)
+    assert host["error"].startswith("--host-token needs a board")
+    assert TOKEN not in result.output
 
 
 def test_a_host_setting_that_is_no_machine_is_reported_and_nothing_is_asked_of_it(

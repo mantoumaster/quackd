@@ -1169,14 +1169,16 @@ def refused_host(text: str, error: str) -> HostReport:
     return HostReport(host=text, ok=False, error=error)
 
 
-def _ask_host(host: str, token: str | None, say: Any) -> HostReport:
+def _ask_host(
+    host: str, token: str | None, say: Any, *, token_fix: str | None = None
+) -> HostReport:
     """Everything the daemon at `host` will say, as a report that never raises.
 
     `/hello` first, because it is the one answer a run needs and the one this report's `ok`
     follows. `/healthz` and `/board` after it, each allowed to fail on its own: a daemon that
     answered hello and then timed out on the board dump is a daemon a run would still use."""
     try:
-        client = _host_client(host, token=token)
+        client = _host_client(host, token=token, token_fix=token_fix)
     except ValueError as e:
         # a host that is no machine, or a token no header can carry: the CLI settles both
         # before collect runs, so this is a library caller, told the same way
@@ -1215,6 +1217,7 @@ def collect(
     progress: Progress = None,
     robot_name: str | None = None,
     before_connect: Callable[[Any], None] | None = None,
+    host_token_fix: str | None = None,
 ) -> DoctorReport:
     """Every question doctor asks, answered as data.
 
@@ -1229,7 +1232,8 @@ def collect(
     robot's, or `QUACKD_HOST`), and `host_token` the token that goes with it. With one, the
     daemon on it is asked what it is, and the four local presets are probed on that machine
     rather than on this one. Nothing on this machine is read to find a board: no `/proc`, no
-    subprocess, only the network."""
+    subprocess, only the network. `host_token_fix` is what a refused token's message says to
+    do, for the place the token came from (`HostChoice.token_fix`)."""
 
     def say(message: str) -> None:
         if progress is not None:
@@ -1244,7 +1248,7 @@ def collect(
 
     host = (host or "").strip() or None
     if host is not None:
-        report.host = _ask_host(host, host_token, say)
+        report.host = _ask_host(host, host_token, say, token_fix=host_token_fix)
 
     say("checking the core packages")
     for name, module in CORE_MODULES:

@@ -161,6 +161,26 @@ async def _no_frame(ctx: VerbContext, verb: str) -> VerbResult:
     return VerbResult.fail(f"{verb}: {why}" if why else f"{verb} needs a camera and got no frame")
 
 
+async def detector_failed(ctx: VerbContext, verb: str, stopped: str) -> VerbResult | None:
+    """Stop the body and fail when the detector could not read the frame just looked at, or
+    None when it could.
+
+    The board's detector turns a failed call into no detections and keeps the reason in
+    `error`, which it sets or clears on every call, so read right after `_see` it is about that
+    frame. No detections is what every steering loop here reads as a target out of view:
+    `go_to` turned toward where it last saw the target on each such frame, and `search_scan`
+    turned a full circle and said the target was not there, when nothing had been looked at.
+    A board that hangs costs every frame its whole two second timeout, so `go_to`'s count of
+    empty frames never ran out before its own timeout did. The body stops on the first such
+    frame instead, and the verb says why. A detector with no `error` never fails here."""
+    why = getattr(ctx.detector, "error", None)
+    if not isinstance(why, str) or not why:
+        return None
+    await ctx.transport.stop()
+    name = getattr(ctx.detector, "name", "the detector")
+    return VerbResult.fail(f"{verb}: {name} failed, so {stopped}: {why}", detector_error=why)
+
+
 async def _see_holding(
     ctx: VerbContext,
     label: str,
@@ -180,7 +200,15 @@ async def _see_holding(
     blind for the whole fetch timeout, turning the deadman's meaning from "the steering loop
     is alive" into "the socket is up". This holds only the last justified twist, and only
     for one deadman window — after that the steering loop really is stalled, and a duck that
-    stops is the right outcome."""
+    stops is the right outcome.
+
+    So when the window closes with the frame still out, this sends one zero twist itself
+    rather than leave the stop to the body's deadman. Not every body has one that would fire:
+    a rosbridge base has none, and a ToddlerBot's is fed by the adapter's own keepalive with
+    WALK latched. Both kept going on the last twist for as long as the frame took, which
+    through a board is up to two seconds for the detection and one more for a snapshot from
+    its camera, all of it driving on a decision made from an older frame. A body with a
+    deadman loses nothing, because it was about to stop anyway."""
     task = asyncio.ensure_future(_see(ctx, label, caption))
     deadline = ctx.transport.now() + HOLD_TTL_S
     try:
@@ -188,8 +216,15 @@ async def _see_holding(
             done, _ = await asyncio.wait({task}, timeout=MOVE_RESEND_S)
             if done:
                 return task.result()
-            if twist is not None and ctx.transport.now() < deadline:
+            if twist is None:
+                continue
+            if ctx.transport.now() < deadline:
                 await ctx.transport.send_intent(Intent.move(*twist))
+            else:
+                # a zero twist, not `stop()`: on a ToddlerBot `stop` leaves the walk policy for
+                # a held pose, and this stop is one the next frame may undo a moment later
+                await ctx.transport.send_intent(Intent.move(0.0, 0.0, 0.0))
+                twist = None
     finally:
         if not task.done():  # pragma: no cover - only on cancellation
             task.cancel()
@@ -343,6 +378,8 @@ async def _gaze_sweep(ctx: VerbContext, p: SearchScanParams, limit_deg: float) -
         img, hits = await _see(ctx, p.target, f"search_scan gaze {yaw:+.0f}")
         if img is None:
             return await _no_frame(ctx, "search_scan")
+        if (failed := await detector_failed(ctx, "search_scan", "the sweep stopped")) is not None:
+            return failed
         if hits:
             best = hits[0]
             return VerbResult.success(
@@ -373,6 +410,8 @@ async def search_scan(ctx: VerbContext, p: SearchScanParams) -> VerbResult:
         img, hits = await _see(ctx, p.target, f"search_scan {i}")
         if img is None:
             return await _no_frame(ctx, "search_scan")
+        if (failed := await detector_failed(ctx, "search_scan", "the scan stopped")) is not None:
+            return failed
         if hits:
             best = hits[0]
             return VerbResult.success(
@@ -403,6 +442,8 @@ async def go_to(ctx: VerbContext, p: GoToParams) -> VerbResult:
         img, hits = await _see_holding(ctx, p.target, f"go_to {p.target}", held)
         if img is None:
             return await _no_frame(ctx, "go_to")
+        if (failed := await detector_failed(ctx, "go_to", "the body stopped")) is not None:
+            return failed
         if not hits:
             lost += 1
             if lost > 30:

@@ -670,11 +670,14 @@ def test_an_oversized_frame_is_refused_before_a_byte_is_sent(hostd: FakeHostd) -
     assert hostd.requests_to("/detect") == []
 
 
-@pytest.mark.parametrize("conf", [1.5, -0.1, math.nan, True])
-def test_a_confidence_outside_zero_to_one_is_the_callers_mistake(
+@pytest.mark.parametrize("conf", [1.5, -0.1, math.nan, True, 0.0, -0.0, 0])
+def test_a_confidence_the_daemon_would_refuse_is_the_callers_mistake(
     hostd: FakeHostd, conf: float
 ) -> None:
-    with pytest.raises(ValueError, match="confidence floor"):
+    """The daemon takes a floor above 0 and at most 1. A 0 sent anyway would come back as a 400,
+    a HostError, which every consumer reads as the board failing rather than as a caller's
+    bug. `tests/test_jetson_host_contract.py` holds the two sides to one rule."""
+    with pytest.raises(ValueError, match="above 0 and at most 1"):
         HostClient(hostd.address).detect(jpeg_bytes(), conf=conf)
     assert hostd.requests == []
 

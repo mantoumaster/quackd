@@ -344,3 +344,37 @@ def test_a_frame_the_daemon_encodes_is_one_pil_reads_the_same_size(board: Board)
     jpeg, _ = board.daemon.store.get()
     with Image.open(io.BytesIO(jpeg)) as picture:
         assert picture.size == hello.camera_size
+
+
+def test_both_sides_bound_a_confidence_floor_the_same(board: Board) -> None:
+    """The client refuses, as a ValueError before anything is sent, exactly the floors the
+    daemon would refuse, and sends the rest. A floor it passed and the daemon refused would come
+    back as a 400, a HostError, which every consumer reads as the board failing: a
+    `HostDetector` built with it would run blind and blame the board."""
+    client = board.client()
+    buf = io.BytesIO()
+    Image.new("RGB", SIZE, (236, 229, 212)).save(buf, format="JPEG")
+    for conf in (0.0, -0.0, 1e-9, 0.3, 1.0, 1.000000001, -0.1):
+        try:
+            board.module._conf_from(f"conf={conf!r}")
+        except ValueError:
+            with pytest.raises(ValueError, match="confidence floor"):
+                client.detect(buf.getvalue(), conf=conf)
+        else:
+            assert client.detect(buf.getvalue(), conf=conf).w == SIZE[0], conf
+
+
+def test_the_slowest_capture_the_daemon_takes_keeps_frames_younger_than_the_client_refuses(
+    hostd: ModuleType,
+) -> None:
+    """The client refuses a frame older than `STALE_AFTER_S` as a camera that has stopped, and
+    the newest frame is up to a capture period old plus however long the next capture takes. A
+    daemon capturing every 2.5 s would have the client call a working camera stopped on a fifth
+    of its snapshots while its own `/healthz`, which expires frames at `max(1.5, 4 / fps)`, said
+    ok. So the daemon refuses a rate that slow, and its slowest leaves a period to spare."""
+    parse = hostd.parser().parse_args
+    assert 1.0 / hostd.MIN_FPS <= host.STALE_AFTER_S / 2
+    assert parse(["--fps", f"{hostd.MIN_FPS:g}"]).fps == hostd.MIN_FPS
+    for slower in ("0.99", "0.5", "0.4"):
+        with pytest.raises(SystemExit):
+            parse(["--fps", slower])

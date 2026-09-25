@@ -25,7 +25,9 @@ Environment=PYTHONUNBUFFERED=1
 StateDirectory=quackd-jetson-hostd
 WorkingDirectory=/var/lib/quackd-jetson-hostd
 # The system python on purpose: JetPack's own OpenCV, built with GStreamer, is installed for
-# it, and the CSI camera needs GStreamer. A virtualenv's pip OpenCV is built without it.
+# it, and the CSI camera needs GStreamer. A virtualenv's pip OpenCV is built without it, and
+# so is the one pip installs for this python along with ultralytics, which then hides
+# JetPack's: bridge/jetson/README.md, "Detection on the GPU", says how to remove it.
 ExecStart=/usr/bin/python3 /opt/quackd/quackd_jetson_hostd.py --bind 127.0.0.1 --port 9874 --camera csi --fps 5 --size 640x480 --token-file /etc/quackd/jetson-hostd.token
 
 # This is the process to lose. On a robot whose own computer this board is, the robot's

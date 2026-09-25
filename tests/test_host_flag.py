@@ -82,13 +82,44 @@ def test_the_token_climbs_its_own_ladder_so_a_tunnel_still_carries_the_robots_to
     assert resolve_host(None, "jetson.local", token="  ", stored_token="stored").token == "stored"
 
 
-def test_a_token_with_no_board_to_go_to_is_dropped_rather_than_refused(
+def test_a_token_from_the_environment_with_no_board_to_go_to_is_dropped_rather_than_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`QUACKD_HOST_TOKEN` in a `.env` is how the token of the board somebody usually uses is
     kept out of their shell history, and it must not stop a run that names no board."""
     monkeypatch.setenv(TOKEN_ENV, "from-the-env")
-    assert resolve_host(None, None, token="typed") == HostChoice()
+    assert resolve_host(None, None) == HostChoice()
+    assert resolve_host(None, None, token="  ") == HostChoice(), "blank is nothing typed"
+
+
+def test_a_typed_token_with_no_board_to_go_to_is_refused_and_not_quoted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Typed, it is somebody who meant a board, and a run that dropped it went ahead with the
+    laptop's camera and detector and exit 0, while `robot add` refuses the same flag without
+    --host. The variable beside it changes nothing about that."""
+    monkeypatch.setenv(TOKEN_ENV, "from-the-env")
+    with pytest.raises(ValueError, match=r"^--host-token needs a board") as refused:
+        resolve_host(None, None, token="typed-secret", stored_token="stored", robot="jet")
+    assert "typed-secret" not in str(refused.value)
+    assert "give --host too, or drop --host-token" in str(refused.value)
+
+
+def test_a_refused_token_is_answered_for_the_rung_it_came_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The robot's stored token outranks `QUACKD_HOST_TOKEN`, so telling somebody whose robot
+    stores one to set the variable sent them to change something the run never reads."""
+    monkeypatch.setenv(TOKEN_ENV, "from-the-env")
+    typed = resolve_host(None, "jetson.local", token="t", stored_token="s", robot="jet")
+    assert typed.token_source == "--host-token"
+    assert typed.token_fix == "pass the token the daemon was started with as --host-token"
+    stored = resolve_host(None, "jetson.local", stored_token="s", robot="jet")
+    assert stored.token_source == "robot jet (robots.json)"
+    assert stored.token_fix.startswith("quackd robot edit jet --host-token TOKEN")
+    assert TOKEN_ENV not in stored.token_fix
+    usual = resolve_host(None, "jetson.local", robot="jet")
+    assert usual.token_source == TOKEN_ENV and usual.token_fix.startswith(f"set {TOKEN_ENV}")
 
 
 def test_the_robots_token_rides_only_when_the_robot_stores_a_board(
@@ -273,6 +304,68 @@ def test_a_host_that_is_not_one_is_refused_before_anything_connects(
     assert nothing_connects == []
 
 
+def test_a_typed_host_token_with_no_board_is_refused_before_anything_connects(
+    tmp_path: Path, nothing_connects: list[Any]
+) -> None:
+    """It used to be dropped: the run went ahead on the laptop's camera and detector with exit
+    0, and nothing on the screen said the flag had gone nowhere. A fleet has no board at all,
+    and refuses the token as it refuses --host."""
+    alone = _run(tmp_path, "hello-world", "--robot", "microduck:mock", "--host-token", "abc123")
+    assert alone.exit_code == 1, alone.output
+    assert "--host-token needs a board" in _flat(alone), alone.output
+    fleet = _run(
+        tmp_path,
+        "hello-world",
+        "--robots",
+        "a=microduck:mock,b=microduck:mock",
+        "--host-token",
+        "abc123",
+    )
+    assert fleet.exit_code == 1, fleet.output
+    assert "--host-token is one board's token, and a fleet has several bodies" in _flat(fleet)
+    for result in (alone, fleet):
+        assert "abc123" not in result.output
+    assert nothing_connects == []
+    assert not (tmp_path / "runs").exists()
+
+
+def test_serve_mcp_refuses_a_typed_host_token_with_no_board() -> None:
+    with pytest.raises(SystemExit, match=r"^--host-token needs a board"):
+        fleet_from_flags(robot="microduck:mock", host_token="abc123")
+    with pytest.raises(SystemExit, match=r"^--host-token is one board's token, and a fleet"):
+        fleet_from_flags(robots="a=microduck:mock,b=microduck:mock", host_token="abc123")
+
+
+def test_a_stored_token_the_board_refuses_is_answered_with_robot_edit_and_doctor_by_name(
+    tmp_path: Path, nothing_connects: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The board's daemon restarted with a new token, and the robot still stores the old one.
+    The stored token outranks QUACKD_HOST_TOKEN, so the variable is set here to show that
+    following the old advice changed nothing, and the refusal names the fix that lasts. The
+    doctor it points at names the robot, since `doctor --host` alone carries no stored token
+    and reported a healthy daemon while the run kept refusing. The daemon did answer, with a
+    401, and the refusal no longer says it did not."""
+    monkeypatch.setenv(TOKEN_ENV, "new-token")
+    with FakeHostd(token="new-token") as hostd:
+        address = hostd.address
+        Registry(tmp_path / "reg").add_robot(
+            RobotEntry(name="jet", spec="microduck:mock", host=address, host_token="old-token")
+        )
+        stored = _run(tmp_path, "hello-world", "--robot", "jet")
+        tunnel = _run(tmp_path, "hello-world", "--robot", "jet", "--host", address)
+    assert stored.exit_code == 1, stored.output
+    flat = _flat(stored)
+    assert f"the host {address} from robot jet (robots.json) answered with HTTP 401" in flat, flat
+    assert "quackd robot edit jet --host-token TOKEN stores the one the daemon was started" in flat
+    assert f"set {TOKEN_ENV}" not in flat and "did not answer" not in flat
+    assert "quackd doctor --robot jet shows what the board says" in flat
+    assert tunnel.exit_code == 1, tunnel.output
+    assert f"quackd doctor --robot jet --host {address} shows" in _flat(tunnel)
+    for result in (stored, tunnel):
+        assert "old-token" not in result.output and "new-token" not in result.output
+    assert nothing_connects == []
+
+
 def _hand_edited(tmp_path: Path) -> None:
     """robots.json with a good robot and one whose host a hand broke, past every check."""
     (tmp_path / "reg").mkdir()
@@ -343,7 +436,9 @@ def any_board(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     asked: list[str] = []
 
     class Board:
-        def __init__(self, host: str, *, token: str | None = None) -> None:
+        def __init__(
+            self, host: str, *, token: str | None = None, token_fix: str | None = None
+        ) -> None:
             asked.append(host)
             self.host = host
             self.address = host
@@ -546,6 +641,14 @@ def test_the_commands_that_use_a_board_offer_host_and_its_token(command: list[st
     assert "--host HOST[:PORT] A machine quackd uses and never runs on" in text, text
     assert "--robot still names the body" in text
     assert "--host-token" in text and "QUACKD_HOST_TOKEN" in text
+
+
+@pytest.mark.parametrize("command", [["run"], ["serve-mcp"]], ids=" ".join)
+def test_the_detector_help_names_the_extra_yolo_needs(command: list[str]) -> None:
+    """The help is Rich markup, which reads an unescaped `[yolo]` as a tag and drops it: the
+    help said yolo "needs quackd.", which is true of everything and names no extra."""
+    text = help_text([*command, "--help"])
+    assert "yolo is YOLO on this machine and needs quackd[yolo]." in text, text
 
 
 @pytest.mark.parametrize("command", [["robot", "add"], ["robot", "edit"]], ids=" ".join)

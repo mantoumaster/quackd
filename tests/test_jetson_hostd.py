@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -468,28 +469,87 @@ def test_every_path_refuses_a_missing_or_wrong_token_and_never_reads_one_from_th
 
 
 def test_a_refused_body_is_drained_so_the_connection_reads_the_next_request_cleanly(
-    hostd: ModuleType, fake_gpu: Callable[[bool], SimpleNamespace], tmp_path: Path
+    hostd: ModuleType,
+    fake_gpu: Callable[[bool], SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """A 401 or a 400 that leaves the JPEG in the socket turns it into the next request line
-    on a kept-alive connection, and closing on it resets the connection under the reply."""
+    """A 400 or a 405 that leaves the body in the socket turns it into the next request line
+    on a kept-alive connection. So a client with the token has what it sent read and dropped,
+    a chunk at a time and never all at once, before it is answered."""
+    asked: list[int] = []
+    readinto = hostd._Reader.readinto
+
+    def recording(self: Any, buffer: Any) -> int:
+        asked.append(len(memoryview(buffer)))
+        return int(readinto(self, buffer))
+
+    monkeypatch.setattr(hostd._Reader, "readinto", recording)
     fake_gpu(False)
     daemon = hostd.Hostd(engine=hostd.YoloEngine(), token=TOKEN, board_root=str(tmp_path))
     with serving(hostd, daemon) as port:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         try:
-            conn.request("POST", "/detect", body=jpeg_of(), headers={"X-Quackd-Token": "wrong"})
-            resp = conn.getresponse()
-            assert resp.status == 401 and resp.getheader("Connection") != "close"
-            resp.read()
             conn.request("POST", "/detect", body=b"not a jpeg", headers={"X-Quackd-Token": TOKEN})
             resp = conn.getresponse()
-            assert resp.status == 400
+            assert resp.status == 400 and resp.getheader("Connection") != "close"
+            resp.read()
+            big = bytes(5 * hostd.DRAIN_CHUNK_BYTES + 7)
+            conn.request("POST", "/hello", body=big, headers={"X-Quackd-Token": TOKEN})
+            resp = conn.getresponse()
+            assert resp.status == 405 and resp.getheader("Connection") != "close"
             resp.read()
             conn.request("GET", "/hello", headers={"X-Quackd-Token": TOKEN})
             resp = conn.getresponse()
             assert resp.status == 200 and json.loads(resp.read())["protocol_version"] == 1
         finally:
             conn.close()
+    assert asked and max(asked) <= hostd.DRAIN_CHUNK_BYTES, "a dropped body was read whole"
+
+
+def read_until_closed(sock: socket.socket) -> bytes:
+    """Everything the daemon sends before it closes, or what came before it reset or went
+    quiet: a test asks what arrived, and a reset is only one way of nothing arriving."""
+    chunks: list[bytes] = []
+    with contextlib.suppress(OSError):
+        while chunk := sock.recv(65536):
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def test_a_client_without_the_token_is_refused_before_its_body_and_the_refusal_arrives(
+    hostd: ModuleType, fake_gpu: Callable[[bool], SimpleNamespace], tmp_path: Path
+) -> None:
+    """A 401 that first read the body it was going to throw away let a client with no token
+    declare 8 MB and send a byte every few seconds, holding a thread and the buffer for as long
+    as it liked, and never be told no. So the 401 goes out on the head alone, and closes.
+
+    Closing with the body unread makes the kernel reset the connection, which can throw the
+    401 away before the client reads it: quackd sending a frame with the wrong token would hear
+    "connection reset" rather than which token was wrong. So the daemon lingers after the
+    refusal, dropping what arrives, and the 401 gets through whatever size the body was."""
+    fake_gpu(False)
+    daemon = hostd.Hostd(engine=hostd.YoloEngine(), token=TOKEN, board_root=str(tmp_path))
+    with serving(hostd, daemon) as port:
+        # the largest body it takes: a smaller one can fit in the kernel's buffers whole, and
+        # then the reset comes too late to show
+        for body in (jpeg_of(), bytes(hostd.MAX_JPEG_BYTES)):
+            for _ in range(3):
+                status, headers, raw = call(port, "POST", "/detect", body=body, token="wrong")
+                assert status == 401 and headers["connection"] == "close"
+                assert json.loads(raw)["reason"] == "bad or missing token"
+
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+            sock.sendall(
+                b"POST /detect HTTP/1.1\r\nHost: hostd\r\nContent-Type: image/jpeg\r\n"
+                b"Content-Length: %d\r\n\r\n" % hostd.MAX_JPEG_BYTES
+            )
+            began = time.monotonic()
+            sock.settimeout(hostd.REQUEST_TIMEOUT_S / 2)
+            said = read_until_closed(sock)
+            took = time.monotonic() - began
+    assert said.startswith(b"HTTP/1.1 401 "), said[:80]
+    assert took < hostd.REQUEST_TIMEOUT_S / 2, "the refusal waited on a body it never read"
 
 
 def test_a_verb_or_path_it_does_not_answer_is_refused_in_json(
@@ -805,6 +865,34 @@ def test_a_camera_that_will_not_open_or_will_not_deliver_is_no_camera_with_a_rea
     assert capture.opened[-1] == "released"
 
 
+def test_an_opencv_without_gstreamer_is_named_with_where_it_loads_from_and_how_to_remove_it(
+    hostd: ModuleType, capture: type[_Capture], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The usual way a board gets one is `pip install ultralytics` for the system python, which
+    installs pip's opencv-python where that python finds it before JetPack's own. So the reason
+    names the copy that loaded and the uninstall, where the operator reads it."""
+    import cv2
+
+    monkeypatch.setattr(cv2, "getBuildInformation", lambda: "  Video I/O:\n    GStreamer: NO\n")
+    capture.works = False
+    for spec in ("csi", "v4l2src ! videoconvert ! appsink"):
+        camera, why = hostd.open_camera(spec, (640, 480))
+        assert camera is None and "was built without GStreamer" in why, why
+        assert f"({os.path.dirname(cv2.__file__)})" in why, why
+        assert why.endswith("pip uninstall opencv-python"), why
+
+
+def test_the_readme_says_ultralytics_brings_a_pip_opencv_and_how_to_take_it_out() -> None:
+    """The unit runs the system python for JetPack's OpenCV, and the README sends people to
+    install ultralytics for that same python, which brings pip's OpenCV and hides JetPack's.
+    The section that sends them there is the one that has to say so."""
+    readme = (REPO / "bridge" / "jetson" / "README.md").read_text(encoding="utf-8")
+    section = readme.split("\n## Detection on the GPU\n", 1)[1].split("\n## ", 1)[0]
+    assert "ultralytics requires pip's `opencv-python`" in section
+    assert "python3 -m pip uninstall -y opencv-python" in section
+    assert 'python3 -c "import cv2; print(cv2.getBuildInformation())" | grep GStreamer' in section
+
+
 PASSWORDED = (
     "rtspsrc location=rtsp://admin:hunter2@192.168.1.64/stream1 user-id=admin "
     'user-pw="sword fish" ! decodebin ! videoconvert ! appsink'
@@ -858,6 +946,89 @@ def test_a_password_in_a_camera_pipeline_reaches_the_capture_and_nothing_else(
     with pytest.raises(argparse.ArgumentTypeError) as refused:
         hostd.camera_spec("rtsp://admin:hunter2@192.168.1.64/stream1")
     assert not leaks(str(refused.value))
+
+
+@pytest.mark.parametrize(
+    "pipeline",
+    [
+        # a property with spaces around its `=`, which GStreamer's lexer takes
+        "rtspsrc location=rtsp://cam/s user-id=admin user-pw = hunter2 ! decodebin ! appsink",
+        # a query parameter: how a Foscam-style snapshot CGI authenticates
+        'souphttpsrc location="http://cam:88/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2&usr=admin'
+        '&pwd=hunter2" ! jpegdec ! appsink',
+        "souphttpsrc location=https://cam/mjpeg?token=hunter2 ! jpegdec ! appsink",
+        "souphttpsrc location=https://cam/mjpeg?res=hd&api_key=hunter2#top ! jpegdec ! appsink",
+        'srtsrc uri="srt://cam:7001?mode=caller&passphrase=hunter2" ! tsdemux ! appsink',
+        # a header, and a cookie
+        'souphttpsrc location=http://cam/ extra-headers="h, Authorization=(string)\\"Bearer '
+        'hunter2\\"" ! jpegdec ! appsink',
+        'souphttpsrc location=http://cam/ cookies="session=hunter2" ! jpegdec ! appsink',
+        # a quoted URL whose password has a space in it, or a slash
+        'rtspsrc location="rtsp://admin:hun ter2@cam/s" ! decodebin ! appsink',
+        "rtspsrc location=rtsp://admin:hun/ter2@cam/s ! decodebin ! appsink",
+        # a value holding what the lexer keeps in one: a `!`, an escaped space or quote
+        "rtspsrc location=rtsp://cam/s user-pw=hun!ter2 ! decodebin ! appsink",
+        "rtspsrc location=rtsp://cam/s user-pw=hun\\ ter2 ! decodebin ! appsink",
+        'rtspsrc location=rtsp://cam/s user-pw="hun\\"ter2" ! decodebin ! appsink',
+        "rtspsrc location=rtsp://cam/s proxy-pw=(string)hunter2 ! decodebin ! appsink",
+    ],
+)
+def test_every_way_a_pipeline_carries_a_credential_is_masked(
+    hostd: ModuleType, pipeline: str
+) -> None:
+    shown = hostd.redact(pipeline)
+    assert "hunter2" not in shown and "ter2" not in shown and "***" in shown, shown
+    assert shown.endswith("appsink"), "the rest of the pipeline is still there to read"
+
+
+def test_redaction_takes_the_credential_and_leaves_what_a_reader_needs(
+    hostd: ModuleType,
+) -> None:
+    snapshot = (
+        'souphttpsrc location="http://cam:88/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2&usr=admin'
+        '&pwd=hunter2" ! jpegdec ! videoconvert ! appsink'
+    )
+    assert hostd.redact(snapshot) == snapshot.replace("hunter2", "***")
+    spaced = "rtspsrc location=rtsp://cam/s user-id=admin user-pw = hunter2 latency=0 ! appsink"
+    assert hostd.redact(spaced) == (
+        "rtspsrc location=rtsp://cam/s user-id=admin user-pw=*** latency=0 ! appsink"
+    )
+    usb = "v4l2src device=/dev/video0 ! video/x-raw, format=YUY2, width=640 ! appsink drop=1"
+    for untouched in (hostd.DEFAULT_CSI_PIPELINE, usb):
+        assert hostd.redact(untouched) == untouched
+
+
+def test_a_capture_error_that_quotes_the_pipeline_is_redacted_in_healthz_and_the_log(
+    hostd: ModuleType, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every reason that may name the camera is redacted, and a capture that fails mid-run is
+    one: `/healthz` serves its error, and quackd doctor prints it."""
+
+    class Quoting:
+        source = f"gstreamer: {hostd.redact(PASSWORDED)}"
+        size = (640, 480)
+
+        def jpeg(self) -> tuple[bytes, tuple[int, int]]:
+            raise RuntimeError(f"could not read a frame from {PASSWORDED}")
+
+        def close(self) -> None:
+            pass
+
+    daemon = hostd.Hostd(camera=Quoting(), board_root=str(tmp_path))
+    with caplog.at_level(logging.WARNING, logger="quackd-jetson-hostd"):
+        daemon.start()
+        try:
+            end = time.monotonic() + 5.0
+            while daemon.store.health(now=0.0, stale_after=1.0)["errors"] == 0:
+                assert time.monotonic() < end, "the capture never failed"
+                time.sleep(0.02)
+        finally:
+            daemon.stop()
+    health = daemon.health()
+    assert "could not read a frame from rtspsrc" in health["reason"]
+    assert "could not read a frame from rtspsrc" in health["camera"]["last_error"]
+    for said in (health["reason"], caplog.text):
+        assert "hunter2" not in said and "sword" not in said, said
 
 
 # ── /board ──────────────────────────────────────────────────────────────────────────────
@@ -942,6 +1113,29 @@ def test_board_files_are_capped_decoded_whatever_they_hold_and_a_directory_is_a_
     assert len(board["files"]["/proc/meminfo"]) == 65536
     assert board["files"]["/proc/swaps"] is None and board["errors"]["/proc/swaps"]
     assert board["files"]["/etc/nv_tegra_release"] == "# R36 �� (release)"
+
+
+def test_a_board_file_is_capped_as_it_goes_on_the_wire_not_only_as_it_is_read(
+    hostd: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A byte that is not UTF-8 becomes U+FFFD and a control character stays itself, and JSON
+    writes either as a six byte escape; a character past the BMP is twelve, and a quote two.
+    The cap bounds what a wrong board root can make `/board` send, so it is measured there,
+    and a value is trimmed to the longest start of it that fits, not shorter."""
+    no_commands(monkeypatch, hostd)
+    root = tmp_path / "board"
+    (root / "proc" / "device-tree").mkdir(parents=True)
+    (root / "proc" / "swaps").write_bytes(b"\xff" * 70000)
+    (root / "proc" / "meminfo").write_bytes(b"\x01" * 70000)
+    write(root, "proc/device-tree/model", "\U0001f986" * 20000)
+    write(root, "proc/device-tree/compatible", '"' * 70000)
+    with serving(hostd, hostd.Hostd(board_root=str(root))) as port:
+        status, _, raw = call(port, "GET", "/board")
+    assert status == 200
+    files = json.loads(raw)["files"]
+    for path in FILES[:2] + FILES[3:]:
+        wire = len(json.dumps(files[path])) - 2
+        assert hostd.FILE_CAP_BYTES - 12 < wire <= hostd.FILE_CAP_BYTES, (path, wire)
 
 
 def test_a_board_with_no_device_tree_is_still_a_tegra_by_its_release_file(
@@ -1228,6 +1422,164 @@ def test_a_client_that_keeps_its_connection_open_does_not_hold_up_shutdown(
     assert took < 2.0, f"closing the server waited {took:.1f}s for an idle client"
 
 
+def test_a_request_trickled_a_byte_at_a_time_is_cut_off_at_its_deadline(
+    hostd: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The timeout bounds each wait for a byte, and a client sending one just inside it never
+    trips that: it held a thread, and everything it had sent, for as long as it went on. So the
+    whole request has one deadline. It is shortened here so the test does not wait ten seconds;
+    the byte interval is well inside the five-second timeout, which is left as it is."""
+    monkeypatch.setattr(hostd, "REQUEST_DEADLINE_S", 1.0)
+    daemon = hostd.Hostd(token=TOKEN, board_root=str(tmp_path))
+    with (
+        serving(hostd, daemon) as port,
+        socket.create_connection(("127.0.0.1", port), timeout=10) as sock,
+    ):
+        sock.sendall(b"GET /hello HTTP/1.1\r\nHost: hostd\r\nX-Pad: ")
+        sock.settimeout(0.2)
+        began = time.monotonic()
+        closed_after: float | None = None
+        while closed_after is None and time.monotonic() - began < 4.0:
+            try:
+                sock.sendall(b"a")
+                if sock.recv(1) == b"":
+                    closed_after = time.monotonic() - began
+            except TimeoutError:
+                continue  # still open, and still waiting for the rest of the head
+            except OSError:
+                closed_after = time.monotonic() - began
+    assert closed_after is not None, "a request trickled for 4 s was still being read"
+    assert closed_after < 2.5
+
+
+def test_a_head_larger_than_the_daemon_reads_is_not_answered(
+    hostd: ModuleType, tmp_path: Path
+) -> None:
+    """http.server by itself reads a hundred header lines of 64 KB before the handler or the
+    token check runs: over 6 MB held for a client that has proved nothing. The daemon reads
+    `MAX_HEAD_BYTES` of head and then closes; a head of an ordinary size is answered."""
+    daemon = hostd.Hostd(token=TOKEN, board_root=str(tmp_path))
+
+    def head_of(lines: int) -> bytes:
+        pad = b"a" * 1000
+        padding = b"".join(b"X-Pad-%d: %s\r\n" % (i, pad) for i in range(lines))
+        return b"GET /hello HTTP/1.1\r\nHost: hostd\r\n" + padding + b"\r\n"
+
+    assert len(head_of(60)) > hostd.MAX_HEAD_BYTES > len(head_of(16))
+    with serving(hostd, daemon) as port:
+        for lines, answered in ((16, True), (60, False)):
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+                with contextlib.suppress(OSError):
+                    sock.sendall(head_of(lines))
+                said = read_until_closed(sock)
+            assert said.startswith(b"HTTP/1.1 401 ") is answered, (lines, said[:80])
+
+
+def test_connections_past_the_cap_are_refused_busy_rather_than_given_a_thread(
+    hostd: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Every connection is a thread and what it has read, and ThreadingHTTPServer bounds
+    neither, so anyone who could reach the port could open connections until the board ran
+    out of memory. Past the cap a connection is answered 503 in JSON and closed, and a slot
+    comes back when a connection ends."""
+    monkeypatch.setattr(hostd, "MAX_CONNECTIONS", 2)
+    daemon = hostd.Hostd(board_root=str(tmp_path))
+    with serving(hostd, daemon) as port:
+        idle = [socket.create_connection(("127.0.0.1", port), timeout=10) for _ in range(2)]
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+                sock.settimeout(hostd.REQUEST_TIMEOUT_S / 2)
+                said = read_until_closed(sock)
+        finally:
+            for sock in idle:
+                sock.close()
+        head, _, body = said.partition(b"\r\n\r\n")
+        assert head.startswith(b"HTTP/1.1 503 "), said[:80]
+        assert b"Connection: close" in head
+        refused = json.loads(body)
+        assert refused["ok"] is False and refused["reason"].startswith("busy: ")
+
+        def hello() -> int | None:
+            try:
+                return call(port, "GET", "/hello")[0]
+            except (OSError, http.client.HTTPException):
+                return None  # still busy: a 503 to a request already sent can be reset away
+
+        end = time.monotonic() + 5.0
+        while (status := hello()) != 200 and time.monotonic() < end:
+            time.sleep(0.05)
+        assert status == 200, "the idle connections' slots never came back"
+
+
+def test_detect_holds_no_more_bodies_and_decoded_images_than_it_has_slots(
+    hostd: ModuleType, fake_gpu: Callable[[bool], SimpleNamespace], tmp_path: Path
+) -> None:
+    """The body and pixel caps are per request, and decoding ran outside any bound, so thirty
+    requests at the pixel cap held thirty decoded frames of 48 MB while they queued for the
+    model. Now a request takes a slot before it reads its body, and every request is still
+    answered: they queue for the slots as they queue for the model."""
+    fake_gpu(True)
+    daemon = hostd.Hostd(engine=hostd.YoloEngine(), board_root=str(tmp_path))
+    engine = daemon.engine
+    overlap = Overlap(0.2)
+    decode = engine.decode
+
+    def slow(jpeg: bytes) -> Any:
+        with overlap.enter():
+            return decode(jpeg)
+
+    engine.decode = slow
+    with serving(hostd, daemon) as port:
+        statuses = at_once(5, lambda: reply(port, "POST", "/detect", body=jpeg_of())[0])
+    assert statuses == [200] * 5
+    assert overlap.calls == 5 and overlap.peak <= hostd.DETECT_SLOTS
+
+
+def test_a_detect_that_cannot_get_a_slot_is_refused_busy_with_its_body_unread(
+    hostd: ModuleType,
+    fake_gpu: Callable[[bool], SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(hostd, "DETECT_SLOTS", 1)
+    monkeypatch.setattr(hostd, "DETECT_WAIT_S", 0.3)
+    gpu = fake_gpu(True)
+    daemon = hostd.Hostd(engine=hostd.YoloEngine(), board_root=str(tmp_path))
+    (model,) = gpu.made
+    inside, release = threading.Event(), threading.Event()
+    predict = model.predict
+
+    def held(*args: Any, **kwargs: Any) -> Any:
+        inside.set()
+        release.wait(10)
+        return predict(*args, **kwargs)
+
+    model.predict = held  # type: ignore[method-assign]
+    first: list[int] = []
+    with serving(hostd, daemon) as port:
+        holder = threading.Thread(
+            target=lambda: first.append(reply(port, "POST", "/detect", body=jpeg_of())[0])
+        )
+        holder.start()
+        try:
+            assert inside.wait(5), "the first detection never reached the model"
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+                # a body declared and never sent: a reply at all means it was not waited for
+                sock.sendall(
+                    b"POST /detect HTTP/1.1\r\nHost: hostd\r\nContent-Type: image/jpeg\r\n"
+                    b"Content-Length: 1000\r\n\r\n"
+                )
+                sock.settimeout(hostd.REQUEST_TIMEOUT_S / 2)
+                said = read_until_closed(sock)
+        finally:
+            release.set()
+            holder.join(10)
+    head, _, body = said.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 503 "), said[:80]
+    assert json.loads(body)["reason"].startswith("busy: ")
+    assert first == [200], "the detection holding the slot was answered"
+
+
 # ── what the daemon cannot do, read from its source ─────────────────────────────────────
 
 
@@ -1466,6 +1818,103 @@ def test_it_serves_on_ipv6_loopback_too(hostd: ModuleType, tmp_path: Path) -> No
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_port_another_server_listens_on_is_refused_rather_than_shared(
+    hostd: ModuleType, tmp_path: Path
+) -> None:
+    """On Windows SO_REUSEADDR lets two servers bind one port, so a daemon started on a busy
+    port there said it was serving while every request went to the one already listening. The
+    one already listening here is what http.server, the fake daemon and a second copy of this
+    daemon all are: a server that sets SO_REUSEADDR. Linux refuses both ways regardless."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    other = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    try:
+        try:
+            shared = hostd.serve(
+                hostd.Hostd(board_root=str(tmp_path)), "127.0.0.1", other.server_address[1]
+            )
+        except OSError:
+            pass
+        else:
+            shared.shutdown()
+            shared.server_close()
+            pytest.fail("the daemon bound a port another server was listening on")
+    finally:
+        other.server_close()
+
+    with serving(hostd, hostd.Hostd(board_root=str(tmp_path))) as port:
+        try:
+            later = ThreadingHTTPServer(("127.0.0.1", port), BaseHTTPRequestHandler)
+        except OSError:
+            pass
+        else:
+            later.server_close()
+            pytest.fail("a later server bound the port the daemon was listening on")
+
+
+class _Died(BaseException):
+    """What SIGTERM's default action does to the daemon, without doing it to the test run. A
+    BaseException, so nothing in the daemon that catches Exception can swallow it."""
+
+
+@pytest.mark.parametrize("when", ["the model loads", "the camera reads its first frame"])
+def test_a_sigterm_while_it_starts_stops_it_and_lets_go_of_the_camera(
+    hostd: ModuleType,
+    capture: type[_Capture],
+    fake_gpu: Callable[[bool], SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    when: str,
+) -> None:
+    """systemd stops the unit with SIGTERM, and starting can take minutes: importing torch and,
+    on a first start, downloading the model. SIGTERM's default is to die on the spot, and an
+    argus client that dies holding the sensor can leave nvargus-daemon needing a restart. The
+    handler this test puts in stands for that default, so a daemon that has not put its own in
+    by then fails here, rather than killing the test run."""
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("only the main thread can take a signal")
+    fake_gpu(True)
+
+    def terminate() -> None:
+        signal.raise_signal(signal.SIGTERM)
+
+    if when == "the model loads":
+        loaded = sys.modules["ultralytics"].YOLO
+
+        class Loading(loaded):  # type: ignore[misc,valid-type]
+            def __init__(self, model: str) -> None:
+                terminate()
+                super().__init__(model)
+
+        monkeypatch.setattr(sys.modules["ultralytics"], "YOLO", Loading)
+    else:
+        read = capture.read
+
+        def reading(self: Any) -> tuple[bool, Any]:
+            terminate()
+            return read(self)
+
+        monkeypatch.setattr(capture, "read", reading)
+
+    def default_action(signum: int, frame: Any) -> None:
+        raise _Died
+
+    found = signal.signal(signal.SIGTERM, default_action)
+    try:
+        code = hostd.main(["--camera", "0", "--port", "0", "--board-root", str(tmp_path)])
+        left = signal.getsignal(signal.SIGTERM)
+    except _Died:
+        pytest.fail(f"a SIGTERM while {when} met the default action: the daemon died there")
+    finally:
+        signal.signal(signal.SIGTERM, found)
+    assert code == 0
+    assert left is default_action, "main puts back the handler it found"
+    opened = [o for o in capture.opened if o != "released"]
+    assert capture.opened.count("released") == len(opened), capture.opened
+    if when == "the camera reads its first frame":
+        assert opened and capture.opened[-1] == "released"
 
 
 def test_once_prints_a_hello_whose_protocol_and_version_match(

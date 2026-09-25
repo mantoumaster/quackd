@@ -73,6 +73,12 @@ transcripts. A token in the query string is not read at all, rather than read an
 DEFAULT_FPS = 5.0
 """The rate the Open Duck camera daemon settled on: `go_to` and `search_scan` close a visual
 loop at 10 Hz, and a frame period much longer than that makes the steering weave."""
+MIN_FPS = 1.0
+"""The slowest `--fps` this daemon takes. quackd refuses a frame older than 2 s as a camera
+that has stopped (`STALE_AFTER_S` in quackd/host.py), and the newest frame is up to one capture
+period old plus however long the next capture takes. At 1 fps that leaves a second for a slow
+capture. At 0.5 it leaves none, and below that quackd would call a working camera stopped on
+a share of its snapshots while this daemon's own `/healthz` said ok."""
 DEFAULT_SIZE = (640, 480)
 """A box the served JPEG fits inside, not a size it is forced to. See `fit_within`."""
 JPEG_QUALITY = 80
@@ -81,8 +87,26 @@ JPEG_QUALITY = 80
 STALE_PERIODS = 4.0
 #: ...but a very low --fps must still expire in human time, not eventually.
 MIN_STALE_S = 1.5
-#: How long a client may hold a connection open without finishing a request.
+#: How long a client may hold a connection open without sending anything.
 REQUEST_TIMEOUT_S = 5.0
+REQUEST_DEADLINE_S = 10.0
+"""How long one request may take to arrive whole, head and body, from when the connection
+starts waiting for it. `REQUEST_TIMEOUT_S` bounds each wait on the socket, and a client that
+sends a byte every four seconds never trips it, so this bounds all the waits together."""
+MAX_HEAD_BYTES = 32 << 10
+"""The most a request line and its headers may take. quackd sends a few hundred bytes, and
+http.server alone reads a hundred header lines of 64 KB, over 6 MB, before this daemon's code
+or its token check runs. A head over this is not answered: the connection is closed."""
+MAX_CONNECTIONS = 16
+"""How many connections are served at once. Each one is a thread and whatever it has read,
+and ThreadingHTTPServer bounds neither, so without this anyone who can reach the port could
+open connections until the board ran out of memory. quackd opens one per call and closes it.
+A connection past this is answered 503 and closed."""
+LINGER_S = 2.0
+"""How long a connection closed on a body it did not read waits for the client to finish
+sending, dropping what arrives, before it closes anyway. See `_linger`."""
+DRAIN_CHUNK_BYTES = 64 << 10
+"""A body read only to be dropped is read this much at a time, never all at once."""
 MAX_JPEG_BYTES = 8 << 20
 """The largest body `POST /detect` reads. quackd sends a 640 by 480 JPEG of tens of kilobytes,
 so this is room for a large frame and a bound on what a stranger can make the board hold."""
@@ -90,6 +114,13 @@ MAX_DETECT_PIXELS = 4096 * 4096
 """The largest image `POST /detect` decodes. A JPEG of a few bytes can declare a canvas of
 billions of pixels, and Pillow only refuses one past twice its own warning threshold, so a
 small body could otherwise make a board with 8 GB of shared memory allocate hundreds of MB."""
+DETECT_SLOTS = 2
+"""How many `POST /detect` requests may hold a body and its decoded image at once. The two caps
+above are per request, so without this thirty requests at the pixel cap would hold thirty
+decoded frames of 48 MB each while they queued for the model. Two rather than one, so a slow
+upload cannot stall the model for everyone else."""
+DETECT_WAIT_S = REQUEST_TIMEOUT_S
+"""How long a `POST /detect` waits for a slot before it is refused as busy, its body unread."""
 
 DEFAULT_YOLO_MODEL = "yolov8n.pt"
 DEFAULT_CONF = 0.4
@@ -97,7 +128,8 @@ DEFAULT_CONF = 0.4
 
 FILE_CAP_BYTES = 65536
 """No file `/board` reads is anywhere near this, and a wrong board root must not be able to
-make a reply of one."""
+make a reply of one. It bounds each value as it goes on the wire, JSON's escapes included,
+not only what is read: a byte that is not UTF-8 or a control character is six bytes there."""
 NVPMODEL_TIMEOUT_S = 3.0
 TEGRASTATS_TIMEOUT_S = 3.0
 
@@ -247,22 +279,57 @@ def _gstreamer_built_in(cv2: Any) -> bool | None:
     return None if match is None else match.group(1).upper() == "YES"
 
 
-_URL_USERINFO = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s]*@")
-_PASSWORD_PROPERTY = re.compile(
-    r"\b([\w-]*(?:-pw|passwd|password|passphrase))=(\"[^\"]*\"|'[^']*'|[^\s!]+)", re.IGNORECASE
+_SECRET_NAME = re.compile(
+    r"(?:^|[-_.])(?:pw|pass|key|auth|authorization|cookies?|headers|credentials?|sig|signature)$"
+    r"|(?:pwd|passwd|password|passphrase|secret|token|apikey)$",
+    re.IGNORECASE,
 )
+"""A property or query parameter whose value is a credential: rtspsrc's and souphttpsrc's
+`user-pw` and `proxy-pw`, srtsrc's `passphrase`, souphttpsrc's `extra-headers` and `cookies`,
+and the query names quackd's own `SECRET_QUERY_KEYS` redacts (`pwd`, `token`, `api_key`...)."""
+_VALUE = r"""(?:\([\w-]+\)\s*)?(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|(?:\\.|[^\s\\])+)"""
+"""A property value as GStreamer's lexer reads one: a quoted string with its escapes, or a run
+of anything but unescaped whitespace, `!` included. An optional `(type)` cast before either."""
+_ASSIGNMENT = re.compile(rf"(?<![^\s])([A-Za-z_][\w-]*)\s*=\s*({_VALUE})", re.DOTALL)
+"""`name=value` at the start of a word, with the spaces around `=` the lexer also takes."""
+_WORD = re.compile(r"""(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|\\.|[^\s"'\\])+""", re.DOTALL)
+"""One word of a pipeline, a quoted part and its spaces included, so a URL in quotes is whole."""
+_URL_USERINFO = re.compile(r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*://).*@", re.DOTALL)
+"""A URL's scheme and everything after it up to the word's last `@`: a password may hold an `@`
+or a `/`, and masking a path along with it costs nothing a reader needs."""
+_QUERY_PAIR = re.compile(r"""([?&])([^=&#?\s]+)=(.*?)(?=[&#]|["']?\Z)""", re.DOTALL)
+"""One `name=value` of a query string, up to the next pair or the word's end."""
+
+
+def _mask_assignment(match: re.Match[str]) -> str:
+    name = match.group(1)
+    return f"{name}=***" if _SECRET_NAME.search(name) else match.group(0)
+
+
+def _mask_query_pair(match: re.Match[str]) -> str:
+    sep, name = match.group(1), match.group(2)
+    return f"{sep}{name}=***" if _SECRET_NAME.search(name) else match.group(0)
+
+
+def _redact_word(match: re.Match[str]) -> str:
+    word = _URL_USERINFO.sub(r"\1***@", match.group(0))
+    return _QUERY_PAIR.sub(_mask_query_pair, word)
 
 
 def redact(text: str) -> str:
-    """`text` with the passwords a camera pipeline can carry replaced by `***`.
+    """`text` with the credentials a camera pipeline can carry replaced by `***`.
 
-    A GStreamer pipeline of your own can hold a camera's credentials, as the userinfo of a URL
-    (`rtsp://user:pass@host/`) or as a property such as rtspsrc's `user-pw=`. The pipeline is
-    shown in `/hello`, in every reason that names the camera and in the log, which is to say to
-    every client and to journald, and quackd puts a 503's reason in the error it raises, so an
-    unredacted password would reach the laptop's terminal and its transcripts. Only the capture
-    itself is handed the real string."""
-    return _PASSWORD_PROPERTY.sub(r"\1=***", _URL_USERINFO.sub(r"\1***@", text))
+    A GStreamer pipeline of your own can hold a camera's credentials: as the userinfo of a URL
+    (`rtsp://user:pass@host/`), as a query parameter (`?pwd=`, `?token=`), or as a property
+    such as rtspsrc's `user-pw=` or souphttpsrc's `extra-headers=`, with or without spaces
+    around its `=`. The pipeline is shown in `/hello`, in every reason that names the camera
+    and in the log, which is to say to every client and to journald, and quackd puts a 503's
+    reason in the error it raises, so an unredacted password would reach the laptop's terminal
+    and its transcripts. Only the capture itself is handed the real string.
+
+    It masks by name, like quackd's own redaction, and it masks too much rather than too
+    little: a whole URL userinfo, username included, and a value to the end of its word."""
+    return _WORD.sub(_redact_word, _ASSIGNMENT.sub(_mask_assignment, text))
 
 
 class Cv2Camera:
@@ -306,9 +373,15 @@ class Cv2Camera:
                 cap.release()
             reason = f"{self.source} did not open"
             if gstreamer and _gstreamer_built_in(cv2) is False:
+                # named, because the usual culprit is pip's opencv-python, which pip installs
+                # with ultralytics and puts ahead of JetPack's on this python's path
+                where = getattr(cv2, "__file__", None)
+                loaded = f" ({os.path.dirname(where)})" if where else ""
                 reason += (
-                    ": this OpenCV was built without GStreamer (pip's opencv-python is), and a "
-                    "CSI camera needs JetPack's own"
+                    f": the OpenCV this python loads{loaded} was built without GStreamer, as "
+                    "pip's opencv-python is, and a CSI camera needs JetPack's own. pip installs "
+                    "opencv-python along with ultralytics; remove it with: pip uninstall "
+                    "opencv-python"
                 )
             elif spec == "csi":
                 reason += ": is nvargus-daemon running and a camera on the connector?"
@@ -320,6 +393,9 @@ class Cv2Camera:
         except Exception as e:
             self.close()
             raise CameraUnavailable(f"{self.source} opened but gave no frame: {e}") from e
+        except BaseException:  # a stop while it reads (see _Stopped) still lets go of it
+            self.close()
+            raise
 
     def jpeg(self) -> tuple[bytes, tuple[int, int]]:
         cv2 = self._cv2
@@ -406,8 +482,10 @@ def capture_loop(store: FrameStore, source: Any, fps: float, stop: threading.Eve
             jpeg, size = source.jpeg()
             store.put(jpeg, size, now=time.monotonic())
         except Exception as e:  # a camera hiccup must not kill the server
-            store.fail(str(e))
-            log.warning("capture failed: %s", e)
+            # redacted, like every reason that may quote the pipeline: /healthz serves this
+            said = redact(str(e))
+            store.fail(said)
+            log.warning("capture failed: %s", said)
         stop.wait(max(0.0, period - (time.monotonic() - started)))
 
 
@@ -626,8 +704,28 @@ def open_engine(enabled: bool, model: str, conf: float) -> tuple[YoloEngine | No
 def _text(raw: bytes) -> str:
     """Bytes as the wire carries them: utf-8 whatever they were, capped, and with no NULs,
     because the device tree's own strings are NUL terminated and a NUL in a JSON string
-    reaches a terminal cell on the other side."""
-    return raw[:FILE_CAP_BYTES].decode("utf-8", errors="replace").replace("\x00", "")
+    reaches a terminal cell on the other side.
+
+    The cap is on the JSON the value becomes, the way `_json` writes it: a replaced byte or a
+    control character is a six byte escape there, so a file capped only as it was read could
+    reach six times the cap on the wire. A board's own files are short plain text, which
+    this never trims."""
+    text = raw[:FILE_CAP_BYTES].decode("utf-8", errors="replace").replace("\x00", "")
+    if _wire_len(text) <= FILE_CAP_BYTES:
+        return text
+    fits, over = 0, len(text)  # the longest prefix that fits, by bisection
+    while over - fits > 1:
+        mid = (fits + over) // 2
+        if _wire_len(text[:mid]) <= FILE_CAP_BYTES:
+            fits = mid
+        else:
+            over = mid
+    return text[:fits]
+
+
+def _wire_len(text: str) -> int:
+    """The bytes `text` takes inside a JSON string as `_json` writes one, quotes left out."""
+    return len(json.dumps(text)) - 2
 
 
 def on_board(root: str, path: str) -> str:
@@ -821,6 +919,7 @@ class Hostd:
         # which is a check in name only. The protocol makes it no token, and so does this.
         self.token = token or None
         self.board_root = board_root
+        self.detect_slots = threading.BoundedSemaphore(DETECT_SLOTS)
         self.store = FrameStore()
         self.stale_after = stale_after_s(fps)
         self.started = time.monotonic()
@@ -829,24 +928,32 @@ class Hostd:
 
     @classmethod
     def from_args(cls, args: argparse.Namespace, token: str | None) -> Hostd:
-        camera, camera_error = open_camera(args.camera, args.size)
-        if camera is None and args.camera != "none":
-            log.warning("no camera: %s", camera_error)
+        """The detector first and the camera second, so the camera is not held through the
+        model's load, which on a first start includes downloading it. A stop that comes while
+        this runs (`_Stopped`, or Ctrl+C) closes the camera if it had opened."""
         if not args.no_detect:
             log.info("loading %s", args.yolo_model)
         engine, detect_error = open_engine(not args.no_detect, args.yolo_model, args.conf)
         if engine is None and not args.no_detect:
             log.warning("no detector: %s", detect_error)
-        return cls(
-            camera=camera,
-            camera_error=camera_error,
-            fps=args.fps,
-            fov_deg=args.fov_deg,
-            engine=engine,
-            detect_error=detect_error,
-            token=token,
-            board_root=args.board_root,
-        )
+        camera, camera_error = open_camera(args.camera, args.size)
+        try:
+            if camera is None and args.camera != "none":
+                log.warning("no camera: %s", camera_error)
+            return cls(
+                camera=camera,
+                camera_error=camera_error,
+                fps=args.fps,
+                fov_deg=args.fov_deg,
+                engine=engine,
+                detect_error=detect_error,
+                token=token,
+                board_root=args.board_root,
+            )
+        except BaseException:
+            if camera is not None:
+                camera.close()
+            raise
 
     def start(self) -> None:
         if self.camera is None or self._capture is not None:
@@ -974,6 +1081,71 @@ def _conf_from(query: str) -> float | None:
     return conf
 
 
+class _Cutoff(TimeoutError):
+    """A request cut off for taking too long or growing too large. A TimeoutError, because that
+    is what http.server treats as "discard this connection", without a traceback."""
+
+
+class _Reader(io.RawIOBase):
+    """The socket as a request reads it, with one deadline and one allowance per request.
+
+    The handler's timeout bounds each wait for bytes, which a client sending a byte every few
+    seconds never trips, and http.server reads a head of over 6 MB before this daemon's code
+    runs, so a client with no token could hold a thread and all it had sent for as long as it
+    liked. So a request has to arrive whole by `REQUEST_DEADLINE_S`, and may send a head of
+    `MAX_HEAD_BYTES` and whatever body the handler chose to read, and nothing more."""
+
+    def __init__(self, sock: socket.socket, timeout: float | None) -> None:
+        super().__init__()
+        self._sock = sock
+        self._timeout = timeout
+        self._deadline = 0.0
+        self._allowed = 0
+
+    def begin(self) -> None:
+        """A new request: a fresh deadline, and room for a head and no body."""
+        self._deadline = time.monotonic() + REQUEST_DEADLINE_S
+        self._allowed = MAX_HEAD_BYTES
+
+    def allow(self, n: int) -> None:
+        """Room for `n` more bytes: a body the handler has decided to read."""
+        self._allowed += n
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        left = self._deadline - time.monotonic()
+        if left <= 0:
+            raise _Cutoff(f"the request did not arrive whole within {REQUEST_DEADLINE_S:g}s")
+        if self._allowed <= 0:
+            raise _Cutoff("the request is longer than this daemon reads")
+        self._sock.settimeout(left if self._timeout is None else min(self._timeout, left))
+        try:
+            got = self._sock.recv_into(memoryview(buffer)[: self._allowed])
+        finally:
+            self._sock.settimeout(self._timeout)
+        self._allowed -= got
+        return got
+
+
+def _linger(sock: socket.socket) -> None:
+    """Close a connection whose request body was left unread without resetting the reply away.
+
+    Closing a socket with unread bytes in it makes the kernel send a reset rather than an end
+    of stream, and a client that has not read the reply yet can lose it to that reset: quackd
+    sending a frame with the wrong token would hear that the connection was reset rather than
+    that the token was wrong. So the reply is followed by an end of stream, and what the client
+    still sends is read a chunk at a time and dropped until it closes, for `LINGER_S` at most."""
+    end = time.monotonic() + LINGER_S
+    with contextlib.suppress(OSError):
+        sock.shutdown(socket.SHUT_WR)
+        while (left := end - time.monotonic()) > 0:
+            sock.settimeout(left)
+            if not sock.recv(DRAIN_CHUNK_BYTES):
+                return
+
+
 def make_handler(daemon: Hostd) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = f"quackd-jetson-hostd/{HOSTD_VERSION}"
@@ -983,6 +1155,26 @@ def make_handler(daemon: Hostd) -> type[BaseHTTPRequestHandler]:
         # on a board that may also be running a robot's fifty hertz control loop.
         timeout = REQUEST_TIMEOUT_S
         _consumed = False
+        _linger_on_close = False
+        _reader: _Reader
+
+        def setup(self) -> None:
+            super().setup()
+            # every read of a request goes through one deadline and one allowance (`_Reader`)
+            self.rfile.close()
+            self._reader = _Reader(self.connection, self.timeout)
+            self.rfile = io.BufferedReader(self._reader)
+
+        def handle_one_request(self) -> None:
+            self._consumed = False
+            self._linger_on_close = False
+            self._reader.begin()
+            super().handle_one_request()
+
+        def finish(self) -> None:
+            super().finish()
+            if self._linger_on_close:
+                _linger(self.connection)
 
         def do_GET(self) -> None:
             self._route("GET")
@@ -1009,7 +1201,9 @@ def make_handler(daemon: Hostd) -> type[BaseHTTPRequestHandler]:
             self._consumed = False
             path, _, query = self.path.partition("?")
             if not daemon.authorised(self.headers.get(TOKEN_HEADER)):
-                self._json(401, {"ok": False, "reason": "bad or missing token"})
+                # answered on the head alone and closed: a client without the token is never
+                # waited on for its body, and nothing it sends is kept (see _linger)
+                self._json(401, {"ok": False, "reason": "bad or missing token"}, close=True)
                 return
             if path in GET_PATHS:
                 if method != "GET":
@@ -1092,6 +1286,19 @@ def make_handler(daemon: Hostd) -> type[BaseHTTPRequestHandler]:
                 )
                 self._json(413, {"ok": False, "reason": reason})
                 return
+            # the slot is taken before the body is read, so a request queued for the model
+            # holds neither its body nor its decoded image (see DETECT_SLOTS)
+            if not daemon.detect_slots.acquire(timeout=DETECT_WAIT_S):
+                reason = f"busy: {DETECT_SLOTS} detections are already under way; try again"
+                self._json(503, {"ok": False, "reason": reason}, close=True)
+                return
+            try:
+                self._detect_body(engine, length, conf)
+            finally:
+                daemon.detect_slots.release()
+
+        def _detect_body(self, engine: YoloEngine, length: int, conf: float | None) -> None:
+            self._reader.allow(length)
             try:
                 body = self.rfile.read(length)
             except OSError:
@@ -1123,28 +1330,30 @@ def make_handler(daemon: Hostd) -> type[BaseHTTPRequestHandler]:
             A reply that did not read the body must still get it off the wire: a keep-alive
             connection would parse it as the next request, and closing a socket with unread
             bytes makes the kernel reset it, which can throw away the reply before the client
-            reads it. So a body within the cap is read and dropped, and anything else closes."""
+            reads it. So a body within the cap is read a chunk at a time and dropped, within
+            the request's deadline, and anything else closes and lingers (`_linger`)."""
             if self._consumed:
                 return
             self._consumed = True
             declared = self.headers.get("Content-Length")
             if declared is None:
                 if self.headers.get("Transfer-Encoding"):
-                    self.close_connection = True
+                    self.close_connection = self._linger_on_close = True
                 return
             try:
                 length = int(declared)
             except ValueError:
-                self.close_connection = True
+                self.close_connection = self._linger_on_close = True
                 return
             if length < 0 or length > MAX_JPEG_BYTES:
-                self.close_connection = True
+                self.close_connection = self._linger_on_close = True
                 return
-            if length:
-                try:
-                    self.rfile.read(length)
-                except OSError:
-                    self.close_connection = True
+            self._reader.allow(length)
+            try:
+                while length > 0 and (chunk := self.rfile.read(min(length, DRAIN_CHUNK_BYTES))):
+                    length -= len(chunk)
+            except OSError:
+                self.close_connection = True
 
         def _bytes(
             self,
@@ -1158,6 +1367,7 @@ def make_handler(daemon: Hostd) -> type[BaseHTTPRequestHandler]:
         ) -> None:
             if close:
                 self.close_connection = True
+                self._linger_on_close = not self._consumed
             else:
                 self._settle_body()
             try:
@@ -1197,8 +1407,54 @@ def make_handler(daemon: Hostd) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+def _refuse_busy(sock: socket.socket) -> None:
+    """A 503 written straight to a connection there is no thread for, never waiting on it: this
+    runs on the accept loop, which a client that does not read must not be able to stall."""
+    reason = f"busy: this daemon is already serving {MAX_CONNECTIONS} connections; try again"
+    body = json.dumps({"ok": False, "reason": reason}).encode("utf-8")
+    head = (
+        "HTTP/1.1 503 Service Unavailable\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n"
+    )
+    with contextlib.suppress(OSError):
+        sock.setblocking(False)
+        sock.send(head.encode("ascii") + body)
+
+
 class _Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer with at most `MAX_CONNECTIONS` connections, and so threads, at once."""
+
     daemon_threads = True
+    # SO_REUSEADDR lets a restart bind past the last run's TIME_WAIT on Linux. On Windows it
+    # lets a second server bind a port another one is listening on, so a daemon started on a
+    # busy port there would say it was serving while every request went to the other one.
+    allow_reuse_address = sys.platform != "win32"
+
+    def __init__(self, address: Any, handler: Any) -> None:
+        self._connections = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        super().__init__(address, handler)
+
+    def verify_request(self, conn: Any, client_address: Any) -> bool:
+        if self._connections.acquire(blocking=False):
+            return True
+        _refuse_busy(conn)
+        return False  # and socketserver closes it
+
+    def process_request(self, conn: Any, client_address: Any) -> None:
+        try:
+            super().process_request(conn, client_address)
+        except BaseException:
+            self._connections.release()  # no thread started, so none will release it
+            raise
+
+    def process_request_thread(self, conn: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(conn, client_address)
+        finally:
+            self._connections.release()
 
 
 class _Server6(_Server):
@@ -1302,16 +1558,18 @@ def size_spec(text: str) -> tuple[int, int]:
     return size
 
 
-def _bounded(name: str, low: float, high: float) -> Any:
-    """A float type for argparse that is above `low` and at most `high`, NaN refused."""
+def _bounded(name: str, low: float, high: float, *, low_included: bool = False) -> Any:
+    """A float type for argparse that is above `low` (or at least it, with `low_included`) and
+    at most `high`, NaN refused."""
+    floor = "at least" if low_included else "above"
 
     def parse(text: str) -> float:
         try:
             value = float(text)
         except ValueError:
             value = float("nan")
-        if not low < value <= high:
-            raise argparse.ArgumentTypeError(f"{name} must be above {low:g} and at most {high:g}")
+        if not (low <= value if low_included else low < value) or not value <= high:
+            raise argparse.ArgumentTypeError(f"{name} must be {floor} {low:g} and at most {high:g}")
         return value
 
     return parse
@@ -1337,10 +1595,10 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--fps",
-        type=_bounded("--fps", 0.0, 60.0),
+        type=_bounded("--fps", MIN_FPS, 60.0, low_included=True),
         default=DEFAULT_FPS,
-        help="capture rate. go_to and search_scan steer on these frames, so a low rate is a "
-        "slow visual loop, not just a stale picture",
+        help="capture rate, at least 1. go_to and search_scan steer on these frames, so a low "
+        "rate is a slow visual loop, not just a stale picture",
     )
     p.add_argument(
         "--size",
@@ -1381,6 +1639,16 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
+class _Stopped(BaseException):
+    """SIGTERM while the daemon is still starting, raised from wherever the signal lands.
+
+    Starting can take minutes: importing torch, and on a first start downloading the model. A
+    handler that only set a flag would be read after all of that, and systemd kills a unit
+    that has not stopped within 90 seconds, so the stop would still end in a kill, only a
+    later one. A BaseException, so the `except Exception` around the camera and the detector
+    lets it through to the code that closes what had opened."""
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     logging.basicConfig(
@@ -1388,60 +1656,79 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="quackd-jetson-hostd %(levelname)s %(message)s",
     )
-    try:
-        token = resolve_token(args)
-    except TokenFileError as e:
-        log.error("%s", e)
-        return 2
-
-    daemon = Hostd.from_args(args, token)
-    if args.once:
-        try:
-            sys.stdout.write(json.dumps(daemon.hello(), indent=2) + "\n")
-            sys.stdout.flush()
-        finally:
-            daemon.stop()
-        return 0
-
-    warning = wide_bind_warning(args.bind, token)
-    if warning:
-        log.warning("%s", warning)
-
     stop = threading.Event()
+    starting = True
 
     def on_term(signum: int, frame: Any) -> None:
+        nonlocal starting
         stop.set()
+        if starting:
+            starting = False  # once: the close it unwinds into must not be cut short
+            raise _Stopped
 
-    # systemd stops a unit with SIGTERM, whose default is to die on the spot. Dying is
-    # harmless here, but the camera is released on the way out, so this turns it into an exit.
+    # systemd stops a unit with SIGTERM, whose default is to die on the spot, and an argus
+    # client that dies holding the sensor can leave nvargus-daemon needing a restart (see
+    # Cv2Camera.close). So the handler goes in before anything opens, and a stop at any point
+    # is an exit that lets go of the camera. It is put back on the way out, for a caller that
+    # runs this inside a process of its own, as the tests do.
+    previous: Any = None
     with contextlib.suppress(ValueError):  # not the main thread
-        signal.signal(signal.SIGTERM, on_term)
+        previous = signal.signal(signal.SIGTERM, on_term)
+    try:
+        daemon: Hostd | None = None
+        try:
+            token = resolve_token(args)
+            daemon = Hostd.from_args(args, token)
+            starting = False
+        except TokenFileError as e:
+            log.error("%s", e)
+            return 2
+        except (_Stopped, KeyboardInterrupt):
+            if daemon is not None:  # stopped after it had opened, before it could say so
+                daemon.stop()
+            log.info("stopped while starting")
+            return 0
 
-    try:
-        server = serve(daemon, args.bind, args.port)
-    except OSError as e:
-        log.error("cannot listen on %s:%s: %s", args.bind, args.port, e)
-        daemon.stop()
-        return 2
-    daemon.start()
-    log.info(
-        "serving http://%s:%s (camera: %s, detect: %s, token: %s)",
-        args.bind,
-        server.server_address[1],
-        daemon.camera.source if daemon.camera is not None else "none",
-        daemon.engine.device if daemon.engine is not None else "none",
-        "required" if token else "none",
-    )
-    try:
-        while not stop.is_set():
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        pass
+        if args.once:
+            try:
+                sys.stdout.write(json.dumps(daemon.hello(), indent=2) + "\n")
+                sys.stdout.flush()
+            finally:
+                daemon.stop()
+            return 0
+
+        warning = wide_bind_warning(args.bind, token)
+        if warning:
+            log.warning("%s", warning)
+
+        try:
+            server = serve(daemon, args.bind, args.port)
+        except OSError as e:
+            log.error("cannot listen on %s:%s: %s", args.bind, args.port, e)
+            daemon.stop()
+            return 2
+        daemon.start()
+        log.info(
+            "serving http://%s:%s (camera: %s, detect: %s, token: %s)",
+            args.bind,
+            server.server_address[1],
+            daemon.camera.source if daemon.camera is not None else "none",
+            daemon.engine.device if daemon.engine is not None else "none",
+            "required" if token else "none",
+        )
+        try:
+            while not stop.is_set():
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.shutdown()
+            server.server_close()
+            daemon.stop()
+        return 0
     finally:
-        server.shutdown()
-        server.server_close()
-        daemon.stop()
-    return 0
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == "__main__":

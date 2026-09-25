@@ -98,8 +98,9 @@ def explicit_detector(
     `fov_deg` is `--fov-deg` or the body's own `camera_fov_deg`, never the board's: whether the
     board's camera is the primary view is only settled at connect. `has_camera` is whether the
     body's own description has a camera. The lens is set here when it is already known
-    (`_lens_if_known`), and the loop calls `calibrate()` again once the body has said what it
-    really has.
+    (`_lens_if_known`), and the detector is marked `lens_at_connect`, so the loop and the MCP
+    server call `calibrate()` again once the body has said what it really has. A detector
+    handed to a run from Python has no such mark and keeps the lens it was built with.
 
     A body that describes no camera still gets the board's detector by itself. It may report a
     camera when it connects, as a ToddlerBot does when its daemon owns the cameras and the
@@ -113,6 +114,7 @@ def explicit_detector(
         from quackd.perception.yolo import GUESSED_FOV_DEG, YoloDetector
 
         yolo = YoloDetector(fov_deg=GUESSED_FOV_DEG, calibrated=False)
+        yolo.lens_at_connect = True
         _lens_if_known(yolo, fov_deg, backend, has_camera=has_camera)
         return yolo
     can_detect = client is not None and hello is not None and hello.can_detect
@@ -135,6 +137,7 @@ def explicit_detector(
 
     assert client is not None  # can_detect, or refused above
     detector = HostDetector(client, fov_deg=GUESSED_FOV_DEG, calibrated=False)
+    detector.lens_at_connect = True
     _lens_if_known(detector, fov_deg, backend, has_camera=has_camera)
     return detector
 

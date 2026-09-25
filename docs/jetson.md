@@ -33,8 +33,13 @@ exist ([local-llms.md](local-llms.md)), and the host daemon over plain HTTP on p
 it. `--robot` still names the body, so the flag is the same whatever the body is. Without the
 flag, a command uses the host a registered robot keeps, then `QUACKD_HOST`. The token is found
 in the same order, `--host-token`, then the robot's, then `QUACKD_HOST_TOKEN`, and a robot's
-token is only used when that robot keeps a board. A run asks the daemon's `/hello` before
-anything connects to the body, and refuses when it does not answer:
+token is only used when that robot keeps a board. A `--host-token` typed where nothing names a
+board refuses a run or a server, as `robot add` refuses one without `--host`, and fails
+`doctor`'s host section, while a `QUACKD_HOST_TOKEN` with no board to go to is left unread.
+When the daemon refuses a token, the refusal says how to change the one that was sent. For a
+token the robot keeps, that is `quackd robot edit NAME --host-token`, because the robot's
+token outranks `QUACKD_HOST_TOKEN` and setting the variable changes nothing. A run asks the
+daemon's `/hello` before anything connects to the body, and refuses when it does not answer:
 
 ```
 ✗ error: --host 127.0.0.1:1 did not answer: 127.0.0.1:1 did not answer /hello within 2s: is
@@ -115,7 +120,8 @@ serves asks for a little more:
 - **Health** needs nothing installed. The daemon reads five files and runs `nvpmodel -q` and
   `tegrastats`, which JetPack ships.
 - **The camera** needs OpenCV, and a CSI camera needs JetPack's own, which is built with
-  GStreamer. A pip `opencv-python` is built without it.
+  GStreamer. A pip `opencv-python` is built without it, and pip installs one along with
+  ultralytics.
 - **Detections** need ultralytics, and a torch built for the board's GPU. With the torch pip
   installs by default they run on the CPU, and `/hello` says which.
 
@@ -178,7 +184,10 @@ and that token. A USB camera is `--camera 0` in its place, and a board whose rob
 the cameras is `--camera none` ([the camera notes](../bridge/jetson/README.md#the-camera)).
 Detections need ultralytics installed for that same `python3`
 ([detection on the GPU](../bridge/jetson/README.md#detection-on-the-gpu)), and a daemon
-without it serves everything else and says why in `/hello`.
+without it serves everything else and says why in `/hello`. Installing it also installs pip's
+`opencv-python`, which that `python3` then loads ahead of JetPack's, and the CSI camera stops
+opening until it is removed. That section has the order to install in and the lines that
+remove it.
 
 ### From the laptop
 
@@ -197,7 +206,8 @@ its own, so there is no second port to type. The `export` above already put the 
 `run`, `serve-mcp` and `doctor` look for it.
 
 Where the model server is has an order of its own, because a URL can name it as well as a host,
-and a host only ever moves a preset. The local provider takes the first rung that answers:
+and a host only ever moves a preset. The local provider takes the first rung that is set, and
+probes none of them:
 
 1. `--base-url`: a URL given for this run is used exactly as given.
 2. `--host`, or the host a registered robot was stored with: the preset's address moved to that
@@ -343,18 +353,33 @@ and is refused before anything connects when the daemon cannot detect. `--detect
 YOLO on the laptop and needs `quackd[yolo]`. Whichever it is, the run keeps it: a board that
 stops answering mid-run gives each frame no detections and a reason, never the colour
 detector in its place. The two do not label the same things on a real camera, and a quiet
-switch would change what `go_to` steers at with nothing in the record saying so. A frame with
-no detections is one every verb already handles, and it reads the same as a target out of view.
-On each such frame `go_to` turns the body toward where the target was last seen. It stops the
-body and gives up when more than 30 frames in a row come back empty, saying
-`lost the ball; try search_scan`, or when its own timeout runs out, 20 seconds unless the pilot
-asked for another. A board that hangs costs every frame the two seconds `POST /detect` is
-allowed, so there it is the timeout that stops the body. `observe` reports nothing seen with the
-reason beside it, and the log gets a `note` when the detector starts failing and another when
-it answers again. The run header and the log's `run_start` event both name the detector.
+switch would change what `go_to` steers at with nothing in the record saying so. Nor is a frame
+the board could not read taken for a target out of view. `go_to` and `search_scan` stop the body
+on the first one and fail with what the board said, as in
+`go_to: yolo@host failed, so the body stopped:` and then the board's reason, so the pilot hears
+that the detector failed rather than that the ball is gone. `approach_and` fails with `go_to`
+and never runs its second verb. `observe` reports nothing seen with the reason beside it, and
+the log gets a `note` when the detector starts failing and another when it answers again. A
+board that answers slowly stops the body too: while `go_to` waits for a frame it re-sends its
+last twist for 0.3 s and then sends a zero one, so a body with no deadman of its own, such as a
+rosbridge base, does not drive on in the meantime. The run header and the log's `run_start`
+event both name the detector, and each `observation` and `verb_end` record that sent the board
+a frame has a `detect` block: how many frames went, how long the laptop waited for each, and the
+time the board says it spent in the model ([architecture.md](architecture.md#transcript-format)).
 
 `quackd serve-mcp` takes `--host`, `--host-token` and `--detector` the same way, so a chat
 client drives the body with the board's camera and detector ([mcp.md](mcp.md)).
+
+A body described without a camera of its own, such as a ToddlerBot on its bridge, gains a
+board's camera, and `observe` with it, before a run judges the task file. `quackd validate`
+and `quackd list-verbs` ask no board anything, so they judge that body without the board's
+camera, and say so when a board is named for the robot:
+
+```
+⚠ validate does not ask the host 127.0.0.1 from robot tb (robots.json), so the board's camera
+is not counted: a run adds it to tb (toddlerbot:bridge), with the verbs a camera unlocks, when
+the board has one; quackd doctor --host 127.0.0.1 shows whether it does
+```
 
 If all you want from the board is its model, none of this is needed:
 `--base-url http://jetson.local:11434/v1` asks nothing of the daemon.
@@ -587,8 +612,13 @@ If you run it, please open a Discussion or an issue with:
 - `quackd doctor --host <board> --json` from the laptop, which carries the whole `host` block
 - what the daemon's `/hello` says, fetched through the tunnel with
   `curl -s -H "X-Quackd-Token: $QUACKD_HOST_TOKEN" http://127.0.0.1:9874/hello`
+- what its `/board` says, fetched the same way from `http://127.0.0.1:9874/board`: the
+  board's own files, `nvpmodel -q` and a `tegrastats` line as raw text, most of which
+  doctor's `--json` carries only as the values it parsed out of them
 - one `tegrastats` line captured on the board while the model was answering
-- `runs/<timestamp>-<name>/terminal.txt` and `transcript.jsonl` from a real run
+- `runs/<timestamp>-<name>/terminal.txt` and `transcript.jsonl` from a real run, whose
+  `detect` blocks are the round trip inside `go_to`'s loop, split into the board's share
+  and the rest
 - which board, which JetPack, and which camera
 
 A transcript is the most useful thing of all, and

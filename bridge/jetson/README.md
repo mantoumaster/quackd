@@ -29,6 +29,13 @@ Every request on every path needs the token when the daemon has one. It goes in 
 read, because URLs get logged. Every JSON reply carries `"ok"`, and every failure carries a
 one-sentence `"reason"`.
 
+A request without the right token is answered 401 on its headers alone and its connection
+closed: nothing it sends after them is kept, and the daemon stops reading within 2 seconds. And
+whatever the token, what a client can make the board hold is bounded: 16 connections at once
+(the next is answered 503 and closed), 32 KB of headers, 10 seconds for a request to arrive
+whole, and two `/detect` bodies in hand at a time (the next waits up to 5 seconds for its turn,
+then is answered 503).
+
 | Path | Method | What it answers |
 |---|---|---|
 | `/hello` | GET | the protocol and its version, the board's model name, and what started: `camera`, `detect` and `tegra`. Anything that did not start says why in `camera_error` or `detect_error`. quackd refuses `--host` until this answers |
@@ -40,7 +47,9 @@ one-sentence `"reason"`.
 There is no `/detections` endpoint that runs the detector on this board's own camera. quackd
 detects on the primary frame, which is the body's own camera whenever it has one, so such an
 endpoint would serve one arrangement of two and add a second code path. It is the next step if
-`ms` and `X-Frame-Age` show that the round trip is too slow.
+`ms` and `X-Frame-Age` show that the round trip is too slow. A run with the board's detector
+records both halves of that trip: each `observation` and `verb_end` in its transcript that sent
+a frame here has a `detect` block with the laptop's wait for each frame beside the `ms` reported.
 
 ## Flags
 
@@ -53,7 +62,7 @@ python3 quackd_jetson_hostd.py [flags]
 | `--bind` | `127.0.0.1` | loopback on purpose. Bound anywhere else with no token, it warns and starts |
 | `--port` | `9874` | the Open Duck Mini takes 9871 and 9872 and the ToddlerBot daemon 9873, so a board running both never collides |
 | `--camera` | `none` | `csi`, a V4L2 index such as `0`, a GStreamer pipeline of your own (anything containing `!`, ending in an appsink), or `fake` |
-| `--fps` | `5` | the capture rate. It captures on a timer, so a slow client cannot stall it, and `go_to` steers on these frames |
+| `--fps` | `5` | the capture rate, at least 1. It captures on a timer, so a slow client cannot stall it, and `go_to` steers on these frames. quackd refuses a frame older than 2 s as a camera that has stopped, so a slower rate would have it refuse a working one |
 | `--size` | `640x480` | the box a frame is shrunk into. The aspect ratio is kept, so the horizontal field of view is the lens's, and a frame is never enlarged. A 16:9 camera comes out 640x360 |
 | `--fov-deg` | unset | the lens's horizontal field of view, passed on in `/hello`. Unset, quackd treats the lens as uncalibrated rather than guess |
 | `--yolo-model` | `yolov8n.pt` | anything ultralytics' `YOLO()` loads |
@@ -157,8 +166,8 @@ on a real body when `/hello` says `detect`, and never on a simulator by itself.
 `--detector color` keeps the colour detector on the laptop, and `--detector yolo` runs YOLO on
 the laptop instead. `--detector host` asks for this one by name, even on a simulator, and is
 refused before anything connects when the daemon cannot detect. A call to `/detect` that fails
-gives that frame no detections and a note in the run's log, and the run never switches
-detector. The header names both:
+gives that frame no detections and a note in the run's log, `go_to` and `search_scan` stop the
+body on it and fail with the reason, and the run never switches detector. The header names both:
 
 ```
 ┌─ 🦆 find-and-kick ──────────────────────────────────────────────────────────────────────┐
@@ -205,18 +214,41 @@ detector sees. It needs no OpenCV, and without Pillow it serves a 2 by 2 grey JP
   everything else. It does not retry: `sudo systemctl restart quackd-jetson-hostd` once the
   camera is there.
 - **A password in a pipeline stays on the board.** A pipeline of your own may carry one, as
-  `rtsp://user:pass@...` or as a property such as `user-pw=`. The capture gets the real string;
-  `/hello`, every reason that names the camera and the log show it as `***`.
+  `rtsp://user:pass@...`, as a query parameter such as `?pwd=` or `?token=`, or as a property
+  such as `user-pw=` or `extra-headers=`. The capture gets the real string; `/hello`, every
+  reason that names the camera and the log show it as `***`. The masking goes by name, as
+  quackd's own does, so a credential under a name it does not know, such as a stream key in a
+  URL's path, is shown as it is.
 - **Two processes cannot own one camera.** If something else on the board has it, use
   `--camera none`.
 
 ## Detection on the GPU
 
-Detection needs ultralytics installed for the system `python3` that the unit runs. The catch
-on a Jetson is torch: the torch pip installs by default is not built for the Jetson's GPU, and
-detection then runs on the CPU. For the GPU, install NVIDIA's torch wheel for your JetPack
-before ultralytics, or run this file inside Ultralytics' JetPack container, which has both.
-Either way, **`/hello`'s `detect.device` says which you got**: `cuda` or `cpu`, from
+Detection needs ultralytics installed for the system `python3` that the unit runs, and pip
+installs three packages along with it that are the wrong builds for a Jetson:
+
+- **torch and torchvision.** The ones pip picks are not built for the Jetson's GPU, and
+  detection then runs on the CPU. For the GPU, install ultralytics first and NVIDIA's torch
+  and torchvision wheels for your JetPack after it, over the ones it brought, which is the
+  order Ultralytics' own Jetson guide uses. The other order undoes itself: ultralytics
+  requires torchvision, every torchvision on PyPI requires one exact torch release, and
+  NVIDIA's torch is not that release, so pip replaces it. Or run this file inside Ultralytics'
+  JetPack container, which has both.
+- **OpenCV.** ultralytics requires pip's `opencv-python`, which is built without GStreamer,
+  and pip puts it where `python3` finds it before JetPack's own. The CSI camera then stops
+  opening, and `camera_error` names the OpenCV that was loaded. Remove pip's copy once
+  ultralytics is in, and check that `python3` loads JetPack's again:
+
+  ```bash
+  sudo python3 -m pip uninstall -y opencv-python    # a copy pip installed with sudo
+  python3 -m pip uninstall -y opencv-python         # a copy it installed under ~/.local
+  python3 -c "import cv2; print(cv2.getBuildInformation())" | grep GStreamer
+  ```
+
+  The last line has to say `YES`; pip's build says `NO`. Upgrading ultralytics brings pip's
+  copy back, so run these again after one. A USB camera opens with either, through V4L2.
+
+**`/hello`'s `detect.device` says which torch you got**: `cuda` or `cpu`, from
 `torch.cuda.is_available()` on the board, not from what anyone intended.
 
 The first start with the default `yolov8n.pt` downloads it into the working directory, which
@@ -266,5 +298,6 @@ Never opened: the CSI pipeline, a USB camera, CUDA, a real model. The source is 
 Python 3.10's grammar and checked for names 3.10 lacks, but it has not been executed on 3.10:
 quackd's own floor is 3.11.
 
-If you run it on a board, please open an issue with what `/hello` and `/board` said, one line
-of `tegrastats`, and `quackd doctor --host <board> --json` from the laptop.
+If you run it on a board, please open an issue with what the Status section of
+[docs/jetson.md](../../docs/jetson.md#status) asks for, which is one list for the daemon and
+quackd together and includes the raw `/board` this daemon serves.
