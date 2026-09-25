@@ -61,8 +61,8 @@ third of that is the seeded acceptance sweeps, which CI holds at 10 of 10 by set
 | `quackd/` | the core, and nothing that is one robot's: the loop, the executor, the verb registry, the `.duck` contract, the MCP server, the 2D arena (`quackd/sim2d/`) and the mock transport (`quackd/transport/mock.py`) |
 | `quackd/adapters/` | what every adapter shares: `base.py` (the `RobotAdapter` protocol and its helpers), `manifest.py`, `catalogue.py` (the seven quackd publishes, as strings), `factory.py` (`--robot` to a body) |
 | `adapters/<name>/` | one robot, one distribution: `pyproject.toml`, `README.md`, and the code in `src/quackd_<name>/` |
-| `bridge/<name>/` | the daemon that runs on the robot itself (`open_duck`, `alohamini`, `toddlerbot`), which never imports quackd |
-| `deploy/jetson/` | a Dockerfile and a compose file for running quackd beside a local model server on an NVIDIA Jetson. Not a robot side and imported by nothing: it is the same wheel a laptop installs, on an arm64 image with no CUDA in it. In neither the wheel nor the sdist, so the image is only ever built from a checkout |
+| `bridge/<name>/` | the daemons that run across the network from quackd and never import it: on the robot itself (`open_duck`, `alohamini`, `toddlerbot`), and on an NVIDIA Jetson that `--host` names (`jetson`), which serves that board's camera, a detector on its GPU and its health |
+| `quackd/host.py` | the laptop half of the Jetson daemon's protocol: what `--host` accepts, which board a run uses, and the one client every request to it goes through. The board's camera joins a body in `quackd/adapters/host_camera.py`, and its detector is `quackd/perception/host.py` |
 | `ducks/`, `docs/`, `tests/`, `web/`, `scripts/` | the starter task files, the documentation, the whole suite, the browser demo, `set_version.py` |
 
 A robot's code is imported as `quackd_<name>`, never as `quackd.adapters.<name>`. The 2D
@@ -81,29 +81,33 @@ they skip until you have run `--robot microduck:mujoco` once, and a nightly job 
 The gait arithmetic itself lives in that package's `sim3d/gait.py`, which imports no `mujoco`, so
 `tests/test_sim3d_gait.py` runs whether you installed the extra or not.
 
-Touching anything under `bridge/`? That is the code that runs on a robot, and there are
-three lots of it now (`open_duck/`, `alohamini/`, `toddlerbot/`). It plays by different
-rules: it must never import quackd (its dependencies do not belong on a 512 MB
-Raspberry Pi), it ships in the sdist and never in the wheel, and it stays testable with no
-hardware through its `--fake` mode and a pure core the tests drive directly. The
-ToddlerBot daemon is the largest of the three, because it owns that robot's control
-loop rather than feeding one, so it carries the most of its own safety machinery.
+Touching anything under `bridge/`? That is the code that runs on a robot, or on the board
+`--host` names, and there are four lots of it now (`open_duck/`, `alohamini/`,
+`toddlerbot/`, `jetson/`). It plays by different rules: it must never import quackd (its
+dependencies do not belong on a 512 MB Raspberry Pi), it ships in the sdist and never in
+the wheel, and it stays testable with no hardware through a fake mode of its own and a pure
+core the tests drive directly. The ToddlerBot daemon carries the most of its own safety
+machinery, because it owns that robot's control loop rather than feeding one.
 
-Touching `deploy/jetson/`? That is the container, and it is published nowhere: people build it
-from a checkout, which is what [docs/jetson.md](docs/jetson.md) tells them to do.
-`tests/test_deploy_jetson.py` runs in the ordinary suite with nothing extra installed: it reads
-`compose.yml` and asserts the shape that file argues for, and it holds the JetPack table on the
-page against `_JETPACK_FOR_L4T` in `quackd/doctor.py`, so editing one of those two and not the
-other fails locally. The build is the half pytest cannot see. Do it yourself with `docker buildx
-build --platform linux/arm64 -f deploy/jetson/Dockerfile -t quackd-jetson .` if you have buildx
-and qemu. `.github/workflows/jetson-image.yml` is written to do it on a native arm64 runner and
-then run `doctor` and a whole task inside the image, which it first did green on 2026-09-23.
-That job is deliberately off the required path, so a red run blocks no merge and somebody has to
-go and read it. The image installs nothing from apt on purpose, which is why a dependency that
-one day wants a system library shows up as the `import cv2` step failing there rather than on
-somebody's board. Nothing here has been run on a Jetson, so what you change is checked against
-files and against `uv.lock` and never against the board it is named after
-([ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
+Touching `bridge/jetson/`? That is the daemon at the far end of `--host`, and the one under
+`bridge/` that is not a robot side: it serves a Jetson's camera, a YOLO detector on its GPU
+and the board's own files and command output, and it has no control path at all. quackd
+stays on the laptop and never runs on the board. The daemon runs there under JetPack's own
+Python 3.10, so it is written to 3.10 and imports only the standard library until a camera
+or a detector needs more, and it never imports quackd. `tests/test_jetson_hostd.py` holds
+all of that in the ordinary suite with nothing extra installed: it drives the real server in
+process, parses the source with Python 3.10's grammar and scans it for names newer than 3.10,
+and fails if the daemon ever grows a way to move anything. The protocol lives on both sides,
+the daemon here and the client in `quackd/host.py`, so a change to one is a change to the
+other. `tests/test_jetson_host_contract.py` runs the real daemon against the real client and
+the real `quackd doctor`, which is what catches the two drifting apart, and the rest of the
+suite talks to `tests/fake_jetson_hostd.py`. The board in all of them is files written by
+`tests/jetson_fixtures.py`, and `tests/test_docs.py` holds the JetPack table in
+[docs/jetson.md](docs/jetson.md) against `_JETPACK_FOR_L4T` in `quackd/doctor.py`, so
+editing one of those two and not the other fails locally. Nothing here has been run on a
+Jetson by this project, so what you change is checked against the contract and a board made
+of files, and never against the board it is named after
+([ADR-0046](docs/adr/0046-the-jetson-is-reached-not-run-on.md)).
 
 Touching `web/`? That is the browser demo, and the only quackd code that is not Python: plain
 JavaScript modules, no build step, nothing to install. Run it with the server in the directory

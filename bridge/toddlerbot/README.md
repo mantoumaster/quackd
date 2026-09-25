@@ -92,20 +92,21 @@ upstream installed, which is what CI does. `--once` sets up, reports what it fou
 gitignored upstream so a fresh clone has none). Without it every commanded angle is offset by
 however that particular robot was assembled. Run upstream's `calibrate_zero` first.
 
-**quackd itself can run on this board.** A Jetson is a host and not a body, so quackd is
-just another arm64 process here: it reaches this daemon on `127.0.0.1:9873` and a model
-server on loopback beside it, and a goal in plain language never leaves the robot
-([docs/jetson.md](../../docs/jetson.md)). It does not belong in upstream's conda
-environment: install it with `uv`, which brings its own Python, and leave upstream's pins
-alone. What to watch is contention, because a model server saturating the board is what
-can starve the loop this file exists to protect, and nobody has measured it.
+**quackd's host daemon can run beside this one, and quackd stays on the laptop.** quackd
+never runs on this board. `bridge/jetson/quackd_jetson_hostd.py` can, and it gives the laptop
+the board's health and YOLO on its GPU, which `quackd run --host` reaches on port 9874 while
+this daemon keeps 9873 ([`bridge/jetson/`](../jetson/README.md)). Start it with `--camera none`,
+because this daemon owns the robot's cameras and two processes cannot own one camera. It runs
+on the board's system `python3`, outside upstream's conda environment, needs Python 3.10 or
+newer (JetPack 6 ships 3.10), and imports nothing from quackd. A model server can sit beside
+both ([docs/jetson.md](../../docs/jetson.md)). What to watch is contention, because a model
+server or a detector saturating the board is what can starve the loop this file exists to
+protect, and nobody has measured it.
 
 ## Rules this file lives by
 
-- **It never imports quackd.** This file runs in upstream's own environment and quackd's
-  dependencies must not be in its import path, while a quackd installed beside it with `uv`
-  is a different process in a different environment, and a test enforces this by reading the
-  file.
+- **It never imports quackd.** quackd's dependencies do not belong on a robot, and a test
+  enforces this by reading the file.
 - **It ships in the sdist and never in the wheel**, so `packages` stays `["quackd"]`.
 - **It is testable with no hardware.** Everything above the `Robot` boundary is pure and takes
   plain arrays, so the clamp, the rate limit, the dropped-read detector and the slew are all

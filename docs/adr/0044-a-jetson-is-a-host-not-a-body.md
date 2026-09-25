@@ -1,6 +1,19 @@
 # ADR-0044: A Jetson is a host, not a body
 
-**Status:** accepted · **Date:** 2026-09-22 · Extends [ADR-0014](0014-local-llms.md) (a local model is the OpenAI provider at an address, and that address may be loopback on the robot's own board) · Follows from [ADR-0003](0003-three-loops.md) (the loop that calls the model runs two orders of magnitude below the body's, so where it runs is a deployment choice and not an architectural one) · Declines to extend [ADR-0017](0017-robot-adapters-and-manifest.md), which is the whole decision · Implemented in `deploy/jetson/` and the Jetson section of `quackd/doctor.py` ([page](../jetson.md))
+**Status:** superseded by [ADR-0046](0046-the-jetson-is-reached-not-run-on.md) · **Date:** 2026-09-22 · Extends [ADR-0014](0014-local-llms.md) (a local model is the OpenAI provider at an address, and that address may be loopback on the robot's own board) · Follows from [ADR-0003](0003-three-loops.md) (the loop that calls the model runs two orders of magnitude below the body's, so where it runs is a deployment choice and not an architectural one) · Declines to extend [ADR-0017](0017-robot-adapters-and-manifest.md), which is the whole decision · Implemented in `deploy/jetson/` and the Jetson section of `quackd/doctor.py` ([page](../jetson.md))
+
+**Superseded 2026-09-25 by [ADR-0046](0046-the-jetson-is-reached-not-run-on.md):** quackd no
+longer runs on the Jetson. It runs on the laptop and reaches the board with `--host`, through a
+daemon it ships for the board. The image and the compose file in `deploy/jetson/`, the arm64
+workflow that built the image and ran it, the `.dockerignore` whose only consumer was the
+Dockerfile, and `quackd doctor`'s reading of the board it runs on were removed, and the files
+are still at the `v0.13.0` tag. What survives is the half of this decision that was about the
+board rather than about where quackd runs. A Jetson is still not an adapter or a body. quackd
+still carries no CUDA: its core imports no GPU library, and the daemon uses whatever torch and
+ultralytics a person installed on the board. The GPU still belongs to what runs on the board,
+the model server and now the daemon's detector, and quackd reaches them over the network, where
+it used to reach the model server over loopback. Everything below is left as the record of what
+0.13.0 shipped.
 
 ## Context
 

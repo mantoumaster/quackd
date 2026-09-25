@@ -40,9 +40,10 @@ quackd robot release NAME [--yes]             # hold the arm: torque off, wherev
 quackd robot remove NAME [--force]            # forget it
 ```
 
-`add` takes `--address`, `--camera-url` and `--token` (the same three flags `run` takes), plus
-`--llm VENDOR[:MODEL]` for the pilot that drives this robot, and `--note` for a line only
-people read. `--camera-url` repeats, for the one body that reads more than one camera.
+`add` takes `--address`, `--camera-url`, `--token`, `--host` and `--host-token` (the same five
+flags `run` takes), plus `--llm VENDOR[:MODEL]` for the pilot that drives this robot, and
+`--note` for a line only people read. `--camera-url` repeats, for the one body that reads more
+than one camera. `edit` takes the same flags, and `--clear` empties a field.
 
 ```
 $ quackd robot add duck-a microduck:mock --note "the cream one"
@@ -67,37 +68,42 @@ A column nobody has filled is left out, so the table stays readable on a narrow 
 
 ```
 $ quackd robot show arm
-name       arm
-robot      lerobot:mock
-body       lerobot-so101 (arm, mobility none) 7 verbs: observe, report_state, stop,
-           move_joints, gripper, place, pick
-address    -
-camera     -
-rest pose  shoulder_pan 0.0
-           shoulder_lift -90.0
-           elbow_flex 90.0
-           wrist_flex 0.0
-           wrist_roll 0.0
-           gripper 100.0
-token      -
-pilot      fake
-note       -
-flocks     -
-added      2026-09-13T13:10:53Z
-updated    2026-09-13T13:10:53Z
-memory     0 notes, 0 runs  ~/.quackd/memory/arm.jsonl
+name        arm
+robot       lerobot:mock
+body        lerobot-so101 (arm, mobility none) 7 verbs: observe, report_state, stop,
+            move_joints, gripper, place, pick
+address     -
+camera      -
+rest pose   shoulder_pan 0.0
+            shoulder_lift -90.0
+            elbow_flex 90.0
+            wrist_flex 0.0
+            wrist_roll 0.0
+            gripper 100.0
+token       -
+host        -
+host token  -
+pilot       fake
+note        -
+flocks      -
+added       2026-09-25T10:13:26Z
+updated     2026-09-25T10:13:29Z
+memory      0 notes, 0 runs  ~/.quackd/memory/arm.jsonl
 ```
 
 `body` is the robot's static manifest, read without connecting to anything. `rest pose` is the
 one field here that was measured rather than typed, and the section below is what it is for.
-`--json` is the same record for a script, with the token reduced to whether there is one:
+`updated` is later than `added` because recording that pose is an edit. `memory` prints the
+file's full path, which this page writes from your home directory as `~`. `--json` is the same
+record for a script, with each token reduced to whether there is one:
 
 ```
 $ quackd robot show arm --json
 {"name": "arm", "spec": "lerobot:mock", "adapter": "lerobot", "backend": "mock", "address": null,
 "camera_url": null, "rest_pose": {"shoulder_pan": 0.0, "shoulder_lift": -90.0, "elbow_flex": 90.0,
-"wrist_flex": 0.0, "wrist_roll": 0.0, "gripper": 100.0}, "token_set": false, "llm": "fake",
-"note": null, "added": "2026-09-13T13:10:53Z", "updated": "2026-09-13T13:10:53Z", "flocks": []}
+"wrist_flex": 0.0, "wrist_roll": 0.0, "gripper": 100.0}, "token_set": false, "host": null,
+"host_token_set": false, "llm": "fake", "note": null, "added": "2026-09-25T10:13:26Z",
+"updated": "2026-09-25T10:13:29Z", "flocks": []}
 ```
 
 That is one line of output, wrapped here to fit the page.
@@ -139,6 +145,52 @@ costs: the last two exchanges keep their images, so a two-camera run carries fou
 every request where a one-camera run carries two. On Claude Opus 5.5 and Fable 5.1, whose old
 frames are trimmed every eight exchanges rather than on every one, that is up to eighteen where
 one camera is nine.
+
+## A board it uses
+
+`--host` and `--host-token` keep the board this robot's runs reach: a machine quackd uses and
+never runs on, such as an NVIDIA Jetson running quackd's host daemon, for the model server,
+the camera and the detector on it ([jetson.md](jetson.md)).
+
+```
+$ quackd robot add bench lerobot:real --address COM5 --host jetson.local --host-token 3b9a...
++ added bench: lerobot:real at COM5, host jetson.local
+  quackd run <duck> --robot bench
+```
+
+`robot show` prints the host and only whether a token is set, and `--json` does the same as
+`host` and `host_token_set`. `robot list` gains a `host` column once some robot has one.
+
+```
+$ quackd robot show bench     # the host rows
+host        jetson.local
+host token  set
+```
+
+A run of `bench` then uses that board with no flag. `--host` on the line beats the stored one,
+and the stored one beats `QUACKD_HOST`. The token climbs its own ladder, `--host-token`, then
+the stored one, then `QUACKD_HOST_TOKEN`, with one rule the other fields do not need: the
+robot's token rides only when the robot stores a board, so it is never sent to a board the
+environment named. `--host 127.0.0.1` through an ssh tunnel still carries it, because that is
+the same board reached another way. A host token therefore needs a host, and clearing the host
+clears its token:
+
+```
+$ quackd robot edit bench --clear host
++ updated bench: host, host-token
+
+$ quackd robot edit bench --host-token 3b9a...
+x error: bench would have a host token and no host: the token is for one board's daemon, so give
+--host too, or --clear host-token
+```
+
+Nothing asks the board anything while you register it: `add` and `edit` check that the host
+is a machine with an optional port and store it. `quackd doctor --robot bench` is where the
+board is asked, through the stored host and token. Both fields are left out of `robots.json`
+while they are empty, so a file that never named a board is still one quackd 0.12 to 0.14
+reads. A robot that does name a board makes the whole file one those releases refuse, since
+they read it with no room for a field they do not know, and two installs on one machine share
+`~/.quackd` unless `QUACKD_REGISTRY_DIR` moves one of them.
 
 ## The rest pose
 
@@ -358,8 +410,8 @@ microduck:mock` is a spec, and a bare word that is neither says so in one line.
       },
       "llm": "fake",
       "note": null,
-      "added": "2026-09-13T13:10:53Z",
-      "updated": "2026-09-13T13:10:53Z"
+      "added": "2026-09-25T10:13:26Z",
+      "updated": "2026-09-25T10:13:29Z"
     }
   }
 }
@@ -396,8 +448,9 @@ a robot's address is not, so an unknown field or a broken file names itself and 
 command rather than being quietly dropped.
 
 **Tokens are stored in plain text.** `robots.json` is a file in your home directory, not a
-secret store. quackd masks the token in everything it prints, including `--json`, which says
-only whether one is set. `SECURITY.md` says the same.
+secret store, and it holds a robot's `token` and its board's `host_token` alike. quackd masks
+both in everything it prints, including `--json`, which says only whether each is set.
+`SECURITY.md` says the same.
 
 ## What a name changes
 
@@ -413,15 +466,16 @@ Microducks on one desk shared one file. A registered robot keys by its name, so 
 `quackd run fetch --robot scout` uses Claude without a flag. `--llm` on the line still wins,
 and the stored one still beats `QUACKD_LLM`.
 
-**Endpoints come from it.** `--address`, `--token` and `--camera-url` on the line each override
-the stored one, field by field, because reaching the same robot through a tunnel today is not
-renaming it. `--camera-url` overrides as a set rather than one url at a time: pass it twice and
-the two you passed are the cameras for that run, stored ones included.
+**Endpoints come from it.** `--address`, `--token`, `--camera-url`, `--host` and
+`--host-token` on the line each override the stored one, field by field, because reaching the
+same robot through a tunnel today is not renaming it. `--camera-url` overrides as a set rather
+than one url at a time: pass it twice and the two you passed are the cameras for that run,
+stored ones included.
 
 **The rest pose does not.** There is no flag for it on `run`, `doctor` or `serve-mcp`. The
-other three are addresses, and an address is a route to the same robot; a rest pose is a
-measurement of the arm in front of you, so it changes by being recorded again or cleared
-(`quackd robot rest-pose NAME`), never by a number typed on a command line.
+others are addresses and their tokens, and an address is a route to the same robot; a rest
+pose is a measurement of the arm in front of you, so it changes by being recorded again or
+cleared (`quackd robot rest-pose NAME`), never by a number typed on a command line.
 
 ## Flocks
 

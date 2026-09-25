@@ -7,10 +7,10 @@ gap the wall clock had, and it is closed the same way, by writing the thing down
 top.
 
 Secrets reach that line by more routes than one, and those are the reason this is a module
-rather than a line. `--api-key` and `--token` carry one outright, a URL flag carries one in
-its userinfo or its query string, and `--extra-body` carries one in whatever field a vendor
-asked for. A run directory is pasted into issues, attached to bug reports and copied off a
-bench machine, and a key that reaches one is a key that has to be rotated.
+rather than a line. `--api-key`, `--token` and `--host-token` carry one outright, a URL flag
+carries one in its userinfo or its query string, and `--extra-body` carries one in whatever
+field a vendor asked for. A run directory is pasted into issues, attached to bug reports and
+copied off a bench machine, and a key that reaches one is a key that has to be rotated.
 """
 
 from __future__ import annotations
@@ -21,9 +21,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-SECRET_FLAGS = ("--api-key", "--token")
+SECRET_FLAGS = ("--api-key", "--token", "--host-token")
 """Flags whose VALUE never appears in a record. The flag itself does, so a reader can see
-that one was given, which is often the thing they are checking."""
+that one was given, which is often the thing they are checking. `--host-token` is the Jetson
+host daemon's, which guards a camera and a GPU rather than a body, and is hidden all the same:
+a run directory is copied off the bench whatever it holds."""
 
 URL_FLAGS = ("--base-url", "--address", "--camera-url", "--decision-url")
 """Flags that take a URL, which is a second way to type a password.

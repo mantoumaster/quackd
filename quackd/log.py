@@ -275,6 +275,10 @@ Line = tuple[str, str]
 _LABEL = 8
 _PAD = " " * _LABEL
 
+DEFAULT_DETECTOR = "color_blob"
+"""The colour detector's name, which `run_start` does not spell out on the `run` line: it is
+the detector every run used before there was a choice, so naming it would move every line."""
+
 
 def _label(name: str) -> str:
     return f"{name:<{_LABEL}}"
@@ -482,6 +486,12 @@ def render_events(
         adapter = d.get("adapter")
         robot = f"{adapter}:{d.get('transport')}" if adapter else str(d.get("transport"))
         head = f"{d.get('duck')} provider={d.get('provider')} model={d.get('model')} robot={robot}"
+        # Only a detector other than the colour one, which every run before there was a choice
+        # used and every run on a simulator still does: those lines stay exactly as they were,
+        # in every transcript already written and in every MCP result a model reads.
+        detector = d.get("detector")
+        if isinstance(detector, str) and detector != DEFAULT_DETECTOR:
+            head += f" detector={detector}"
         if d.get("dry_run"):
             head += " DRY RUN"
         if "connect_s" in d:

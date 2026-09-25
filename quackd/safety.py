@@ -32,7 +32,7 @@ from quackd.log import (
     counting,
     fmt_params,
 )
-from quackd.perception.base import Detector
+from quackd.perception.base import Detector, detect_times
 from quackd.transport.base import CameraFrame, DuckState, DuckTransport
 from quackd.verbs.registry import Verb, VerbContext, VerbNotFound, VerbRegistry, VerbResult
 from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY, Verdict
@@ -349,6 +349,7 @@ class Executor:
                     source=source,
                     nested=nested,
                     **clocks,
+                    **detect_times(self.detector),
                 )
 
     async def _run_verb(

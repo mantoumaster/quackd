@@ -7,7 +7,8 @@ stream, the rest of quackd does not care.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+import asyncio
+from typing import Any, Protocol, runtime_checkable
 
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -52,6 +53,40 @@ class Detector(Protocol):
     name: str
 
     def detect(self, image: Image.Image) -> list[Detection]: ...
+
+
+async def detect_off_loop(detector: Detector, image: Image.Image) -> list[Detection]:
+    """`detector.detect(image)`, in a worker thread when the detector says it waits on
+    something outside this process.
+
+    Such a detector sets `blocking = True`; today that is `HostDetector`, whose model runs on
+    the board `--host` names. Called on the event loop, its round trip would hold up
+    everything else the loop runs, the twist `go_to` re-sends while it looks among them, so a
+    board slower than a body's deadman would stop the body on every frame. Every other
+    detector runs where it always has, on the loop, so a run without a board is scheduled
+    exactly as it was."""
+    if getattr(detector, "blocking", False):
+        return await asyncio.to_thread(detector.detect, image)
+    return detector.detect(image)
+
+
+def detect_times(detector: Detector | None) -> dict[str, Any]:
+    """The `detect` key of the record that closes a stretch of detecting: what the frames
+    `detector` was sent since the last such record cost, from a detector that keeps those times
+    (the board's, `HostDetector.take_timing`), or nothing from one that keeps none or was sent
+    no frame.
+
+    Taken at each `observation` the loop makes and at each `verb_end`, which the executor
+    writes however a verb ends, so no frame is on two records and every frame of a verb's
+    steering loop is on that verb's, which is where a slow round trip to a board shows. A
+    composite's record has the frames it sent itself, and the verbs it called have their own.
+    A frame still in flight when an abort cancels its verb lands on the next record, or on none
+    once the run has ended. The count is one per detector, so two verbs running at once, which an
+    MCP client can start and a run's loop never does, share it, and whichever ends first takes
+    the frames of both so far."""
+    take = getattr(detector, "take_timing", None)
+    times = take() if callable(take) else None
+    return {"detect": times} if isinstance(times, dict) else {}
 
 
 def summarize_detections(detections: list[Detection]) -> str:

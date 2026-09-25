@@ -24,7 +24,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from quackd.transport.base import DuckState, Intent
-from quackd.verbs.core import SearchScanParams, _see, gaze_sweep_yaws, send_or_fail
+from quackd.verbs.core import (
+    SearchScanParams,
+    _see,
+    detector_failed,
+    gaze_sweep_yaws,
+    send_or_fail,
+)
 from quackd.verbs.registry import NoParams, Precondition, Verb, VerbContext, VerbResult
 
 #: The motions that ship as keyframes in the repository, and therefore the only motion that
@@ -303,6 +309,8 @@ async def search_scan(ctx: VerbContext, p: SearchScanParams) -> VerbResult:
         img, hits = await _see(ctx, p.target, f"search_scan gaze {yaw:+.0f}")
         if img is None:
             return VerbResult.fail("this transport has no camera")
+        if (failed := await detector_failed(ctx, "search_scan", "the sweep stopped")) is not None:
+            return failed
         if hits:
             best = hits[0]
             return VerbResult.success(

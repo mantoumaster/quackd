@@ -964,6 +964,83 @@ def test_every_body_carries_its_own_numbers_on_its_own_page() -> None:
             assert amount in page, f"{path.name} does not say {label} is {amount}"
 
 
+def test_the_jetpack_table_matches_the_one_doctor_reads() -> None:
+    """Two copies of a version table drift, and the copy people paste into an issue is the one
+    nobody re-reads. The page's table is the documentation; `_JETPACK_FOR_L4T` is what the
+    command prints. They are the same fact and this is the only thing holding them together.
+
+    It lived beside the Jetson container's checks until the container was removed. The table
+    outlived it because it describes the board rather than the image, so it sits here with the
+    other pages that have to agree with the code."""
+    from quackd import doctor
+
+    page = (REPO / "docs" / "jetson.md").read_text(encoding="utf-8")
+    rows = dict(re.findall(r"^\| `r(\d[\w.]*)` \| ([\w.]+) \|", page, flags=re.M))
+    assert rows, "no L4T table found in docs/jetson.md, or its shape changed"
+    assert rows == doctor._JETPACK_FOR_L4T, (
+        "docs/jetson.md and quackd/doctor.py disagree about which JetPack an L4T release is:\n"
+        f"  page:   {sorted(rows.items())}\n"
+        f"  doctor: {sorted(doctor._JETPACK_FOR_L4T.items())}"
+    )
+
+
+def test_the_page_says_no_jetson_has_run_this() -> None:
+    """The claim the Jetson page turns on, and the one a well meaning edit would soften. It is
+    spelled this way rather than any of the phrasings `_RETIRED_HARDWARE_CLAIMS` bans, because
+    an SO-101 arm has run quackd and a Jetson has not.
+
+    It moved here with the JetPack table when the Jetson container was removed, and the page was
+    rewritten for `--host` after that. The page says it where a reader starts and again in its
+    Status section, and the Status one is held here too, because that is where somebody looks to
+    decide whether to trust the rest. The daemon's own README says the same of the daemon. The
+    second sentence sits under the doctor block the page pastes: that block came from
+    `tests/fake_jetson_hostd.py`, and without the sentence beside it an Orin Nano's L4T, memory
+    and `tegrastats` line read as a board's own output, which is the opposite of what happened."""
+    page = (REPO / "docs" / "jetson.md").read_text(encoding="utf-8")
+    # whole sentences, because the negation is in the first words: the substring
+    # "run on a Jetson by this project" is just as true of a page claiming the opposite
+    nothing = "Nothing on this page has been run on a Jetson by this project"
+    for sentence in (nothing, "That block came from a fake board, not a Jetson"):
+        assert sentence in page, f"docs/jetson.md no longer says: {sentence}"
+    status = page.split("\n## Status\n", 1)
+    assert len(status) == 2, "docs/jetson.md has no Status section"
+    assert nothing in status[1], f"the Status section of docs/jetson.md no longer says: {nothing}"
+
+
+#: What 0.13.0 shipped to put quackd on a Jetson, and what the release after it removed: the
+#: image's directory, its compose file, the workflow that built it, the tag it was built as, and
+#: the two commands that ran it, the second being the one an MCP client was told to spawn.
+_JETSON_IMAGE_SPELLINGS = (
+    "deploy/jetson",
+    "compose.yml",
+    "jetson-image",
+    "quackd-jetson:local",
+    "docker compose run --rm quackd",
+    "docker compose run --rm -T quackd",
+)
+
+
+def test_no_living_document_still_describes_the_jetson_image() -> None:
+    """quackd no longer runs on a Jetson, so nothing a reader follows today may still build the
+    image or start quackd inside it.
+
+    The whole text is read, fenced blocks included, which is where every one of these lived: a
+    reader copies a command out of a fence before reading the paragraph around it. The history
+    files keep them all, the way they keep every removal: the CHANGELOG, PLAN, the ADRs and the
+    design notes say what was true when they were written, which is what `_living_docs()`
+    leaves out. The bridge READMEs are read as well, because they are what somebody on the
+    board reads, and so is `pyproject.toml`, whose comment above the sdist list used to
+    describe the image."""
+    extra = [REPO / "pyproject.toml", *sorted((REPO / "bridge").rglob("README.md"))]
+    for path in [*_living_docs(), *extra]:
+        text = path.read_text(encoding="utf-8")
+        for spelling in _JETSON_IMAGE_SPELLINGS:
+            assert spelling not in text, (
+                f"{path.relative_to(REPO).as_posix()} still describes the Jetson image "
+                f"({spelling!r}), which went when quackd stopped running on the board (ADR-0046)"
+            )
+
+
 def test_the_registry_is_documented_where_it_is_configured() -> None:
     """Two files under a directory an env var moves, holding a robot's token. Every one of
     those facts has a place it has to be findable from, or somebody loses a robot or a secret.
@@ -985,6 +1062,107 @@ def test_the_registry_is_documented_where_it_is_configured() -> None:
         text = (REPO / path).read_text(encoding="utf-8")
         for needle in needles:
             assert needle in text, f"{path} does not mention {needle!r}"
+
+
+def test_the_host_is_documented_where_it_is_configured() -> None:
+    """The same rule again, for the flag that names a board quackd uses and never runs on.
+
+    Each needle has a page it has to be findable from. The README for the flags and the two
+    variables, since that is where somebody decides whether any of this is for them, and for
+    `--detector`, whose default changes the moment `--host` names a board that can detect. The
+    Jetson page, because it is the one that explains all of it. local-llms.md, because `--host`
+    moves a local preset's address and that page is where the address ladder is written down.
+    registry.md, because a robot keeps a host and a token. `.env.example` with its `=`, the way
+    the price test spells its variables, because the name also turns up in the prose around it.
+    SECURITY.md for the port and the header, since a daemon serving a camera on a network is
+    exactly the thing that page exists to describe. CONTRIBUTING.md and architecture.md for the
+    directory, because a daemon nobody can find in the map is one nobody reviews.
+
+    Each needle must not run on into a longer name: `--host` is inside `--host-token`, and
+    `QUACKD_HOST` inside `QUACKD_HOST_TOKEN`, so a plain substring check would pass a page that
+    only ever names the token.
+
+    The README and local-llms.md show `--host jetson.local`, and neither the daemon nor Ollama
+    answers there as installed: both listen on the board's own loopback. Both pages once gave
+    that spelling alone, so each has to name the way that works as installed as well, the
+    tunnel and `--host 127.0.0.1`, and the README the `--bind` that makes the other one work."""
+    flags = ("--host", "--host-token", "QUACKD_HOST", "QUACKD_HOST_TOKEN")
+    for path, needles in (
+        ("README.md", (*flags, "--detector", "--host 127.0.0.1", "--bind")),
+        ("docs/jetson.md", (*flags, "--detector")),
+        ("docs/local-llms.md", (*flags, "loopback", "tunnel")),
+        ("docs/registry.md", flags),
+        (".env.example", ("QUACKD_HOST=", "QUACKD_HOST_TOKEN=")),
+        ("SECURITY.md", ("9874", "X-Quackd-Token")),
+        ("CONTRIBUTING.md", ("bridge/jetson",)),
+        ("docs/architecture.md", ("bridge/jetson",)),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert re.search(re.escape(needle) + r"(?![\w-])", text), (
+                f"{path} does not mention {needle!r}"
+            )
+
+
+#: What the pages written for `--host` said and the code never did, each with what it does.
+#: Every one was copied into more than one file before anybody caught it.
+_HOST_CLAIMS_THE_CODE_NEVER_MADE = (
+    (
+        "readable by 0.13,",
+        "0.12, 0.13 and 0.14 all refuse a key they do not know, so a registry with no board is "
+        "readable by 0.12 to 0.14, and one robot with a host makes the whole file unreadable",
+    ),
+    (
+        "gets four things from it",
+        "the model comes from the person's own server, a preset moved to the board, and the "
+        "daemon has no route to it",
+    ),
+    (
+        "rung that answers",
+        "the local provider takes the first rung that is set and probes none of them, so a dead "
+        "QUACKD_BASE_URL beats a live QUACKD_HOST",
+    ),
+    (
+        "so the body's keepalives keep flowing",
+        "go_to holds its last twist for one deadman window (HOLD_TTL_S) and then sends a zero one",
+    ),
+)
+
+
+def test_no_page_repeats_a_host_claim_the_code_never_made() -> None:
+    """Four sentences about `--host` that read well and were wrong.
+
+    The CHANGELOG, ADR-0046 and the source are read along with the living documents. None of
+    these was ever true, so no record of the day has a reason to keep one, and the first and
+    third were a comment and a docstring before they were a page."""
+    sources = [
+        REPO / "CHANGELOG.md",
+        *sorted((REPO / "docs" / "adr").glob("0046-*.md")),
+        *sorted((REPO / "bridge").rglob("README.md")),
+        *sorted((REPO / "quackd").rglob("*.py")),
+    ]
+    for path in _living_docs() + sources:
+        text = _one_line(path.read_text(encoding="utf-8"), seams=path.suffix == ".py")
+        for wrong, true in _HOST_CLAIMS_THE_CODE_NEVER_MADE:
+            # pytest.fail rather than assert: pytest explains a failed `not in` by diffing the
+            # needle against the whole file, which takes minutes on a file this long
+            if wrong in text:
+                pytest.fail(f"{path.relative_to(REPO).as_posix()} says {wrong!r}: {true}")
+
+
+def test_what_to_send_back_from_a_board_is_one_list() -> None:
+    """The daemon's README and the Jetson page once asked for two different reports, and the one
+    the CHANGELOG links left out `/board`, the only thing that returns the board's own files: a
+    doctor `--json` carries what doctor parsed from them, so a parser wrong about a real board
+    could not be seen in it. The list lives on the Jetson page, and the README points there."""
+    page = (REPO / "docs" / "jetson.md").read_text(encoding="utf-8")
+    status = page.split("\n## Status\n", 1)[1]
+    for needle in ("--json", "/hello", "/board", "tegrastats", "transcript.jsonl"):
+        assert needle in status, f"the Status section of docs/jetson.md no longer asks for {needle}"
+    readme = (REPO / "bridge" / "jetson" / "README.md").read_text(encoding="utf-8")
+    assert "(../../docs/jetson.md#status)" in readme.split("\n## Status\n", 1)[1], (
+        "bridge/jetson/README.md should send a board owner to docs/jetson.md#status for the list"
+    )
 
 
 def test_every_command_is_named_in_the_readme_table_and_the_module_map() -> None:

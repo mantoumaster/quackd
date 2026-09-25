@@ -5,11 +5,11 @@ an upstream assumption, and all three should be visible in one screen before any
 an issue.
 
 It is two halves on purpose. `collect` asks the questions — which modules import, which keys
-are set, which local servers answer, what a real robot says about itself — and answers in
-dataclasses with no styling anywhere in them. `render` decides what that looks like, and
-`to_dict` is the same report with no renderer at all. That split is what `--json` is made
-of, and it was not possible before: every cell in here used to *be* a markup string, so
-there was nothing underneath to serialise.
+are set, which local servers answer, what a real robot says about itself, what a board named
+with `--host` says about itself — and answers in dataclasses with no styling anywhere in them.
+`render` decides what that looks like, and `to_dict` is the same report with no renderer at
+all. That split is what `--json` is made of, and it was not possible before: every cell in
+here used to *be* a markup string, so there was nothing underneath to serialise.
 """
 
 from __future__ import annotations
@@ -20,11 +20,8 @@ import importlib.metadata as md
 import os
 import platform
 import re
-import shutil
-import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -55,9 +52,18 @@ from quackd.agent.providers.factory import (
     parse_llm,
     resolve_model,
 )
-from quackd.agent.providers.local import PRESETS
+from quackd.agent.providers.local import PRESETS, on_host
 from quackd.command import redacted_url
 from quackd.duckfile.parser import list_bundled_ducks
+from quackd.host import (
+    PROTOCOL,
+    HostBoard,
+    HostClient,
+    HostError,
+    HostHello,
+    host_of,
+    parse_host,
+)
 
 # The optional extras table, which is about packages rather than providers: the providers table
 # builds its own rows from SDK_FOR and EXTRA_FOR. One wheel now serves nine vendors, so naming
@@ -192,15 +198,71 @@ class ProviderRow:
 
 
 @dataclass
+class PlacementRow:
+    """One model Ollama has loaded, and how much of it sits in GPU memory.
+
+    Ollama's own `/api/ps` reports both sizes, and the gap between them is the question a
+    Jetson owner cannot see from the laptop: a model that answers, slowly, because it is on the
+    CPU looks exactly like one that answers quickly until somebody times it."""
+
+    model: str
+    size: int
+    """Bytes the loaded model takes, as Ollama counts them."""
+    size_vram: int
+    """Bytes of that in GPU memory. Equal to `size` is all on the GPU, zero is all on the CPU."""
+
+    @property
+    def gpu_pct(self) -> int:
+        """The share on the GPU, rounded down, and never 0 for a model with any of itself there:
+        a partial split must not read as "all on the CPU" nor as "all on the GPU"."""
+        if self.size <= 0 or self.size_vram <= 0:
+            return 0
+        if self.size_vram >= self.size:
+            return 100
+        return max(1, min(99, self.size_vram * 100 // self.size))
+
+    @property
+    def where(self) -> str:
+        """gpu · partial · cpu"""
+        pct = self.gpu_pct
+        return "gpu" if pct == 100 else "cpu" if pct == 0 else "partial"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "size": self.size,
+            "size_vram": self.size_vram,
+            "gpu_pct": self.gpu_pct,
+            "where": self.where,
+        }
+
+
+@dataclass
 class ServerRow:
     preset: str
     url: str
+    """Where it was probed, with any password in it replaced: the screen is pasted into issues."""
     state: str
-    """up · http · down · unset"""
+    """up · http · down · unset · skipped (the board's name has no address, so nothing was
+    asked)"""
     detail: str = ""
+    placement: list[PlacementRow] | None = None
+    """What Ollama has loaded and where, for the ollama row when it is up; None when nobody
+    asked, which is every other row."""
+    placement_note: str = ""
+    """Why `placement` is empty when it was asked for: nothing loaded, or `/api/ps` failed."""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"preset": self.preset, "url": self.url, "state": self.state, "detail": self.detail}
+        return {
+            "preset": self.preset,
+            "url": self.url,
+            "state": self.state,
+            "detail": self.detail,
+            "placement": (
+                None if self.placement is None else [p.to_dict() for p in self.placement]
+            ),
+            "placement_note": self.placement_note or None,
+        }
 
 
 @dataclass
@@ -234,9 +296,9 @@ class ProbeRow:
 class ProbeReport:
     """What a real robot said about itself.
 
-    The only part of doctor that leaves this machine, and the only way to see the difference
-    between quackd's description of a fully built robot and the one somebody assembled,
-    before a run finds it."""
+    The only way to see the difference between quackd's description of a fully built robot and
+    the one somebody assembled, before a run finds it. It is one of the parts of doctor that
+    leave this machine, with the model servers it probes and the board `--host` names."""
 
     address: str
     ok: bool
@@ -331,23 +393,25 @@ class PinRow:
 class JetsonReport:
     """What an NVIDIA Jetson says about itself, for whoever is putting a model on it.
 
-    Informational, and never part of `ok`. quackd is CPU Python on this board exactly as it is
-    on a laptop: the GPU belongs to the model server, which is a separate process reached
-    through one of the local presets in the servers table. Nothing in this block can stop a
-    run, so nothing in it may fail one.
+    Read over the network: quackd never runs on the board, and the daemon it ships for it
+    (`bridge/jetson/quackd_jetson_hostd.py`) sends the board's own files and command output as
+    raw text for `_jetson_from_dump` to parse here. Informational, and never part of `ok`: the
+    GPU belongs to the model server and the daemon's detector, and a board with no swap is a
+    board this command has advice for, not a machine that cannot run anything.
     """
 
     board: str | None = None
-    """`/proc/device-tree/model`, which describes the board rather than the image. A container
-    reads it only when it is privileged or started with `--security-opt systempaths=unconfined`:
-    `/proc/device-tree` points into `/sys/firmware`, which Docker masks by default."""
+    """`/proc/device-tree/model` on the board, which names the board rather than the image. A
+    daemon run in a container reads it only when the container is privileged or started with
+    `--security-opt systempaths=unconfined`: `/proc/device-tree` points into `/sys/firmware`,
+    which Docker masks by default."""
     l4t: str | None = None
-    """`36.4.3`, parsed from `/etc/nv_tegra_release`. That file belongs to the host, so a
-    container usually has none and this is None there even on a Jetson."""
+    """`36.4.3`, parsed from the board's `/etc/nv_tegra_release`."""
     release_seen: bool = False
-    """`/etc/nv_tegra_release` was there to read. Absent and unparseable are different
-    facts and the renderer says which: the first is what a container sees, the second is a
-    board this build has not met."""
+    """The daemon could read `/etc/nv_tegra_release`. Absent and unparseable are different
+    facts and the renderer says which: the first is a daemon that cannot see the board's root
+    filesystem (a container, or an unusual install), the second is a release this build has
+    not met."""
     jetpack: str | None = None
     mem_total_bytes: int | None = None
     mem_available_bytes: int | None = None
@@ -356,12 +420,19 @@ class JetsonReport:
     is a different fact and one worth warning about."""
     swap_devices: list[str] = field(default_factory=list)
     gpu_device: str | None = None
+    """The first GPU device node the daemon found on the board, or None for none of them."""
     power_mode: str | None = None
-    docker_default_runtime: str | None = None
+    gpu_busy_pct: int | None = None
+    """The GPU's load, `GR3D_FREQ N%` in the one line of `tegrastats` the daemon read."""
+    tegrastats: str | None = None
+    """That line, whole, because it is the one line the Jetson page asks people to send back."""
+    errors: dict[str, str] = field(default_factory=dict)
+    """Why the daemon could not read a file or run a command, in its words, keyed as `/board`
+    keys them, so an unknown row can say which it was."""
 
     @property
     def swap_only_zram(self) -> bool:
-        """Every swap here compresses RAM rather than adding any.
+        """Every swap on the board compresses RAM rather than adding any.
 
         JetPack ships zram on, which is the right default for a desktop and the wrong one for
         a model that does not fit: compressing memory cannot hold what memory could not."""
@@ -380,7 +451,74 @@ class JetsonReport:
             "swap_only_zram": self.swap_only_zram,
             "gpu_device": self.gpu_device,
             "power_mode": self.power_mode,
-            "docker_default_runtime": self.docker_default_runtime,
+            "gpu_busy_pct": self.gpu_busy_pct,
+            "tegrastats": self.tegrastats,
+            "errors": dict(self.errors),
+        }
+
+
+@dataclass
+class HostReport:
+    """The machine `--host` names, as the daemon quackd ships for it described it.
+
+    `ok` is one question: did the daemon answer `/hello`, with the token it was given, in the
+    protocol this quackd speaks. That is what a run needs before it will start with `--host`,
+    so it is what fails this report, the way a robot that does not answer `--address` fails it.
+    Everything the daemon says after that is information: its health, a camera that stopped, a
+    board with no swap. A `/healthz` or `/board` that fails once `/hello` has answered is kept
+    as an error of its own and shown as a warning, because a run would still start.
+
+    The token is never here: `HostClient` replaces it in every error it raises and in every
+    reply it returns, so a daemon that echoes it in a reason, a hostname or a board file puts
+    `<token>` on the screen and in --json, and nothing else in this report is built from it."""
+
+    host: str
+    """As it was given: `--host`, a registered robot's host, or `QUACKD_HOST`. Empty when the
+    value was refused before anything was asked (`refused_host`), since a refused one is never
+    shown."""
+    address: str = ""
+    """`host:port` as a URL spells it, or empty when `host` is not a machine at all."""
+    ok: bool = False
+    error: str | None = None
+    tried: str = ""
+    """The first URL asked, so a daemon that did not answer is reported with where it was
+    looked for, not only with what went wrong."""
+    hello: HostHello | None = None
+    healthz: dict[str, Any] | None = None
+    """The daemon's own health, as it sent it but for the token, which the client replaced."""
+    healthz_error: str | None = None
+    board_error: str | None = None
+    unresolved: bool = False
+    """True when `host` found no address, so no model server there is asked either: each would
+    wait on the same failed lookup and then read as a machine whose servers are off. Not in
+    --json, where `error` says it in words and every preset row says it was not asked."""
+    jetson: JetsonReport | None = None
+    """None when the board is not a Tegra, or its dump could not be had."""
+    servers: list[ServerRow] = field(default_factory=list)
+    """The four local presets as they were probed on this machine, Ollama's placement rows
+    among them. The same rows the report's own `servers` lists, kept here as well so a reader
+    of `--json` finds the board's model server under the board: whether a model sits on the
+    Jetson's GPU is a fact about the board, and the top-level list also holds `local`, which
+    is wherever QUACKD_BASE_URL points and may be no part of it."""
+
+    @property
+    def is_tegra(self) -> bool:
+        """The daemon's word, or the board's own files: either one is a Jetson."""
+        return self.jetson is not None or (self.hello is not None and self.hello.is_tegra)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "host": self.host,
+            "address": self.address,
+            "ok": self.ok,
+            "error": self.error,
+            "tried": self.tried or None,
+            "hello": self.hello.to_dict() if self.hello else None,
+            "healthz": self.healthz,
+            "healthz_error": self.healthz_error,
+            "board_error": self.board_error,
+            "jetson": self.jetson.to_dict() if self.jetson else None,
+            "servers": [s.to_dict() for s in self.servers],
         }
 
 
@@ -415,17 +553,20 @@ class DoctorReport:
     assumptions: list[Assumption] = field(default_factory=list)
     pins: list[PinRow] = field(default_factory=list)
     robot: RobotReport | None = None
-    jetson: JetsonReport | None = None
-    """None on every machine that is not a Tegra, which is most of them."""
+    host: HostReport | None = None
+    """None unless a board was named: `--host`, a registered robot's host, or `QUACKD_HOST`."""
 
     @property
     def ok(self) -> bool:
-        """Whether this machine is in a state to run anything: the core imports, and the
-        robot the command was asked about answered. A missing extra is a choice, not a
-        fault, and never fails the check."""
+        """Whether this machine is in a state to run anything: the core imports, the robot
+        the command was asked about answered, and so did the board `--host` names. A missing
+        extra is a choice, not a fault, and never fails the check; nor does anything the
+        board reports about itself once it has answered."""
         if any(not c.ok for c in self.core):
             return False
         if self.robot is not None and self.robot.error is not None:
+            return False
+        if self.host is not None and not self.host.ok:
             return False
         return not (self.robot and self.robot.probe and not self.robot.probe.ok)
 
@@ -445,7 +586,7 @@ class DoctorReport:
             "python": self.python,
             "platform": self.platform,
             "api_version": self.api_version,
-            "jetson": self.jetson.to_dict() if self.jetson else None,
+            "host": self.host.to_dict() if self.host else None,
             "core": [c.to_dict() for c in self.core],
             "bundled_ducks": self.bundled_ducks,
             "providers": [p.to_dict() for p in self.providers],
@@ -465,7 +606,16 @@ class DoctorReport:
 
 
 def _probe_models(base_url: str, timeout_s: float = 1.5) -> tuple[str, str]:
-    """Reachability of an OpenAI-compatible server, as (state, detail)."""
+    """Reachability of an OpenAI-compatible server, as (state, detail). Never raises.
+
+    Whatever answered is read with no trust in its shape. A reply that is JSON but not an
+    object, or an object whose `data` is null or a number, used to raise out of `collect()` from
+    outside the `try`, which took the whole report with it; a model server on another machine
+    makes a stranger answer likelier, and doctor is the command people run when something is
+    already wrong. `"data": null` is read as no models, the way `"data": []` is: a server with
+    nothing to list may say either, and neither is a stranger. Any other `data` that is not a
+    list gets the row that says so, where text or an object there used to read as a server with
+    no models loaded."""
     import json
     import urllib.error
     import urllib.request
@@ -476,11 +626,85 @@ def _probe_models(base_url: str, timeout_s: float = 1.5) -> tuple[str, str]:
     except urllib.error.HTTPError as e:
         return "http", f"HTTP {e.code}"
     except Exception:
+        # A body that is not JSON lands here too, and reads as no model server there, which is
+        # what a dev web server's index page on 8000 or 8080 is. That is the row this probe has
+        # always given it; only the JSON shapes below have rows of their own.
         return "down", "not running"
-    ids = [str(m.get("id", "")) for m in payload.get("data", []) if isinstance(m, dict)]
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or not isinstance(data, list | None):
+        return "http", "answered /models with something that is not a list of models"
+    ids = [str(m.get("id", "")) for m in data or [] if isinstance(m, dict)]
     shown = ", ".join(i for i in ids[:3] if i)
     more = f" (+{len(ids) - 3})" if len(ids) > 3 else ""
     return "up", f"{shown}{more}" if ids else "no models loaded"
+
+
+def _ollama_root(url: str) -> str:
+    """The Ollama preset's address without its OpenAI-compatible `/v1`: Ollama's own API,
+    `/api/ps` among it, lives at the root."""
+    root = url.rstrip("/")
+    return root[: -len("/v1")] if root.endswith("/v1") else root
+
+
+def _probe_placement(root_url: str, timeout_s: float = 1.5) -> tuple[list[PlacementRow], str]:
+    """What an Ollama at `root_url` has loaded and where, from its own `GET /api/ps`, as
+    (rows, note). The note says why there are no rows. Never raises, and nothing it finds
+    touches `ok`: a model on the CPU is slow, not broken.
+
+    A module attribute for the reason `_probe_models` is one: the tests replace it."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = f"{root_url.rstrip('/')}/api/ps"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        return [], f"GET /api/ps answered HTTP {e.code}, so this may not be Ollama"
+    except Exception:
+        return [], "GET /api/ps did not answer"
+    try:
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        return [], "GET /api/ps answered with something that is not JSON"
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or not isinstance(models, list | None):
+        return [], "GET /api/ps answered with something that is not Ollama's list"
+
+    def size_of(value: Any) -> int | None:
+        # bool is an int to Python and not a size to anybody
+        ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        return int(value) if ok else None
+
+    rows: list[PlacementRow] = []
+    unplaced: list[str] = []
+    for item in models or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("model")
+        if not isinstance(name, str) or not name:
+            continue
+        size, vram = size_of(item.get("size")), size_of(item.get("size_vram"))
+        # a model of no size has no split to report, and would read as "on the CPU"
+        if size and vram is not None:
+            rows.append(PlacementRow(model=name, size=size, size_vram=vram))
+        else:
+            unplaced.append(name)
+    if rows:
+        return rows, ""
+    if unplaced:
+        # Listed with no `size_vram`, or a size of 0: loaded all the same, so "nothing loaded"
+        # would be false about the board, and there is no split to show for it either
+        one = len(unplaced) == 1
+        more = f" (+{len(unplaced) - 3})" if len(unplaced) > 3 else ""
+        return [], (
+            f"{', '.join(unplaced[:3])}{more} {'is' if one else 'are'} loaded, and /api/ps did "
+            f"not say how much of {'it' if one else 'them'} is on the GPU"
+        )
+    # Ollama loads a model on its first request and unloads it after five idle minutes, so an
+    # empty list on a healthy server is the usual answer and not a fault
+    return [], "nothing loaded yet: Ollama loads a model on its first request"
 
 
 def probe(
@@ -493,6 +717,7 @@ def probe(
     *,
     name: str | None = None,
     before_connect: Callable[[Any], None] | None = None,
+    host: HostClient | None = None,
 ) -> ProbeReport:
     """Connect, and report what the robot itself said.
 
@@ -508,10 +733,16 @@ def probe(
     calibration file under that id, and every line it writes names it. Without it, a probe of a
     registered arm read the calibration of the default id, whatever the arm was registered as.
     `before_connect` is handed the built body just before it connects, which is the caller's
-    one chance to say something to a person holding it (`cli._doctor_warning`)."""
+    one chance to say something to a person holding it (`cli._doctor_warning`).
+
+    `host` is the board `--host` names, when its daemon answered. Its camera joins the body
+    as a run's would (`quackd.adapters.host_camera`), and the camera rows say whether it is
+    the primary view or an extra one. The body's own cameras are read only with
+    `--camera-url`, as before, because only then was anybody asking about them."""
     import asyncio
 
     from quackd.adapters.factory import make_adapter
+    from quackd.adapters.host_camera import HOST_CAMERA_NAME, HostCameraAdapter
     from quackd.transport.base import DEFAULT_CAMERA_NAME, TransportError, frames_of
 
     async def go() -> tuple[
@@ -524,10 +755,12 @@ def probe(
             camera_url=camera_url,
             token=token,
             rest_pose=rest_pose,
+            host=host,
         )
         if before_connect is not None:
             before_connect(adapter)
         live = await adapter.connect()
+        hosted = isinstance(adapter, HostCameraAdapter)
         # the connect attempts a body had to make again, read here and not after the close:
         # the list belongs to the connect that just happened
         retried = [str(n) for n in getattr(adapter, "connect_notes", ()) or ()]
@@ -548,11 +781,17 @@ def probe(
             # to accept --camera-url, hand it to the transport and never ask for a frame, so a
             # typo'd or unreachable snapshot server passed here and failed at the first observe.
             camera: dict[str, Any] | None = None
-            cam_probe = getattr(transport, "camera_health", None)
+            # The board's camera is the wrapper's to report, beside the body's own; the body's
+            # alone is its transport's.
+            cam_probe = (
+                adapter.camera_health
+                if isinstance(adapter, HostCameraAdapter)
+                else getattr(transport, "camera_health", None)
+            )
             # Only report on a camera the adapter actually reads. `camera_url` is accepted and
             # ignored by rosbridge, and gating its verdict on a frame from an unrelated path
             # fails a healthy robot.
-            if camera_url and callable(cam_probe):
+            if (camera_url or hosted) and callable(cam_probe):
                 # Asked once for the shape and again for the answer: how many cameras there
                 # are decides how they are read, and the read is what fills in the sizes.
                 if dict(cam_probe()).get("cameras"):
@@ -564,6 +803,9 @@ def probe(
                     camera["cameras"] = [
                         {**cam, "size": sizes.get(str(cam.get("name")))}
                         for cam in camera["cameras"]
+                        # --host alone asks about the board's camera, and a body camera that
+                        # nobody configured is not a failure of this probe
+                        if camera_url or cam.get("name") == HOST_CAMERA_NAME
                     ]
                 else:
                     # Frames arrive on a timer, so ask for one and give the capture loop a
@@ -589,7 +831,7 @@ def probe(
 
     try:
         live, health, camera, told, parked, note, retried = asyncio.run(go())
-    except (TransportError, OSError) as e:
+    except (TransportError, OSError, HostError) as e:
         return ProbeReport(address=address, ok=False, error=f"{spec} at {address}: {e}")
 
     report = ProbeReport(address=address, ok=True)
@@ -630,6 +872,7 @@ def probe(
     camera_ok = True
     several = False
     dead: list[str] = []
+    host_role: str | None = None
     if camera is not None:
         cams = camera.get("cameras") or [camera]
         several = len(cams) > 1
@@ -638,13 +881,19 @@ def probe(
             # "frame", which is what one camera printed before any body had a second one
             size = cam.get("frame", cam.get("size"))
             name = str(cam.get("name") or DEFAULT_CAMERA_NAME)
+            # only the rows a board's camera brought carry a role, so every body without one
+            # prints exactly the rows it always did
+            role = cam.get("role")
+            if name == HOST_CAMERA_NAME and role:
+                host_role = str(role)
             if size is None:
                 dead.append(name)
                 camera_ok = False
             add(
                 ProbeRow(
-                    f"camera {name}" if several else "camera",
-                    str(size) if size is not None else "no frame",
+                    f"camera {name}" if several or role else "camera",
+                    (str(size) if size is not None else "no frame")
+                    + (f" ({role})" if role else ""),
                     "ok" if size is not None else "fail",
                 )
             )
@@ -684,13 +933,26 @@ def probe(
             for name in live.verb_names()
             if (req := REQUIREMENTS.get(name)) is not None and req.camera
         ]
-        report.advisories.append(
-            "--camera-url was given but no frame came back"
-            + (f" from {', '.join(dead)}" if several else "")
-            + ", so "
-            + (", ".join(blind) if blind else "nothing that needs a camera")
-            + " cannot see anything on this run"
-        )
+        if host_role == "extra view" and dead == [HOST_CAMERA_NAME]:
+            # the body's own camera answered, so nothing goes blind: the run is shown one view
+            # fewer than it would have been
+            report.advisories.append(
+                "the camera on the --host board gave no frame, so a run is shown the body's "
+                "own camera and not the board's"
+            )
+        else:
+            given = (
+                "the camera on the --host board gave no frame"
+                if dead == [HOST_CAMERA_NAME]
+                else "--camera-url was given but no frame came back"
+                + (f" from {', '.join(dead)}" if several else "")
+            )
+            report.advisories.append(
+                given
+                + ", so "
+                + (", ".join(blind) if blind else "nothing that needs a camera")
+                + " cannot see anything on this run"
+            )
     if note:
         # the arm is still holding itself up, and the one place that says so is the note the
         # disconnect left behind. Not gated on the rest row: the move can report that it
@@ -747,26 +1009,19 @@ def _upstreams() -> list[tuple[str, Any, str, str]]:
     return rows
 
 
-# ── the board underneath, when it is a Jetson ───────────────────────────────────────────
+# ── the board --host names, over the network ────────────────────────────────────────────
 
-_HOST_ROOT = Path("/")
-"""Where the board's own files are read from.
-
-A module attribute rather than a parameter of `collect`, for the reason `_probe_models` is one:
-a test points it at a tree it built. It must never become a default argument, which would bind
-at import and ignore the monkeypatch."""
-
-_DT_MODEL = "proc/device-tree/model"
-_DT_COMPATIBLE = "proc/device-tree/compatible"
-_L4T_RELEASE = "etc/nv_tegra_release"
-
-_GPU_NODES = ("dev/nvgpu/igpu0", "dev/nvhost-ctrl-gpu", "dev/nvidia0")
-"""JetPack 6's node, JetPack 5's, and the one a discrete driver leaves. quackd needs none of
-them, and the renderer says so: it is the model server that wants a GPU, and a container that
-cannot see one of these is the commonest reason a Jetson answers off its CPU."""
+_host_client = HostClient
+"""How doctor reaches the board, and a module attribute for the reason `_probe_models` is one:
+a test replaces it. It must never become a default argument, which would bind at import and
+ignore the monkeypatch."""
 
 _L4T_LINE = re.compile(r"R(\d+)\s*\(release\),\s*REVISION:\s*(\d+(?:\.\d+)*)")
 """`# R36 (release), REVISION: 4.3, GCID: ...` is the first line of `/etc/nv_tegra_release`."""
+
+_GPU_BUSY = re.compile(r"GR3D_FREQ\s+(\d+)%")
+"""The GPU's load in a `tegrastats` line. Orin prints `GR3D_FREQ 0%@[305]`, the clock after the
+`@`, and older boards `GR3D_FREQ 0%@1300`; the percentage comes first in both."""
 
 _JETPACK_FOR_L4T = {
     "36.5.2": "6.2.3",
@@ -783,60 +1038,14 @@ _JETPACK_FOR_L4T = {
 }
 """Exact releases only, read off NVIDIA's JetPack archive on 2026-09-22.
 
-`docs/jetson.md` prints this same table and `tests/test_deploy_jetson.py` holds the two to each
-other, so a board whose JetPack shipped after this was written cannot read as one version in
-the documentation and another on the screen."""
+`docs/jetson.md` prints this same table and `tests/test_docs.py` holds the two to each other,
+so a board whose JetPack shipped after this was written cannot read as one version in the
+documentation and another on the screen."""
 
 _JETPACK_MAJOR = {"32": "4.x", "35": "5.x", "36": "6.x", "38": "7.x", "39": "7.x"}
 """What to say about a revision the table above has not heard of. The major version only, on
 purpose: L4T 35.1 was JetPack 5.0.2 and 35.2.1 was 5.1, so a guessed minor here would be wrong
 about a board somebody owns."""
-
-
-def _read_text(path: Path) -> str | None:
-    """A small file, or None for any reason at all: absent, unreadable, a directory.
-
-    The `/proc/device-tree` entries are the device tree's own bytes and are NUL terminated, and
-    a NUL arriving in a Rich cell is not something anyone should have to debug."""
-    try:
-        raw = path.read_bytes()
-    except Exception:
-        return None
-    return raw.decode("utf-8", errors="replace").replace("\x00", "")
-
-
-def _exists(path: Path) -> bool:
-    """`Path.exists()` raises on a path this process may not stat, and being refused a look at
-    a device node is not the same fact as a board that has none."""
-    try:
-        return path.exists()
-    except Exception:
-        return False
-
-
-def _run_quiet(argv: Sequence[str], timeout_s: float = 3.0) -> str | None:
-    """The stdout of a command that exited 0, or None.
-
-    Best effort in the sense `_probe_models` is: `nvpmodel` is absent inside a container and
-    the docker daemon may be down, and neither is a fault of the machine being described.
-    `shutil.which` first, so a missing binary never forks; stdin closed, so the docker CLI
-    cannot sit waiting on a terminal that is not there."""
-    if shutil.which(argv[0]) is None:
-        return None
-    try:
-        done = subprocess.run(
-            list(argv),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_s,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except Exception:
-        return None
-    return done.stdout if done.returncode == 0 else None
 
 
 def _parse_l4t(text: str) -> str | None:
@@ -889,36 +1098,48 @@ def _power_mode(text: str | None) -> str | None:
     return None
 
 
-def _jetson(root: Path) -> JetsonReport | None:
-    """What this board is, or None where it is not a Tegra.
+def _gpu_busy(line: str | None) -> int | None:
+    """`GR3D_FREQ 0%@[305]` in a `tegrastats` line as 0, or None where the line has no load."""
+    match = _GPU_BUSY.search(line or "")
+    return int(match.group(1)) if match else None
 
-    Two ways in. The device tree is the kernel's and names the board on any Tegra, and
-    `/etc/nv_tegra_release` is a file in the host's root filesystem that also carries the L4T
-    release. Neither is dependable inside a container: `/proc/device-tree` points into
-    `/sys/firmware`, which Docker masks unless the container is privileged or started with
-    `--security-opt systempaths=unconfined`, and a plain Python image has no release file. This
-    section is for `doctor` run on the board itself, and a board seen only through the device
-    tree is a container started one of those two ways, or an unusual install.
 
-    Every question here is asked of a file that may be absent or a binary that may not exist,
-    and none of them may raise: doctor is what people run when something is already wrong,
-    which is the worst possible place to add a new way to crash."""
-    compatible = _read_text(root / _DT_COMPATIBLE) or ""
-    release = _read_text(root / _L4T_RELEASE)
+def _jetson_from_dump(board: HostBoard) -> JetsonReport | None:
+    """What the board the daemon runs on is, from its `/board` dump, or None where it is not a
+    Tegra.
+
+    Two ways in, the two the daemon's own `capabilities.tegra` asks. The device tree is the
+    kernel's and names the board on any Tegra, and `/etc/nv_tegra_release` is a file in the
+    board's root filesystem that also carries the L4T release. A daemon in a container may see
+    neither: `/proc/device-tree` points into `/sys/firmware`, which Docker masks unless the
+    container is privileged or started with `--security-opt systempaths=unconfined`, and a plain
+    image has no release file.
+
+    The daemon parses nothing and strips the device tree's NUL terminators; they are stripped
+    again here, because a NUL reaching a Rich cell is not something anyone should have to debug
+    and a daemon of another version may not. Every file may be None and every command may have
+    failed, and none of that may raise: doctor is what people run when something is already
+    wrong, which is the worst possible place to add a new way to crash."""
+
+    def text(path: str) -> str | None:
+        value = board.files.get(path)
+        return value.replace("\x00", "") if isinstance(value, str) else None
+
+    compatible = text("/proc/device-tree/compatible") or ""
+    release = text("/etc/nv_tegra_release")
     if "nvidia,tegra" not in compatible and release is None:
         return None
 
-    model = _read_text(root / _DT_MODEL) or ""
     l4t = _parse_l4t(release) if release is not None else None
-    mem = _kb_fields(_read_text(root / "proc/meminfo") or "", ("MemTotal", "MemAvailable"))
-    swap_text = _read_text(root / "proc/swaps")
+    mem = _kb_fields(text("/proc/meminfo") or "", ("MemTotal", "MemAvailable"))
+    swap_text = text("/proc/swaps")
     swap_total: int | None = None
     swap_devices: list[str] = []
     if swap_text is not None:
         swap_total, swap_devices = _swaps(swap_text)
-    runtime = (_run_quiet(["docker", "info", "--format", "{{.DefaultRuntime}}"]) or "").strip()
+    line = (board.commands.get("tegrastats") or "").replace("\x00", "").strip() or None
     return JetsonReport(
-        board=model.strip() or None,
+        board=(text("/proc/device-tree/model") or "").strip() or None,
         l4t=l4t,
         release_seen=release is not None,
         jetpack=_jetpack_for(l4t) if l4t else None,
@@ -926,10 +1147,62 @@ def _jetson(root: Path) -> JetsonReport | None:
         mem_available_bytes=mem.get("MemAvailable"),
         swap_total_bytes=swap_total,
         swap_devices=swap_devices,
-        gpu_device=next((f"/{node}" for node in _GPU_NODES if _exists(root / node)), None),
-        power_mode=_power_mode(_run_quiet(["nvpmodel", "-q"])),
-        docker_default_runtime=runtime or None,
+        gpu_device=next((node for node, there in board.nodes.items() if there is True), None),
+        power_mode=_power_mode(board.commands.get("nvpmodel -q")),
+        gpu_busy_pct=_gpu_busy(line),
+        tegrastats=line,
+        errors=dict(board.errors),
     )
+
+
+def refused_host(text: str, error: str) -> HostReport:
+    """A board setting refused before anything was asked of it, as a report that fails.
+
+    The value is kept to be shown only when it is a machine, which means the token was the
+    trouble. A host `parse_host` refused can hold a secret written before an `@`, or an escape
+    sequence, and its own refusals quote neither back, so neither does the title of this
+    section nor --json."""
+    try:
+        parse_host(text)
+    except ValueError:
+        text = ""
+    return HostReport(host=text, ok=False, error=error)
+
+
+def _ask_host(
+    host: str, token: str | None, say: Any, *, token_fix: str | None = None
+) -> HostReport:
+    """Everything the daemon at `host` will say, as a report that never raises.
+
+    `/hello` first, because it is the one answer a run needs and the one this report's `ok`
+    follows. `/healthz` and `/board` after it, each allowed to fail on its own: a daemon that
+    answered hello and then timed out on the board dump is a daemon a run would still use."""
+    try:
+        client = _host_client(host, token=token, token_fix=token_fix)
+    except ValueError as e:
+        # a host that is no machine, or a token no header can carry: the CLI settles both
+        # before collect runs, so this is a library caller, told the same way
+        return refused_host(host, str(e))
+    report = HostReport(host=host, address=client.address, tried=f"{client.base_url}/hello")
+    say(f"asking the daemon at {client.address}")
+    try:
+        report.hello = client.hello()
+    except HostError as e:
+        report.error = str(e)
+        report.unresolved = e.unresolved
+        return report
+    report.ok = True
+    say(f"reading the health of {client.address}")
+    try:
+        report.healthz = client.healthz()
+    except HostError as e:
+        report.healthz_error = str(e)
+    say(f"reading the board at {client.address}")
+    try:
+        report.jetson = _jetson_from_dump(client.board())
+    except HostError as e:
+        report.board_error = str(e)
+    return report
 
 
 def collect(
@@ -939,9 +1212,12 @@ def collect(
     camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
     rest_pose: dict[str, float] | None = None,
+    host: str | None = None,
+    host_token: str | None = None,
     progress: Progress = None,
     robot_name: str | None = None,
     before_connect: Callable[[Any], None] | None = None,
+    host_token_fix: str | None = None,
 ) -> DoctorReport:
     """Every question doctor asks, answered as data.
 
@@ -950,7 +1226,14 @@ def collect(
 
     `robot_name` is the registered name `robot` was resolved from, when it was, and the robot
     is described and built under it, as a run builds it; `before_connect` goes to `probe`.
-    Not `name`, which this function's own loops over providers and presets rebind."""
+    Not `name`, which this function's own loops over providers and presets rebind.
+
+    `host` is a board already settled by `quackd.host.resolve_host` (the flag, a registered
+    robot's, or `QUACKD_HOST`), and `host_token` the token that goes with it. With one, the
+    daemon on it is asked what it is, and the four local presets are probed on that machine
+    rather than on this one. Nothing on this machine is read to find a board: no `/proc`, no
+    subprocess, only the network. `host_token_fix` is what a refused token's message says to
+    do, for the place the token came from (`HostChoice.token_fix`)."""
 
     def say(message: str) -> None:
         if progress is not None:
@@ -963,8 +1246,9 @@ def collect(
         api_version=_microduck_api_version(),
     )
 
-    say("looking for a Jetson")
-    report.jetson = _jetson(_HOST_ROOT)
+    host = (host or "").strip() or None
+    if host is not None:
+        report.host = _ask_host(host, host_token, say, token_fix=host_token_fix)
 
     say("checking the core packages")
     for name, module in CORE_MODULES:
@@ -1070,15 +1354,42 @@ def collect(
         )
 
     custom = os.environ.get("QUACKD_BASE_URL")
+    # With a board, the four presets are asked on it, as a run with --host would reach them;
+    # `local` has no preset address and keeps meaning QUACKD_BASE_URL. A host that is no
+    # machine was already reported above, and its presets stay where they were. A daemon that
+    # is down or refused still has its board's presets asked, since the model server can be up
+    # without it; a name that found no address has none asked, since there is no machine to ask.
+    board = report.host if report.host is not None and report.host.address else None
     for preset, url in {**PRESETS, **({"local": custom} if custom else {})}.items():
         if not url:
             report.servers.append(
                 ServerRow(preset, "", "unset", "set QUACKD_BASE_URL or --base-url")
             )
             continue
-        say(f"probing {preset} at {url}")
+        on_board = False
+        if board is not None and preset != "local":
+            with contextlib.suppress(ValueError):
+                url, on_board = on_host(url, board.host), True
+        # QUACKD_BASE_URL is a URL a person typed, so it can carry a password in its userinfo,
+        # and this screen and its spinner are what people paste into issues
+        shown = redacted_url(url)
+        if board is not None and on_board and board.unresolved:
+            skipped = ServerRow(
+                preset, shown, "skipped", f"not asked: {host_of(board.host)} has no address"
+            )
+            report.servers.append(skipped)
+            board.servers.append(skipped)
+            continue
+        say(f"probing {preset} at {shown}")
         state, detail = _probe_models(url)
-        report.servers.append(ServerRow(preset, url, state, detail))
+        row = ServerRow(preset, shown, state, detail)
+        if preset == "ollama" and state == "up":
+            root = _ollama_root(url)
+            say(f"asking ollama at {redacted_url(root)} where its models are")
+            row.placement, row.placement_note = _probe_placement(root)
+        report.servers.append(row)
+        if board is not None and on_board:
+            board.servers.append(row)
 
     report.adapters = list_adapters()
 
@@ -1108,6 +1419,14 @@ def collect(
             if address:
                 shown = f"{robot_name} ({robot})" if robot_name else robot
                 say(f"connecting to {shown} at {address}")
+                # the board's camera joins the body as it would a run's, but only a board that
+                # answered: one that did not has already failed this report with a row of its
+                # own, and asking it again from inside the probe would only say so twice
+                host_camera_from = (
+                    _host_client(host, token=host_token)
+                    if host is not None and report.host is not None and report.host.ok
+                    else None
+                )
                 report.robot.probe = probe(
                     robot,
                     manifest,
@@ -1117,6 +1436,7 @@ def collect(
                     rest_pose,
                     name=robot_name,
                     before_connect=before_connect,
+                    host=host_camera_from,
                 )
 
     # An adapter that has backends worth probing on this machine says so itself. The
@@ -1191,12 +1511,122 @@ def _gib(n: int) -> str:
     return f"{n / (1024**3):.1f} GiB"
 
 
-def _jetson_grid(jetson: JetsonReport) -> Any:
-    """The board, for somebody about to put a model on it.
+def _flat(text: Any, limit: int = 500) -> str:
+    """A string the board sent, made safe for one cell of this terminal: control characters,
+    an escape sequence among them, turned to spaces, and a long one cut short. The daemon is
+    another machine on the network, and what it says is printed on this one."""
+    flat = "".join(c if c.isprintable() else " " for c in str(text))
+    return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+
+
+_Row = Callable[..., None]
+"""`row(key, value, style="muted", mark="")`: one line of a grid, as the grids below add it."""
+
+
+def _jetson_rows(jetson: JetsonReport, row: _Row, g: ui.Glyphs) -> None:
+    """The board the daemon runs on, for somebody about to put a model on it.
 
     Warnings only where a person would have to do something about it: swap that cannot hold a
-    model, and a docker daemon whose containers will not be given the GPU. The GPU node is a
-    note rather than a warning, because quackd running without one is not a fault."""
+    model. The GPU node is a note rather than a warning, because quackd reading the board
+    without one is not a fault. Every value here came from the board, so every one is flattened
+    before it reaches a cell."""
+
+    def why(key: str) -> str:
+        reason = jetson.errors.get(key)
+        return f" ({_flat(reason, 120)})" if reason else ""
+
+    if jetson.board:
+        row("board", _flat(jetson.board))
+    else:
+        model = "/proc/device-tree/model"
+        row("board", f"unknown: the daemon could not read {model}{why(model)}")
+    if jetson.l4t:
+        named = f" (JetPack {jetson.jetpack})" if jetson.jetpack else ""
+        row("L4T", f"{jetson.l4t}{named}")
+    elif jetson.release_seen:
+        row(
+            "L4T",
+            "/etc/nv_tegra_release is on the board and its first line is not one this build knows",
+        )
+    else:
+        row(
+            "L4T",
+            "unknown: the daemon could not read /etc/nv_tegra_release"
+            f"{why('/etc/nv_tegra_release')}. A daemon in a container usually cannot",
+        )
+
+    if jetson.mem_total_bytes is not None:
+        free = (
+            f", {_gib(jetson.mem_available_bytes)} available"
+            if jetson.mem_available_bytes is not None
+            else ""
+        )
+        row("memory", f"{_gib(jetson.mem_total_bytes)}{free}, shared with the GPU")
+
+    if jetson.swap_total_bytes is not None:
+        if jetson.swap_total_bytes == 0:
+            row(
+                "swap",
+                "none. A model that does not fit in memory cannot load, and a swapfile on the "
+                "board's NVMe is what lets a bigger one in",
+                "warn",
+                g.warn,
+            )
+        elif jetson.swap_only_zram:
+            row(
+                "swap",
+                f"{_gib(jetson.swap_total_bytes)}, all zram: it compresses RAM rather than "
+                "adding any (docs/jetson.md)",
+                "warn",
+                g.warn,
+            )
+        else:
+            devices = _flat(", ".join(jetson.swap_devices), 200)
+            row("swap", f"{_gib(jetson.swap_total_bytes)} on {devices}")
+
+    if jetson.gpu_device:
+        row("GPU device", _flat(jetson.gpu_device, 120))
+    else:
+        row(
+            "GPU device",
+            "none the daemon could see. The model server and the detector want one, and "
+            "quackd never asks for one",
+        )
+
+    if jetson.power_mode:
+        row("power mode", f"{_flat(jetson.power_mode, 120)} (nvpmodel -q)")
+    elif "nvpmodel -q" in jetson.errors:
+        row("power mode", f"unknown: nvpmodel -q gave nothing{why('nvpmodel -q')}")
+
+    if jetson.gpu_busy_pct is not None:
+        row("GPU busy", f"{jetson.gpu_busy_pct}% (GR3D_FREQ in tegrastats)")
+    elif jetson.tegrastats is None and "tegrastats" in jetson.errors:
+        row("GPU busy", f"unknown: tegrastats gave nothing{why('tegrastats')}")
+    if jetson.tegrastats:
+        row("tegrastats", _flat(jetson.tegrastats))
+
+
+def _host_title(host: HostReport) -> str:
+    """Jetson in the title only when the daemon or the board's files say so: the daemon runs on
+    a laptop for a test, and a section calling that a Jetson would be the one lie on the page.
+    The word stays out of the other titles altogether, so a reader scanning for it finds only a
+    board that is one; the board row below the title says what the machine is not."""
+    where = host.address or host.host
+    if not where:
+        return "host"
+    if host.hello is None:
+        return f"host at {where}"
+    if host.is_tegra:
+        return f"Jetson at {where} (the board the daemon runs on)"
+    return f"host at {where} (the machine the daemon runs on)"
+
+
+def _host_grid(host: HostReport) -> Any:
+    """The board `--host` names, once its daemon has answered: what the daemon is, the camera
+    and the detector it offers, whether it is well, and then the board itself.
+
+    A missing camera or detector is a note, not a warning: `--camera none` and `--no-detect`
+    are choices, and the health row is where one that was asked for and failed shows up."""
 
     def build(g: ui.Glyphs) -> Any:
         rows: list[tuple[str, Any]] = []
@@ -1204,76 +1634,106 @@ def _jetson_grid(jetson: JetsonReport) -> Any:
         def row(key: str, value: str, style: str = "muted", mark: str = "") -> None:
             rows.append((f"{mark or g.note} {key}", Text(value, style=ui.STYLES[style])))
 
-        row("board", jetson.board or "unknown (no /proc/device-tree/model)")
-        if jetson.l4t:
-            named = f" (JetPack {jetson.jetpack})" if jetson.jetpack else ""
-            row("L4T", f"{jetson.l4t}{named}")
-        elif jetson.release_seen:
+        hello = host.hello
+        if hello is not None:
             row(
-                "L4T",
-                "/etc/nv_tegra_release is here and its first line is not one this build knows",
+                "daemon",
+                f"{PROTOCOL} {_flat(hello.daemon_version, 40)}, protocol "
+                f"{hello.protocol_version}, on {_flat(hello.hostname, 120)}",
+                "ok",
+                g.ok,
             )
-        else:
-            row("L4T", "unknown: no /etc/nv_tegra_release, which is what a container sees")
-
-        if jetson.mem_total_bytes is not None:
-            free = (
-                f", {_gib(jetson.mem_available_bytes)} available"
-                if jetson.mem_available_bytes is not None
-                else ""
-            )
-            row("memory", f"{_gib(jetson.mem_total_bytes)}{free}, shared with the GPU")
-
-        if jetson.swap_total_bytes is not None:
-            if jetson.swap_total_bytes == 0:
+            if hello.has_camera:
+                size = hello.camera_size
+                said = [f"{size[0]}x{size[1]}" if size else "a camera"]
+                if hello.camera_fps is not None:
+                    said.append(f"at {hello.camera_fps:g} fps")
+                source = (hello.camera or {}).get("source")
+                if isinstance(source, str) and source:
+                    said.append(f"from {_flat(source, 120)}")
+                fov = hello.camera_fov_deg
+                lens = (
+                    f"field of view {fov:g} degrees"
+                    if fov is not None
+                    else "field of view not given: start the daemon with --fov-deg for bearings"
+                )
+                row("camera", f"{' '.join(said)}, {lens}", "ok", g.ok)
+            else:
+                row("camera", f"none: {_flat(hello.camera_error or 'the daemon did not say why')}")
+            label = hello.label()
+            if label and (hello.detect or {}).get("device") == "cpu":
                 row(
-                    "swap",
-                    "none. A model that does not fit in memory cannot load, and a swapfile on "
-                    "the NVMe is what lets a bigger one in",
+                    "detector",
+                    f"{_flat(label, 120)}: the board's torch sees no CUDA "
+                    "(bridge/jetson/README.md)",
                     "warn",
                     g.warn,
                 )
-            elif jetson.swap_only_zram:
+            elif label:
+                row("detector", _flat(label, 120), "ok", g.ok)
+            else:
                 row(
-                    "swap",
-                    f"{_gib(jetson.swap_total_bytes)}, all zram: it compresses RAM rather than "
-                    "adding any (docs/jetson.md)",
+                    "detector",
+                    f"none: {_flat(hello.detect_error or 'the daemon did not say why')}",
+                )
+        if host.healthz_error:
+            row("health", f"could not be read: {_flat(host.healthz_error)}", "warn", g.warn)
+        elif host.healthz is not None:
+            if host.healthz.get("ok") is True:
+                row("health", "ok", "ok", g.ok)
+            else:
+                reason = host.healthz.get("reason")
+                row(
+                    "health",
+                    _flat(reason)
+                    if isinstance(reason, str) and reason
+                    else "not ok, and it did not say why",
+                    "warn",
+                    g.warn,
+                )
+        if host.jetson is not None:
+            _jetson_rows(host.jetson, row, g)
+        elif host.board_error:
+            row("board", f"could not be read: {_flat(host.board_error)}", "warn", g.warn)
+        elif host.is_tegra:
+            row("board", "a Tegra by the daemon's account, and none of the files it sent says so")
+        else:
+            row("board", "not a Jetson: no Tegra in its device tree, no /etc/nv_tegra_release")
+        return ui.kv_grid(rows, key_style="")
+
+    return ui.Deferred(build)
+
+
+def _placement_grid(server: ServerRow, *, tegra: bool) -> Any:
+    """Where Ollama put each model it has loaded. A model on a Jetson's CPU is the pitfall the
+    Jetson page names, so that one says what to do about it; on any other machine a model on
+    the CPU may be all there is, and it is a note."""
+
+    def build(g: ui.Glyphs) -> Any:
+        rows: list[tuple[str, Any]] = []
+
+        def row(key: str, value: str, style: str = "muted", mark: str = "") -> None:
+            rows.append((f"{mark or g.note} {key}", Text(value, style=ui.STYLES[style])))
+
+        for model in server.placement or []:
+            name = _flat(model.model, 80)
+            if model.where == "gpu":
+                row(name, f"all on the GPU, {_gib(model.size)}", "ok", g.ok)
+            elif model.where == "partial":
+                row(name, f"{model.gpu_pct}% on the GPU, the rest on the CPU", "warn", g.warn)
+            elif tegra:
+                row(
+                    name,
+                    "on the CPU: the generic arm64 build of Ollama has no Tegra CUDA, and the "
+                    "official installer picks the JetPack build (docs/jetson.md)",
                     "warn",
                     g.warn,
                 )
             else:
-                row(
-                    "swap",
-                    f"{_gib(jetson.swap_total_bytes)} on {', '.join(jetson.swap_devices)}",
-                )
-
-        if jetson.gpu_device:
-            row("GPU device", jetson.gpu_device)
-        else:
-            row(
-                "GPU device",
-                "none visible here. quackd never asks for one, and the model server does",
-            )
-
-        if jetson.power_mode:
-            row("power mode", f"{jetson.power_mode} (nvpmodel -q)")
-
-        if jetson.docker_default_runtime == "nvidia":
-            row("docker default runtime", "nvidia", "ok", g.ok)
-        elif jetson.docker_default_runtime:
-            row(
-                "docker default runtime",
-                f"{jetson.docker_default_runtime}: a container is given no GPU unless it is "
-                "started with --runtime nvidia",
-                "warn",
-                g.warn,
-            )
-        else:
-            row(
-                "docker default runtime",
-                "unknown: docker did not answer here, because it is not installed or this "
-                "user cannot reach it",
-            )
+                row(name, "on the CPU: this Ollama put none of it on a GPU")
+        if not rows:
+            # flattened, because the note can name the models another machine's Ollama sent
+            row("loaded", _flat(server.placement_note or "nothing"))
         return ui.kv_grid(rows, key_style="")
 
     return ui.Deferred(build)
@@ -1503,11 +1963,13 @@ def verdict(report: DoctorReport) -> Any:
         reason = report.robot.error
     elif report.robot and report.robot.probe and report.robot.probe.error:
         reason = report.robot.probe.error
-    elif report.robot and report.robot.probe:
+    elif report.robot and report.robot.probe and not report.robot.probe.ok:
         # the probe fails on health OR on a camera that sent no frame, and blaming health
         # for a camera sends the reader to the wrong end of the robot
         bad = [r for r in report.robot.probe.rows if r.state == "fail"]
         reason = f"{bad[0].what}: {bad[0].value}" if bad else "the robot did not report healthy"
+    elif report.host is not None and not report.host.ok:
+        reason = report.host.error or f"{report.host.host} did not answer"
     else:
         reason = "the robot did not report healthy"
     counters = [
@@ -1536,12 +1998,16 @@ def render(console: Console, report: DoctorReport) -> None:
         )
     )
 
-    if report.jetson is not None:
-        _section(
-            console,
-            "Jetson (the board this is running on, and the GPU on it belongs to the model server)",
-        )
-        console.print(_jetson_grid(report.jetson))
+    if report.host is not None:
+        _section(console, _host_title(report.host))
+        if report.host.ok:
+            console.print(_host_grid(report.host))
+        else:
+            tried = f"tried GET {report.host.tried}" if report.host.tried else None
+            console.print(
+                ui.fail_line(report.host.error or "the host did not answer", hint=tried),
+                soft_wrap=True,
+            )
 
     _section(console, "core")
     console.print(_checks(report.core))
@@ -1566,8 +2032,21 @@ def render(console: Console, report: DoctorReport) -> None:
         )
     )
 
-    _section(console, "local LLM servers (GET /v1/models, 1.5 s timeout)")
+    at_host = report.host is not None and bool(report.host.address)
+    if report.host is not None and at_host:
+        machine = host_of(report.host.host)
+        _section(console, f"LLM servers, the presets on {machine} (GET /v1/models, 1.5 s timeout)")
+    else:
+        _section(console, "local LLM servers (GET /v1/models, 1.5 s timeout)")
     console.print(_servers_table(report))
+    for server in report.servers:
+        if server.placement is None:
+            continue
+        console.print(
+            Text(f"  where {server.preset} put its models (GET /api/ps)", style=ui.STYLES["muted"])
+        )
+        tegra = at_host and report.host is not None and report.host.is_tegra
+        console.print(_placement_grid(server, tegra=tegra and server.preset != "local"))
 
     _section(console, "adapters (--robot <adapter>:<backend>)")
     console.print(ui.adapters_table(report.adapters, title=None))
@@ -1609,9 +2088,19 @@ def run_doctor(
     address: str | None = None,
     camera_url: str | None = None,
     token: str | None = None,
+    host: str | None = None,
+    host_token: str | None = None,
     progress: Progress = None,
 ) -> bool:
     """Collect, render, and say whether this machine is in a state to run anything."""
-    report = collect(robot, address=address, camera_url=camera_url, token=token, progress=progress)
+    report = collect(
+        robot,
+        address=address,
+        camera_url=camera_url,
+        token=token,
+        host=host,
+        host_token=host_token,
+        progress=progress,
+    )
     render(console, report)
     return report.ok

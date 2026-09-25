@@ -14,12 +14,15 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, RobotAdapter, camera_urls
 from quackd.adapters.catalogue import BY_NAME, ENTRY_POINT_GROUP, OFFICIAL, AdapterInfo
 from quackd.adapters.manifest import RobotManifest
 from quackd.verbs.registry import VerbRegistry, core_registry, registry_from_manifest
+
+if TYPE_CHECKING:
+    from quackd.host import HostClient
 
 DEFAULT_ROBOT = "microduck:sim2d"
 """The body a command falls back to when nothing named one and several are installed.
@@ -218,11 +221,17 @@ def describe(spec: RobotSpec) -> RobotManifest:
     return _module(spec.adapter).describe(spec.backend, spec.robot_id)
 
 
-def registry_for(spec: RobotSpec) -> VerbRegistry:
-    """The vocabulary of a robot that is not connected (`list-verbs --robot`, `--goal`)."""
+def registry_for(spec: RobotSpec, manifest: RobotManifest | None = None) -> VerbRegistry:
+    """The vocabulary of a robot that is not connected (`list-verbs --robot`, `--goal`).
+
+    `manifest` is the static one changed by something the body does not know about, which today
+    is only the camera on a `--host` board (`quackd.adapters.host_camera`); None describes the
+    body as its adapter does."""
     module = _module(spec.adapter)
     return registry_from_manifest(
-        describe(spec), implementations=module.implementations(), conditions=module.conditions()
+        manifest if manifest is not None else describe(spec),
+        implementations=module.implementations(),
+        conditions=module.conditions(),
     )
 
 
@@ -235,10 +244,16 @@ def make_adapter(
     camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
     rest_pose: Mapping[str, float] | None = None,
+    host: HostClient | None = None,
 ) -> RobotAdapter:
     """Build a robot. `camera_url` may name several cameras; every `make()` is handed the
     tuple and decides whether this body reads more than one (`MULTI_CAMERA_SPECS`), and a
-    `rest_pose` reaches a body that parks or is refused by one that does not."""
+    `rest_pose` reaches a body that parks or is refused by one that does not.
+
+    `host` is the board `--host` names. When its daemon has a camera, the body is wrapped in a
+    `HostCameraAdapter`, which adds that camera to any body and changes nothing else. The
+    board is asked for its `/hello` here unless the client already has it, so a caller that
+    must refuse a board that does not answer asks first; this raises `HostError` otherwise."""
     if isinstance(spec, str):
         spec = parse_robot_spec(spec)
     adapter: RobotAdapter = _module(spec.adapter).make(
@@ -251,6 +266,12 @@ def make_adapter(
         token=token,
         rest_pose=dict(rest_pose) if rest_pose else None,
     )
+    if host is not None:
+        hello = host.hello()
+        if hello.has_camera:
+            from quackd.adapters.host_camera import HostCameraAdapter
+
+            return HostCameraAdapter(adapter, host, hello)
     return adapter
 
 

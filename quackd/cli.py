@@ -350,14 +350,147 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
     return counters
 
 
+def _detector_row(detector: Any, hello: Any, backend: str | None, *, sees: bool = True) -> str:
+    """Which detector reads the frames, and where it runs, in one line. The board's is named
+    with the board and what the daemon said it runs, because "yolo" alone would not say whether
+    the laptop or the Jetson is doing the work.
+
+    None is the colour detector, which the loop builds at connect for a body that reports a
+    camera (`detector_for`) when nothing was chosen before. The row names it rather than
+    leaving the question open beside a host row that says "detect".
+
+    `sees` is whether the body, with the board's camera if it has one, is described with a
+    camera. A body described without one may report a camera when it connects, and the row
+    says that its detector reads nothing until then."""
+    from quackd.perception import is_simulated
+    from quackd.perception.color_blob import ColorBlobDetector
+    from quackd.perception.host import HostDetector
+
+    if detector is None:
+        text = f"{ColorBlobDetector.name} on this machine"
+    elif isinstance(detector, HostDetector):
+        text = f"{detector.name}  {detector.address}"
+        if hello is not None and (label := hello.label()):
+            text += f"  {label}"
+        if is_simulated(backend):
+            # never chosen by itself on a simulator, so a reader seeing it there is told it
+            # was asked for, and that it is not what this simulator's colours are tuned for
+            text += "  (asked for on a simulator)"
+    else:
+        text = f"{getattr(detector, 'name', type(detector).__name__)} on this machine"
+    if not sees:
+        text += "  (once the body reports a camera)"
+    return text
+
+
+def _host_row(board: Any, hello: Any, host_camera: dict[str, Any] | None) -> str:
+    """The board: where it is, which daemon answered, and what it has. The camera says whether
+    it is the view the run steers by or one it is only shown.
+
+    That is settled at connect, from what the body reports (`HostCameraAdapter.connect`), and
+    this is written before. A body described with a camera keeps it, so the board's is an
+    extra view. For one described without, the board's is the primary view only if the body
+    does not report a camera of its own when it connects (an arm given --camera-url, a
+    rosbridge base), so the row says so; `run_start` records which it was."""
+    has: list[str] = []
+    if hello.has_camera:
+        primary = bool((host_camera or {}).get("primary"))
+        has.append(
+            "camera as the primary view unless the body reports its own"
+            if primary
+            else "camera as an extra view"
+        )
+    if hello.can_detect:
+        has.append("detect")
+    if hello.is_tegra:
+        has.append("tegra")
+    return f"{board.address}  daemon {hello.daemon_version}  " + (
+        ", ".join(has) if has else "health only"
+    )
+
+
+def _host_doctor(choice: Any) -> str:
+    """The doctor command that asks the same board with the same token. `--robot NAME` when the
+    token is the one the robot keeps, because `doctor --host` alone sends no stored token and
+    would report "wants a token" in place of whatever the run met. Otherwise `--host`, which
+    asks the board and leaves the body alone: `doctor --robot` connects to a robot that keeps
+    an address."""
+    if not choice.token_stored:
+        return f"quackd doctor --host {choice.host}"
+    typed = f" --host {choice.host}" if choice.source == "--host" else ""
+    return f"quackd doctor --robot {choice.robot}{typed}"
+
+
+def _host_unreached_hint(choice: Any) -> str:
+    """Where to see what the board says, and how to run without it, from wherever it was named:
+    the flag, the robot that stores it, or the environment."""
+    from quackd.host import HOST_ENV
+
+    if choice.source == "--host":
+        undo = "drop --host"
+    elif choice.source == HOST_ENV:
+        undo = f"unset {HOST_ENV}"
+    else:
+        undo = f"quackd robot edit {choice.robot or 'NAME'} --clear host"
+    return f"{_host_doctor(choice)} shows what the board says; {undo} to run without it"
+
+
+def _board_not_asked(resolved: Any, manifest: Any, command: str) -> str | None:
+    """A note for `validate` and `list-verbs` about the board a run of this robot would use.
+
+    Both read the body's own description and ask no board anything. A run adds the board's
+    camera to a body described without one before it judges the task (`with_host_camera`),
+    so for such a body these two can refuse a camera task a run accepts, and leave out the
+    verbs the camera unlocks. Saying so keeps their answer from reading as final. None when no
+    board is named for this robot, or the body has a camera of its own, whose vocabulary the
+    board's camera does not change. A stored setting `resolve_host` refuses is left for the
+    run to refuse in its own words."""
+    from quackd.host import resolve_host
+
+    if "camera" in manifest.sensors:
+        return None
+    stored = resolved.host_kwargs()
+    try:
+        choice = resolve_host(
+            None,
+            stored["host"],
+            stored_token=stored["host_token"],
+            robot=resolved.entry.name if resolved.entry is not None else None,
+        )
+    except ValueError:
+        return None
+    if choice.host is None:
+        return None
+    return (
+        f"{command} does not ask {choice.named}, so the board's camera is not counted: a run "
+        f"adds it to {resolved.label}, with the verbs a camera unlocks, when the board has one; "
+        f"{_host_doctor(choice)} shows whether it does"
+    )
+
+
 def _header_rows(
-    *, provider: Any, robot: str, seed: int | None, dry_run: bool, memory: Any
+    *,
+    provider: Any,
+    robot: str,
+    seed: int | None,
+    dry_run: bool,
+    memory: Any,
+    detector: Any = None,
+    board: Any = None,
+    hello: Any = None,
+    backend: str | None = None,
+    host_camera: dict[str, Any] | None = None,
+    sees: bool = True,
 ) -> list[tuple[str, Any]]:
-    """The four things worth knowing before a run starts, and nothing else."""
+    """The things worth knowing before a run starts, and nothing else: who pilots, which body,
+    what reads its frames, and the board when there is one."""
     rows: list[tuple[str, Any]] = [
         ("provider", f"{provider.name} ({provider.model or 'the first model it serves'})"),
         ("robot", robot + (f"  seed {seed}" if seed is not None else "")),
     ]
+    rows.append(("detector", _detector_row(detector, hello, backend, sees=sees)))
+    if board is not None and hello is not None:
+        rows.append(("host", _host_row(board, hello, host_camera)))
     if dry_run:
         rows.append(
             (
@@ -465,16 +598,16 @@ def validate(
             row["flock"] = len(duck.frontmatter.flock.member_names)
         try:
             if robot or robots:
-                specs = (
-                    [resolve_robot_ref(r, registry_ref).spec for r in robot]
+                resolved = (
+                    [resolve_robot_ref(r, registry_ref) for r in robot]
                     if robot
-                    else [r.spec for r in _robot_specs(None, robots, duck)]
+                    else _robot_specs(None, robots, duck)
                 )
             elif duck.frontmatter.robots is not None:
-                specs = [r.spec for r in _robot_specs(None, None, duck)]
+                resolved = _robot_specs(None, None, duck)
             else:
-                specs = []
-            manifests = [describe(spec) for spec in specs]
+                resolved = []
+            manifests = [describe(r.spec) for r in resolved]
         except (AdapterError, RegistryError) as e:
             # a registered name means reading robots.json, and a broken one refuses
             row.update(ok=False, problems=[str(e)], summary=[str(e)])
@@ -489,6 +622,11 @@ def validate(
                 problems=[str(p) for p in problems],
                 summary=[p.message for p in problems],
             )
+            # one body, as `run` has a board only for one: a fleet takes none
+            if len(resolved) == 1 and not robots and duck.frontmatter.flock is None:
+                note = _board_not_asked(resolved[0], manifests[0], "validate")
+                if note is not None:
+                    row["notes"] = [note]
 
     failures = [row for row in rows if not row["ok"]]
     if as_json:
@@ -513,6 +651,9 @@ def validate(
         for row in failures:
             for problem in row.get("problems", []):
                 ui.console.print(Text(f"  {row['file']}: {problem}"), soft_wrap=True)
+        # once each, since every file checked against one robot carries the same one
+        for note in dict.fromkeys(n for row in failures for n in row.get("notes", [])):
+            ui.console.print(_warn_line(note), soft_wrap=True)
         _fail(f"{len(failures)} of {len(rows)} {_files(len(rows))} failed", hint=_VALIDATE_HINT)
     ui.console.print(_ok_line(f"{len(rows)} {_files(len(rows))} valid"))
 
@@ -574,19 +715,24 @@ def list_verbs(
 ) -> None:
     """List every verb a robot provides, with params and safety class."""
     from quackd.adapters.base import AdapterError
-    from quackd.adapters.factory import registry_for
+    from quackd.adapters.factory import describe, registry_for
     from quackd.registry import Registry, RegistryError, resolve_robot_ref
     from quackd.verbs.registry import default_registry
 
+    note: str | None = None
     try:
-        registry = (
-            registry_for(resolve_robot_ref(robot, Registry(registry_dir)).spec)
-            if robot
-            else default_registry()
-        )
+        if robot:
+            resolved = resolve_robot_ref(robot, Registry(registry_dir))
+            registry = registry_for(resolved.spec)
+            note = _board_not_asked(resolved, describe(resolved.spec), "list-verbs")
+        else:
+            registry = default_registry()
     except (AdapterError, RegistryError) as e:
         _fail(str(e), hint=_ADAPTER_HINT)
         return
+    if note is not None and as_json:
+        # on stderr under --json, whose stdout is one verb per line and nothing else
+        ui.err_console.print(_warn_line(note), soft_wrap=True)
     aliases: dict[str, list[str]] = {}
     for alias, target in registry.aliases().items():
         aliases.setdefault(target, []).append(alias)
@@ -634,6 +780,8 @@ def list_verbs(
     )
     table.caption_justify = "left"
     ui.console.print(table)
+    if note is not None:
+        ui.console.print(_warn_line(note), soft_wrap=True)
 
 
 @app.command("list-adapters", rich_help_panel="Inspect")
@@ -1014,9 +1162,14 @@ def _run_impl(
     log_prompt: bool | None = None,
     run_name: str | None = None,
     price: str | None = None,
+    host: str | None = None,
+    host_token: str | None = None,
+    detector_choice: str | None = None,
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
+    from quackd.adapters.host_camera import EXTRAS_KEY as HOST_CAMERA_EXTRAS
+    from quackd.adapters.host_camera import with_host_camera
     from quackd.agent.decision.base import DecisionError
     from quackd.agent.decision.factory import PRICE_ENV as DECISION_PRICE_ENV
     from quackd.agent.decision.factory import (
@@ -1037,6 +1190,15 @@ def _run_impl(
     from quackd.duckfile.validate import validate_duck
     from quackd.flock.pilots import ADVISORY_FIELDS, roster_from_specs
     from quackd.flock.runner import member_specs
+    from quackd.host import (
+        HostChoice,
+        HostClient,
+        HostError,
+        HostHello,
+        reach_host,
+        resolve_host,
+        unreached,
+    )
     from quackd.log import (
         ConsoleLog,
         fan_out,
@@ -1044,7 +1206,7 @@ def _run_impl(
         prompt_shown_default,
         thinking_limit_default,
     )
-    from quackd.perception import detector_for
+    from quackd.perception import DETECTOR_CHOICES, detector_for, explicit_detector
     from quackd.registry import RegistryError, Resolved
     from quackd.safety import KillSwitch, allow_all
     from quackd.transport.base import TransportError
@@ -1076,6 +1238,10 @@ def _run_impl(
         except ValueError as e:
             _fail(str(e))
             return
+    detector_choice = (detector_choice or "").strip().lower() or None
+    if detector_choice is not None and detector_choice not in DETECTOR_CHOICES:
+        _fail(f"--detector is one of {', '.join(DETECTOR_CHOICES)}, not {detector_choice!r}")
+        return
     flock_n, roster = _parse_flock_flag(flock, registry_dir)
     flock_name = flock if roster is not None else None
     if roster is not None and (robot or robots):
@@ -1098,14 +1264,92 @@ def _run_impl(
         specs = [r.spec for r in resolved]
         here = resolved[0]
         spec = here.spec
+    except (DuckParseError, TransportError, RegistryError) as e:
+        _fail(str(e))
+        return
+    # Before the dispatch below, because a flock takes neither of the two flags and dropping
+    # one silently is the failure both of them exist to prevent: a task about a picture that
+    # never arrived, and an arm nobody was asked to place. A goal is never a flock.
+    several = (
+        flock_n is not None
+        or roster is not None
+        or (duck is not None and duck.frontmatter.flock is not None)
+        or len(specs) > 1
+    )
+    # A host is one machine: one camera, one detector, the health of one board. A fleet is
+    # several bodies, and one --host would have to be every member's camera at once, so it is
+    # refused here with --image and --by-hand, before anything connects. `--robots` counts even
+    # with one member in it, because it is the fleet spelling. A host stored with a member is
+    # the same claim made in robots.json, and is refused by that member's name. QUACKD_HOST is
+    # not: it is the board you usually use rather than a claim about these bodies, and for a
+    # fleet it moves only the local presets' model server, which LocalProvider reads itself.
+    fleet = several or bool(robots)
+    hosted = [r.entry.name for r in resolved if r.entry is not None and r.entry.host]
+    if fleet and (host or "").strip():
+        _fail(
+            "--host names one machine's camera and detector, and a fleet has several bodies",
+            hint="drop --host, or run the task on one body at a time",
+        )
+        return
+    if fleet and hosted:
+        _fail(
+            f"{hosted[0]} has a host in robots.json, which names one machine's camera and "
+            "detector, and a fleet has several bodies",
+            hint=f"quackd robot edit {hosted[0]} --clear host, or run it on its own",
+        )
+        return
+    if fleet and (host_token or "").strip():
+        # refused as --host is, rather than dropped: `resolve_host` refuses a typed token with
+        # no board to go to, and a fleet never reaches it
+        _fail(
+            "--host-token is one board's token, and a fleet has several bodies and no board",
+            hint="drop --host-token, or run the task on one body at a time",
+        )
+        return
+    # The one place this run's board is settled, so everything that uses the board reads this
+    # value rather than deriving its own. A fleet has none, whatever the environment says.
+    stored = here.host_kwargs()
+    try:
+        host_choice = (
+            HostChoice()
+            if fleet
+            else resolve_host(
+                host,
+                stored["host"],
+                token=host_token,
+                stored_token=stored["host_token"],
+                robot=here.entry.name if here.entry is not None else None,
+            )
+        )
+    except ValueError as e:
+        _fail(str(e))
+        return
+    # The board is asked what it is before the task file is judged and before anything is
+    # built, because both depend on the answer: a camera on the board is a camera the body
+    # has, so a camera task on a blind body is not refused for a camera the run will have, and
+    # a board that does not answer is a run refused while nothing is powered.
+    board: HostClient | None = None
+    hello: HostHello | None = None
+    try:
+        reached = reach_host(host_choice)
+    except HostError as e:
+        _fail(unreached(host_choice, e), hint=_host_unreached_hint(host_choice))
+        return
+    if reached is not None:
+        board, hello = reached
+    try:
         if goal is not None:
             # the union across the flock, so a goal run on mixed bodies allows what any of
-            # them can do; each member is then trimmed to its own half of that
+            # them can do; each member is then trimmed to its own half of that. With a board,
+            # the one body's vocabulary includes what the board's camera lets it do.
             safe = sorted(
                 {
                     v.name
                     for one in specs
-                    for v in registry_for(one).verbs()
+                    for v in registry_for(
+                        one,
+                        with_host_camera(describe(one), hello) if hello is not None else None,
+                    ).verbs()
                     if v.safety_class == "safe"
                 }
             )
@@ -1115,6 +1359,11 @@ def _run_impl(
         # this; `run` never did, and reached the loop's tool_schemas and died on a raw
         # VerbNotFound with the robot already connected and a run directory already made.
         manifests = [describe(s) for s in specs]
+        # the body as its adapter describes it, before the board's camera joins it: all a
+        # detector built before connect may know about the lens (below)
+        described = manifests[0]
+        if hello is not None:
+            manifests[0] = with_host_camera(described, hello)
         section = duck.frontmatter.flock
         method = (
             section.allocation.method
@@ -1142,15 +1391,16 @@ def _run_impl(
     if flock_n is not None and not 2 <= flock_n <= 4:
         _fail("a flock needs 2 to 4 ducks (drop --flock for a single run)")
         return
-    # Before the dispatch below, because a flock takes neither of the two flags and dropping
-    # one silently is the failure both of them exist to prevent: a task about a picture that
-    # never arrived, and an arm nobody was asked to place.
-    several = (
-        flock_n is not None
-        or roster is not None
-        or duck.frontmatter.flock is not None
-        or len(specs) > 1
-    )
+    if detector_choice is not None and fleet:
+        # every flock path builds its own members' detectors, so a choice made here would be
+        # dropped without a word, which is the thing a flag must never do. `--robots` counts
+        # even with one member, as it does for --host: serve-mcp serves one member as a fleet
+        # and would drop the choice there, and the two commands keep one rule
+        _fail(
+            "--detector is for one robot, and a fleet has several bodies",
+            hint="drop --detector, or run the task on one body at a time",
+        )
+        return
     task_images: list[Any] = []
     if images:
         if several:
@@ -1327,6 +1577,27 @@ def _run_impl(
             price=price,
         )
         return
+    # The lens a detector built now measures through: --fov-deg, else the body's own. Never
+    # the board's yet: a body described without a camera may report one of its own when it
+    # connects (an arm given --camera-url, a rosbridge base), and the board's camera is then
+    # only an extra view, so its lens would measure the body's camera. The loop sets the lens
+    # again from the live manifest at connect, which carries the board's when the board's
+    # camera turned out to be the only one (`HostCameraAdapter.connect`).
+    lens_fov = fov_deg or described.limits.get("camera_fov_deg")
+    try:
+        # chosen once, before anything is built: a detector asked for that cannot run here is
+        # a sentence now, and the run never changes detector after it starts
+        asked_detector = explicit_detector(
+            detector_choice,
+            client=board,
+            hello=hello,
+            fov_deg=lens_fov,
+            backend=spec.backend,
+            has_camera="camera" in described.sensors,
+        )
+    except (ValueError, ImportError) as e:
+        _fail(str(e))
+        return
     try:
         # a registered robot may name the pilot that drives it; a flag on the line still wins,
         # and `QUACKD_LLM` sits behind both. One spec carries the vendor and the model
@@ -1345,11 +1616,17 @@ def _run_impl(
             api_key=api_key,
             vision=vision,
             extra_body=extra_body,
+            # only a host a person named for this run or this robot: QUACKD_HOST sits below
+            # QUACKD_BASE_URL, and the local provider reads it there for itself
+            host=host_choice.explicit,
         )
         duck_transport = make_adapter(
             spec,
             seed=seed,
             live=live,
+            # the board's camera joins the body here when it has one; the board has answered
+            # its hello already, so building this asks it nothing
+            host=board,
             **here.adapter_kwargs(address=address, camera_url=camera_url, token=token),
         )
     except (ProviderError, TransportError, ImportError) as e:
@@ -1438,10 +1715,11 @@ def _run_impl(
     # simulator. This is the static manifest, so it is only a head start: the loop asks
     # again with the live one at connect, where a robot may report a camera this does not
     # know about (a rosbridge base) or lack one this promises (a duck built without a head).
+    # A detector chosen above is kept as it is, here and at connect. The body's own
+    # description, not the one with the board's camera: a body described without a camera
+    # gets its colour detector at connect, measured through whichever lens is then primary.
     detector = detector_for(
-        manifests[0].sensors,
-        fov_deg=fov_deg or manifests[0].limits.get("camera_fov_deg"),
-        backend=spec.backend,
+        described.sensors, asked_detector, fov_deg=lens_fov, backend=spec.backend
     )
     # the recorder is sim2d only: it draws the world, and only the simulator has one
     if spec.backend in ("sim2d", "mujoco") and gif:
@@ -1511,12 +1789,23 @@ def _run_impl(
         decision=decision,
         decision_llm=decision_pilot,
         decision_price=decision_price,
+        host=hello.record(board.address) if board is not None and hello is not None else None,
     )
     ui.console.print(
         ui.run_header(
             duck.name,
             _header_rows(
-                provider=pilot, robot=here.label, seed=seed, dry_run=dry_run, memory=robot_memory
+                provider=pilot,
+                robot=here.label,
+                seed=seed,
+                dry_run=dry_run,
+                memory=robot_memory,
+                detector=detector,
+                board=board,
+                hello=hello,
+                backend=spec.backend,
+                host_camera=manifests[0].extras.get(HOST_CAMERA_EXTRAS),
+                sees="camera" in manifests[0].sensors,
             ),
             hint="Ctrl-C or q stops the duck. Press it twice to quit at once.",
         )
@@ -2147,6 +2436,58 @@ _BASEURL = typer.Option(
     help="OpenAI-compatible server, e.g. http://localhost:8000/v1 (local presets).",
     rich_help_panel="Model",
 )
+# Declared once, like every option two commands share, so `run` and `serve-mcp` cannot come to
+# spell the board differently. No `envvar=`: Typer would fold QUACKD_HOST_TOKEN
+# into the flag, above a token stored with the robot, and quackd's order everywhere is the
+# flag, then the robot, then the environment. `quackd.host.resolve_host` reads both variables.
+_HOST = typer.Option(
+    None,
+    "--host",
+    metavar="HOST[:PORT]",
+    help="A machine quackd uses and never runs on: its model server, its camera, its detector "
+    "and its health. --robot still names the body. The port is the one quackd's daemon on the "
+    "board listens on, 9874 unless you changed it, and a local preset keeps its own port on "
+    "that machine. Without the flag, a run uses the robot's registered host, then QUACKD_HOST.",
+    rich_help_panel="Host",
+)
+_HOST_TOKEN = typer.Option(
+    None,
+    "--host-token",
+    help="The token the --host daemon was started with. It travels in a header, never in a "
+    "URL, and never reaches the run record. Without the flag, a run uses the robot's "
+    "registered one, then QUACKD_HOST_TOKEN.",
+    rich_help_panel="Host",
+)
+_DETECTOR = typer.Option(
+    None,
+    "--detector",
+    metavar="color|host|yolo",
+    help="What reads the camera's frames. color is the colour detector on this machine; host "
+    r"is YOLO on the board --host names; yolo is YOLO on this machine and needs quackd\[yolo]. "
+    "Default: the host's detector on a real body when --host names a daemon that can detect, "
+    "else the colour detector on this machine. The run never changes detector once it starts.",
+    rich_help_panel="Host",
+)
+# The same two flags for `quackd robot add` and `edit`, with help of their own for the reason
+# `--llm` has its own there: those commands have no --robot, they are what does the
+# registering, and the token they take goes into robots.json rather than into a run.
+_ROBOT_HOST = typer.Option(
+    None,
+    "--host",
+    metavar="HOST[:PORT]",
+    help="The board this robot uses and quackd never runs on: its runs reach their model "
+    "server, camera and detector there. The port is quackd's daemon's on the board, 9874 "
+    "unless you changed it. --host on a run beats this, and this beats QUACKD_HOST.",
+    rich_help_panel="Host",
+)
+_ROBOT_HOST_TOKEN = typer.Option(
+    None,
+    "--host-token",
+    help="The token that board's daemon was started with. Kept in robots.json, as --token "
+    "is. A run of this robot sends it in a header to that board, or to the --host the run "
+    "names instead, and --host-token on the run beats it.",
+    rich_help_panel="Host",
+)
 _APIKEY = typer.Option(
     None,
     "--api-key",
@@ -2387,6 +2728,9 @@ def run(
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
     fov_deg: float | None = _FOV,
+    host: str | None = _HOST,
+    host_token: str | None = _HOST_TOKEN,
+    detector: str | None = _DETECTOR,
     gif: bool = typer.Option(
         True,
         "--gif/--no-gif",
@@ -2449,6 +2793,9 @@ def run(
             by_hand=by_hand,
             run_name=run_name,
             price=price,
+            host=host,
+            host_token=host_token,
+            detector_choice=detector,
         )
 
 
@@ -2740,19 +3087,26 @@ def doctor(
     ),
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
+    host: str | None = _HOST,
+    host_token: str | None = _HOST_TOKEN,
     registry_dir: str | None = _REGISTRY_DIR,
     as_json: bool = _JSON,
 ) -> None:
     """Check the environment: keys, optional extras, adapters, upstream assumptions.
 
     With `--robot X --address Y` it also connects, which is the only way to see what a
-    robot actually reports before a run does."""
-    from quackd.doctor import collect, render
+    robot actually reports before a run does. With `--host` it asks the daemon on that board
+    what it is, reads the board's health over the network, and probes the local model
+    presets there."""
+    from quackd.doctor import HostReport, collect, refused_host, render
+    from quackd.host import HOST_ENV, HostChoice, resolve_host
+    from quackd.registry import RobotEntry
 
     if address and not robot:
         _fail("--address needs --robot, so quackd knows what it is connecting to")
         return
     rest_pose: dict[str, float] | None = None
+    entry: RobotEntry | None = None
     name: str | None = None
     if robot:
         # a registered name is a robot too, and it brings the address you registered it with.
@@ -2778,6 +3132,30 @@ def doctor(
                 # only a robot you registered has one, because a rest pose is read off the arm
                 # and kept under its name rather than typed on a command line
                 rest_pose = where["rest_pose"]
+    # The board by the ladder `run` climbs, settled by the same function so the two cannot
+    # disagree about which board a robot uses: the flag, then the host registered with the
+    # robot --robot names, then QUACKD_HOST. A value that is no machine, a token no header
+    # can carry, or a typed --host-token with no board to go to, is reported with the place it
+    # came from rather than refused as `run` refuses it: doctor is where a person comes to find
+    # a bad setting, one in QUACKD_HOST is there without anybody having typed --host, and
+    # --json stays one document, as it does for a bad --robot above. Nothing is asked of it,
+    # and it fails the report as a dead daemon does.
+    stored = entry.host_kwargs() if entry is not None else {"host": None, "host_token": None}
+    unusable: HostReport | None = None
+    try:
+        board = resolve_host(
+            host,
+            stored["host"],
+            token=host_token,
+            stored_token=stored["host_token"],
+            robot=entry.name if entry is not None else None,
+        )
+    except ValueError as e:
+        # the ladder stops at the first value that is not blank, so that is the one refused;
+        # a token with no board has none, and the section is titled plain `host`
+        named = (host, stored["host"], os.environ.get(HOST_ENV))
+        text = next((t.strip() for t in named if t and t.strip()), "")
+        board, unusable = HostChoice(), refused_host(text, str(e))
 
     def warn(adapter: Any) -> None:
         # Before the connect, and only for a body that is handed to people, which is the one
@@ -2796,7 +3174,11 @@ def doctor(
             rest_pose=rest_pose,
             robot_name=name,
             before_connect=warn,
+            host=board.host,
+            host_token=board.token,
+            host_token_fix=board.token_fix,
         )
+        report.host = unusable or report.host
         print(json.dumps(report.to_dict()))
         raise typer.Exit(code=0 if report.ok else 1)
     ui.install_logging()
@@ -2809,10 +3191,14 @@ def doctor(
             camera_url=camera_url,
             token=token,
             rest_pose=rest_pose,
+            host=board.host,
+            host_token=board.token,
+            host_token_fix=board.token_fix,
             progress=say,
             robot_name=name,
             before_connect=warn,
         )
+    report.host = unusable or report.host
     render(ui.console, report)
     if not report.ok:
         raise typer.Exit(code=1)
@@ -2842,6 +3228,9 @@ def serve_mcp(
     address: str | None = _ADDR,
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
+    host: str | None = _HOST,
+    host_token: str | None = _HOST_TOKEN,
+    detector: str | None = _DETECTOR,
     dry_run: bool = _DRY,
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Allow confirm-gated verbs (there is no terminal to ask)."
@@ -2867,6 +3256,9 @@ def serve_mcp(
             address=address,
             camera_url=camera_url,
             token=token,
+            host=host,
+            host_token=host_token,
+            detector=detector,
             dry_run=dry_run,
             yes=yes,
             memory=memory,
@@ -2943,6 +3335,8 @@ def _entry_rows(entry: Any, *, flocks: list[str]) -> list[tuple[str, Any]]:
         ("camera", Text("\n".join(entry.camera_urls)) if entry.camera_urls else dash),
         ("rest pose", _rest_pose_text(entry.rest_pose) if entry.rest_pose else dash),
         ("token", Text("set") if entry.token else dash),
+        ("host", Text(entry.host) if entry.host else dash),
+        ("host token", Text("set") if entry.host_token else dash),
         ("pilot", pilot),
         ("note", Text(entry.note) if entry.note else dash),
         ("flocks", Text(", ".join(flocks)) if flocks else dash),
@@ -2975,6 +3369,8 @@ def robot_add(
     address: str | None = _ADDR,
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
+    host: str | None = _ROBOT_HOST,
+    host_token: str | None = _ROBOT_HOST_TOKEN,
     llm: str | None = typer.Option(
         None,
         "--llm",
@@ -2991,6 +3387,7 @@ def robot_add(
     from quackd.adapters.base import AdapterError
     from quackd.agent.providers.base import ProviderError
     from quackd.agent.providers.factory import parse_llm
+    from quackd.host import parse_host
     from quackd.registry import RegistryError, RobotEntry
 
     try:
@@ -3000,21 +3397,30 @@ def robot_add(
         # place a typo can still be caught while the person who made it is looking at it.
         if llm is not None:
             parse_llm(llm, source="--llm")
+        # The board gets the same gate, and needs it here as well as in `add_robot`: the entry
+        # reads a blank host as none, so `--host ""` would otherwise register a robot with no
+        # board and report success.
+        if host is not None:
+            parse_host(host)
         entry = RobotEntry(
             name=name,
             spec=spec,
             address=address,
             camera_url=list(camera_url) or None,
             token=token,
+            host=host,
+            host_token=host_token,
             llm=llm,
             note=note,
         )
         _registry(registry_dir).add_robot(entry)
-    except (RegistryError, AdapterError, ValidationError, ProviderError) as e:
+    except (RegistryError, AdapterError, ValueError, ProviderError) as e:
+        # ValueError is parse_host's, and is also what pydantic's ValidationError is
         _registry_fail(_one_line(e))
         return
     where = f" at {entry.address}" if entry.address else ""
-    ui.console.print(_ok_line(f"added {entry.name}: {entry.key}{where}"))
+    board = f", host {entry.host}" if entry.host else ""
+    ui.console.print(_ok_line(f"added {entry.name}: {entry.key}{where}{board}"))
     ui.console.print(Text(f"  quackd run <duck> --robot {entry.name}", style=ui.STYLES["muted"]))
 
 
@@ -3073,6 +3479,7 @@ def robot_list(
     # 80-column terminal a probe's refusal needs every character it can get
     cells: dict[str, list[Any]] = {
         "address": [Text(e.address or "") for e in entries.values()],
+        "host": [Text(e.host or "") for e in entries.values()],
         "pilot": [Text(e.llm or "") for e in entries.values()],
         "flocks": [Text(", ".join(holders[n])) for n in entries],
         "note": [Text(e.note or "") for e in entries.values()],
@@ -3162,7 +3569,7 @@ def robot_show(
     ui.console.print(ui.kv_grid(rows))
 
 
-_CLEARABLE = ("address", "token", "camera-url", "rest-pose", "llm", "note")
+_CLEARABLE = ("address", "token", "camera-url", "rest-pose", "host", "host-token", "llm", "note")
 
 
 @robot_app.command("edit")
@@ -3172,6 +3579,8 @@ def robot_edit(
     address: str | None = _ADDR,
     camera_url: list[str] = _CAMERA_URL,
     token: str | None = _TOKEN,
+    host: str | None = _ROBOT_HOST,
+    host_token: str | None = _ROBOT_HOST_TOKEN,
     llm: str | None = typer.Option(
         None,
         "--llm",
@@ -3184,7 +3593,8 @@ def robot_edit(
     clear: list[str] = typer.Option(
         [],
         "--clear",
-        help=f"Empty one field: {', '.join(_CLEARABLE)}. Repeatable.",
+        help=f"Empty one field: {', '.join(_CLEARABLE)}. Repeatable. Clearing host clears "
+        "its token too.",
     ),
     registry_dir: str | None = _REGISTRY_DIR,
 ) -> None:
@@ -3201,6 +3611,8 @@ def robot_edit(
         # cameras are today, which is the rule --address and --token already follow
         "camera_url": list(camera_url) or None,
         "token": token,
+        "host": host,
+        "host_token": host_token,
         "llm": llm,
         "note": note,
     }
@@ -3210,6 +3622,15 @@ def robot_edit(
         # a word rather than an absence.
         _fail("--llm needs a pilot: quackd robot edit NAME --clear llm forgets the stored one")
         return
+    for flag, value, what in (("host", host, "a machine"), ("host-token", host_token, "a token")):
+        if value is not None and not value.strip():
+            # the same rule as --llm, for the same reason: an empty value would store nothing
+            # and report success, and forgetting a board is `--clear`'s job
+            _fail(
+                f"--{flag} needs {what}: quackd robot edit NAME --clear {flag} forgets the "
+                "stored one"
+            )
+            return
     changes: dict[str, Any] = {k: v for k, v in given.items() if v is not None}
     for field in clear:
         key = field.strip().lower().replace("-", "_")
@@ -3220,6 +3641,12 @@ def robot_edit(
             _fail(f"--{key.replace('_', '-')} and --clear {field} contradict each other")
             return
         changes[key] = None
+    if "host" in changes and changes["host"] is None:
+        # A host token is its board's, and `resolve_host` sends a robot's token only when the
+        # robot stores a board. Left behind, it would sit in robots.json as a secret for a board
+        # this robot no longer names, and `robot show` would say `host token set` beside
+        # `host -`. `--host-token` given alongside is left to the registry, which refuses it.
+        changes.setdefault("host_token", None)
     if not changes:
         _fail("nothing to change: give a field to set, or --clear FIELD")
         return

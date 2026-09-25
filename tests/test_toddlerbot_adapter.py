@@ -18,7 +18,9 @@ from quackd.agent.prompts import build_system_prompt
 from quackd.cli import app
 from quackd.duckfile.parser import load_duck
 from quackd.duckfile.validate import validate_duck
+from quackd.host import HostClient
 from quackd.perception.color_blob import ColorBlobDetector
+from quackd.perception.host import HostDetector
 from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all
 from quackd.transport.base import Intent
 from quackd.verbs.core import scan_mode
@@ -37,6 +39,7 @@ from quackd_toddlerbot import (
 from quackd_toddlerbot.mock import ToddlerBotMock
 from quackd_toddlerbot.sim2d import ToddlerBotSim2D
 from quackd_toddlerbot.verbs import MOTIONS, SHIPPED_MOTIONS, neck_limits
+from tests.fake_jetson_hostd import FakeHostd
 
 runner = CliRunner()
 
@@ -492,6 +495,38 @@ async def test_search_scan_sweeps_the_head_and_never_turns_the_body() -> None:
     assert mock.theta == pytest.approx(start_theta), "it never turned the body"
     assert not mock.intents_of("move"), "and never asked to walk"
     assert len(mock.intents_of("look")) > 1, "it swept the head instead"
+
+
+async def test_search_scan_stops_the_sweep_when_the_board_detector_fails() -> None:
+    """With `--host`, a real ToddlerBot's detector is YOLO on the board, and a board can stop
+    answering. A failed call is a frame with no detections, and the sweep read each one as the
+    ball not being there: every look taken, then `ball not found`, with the ball in plain view
+    of the first. It stops on the first frame the board could not read and says why."""
+    adapter = ToddlerBotAdapter(ToddlerBotMock(walk=True))
+    manifest = await adapter.connect()
+    mock = adapter.transport
+    assert isinstance(mock, ToddlerBotMock)
+    seen = await _executor(adapter, manifest).run_verb("search_scan", {"target": "ball"})
+    assert seen.ok and seen.data["steps"] == 0, "the ball is in view of the first look"
+    looks = len(mock.intents_of("look"))
+
+    with FakeHostd() as hostd:
+        hostd.detect_status = 503
+        hostd.detect_reply = {"ok": False, "reason": "detection is not available: CUDA OOM"}
+        ex = Executor(
+            registry_from_manifest(manifest, adapter),
+            adapter,
+            contract=None,
+            detector=HostDetector(HostClient(hostd.address), fov_deg=62.2),
+            confirm=allow_all,
+        )
+        result = await ex.run_verb("search_scan", {"target": "ball", "max_steps": 6})
+        assert len(hostd.requests_to("/detect")) == 1
+    assert not result.ok
+    assert result.summary.startswith("search_scan: yolo@host failed, so the sweep stopped: ")
+    assert "not found" not in result.summary
+    assert len(mock.intents_of("look")) == looks + 1, "one look, not the whole sweep"
+    assert not mock.intents_of("move")
 
 
 async def test_the_confirm_gated_verbs_are_actually_gated() -> None:
