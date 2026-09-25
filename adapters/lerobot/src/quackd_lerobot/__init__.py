@@ -55,7 +55,7 @@ from quackd_lerobot.verbs import (
     worth_saying,
 )
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 """Kept in step with quackd's own version by scripts/set_version.py. It lives here rather
 than being read from the core, because this file is all an adapter's sdist contains."""
 

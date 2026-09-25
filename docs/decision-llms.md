@@ -350,13 +350,13 @@ quackd run arm-grip-check --robot lerobot:mock --decision-llm jev        # no ar
 quackd run arm-grip-check --robot arm-01 --by-hand --decision-llm jev    # something in the gripper
 ```
 
-With `--by-hand`, the arm is let go at its rest pose, or at the edge of its travel where the pose
-lies past it, and quackd takes hold of it again at Enter only when every joint reads inside its
-calibrated travel. On an arm whose rest pose was recorded folded past that travel, as `arm-01`'s
-`shoulder_lift` was on 2026-09-23, lift the arm clear of the fold before you press Enter, not
-only the gripper. Press it over the fold and the take-hold
-is refused: torque stays off, nothing moves the arm, and the run ends naming the joint to lift
-inside its travel ([adapters/lerobot.md](adapters/lerobot.md#placing-it-by-hand)).
+With `--by-hand`, the arm is let go at its rest pose, or at the edge of its travel where the
+pose lies past it, and quackd takes hold of it again at Enter only when every joint reads inside
+its calibrated travel. On an arm whose rest pose was recorded folded past that travel, as
+`arm-01`'s `shoulder_lift` was on 2026-09-23, lift the arm clear of the fold before you press
+Enter, not only the gripper. Press it over the fold and the take-hold is refused: torque stays
+off, nothing moves the arm, and the run ends naming the joint to lift inside its travel
+([adapters/lerobot.md](adapters/lerobot.md#placing-it-by-hand)).
 
 Here is a run of it on the mock arm, with a fake standing in for the server, trimmed to the lines
 that matter. (Replayed from a recorded transcript and relabelled to what today's code prints. Not

@@ -24,13 +24,12 @@ quackd validate ducks/find-and-kick.duck --robot open_duck:sim2d
 # exit 1: requires kick, but open-duck-01 (open-duck-mini-v2) does not provide it
 ```
 
-That extra is new, and it installs exactly one package: `quackd-open-duck`, quackd's own
-Apache-2.0 adapter, whose only dependency is quackd itself. It still pulls nothing from
-upstream, and that is deliberate. The Open Duck Mini Runtime has no license file, so quackd
+That extra dates from 0.10.0, and it installs exactly one package: `quackd-open-duck`,
+quackd's own Apache-2.0 adapter, whose only dependency is quackd itself. It still pulls nothing
+from upstream, and that is deliberate. The Open Duck Mini Runtime has no license file, so quackd
 never vendors it and never depends on it; the daemon below is copied onto the duck's own Pi
 and lives beside upstream's code there, not in any wheel ([licenses.md](../licenses.md)).
-Before this release the adapter was part of the core wheel, which is why there was no extra
-to name.
+Before 0.10.0 the adapter was part of the core wheel, which is why there was no extra to name.
 
 ## Backends
 

@@ -22,30 +22,30 @@ motions. ADR-0045 has the whole of it.)
 **Amended 2026-09-24:** the rule for an arm a take-hold refused, whatever refused it. While an
 arm is, or may be, in a person's hands, quackd writes it no goal, does not move it and does not
 switch its torque on again on its own, and it tells the person torque is off only where nothing
-was sent or a read said so. A take-hold refused before its torque write went out (a joint
-placed past its travel, a closed transport, nothing to hold), or one whose read after that
-write found every motor off, left the arm as the release did, limp, and the person is told
-quackd did not take hold and the arm is still in their hands, or, where the take-hold's own read
-found the whole arm at its rest pose with every motor off, that it is still limp at its rest
-pose and which joints to lift inside their travel for quackd to take hold. One refused after it
-(a torque register that did not answer, a torque call that raised) may have left the arm
-energised, and the person is told quackd could not confirm whether it has torque, to hold it as
-though it may move or drop, and to cut its power to be sure, and one whose read found motors on
-beside others off is told which joints hold and that the rest is limp, to keep hold of the arm
-and to cut its power (`HandResult.energised` says which, `torque_on` which motors). That
-speaks for every take-hold since the release: one refused before its own write after an earlier
-one an interrupt cut off past its write says what the reads since that write say. A read speaks
-for the arm only when the bus carried it after the last torque write, since the run's heartbeat
-reads on its own clock. After any refusal, the teardown's stop takes no second hold and sends
-nothing, the hand-back is not asked, the rest move writes nothing and the run says the arm is
-not folded (or, where a read finds it at its rest pose, that it is already there), and the close
-says what its own read found: an unconfirmed torque write as unconfirmed, joints read on by
-name, an arm the placing release let go of that still reads at its rest pose with every motor
-off as limp at that pose, and otherwise the arm limp in their hands, let go of for them to
-place. The stop still picks an arm up out of a hand, as the decision below on the stop says,
-where no take-hold has been refused since the release, which is a Ctrl-C during the placement
-wait: it energises the arm where the hand has it and the rest move folds it. Where that
-take-hold is refused, the person is told so once and it is recorded, as the one at Enter is. The
+was sent or a read said so. A take-hold refused before its torque write went out (a joint placed
+past its travel, a closed transport, nothing to hold), or one whose read after that write found
+every motor off, left the arm as the release did, limp, and the person is told quackd did not
+take hold and the arm is still in their hands, or, where the take-hold's own read found the
+whole arm at its rest pose with every motor off, that it is still limp at its rest pose and
+which joints to lift inside their travel for quackd to take hold. One refused after it (a torque
+register that did not answer, a torque call that raised) may have left the arm energised, and
+the person is told quackd could not confirm whether it has torque, to hold it as though it may
+move or drop, and to cut its power to be sure, and one whose read found motors on beside others
+off is told which joints hold and that the rest is limp, to keep hold of the arm and to cut its
+power (`HandResult.energised` says which, `torque_on` which motors). That speaks for every
+take-hold since the release: one refused before its own write after an earlier one an interrupt
+cut off past its write says what the reads since that write say. A read speaks for the arm only
+when the bus carried it after the last torque write, since the run's heartbeat reads on its own
+clock. After any refusal, the teardown's stop takes no second hold and sends nothing, the
+hand-back is not asked, the rest move writes nothing and the run says the arm is not folded (or,
+where a read finds it at its rest pose, that it is already there), and the close says what its
+own read found: an unconfirmed torque write as unconfirmed, joints read on by name, an arm the
+placing release let go of that still reads at its rest pose with every motor off as limp at that
+pose, and otherwise the arm limp in their hands, let go of for them to place. The stop still
+picks an arm up out of a hand, as the decision below on the stop says, where no take-hold has
+been refused since the release, which is a Ctrl-C during the placement wait: it energises the
+arm where the hand has it and the rest move folds it. Where that take-hold is refused, the
+person is told so once and it is recorded, as the one at Enter is. An earlier version of the
 amendment above said the teardown after a refusal "closes on the note for an arm in somebody's
 hands, never on the one about torque left on", and a person who moved the joint back inside its
 travel had torque switched on under their hand by the stop or by the stall of the rest move,
@@ -60,26 +60,27 @@ limp.)
 
 **Amended again 2026-09-23, by `quackd robot release`:** the rest pose is no longer the only
 place quackd releases an arm. A person at the arm can now ask for its torque by name, wherever
-it stands, because on the bench that day every run that got to its end kept torque on at a
-pose it could not reach and finished at the power switch. `let_go(anywhere=True)` skips the two
+it stands, because on the bench that day every run that got to its end kept torque on at a pose
+it could not reach and finished at the power switch. `let_go(anywhere=True)` skips the two
 refusals about the pose and nothing else: the joints are read first, the release is read back
 off every motor, and the arm is in somebody's hands afterwards, so the close says
 `LIMP_IN_HAND`, or, where that read-back found motors still on, names them and says to cut the
 power (`still_holding_in_hand`), or, where nothing read the release back, says that and to cut
-the power to be sure (`UNREAD_IN_HAND`). Two things open it, and both are a person at a terminal. `quackd robot release
-NAME` warns that connecting takes torque off for a moment and that the release lets the arm
-fall, asks, and only then connects. A run whose last rest move missed, over an arm that still
-answered, offers the same before its close, Enter within `AgentLoop.RELEASE_OFFER_S` (60 s), and only where the CLI could prompt
-(`RunConfig.person`, which is not `hand_off`): never on a dry run, over MCP or in a flock. The
-first decision below stands for `--by-hand`, which still releases at the rest pose and nowhere
-else, because there the release comes before anybody's hands are on the arm, and here the hands
-come first. The last decision stands whole: no verb, no MCP tool, and not on the `RobotAdapter`
-protocol. One reading moved with it, in both doors. A release is `released` from the moment it
-is sent, so a release call that raised part way through its motors, or that a Ctrl-C or a
-cancellation landed on, now leaves the arm in a hand instead of reporting it released in
-nobody's, and a read that failed *before* the release now
-refuses instead of reporting a release that never went out. `HandResult.torque_on` names the
-motors that still read on, so nobody is told torque reads off over a joint that kept it.
+the power to be sure (`UNREAD_IN_HAND`). Two things open it, and both are a person at a
+terminal. `quackd robot release NAME` warns that connecting takes torque off for a moment and
+that the release lets the arm fall, asks, and only then connects. A run whose last rest move
+missed, over an arm that still answered, offers the same before its close, Enter within
+`AgentLoop.RELEASE_OFFER_S` (60 s), and only where the CLI could prompt (`RunConfig.person`,
+which is not `hand_off`): never on a dry run, over MCP or in a flock. The first decision below
+stands for `--by-hand`, which still releases at the rest pose and nowhere else, because there
+the release comes before anybody's hands are on the arm, and here the hands come first. The last
+decision stands whole: no verb, no MCP tool, and not on the `RobotAdapter` protocol. One reading
+moved with it, in both doors. A release is `released` from the moment it is sent, so a release
+call that raised part way through its motors, or that a Ctrl-C or a cancellation landed on, now
+leaves the arm in a hand instead of reporting it released in nobody's, and a read that failed
+*before* the release now refuses instead of reporting a release that never went out.
+`HandResult.torque_on` names the motors that still read on, so nobody is told torque reads off
+over a joint that kept it.
 
 ## Context
 
