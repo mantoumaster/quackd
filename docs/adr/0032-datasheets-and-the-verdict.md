@@ -54,6 +54,33 @@ again rather than allowed to proceed. The route out of that for a person who kno
 is the `duck: 2` `datasheet:` block above, which is the only thing that makes a sheet say
 something new.
 
+**Amended 2026-09-23, after the first SO-101 bench runs of the shoot examples:** the check
+#24 added refused the honest answers of a body this ADR never had in front of it, one that
+does not move. The pilot was told to fill `needs` in even for a feasible verdict and that a 0
+asks for nothing, while the checker left `work_height_m: 0` out of that rule, offered no word
+for a task that goes nowhere (`any` means some kind, which a bolted arm fails), and refused a
+flat indoor floor on a body whose prompt says "it does not move" where a moving body's names a
+terrain. Nearly every run stopped at the `uncertain` that followed and its y/N question. So
+`none` joins the `mobility` and `manipulator` words and asks for nothing, a zero asks for
+nothing on every number, a body that does not move meets `indoor_flat` and is refused anything
+above it as `(it does not move)`, and every field in the tool schema says what it means. The
+two exceptions of the amendment above are four. One reading is also kinder to a pilot's own
+sheet than to anybody else's: an unpublished working height band does not refuse the pilot's
+own verdict, because the prompt never lists a working height as missing, while the
+coordinator, a flock role and the list of bodies that could stay strict, since there an
+unknown is still not a yes.
+
+The prompt's "Not published" line no longer says to decline any task that hinges on one of
+them, which on an arm with no published reach forbade reaching for anything. It tells the
+pilot to answer `uncertain` and name the figure, which is the way out the gate already
+offered, and the sentence under Decision that the prompt renders an unpublished figure as
+"decline" is superseded by it. The SO-101 sheet publishes a reach, as an estimate summed from
+the link lengths in the maker's URDF, and its payload line gives the pilot a scale to judge an
+object by rather than ruling out everything nobody weighed. And a pilot whose `uncertain` a
+person answered with go is told so, and not to assess the same doubt again: told only that
+motion now ran, the bench's pilot asked again, as `infeasible`, and ended its run. The rule
+that a figure nobody published is not met stands.
+
 ## Context
 
 A pilot was told one line about the body it was driving, `manifest.blurb`, and a list of

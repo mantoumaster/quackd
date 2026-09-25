@@ -24,10 +24,10 @@ quackd run toddlerbot-lookout --robot toddlerbot:bridge \
   --address tcp://toddlerbot.local:9873
 ```
 
-That extra is new, and it installs exactly one package: `quackd-toddlerbot`, quackd's own
-Apache-2.0 adapter, whose only dependency is quackd itself. The client is stdlib, and nothing
-of upstream's is in it, the non-commercial `descriptions/` included. Before this release the
-adapter was part of the core wheel, which is why there was no extra to name.
+That extra dates from 0.10.0, and it installs exactly one package: `quackd-toddlerbot`,
+quackd's own Apache-2.0 adapter, whose only dependency is quackd itself. The client is stdlib,
+and nothing of upstream's is in it, the non-commercial `descriptions/` included. Before 0.10.0
+the adapter was part of the core wheel, which is why there was no extra to name.
 
 ## Backends
 
@@ -111,7 +111,7 @@ And what it cannot do whatever the task says, which is the half a refusal usuall
 - carry more than about 1.5 kg with both arms together, or an unknown weight in one
 - keep going for more than about twenty minutes: past that the servos heat up and balance suffers
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The verbs this robot brings
 

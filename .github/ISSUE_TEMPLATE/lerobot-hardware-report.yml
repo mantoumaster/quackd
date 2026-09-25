@@ -5,11 +5,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you. One SO-101 has run `lerobot:real`, for one afternoon on 2026-09-15 on one
-        Windows laptop, so yours is the second arm and the first on a machine this project has
-        not seen, and a report that says "it did not work" is worth as much as one that says it
-        did. That afternoon loaded no policy, reached the arm by `--address` rather than by a
-        registered name and never tried the rest pose, so on any of those yours is still the first.
+        Thank you. One SO-101 has run `lerobot:real`, on one Windows laptop, for an afternoon
+        on 2026-09-15 and another on 2026-09-23, so yours is the second arm and the first on a
+        machine this project has not seen, and a report that says "it did not work" is worth as
+        much as one that says it did. Neither afternoon loaded a policy. The second reached the
+        arm by a registered name, with a rest pose recorded that the arm could not reach, and
+        most of its runs never moved the arm. What quackd changed after it has not met an arm
+        yet, so on a policy, a rest pose that parks and a release, yours is still the first.
 
         Please follow [docs/lerobot-hardware-checklist.md](https://github.com/rokbenko/quackd/blob/main/docs/lerobot-hardware-checklist.md)
         first. It is ordered so that nothing moves until step 10, because this arm has no
@@ -44,8 +46,10 @@ body:
         - "12: an out-of-range goal refused"
         - "13: USB pulled mid-move"
         - "14: Ctrl-C mid-move"
-        - "15: gripper closed on something soft"
-        - "16: a policy, wired up in your own code"
+        - "15: --by-hand, the starting pose set by hand"
+        - "16: Ctrl-C with the arm in your hands"
+        - "17: gripper closed on something soft"
+        - "18: a policy, wired up in your own code"
     validations:
       required: true
   - type: dropdown
@@ -79,6 +83,29 @@ body:
         - "too slow"
         - "not tested"
   - type: dropdown
+    id: slow_move
+    attributes:
+      label: A move_joints given several seconds. Did it look like one motion, and arrive when the time was up?
+      options:
+        - "one motion, and it arrived on time"
+        - "a staircase of small steps"
+        - "it moved at the step cap whatever the time"
+        - "not tested"
+  - type: dropdown
+    id: settle
+    attributes:
+      label: A joint let go at the edge of its travel. Did it settle onto its fold, and gently?
+      description: >-
+        Only if a run or doctor said a joint of the rest pose lies past its travel and parks at
+        the edge. Name the joint, and how far the note said it had to go, under what the arm
+        actually did.
+      options:
+        - "it eased down onto the fold"
+        - "it dropped onto the fold"
+        - "it stayed at the edge"
+        - "no joint was said to lie past its travel"
+        - "not tested"
+  - type: dropdown
     id: stall
     attributes:
       label: Held a joint against its goal. Was the stall caught?
@@ -86,6 +113,31 @@ body:
         - "yes, the verb failed with where it stopped"
         - "no, it kept trying"
         - "not tested"
+  - type: dropdown
+    id: by_hand_hold
+    attributes:
+      label: With --by-hand, did the arm stay where you put it when torque came back on?
+      description: >-
+        Name the joint that moved and how far under what the arm actually did, and whether a
+        loaded arm behaved differently from an empty one.
+      options:
+        - "stayed where I put it"
+        - "twitched or sagged: name the joint and how far"
+        - "refused: a joint moved more than five degrees"
+        - "not tested"
+  - type: dropdown
+    id: pencil_kept
+    attributes:
+      label: A pencil closed in the gripper by hand, through a drawing move. Was it still there at the end?
+      options:
+        - "still there at the end"
+        - "slipped out"
+        - "not tested"
+  - type: input
+    id: decision_llm
+    attributes:
+      label: A decision LLM, if you ran one with --decision-mode shadow
+      description: Which one, how long it took to answer, and how often it agreed with the model.
   - type: input
     id: camera
     attributes:
@@ -94,8 +146,11 @@ body:
   - type: textarea
     id: doctor
     attributes:
-      label: quackd doctor --robot lerobot:real --address ...
-      description: The whole thing. It carries the calibration file, the joint ranges and the temperatures.
+      label: quackd doctor --robot <the name you registered the arm under>
+      description: >-
+        The whole thing. It carries the calibration file, the joint ranges, the temperatures
+        and the rest pose row. Hold the arm while it runs, because connecting takes torque off
+        every motor for a moment.
       render: shell
     validations:
       required: true

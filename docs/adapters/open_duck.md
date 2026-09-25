@@ -24,13 +24,12 @@ quackd validate ducks/find-and-kick.duck --robot open_duck:sim2d
 # exit 1: requires kick, but open-duck-01 (open-duck-mini-v2) does not provide it
 ```
 
-That extra is new, and it installs exactly one package: `quackd-open-duck`, quackd's own
-Apache-2.0 adapter, whose only dependency is quackd itself. It still pulls nothing from
-upstream, and that is deliberate. The Open Duck Mini Runtime has no license file, so quackd
+That extra dates from 0.10.0, and it installs exactly one package: `quackd-open-duck`,
+quackd's own Apache-2.0 adapter, whose only dependency is quackd itself. It still pulls nothing
+from upstream, and that is deliberate. The Open Duck Mini Runtime has no license file, so quackd
 never vendors it and never depends on it; the daemon below is copied onto the duck's own Pi
 and lives beside upstream's code there, not in any wheel ([licenses.md](../licenses.md)).
-Before this release the adapter was part of the core wheel, which is why there was no extra
-to name.
+Before 0.10.0 the adapter was part of the core wheel, which is why there was no extra to name.
 
 ## Backends
 
@@ -74,7 +73,7 @@ And what it cannot do whatever the task says, which is the half a refusal usuall
 - pick up, push or carry anything: there is no arm, no gripper and no beak
 - get back on its feet after a fall: there is no recovery policy, so a fall ends the run and needs a human
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The manifest
 

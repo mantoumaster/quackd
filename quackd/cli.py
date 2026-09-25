@@ -915,8 +915,27 @@ class _TerminalHandOff:
     that decides it; it is here so the loop does not have to know which of its callables
     reaches a terminal."""
 
+    WAIT_ENDED = {
+        "enter": "(Enter)",
+        "kill switch": "(the kill switch ended the wait, without an Enter)",
+        "no keys": "(no key could be read, so the wait ended without an Enter)",
+        "stopped": "(the run was stopped, which ended the wait without an Enter)",
+        "timeout": "(nobody answered: the wait ran out without an Enter)",
+    }
+    """What the saved terminal says about each way a wait ends, since none of them printed."""
+
     def __init__(self) -> None:
         self.switch: KillSwitch | None = None
+        self.ended: str | None = None
+        """How the last wait ended: `enter`, `kill switch` (a Ctrl-C, or `q`), `no keys` (no
+        key thread, or stdin finished), `stopped` (an abort nobody pressed, on a wait that
+        watches the abort flag) or `timeout`. `wait` still answers with a bool, which is
+        all the first `--by-hand` wait needs, since it watches the abort flag and reads that
+        after a False. The two waits that watch a fresh key press instead, the hand-back at the
+        end of a `--by-hand` run and the end-of-run offer, read this as well, because the abort
+        flag is set on every run a person ended and says nothing about this wait, and a record
+        that files a Ctrl-C under "nobody answered" says the room was empty when somebody in it
+        pressed a key."""
 
     def bind(self, switch: KillSwitch) -> None:
         """The switch is built from the loop's own abort event, which does not exist until the
@@ -933,10 +952,26 @@ class _TerminalHandOff:
         if self.switch is None:  # `bind` runs before the loop does, so this is a bug if hit
             raise RuntimeError("the hand-off has no kill switch to read Enter from")
         self.say(text)
+        self.ended = None
+        # counted rather than read off `pressed`, which the wait itself clears on the way in: a
+        # press is counted on the signal's own thread before the loop is told of it, so one
+        # that ended this wait has always been counted by the time it returns
+        presses = self.switch.presses
         came = await self.switch.wait_for_enter(timeout_s=timeout_s, until_abort=until_abort)
+        if came:
+            self.ended = "enter"
+        elif self.switch.presses > presses:
+            self.ended = "kill switch"
+        elif self.switch.keys_ended.is_set():
+            self.ended = "no keys"
+        elif until_abort and self.switch.abort.is_set():
+            # a heartbeat that failed, or a flock stopping its members: an abort nobody pressed
+            self.ended = "stopped"
+        else:
+            self.ended = "timeout"
         # Enter is a keystroke nobody printed, and not pressing it is the more interesting
         # half: a hand-off that timed out is why the arm was left where it was.
-        ui.note("(Enter)" if came else "(nobody answered: the wait ended without an Enter)")
+        ui.note(self.WAIT_ENDED[self.ended])
         return came
 
 
@@ -1649,6 +1684,12 @@ def _run_impl(
             _verbose_line(msg)
 
     hand_off = _TerminalHandOff() if by_hand else None
+    # Whoever is at this terminal, for the one question a run can put at its very end: the
+    # rest move missed, and would they like torque off while they hold the arm. Not `hand_off`,
+    # which the loop reads as "this run is handed over by hand", but the same object when
+    # there is one, so a run reads Enter through one reader. None without a terminal to ask on
+    # and on a dry run, which moves nothing and so has no rest move to miss.
+    person = hand_off or (_TerminalHandOff() if _can_prompt() and not dry_run else None)
     robot_memory = None
     if memory:
         from quackd.memory import RobotMemory
@@ -1676,6 +1717,7 @@ def _run_impl(
         view=fan_out(console_log, status.sink),
         task_images=task_images,
         hand_off=hand_off,
+        person=person,
         decision=decision,
         decision_llm=decision_pilot,
         decision_price=decision_price,
@@ -1717,6 +1759,8 @@ def _run_impl(
         ks = KillSwitch(loop.executor.abort, log=killed)
         if hand_off is not None:
             hand_off.bind(ks)
+        if person is not None and person is not hand_off:
+            person.bind(ks)
         ks.install()
         _SWITCH = ks
         try:
@@ -2995,6 +3039,7 @@ def doctor(
         return
     rest_pose: dict[str, float] | None = None
     entry: RobotEntry | None = None
+    name: str | None = None
     if robot:
         # a registered name is a robot too, and it brings the address you registered it with.
         # Only a name that resolves is substituted: anything else stays exactly as typed, so
@@ -3005,7 +3050,11 @@ def doctor(
         with contextlib.suppress(RegistryError):
             entry = Registry(registry_dir).get_robot(robot)
             if entry is not None:
-                robot = entry.key
+                # The spec for the report, and the name for the body, which is built under it
+                # as a run builds it (`entry.robot_spec`): an arm looks its calibration up by
+                # that id, and every line it writes names it. The name used to be dropped here,
+                # so a probe of `arm-02` read the default id's calibration.
+                robot, name = entry.key, entry.name
                 where = entry.adapter_kwargs(address=address, camera_url=camera_url, token=token)
                 address, camera_url, token = (
                     where["address"],
@@ -3037,6 +3086,15 @@ def doctor(
         named = (host, stored["host"], os.environ.get(HOST_ENV))
         text = next((t.strip() for t in named if t and t.strip()), "")
         board, unusable = HostChoice(), refused_host(text, str(e))
+
+    def warn(adapter: Any) -> None:
+        # Before the connect, and only for a body that is handed to people, which is the one
+        # whose connect takes torque off: the arm's close note sends a person here when it is
+        # holding itself up away from its fold. On stderr under --json, whose stdout is one
+        # JSON document and nothing else.
+        if getattr(adapter, "supports_hand_off", False):
+            (ui.err_console if as_json else ui.console).print(_warn_line(_doctor_warning()))
+
     if as_json:
         report = collect(
             robot,
@@ -3044,6 +3102,8 @@ def doctor(
             camera_url=camera_url,
             token=token,
             rest_pose=rest_pose,
+            robot_name=name,
+            before_connect=warn,
             host=board.host,
             host_token=board.token,
         )
@@ -3063,6 +3123,8 @@ def doctor(
             host=board.host,
             host_token=board.token,
             progress=say,
+            robot_name=name,
+            before_connect=warn,
         )
     report.host = unusable or report.host
     render(ui.console, report)
@@ -3639,6 +3701,13 @@ def robot_rest_pose(
 
     ui.console.print(Text(f"{label} is at", style=ui.STYLES["muted"]))
     ui.console.print(ui.kv_grid((j, f"{v:.1f}") for j, v in joints.items()))
+    # A fold past the travel this arm's calibration recorded is still recorded: it is where
+    # the arm rests, and a run parks at the edge of the travel and lets it settle there. But
+    # the person folding it is the one who can fix it, so they hear it now, before answering,
+    # in the words a run and `doctor` will use. The adapter owns the rule; this only asks.
+    note_for = getattr(adapter, "rest_pose_note", None)
+    if callable(note_for) and (warning := note_for(joints)):
+        ui.console.print(_warn_line(str(warning)))
     if not yes:
         if not _can_prompt():
             _fail(
@@ -3668,6 +3737,168 @@ def robot_rest_pose(
             style=ui.STYLES["muted"],
         )
     )
+
+
+def _connect_warning() -> str:
+    """What connecting does to a body that is handed to a person, and why, in the one wording
+    `quackd robot release`, `quackd doctor` and the arm's own close note share
+    (`adapters.base.CONNECTING_TAKES_TORQUE_OFF`). Imported here rather than at the top, like
+    every other `quackd.adapters` import in this file, so `quackd --help` stays quick."""
+    from quackd.adapters.base import CONNECTING_TAKES_TORQUE_OFF
+
+    return f"{CONNECTING_TAKES_TORQUE_OFF}, because LeRobot configures them with it off"
+
+
+def _release_warning() -> str:
+    """Said before anything connects, and before the question, because both halves happen to
+    an arm a person has to be holding already. The first is upstream's (`configure()` runs
+    inside `torque_disabled()`), and it is the reason this cannot wait until after the
+    connect: by then the arm has already been limp once."""
+    return (
+        f"{_connect_warning()}, and the release then lets the arm fall from wherever it is: "
+        "hold it now, and keep hold of it until it is down"
+    )
+
+
+def _doctor_warning() -> str:
+    """`_release_warning`'s first half, for `doctor --robot` on a body handed to people. A
+    probe connects, and an arm left holding itself up, which is when its close note sends a
+    person to `doctor`, is limp for that moment like any other, so the person is told to
+    support it before the connect rather than finding out during it."""
+    return f"{_connect_warning()}: support the arm until doctor has finished with it"
+
+
+@robot_app.command("release")
+def robot_release(
+    name: str = _ROBOT_NAME,
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Do not ask. Hold the arm before you run it: nothing waits."
+    ),
+    address: str | None = _ADDR,
+    registry_dir: str | None = _REGISTRY_DIR,
+) -> None:
+    """Take torque off this arm wherever it stands, while you hold it.
+
+    For an arm left holding itself up, which is what a run does when it cannot get the arm back
+    to its rest pose: hold the arm, run this, and put it down. It says what connecting and
+    releasing do to the arm, asks, and only then connects, prints the joints, releases, and
+    reads torque back. No verb and no MCP tool can do this: it is a command a person types.
+    """
+    from quackd.adapters.base import AdapterError, HandResult, let_go_if_any
+    from quackd.adapters.factory import make_adapter
+    from quackd.registry import RegistryError
+    from quackd.transport.base import TransportError
+
+    registry = _registry(registry_dir)
+    try:
+        entry = registry.robot(name)
+    except RegistryError as e:
+        _fail(str(e), hint="quackd robot list")
+        return
+
+    kwargs = entry.adapter_kwargs(address=address)
+    # No camera: releasing needs none, and a webcam that will not open refuses the whole
+    # connect. The rest pose IS kept, unlike `rest-pose`: it is what the close judges the arm
+    # against, so an arm this could not release closes under the ordinary torque rule.
+    kwargs.update(camera_url=())
+    try:
+        adapter = make_adapter(entry.robot_spec, **kwargs)
+    except (AdapterError, ImportError) as e:
+        _registry_fail(e if isinstance(e, AdapterError) else AdapterError(str(e)))
+        return
+    if not getattr(adapter, "supports_hand_off", False):
+        _fail(
+            f"{name} ({entry.key}) is not a body quackd takes torque off: only the LeRobot arm is",
+            hint="quackd list-adapters",
+        )
+        return
+
+    label = f"{entry.name} ({entry.key})"
+    if not yes and not _can_prompt():
+        # refused before the warning, because nothing is going to happen that a person has to
+        # get hold of the arm for
+        _fail(
+            "no terminal to ask on: pass --yes to release it",
+            hint=f"hold the arm, then quackd robot release {name} --yes",
+        )
+        return
+    # Before anything connects: connecting is the first thing that takes torque off, so a
+    # warning printed after it would arrive after the arm had already been limp once.
+    ui.console.print(_warn_line(_release_warning()))
+    if not yes:
+        with ui.pause_status():
+            if not typer.confirm(f"release torque on {name}?"):
+                ui.console.print(
+                    Text(
+                        "  nothing was connected, and the arm is as it was",
+                        style=ui.STYLES["muted"],
+                    )
+                )
+                raise typer.Exit()
+
+    async def release() -> tuple[HandResult, str | None]:
+        await adapter.connect()
+        try:
+            joints: dict[str, float] = {}
+            with contextlib.suppress(Exception):
+                state = await adapter.get_state()
+                joints = {str(k): float(v) for k, v in dict(state.extras.get("joints", {})).items()}
+            if joints:
+                # where it is before it goes, which is where the person is holding it
+                ui.console.print(Text(f"{label} is at", style=ui.STYLES["muted"]))
+                ui.console.print(ui.kv_grid((j, f"{v:.1f}") for j, v in joints.items()))
+            # No stop first. A stop picks an arm in somebody's hands back up (`_hold`), and
+            # this arm is about to be in them: the release goes out on its own.
+            released = await let_go_if_any(adapter, anywhere=True)
+        finally:
+            with contextlib.suppress(Exception):
+                await adapter.close()
+        note = getattr(adapter, "close_note", None)
+        return released, str(note) if note else None
+
+    try:
+        released, note = asyncio.run(release())
+    except (TransportError, OSError) as e:
+        where = f" at {kwargs['address']}" if kwargs.get("address") else ""
+        _fail(
+            f"{entry.key}{where}: {e}",
+            hint="nothing was released by quackd, and a connect that failed part way can leave "
+            "some motors limp: keep hold of the arm",
+        )
+        return
+
+    failed = True
+    if released.ok and released.torque_on == ():
+        failed = False
+        ui.console.print(_ok_line(f"torque reads off on every joint of {name}"))
+    elif released.torque_on:
+        ui.err_console.print(
+            ui.fail_line(
+                f"torque still reads on for {', '.join(released.torque_on)}: cut the power",
+                hint=released.reason,
+            )
+        )
+    elif released.ok:
+        # sent, and never read back: the arm is treated as limp, which is what keeps it up, and
+        # the motors after one whose write failed may still hold, which only the switch settles
+        ui.err_console.print(
+            ui.fail_line(
+                f"torque was taken off and could not be read back: {released.reason}",
+                hint="hold the arm as though nothing holds it, and cut its power to be sure",
+            )
+        )
+    else:
+        ui.err_console.print(
+            ui.fail_line(
+                f"nothing was released: {released.reason}",
+                hint="run it again, or hold the arm and cut its power",
+            )
+        )
+    if note:
+        # after a release this is the limp-in-your-hands line, which is the one to end on
+        ui.console.print(_warn_line(note))
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @robot_app.command("remove")

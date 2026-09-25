@@ -1278,6 +1278,28 @@ def test_an_arm_already_at_its_rest_pose_says_so_rather_than_driving_it_there(
     assert report.ok is True
 
 
+def test_a_rest_pose_past_the_travel_is_advice_and_the_verdict_stays_green() -> None:
+    """The bench's first step after the fix: doctor on an arm whose recorded fold lies past
+    its calibrated travel. The arm parks at the edge of the travel, which is the pose it can
+    be driven to, so the row is the ordinary green one and torque is released. What the person
+    needs to know about the fold is advice, in the arm's own numbers, and failing the verdict
+    over it would say an arm that did everything right is broken."""
+    from quackd_lerobot.mock import MOCK_RANGES
+
+    ceiling = MOCK_RANGES["elbow_flex"][1]
+    pose = dict(AWAY_FROM_REST) | {"elbow_flex": ceiling + 12.0}
+    report = doctor.collect("lerobot:mock", address="mock://arm", rest_pose=pose)
+    row = _row(report, "rest pose")
+    assert (row.value, row.state) == ("returned to it", "ok")
+    assert report.ok is True, "parking at the reachable pose is not a fault"
+    advisories = _probe_of(report).advisories
+    said = [a for a in advisories if "lerobot-calibrate" in a]
+    assert len(said) == 1, advisories
+    assert f"elbow_flex is recorded at {pose['elbow_flex']:.0f}" in said[0], said[0]
+    assert f"driven to {ceiling:.0f} and no further" in said[0], said[0]
+    assert not any("torque was left on" in a for a in advisories), advisories
+
+
 def test_a_robot_with_no_rest_pose_recorded_says_how_to_record_one_and_still_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1304,11 +1326,14 @@ def test_an_arm_that_arrived_and_was_still_held_at_the_close_fails_the_verdict_t
 
     A person runs `doctor` to be told whether they can walk away. Saying yes over a note that
     says the arm is still powered is the one answer this command must never give."""
+    from quackd_lerobot.verbs import torque_left_on
+
     arm = LeRobotMock(rest_pose=dict(REST))
 
     async def arrive_then_drift() -> None:
         arm.sequence.append("close")
-        arm.close_note = "the arm is not at its rest pose (it stopped answering), so torque was left on and it will not fall: hold the arm and cut its power, or run again"  # noqa: E501
+        # the arm's own sentence rather than a copy of it, so the fake says what the arm does
+        arm.close_note = torque_left_on("it stopped answering", None)
 
     monkeypatch.setattr(arm, "close", arrive_then_drift)
     report = _probed(monkeypatch, arm, rest_pose=dict(REST))
@@ -1340,6 +1365,42 @@ def test_an_arm_that_cannot_reach_its_rest_pose_fails_the_verdict_and_says_torqu
     Console(file=buf, width=200).print(doctor.verdict(report))
     said = " ".join(buf.getvalue().split())
     assert "FAILURE" in said and "rest pose: not reached" in said, said
+
+
+class _ConnectedOnRetry(LeRobotMock):
+    """An arm whose connect had to be made again, reported the way the real backend reports
+    it: `connect_notes`, filled by the connect that just happened."""
+
+    def __init__(self, notes: list[str], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._retries = list(notes)
+        self.connect_notes: list[str] = []
+
+    async def connect(self) -> Any:
+        connected = await super().connect()
+        self.connect_notes = list(self._retries)
+        return connected
+
+
+def test_a_connect_the_arm_had_to_make_again_is_advice_and_the_verdict_stays_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bench, 2026-09-23: connects failed on one lost packet on the bus, and the next connect
+    went through. The real backend now tries again by itself, and a probe that connected on a
+    later attempt did connect: the row says so and the verdict stays green. What the person
+    needs is which joint the bus dropped a packet on, because one that does it every time is a
+    cable to look at, so every retry the arm reports is listed as advice, first, in its own
+    words, before the probe's other advice."""
+    said = [
+        "the bus lost a packet on elbow_flex while connecting, and connect ran again",
+        "and on wrist_roll the second time, and the next connect went through",
+    ]
+    arm = _ConnectedOnRetry(said, rest_pose=dict(REST))
+    report = _probed(monkeypatch, arm, rest_pose=dict(REST))
+    assert _row(report, "connected").value == "yes"
+    advisories = _probe_of(report).advisories
+    assert advisories[: len(said)] == said, advisories
+    assert report.ok is True, "a connect that went through on a retry is a connect"
 
 
 class _TwoEyes(LeRobotMock):

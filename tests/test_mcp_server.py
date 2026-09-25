@@ -589,6 +589,32 @@ async def test_the_mcp_verdict_tool_says_what_the_prompt_says() -> None:
         assert "before_verdict" in said, "which verbs run first is a field, not a fixed list"
 
 
+async def test_the_mcp_verdict_tool_spells_out_the_words_needs_takes() -> None:
+    """MCP types `needs` as a bare dict, so a client is shown no enum and none of the loop's
+    field descriptions. An MCP pilot asked to fill `needs` in had to guess the words, and the
+    one it most needs on an arm, `mobility: none`, did not exist. The description names every
+    word the checker accepts, read from the same tuples, and says a 0 or a none asks for
+    nothing."""
+    from quackd.verdict import MANIPULATOR_WORDS, MOBILITY_WORDS, TERRAIN_ORDER
+
+    assert "none" in MOBILITY_WORDS and "none" in MANIPULATOR_WORDS, "the words an arm needs"
+    async with connected() as (client, _session, _transport):
+        tool = next(t for t in (await client.list_tools()).tools if t.name == "robot_assess_task")
+        said = tool.description or ""
+        for key, words in (
+            ("mobility", MOBILITY_WORDS),
+            ("manipulator", MANIPULATOR_WORDS),
+            ("terrain", TERRAIN_ORDER),
+        ):
+            assert f"{key} is " in said, key
+            for word in words:
+                assert word in said, f"{key} never names {word}"
+        assert "none means the task needs no locomotion" in said
+        assert "a body that does not move meets indoor_flat" in said
+        assert "give 0 or none, when the task does not need it" in said
+        assert "work_height_m is a height the hands must reach, not a minimum" in said
+
+
 async def test_a_model_cannot_answer_for_the_human() -> None:
     """The tool has no `human` field to fill in, so the pilot cannot clear its own doubt."""
     async with connected() as (client, session, _transport):
@@ -708,6 +734,28 @@ async def test_a_session_starts_from_and_returns_to_the_rest_pose() -> None:
     assert arm.sequence[-3:] == ["stop", "rest", "close"], arm.sequence
     assert arm.torque is False, "at its rest pose the arm is a thing that can be let go of"
     assert arm.close_note is None
+
+
+async def test_a_session_whose_rest_pose_lies_past_the_travel_says_so_once_and_starts(
+    caplog: Any,
+) -> None:
+    """An MCP session has no transcript of its own to put the sentence in, so it goes to the
+    log where the rest move's own reason goes, once, at connect. The session starts: an arm
+    parked at the edge of its travel has reached the pose it can be driven to."""
+    from quackd_lerobot.mock import MOCK_RANGES
+
+    floor = MOCK_RANGES["wrist_flex"][0]
+    arm = LeRobotMock(rest_pose=dict(REST) | {"wrist_flex": floor - 11.0})
+    caplog.set_level(logging.INFO, logger="quackd.mcp")
+    _server, session = build_server(LeRobotAdapter(arm), heartbeat_period_s=0.05)
+    await session.connect()
+    try:
+        said = [m for m in caplog.messages if "lerobot-calibrate" in m]
+        assert len(said) == 1, caplog.messages
+        assert f"driven to {floor:.0f} and no further" in said[0], said[0]
+    finally:
+        await session.close()
+    assert arm.torque is False and arm.close_note is None
 
 
 async def test_a_dry_run_session_never_moves_the_arm() -> None:

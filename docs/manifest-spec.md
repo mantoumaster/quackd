@@ -83,10 +83,11 @@ Three rules make it honest:
 - **`confidence` is one of `official` (the maker or a paper says so), `estimate` (one vendor,
   a community number, a reading off a photo) or `measured` (somebody measured it and said
   how), and `source` is required.** A figure without a source is a rumour.
-- **`None` means not published.** The prompt says so in those words and tells the pilot to
-  decline whatever hinges on it. It is never rendered as a zero, and a figure that cannot
-  apply (endurance on a mains-powered arm, payload on a body with no manipulator) is not
-  listed as missing either.
+- **`None` means not published.** The prompt says so in those words and tells the pilot,
+  where a task turns on one, to answer `uncertain` and name it rather than guess, and a
+  `feasible` verdict that names it is refused. It is never rendered as a zero, and a figure
+  that cannot apply (endurance on a mains-powered arm, payload on a body with no
+  manipulator) is not listed as missing either.
 - **Speeds are not in it.** `limits` is what quackd clamps to, which is a rule about what
   quackd sends rather than a fact about the body, and the prompt renders those separately as
   clamps.
@@ -107,7 +108,7 @@ The seven sheets quackd publishes, with each figure's confidence:
 |---|---|---|---|---|---|---|---|
 | `microduck` | 0.8 kg official | 0.25 m official | 15 official | not published | not published | not published | a beak |
 | `open_duck` | not published | 0.42 m official | 14 estimate | not published | not published | not published | none |
-| `lerobot` | not published | 0.53 m estimate | 6 official | 0.5 kg estimate | not published | mains powered | one gripper |
+| `lerobot` | not published | 0.53 m estimate | 6 official | 0.5 kg estimate | 0.4 m estimate, from the maker's URDF | mains powered | one gripper |
 | `rosbridge` | from the URDF | not published | from the URDF | not published | not published | not published | none |
 | `xlerobot` | 12 kg official | not published | 17 official | 1.0 kg official, per arm | 0.40 m official | 600 min official | two grippers |
 | `alohamini` | not published | not published | 14 official | 1.0 kg official, per arm | 0.52 m official | not published | two grippers |

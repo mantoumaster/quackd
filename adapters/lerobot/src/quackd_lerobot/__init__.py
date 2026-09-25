@@ -45,9 +45,17 @@ from quackd.transport.base import (
 )
 from quackd.verbs.core import CORE
 from quackd.verbs.registry import Precondition, Verb
-from quackd_lerobot.verbs import JOINTS, lerobot_conditions, lerobot_verbs
+from quackd_lerobot.verbs import (
+    JOINTS,
+    lerobot_conditions,
+    lerobot_verbs,
+    published_travel,
+    reachable_rest_goal,
+    rest_clip_note,
+    worth_saying,
+)
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 """Kept in step with quackd's own version by scripts/set_version.py. It lives here rather
 than being read from the core, because this file is all an adapter's sdist contains."""
 
@@ -58,6 +66,32 @@ BLURB = (
     "a six-joint desktop robot arm with a parallel gripper (an SO-101 class arm driven "
     "by LeRobot), bolted to a table"
 )
+
+REACH = Figure(
+    value=0.4,
+    confidence="estimate",
+    source="the maker's URDF, TheRobotStudio/SO-ARM100 Simulation/SO101/so101_new_calib.urdf",
+    note="link lengths from the shoulder to the gripper frame, summed with the arm straight and "
+    "rounded down",
+)
+"""How far the gripper gets from the shoulder, read off the maker's own robot description.
+
+Nobody publishes a reach for the SO-101, and the sheet used to say so, which on an arm told
+the pilot to decline anything that turned on reaching: every task an arm has. The URDF gives
+each joint's origin in its parent link's frame, so the distance from one joint to the next is
+the length of that origin vector. From `shoulder_lift` outwards, read on 2026-09-23:
+
+    elbow_flex          (-0.11257, -0.028,     0)          0.116 m
+    wrist_flex          (-0.1349,   0.0052,    0)          0.135 m
+    wrist_roll          ( 0,       -0.0611,    0.0181)     0.064 m
+    gripper_frame_joint (-0.0079,  -0.000218, -0.0981274)  0.098 m
+
+They sum to 0.413 m. That is an upper bound, since the links only add up in full when they
+are collinear, and a grid sweep of `elbow_flex`, `wrist_flex` and `wrist_roll` through their
+URDF limits put the farthest the gripper frame gets from the `shoulder_lift` axis at about
+0.41 m. So 0.4, rounded down, and an estimate rather than official: it is quackd's arithmetic
+on the maker's file, not a figure the maker states. It is measured from the shoulder joint
+rather than the base, and to the gripper frame rather than the fingertips."""
 
 DATASHEET = Datasheet(
     height_m=Figure(
@@ -73,14 +107,19 @@ DATASHEET = Datasheet(
         note="five joints and a gripper",
     ),
     payload_kg=Figure(value=0.5, confidence="estimate", source="one vendor's listing"),
+    reach_m=REACH,
     manipulator="gripper",
     arms=1,
     tethered=True,
     cannot=[
         "go anywhere: it is bolted to a table and has no base",
-        "lift or hold more than about half a kilogram, and nothing whose weight is not known",
-        "reach anything that is not already within arm's length of its base: the reach is not "
-        "published",
+        # This used to end "and nothing whose weight is not known", which is nearly every
+        # object a task names: nobody tells the pilot what a pen weighs. It needs a scale to
+        # judge an object by, not a ban on everything unweighed
+        "lift or hold more than about half a kilogram: a pen, an empty cup or a wooden block "
+        "weighs far less than that, and a full bottle or a tool may weigh more",
+        f"reach anything more than about {REACH.value:g} m from its shoulder: that is the arm "
+        "held straight out, and any bent pose reaches less",
         "feel what it holds: nothing reports grip force, so holding is inferred from the "
         "gripper stopping short of shut, which an empty hand that binds also does",
         "know its own mass: vendor listings disagree by a factor of three",
@@ -111,10 +150,16 @@ def lerobot_manifest(
     camera_url: str | None = None,
     camera_fov_deg: float | None = None,
     camera_names: Sequence[str] = (),
+    rest_pose_clipped: Sequence[tuple[str, float, float]] = (),
 ) -> RobotManifest:
     """The arm as data. `camera` and `policy` are what the backend found at connect: the
     static manifest of `real` claims neither, the mock has both. So are the joint ranges,
-    which come off the arm's own calibration file and are unknown until it has answered."""
+    which come off the arm's own calibration file and are unknown until it has answered.
+
+    So is `rest_pose_clipped`: each joint the recorded rest pose puts past that travel, as
+    `(joint, recorded, reachable)`. It goes in the manifest rather than the state because the
+    manifest is what a run's record opens with, and the reader of a transcript whose arm
+    parked short of its recorded fold deserves to find out why on the first line."""
     own = lerobot_verbs(policy=policy)
     verbs = [
         verb_spec(own["report_state"], core=True),
@@ -151,7 +196,14 @@ def lerobot_manifest(
     }
     if joint_range_deg:
         extras["joint_range_deg"] = {
-            joint: [round(lo, 1), round(hi, 1)] for joint, (lo, hi) in joint_range_deg.items()
+            joint: published_travel(lo, hi) for joint, (lo, hi) in joint_range_deg.items()
+        }
+    if rest_pose_clipped:
+        # only when there is one: a pose inside its travel changes nothing, so the manifest of
+        # every such arm, its digest included, stays exactly what it was
+        extras["rest_pose_clipped"] = {
+            joint: {"recorded": round(recorded, 1), "reachable": round(reachable, 1)}
+            for joint, recorded, reachable in rest_pose_clipped
         }
     if calibration_file:
         extras["calibration_file"] = calibration_file
@@ -194,8 +246,10 @@ class LeRobotAdapter:
     supports_hand_off = True
     """A person can be handed this body: quackd takes torque off at its recorded rest pose,
     waits while they place it, and holds whatever pose they left it in (`quackd run
-    --by-hand`). Declared rather than inferred, because the run refuses the flag outright on a
-    body that does not offer it rather than connecting and finding out."""
+    --by-hand`), and a person holding it can have its torque taken off wherever it stands
+    (`quackd robot release`, and the offer at the end of a run whose rest move missed).
+    Declared rather than inferred, because the run and the command refuse outright on a body
+    that does not offer it rather than connecting and finding out."""
     supports_rest_pose = True
     """This body is driven to a recorded pose before torque is released. The registry's
     `rest-pose` command asks for exactly this, because a body with joints that quackd does
@@ -226,8 +280,21 @@ class LeRobotAdapter:
             camera_url=getattr(spec, "url", None),
             camera_fov_deg=getattr(spec, "fov_deg", None),
             camera_names=getattr(self.transport, "camera_keys", ()),
+            rest_pose_clipped=tuple(getattr(self.transport, "rest_clipped", ())),
         )
         return self.manifest
+
+    def rest_pose_note(self, pose: dict[str, float]) -> str | None:
+        """What recording `pose` as the rest pose would mean on this arm, or None if nothing.
+
+        `quackd robot rest-pose` asks this after reading the joints and before asking whether
+        to keep them. The clip is this adapter's, on the travel the connected backend read off
+        its own calibration, so the command neither knows the rule nor reimplements it, and the
+        sentence is the one the run and `doctor` say about the same pose."""
+        ranges = dict(getattr(self.transport, "joint_range_deg", None) or {})
+        _, clipped = reachable_rest_goal(pose, ranges)
+        name = getattr(self.transport, "registered_name", None)
+        return rest_clip_note(worth_saying(clipped), name)
 
     async def disconnect(self) -> None:
         await self.transport.close()
@@ -256,7 +323,12 @@ class LeRobotAdapter:
     async def go_to_rest(self) -> RestResult:
         return await go_to_rest_if_any(self.transport)
 
-    async def let_go(self) -> HandResult:
+    async def let_go(self, *, anywhere: bool = False) -> HandResult:
+        """Torque off, for a person at the arm. `anywhere` is the transport's own keyword and
+        is passed only when set, for `let_go_if_any`'s reason: without it the arm is released
+        at its rest pose or refused, which is `--by-hand`'s rule and stays the default."""
+        if anywhere:
+            return await let_go_if_any(self.transport, anywhere=True)
         return await let_go_if_any(self.transport)
 
     async def take_hold(self) -> HandResult:
@@ -312,11 +384,55 @@ class LeRobotAdapter:
         return str(note) if note else None
 
     @property
+    def connect_notes(self) -> tuple[str, ...]:
+        """One sentence per connect attempt the backend had to make again, from the last
+        `connect()`. Proxied for `close_note`'s reason: the run narrates them into its
+        transcript and `doctor` lists them as advice, and both hold this adapter. The backend
+        has already logged each one while it happened; this is the record."""
+        return tuple(str(n) for n in getattr(self.transport, "connect_notes", ()) or ())
+
+    @property
+    def in_hand(self) -> bool | None:
+        """Whether the backend takes the arm to be in somebody's hands, because a release went
+        out and no hold has confirmed torque since, or None when the backend does not say.
+        Proxied for `close_note`'s reason: the end-of-run offer reads it off this adapter after
+        an interrupt lands on the release it asked for, to tell a release that went out from
+        one that never did."""
+        held = getattr(self.transport, "in_hand", None)
+        return None if held is None else bool(held)
+
+    @property
+    def refused_hold(self) -> HandResult | None:
+        """The take-hold the backend refused since the last release that left the arm in a
+        hand, or None. Proxied for `close_note`'s reason: the run reads it off this adapter
+        after the stop that opens its teardown, to say a refusal that stop made, and to know
+        which arm the person is holding when an interrupt kept the run's own take-hold from
+        telling it."""
+        refused = getattr(self.transport, "refused_hold", None)
+        return refused if isinstance(refused, HandResult) else None
+
+    def set_stop_check(self, check: Callable[[], bool] | None) -> None:
+        """Hand the backend a way to hear that a stop was asked for while it connects, or take
+        it away. Passed on to a backend that retries its connect (`LeRobotReal`), and a no-op
+        on one that does not, which is the mock. The agent loop hands its abort flag's `is_set`
+        to any body that has this before it connects, and takes it back afterwards."""
+        forward = getattr(self.transport, "set_stop_check", None)
+        if callable(forward):
+            forward(check)
+
+    @property
     def stop_error(self) -> str | None:
         """Why the last stop did not reach the arm, when the backend knows: the core `stop`
         verb reads this and refuses to say "stopped" over a hold that never got there."""
         error = getattr(self.transport, "stop_error", None)
         return str(error) if error else None
+
+    @property
+    def stop_skipped(self) -> tuple[str, ...]:
+        """The body joints the last stop wrote no goal for, because each read past its travel.
+        Proxied for `stop_error`'s reason: the core `stop` verb reads it off whatever it was
+        handed, which is this adapter, and says which joints the hold left alone."""
+        return tuple(str(j) for j in getattr(self.transport, "stop_skipped", ()) or ())
 
     async def heartbeat(self) -> None:
         await self.transport.heartbeat()
@@ -400,6 +516,11 @@ def make(
     rest_pose: dict[str, float] | None = None,
 ) -> LeRobotAdapter:
     _check_rest_pose(rest_pose)
+    # The name the arm was asked for by, before the default fills it in: the registered name
+    # for every robot built from the registry, which is the only place a rest pose comes from.
+    # The close note names it in the commands it gives a person, and says NAME where there
+    # is none rather than the default id, which is not necessarily what anybody registered.
+    registered_name = robot_id
     if backend == "mock":
         from quackd_lerobot.mock import LeRobotMock
 
@@ -407,7 +528,9 @@ def make(
         # rather than dropped: only the real arm opens more than one, and a task rehearsed
         # against the mock should fail here rather than at the bench
         one_camera_url(camera_url, spec="lerobot:mock")
-        return LeRobotAdapter(LeRobotMock(rest_pose=rest_pose), robot_id=robot_id)
+        return LeRobotAdapter(
+            LeRobotMock(rest_pose=rest_pose, registered_name=registered_name), robot_id=robot_id
+        )
     if backend == "real":
         from quackd_lerobot.real import LeRobotReal, parse_camera_urls, step_from_env
 
@@ -418,6 +541,7 @@ def make(
                 max_step_deg=step_from_env(),
                 cameras=parse_camera_urls(camera_urls(camera_url)),
                 rest_pose=rest_pose,
+                registered_name=registered_name,
             ),
             robot_id=robot_id,
         )
@@ -434,6 +558,7 @@ __all__ = [
     "implementations",
     "lerobot_manifest",
     "make",
+    "published_travel",
 ]
 
 

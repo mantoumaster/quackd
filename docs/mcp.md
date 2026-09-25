@@ -40,7 +40,7 @@ first member, else the first Microduck, else the first declared.
 |---|---|
 | `robot_list` | Every robot this server fronts: name, adapter, backend, vendor, model, embodiment, mobility, manifest id and digest, its `datasheet` as data and as one paragraph of `datasheet_text`, loaded contract, health, and which one is the default. Call this first. |
 | `robot_list_verbs(robot?)` | That robot's verbs from its own manifest: params, safety class, `canonical` name and `aliases`, whether it is `core`, whether it is `before_verdict` (it looks, speaks or brakes, so it runs before the pilot has judged the task), and whether its current contract allows it. |
-| `robot_assess_task(robot?, verdict, reason, limits_consulted?, estimates?, needs?)` | Your verdict on whether that body can do the task, judged against the datasheet in its `robot_list` row: `feasible`, `infeasible` or `uncertain`. Required before the first verb that moves the body, and `robot_run_verb` refuses anything that does until you answer (the `verdict` gate). An `infeasible` answer names, in `could`, the robots here whose datasheets meet what the task needs, so it can be handed over. `uncertain` stays pending: there is no terminal to ask on, so ask the person you are chatting with and answer again. Answering again replaces the earlier verdict, which is how an `uncertain` is cleared once you have asked, and is also why an `infeasible` here is not the end of the session the way it is the end of a `quackd run`. A `feasible` whose `needs` that robot's own datasheet does not meet, or does not publish, is refused before it is recorded and names the need (a minimum of zero and an unpublished terrain asked as `indoor_flat` are the two exceptions), which is the check a bid is already held to at the coordinator: answer `infeasible` if that need decides the task, `uncertain` if a person could know the figure, or correct a need you asked more of than the task turns on. Moves nothing and costs no step. |
+| `robot_assess_task(robot?, verdict, reason, limits_consulted?, estimates?, needs?)` | Your verdict on whether that body can do the task, judged against the datasheet in its `robot_list` row: `feasible`, `infeasible` or `uncertain`. Required before the first verb that moves the body, and `robot_run_verb` refuses anything that does until you answer (the `verdict` gate). An `infeasible` answer names, in `could`, the robots here whose datasheets meet what the task needs, so it can be handed over. `uncertain` stays pending: there is no terminal to ask on, so ask the person you are chatting with and answer again. Answering again replaces the earlier verdict, which is how an `uncertain` is cleared once you have asked, and is also why an `infeasible` here is not the end of the session the way it is the end of a `quackd run`. A `feasible` whose `needs` that robot's own datasheet does not meet, or does not publish, is refused before it is recorded and names the need, which is the check a bid is already held to at the coordinator. The exceptions are the four [safety.md](safety.md#when-a-feasible-verdict-contradicts-itself) lists: a zero and a `none` ask for nothing, and a body that publishes no terrain, or does not move, meets `indoor_flat`. A `work_height_m` is not held against a robot's own verdict when its sheet publishes no working height band, though such a robot is still left out of `could` for a task that names one. When a need is refused: answer `infeasible` if that need decides the task, `uncertain` if a person could know the figure, or correct a need you asked more of than the task turns on. Moves nothing and costs no step. |
 | `robot_run_verb(robot?, verb, params?)` | Run any verb through that robot's executor (`search_scan`, `go_to` or its alias `walk_to`, `kick`, `gaze`, `express`, …). Refusals come back as `ok: false`, and a verb the manifest does not list is a refusal too. The result carries a `log` list of what happened behind it (see below). |
 | `robot_observe(robot?)` | The `observe` verb through the executor (it counts against the budget), returning the camera frame as a PNG image, a one-line detection summary, and the log as a final text block. A robot with several cameras returns one image per camera, each preceded by a `camera <name>:` line, and the detection summary is the primary camera's alone, because a bearing measured through one lens means nothing through another. A camera that gave nothing this step costs its own picture and nothing else. |
 | `robot_say(robot?, text)` | The `say` verb, with a `log` like `robot_run_verb`. No robot here has text to speech, so it degrades: one of seven tones on a Microduck, one of the duck's own sounds on an Open Duck. A robot without a `sound` intent refuses with `ok: false`. |
@@ -313,17 +313,20 @@ against a real duck: [adapters/open_duck.md](adapters/open_duck.md) and its
   carry on.
 - Every robot connects at startup, in the order given; if one cannot, the server stops
   and disconnects the ones that did, rather than fronting a flock with a hole in it.
-- A robot with a recorded rest pose, which today means a LeRobot arm, is driven to that pose
-  as part of connecting, before the heartbeat starts, so the arm this session is handed is the
-  arm the last one put down rather than wherever it was left. An arm that cannot get there is
-  not a robot this session fronts: the connect fails with `the arm did not reach its rest
-  pose`, and by the rule above the server stops. The same move runs again when the session
-  closes, between the `stop` and the disconnect, which is the only window where putting the arm
-  down changes whether it falls once torque is released. Where the arm is not at that pose,
-  torque is left on and it holds itself up instead of dropping, and [safety.md](safety.md) has
-  the line it prints and what to do about it. A session started with `--dry-run` moves nothing
-  at either end, and a robot with no pose recorded ends the way it always did. Recording one is
-  `quackd robot rest-pose NAME` ([registry.md](registry.md)).
+- A robot with a recorded rest pose, which today means a LeRobot arm, is driven to that pose as
+  part of connecting, before the heartbeat starts, so the arm this session is handed is the arm
+  the last one put down rather than wherever it was left. An arm that cannot get there is not a
+  robot this session fronts: the connect fails with `the arm did not reach its rest pose`, and
+  by the rule above the server stops. A pose recorded past the travel the arm's calibration
+  recorded is parked at the edge of that travel, which counts as getting there, and the server
+  logs once which joint is free to settle the rest of the way
+  ([adapters/lerobot.md](adapters/lerobot.md#a-pose-past-the-travel)). The same move runs again
+  when the session closes, between the `stop` and the disconnect, which is the only window where
+  putting the arm down changes whether it falls once torque is released. Where the arm is not at
+  that pose, torque is left on and it holds itself up instead of dropping, and
+  [safety.md](safety.md) has the line it prints and what to do about it. A session started with
+  `--dry-run` moves nothing at either end, and a robot with no pose recorded ends the way it
+  always did. Recording one is `quackd robot rest-pose NAME` ([registry.md](registry.md)).
 - Confirm-gated verbs are **refused** unless the server was started with `--yes`, because
   there is no terminal to ask on. The refusal text tells the model why.
 - What stops the body when quackd goes quiet is the body's job, not the server's, and it differs per robot. Read [safety.md](safety.md) before an MCP session drives hardware.

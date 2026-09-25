@@ -87,7 +87,8 @@ to the file they were read from, because it is the robot's own:
 Everything else stays unknown, **payload above all**: a description says nothing about what
 a gripper can hold, and quackd on this adapter commands a velocity and nothing else. Joints
 named like a gripper are noted and claimed as nothing. A pilot reading a datasheet full of
-"not published" is told to decline whatever hinges on it, which is the point.
+"not published" is told to answer `uncertain` wherever a task turns on one of them, and a
+`feasible` that names one is refused, which is the point.
 
 Two caps bound what comes back. A description over 8 MiB is refused unparsed, so mass and
 joint count stay unknown with `the description is over 8192 KiB` as the reason, and only the

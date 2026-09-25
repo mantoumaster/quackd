@@ -16,13 +16,16 @@ and why the adapter is shaped the way it is is
 [ADR-0036](../adr/0036-what-the-arm-does-not-say.md).
 
 > [!NOTE]
-> **The `real` backend has run on an arm. Once.** On 2026-09-15 an SO-101 follower, calibrated
-> as `arm-01` and reached with no registered name, ran `lerobot-lookout` and then free-form `--goal` runs
-> on Windows 11 with Python 3.12.12, lerobot 0.6.1 and quackd 0.9.0, piloted by OpenAI's
-> `gpt-6-astra`. It also went limp and fell at the end of every one of those runs, which is what
-> [the rest pose](#the-rest-pose) now exists to fix. What ran, what went wrong and what that
-> afternoon did not measure is in [Status](#status); the account from the other end, an empty
-> laptop to a waving arm, is [lerobot-first-run.md](../lerobot-first-run.md).
+> **The `real` backend has run on an arm.** On 2026-09-15 an SO-101 follower, calibrated as
+> `arm-01` and reached with no registered name, ran `lerobot-lookout` and then free-form
+> `--goal` runs on Windows 11 with Python 3.12.12, lerobot 0.6.1 and quackd 0.9.0, piloted by
+> OpenAI's `gpt-6-astra`. It also went limp and fell at the end of every one of those runs,
+> which is what [the rest pose](#the-rest-pose) exists to fix. On 2026-09-23 the same arm ran
+> again with a rest pose recorded, and the pose lay past the travel its calibration recorded,
+> where the servo will not be driven: [The rest pose](#the-rest-pose) says what that did and
+> what quackd does about it now. What ran, what went wrong and what that first afternoon did not
+> measure is in [Status](#status); the account from the other end, an empty laptop to a waving
+> arm, is [lerobot-first-run.md](../lerobot-first-run.md).
 
 ```bash
 # offline, the default
@@ -90,10 +93,11 @@ drive the arm.
    ```
 
 2. **Bring the real arm up in the order that can only fail safely.**
-   [lerobot-hardware-checklist.md](../lerobot-hardware-checklist.md) is sixteen steps and
-   nothing moves until step 10. Do not skip the calibration step: quackd refuses an arm that
-   has not been calibrated, because the calibration file is where every joint's travel
-   comes from.
+   [lerobot-hardware-checklist.md](../lerobot-hardware-checklist.md) is eighteen steps, and
+   nothing moves until step 10 as long as the arm stays where step 6 records its rest pose:
+   move it by hand after that, and the next run or `doctor` drives it back there. Do not skip
+   the calibration step: quackd refuses an arm that has not been calibrated, because the
+   calibration file is where every joint's travel comes from.
 3. **Then drive it**, which is [three commands](#driving-it) depending on who is choosing the
    verbs: a task file, a one-line goal, or you from an MCP client.
 
@@ -102,7 +106,7 @@ drive the arm.
 | `--robot` | Status | What it is |
 |---|---|---|
 | `lerobot:mock` | ✅ | an arm in memory: goals land instantly, the gripper stops on the object, a scripted policy answers `pick`, and it refuses an out-of-range goal in the same words the real one does |
-| `lerobot:real` | ✅ | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch), and as many USB webcams as `--camera-url` names; every name VERIFIED at the pin, exercised against a fake arm and a fake camera, and run for one afternoon on one real arm, 2026-09-15, with lerobot 0.6.1, one webcam and no policy |
+| `lerobot:real` | ✅ | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch), and as many USB webcams as `--camera-url` names; every name VERIFIED at the pin, exercised against a fake arm and a fake camera, and run on one real arm on two afternoons, 2026-09-15 on quackd 0.9.0 and 2026-09-23 on quackd 0.12.0, with lerobot 0.6.1 and no policy. What changed after 2026-09-23 has not run on an arm yet |
 
 `--address` is the arm's serial port (`/dev/ttyACM0`, `COM5`), and quackd checks that it
 looks like one before LeRobot opens anything. The `real` backend calls
@@ -209,9 +213,11 @@ That is the mock's static manifest. The static manifest of `lerobot:real` claims
 camera nor a policy; `connect()` adds `observe` when `--camera-url` named a camera and it
 opened, and `pick` when a policy object was injected. It also adds what cannot be known until
 the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
-the calibration file (`wrist_roll` included, where that travel is the whole turn upstream
+the calibration file, to a tenth of a degree rounded inward so that every angle it names is one
+the arm accepts (`wrist_roll` included, where that travel is the whole turn upstream
 records rather than anything swept, see Safety), `extras.calibration_file`, the path that came
-from, `limits.step_deg`,
+from, `extras.rest_pose_clipped` when the recorded rest pose lies past that travel
+([A pose past the travel](#a-pose-past-the-travel)), `limits.step_deg`,
 how far one action may move a joint (`QUACKD_LEROBOT_MAX_STEP_DEG` sets it), and
 `extras.camera` with `limits.camera_fov_deg` when there is a camera. With more than one camera
 it also carries `extras.cameras`, their names in the order the urls were given, primary first.
@@ -222,9 +228,9 @@ naming it in sentences nobody needs.
 | Verb | Kind | What it does here |
 |---|---|---|
 | `observe` (alias `get_frame`) | core | one frame plus detections, only when a camera is configured. With several cameras it is the primary's frame, because a detection is a bearing and a bearing belongs to one lens |
-| `report_state` | core | joint positions in degrees, whether torque is on, each servo's temperature, whether something is held |
-| `stop` | core | hold: the present position becomes the goal. Never limp (see Safety) |
-| `move_joints(positions, duration_s)` | extension | goal angles for one or more of the six joints, re-sent at 10 Hz until the measurement arrives; a joint that stops short is a failure, and `duration_s` is the budget |
+| `report_state` | core | joint positions in degrees, whether torque is on, each servo's temperature, whether something is held, and a clause for any joint that reads more than 2 degrees past its travel |
+| `stop` | core | hold: the present position becomes the goal of every body joint inside its travel. Never limp (see Safety) |
+| `move_joints(positions, duration_s)` | extension | goal angles for one or more of the six joints, walked there across `duration_s` seconds one goal a tick at 10 Hz, then re-sent until the measurement arrives; the step cap is the ceiling on speed, and a joint that stops short is a failure |
 | `gripper(open)` | extension | open or close the gripper, and report where it stopped |
 | `place` | extension | open the gripper where the arm is; needs `holding` |
 | `pick(target, max_s)` | extension, **confirm** | one skill intent; the arm's learned policy runs its own observe/act loop at its own rate until something is held or the time is up |
@@ -236,9 +242,59 @@ Joints are named, not numbered, and a `move_joints` call may name any subset of 
 ```
 
 The five body joints are degrees, centred on zero, and the gripper is `0..100` whatever the
-others are. `duration_s` is a budget rather than a speed: the arm moves at the capped step
-(5 degrees per action, re-sent ten times a second) and the verb fails if the measurement has
-not arrived when the budget runs out, with where the joint actually stopped in the reason.
+others are.
+
+`duration_s` is how long the motion should take, from 0.2 to 12 seconds, and 5 when the pilot
+names none. The arm is read once, and every tick sends a goal as far along the straight line
+from where each joint is to where it was asked to be as the time is through: halfway at half the
+time, every joint starting together and arriving together. Once the time is up the goal
+itself goes out, tick after tick, until every joint is within 5 degrees of it (5 units on the
+gripper). So "slowly" is something a pilot can ask for, and a longer time is a slower move.
+Each tick's intent still carries the `duration_s` the pilot asked for, so the record shows the
+ramp and the time it was meant to take.
+
+The step cap stays the ceiling. One action moves a joint at most 5 degrees and ten go out a
+second, so nothing moves faster than 50 degrees a second, whatever `duration_s` says. A time too
+short for the distance is neither refused nor obeyed: the goal runs ahead of the arm, LeRobot
+clips every send to one step from where the joint is, and the joint travels at the cap until it
+is there, later than asked. Those are the defaults: `QUACKD_LEROBOT_MAX_STEP_DEG` sets another
+step, above 0 and up to 180 degrees.
+
+A small move is walked like a long one: a nudge of three degrees asked to take four seconds
+takes the four seconds. Until 2026-09-24 a move whose every joint already read within 5 degrees
+of its goal went out whole and was judged after one tick, a tenth of a second whatever
+`duration_s` said, and with a lowered step cap the one send moved the joint a step and the verb
+still said it had moved.
+
+Four exceptions, each on purpose:
+
+- **A move with nothing to walk goes out at once.** When every joint is already within a tenth
+  of a degree of its goal (a tenth of a unit on the gripper), the resolution the ramp's targets
+  are sent in, there is no target between where it is and where it was asked to be. The goal is
+  sent once and judged after one tick.
+- **A goal outside the travel is refused before anything moves.** The verb checks every goal
+  against the travel the manifest published, which is the travel the pilot was shown, and
+  refuses one outside it in the words the backend refuses with, before it reads the arm or sends
+  anything. Ramped, the arm would travel to the edge of its travel and be refused there. The
+  published travel is rounded inward to a tenth, so a goal less than a tenth of a degree past
+  its edge is refused too, although the backend's exact travel would take it: it used to be
+  sent whole for the backend to refuse, and the backend let it through at the step cap, unpaced.
+- **A joint that reads past its travel starts its ramp at the edge of it.** The servo clamps
+  every goal to the travel its calibration wrote into it, so such a joint first rises to that
+  edge at the servo's own speed, whatever quackd sends, and is paced from there. That first
+  stretch is the one part of a move `duration_s` cannot slow down: support the arm or place it
+  inside its travel if that matters ([A pose past the travel](#a-pose-past-the-travel)).
+- **`gripper` is not ramped.** It sends open or shut, which each backend maps to 100 or 0, and
+  closes at the cap. A gripper named in `move_joints` is a joint with a goal and ramps like one.
+
+Arrival and stalls are judged only once the goal itself is going out. A slow ramp moves a joint
+less per tick than the stall rule's threshold, so a stall counted during the ramp would fail
+every slow move. The price is that a joint blocked partway is found when the ramp ends rather
+than when it stopped, pushing meanwhile against a goal one step ahead of it, as it always did.
+The verb then fails naming the joint, where it stopped and its goal, and holds the arm. It
+gives the move the time asked for, or the time the cap needs if that is longer, plus 2.5
+seconds to settle, and never more than 18: the executor's own timeout for `move_joints` is 20,
+and the verb ends first so that the reason names the joint that fell short.
 
 Its datasheet, which the pilot is shown and told to judge a task against before anything moves ([manifest-spec.md](../manifest-spec.md)):
 
@@ -247,19 +303,25 @@ Its datasheet, which the pilot is shown and told to judge a task against before 
 | Height | 0.53 m (estimate: one vendor's listing; reaching straight up) |
 | Actuated joints | 6 (official: the LeRobot SO-101 docs; five joints and a gripper) |
 | Payload | 0.5 kg (estimate: one vendor's listing) |
-| Not published | mass, reach |
+| Reach | 0.4 m (estimate: the maker's URDF, TheRobotStudio/SO-ARM100 Simulation/SO101/so101_new_calib.urdf; link lengths from the shoulder to the gripper frame, summed with the arm straight and rounded down) |
+| Not published | mass |
 
 And what it cannot do whatever the task says, which is the half a refusal usually turns on, in the words the pilot is shown:
 
 - go anywhere: it is bolted to a table and has no base
-- lift or hold more than about half a kilogram, and nothing whose weight is not known
-- reach anything that is not already within arm's length of its base: the reach is not
-  published
+- lift or hold more than about half a kilogram: a pen, an empty cup or a wooden block weighs
+  far less than that, and a full bottle or a tool may weigh more
+- reach anything more than about 0.4 m from its shoulder: that is the arm held straight out,
+  and any bent pose reaches less
 - feel what it holds: nothing reports grip force, so holding is inferred from the gripper
   stopping short of shut, which an empty hand that binds also does
 - know its own mass: vendor listings disagree by a factor of three
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+
+**Where the reach comes from.** Nobody publishes a reach for the SO-101, and up to 0.13.0 the sheet said so, which told the pilot to decline whatever turned on reaching: every task an arm has. The maker's URDF gives every link, so the figure is quackd's arithmetic on the maker's file. From the `shoulder_lift` joint outwards the joint origins are 0.116 m to `elbow_flex`, 0.135 m to `wrist_flex`, 0.064 m to `wrist_roll` and 0.098 m to the gripper frame, 0.413 m in all, which is an upper bound because links only add up in full when they are in a line. A grid sweep of the elbow and both wrist joints through their URDF limits puts the farthest the gripper frame gets from the shoulder axis at about 0.41 m. The sheet says 0.4, as an estimate, and the adapter's source (`REACH` in `quackd_lerobot/__init__.py`) keeps the four vectors so anyone can check them. It is measured from the shoulder joint rather than the base, and to the gripper frame rather than the fingertips.
+
+**What the pilot is told about a pen.** The payload line used to end "and nothing whose weight is not known", which is nearly every object a task names: nobody tells the pilot what a pen weighs. It keeps the half kilogram, itself an estimate from one vendor's listing, and gives the pilot objects to judge by instead.
 
 ## Camera
 
@@ -486,8 +548,12 @@ two-minute script: [mcp.md](../mcp.md). The same path at walking pace, from an e
 a waving arm in fifteen steps, is
 [Part 2 of the first run](../lerobot-first-run.md#part-2-from-claude-over-mcp).
 
-A session parks the arm at both ends, the same as a run does, and **refuses to start** if it
-cannot reach the recorded rest pose. Repeat `--camera-url` here too, and the session reads
+A session started with a registered name that has a rest pose parks the arm at both ends, the
+same as a run does, and **refuses to start** if it cannot reach that pose. The spec form above
+has none, because a rest pose lives under a registered name, so that session parks nothing and
+the arm goes limp when it ends, as it does at the end of both runs above. Register the arm
+(`quackd robot add`, then `quackd robot rest-pose`) and name it instead, `"--robot", "arm-01"`
+with no `--address`, to have it parked. Repeat `--camera-url` here too, and the session reads
 every camera you name.
 
 **A picture that comes with the task** is `--image PATH`, repeatable, and it is the flag that
@@ -610,19 +676,25 @@ quackd, side by side, is [safety.md](../safety.md).
   `Torque_Enable` and `Present_Temperature` are read off the bus. A body joint at or above
   60 °C refuses `move_joints` and `pick`; the servo's own cut-off is 70 °C.
 - **A goal outside the calibrated range is refused, on four joints of the five.** LeRobot
-  does not clamp a degrees goal, so quackd computes each joint's travel from the calibration
-  file and refuses instead. `wrist_roll` is the exception, and it is upstream's: its
+  does not clamp a degrees goal and the servo does, silently, to the travel calibration wrote
+  into it (`up.POSITION_LIMITS_CLAMP_GOALS`), so a goal let through would be one the arm quietly
+  stops short of. quackd computes each joint's travel from the calibration file and refuses
+  instead. `wrist_roll` is the exception, and it is upstream's: its
   calibration deliberately does not sweep that joint, printing *move all joints except
   'wrist_roll'* and recording a full encoder turn for it instead
   (`up.WRIST_ROLL_IS_A_FULL_TURN`). Its travel therefore comes out as -180..180, and a refusal
   that cannot be narrower than the whole turn cannot catch anything. Treat `wrist_roll` as
   unguarded and give it small goals.
 - **One action moves a joint at most one step.** `max_relative_target` is unset upstream;
-  quackd sets it to 5 degrees, re-sent at 10 Hz, so 50 degrees a second.
+  quackd sets it to 5 degrees, re-sent at 10 Hz, so 50 degrees a second at most. That is a
+  ceiling and not a pace: `move_joints` walks its goal across the `duration_s` it is given, and
+  only a time too short for the distance runs at the cap.
 - **No deadman.** Nothing in LeRobot's `Robot` stops an arm when the client goes quiet: read
   from the class, not assumed. quackd's `stop` re-sends the present position as the goal and
   never calls `disable_torque()`, the same principle as never sending `robot.relax` to a
-  Microduck.
+  Microduck. A joint that reads past its travel gets no goal from a stop at all, because the
+  servo would clamp "stay here" to its limit and drive there
+  ([A pose past the travel](#a-pose-past-the-travel)).
 - **`stop` leaves the gripper's goal alone.** It sends the five body joints and omits the
   gripper key, so a stop never opens a hand that is squeezing something, and every failed
   verb ends in a stop.
@@ -633,24 +705,86 @@ quackd, side by side, is [safety.md](../safety.md).
 - **A wedged call is not a finished call.** A call that blows its deadline leaves a thread on
   a half-duplex bus, so the transport refuses every later call until that thread comes back
   rather than starting a second one. The arm holds its goal meanwhile.
-- **Torque is released only where the arm is known to be at its recorded rest pose.**
-  `disconnect()` disables it by LeRobot's default, which quackd keeps, because an arm at rest
-  should be limp: that is what "at rest" means. So before the disconnect quackd reads the
-  joints one last time, and where they are not the pose you recorded it turns that default off
-  and leaves the arm holding itself up, with one line saying so:
+- **Torque is released only where the arm is known to be at its recorded rest pose, unless a
+  person holding it asks.** `disconnect()` disables it by LeRobot's default, which quackd
+  keeps, because an arm at rest should be limp: that is what "at rest" means. So before the
+  disconnect quackd reads the joints one last time, and where they are not the pose you
+  recorded, or as near it as the calibrated travel lets the servo go, it turns that default off
+  and leaves the arm holding itself up, with one line saying so and naming the ways out:
 
   ```
-  the arm is not at its rest pose (...), so torque was left on and it will not fall:
-  hold the arm and cut its power, or run again
+  the arm is not at its rest pose (...), so torque was left on and it will not fall as it
+  stands: hold it first, because connecting takes torque off every motor for a moment, then
+  run quackd robot release NAME, or quackd doctor --robot NAME to park it, or cut its power
   ```
 
-  With no rest pose recorded there is nothing to check against, nothing changes, and the arm
-  goes limp at the end of every clean session exactly as it did in 0.9. See
-  [The rest pose](#the-rest-pose).
+  The hold comes before every way out, because both commands begin by connecting, and the
+  connect is the next bullet. At a terminal, a run whose rest move missed asks first: hold the
+  arm and press Enter within 60 seconds, and torque comes off where it stands. The line above is
+  what follows when nobody presses Enter, and what `doctor`, a dry run, an MCP session or a
+  flock member says without asking. With no rest pose recorded there is nothing to check
+  against, nothing changes, and the arm goes limp at the end of every clean session exactly as
+  it did in 0.9. See [The rest pose](#the-rest-pose), and for the person holding an arm left up
+  this way, [Releasing it where it stands](#releasing-it-where-it-stands).
 - **Connecting still drops torque briefly, and that has not changed.** `configure()` runs
   inside `torque_disabled()`, so the arm is limp for the moment between the port opening and
   the configuration landing, whatever any rest pose says. Support the arm when a session
-  starts, including at the start of a `doctor` probe.
+  starts, including at the start of a `doctor` probe, which says so before it connects to a
+  body that is handed to people:
+
+  ```
+  ⚠ connecting takes torque off every motor for a moment, because LeRobot configures them with it
+  off: support the arm until doctor has finished with it
+  ```
+- **A packet lost while connecting is tried again, and said.** Those torque writes are a
+  `Torque_Enable` and a `Lock` per motor, off on every motor and back on one at a time, each
+  tried once (`up.CONFIGURE_TORQUE_WRITES_ONCE`), so one status packet the bus drops, or that
+  comes back garbled, fails the whole connect and leaves the port open behind it. On 2026-09-23
+  that ended three of 26 runs on an SO-101 before they began, on a different motor each time,
+  and the next connect went through every time. quackd now closes the port through the bus
+  without writing to any motor (`up.BUS_DISCONNECT` with `disable_torque` False: the follower's
+  own `disconnect()` would first switch torque off on every motor again, on the bus that has
+  just lost a packet), waits half a second and connects again, up to three attempts in all. Each
+  retry is a WARNING line while it happens, a note in the run's transcript and an advice line in
+  `doctor`, and it names the joint through the bus's own motor table (`up.BUS_MOTORS`) rather
+  than by an assumed order:
+
+  ```
+  connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' on id_=<N> with
+  '1' after 1 tries. [TxRxResult] There is no status packet! The port was closed without a
+  write to any motor, and connect runs again
+  ```
+
+  A camera opened before the arm stays open across the attempts. A connect that blew its 30
+  second deadline is never tried again, because its thread is still on the bus and a second
+  talker there is how packets get lost. Every attempt runs `configure()` again, so the limp
+  moment above happens once per attempt. When the last attempt fails too, the port is closed
+  the same way and the refusal says the arm may be left half energised
+  ([When it will not work](#when-it-will-not-work)), if any attempt can have written torque:
+  one that failed on a write or inside `configure()`, one that failed somewhere nothing can
+  place, or a connect that ends on a timeout. A servo that does not answer its ping is refused
+  by LeRobot's handshake, before `configure()` has written anything (`up.BUS_HANDSHAKE`), so
+  that refusal names the joint (`up.HANDSHAKE_NAMES_THE_ID`) and says nothing about torque. So
+  does a read lost in the calibration check LeRobot's connect makes between the handshake and
+  `configure()`, whatever `calibrate` says (so_follower.py line 99, `up.BUS_IS_CALIBRATED`),
+  which reads each motor's limits and writes nothing. A handshake that found none of the arm's
+  motors, which is how a servo supply that is switched off looks, names no joint at all, since
+  one joint's cable would be a guess, and sends you to the arm's cables and power.
+
+  A stop asked for while a connect is failing ends it: a Ctrl-C during a `quackd run`, whose
+  first press sets the run's abort flag, is looked for once an attempt has failed and throughout
+  the pause before the next, and the connect is refused on the spot with no further attempt, and
+  so no further torque switched off and on
+  (`connect stopped after attempt <k> of 3, because a stop was asked for`). A stop asked for
+  during an attempt that then connects is answered by the run as any other stop is, after the
+  rest move that opens it.
+
+  A serial error in the middle of a packet, a USB glitch rather than a lost reply, leaves the
+  servo SDK's busy flag raised, and reopening the port does not lower it, so the next attempt
+  would be answered "port in use" before a byte went out and refused as every motor missing.
+  quackd lowers the flag when it closes the port between attempts, in the same call and once
+  the port has shut, so never under another call's packet. Upstream's own disconnect lowers it
+  too, and lowering it writes nothing to a motor (`up.BUS_DISCONNECT`).
 - **`pick` is confirm-gated**: a learned policy moves the whole arm. Its actions go through
   the same step cap and range check as a verb's.
 
@@ -665,11 +799,20 @@ A rest pose fixes both. You fold the arm by hand, tell quackd where that is, and
 it there at both ends of every run.
 
 > [!IMPORTANT]
-> None of this has been run on an arm. It was written after the day the arm fell, and it is
-> exercised against a fake arm and the mock, the same standing as every other `lerobot:real`
-> behaviour on this page. The first person to record a pose on real hardware is finding out
-> whether it holds, so read [section 07 of the first run](../lerobot-first-run.md#07-record-the-rest-pose)
-> with a hand near the power switch and say what happened.
+> **The first arm to run a rest pose could not reach it.** On 2026-09-23 the SO-101 of the 15th
+> ran with a pose recorded, and that pose had `shoulder_lift` folded about 20 degrees past the
+> floor of the travel its calibration recorded, because the calibration never saw the shoulder
+> folded all the way back. LeRobot's calibration writes that travel into each servo as its
+> position limits, and the servo clamps every goal to them. So the rest move drove the shoulder
+> to the limit, stalled there and called the arm lost: runs aborted before their first model
+> call, every run that got to its end kept torque on and finished at the power switch, and the
+> `stop` at the end of a run hauled a folded shoulder up out of its fold. What quackd does with
+> a pose past the travel now is [A pose past the travel](#a-pose-past-the-travel), below, and
+> the whole account is [ADR-0045](../adr/0045-a-rest-pose-the-calibration-cannot-reach.md).
+> That answer has run against a fake arm that clamps the way the servo does and against
+> `lerobot:mock`, and not yet on the arm, so read
+> [section 07 of the first run](../lerobot-first-run.md#07-record-the-rest-pose) with a hand
+> near the power switch and say what happened.
 
 ### Recording it
 
@@ -677,8 +820,20 @@ it there at both ends of every run.
 quackd robot rest-pose NAME [--clear] [--yes] [--address ADDR] [--registry-dir DIR] [--json]
 ```
 
-Fold the arm first, with nothing connected, so the pose you record is one it can hold with
-torque off. Then run the command: it connects, reads every joint, prints them, asks, and keeps
+**Calibrate with the arm folded, before you record.** A servo will not be driven past the
+travel its calibration recorded, so the fold you record should be inside that travel. When
+`lerobot-calibrate` asks you to move every joint through its whole range, take each one all
+the way into the fold you mean to rest the arm in. Where the fold still lies past the travel,
+`rest-pose` says so as a warning before it asks, in the same sentence a run will use, and
+records the pose anyway: it is where the arm rests, and a run parks as near it as the servo
+goes ([A pose past the travel](#a-pose-past-the-travel)). A new calibration also moves the zero
+of any joint whose travel it records differently, because a joint's zero in degrees is the
+middle of its recorded travel. So a pose recorded before it names a different shape after it:
+record the pose again, and read any task or remembered note that names an angle as meaning a
+different pose too.
+
+Then fold the arm, with nothing connected, so the pose you record is one it can hold with
+torque off, and run the command: it connects, reads every joint, prints them, asks, and keeps
 the pose in `~/.quackd/robots.json` beside the address and the cameras. It opens no camera,
 because reading joints needs none, and it drives the arm nowhere, because the point is to let
 go of it at the pose you are choosing now rather than the one you are replacing.
@@ -716,10 +871,11 @@ its name. There is no `--rest-pose` flag on `quackd run`.
 | When | What happens |
 |---|---|
 | the start of every run | the arm is driven to the pose before the pilot gets control, so what the model improvises from is the same arm every time. A run that cannot get there aborts **before the first LLM call** |
-| the end of every run | between the `stop` and the disconnect, which is the only window in which putting the arm down changes whether it falls. On every exit path there is: success, failure, infeasible, a spent budget, an abort, an error and Ctrl-C |
-| a `--by-hand` run | the rest move still happens first, and then the arm is released **at** that pose for somebody to place. The pose is what makes the release safe rather than something the flag skips, and the run ends back at it ([Placing it by hand](#placing-it-by-hand)) |
+| the end of every run | between the `stop` and the disconnect, which is the only window in which putting the arm down changes whether it falls. On every exit path there is: success, failure, infeasible, a spent budget, an abort, an error and Ctrl-C. Where that rest move misses, a run at a terminal offers to release the arm into your hands on Enter ([Releasing it where it stands](#releasing-it-where-it-stands)) |
+| a `--by-hand` run | the rest move still happens first, and then the arm is released **at** that pose for somebody to place, at the edge of the travel for a joint recorded past it. The pose is what makes the release safe rather than something the flag skips, and the run ends back at it unless quackd refuses to take hold of what you left. It refuses while any joint reads past its travel, a fold nobody lifted the arm out of included, so lift every joint inside its travel before you press Enter. After a refused take-hold nothing moves the arm again, and the run ends with it where it is rather than folding it: in your hands, or still at its rest pose if you never lifted it ([Placing it by hand](#placing-it-by-hand)) |
 | a dry run | nothing. `--dry-run` never moves the arm, and that includes the rest move |
 | an MCP session | the same at both ends, and the session refuses to start if it cannot get there |
+| a pose past the travel | the arm is driven as near the pose as its servos go, which is the edge of the travel, and that counts as getting there. Torque is released at the edge, and the run says once which joint is free to settle the rest of the way ([A pose past the travel](#a-pose-past-the-travel)) |
 
 Both ends are narrated, so the transcript says what happened rather than leaving you to infer
 it from a joint reading:
@@ -728,6 +884,96 @@ it from a joint reading:
 ·  note    moving to the rest pose
 ·  note    already at the rest pose
 ```
+
+### A pose past the travel
+
+A servo on this arm will not be driven outside the travel its calibration recorded. LeRobot's
+calibration writes each joint's travel into its servo as two position limits, and the servo
+clamps every goal it is written to them (`up.POSITION_LIMITS_CLAMP_GOALS`). A reading is not
+clamped: with torque off a joint goes wherever a hand or its own weight puts it, past either
+end. So a pose recorded off a hand-folded arm can lie past the travel, and a goal of that pose
+is one the arm drives to the limit, stops at, and never reaches. That is the bench of
+2026-09-23 in the box above.
+
+quackd now plans for it, on any joint, at either end of its travel, from the numbers this
+arm's own calibration gives it at connect:
+
+- **The rest move drives to the reachable pose.** Each body joint of the recorded pose is
+  clipped into its travel. The pose in `robots.json` stays exactly as you recorded it, because
+  the clip is a fact about this calibration and not about your fold.
+- **A clipped joint is at rest anywhere from 5 degrees short of the edge of its travel out
+  past it**, on the side its fold lies. Nothing quackd sends can drive a joint past its limit,
+  so a joint that reads well past it was put there with torque off: it is folded, not lost.
+  Every other joint keeps the ordinary rule of within 5 degrees of its recorded angle.
+- **So the arm parks at the edge, which counts as arriving, and torque is released there.** The
+  joint is then free to settle the rest of the way toward its fold. An arm already folded past
+  the edge is `already` at rest, and the rest move sends that joint nothing, because the only
+  goal it could send is the limit, and that would haul the joint up out of its fold.
+- **A stop writes no goal for a joint that reads past its travel**, and the take-hold of a
+  [hand-placed start](#placing-it-by-hand) does not switch torque on under one at all. "Stay
+  where you are" written to that joint arrives as "go to the limit", and the servo does it at
+  full speed: on the bench, the stop at the end of a run hauled a folded shoulder up out of its
+  fold this way. The joint keeps whatever goal its servo already holds instead, and the stop's
+  summary names each joint it wrote no goal for and says why, so the pilot and the record can
+  tell a stop that held all five from one that held some. If every body joint reads past its
+  travel, nothing is sent at all. What the skip does is avoid *starting* a rise, and that is
+  all: any goal quackd writes to a joint while it reads past its travel is the limit to the
+  servo, so a joint a move had already begun lifting out of its fold keeps rising to that limit
+  whatever a stop writes or leaves out. Only the power switch stops that stretch
+  ([safety.md](../safety.md)).
+- **A move out of the fold starts at the edge.** `move_joints` on a joint that reads past its
+  travel paces its ramp from the edge of the travel, not from the reading: any goal between the
+  two is, to the servo, the edge, so the joint rises to it at the servo's own speed first,
+  whatever quackd sends. Only the rest of the move is paced by `duration_s`
+  ([The manifest](#the-manifest)).
+- **A joint that stops short *inside* its travel is still a miss.** A hand, the desk or a
+  tripped servo in the way keeps torque on, as it did in 0.13.0, and prints the line in
+  [The torque rule](#the-torque-rule).
+
+The run says what happened, once, right after its first `at the rest pose`, in this arm's own
+numbers. Captured on `lerobot:mock`, whose `shoulder_lift` travels -100 to 100, registered as
+`arm-01` with a rest pose that has `shoulder_lift` at -118:
+
+```
+·  note    moving to the rest pose
+·  note    at the rest pose
+·  note    shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose arm-01) to make the fold reachable
+```
+
+The end of that run's transcript reads `already at the rest pose`, and says nothing more,
+because the note is about the pose rather than about either move. The same sentence is what
+`doctor` prints as advice under its table, with the `rest pose` row still green
+([doctor](#doctor-and-robot-list---probe)), what an MCP session logs when it parks at connect,
+and what `quackd robot rest-pose` warns before it asks. It names only a joint clipped by more
+than 5 degrees, since a smaller clip is inside the tolerance any reached pose may miss by. The
+run's first record names every clipped joint, whatever the amount, in the manifest:
+
+```
+"rest_pose_clipped": {"shoulder_lift": {"recorded": -118.0, "reachable": -100.0}}
+```
+
+**The pilot is told why a joint can read past its travel.** The travel line of its system prompt
+now ends *A joint can read past its travel when it was folded or placed there with torque off,
+which is where a rest pose usually is; goals are still limited to the travel.* And
+`report_state` adds a clause for each joint that reads more than 2 degrees past its travel, in
+the form
+`<joint> reads <angle>, past the <limit> its servo can be driven to; goals are still limited to its travel`.
+On the bench, a pilot handed a shoulder reading past the end of its travel line, with nothing to
+explain it, refused to move the arm at all.
+
+**The fix is a calibration that saw the fold.** Calibrate again with every joint taken all the
+way into the fold during the sweep, then record the pose again, for the reasons in
+[Recording it](#recording-it). The note goes away once no joint of the pose lies more than 5
+degrees past its travel.
+
+> [!NOTE]
+> Parking at the edge and letting go there has run against a fake arm that clamps goals the way
+> the servo does and against `lerobot:mock`, and not yet on the arm. Two things only a bench
+> can say: whether a joint let go at the edge settles onto its fold, and gently, and whether one
+> folded past its *ceiling* settles at all, since its weight need not pull it toward the fold.
+> The note says the joint is free to settle, not that it will. And the take-hold leaves torque
+> off under a joint placed past its travel rather than trust `up.TORQUE_ENABLE_HOLDS_PRESENT`
+> below with it ([Placing it by hand](#placing-it-by-hand), step 4).
 
 ### Placing it by hand
 
@@ -747,11 +993,16 @@ The order below is the whole of the feature, and none of it is a step you can sk
    A run that cannot get there aborts here, before any torque is touched, because an arm that
    did not reach the pose is precisely an arm that must not be released at it.
 2. **Torque comes off, at that pose and nowhere else.** `let_go()` re-reads the joints and
-   refuses anywhere but the recorded pose: an arm held up by torque alone falls the moment
-   torque goes, and the person who asked for this still has their hands nowhere near it. It
-   also refuses a pose that names no joint this arm drives, and an arm that still reports
-   torque on after the call, which is a release that did not take rather than one to walk
-   away from.
+   refuses anywhere but the recorded pose, judged exactly as the close judges it, so a joint
+   recorded past its travel counts at the edge of it or beyond
+   ([A pose past the travel](#a-pose-past-the-travel)): an arm held up by torque alone falls the
+   moment torque goes, and the person who asked for this still has their hands nowhere near it.
+   It also refuses a pose that names no joint this arm drives, and an arm that still reports
+   torque on after the call, which is a release that did not take rather than one to walk away
+   from. LeRobot tries each torque write once unless told otherwise, and one lost packet there
+   would release the motors before it and not the ones after, so the release asks for the five
+   retries LeRobot's own `disconnect()` gives the same writes, and so does the take-hold in
+   step 4.
 3. **You are told the arm is yours, and quackd waits for Enter.** There is no timeout on this
    wait. The arm is limp at a pose it holds by its own shape, so nothing is being spent by
    waiting, and somebody who has gone to find a pencil should come back to a run that is still
@@ -760,7 +1011,24 @@ The order below is the whole of the feature, and none of it is a step you can sk
    *before* torque comes on, written again after, and then the arm is read back. A joint that
    moved more than the same **5 degrees** every other goal on this page is judged by is a
    refusal and the run ends, because a run that started from a pose nobody chose is a run whose
-   first observation is a lie.
+   first observation is a lie. A joint you placed past its calibrated travel is refused before
+   any of that: nothing is written, torque stays off, and the run ends with the arm still in
+   your hands. Nothing quackd can do would keep that joint where you put it. A goal written
+   where it is lies past the travel and is pulled to the end of it, so torque would drive the
+   joint there under your hand, and with no goal written its servo keeps the last one it had,
+   the rest move's, which can be the far end of the travel from where you put it. The refusal
+   names each such joint, where it reads and its travel, in this arm's numbers, and says the arm
+   is taken hold of only with it inside. A fold that lies past the travel
+   ([A pose past the travel](#a-pose-past-the-travel)) counts, so lift every joint out of it
+   before you press Enter. Press Enter with the arm still lying in that fold and you are told it
+   is still limp at its rest pose, with the joint to lift inside its travel, rather than that it
+   is in your hands. A take-hold refused after torque was asked for, because the torque
+   register did not answer or the call failed on the way, is a different arm: it may be holding
+   itself up, all of it or part of it, and you are told quackd could not confirm whether it has
+   torque, to hold it as though it may move or drop, and to cut its power to be sure. Where the
+   read after the torque write found motors on, some of them or every one, you are told what
+   it found instead: which joints hold, that any joint it does not name is limp, and to keep
+   hold of it and cut its power.
 5. **The pilot runs from those angles.** The step cap, the range refusal, the heat gate and the
    budgets are all the ones any other run gets. The minutes clock restarts the moment the arm
    is holding your pose, so the time you spent looking for a pencil is not taken out of the
@@ -791,7 +1059,8 @@ the arm folds up with the gripper shut
 
 The middle line reads the arm back rather than repeating what it was told to hold, which is how
 you find out that the wrist sagged two degrees as it took the weight. The same run in the
-transcript, where every stage is a `hand` event:
+transcript, where every stage is a `hand` event, with the model's side of each turn, the
+verdict, the declaration and the `asked` record of each question left out:
 
 ```
 ·  note    moving to the rest pose
@@ -801,8 +1070,8 @@ transcript, where every stage is a `hand` event:
 ▶  verb    report_state()
 ✓  result  report_state ok: shoulder_pan 0, shoulder_lift -20, elbow_flex 40, wrist_flex 15, wrist_roll 0, gripper 35; torque on; hottest shoulder_pan 30°C; holding nothing (0.0 s, 0 intents)
 →  send    stop
-·  hand    unloaded: opening the gripper
 →  send    gripper(open=true)
+·  hand    unloaded: opening the gripper
 ·  note    moving to the rest pose
 ·  note    at the rest pose
 ```
@@ -817,16 +1086,43 @@ cannot work the gripper at all, is told that whatever is between the jaws is hel
 squeeze the person left and cannot be tightened.
 
 **Ctrl-C in the first wait** ends the run with the arm limp in your hands, and the teardown it
-goes into is built for exactly that arm. Every teardown starts with a `stop`, and a `stop` on
-an arm somebody is holding takes hold of it first: the arm is re-energised where your hand has
-it, and only then does the rest move fold it. A `stop` that sent a goal to a limp servo would
-stop nothing, and the fold after it would be a fold of an arm that is not listening. A wait
-that ends any other way lands in the same teardown and says so rather than blaming a key
-nobody touched. There is no clock on the first wait, so that ending means the keyboard itself
-went away: the terminal was closed, or the input it was reading finished. quackd notices,
-because a wait for a keystroke that nothing can deliver has to end rather than hold an arm
-limp for ever (captured on `lerobot:mock`, where nobody had moved the arm out of the fold
-either, so the rest move had nothing to do):
+goes into is built for exactly that arm. Every teardown starts with a `stop`, and a `stop` on an
+arm somebody is holding takes hold of it first: the arm is re-energised where your hand has it,
+and only then does the rest move fold it. A `stop` that sent a goal to a limp servo would stop
+nothing, and the fold after it would be a fold of an arm that is not listening. Not while a
+joint reads outside its travel: the take-hold refuses there as it does in step 4, you are told
+so once, naming the joint, and then nothing is written to the arm and nothing folds it. The
+close says what its own read finds, the arm limp in your hands, or, where the joint outside its
+travel is a fold nobody lifted the arm out of, the arm limp at its rest pose (captured on
+`lerobot:mock` registered as `arm-03`, its pose's `shoulder_lift` recorded at -110, past the
+mock's -100, with the capture script letting the joint settle there once torque was off, as a
+fold past the travel does, and pressing Ctrl-C in the wait, with the invitation, the kill
+switch's own line and the record of the question left out):
+
+```
+·  hand    released: torque is off at the rest pose
+→  send    stop
+·  hand    hold refused: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes hold of the arm only once shoulder_lift is lifted inside its travel
+·  note    the arm did not take hold: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes hold of the arm only once shoulder_lift is lifted inside its travel
+quackd did not take hold of the arm when the run stopped and the arm is still limp at its rest
+pose: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes
+hold of the arm only once shoulder_lift is lifted inside its travel
+·  note    already at the rest pose
+·  note    the arm is limp at its rest pose, where it was let go of for you to place and where it still reads: it rests there with no torque, as it does at the end of every run
+```
+
+With the arm lifted and a joint placed past its travel, the line said to you at the stop gives
+the joint, its reading and its travel in the same words as the refusal at Enter below, after
+`quackd did not take hold of the arm when the run stopped and the arm is still in your hands:`,
+and the close is the one for an arm limp in your hands.
+
+A wait that ends any other way lands in the same teardown and says so rather than blaming a
+key nobody touched. There is no clock on the first wait, so that ending means the keyboard
+itself went away: the terminal was closed, or the input it was reading finished. quackd
+notices, because a wait for a keystroke that nothing can deliver has to end rather than hold an
+arm limp for ever (captured on `lerobot:mock`, where nobody had moved the arm out of the fold
+either, so the rest move had nothing to do, with the invitation and the record of the question
+left out):
 
 ```
 ·  hand    released: torque is off at the rest pose
@@ -836,7 +1132,8 @@ either, so the rest move had nothing to do):
 ┌─ ✗ ABORTED ─────────────────────────────────────────────────────────────────────────┐
 │ nobody placed the arm: it was released at its rest pose for somebody to put it      │
 │ somewhere, and nothing was pressed                                                  │
-│ steps 0 · llm calls 0 · tokens 0+0                                                  │
+│ steps 0 · llm calls 0 · tokens 0+0 · time 0.1 s (model 0.0 s) · cost $0             │
+│ run dir  runs\20260924-163419-lerobot-lookout                                       │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -851,6 +1148,24 @@ quits at once:
 ·  note    the gripper was left as it is, and the arm still folds up
 ```
 
+The first Ctrl-C of a run nobody had stopped yet, or `q`, ends this wait without raising
+anything, since the wait watches for a fresh key press and not for the run being stopped, and it
+is recorded in the same words. It used to be filed as nobody answering. A terminal with no keys
+to read says so. Captured on `lerobot:mock` with the key reader stood in for, Enter at the first
+wait and the kill switch at this one:
+
+```
+·  hand    skipped: interrupted while waiting
+·  note    the gripper was left as it is, and the arm still folds up
+```
+
+and with no keys to read:
+
+```
+·  hand    skipped: no key could be read
+·  note    no key could be read, so the gripper stays shut and the arm folds up
+```
+
 Walking away and pressing nothing at all is the same ending by a different route, once the
 120 seconds are up:
 
@@ -859,12 +1174,92 @@ Walking away and pressing nothing at all is the same ending by a different route
 ·  note    nobody unloaded the gripper, so it stays shut and the arm folds up
 ```
 
+**A joint placed past its travel ends the run with the arm in your hands**, as step 4 says. You
+are told at once, not only in the summary, and from then on nothing touches the arm: the stop
+that begins the teardown takes no second hold and writes nothing, the gripper is left for you to
+empty by hand rather than asked about, the rest move writes nothing either and the run says once
+that the arm is not folded, no release is offered over an arm in your hands, and the close ends
+on the line for an arm in your hands. Captured on `lerobot:mock` registered as `arm-01`, with
+your hand stood in for by the capture script, which set `wrist_flex` to 112, past the mock's
+100, before the Enter, and with the log's copy of the second line said to you left out:
+
+```
+·  hand    hold refused: wrist_flex reads 112.0, outside its calibrated travel of -100.0..100.0, so quackd left torque off: a goal written where that joint is lies past its travel and the servo would pull it to the end of its travel, and with none written the servo may drive it to the last goal it was given, with a hand on the arm either way. quackd takes hold of the arm only with wrist_flex inside its travel
+·  note    the arm did not take hold: wrist_flex reads 112.0, outside its calibrated travel of -100.0..100.0, so quackd left torque off: a goal written where that joint is lies past its travel and the servo would pull it to the end of its travel, and with none written the servo may drive it to the last goal it was given, with a hand on the arm either way. quackd takes hold of the arm only with wrist_flex inside its travel
+quackd did not take hold of the arm, so the run stops here and the arm is still in your hands:
+wrist_flex reads 112.0, outside its calibrated travel of -100.0..100.0, so quackd left torque off:
+a goal written where that joint is lies past its travel and the servo would pull it to the end of
+its travel, and with none written the servo may drive it to the last goal it was given, with a hand
+on the arm either way. quackd takes hold of the arm only with wrist_flex inside its travel
+→  send    stop
+·  hand    skipped: the arm is still in your hands
+quackd never took hold of the arm, so it does not open the gripper for you: take out whatever is in
+it by hand, and keep hold of the arm
+·  note    the arm is in your hands, so it is not folded
+·  note    the arm is limp and in your hands (it was let go of for you to place and never taken hold of again): put it down before you let go of it, because nothing is holding it up
+```
+
+Moving the joint back inside its travel changes none of that, on the arm or on the mock. Nothing
+takes hold of the arm again after a refusal until it is released again, because torque coming
+on under your hand with nothing said is the one thing the lines above told you would not
+happen. Put the arm down, and run again with every joint inside its travel.
+
+**Enter pressed over a fold nobody lifted** is refused the same way and said as what it is. The
+take-hold's own read finds the whole arm at its rest pose with every motor off, so you are told
+the arm is still limp at its rest pose and which joint to lift inside its travel, not that it is
+in your hands and to keep hold of it, and the close's own read says the same. Captured on
+`lerobot:mock` registered as `arm-03`, as in the Ctrl-C capture above, with Enter pressed and
+nothing lifted, and with the log's copies of the lines said to you left out:
+
+```
+·  hand    hold refused: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes hold of the arm only once shoulder_lift is lifted inside its travel
+·  note    the arm did not take hold: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes hold of the arm only once shoulder_lift is lifted inside its travel
+quackd did not take hold of the arm, so the run stops here and the arm is still limp at its rest
+pose: shoulder_lift reads -110.0, outside its calibrated travel of -100.0..100.0, and quackd takes
+hold of the arm only once shoulder_lift is lifted inside its travel
+→  send    stop
+·  hand    skipped: the arm is still limp at its rest pose
+quackd never took hold of the arm, which is still limp at its rest pose, so it does not open the
+gripper for you: take out whatever is in it by hand. quackd takes hold of the arm only once
+shoulder_lift is lifted inside its travel
+·  note    already at the rest pose
+·  note    the arm is limp at its rest pose, where it was let go of for you to place and where it still reads: it rests there with no torque, as it does at the end of every run
+```
+
+**A take-hold refused after torque was asked for** ends the same way and is said differently,
+because that arm may be holding itself up: the torque register did not answer the read after the
+torque write, or the call raised with the write on the wire. Nothing folds it and nothing is
+written to it, and the close says what a read found, or that none did. A read after the torque
+write that found motors on, some of them or every one, is said by what it found: that those
+joints hold and any joint it does not name is limp, to keep hold of the arm, and to cut its
+power. A read counts only when the bus carried it after the torque write, so a heartbeat read
+that got the bus just before the write never answers for it. Captured on `lerobot:mock`
+registered as `arm-01`, placed inside its travel, with the capture script standing in for a
+torque register that does not answer, and with the log's copy of the second line said to you
+left out:
+
+```
+·  hand    hold refused: the arm did not say whether torque came back on (RuntimeError: Incorrect status packet!), and a hold nothing confirmed is not a hold
+·  note    the arm did not take hold: the arm did not say whether torque came back on (RuntimeError: Incorrect status packet!), and a hold nothing confirmed is not a hold
+quackd could not confirm whether the arm has torque (the arm did not say whether torque came back
+on (RuntimeError: Incorrect status packet!), and a hold nothing confirmed is not a hold), so the
+run stops here: keep hold of the arm as though it may move or drop, and cut its power to be sure
+→  send    stop
+·  hand    skipped: the arm is still in your hands
+quackd could not confirm whether the arm has torque, so it does not open the gripper or fold the
+arm: keep hold of it as though it may move or drop, and cut its power before you take out whatever
+is in the gripper
+·  note    the arm is in your hands, so it is not folded
+·  note    the arm is in your hands, and quackd asked its motors for torque to take hold of it and nothing read back what they did, so it may hold itself up or be limp, all of it or part of it: keep hold of it as though it may move or drop, and cut its power to be sure
+```
+
 > [!WARNING]
 > There is one window in which you are holding an arm that nothing is holding up, and it runs
 > from the release to the moment quackd takes hold again. A run that ends inside it goes into
-> a teardown that tries to pick the arm back up first, and where that does not work, the close
-> says so in its own words rather than printing the line about torque being left on, which
-> would tell somebody with a limp arm in their hand that it is holding itself up.
+> a teardown that tries to pick the arm back up once, and only where no take-hold has been
+> refused since the release. Where one has, nothing touches the arm again, and the close says
+> what it reads in its own words rather than printing the line about torque being left on,
+> which would tell somebody with a limp arm in their hand that it is holding itself up.
 >
 > ```
 > the arm is limp and in your hands (...): put it down before you let go of it, because
@@ -885,46 +1280,274 @@ connects and before a run directory exists:
 | `--by-hand releases the arm at its recorded rest pose, and this arm has none recorded` | the release refuses anywhere but the recorded pose, so an arm without one could never be handed over at all. Said here rather than after it has connected: `quackd robot rest-pose NAME` |
 
 > [!NOTE]
-> Like the rest pose it departs from, the hand-off is exercised against `lerobot:mock` and in
-> the test suite, and not yet on a real arm. The step that most wants one is the take-hold:
-> whether a servo re-energised under the weight of an outstretched arm actually stays within
-> 5 degrees of where a hand left it is `up.TORQUE_ENABLE_HOLDS_PRESENT` in the table below, and
-> it stays an assumption until somebody stands there and watches it happen. Say what it did.
+> The hand-off is exercised against `lerobot:mock` and in the test suite, and not yet on a
+> real arm. The step that most wants one is the take-hold: whether a servo re-energised under
+> the weight of an outstretched arm actually stays within 5 degrees of where a hand left it is
+> `up.TORQUE_ENABLE_HOLDS_PRESENT` in the table below, and it stays an assumption until
+> somebody stands there and watches it happen. Say what it did.
 
 ### The torque rule
 
-Torque is released **only** where the arm is known to be at the pose you recorded. A joint is
-at its recorded angle when it reads within **5 degrees** of it, the same tolerance a
-`move_joints` goal is judged by, and every joint of the pose has to be reported and within it.
-Where that does not hold, quackd turns LeRobot's `disable_torque_on_disconnect` off on the
+Torque is released **only** where the arm is known to be at the pose you recorded, or as near
+it as its calibration lets the servos go. A joint is at its recorded angle when it reads within
+**5 degrees** of it, the same tolerance a `move_joints` goal is judged by, and every joint of
+the pose has to be reported and within it. A joint recorded past its travel is at rest within
+the same 5 degrees of the edge of that travel, or anywhere beyond the edge on the side its fold
+lies, for the reasons in [A pose past the travel](#a-pose-past-the-travel). Where that does not
+hold, quackd turns LeRobot's `disable_torque_on_disconnect` off on the
 config instance before the call, closes the port with every motor still holding its goal, and
 prints one line:
 
 ```
-the arm is not at its rest pose (...), so torque was left on and it will not fall:
-hold the arm and cut its power, or run again
+the arm is not at its rest pose (...), so torque was left on and it will not fall as it
+stands: hold it first, because connecting takes torque off every motor for a moment, then
+run quackd robot release NAME, or quackd doctor --robot NAME to park it, or cut its power
 ```
 
 The parenthesis names the joints and how far short they are, and, where the rest move itself
-failed, why it failed.
+failed, why it failed. It never names a joint that is folded past its travel, because that
+joint is at rest. An arm parked at the edge of its travel and let go there prints nothing at
+the close: the sentence about its fold was said once, by the rest move, and a close line is
+read everywhere as torque left on.
+
+The hold comes first because both commands connect, and connecting takes every motor's torque
+off for a moment, so "it will not fall" is true of the arm as it stands and of nothing that
+connects to it. Two closes say something else, because this line would be wrong in them. An arm
+that did not answer the close's own read may be one whose supply you have just cut, limp in your
+hands, as easily as one whose cable came out in front of live servos, so its line says quackd
+cannot tell whether the arm is holding itself up, and to hold it and cut its power. And an arm
+whose release you have just asked for and been refused is not sent back to that release
+([Releasing it where it stands](#releasing-it-where-it-stands)).
+
+`NAME` is the name the arm was registered under wherever quackd built it from the registry,
+which is a run, an MCP session, a flock, `doctor --robot NAME` and the `robot` commands. A bare
+spec such as `doctor --robot lerobot:real` builds the arm with no name, and leaves `NAME` as it
+is rather than offering the calibration id as a name nobody may have registered. Captured from a
+`--dry-run` on `lerobot:mock` registered as `arm-01` with its pose's `shoulder_pan` at 30, which
+a dry run never drives it to:
+
+```
+·  note    the arm is not at its rest pose (shoulder_pan is at 0 with a goal of 30), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release arm-01, or quackd doctor --robot arm-01 to park it, or cut its power
+```
 
 > [!CAUTION]
 > This is a behaviour change. A probe or a dry run on an arm away from its recorded rest pose
 > now leaves torque **on** where it used to drop it. The arm is holding itself up and the
-> servos are drawing current until something stops them: hold the arm and cut its power, or run
-> again and let the arm park itself. An arm with no rest pose recorded behaves as it always
-> did.
+> servos are drawing current until something stops them: hold it first, and then run
+> `quackd robot release NAME`, or run `quackd doctor --robot NAME` and let the arm park itself,
+> or cut its power. Both commands connect, and connecting drops torque for a moment. An arm with
+> no rest pose recorded behaves as it always did.
 
-**The one exception is a person asking for it, out loud, at that same pose.** Everything above
-is about quackd's own initiative, and on its own initiative quackd still de-energises nothing:
-no verb disables torque, no model can reach it, and `stop` is a hold rather than a release.
-`let_go()` is the single call in the project that takes torque off a robot, it exists for
-[`--by-hand`](#placing-it-by-hand), and the only thing that reaches it is somebody typing the
-flag. It is guarded by the rule above read from the other side. The close keeps torque on where
-the arm is not at its recorded rest pose; the release refuses where the arm is not at it. Both
-are the same question, *is this arm somewhere it can be let go of*, asked of the same joint
-reading with the same 5 degrees of slack, and the answer that leaves an arm holding itself up
-is also the answer that will not hand it to you.
+**The exceptions are a person asking for it, out loud.** Everything above is about quackd's own
+initiative, and on its own initiative quackd still de-energises nothing: no verb disables
+torque, no model can reach it, and `stop` is a hold rather than a release. `let_go()` is the
+single call in the project that takes torque off a robot, and it has two doors, both opened by
+a person at a terminal and neither by anything else.
+
+The first is [`--by-hand`](#placing-it-by-hand), and it is guarded by the rule above read from
+the other side. The close keeps torque on where the arm is not at its recorded rest pose; the
+release refuses where the arm is not at it. Both are the same question, *is this arm somewhere
+it can be let go of*, asked of the same joint reading with the same 5 degrees of slack, and the
+answer that leaves an arm holding itself up is also the answer that will not hand it to you,
+because the person who asked for it has their hands nowhere near it yet.
+
+The second is for the arm the close has just left holding itself up, and it releases that arm
+wherever it stands, because the person asking is holding it:
+[Releasing it where it stands](#releasing-it-where-it-stands), below, which is
+`quackd robot release` and the offer a run makes at a terminal when its rest move missed.
+
+### Releasing it where it stands
+
+On 2026-09-23 every run that got to its end kept torque on, because its rest pose could not be
+reached, and every one of them finished at the power switch: `let_go()` refused anywhere but the
+rest pose, and nothing else in quackd would take torque off. An arm holding itself up against a
+pose it could not reach is the right thing to leave in an empty room, and a dead end for a
+person standing next to it. So there is a second door, for exactly that person:
+
+```
+quackd robot release NAME [--yes] [--address ADDR] [--registry-dir DIR]
+```
+
+It says two things before it touches anything, because both happen to an arm you should already
+be holding. Connecting takes torque off every motor for a moment, since LeRobot's `configure()`
+runs inside `torque_disabled()`, so a warning printed after the connect would come after the arm
+had already been limp once. And the release lets the arm fall from wherever it is. Then it asks,
+and only then connects, with no camera and with the registered rest pose, so a release that does
+not happen closes under the rule above. It prints the joints, sends the release with no `stop`
+before it (a stop picks an arm in somebody's hands back up), reads `Torque_Enable` back off
+every motor, and says what it read. Captured on `lerobot:mock` registered as `arm-01`, with `y`
+typed at the question:
+
+```
+⚠ connecting takes torque off every motor for a moment, because LeRobot configures them with it
+off, and the release then lets the arm fall from wherever it is: hold it now, and keep hold of it
+until it is down
+release torque on arm-01? [y/N]: y
+arm-01 (lerobot:mock) is at
+shoulder_pan   0.0
+shoulder_lift  -90.0
+elbow_flex     90.0
+wrist_flex     0.0
+wrist_roll     0.0
+gripper        100.0
+✓ torque reads off on every joint of arm-01
+⚠ the arm is limp and in your hands (torque was taken off where it stood, because you asked for
+it): put it down before you let go of it, because nothing is holding it up
+```
+
+The last line is the close's own, and it is the right one to end on: nothing is holding the arm
+up, and you are. Unless a motor kept its torque, and then the close's line is not that one (the
+table below). `--yes` skips the question and nothing else, so hold the arm before you run it.
+With no terminal and no `--yes` it refuses before anything connects
+(`no terminal to ask on: pass --yes to release it`), and answering `n` connects nothing.
+
+`torque reads off on every joint` is printed only when the register was read and every motor
+said 0, and the command exits 0 only then. Everything else exits 1 and says which it was:
+
+| What you see | What it means |
+|---|---|
+| `torque still reads on for <joints>: cut the power` | those motors kept their torque through the release, or every motor did and nothing was released. The ones not named are limp, and the close's line after it says which case it was: below |
+| `torque was taken off and could not be read back: ...` | the release went out and the read that would confirm it failed, or the release call itself did not come back part way through its motors, and then the motors after the one it failed on kept their torque. quackd reads that silence as a release, so hold the arm as though nothing holds it, and cut its power to be sure. The close's line after it says what its own read of the arm finds, when it takes one, which it does on an arm with a rest pose, and that read answers: the arm limp in your hands, or the joints still on by name. Only when no read answers does it say that nothing read the release back |
+| `nothing was released: ...` | the arm did not answer before the release, so nothing was sent. Whether it is holding itself up is not something quackd could read, so hold it |
+| `lerobot:real at COM5: ...` and `keep hold of the arm` | the connect failed, and a connect that fails part way can leave some motors limp ([When it will not work](#when-it-will-not-work)) |
+| `... is not a body quackd takes torque off: only the LeRobot arm is` | the name is a body that does not declare `supports_hand_off` |
+
+After `torque still reads on`, the close's last line says what quackd then did, and never sends
+you back to the command that has just failed. Some motors held and the rest let go, so the arm
+is in your hands with those joints still energised, and the close keeps whatever torque there
+is. Captured on `lerobot:mock` registered as `arm-01` with no rest pose recorded, its release
+made to keep `elbow_flex` on, since an in-memory release otherwise always takes. At the rest
+pose the second line reads
+`torque is off at the rest pose except on elbow_flex, which still read on` instead:
+
+```
+✗ error: torque still reads on for elbow_flex: cut the power
+  torque is off where the arm stands except on elbow_flex, which still read on
+⚠ the arm is in your hands (torque was taken off where it stood, because you asked for it), but
+elbow_flex still reads torque on and holds: keep hold of the arm, put it down, and cut its power to
+let go of it
+```
+
+Every motor held, away from the rest pose, so nothing was released and torque is kept. The same
+arm with a rest pose recorded whose `shoulder_pan` is 30, every motor kept on:
+
+```
+✗ error: torque still reads on for shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll,
+gripper: cut the power
+  the arm still reports torque on, so it was not released
+⚠ the arm is not at its rest pose (shoulder_pan is at 0 with a goal of 30) and the release did not
+take, so torque was left on and it will not fall as it stands: hold it and cut its power
+```
+
+Every motor held at the rest pose, or on an arm with no pose recorded: the close lets go of it
+there, as every such close does, which sends the same release a second time with nothing to read
+it back. The line then begins
+`the release did not take, and the close then took torque off at the rest pose`, and ends on
+cutting the power if the arm still holds itself up.
+
+After `could not be read back`, the close's line turns on a read of its own. On an arm with a
+rest pose the close reads the arm before it decides, and when that read answers it says what the
+read found: the arm limp in your hands, or the joints still on by name, with the power switch as
+what lets go of them. When no read answers, or on an arm with no rest pose, which the close does
+not read, nothing has read the release back, so the close does not say the arm is limp either:
+the call may have stopped at one motor's write and left the motors after it holding. Its line
+says that, and ends on the power switch. The mock's close takes no read of its own, so a mock
+release whose read-back failed always ends this way. Captured on `lerobot:mock` registered as
+`arm-02`, its read-back made to fail, since an in-memory release otherwise always reads back:
+
+```
+✗ error: torque was taken off and could not be read back: torque is off at the rest pose, and the
+torque register did not answer to confirm it (the capture's stand-in for a register that did not
+answer)
+  hold the arm as though nothing holds it, and cut its power to be sure
+⚠ the arm is in your hands (torque was taken off where it stood, because you asked for it), but
+nothing read its torque back after the release went out, so it may be limp only in part: hold it as
+though nothing holds it, put it down, and cut its power to be sure
+```
+
+**The offer at the end of a run.** A run with you at its terminal makes the same offer itself,
+between its last rest move and the close, when that rest move missed: never on a dry run, never
+over MCP and never in a flock. And never over an arm that stopped answering: a rest move that
+failed because the arm went quiet is what cutting the servo supply looks like, nothing read says
+that arm is holding itself up, and the release would refuse at its first read anyway. The same
+goes for a rest move that left a call which never came back, a goal write or the hold a stalled
+move ends with, since the bus stays wedged behind it for as long as the call is out. Enter
+releases the arm through the same door. Sixty seconds with no Enter
+(`AgentLoop.RELEASE_OFFER_S`), no keyboard to read, or a Ctrl-C leaves it exactly as a run
+without the offer would, holding itself up with the torque line said. Captured on `lerobot:mock`
+registered as `arm-01` with `shoulder_pan` at 30 in its pose and its rest move scripted to miss,
+since a mock cannot miss on its own (`shoulder_pan stopped 30 deg short` is the capture script's
+wording), with Enter pressed:
+
+```
+·  note    moving to the rest pose
+·  note    the arm did not reach its rest pose: shoulder_pan stopped 30 deg short
+the arm did not reach its rest pose (shoulder_pan stopped 30 deg short), so it
+is holding itself up. Hold it and press Enter to release torque now. Leave it,
+and after 60 s it stays that way
+·  asked   release: the arm did not reach its rest pose (shoulder_pan stopped 30 deg short), so it is holding itself up. Hold it and press Enter to release torque now. Leave it, and after 60 s it stays that way -> yes
+·  release released: torque is off where the arm stands
+torque is off where the arm stands: the arm is in your hands, so put it down
+before you let go of it
+·  note    the arm is limp and in your hands (torque was taken off where it stood, because you asked for it): put it down before you let go of it, because nothing is holding it up
+```
+
+And left alone:
+
+```
+·  release kept: nobody pressed Enter
+·  note    nobody pressed Enter, so torque stays on and the arm holds itself up
+·  note    the arm is not at its rest pose (shoulder_pan is at 0 with a goal of 30), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release arm-01, or quackd doctor --robot arm-01 to park it, or cut its power
+```
+
+The record says which of those ended the wait. A Ctrl-C at the offer, the first of the run or a
+later one, reads `release kept: interrupted while waiting` rather than `nobody pressed Enter`,
+and a terminal with no keys to read reads `release kept: no key could be read`. A Ctrl-C that
+lands on the release itself, after Enter, is caught too, and what you are told turns on which
+side of the send it landed, which the arm's backend knows. Once the release has gone out, it may
+have reached some motors and not others, so the arm is taken to be limp in your hands, you are
+told to hold it as though nothing holds it, the record says
+`release interrupted: interrupted during the release`, and a close that nothing has read the
+release back for says so, and to cut its power to be sure. Before it went out, on the read the
+release begins with, nothing was sent, and that is all you are told, with torque as the rest
+move left it: "the arm may be limp" would be said of a release that never happened. Whether the
+arm is holding itself up is the close's line, from a read of its own, and it comes next. On the
+arm the read the Ctrl-C landed on may not have come back by then, and while it is out the
+close's read is refused and its line says quackd cannot tell. Captured on `lerobot:mock`
+registered as `arm-02`, with the same pose and the same scripted miss as above, and the
+interrupt landing there:
+
+```
+·  release kept: interrupted before the release was sent
+·  note    the release was interrupted before anything was sent, so torque is as the rest move left it
+the release was interrupted before anything was sent, so torque is as the rest move left it
+·  note    the arm is not at its rest pose (shoulder_pan is at 0 with a goal of 30), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release arm-02, or quackd doctor --robot arm-02 to park it, or cut its power
+```
+
+Either way the close, the summary and the rest of the teardown still happen. When the release is
+refused, what you are told follows what was read: every motor reading torque on says the arm is
+still holding itself up and to cut its power, and a release refused before anything was read
+says quackd cannot tell whether torque is on, to keep holding the arm, and to cut its power.
+
+The offer and what came of it are said to you directly whether or not the log is on, and the
+record keeps them as a `release` event and a `prompt` row
+([architecture.md](../architecture.md)).
+
+**Why a command and a prompt, and not a verb.** Every guard on this arm is there because a model
+is three seconds away from it and nobody's hands are on it. Releasing torque away from the rest
+pose is the one thing that drops the arm, so it goes through the only two doors a model cannot
+reach: a command a person types, and a question put to a person at the run's own terminal. It is
+not a verb and is in no `allow` list, it is not an MCP tool, and `let_go` is still not on the
+`RobotAdapter` protocol ([ADR-0039](../adr/0039-an-arm-placed-by-hand.md),
+[ADR-0045](../adr/0045-a-rest-pose-the-calibration-cannot-reach.md)). Both say "hold it" before
+anything happens, which is the whole difference from `--by-hand`, where the release comes first
+and the person's hands second.
+
+> [!WARNING]
+> Neither has run on an arm. Both are exercised against `lerobot:mock` and a fake arm in the
+> test suite. What an SO-101 does in the moment the release reaches it away from its fold, how
+> fast a shoulder held out at an angle drops, and whether one hand is enough to catch it, are
+> for the bench to say.
 
 ### What is driven, and what is not
 
@@ -933,14 +1556,17 @@ never commanded, for the same reason `stop` omits it: LeRobot writes only the ke
 so leaving the gripper out keeps whatever squeeze is already commanded, and a rest move that
 re-sent the gripper would open a hand that is holding something.
 
-The rest move is also the one move quackd sends **unclipped**. A pose read off the arm is where
-the arm physically was, and an arm folded to rest often sits outside the travel its own
-calibration recorded: the bench arm folded to `shoulder_lift` -113.5 against a calibrated
-±84.2. The out-of-range refusal that guards `move_joints` would refuse to put that arm down, so
-the rest move does not go through it. Record a pose you are willing to have the arm driven to
-without that check.
+The rest move goes out **clipped** into the travel, like every other goal quackd sends. Until
+2026-09-23 it was the one move sent unclipped, on the belief that a servo sent the angle of a
+fold outside its recorded travel would drive the arm back into that fold. The bench showed it
+does not: it clamps the goal to its limit and stops there
+([A pose past the travel](#a-pose-past-the-travel)). The out-of-range refusal that guards
+`move_joints` is still not in the rest move's way, and would have nothing to refuse: the goal is
+the recorded pose already clipped into the travel from the same calibration. Record a pose you
+are willing to have the arm driven toward from wherever a run ends.
 
-The move itself is re-sent at 10 Hz under the same 5 degree step cap as any other, on a budget
+The move itself is not paced the way `move_joints` is: it re-sends the goal at 10 Hz and runs
+at the 5 degree step cap, on a budget
 computed from how far the arm has to travel and bounded so a teardown cannot hold a run open
 for minutes. It stalls the same way a `move_joints` does, five ticks of 0.1 s in which nothing
 moved, and on a stall or a spent budget it holds where it is and reports how far short it
@@ -961,7 +1587,20 @@ dropped torque and put the bench arm on the desk:
 | `at it already` | the arm was within tolerance when `doctor` looked, and nothing moved |
 | `returned to it` | `doctor` drove it back, and torque dropped at the end |
 | `none recorded (quackd robot rest-pose <name>)` | nothing to park to, so the probe ended the way it always did: limp |
-| `not reached: ...` | the probe **fails**, the arm kept its torque, and the line about holding it and cutting the power comes out as an advisory under the table |
+| `not reached: ...` | the probe **fails**, the arm kept its torque, and the torque-left-on line comes out as an advisory under the table, naming the ways out: hold the arm, then run `quackd robot release NAME`, run `doctor` again to let the rest move try from where it is, or cut its power |
+
+A pose past the travel is parked at the edge of it, and the row says `returned to it` or
+`at it already` as it would for any pose, because the arm reached the pose it can be driven to
+and was let go of there. What the fold means comes out as advice under the table, and the
+verdict stays green. Captured on `lerobot:mock` registered with `shoulder_lift` at -118, against
+the mock's travel of -100 to 100 for that joint
+(`quackd doctor --robot arm-01 --address mock://arm`):
+
+```
+│ rest pose         │ returned to it                                                              │
+└───────────────────┴─────────────────────────────────────────────────────────────────────────────┘
+shoulder_lift is recorded at -118 in the rest pose and this calibration lets its servo be driven to -100 and no further, so it parks there and is let go of there, free to settle the rest of the way on its own. Calibrate again with the arm folded (lerobot-calibrate) and record the pose again (quackd robot rest-pose arm-01) to make the fold reachable
+```
 
 `quackd robot list --probe` does **not** move the arm. It reads, lets go, and where the arm was
 not already at its pose it keeps torque and says so on the same line that says the arm
@@ -974,6 +1613,10 @@ answered:
 │ arm-01 │ lerobot:mock │ ✓ ok, torque left on: not at its rest pose │
 └────────┴──────────────┴────────────────────────────────────────────┘
 ```
+
+A real arm that stopped answering before the probe let go of it ends that cell on
+`torque unknown: the arm did not answer the close` instead: quackd cannot tell whether it is
+holding itself up, so it kept whatever torque there is. Hold it, and cut its power.
 
 ### Only this arm parks
 
@@ -1001,7 +1644,14 @@ touched by anything in the first block: these all happen before or during connec
 | `doctor` shows `lerobot` green and `lerobot (feetech bus)` missing | LeRobot is installed without its `[feetech]` extra, so it imports and cannot open a serial port | `uv pip install "quackd[lerobot]"`, which asks for `lerobot[feetech]` |
 | `lerobot real: --address must be the arm's serial port` | no `--address` at all | pass the port. `--address needs --robot, so quackd knows what it is connecting to` means the opposite mistake, an address with no robot to apply it to |
 | `lerobot real: --address 'x' is not a serial port; it looks like COM5 on Windows or /dev/ttyACM0 elsewhere` | the address is not port-shaped | on Windows find it in Device Manager under Ports; on Linux it is usually `/dev/ttyACM0` |
-| `lerobot real: connect failed: ...` naming a port that cannot be opened | the port is wrong, or something else already owns it | LeRobot's own words come through, and they name `lerobot-find-port`, which is the way to be sure. The Feetech bus has one owner at a time, so close any teleoperation, recording or serial monitor still holding it, and on Linux check that your user can open the port (upstream's own line is `sudo chmod 666 /dev/ttyACM0`; the port's group, usually `dialout`, is the version that survives a reboot) |
+| `lerobot real: connect failed 3 times: Could not connect on port ...` | the port is wrong, or something else already owns it. It is tried three times like any connect failure, since a port busy for a moment is as passing as a lost packet | LeRobot's own words come through, and they name `lerobot-find-port`, which is the way to be sure. The Feetech bus has one owner at a time, so close any teleoperation, recording or serial monitor still holding it, and on Linux check that your user can open the port (upstream's own line is `sudo chmod 666 /dev/ttyACM0`; the port's group, usually `dialout`, is the version that survives a reboot). No attempt opened the port, so nothing was written to a motor and the message says nothing about torque |
+| `connect attempt 1 of 3 failed on <joint> (id <N>): Failed to write 'Lock' on id_=<N> ...`, and the session carries on | a status packet on one of the torque writes LeRobot's connect makes (`Lock` or `Torque_Enable`) was lost or came back garbled, and quackd closed the port without writing anything and connected again. Seen three times on 2026-09-23, each on the first connect after the power had been off | nothing, once. The same joint named session after session is a cable to reseat: the one into that servo, and its connectors |
+| `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to write ...` | every attempt failed, the last one on that servo. The torque writes may have stopped part way, so some motors can be holding and others limp, which the message says | keep a hand under the arm. Check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again. A message that names no joint says to check the arm's cables and power instead |
+| `lerobot real: connect failed 3 times, the last on <joint> (id <N>): FeetechMotorsBus motor check failed on port ...: Missing motor IDs: - <N> ...` | the servo at that address did not answer its ping on any attempt: a cable out, a servo with no power, or one answering with an error such as an overload, which LeRobot lists as missing too. `Motors with incorrect model numbers` in the same place is a servo that answered as another model. LeRobot's handshake reports it before anything is written, so the message says nothing about torque unless an earlier attempt got as far as writing | check that joint's cable and connectors and that the servo supply is on, then connect again |
+| `lerobot real: connect failed 3 times: FeetechMotorsBus motor check failed on port ...: Missing motor IDs: - <N> ...` with every motor listed and `Full found motor list (id: model_number): {}` | no servo answered its ping on any attempt. That is what a servo supply that is switched off looks like, which is how the arm is after a power cut, and a cable out between the board and the first servo looks the same, so no joint is named | check that the servo supply is on, then the arm's cables and their connectors, and that nothing else has the port open, then connect again. Nothing was written, so the message says nothing about torque unless an earlier attempt got as far as writing |
+| `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to read 'Min_Position_Limit' on id_=<N> ...` (or `Max_Position_Limit`, `Homing_Offset`) | every attempt lost a reply in the calibration check LeRobot's connect makes after the handshake and before `configure()`. It reads and writes nothing, so the message says nothing about torque unless an earlier attempt got as far as writing | check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again |
+| `lerobot real: connect stopped after attempt <k> of 3, because a stop was asked for. ...` | a Ctrl-C, or `q`, while the connect was failing. The attempt's own failure follows, LeRobot's words and the joint they name, then that the port was closed without a write and connect was not tried again | nothing to fix for the stop. Read the failure as the rows above, and where the message says some motors may be left with torque on and others off, keep a hand under the arm |
+| `lerobot real: connect failed: a LeRobot call (connect) has not come back; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
 | `lerobot real: the arm is not calibrated; run LeRobot's calibration first` | LeRobot read the motors back and they do not match a calibration | run `lerobot-calibrate` under the id quackd will use, and see [the id section](#the-name-you-give-the-arm-is-its-calibration-id) |
 | `lerobot real: the arm reports no calibration file, so nothing knows how far each joint travels` | there is no file for this id | the same fix, and check the path `doctor` prints |
 | `lerobot real: only so101_follower is wired` / `this robot has no motors bus` | the config is not an SO-101 follower | quackd drives this one body; an SO-100 shares the calibration directory but is not wired here |
@@ -1016,30 +1666,34 @@ And once it is running:
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `move_joints: shoulder_pan=170 is outside this arm's calibrated range -100..100` | the goal is outside the travel in your calibration file | aim inside it, or recalibrate if the file does not match the arm's real travel. Nothing was sent. On `wrist_roll` this refusal will never fire, because upstream records a full turn for that joint rather than a sweep |
+| `move_joints: shoulder_pan=170.0 is outside this arm's calibrated range -100.0..100.0` | the goal is outside the travel in your calibration file | aim inside it, or recalibrate if the file does not match the arm's real travel. Nothing was sent. On `wrist_roll` this refusal will never fire, because upstream records a full turn for that joint rather than a sweep |
 | `cannot move_joints: elbow_flex reads 61°C: let the arm cool before moving it ...` | the heat gate, below the servo's own 70 °C cut-off | let it cool. A joint that trips its own protection goes slack without announcing it |
-| `move_joints: elbow_flex is at 12 with a goal of 45, and it has stopped moving` | a stall: five ticks of 0.1 s in which no watched joint moved more than half a step | something is in the way, a mechanical limit the calibration does not know about, or a tripped servo. The arm is held first. The same sentence ending `when the time ran out` means `duration_s` was too short for the capped 50 degrees a second |
+| `move_joints: elbow_flex is at 12 with a goal of 45, and it has stopped moving` | a stall: five ticks of 0.1 s in which no watched joint moved more than half a degree (or half the step cap, where that is lower), counted once the move's ramp has handed the servo the goal itself | something is in the way, a mechanical limit the calibration does not know about, or a tripped servo. The arm is held first. A joint blocked partway through a long `duration_s` is only called stalled when that time is up. The same sentence ending `when the time ran out` means the joint was still moving when the verb's limit came: the time asked for, or the time the step cap needs if that is longer, plus 2.5 s, and never more than 18 s. A lowered `QUACKD_LEROBOT_MAX_STEP_DEG` on a long move gets there, and so does a joint creeping under a load |
 | `the camera gave no frame: TimeoutError: ... too old` | the webcam stalled or was unplugged | only `observe` is affected, and a `pick` in flight. The arm carries on, and `report_state` starts saying `CAMERA DOWN:` with the reason, so a run that cannot call `observe` still records it |
 | `cannot move_joints: the arm's torque is off, so a goal would reach a limp servo` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so torque still off after one points at a tripped servo or the supply. On a `--by-hand` run this is also what the arm reads like between the release and the moment quackd takes hold again, which is before the first turn |
 | `cannot place: nothing is held: pick something first` | the `holding` precondition | holding is inferred from the gripper stopping short of shut, so an empty hand reads as nothing held. After a `--by-hand` start it is also what a pilot gets for the pencil you put between the jaws yourself: closing the gripper by hand sets a position and not a grip, and the pilot has to close on the object itself first |
 | the run ends saying the arm did not answer | the heartbeat's round trip to the motors failed | the cable, the power, or a servo that has tripped. The arm holds its last goal under torque |
 | the arm sags when the run ends | no rest pose is recorded, so LeRobot's `disconnect()` disables torque by its own default, at the end of every clean session | record one: `quackd robot rest-pose <name>`. Until you do, support it or fold it somewhere it can rest before you exit |
-| `the arm is not at its rest pose (...), so torque was left on and it will not fall: hold the arm and cut its power, or run again` | the arm did not reach the pose you recorded, so quackd kept torque rather than dropping it | hold the arm and cut the servo supply, or run again and let the rest move try from where it now is. The parenthesis names the joints that fell short |
-| a run aborts with `the arm did not reach its rest pose: ...` before any model call | the run could not start from the recorded pose | something is in the way, or the pose no longer matches the arm. Clear it with `--clear` and record it again, or move whatever is blocking the fold |
+| `the arm is not at its rest pose (...), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release NAME, or quackd doctor --robot NAME to park it, or cut its power` | the arm did not reach the pose you recorded, or the edge of its travel where the pose lies past it, so quackd kept torque rather than dropping it. A run at a terminal offered to release it first, and nobody pressed Enter | hold the arm before anything else, since both commands connect and connecting drops torque for a moment. Then run `quackd robot release NAME` to have it let go into your hands ([Releasing it where it stands](#releasing-it-where-it-stands)), or run `quackd doctor --robot NAME` to let the rest move try again from where it now is, or cut the servo supply. The parenthesis names the joints that fell short |
+| `quackd cannot tell whether the arm is holding itself up (the arm did not answer: ...), so it kept whatever torque the arm has: hold it, and cut its power` | the arm did not answer the close's last read, so nothing says where it is or whether its servos are powered. Cutting the supply looks exactly like this, and so does a cable that came out in front of live servos | hold it, and cut the servo supply. No offer is made at the end of a run over an arm that went quiet |
+| `torque still reads on for <joints>: cut the power` from `quackd robot release` | those motors kept their torque through the release | cut the servo supply while you hold the arm. The motors not named are limp, and the line after it says what the close then did ([Releasing it where it stands](#releasing-it-where-it-stands)) |
+| a run aborts with `the arm did not reach its rest pose: ...` before any model call | the run could not start from the recorded pose | something is in the way, or the pose no longer matches the arm, which is what a new calibration does to a pose recorded before it. Record it again, or move whatever is blocking the fold. A fold past the calibrated travel no longer ends a run here: the arm parks at the edge |
+| `<joint> is recorded at <angle> in the rest pose and this calibration lets its servo be driven to <limit> and no further, so it parks there and is let go of there ...` | the fold you recorded lies past the travel in your calibration file, so the arm parks at the edge of it and is let go of there. Not a fault: the run carries on | calibrate again with every joint taken all the way into the fold, then record the pose again ([A pose past the travel](#a-pose-past-the-travel)) |
+| `report_state` says `<joint> reads <angle>, past the <limit> its servo can be driven to` | that joint was folded or placed past its travel with torque off, which is where a rest pose past the travel leaves it, or it was parked at its limit and has sagged a few degrees past it under its own weight | nothing. It is said so the pilot does not take the reading for a fault, and goals are still limited to the travel |
 
 ### Reported by owners, not by us
 
-One SO-101 has been on a desk here, for one afternoon on 2026-09-15, and the list above is
-still what quackd's own code does. These are things SO-101 owners report, collected while
+One SO-101 has been on a desk here, on 2026-09-15 and again on 2026-09-23, and the list above
+is still what quackd's own code does. These are things SO-101 owners report, collected while
 writing this page and **not verified against hardware by anyone in this repo**. They are here
 because they are the failures that cost an afternoon, not because we can vouch for them.
 
-None of the first three came up that afternoon: the arm was already assembled, calibrated and
-on a working cable, which is the state this page assumes rather than the state a kit arrives
-in. The two-camera and the Linux ones could not come up either, because the bench ran one
-webcam on Windows, at 640x480 and with no `?backend=` key needed. What did come up is an index
-moving, from the other direction than the bullet describes: a single webcam, `opencv://1` on
-one session and `opencv://2` on a later one.
+None of the first three came up on either afternoon: the arm was already assembled, calibrated
+and on a working cable, which is the state this page assumes rather than the state a kit
+arrives in. The two-camera and the Linux ones could not come up on 2026-09-15, because that
+bench ran one webcam on Windows, at 640x480 and with no `?backend=` key needed. What did come
+up is an index moving, from the other direction than the bullet describes: a single webcam,
+`opencv://1` on one session and `opencv://2` on a later one.
 
 - **No serial port appears at all.** A charge-only USB cable, or the arm's barrel jack out:
   USB does not power the controller board.
@@ -1105,11 +1759,17 @@ If you hit one of these, or fail to, that is exactly what the
 | `the five body joints get no torque or current cap` | the caps sit inside a check for the gripper's name |
 | `configure_motors() writes Return_Delay_Time 0 and Acceleration 254` | called inside torque_disabled(), so connecting drops torque briefly |
 | `SOFollower.is_connected is the serial port plus the cameras` | |
+| `SOFollower.connect() refuses while the port is open` | `check_if_already_connected`, and `is_connected` is the port's flag. connect() opens the port first and configures last, and nothing shuts the port when configure() raises, so a retried connect has to close it first (`MotorsBus.disconnect(False)`) |
+| `configure() switches torque off and on again with no retry` | `torque_disabled()` calls `disable_torque()` and `enable_torque()` with `num_retry` 0, each a `Torque_Enable` then a `Lock` write per motor, so one status packet lost or garbled fails the whole connect with the motors in two torque states. The bench arm did this on three connects on 2026-09-23; quackd connects again, up to three attempts |
 | `SOFollower.bus is a FeetechMotorsBus` | the attribute registers are read through |
 | `no deadman: nothing stops the arm when the client goes quiet` | the class has no thread, timer or timeout; a goal stands until the next write |
-| `MotorsBus.disable_torque()` | never called on quackd's own initiative. The one call is `let_go()`, which a person asks for with `quackd run --by-hand` and which refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to decide that letting go will not drop it. No verb reaches it and no model can ask for it |
-| `MotorsBus.enable_torque()` | called by `take_hold()`, to pick up an arm a person has just placed |
-| `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling |
+| `MotorsBus.disable_torque()` | never called on quackd's own initiative. The one call is `let_go()`, and it has two doors, each opened by a person at a terminal. `let_go()` is `quackd run --by-hand`'s, and refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to decide that letting go will not drop it. `let_go(anywhere=True)` is `quackd robot release`'s and the end-of-run offer's, after each has told the person to hold the arm, and releases wherever the arm stands, with or without a rest pose recorded. No verb reaches either and no model can ask for it. On a Feetech bus it writes `Torque_Enable` 0 then `Lock` 0 per motor, and quackd asks for `num_retry=5`, the count upstream's own `disconnect()` uses |
+| `MotorsBus.enable_torque()` | called by `take_hold()`, to pick up an arm a person has just placed, with `num_retry=5` as for the release. It writes `Torque_Enable` 1 **and then `Lock` 1** per motor, two writes a motor rather than one |
+| `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling, and how the port is closed between two connect attempts without a write to any motor. The same branch clears the port handler's busy flag (`port_handler.is_using = False`, motors_bus.py lines 557 and 558), which a serial error in the middle of a packet leaves set and which reopening the port does not clear, so quackd clears it after its own close: without that, every packet of the next attempt is answered "port in use" and the connect is refused as every motor missing |
+| `MotorsBus.motors: name -> Motor(id, model, norm_mode)` | the table that gives each servo its bus address; a bus error's id is turned into a joint through it, never through an assumed order |
+| `Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>` | what a single write or read that failed raises. quackd reads the id out of it to name the joint; a sync read or write names several and quackd names none |
+| `_handshake` | what `MotorsBus.connect()` runs once the port is open: a ping per motor and the firmware reads, and no write. `configure()`, where every write of a connect is, comes after it, so a connect refused in the handshake left every motor's torque as it was, and its refusal does not tell you to keep a hand under the arm. quackd tells the two apart by this frame in the error's traceback |
+| `Missing motor IDs: / Motors with incorrect model numbers: - <N> (...)` | what the handshake raises for a servo that did not answer its ping, or answered as another model: one line per motor. A servo answering with its error bit set, an overload say, is listed as missing too. quackd names the joint of the first id listed, through the bus's motor table |
 | `MotorsBus.is_connected is port_handler.is_open` | a port flag, not a reply: why the heartbeat reads the arm |
 | `FeetechMotorsBus.is_calibrated reads the motors back` | a missing, stale or foreign file all read as not calibrated |
 | `write_calibration() is reached only through calibrate()` | quackd cannot move an arm's zero by accident |
@@ -1117,7 +1777,8 @@ If you hit one of these, or fail to, that is exactly what the
 | `NORMALIZED_DATA is Goal_Position and Present_Position` | every other register comes back raw |
 | `MotorCalibration(id, drive_mode, homing_offset, range_min, range_max)` | raw encoder ticks, not degrees |
 | `degrees = (raw - mid) * 360 / 4095` | how a calibration file becomes a range in degrees, centred on zero |
-| `a degrees goal is not clamped to the calibrated range` | the two 0..100 modes are clamped and DEGREES is not: why quackd refuses |
+| `a degrees goal is not clamped to the calibrated range` | the two 0..100 modes are clamped and DEGREES is not, so the servo's own clamp is what stops a goal past the travel, silently: why quackd refuses |
+| `write_calibration() writes Min_Position_Limit and Max_Position_Limit, and the servo clamps Goal_Position to them` | the servo clamps every goal to the calibrated travel and never a reading, seen on an SO-101 on 2026-09-23: why a rest pose is clipped into the travel and a joint past it gets no goal |
 | `sts3215 resolution 4096` | one tick is about 0.088 degrees |
 | `Torque_Enable (40, 1) and Present_Temperature (63, 1)` | the two registers quackd reads; upstream reads neither |
 | `Camera.async_read(timeout_ms)` | the most recent new frame |
@@ -1151,11 +1812,11 @@ If you hit one of these, or fail to, that is exactly what the
 | Name | What quackd does |
 |---|---|
 | `POLICY_PIPELINE` | `pick` runs an injected policy object; `load_policy()` builds one from verified names and is untested. A policy's actions get the same step cap and range check as a verb's |
-| `TORQUE_ENABLE_HOLDS_PRESENT` | what a servo does with the goal it was last told when torque comes back on. `enable_torque()` writes the `Torque_Enable` register and nothing else, so whether the motor then holds where it is or drives to that stale goal is the firmware's business and is documented nowhere quackd can read. It matters because the goal last written before a hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back to it would happen with somebody's fingers in the way. `take_hold()` writes the present position as the goal **before** enabling torque, writes it again after, and reads the arm back to check it stayed, so the assumption is never relied on in either direction |
+| `TORQUE_ENABLE_HOLDS_PRESENT` | what a servo does with the goal it was last told when torque comes back on. `enable_torque()` writes `Torque_Enable` and then `Lock` on each motor, neither of them a goal, so whether the motor then holds where it is or drives to that stale goal is the firmware's business and is documented nowhere quackd can read. It matters because the goal last written before a hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back to it would happen with somebody's fingers in the way. `take_hold()` writes the present position as the goal **before** enabling torque, writes it again after, and reads the arm back to check it stayed, so the assumption is never relied on in either direction. A joint placed past its calibrated travel is where that cannot work: a goal written there is clamped to the limit (`POSITION_LIMITS_CLAMP_GOALS`), and no goal leaves the servo the last one it had, the rest move's, which only this row could say it ignores. So `take_hold()` leaves torque off and refuses while any body joint reads outside its travel |
 | `GRIPPER_OPEN_VALUE` | 100 is assumed open; which end is open is how the arm was calibrated, and the checklist asks for it by hand |
 | `HOLDING_INFERRED` | holding is the gripper told to close, settled, and short of shut; listed in `extras.assumptions`. A gripper a person closed by hand is a position and not a grip, so an arm placed with `--by-hand` reports nothing held until the pilot closes the gripper itself |
 | `TEMPERATURE_C` | the register is read raw and treated as Celsius; the 60 °C refusal and the 70 °C cut-off are Feetech's numbers, not measured |
-| `JOINT_RANGES` | each joint's travel is computed from the calibration file and a goal outside it is refused; whether that is the mechanical limit is unverified |
+| `JOINT_RANGES` | each joint's travel is computed from the calibration file and a goal outside it is refused. It is not the mechanical limit on every arm: a calibration that never saw a joint folded all the way leaves the fold past it, as the bench arm's did on 2026-09-23, which is why a rest pose is clipped into the travel. Whether it is the mechanical limit on any given arm is unverified |
 | `SERIAL_PORT` | `--address` is checked for shape and nothing more |
 | `THREAD_SAFETY` | every call is serialised under one lock in a worker thread with a deadline; a blown deadline wedges the transport |
 | `CAMERA_INDEX_MOVES` | an index is a scan position, not an identity: it can move on a replug or a reboot, and a laptop's own webcam usually holds 0. quackd records the index it opened and cannot tell you it is the camera you meant |
@@ -1166,7 +1827,13 @@ If you hit one of these, or fail to, that is exactly what the
 `lerobot:mock` runs every arm verb through the executor in the test suite, including the
 confirm gate on `pick`, the `holding` precondition on `place` and the heat refusal.
 `lerobot:real` is exercised against a fake arm and a fake policy (verified method names, no
-serial port), and it has now run on one real arm, once.
+serial port), and it has now run on one real arm, on 2026-09-15 and again on 2026-09-23.
+
+The 2026-09-23 afternoon ran quackd 0.12.0, so what quackd does about that afternoon has not run
+on an arm yet: parking a rest pose at the edge of its travel, `stop` leaving out a joint that
+reads past its travel, `quackd robot release` and the offer at the end of a run, the connect's
+retries, a `move_joints` paced over its `duration_s`, and the take-hold refusing a joint past
+its travel. The [checklist](../lerobot-hardware-checklist.md) is the order to find out in.
 
 ### What one afternoon proved, and what it did not
 
@@ -1190,7 +1857,9 @@ What went wrong, which belongs in the same breath as the above:
 
 - **The arm fell at the end of every run**, because `disconnect()` drops torque. That is the
   whole reason [the rest pose](#the-rest-pose) exists, and the rest pose is the one thing on
-  this page written after hardware rather than before it.
+  this page written after hardware rather than before it. It met the same arm on 2026-09-23 and
+  could not reach a fold that lay past the calibrated travel, which is the box at the top of
+  that section.
 - One dry run aborted with `the arm did not answer: TimeoutError` when a single heartbeat round
   trip failed. It never recurred, and nothing since has explained it.
 - One dry run aborted because the pilot answered `uncertain` at `assess_task` and the human

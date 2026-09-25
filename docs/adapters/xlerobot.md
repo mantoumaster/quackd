@@ -81,7 +81,7 @@ And what it cannot do whatever the task says, which is the half a refusal usuall
 - move fast, catch, or manipulate a thing in one hand: no dynamic motion and no in-hand dexterity, in the maintainer's words
 - go up or down a step: it is a 12 kg cart on three omniwheels
 
-A figure nobody published is listed as not published, and the pilot is told to decline whatever hinges on it rather than guess. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
+A figure nobody published is listed as not published, and the pilot is told to answer `uncertain` and name it, rather than guess, where a task turns on it. A `.duck` file can correct any of it for the build in front of you ([duck-spec.md](../duck-spec.md)).
 
 ## The manifest
 

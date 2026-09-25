@@ -18,6 +18,19 @@ from quackd_xlerobot import xlerobot_manifest
 SPECS = [RobotSpec(adapter, backend) for adapter in ADAPTER_NAMES for backend in BACKENDS[adapter]]
 
 
+def _bare(**over: object) -> RobotManifest:
+    base: dict[str, object] = {
+        "id": "bot-01",
+        "vendor": "acme",
+        "model": "bot",
+        "embodiment": "wheeled",
+        "mobility": "wheeled",
+        "intents": ["twist"],
+        "verbs": [VerbSpec(name="move", core=True)],
+    }
+    return RobotManifest(**{**base, **over})  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("spec", SPECS, ids=lambda s: f"{s.adapter}:{s.backend}")
 def test_every_shipped_body_publishes_a_datasheet_that_renders(spec: RobotSpec) -> None:
     manifest = describe(spec)
@@ -66,9 +79,40 @@ def test_the_microduck_says_what_it_knows_and_what_nobody_published() -> None:
     assert BODY_HEADING in text
     assert "0.8 kg (official: the Pollen Robotics README)" in text
     assert "Not published: payload, reach, endurance." in text
-    assert "Decline any task that hinges on any of them." in text
     assert "a beak, no arms" in text
     assert "carry, hold or push anything" in text
+
+
+def test_an_unpublished_figure_is_a_question_for_a_person_not_a_refusal() -> None:
+    """The line under "Not published" used to say "Decline any task that hinges on any of
+    them", and on an arm whose reach nobody had published that forbids reaching for anything.
+    The verdict gate already refuses a `feasible` that names an unpublished figure, and what it
+    offers the pilot is `uncertain`, which asks a person who may know. So the line points the
+    same way the gate does, for one unpublished figure or several.
+
+    A body with no datasheet keeps its own sentence, which still says decline: this is about a
+    figure missing from a sheet, not a body nobody has described at all."""
+    many = body_section(microduck_manifest("sim2d"))
+    assert (
+        "Not published: payload, reach, endurance. Where a task turns on one of them, say "
+        "uncertain and name it rather than guessing; do not decline on it alone." in many
+    )
+    assert "Decline" not in many and "hinges" not in many
+
+    figure = Figure(value=1.0, confidence="measured", source="a test")
+    for missing in ("mass_kg", "height_m", "payload_kg"):
+        sheet = Datasheet(
+            manipulator="gripper",
+            arms=1,
+            tethered=True,
+            **{field: figure for field, _l, _u in Datasheet.FIGURES if field != missing},
+        )
+        (label,) = sheet.unknown()
+        text = body_section(_bare(datasheet=sheet))
+        assert f"Not published: {label}. Where a task turns on it, say uncertain" in text
+        assert "Decline" not in text and "hinges" not in text
+
+    assert "decline any task that hinges on one" in body_section(_bare())
 
 
 def test_the_arm_says_it_cannot_go_anywhere_and_the_bridge_says_it_knows_nothing() -> None:
@@ -77,6 +121,8 @@ def test_the_arm_says_it_cannot_go_anywhere_and_the_bridge_says_it_knows_nothing
     assert "It does not move: no base and no legs" in arm
     assert "Mains powered, so nothing runs down" in arm
     assert "Endurance" not in arm, "a mains-powered arm has no endurance to publish"
+    assert "- Reach: " in arm and "(estimate: the maker's URDF" in arm
+    assert "Not published: mass. Where a task turns on it" in arm
 
     bridge = body_section(describe(RobotSpec("rosbridge", "ws")))
     assert "Not published: mass, height, actuated joints, endurance" in bridge

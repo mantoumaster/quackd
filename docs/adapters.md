@@ -57,7 +57,7 @@ description = "The LeRobot SO-101 arm adapter for quackd. Install it as quackd[l
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
-dependencies = ["quackd>=0.13,<0.14"]
+dependencies = ["quackd>=0.14,<0.15"]
 
 [project.optional-dependencies]
 sdk = ["lerobot[feetech]>=0.6; python_version >= '3.12'"]
@@ -77,7 +77,7 @@ quackd = { workspace = true }
 
 | Line | Why it is that way |
 |---|---|
-| `dependencies = ["quackd>=0.13,<0.14"]` | the core is the dependency, never the other way round. The window is narrow because the manifest model and the intent vocabulary are the interface, and they move with the core |
+| `dependencies = ["quackd>=0.14,<0.15"]` | the core is the dependency, never the other way round. The window is narrow because the manifest model and the intent vocabulary are the interface, and they move with the core |
 | `[project.optional-dependencies] sdk` | the library the real backend imports, and only that backend. A machine without it still gets `lerobot:mock`, still validates a `.duck` against the arm and still prints it in `list-adapters`. `quackd[lerobot]` in the core pins `quackd-lerobot[sdk]`, so the extra a reader types buys both halves. An adapter whose robot side you ship yourself declares no `sdk` at all: `quackd-open-duck` and `quackd-toddlerbot` have none |
 | the environment marker | LeRobot needs Python 3.12 and pulls torch. The marker is what keeps the lock solvable on 3.11, where this package still installs and the mock still runs |
 | `[project.entry-points."quackd.adapters"]` | `lerobot = "quackd_lerobot"` is the robot's name mapped to the module carrying `describe`, `make`, `implementations` and `conditions`. This is how quackd finds it, and the only way it finds a third party's |
@@ -221,9 +221,10 @@ lives. The rules, enforced by the model itself ([manifest-spec.md](manifest-spec
   moves: what it weighs, carries and reaches, what it holds with, what it is rated for and
   what it cannot do whatever the task says. Every figure carries a confidence and a source,
   and a figure the maker never published is left out rather than guessed at, because the
-  prompt renders an absent one as "not published" and tells the pilot to decline whatever
-  hinges on it ([manifest-spec.md](manifest-spec.md#the-datasheet)). The same sheet describes
-  the body on every backend, which is part of why `digest()` matches across them.
+  prompt renders an absent one as "not published" and tells the pilot to answer `uncertain`
+  where a task turns on it ([manifest-spec.md](manifest-spec.md#the-datasheet)). The same
+  sheet describes the body on every backend, which is part of why `digest()` matches across
+  them.
 - **`digest()`** is the capability fingerprint discovery advertises; it ignores `id` and
   `backend`, so the same robot over `sim2d` and `mock` hashes the same.
 
@@ -296,11 +297,18 @@ disable torque inside it (three by default, the ToddlerBot always), so `close()`
 and hold rather than delegate.
 
 The one exception is a body that has been put somewhere it can be let go of. A LeRobot arm
-with a recorded rest pose is driven there first, and only then is upstream's own torque-off
-allowed to happen; an arm that did not reach the pose has that flag turned off and is left
-holding itself up, with one line saying so ([safety.md](safety.md)). That is the shape any
+with a recorded rest pose is driven there first, or to the edge of its calibrated travel where
+the pose lies past it, and only then is upstream's own torque-off allowed to happen; an arm
+that did not reach the pose has that flag turned off and is left with whatever torque it has,
+with one line saying so ([safety.md](safety.md)). That is the shape any
 other body would have to take to earn a `go_to_rest()`: a pose the body holds with the power
 off, checked before anything is released, and a refusal to release when it is not there.
+
+The other exception is a person holding the arm who asks. `quackd run --by-hand` releases a
+LeRobot arm at its rest pose so the person can set the start, and `quackd robot release`, or
+Enter at the offer a run makes when its last rest move missed, releases it wherever it stands.
+None of them is a verb, an MCP tool or a method on the `RobotAdapter` protocol, so no pilot can
+reach them ([adapters/lerobot.md](adapters/lerobot.md#the-torque-rule)).
 
 ### If you speak a wire
 
@@ -375,7 +383,9 @@ this repository claims a robot moved unless one did.
 
 One backend has been through that. `lerobot:real` drove an SO-101 on 2026-09-15: the lookout
 duck, free-form waves, the gripper and a USB webcam ([lerobot-first-run.md](lerobot-first-run.md)),
-and it is the only body here any of this has been tested against. Every other adapter is still
+and the same arm ran again on 2026-09-23 under a registered name with a rest pose recorded
+([adapter-status.md](adapter-status.md)). It is the only body here any of this has been tested
+against. Every other adapter is still
 🧪 on the backend that reaches its robot, which is the state this page is mostly written for.
 
 ## The checklist
