@@ -11,17 +11,18 @@ torque on, and taking it off is now a person's call, made after being told to ho
 where before the only call left to them was the power switch. The line a genuine miss ends on,
 `TORQUE_LEFT_ON`, names the ways out with the name the arm was registered under, and puts the
 hold before all of them, because both commands connect and connecting takes torque off every
-motor for a moment: hold the arm first, then run `quackd robot release`, or run `quackd doctor
---robot` to try the rest move again, or cut its power. "It will not fall" is said of the arm as
-it stands. [ADR-0039](0039-an-arm-placed-by-hand.md)'s second amendment has the rest.
+motor for a moment: hold the arm first, then run `quackd robot release`, or run
+`quackd doctor --robot` to try the rest move again, or cut its power. "It will not fall" is said
+of the arm as it stands. [ADR-0039](0039-an-arm-placed-by-hand.md)'s second amendment has the
+rest.
 
 **Amended 2026-09-24:** `take_hold()` no longer skips a joint placed past its travel. It refuses
 before it writes anything, torque stays off and the arm stays in the person's hands, because the
-goal a skipped joint keeps after a hand-off is the rest move's and not the limit. The decision on
-the take-hold below says why, and what the teardown then does, which is to leave the arm alone:
-nothing takes hold of it again, nothing writes it a goal, and nothing folds it, whatever the
-person does with the joint afterwards ([ADR-0039](0039-an-arm-placed-by-hand.md)'s amendment of
-the same day has the rule for every refused take-hold).
+goal a skipped joint keeps after a hand-off is the rest move's and not the limit. The decision
+on the take-hold below says why, and what the teardown then does, which is to leave the arm
+alone: nothing takes hold of it again, nothing writes it a goal, and nothing folds it, whatever
+the person does with the joint afterwards ([ADR-0039](0039-an-arm-placed-by-hand.md)'s amendment
+of the same day has the rule for every refused take-hold).
 
 ## Context
 
@@ -59,9 +60,8 @@ What followed, all of it in that afternoon's traces:
   angle, so every run that did not start within `TOL_DEG` of the recorded pose aborted with
   `the arm did not reach its rest pose` before its first model call. Six runs ended that way:
   four whose shoulder started above the fold, and two whose shoulder started further into it
-  than the recorded angle, where the clamp moved it up past that angle just the same. The
-  other sixteen that reached the rest move started at the fold and were `already at the rest
-  pose`.
+  than the recorded angle, where the clamp moved it up past that angle just the same. The other
+  sixteen that reached the rest move started at the fold and were `already at the rest pose`.
 - Every run that reached its close, 21 of them, ended on `TORQUE_LEFT_ON`. The six above missed
   the same move again at their end. Of the fifteen that got past their start, six ran the move
   at their end and missed it at the limit, and nine found the shoulder still folded and
@@ -98,20 +98,20 @@ never clipped in practice. `rest_pose` stays the pose as recorded. The reachable
 computed from it and the calibration each time it is asked for (`LeRobotReal.rest_reachable`),
 so it cannot outlive the calibration it came from.
 
-**"At rest" is a half-line for a clipped joint.** `verbs.joint_at_rest(goal, reading,
-recorded)`: where the recorded angle lies below the floor, the joint is at rest at
-`reading <= goal + TOL_DEG`, and where it lies above the ceiling, at `reading >= goal -
-TOL_DEG`. The side is read off the sign of `recorded - goal`, so a fold past the ceiling is the
-mirror of one past the floor. Every other joint keeps the band of `TOL_DEG` (5.0 degrees)
-either side of its recorded angle, and `at_rest` called with two arguments judges exactly as it
-always did. The reason is the servo's. Nothing quackd can write drives a joint further past its
-limit than the few degrees a loaded joint sags there, so a joint that reads well past it was put
-there with torque off, by a hand or by its own weight settling: it is folded, not lost. A joint
-parked at the limit and sagging past it is at rest by the same rule. `go_to_rest`, `close()`, `let_go()` and the mock all use the
-rule, so an arm parked at the edge of its travel has `arrived`, an arm already folded past it
-is `already` there, and both are let go of. A joint that stops short *inside* its travel,
-against a hand or the desk, is still a miss, and it still keeps torque on with
-`TORQUE_LEFT_ON`.
+**"At rest" is a half-line for a clipped joint.**
+`verbs.joint_at_rest(goal, reading, recorded)`: where the recorded angle lies below the floor,
+the joint is at rest at `reading <= goal + TOL_DEG`, and where it lies above the ceiling, at
+`reading >= goal - TOL_DEG`. The side is read off the sign of `recorded - goal`, so a fold past
+the ceiling is the mirror of one past the floor. Every other joint keeps the band of `TOL_DEG`
+(5.0 degrees) either side of its recorded angle, and `at_rest` called with two arguments judges
+exactly as it always did. The reason is the servo's. Nothing quackd can write drives a joint
+further past its limit than the few degrees a loaded joint sags there, so a joint that reads
+well past it was put there with torque off, by a hand or by its own weight settling: it is
+folded, not lost. A joint parked at the limit and sagging past it is at rest by the same rule.
+`go_to_rest`, `close()`, `let_go()` and the mock all use the rule, so an arm parked at the edge
+of its travel has `arrived`, an arm already folded past it is `already` there, and both are let
+go of. A joint that stops short *inside* its travel, against a hand or the desk, is still a
+miss, and it still keeps torque on with `TORQUE_LEFT_ON`.
 
 **Torque is released at the reachable pose, and the joint is left to settle the rest of the way
 on its own.** This was decided at the bench, against the alternative, which was an arm that
@@ -151,40 +151,39 @@ core `stop` verb names them and says they read past their travel.
 
 **A take-hold refuses a joint placed outside its travel, before it writes anything.** In
 `take_hold()` a skip would not keep the limit. The last goal quackd wrote to that joint is the
-rest move's, written while the joint sat inside its travel and before the person lifted the
-arm, and a person can place the joint past the far end of the travel from it, so the goal the
-servo keeps can be nearly the whole travel away. A goal written where the joint is would be
-clamped to the near limit and haul it there, and no goal at all leaves the servo that stale
-one, which it drives to on re-enable if `TORQUE_ENABLE_HOLDS_PRESENT` goes the wrong way.
-Neither keeps the joint where it was put. So `take_hold()` refuses whenever a body joint reads
-outside its travel, before any goal or torque write: torque stays off, `_in_hand` stays set, and
-the refusal (`verbs.placed_past_travel`) names each such joint, its reading and its travel, says
-that a goal written where the joint is lies past its travel and the servo would pull the joint
-to the end of it, and says the arm is taken hold of only with the joint inside. A `--by-hand`
-run ends there and tells the person at once that the arm is still in their hands, or, where the
-take-hold's own read finds the whole arm at its rest pose with every motor off, a fold recorded
-past the travel that nobody lifted before pressing Enter, that it is still limp at its rest pose
-and taken hold of only once the folded joint is lifted inside its travel
-(`verbs.unlifted_from_rest`, `HandResult.resting`). The same refusal met by the stop that opens
-the teardown of a Ctrl-C in the placement wait is said to the person once and recorded, in the
-same words. After that nothing in the run touches the arm: the stop takes no second hold and
-sends nothing (`_refused_hold`), the hand-back is not asked, the rest move reads the arm and
-writes it nothing (`IN_HAND_NOT_MOVED`), and the run says once that the arm is in their hands
-and not folded, or, where that read finds the arm still at its rest pose, that it is already
-there. No release is offered over it either. The close ends on the note for an arm in
-somebody's hands, let go of for them to place, or, where its own read finds the arm still at
-its rest pose with every motor off, which is a fold recorded past the travel that nobody lifted
-the arm out of, whether the placement wait ended on Enter, on a Ctrl-C or unanswered, on the note
-for an arm limp at its rest pose (`LIMP_AT_REST`). The gripper is not in the check, because
-LeRobot bounds a gripper reading into
-its 0..100 range before quackd sees it. (This decision first said `take_hold()` left such a
-joint out of both its writes, and that the goal it kept was the limit. That holds for a goal
-written while the joint read past its travel and not for the rest move's, and the skip it
-justified could turn a haul of a few degrees into a swing across the travel with a hand on the
-arm. It then said the teardown's stop "meets the same refusal", which it did only while the
-joint still read past its travel: a person who moved it back inside, as the refusal asked, had
-the stop, or the stall of a rest move writing goals into the limp servos, take hold of the arm
-under their hand with nothing said, and the run closed on torque left on. The refusal's own
+rest move's, written while the joint sat inside its travel and before the person lifted the arm,
+and a person can place the joint past the far end of the travel from it, so the goal the servo
+keeps can be nearly the whole travel away. A goal written where the joint is would be clamped to
+the near limit and haul it there, and no goal at all leaves the servo that stale one, which it
+drives to on re-enable if `TORQUE_ENABLE_HOLDS_PRESENT` goes the wrong way. Neither keeps the
+joint where it was put. So `take_hold()` refuses whenever a body joint reads outside its travel,
+before any goal or torque write: torque stays off, `_in_hand` stays set, and the refusal
+(`verbs.placed_past_travel`) names each such joint, its reading and its travel, says that a goal
+written where the joint is lies past its travel and the servo would pull the joint to the end of
+it, and says the arm is taken hold of only with the joint inside. A `--by-hand` run ends there
+and tells the person at once that the arm is still in their hands, or, where the take-hold's own
+read finds the whole arm at its rest pose with every motor off, a fold recorded past the travel
+that nobody lifted before pressing Enter, that it is still limp at its rest pose and taken hold
+of only once the folded joint is lifted inside its travel (`verbs.unlifted_from_rest`,
+`HandResult.resting`). The same refusal met by the stop that opens the teardown of a Ctrl-C in
+the placement wait is said to the person once and recorded, in the same words. After that
+nothing in the run touches the arm: the stop takes no second hold and sends nothing
+(`_refused_hold`), the hand-back is not asked, the rest move reads the arm and writes it nothing
+(`IN_HAND_NOT_MOVED`), and the run says once that the arm is in their hands and not folded, or,
+where that read finds the arm still at its rest pose, that it is already there. No release is
+offered over it either. The close ends on the note for an arm in somebody's hands, let go of for
+them to place, or, where its own read finds the arm still at its rest pose with every motor off,
+which is a fold recorded past the travel that nobody lifted the arm out of, whether the
+placement wait ended on Enter, on a Ctrl-C or unanswered, on the note for an arm limp at its
+rest pose (`LIMP_AT_REST`). The gripper is not in the check, because LeRobot bounds a gripper
+reading into its 0..100 range before quackd sees it. (This decision first said `take_hold()`
+left such a joint out of both its writes, and that the goal it kept was the limit. That holds
+for a goal written while the joint read past its travel and not for the rest move's, and the
+skip it justified could turn a haul of a few degrees into a swing across the travel with a hand
+on the arm. It then said the teardown's stop "meets the same refusal", which it did only while
+the joint still read past its travel: a person who moved it back inside, as the refusal asked,
+had the stop, or the stall of a rest move writing goals into the limp servos, take hold of the
+arm under their hand with nothing said, and the run closed on torque left on. The refusal's own
 sentence said the servo pulls "any goal written for that joint" to the end of its travel, which
 is true only of a goal written past the travel.)
 

@@ -313,17 +313,17 @@ against a real duck: [adapters/open_duck.md](adapters/open_duck.md) and its
   carry on.
 - Every robot connects at startup, in the order given; if one cannot, the server stops
   and disconnects the ones that did, rather than fronting a flock with a hole in it.
-- A robot with a recorded rest pose, which today means a LeRobot arm, is driven to that pose
-  as part of connecting, before the heartbeat starts, so the arm this session is handed is the
-  arm the last one put down rather than wherever it was left. An arm that cannot get there is
-  not a robot this session fronts: the connect fails with `the arm did not reach its rest
-  pose`, and by the rule above the server stops. A pose recorded past the travel the arm's
-  calibration recorded is parked at the edge of that travel, which counts as getting there, and
-  the server logs once which joint is free to settle the rest of the way
-  ([adapters/lerobot.md](adapters/lerobot.md#a-pose-past-the-travel)). The same move runs
-  again when the session closes, between the `stop` and the disconnect, which is the only
-  window where putting the arm down changes whether it falls once torque is released. Where the
-  arm is not at that pose, torque is left on and it holds itself up instead of dropping, and
+- A robot with a recorded rest pose, which today means a LeRobot arm, is driven to that pose as
+  part of connecting, before the heartbeat starts, so the arm this session is handed is the arm
+  the last one put down rather than wherever it was left. An arm that cannot get there is not a
+  robot this session fronts: the connect fails with `the arm did not reach its rest pose`, and
+  by the rule above the server stops. A pose recorded past the travel the arm's calibration
+  recorded is parked at the edge of that travel, which counts as getting there, and the server
+  logs once which joint is free to settle the rest of the way
+  ([adapters/lerobot.md](adapters/lerobot.md#a-pose-past-the-travel)). The same move runs again
+  when the session closes, between the `stop` and the disconnect, which is the only window where
+  putting the arm down changes whether it falls once torque is released. Where the arm is not at
+  that pose, torque is left on and it holds itself up instead of dropping, and
   [safety.md](safety.md) has the line it prints and what to do about it. A session started with
   `--dry-run` moves nothing at either end, and a robot with no pose recorded ends the way it
   always did. Recording one is `quackd robot rest-pose NAME` ([registry.md](registry.md)).

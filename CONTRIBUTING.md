@@ -38,7 +38,7 @@ extra once reached a release. Change a dependency anywhere, run `uv lock`, and c
 
 Versions move together. The core and each adapter carry their own `__version__`, because an
 adapter's sdist holds only its own source and cannot read the core's, and each one pins a
-window on the core (`quackd>=0.13,<0.14`). `uv run python scripts/set_version.py X.Y.Z`
+window on the core (`quackd>=0.14,<0.15`). `uv run python scripts/set_version.py X.Y.Z`
 rewrites all eight and the windows that tie them together in `pyproject.toml`. It cannot reach
 prose, so the copies of that window quoted in this file and in the docs are the part a release
 still edits by hand. A

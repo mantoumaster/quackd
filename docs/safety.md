@@ -147,9 +147,9 @@ stopping a robot is the kill switch's kind of act rather than a statement about 
 
 A go is told to the pilot as a go: its doubt is recorded, a person read it and said go, the
 verbs that move the body now run, and it should not assess again on the same doubt, only on
-something new it sees. Before 2026-09-23 it heard only that motion now ran, which reads the same
+something new it sees. Up to 0.13.0 it heard only that motion now ran, which reads the same
 as its own `feasible`, and the prompt invites a pilot to assess again when it changes its mind.
-On the bench that day a pilot a person had just cleared assessed the same doubt again, as
+On the 2026-09-23 bench a pilot a person had just cleared assessed the same doubt again, as
 `infeasible`, and the run ended on a question somebody had already answered. Over MCP nobody
 sets that answer: the model asks you in the chat and records its own verdict again.
 
@@ -197,8 +197,8 @@ stranger's: a `work_height_m` against a sheet with no working height band is not
 the pilot's own verdict, because the prompt never lists a working height as missing, while the
 coordinator, a flock role and the list of bodies that could still refuse it.
 
-Until 2026-09-23 there were two, the zero stopped short of `work_height_m`, and the only
-floor was the one for a body that moves. On the bench that day the pilot of an SO-101, filling
+Up to 0.13.0 there were two, the zero stopped short of `work_height_m`, and the only
+floor was the one for a body that moves. On the 2026-09-23 bench the pilot of an SO-101, filling
 every field in as it was told, was refused by its own sheet for needs of exactly that kind on
 nearly every run, and each refusal became an `uncertain` and then the y/N question at the
 terminal.
@@ -247,13 +247,13 @@ instead of going limp.
 One of the seven bodies has run on hardware, on two afternoons. On 2026-09-15 a LeRobot SO-101
 follower arm ran `lerobot-lookout` and then a series of free-form `--goal` runs, piloted by
 OpenAI gpt-6-astra on Windows 11 with lerobot 0.6.1: it waved the wrist about 27 degrees either
-way, waved again from a raised pose, and opened and closed the gripper. **It also fell at the end
-of every one of those runs**, because LeRobot's `disconnect()` drops torque, which is the whole
-reason the rest pose below exists. On 2026-09-23 the same arm ran 26 runs on quackd 0.12.0,
-under a registered name with a rest pose recorded, and that afternoon is where the parking,
-release and verdict changes on this page come from. None of those changes has run on an arm
-yet. [lerobot-first-run.md](lerobot-first-run.md) is the account, including what the first day
-did not measure, and most of what this page would want to know is on that list: whether the
+way, waved again from a raised pose, and opened and closed the gripper. **It also fell at the
+end of every one of those runs**, because LeRobot's `disconnect()` drops torque, which is the
+whole reason the rest pose below exists. On 2026-09-23 the same arm ran 26 runs on quackd
+0.12.0, under a registered name with a rest pose recorded, and that afternoon is where the
+parking, release and verdict changes on this page come from. None of those changes has run on an
+arm yet. [lerobot-first-run.md](lerobot-first-run.md) is the account, including what the first
+day did not measure, and most of what this page would want to know is on that list: whether the
 holding band is right, what a joint reads after ten minutes of work, and whether a stall is
 caught on purpose rather than by luck. The other six bodies have not been on hardware at all.
 
@@ -291,24 +291,24 @@ that got to its end that afternoon finished there
 ([adapters/lerobot.md](adapters/lerobot.md#the-torque-rule)).
 
 **If a run ends while the arm is still limp in your hands and no take-hold has been refused,
-quackd picks it up before it folds it.** That state takes a Ctrl-C during the placement wait or a
-heartbeat that died there, and the way out of it is the `stop` every teardown opens with: on an
-arm that is in somebody's hand that stop takes hold first, at wherever your hand has it, and the
-rest move then puts it down from there. Sending a goal to a limp servo would have been a stop that
-stopped nothing. It never takes while a joint reads outside its calibrated travel, because a goal
-written where that joint is lies past the travel and is pulled to the end of it, and none leaves
-the servo the last goal it had, so torque stays off, and you are told at once, as the take-hold
-at Enter tells you, which joint and where it reads, and it goes on the record. Once a take-hold
-has been refused, at the end of the placement wait or in that stop, quackd leaves the arm alone
-for the rest of the run: no second take-hold, even after you move the joint back inside, no goal
-and no fold, because the arm is in your hands. What you are told is what a read found. An arm
-still lying at its rest pose with every motor off, because you pressed Enter without lifting it
-out of a fold recorded past its travel, is said to be still limp at its rest pose, with the
-joint to lift inside its travel before quackd takes hold. A take-hold whose read found some
-motors on names the joints that hold and says the rest is limp, and to keep hold of the arm and
-cut its power. One that asked for torque with nothing read back may have left the arm
-energised, so you are told quackd cannot confirm whether it has torque, to hold it as though it
-may move or drop, and to cut its power to be sure, and the close says the same. Where the
+quackd picks it up before it folds it.** That state takes a Ctrl-C during the placement wait or
+a heartbeat that died there, and the way out of it is the `stop` every teardown opens with: on
+an arm that is in somebody's hand that stop takes hold first, at wherever your hand has it, and
+the rest move then puts it down from there. Sending a goal to a limp servo would have been a
+stop that stopped nothing. It never takes while a joint reads outside its calibrated travel,
+because a goal written where that joint is lies past the travel and is pulled to the end of it,
+and none leaves the servo the last goal it had, so torque stays off, and you are told at once,
+as the take-hold at Enter tells you, which joint and where it reads, and it goes on the record.
+Once a take-hold has been refused, at the end of the placement wait or in that stop, quackd
+leaves the arm alone for the rest of the run: no second take-hold, even after you move the joint
+back inside, no goal and no fold, because the arm is in your hands. What you are told is what a
+read found. An arm still lying at its rest pose with every motor off, because you pressed Enter
+without lifting it out of a fold recorded past its travel, is said to be still limp at its rest
+pose, with the joint to lift inside its travel before quackd takes hold. A take-hold whose read
+found some motors on names the joints that hold and says the rest is limp, and to keep hold of
+the arm and cut its power. One that asked for torque with nothing read back may have left the
+arm energised, so you are told quackd cannot confirm whether it has torque, to hold it as though
+it may move or drop, and to cut its power to be sure, and the close says the same. Where the
 take-hold switched nothing on, the close says so in the one line that is worth reading:
 
 ```
@@ -324,8 +324,8 @@ the release back at all, a release that raised part way or that a Ctrl-C landed 
 says exactly that, since the motors after the one a release stopped at keep their torque: hold
 the arm as though nothing holds it, put it down, and cut its power to be sure. A read speaks for
 the arm only when the bus carried it after the last torque write, release or take-hold, because
-the run's heartbeat reads the arm on its own clock and a read of its that got the bus just before
-a write used to be taken for the read that confirmed it.
+the run's heartbeat reads the arm on its own clock, and a read that got the bus just before a
+write says nothing about what that write did.
 
 **An XLeRobot (a 12 kg dual-arm cart):**
 
@@ -407,14 +407,14 @@ a write used to be taken for the read that confirmed it.
   ([adapters/lerobot.md](adapters/lerobot.md#the-manifest)).
 - `pick` hands the whole arm to a learned policy for up to a minute. It is confirm-gated
   for that reason. Watch it, and keep `stop` within reach.
-- `stop` holds position and never releases, and it leaves the gripper's goal alone so a
-  failed verb never drops what is held. It also writes no goal for a joint that reads past its
+- `stop` holds position and never releases, and it leaves the gripper's goal alone so a failed
+  verb never drops what is held. It also writes no goal for a joint that reads past its
   calibrated travel, because the servo would clamp "stay here" to its limit and drive the joint
-  there at full speed, and its summary names each joint it left alone. That skip avoids
-  starting a rise out of a fold and cannot halt one already under way: any goal quackd writes
-  to a joint while it reads past its travel is the limit to the servo, so a joint a move had
-  begun lifting keeps rising to that limit whatever the stop does. The power switch is the only stop
-  for that stretch.
+  there at full speed, and its summary names each joint it left alone. That skip avoids starting
+  a rise out of a fold and cannot halt one already under way: any goal quackd writes to a joint
+  while it reads past its travel is the limit to the servo, so a joint a move had begun lifting
+  keeps rising to that limit whatever the stop does. The power switch is the only stop for that
+  stretch.
 - **The arm falls when a session ends, unless you have recorded a rest pose.** LeRobot's own
   `disconnect()` disables torque by its default and quackd keeps that default, which is why the
   arm fell at the end of every run on 2026-09-15. Fold the arm by hand while nothing is

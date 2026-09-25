@@ -53,12 +53,13 @@ before.
   reached by `--address` and never by a registered name, which it was on 2026-09-23 when its
   rest pose was recorded; and that checklist's *What to report*, six things still chosen against
   Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
-- ⬜ **The SO-101 again, for everything since 0.13.0.** The arm last ran quackd 0.12.0. The
-  rest pose clipped into the travel, `quackd robot release`, the Enter offer at the end of a run
-  whose rest move missed, the `--by-hand` refusal over a joint past its travel, the paced
-  `move_joints` and the connect retries have run only against a fake arm, `lerobot:mock` and
-  the test suite. The seven bench steps that would settle them, in order, are under *Known
-  limitations* in [CHANGELOG.md](CHANGELOG.md) for the release after 0.13.0, and
+- ⬜ **The SO-101 again, for everything in 0.14.0.** The arm last ran a build of the code that
+  became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the travel,
+  `quackd robot release`, the Enter offer at the end of a run whose rest move missed, the
+  `--by-hand` refusal over a joint past its travel, the paced `move_joints` and the connect
+  retries have run only against a fake arm, `lerobot:mock` and the test suite. The seven bench
+  steps that would settle them, in order, are under *Known limitations* in
+  [CHANGELOG.md](CHANGELOG.md) for 0.14.0, and
   [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to take
   the arm through, with a hand on the switch.
 - ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
@@ -103,22 +104,23 @@ before.
 
 - ⬜ **One local model has refused tasks on feasibility grounds, one frontier pilot has refused
   one on a real arm, and nobody has watched an `uncertain` over MCP.** Qwen3-32B-AWQ on vLLM,
-  driving `microduck:sim2d`, answered this gate 54 times before the check in #24 and 54 times after.
-  Before: 14 `infeasible`, 26 `uncertain`, 14 `feasible`, with a noise floor around 2 per six
-  run cell ([@Vallhalen](https://github.com/Vallhalen), #24, written up in
+  driving `microduck:sim2d`, answered this gate 54 times before the check in #24 and 54 times
+  after. Before: 14 `infeasible`, 26 `uncertain`, 14 `feasible`, with a noise floor around 2 per
+  six run cell ([@Vallhalen](https://github.com/Vallhalen), #24, written up in
   [docs/local-llms.md](docs/local-llms.md#honest-notes)). It refuses a categorical `cannot`
-  reliably, it hedged on one, and the figure nobody published was the hole the check now
-  covers: on the eight tasks the check never fired on, the verdicts moved by 1 to 2 either
-  way, which is that floor rather than a result. That is one model, one quantisation, one
-  simulated body and three repeats a cell. On the SO-101 on 2026-09-23, with `gpt-6-sol` and
-  `gpt-6-astra` piloting, twelve runs stopped at the y/N question an `uncertain` asks, and one
-  pilot a person had just said go to assessed the same doubt again as `infeasible` and ended its
-  run. The gate and the prompt changed after that afternoon ([CHANGELOG.md](CHANGELOG.md)), and
-  nobody has yet watched a frontier pilot answer the new ones on an arm. Still open: whether a
-  frontier model uses `uncertain` when it should or reaches for `infeasible` too readily, which the `live_llm` tests measure and which needs a key; a pilot
-  that never names the figure its plan hinges on, which the check reads nothing about and
-  cannot catch; and `uncertain` over MCP, where the verdict stays pending and the model is
-  told to ask the person it is chatting with, which no real session has been watched doing.
+  reliably, it hedged on one, and the figure nobody published was the hole the check now covers:
+  on the eight tasks the check never fired on, the verdicts moved by 1 to 2 either way, which is
+  that floor rather than a result. That is one model, one quantisation, one simulated body and
+  three repeats a cell. On the SO-101 on 2026-09-23, with `gpt-6-sol` and `gpt-6-astra`
+  piloting, twelve runs stopped at the y/N question an `uncertain` asks, and one pilot a person
+  had just said go to assessed the same doubt again as `infeasible` and ended its run. The gate
+  and the prompt changed after that afternoon ([CHANGELOG.md](CHANGELOG.md)), and nobody has yet
+  watched a frontier pilot answer the new ones on an arm. Still open: whether a frontier model
+  uses `uncertain` when it should or reaches for `infeasible` too readily, which the `live_llm`
+  tests measure and which needs a key; a pilot that never names the figure its plan hinges on,
+  which the check reads nothing about and cannot catch; and `uncertain` over MCP, where the
+  verdict stays pending and the model is told to ask the person it is chatting with, which no
+  real session has been watched doing.
 - ⬜ **Whether the words of `assess_task` fixed #25.** `--goal "Find the ball and kick it."`
   stopped at this gate 5 times in 6 on that same model where the shipped `find-and-kick` file
   passed 6 of 6, and the allowlist width is the measured cause. The description it read has
@@ -180,7 +182,7 @@ before.
   between them. Both ends are in `docs/assets/transcripts/`, read in
   [docs/local-llms.md](docs/local-llms.md). What is still open is Ollama, llama.cpp, a run on
   this machine, and any task harder than the starter duck.
-- ✅ **Both nightly jobs are green, and this release is what made them so.** Neither had ever
+- ✅ **Both nightly jobs are green, and 0.10.0 is what made them so.** Neither had ever
   passed a scheduled run: `microduck assets` red since 2026-09-09, `toddlerbot contract` since
   2026-09-07. Four failures, and every one of them was the job telling the truth.
   The gait sweep went 9 of 10 because the physics backend raises a small twist to a gait floor
@@ -195,9 +197,9 @@ before.
   advances from the last commanded target now and completes in the 5.2 seconds its own
   arithmetic predicts. And the deadman test asked for the daemon's health over the very socket
   it had just killed on purpose.
-  The record is short and worth stating as it is: both jobs went green on a manual run on
-  2026-09-17, the day the fixes landed, and the first scheduled run after that, on 2026-09-18,
-  was green for both. That is one scheduled green run each, not a record.
+  The record is worth stating as it is: both jobs went green on a manual run on 2026-09-17,
+  the day the fixes landed, and every scheduled run since, seven each from 2026-09-18 to
+  2026-09-24, has been green for both.
 
 - ✅ **Exercise `remember` against a cloud model.** `gpt-6-astra` called it in seven of its
   twelve runs on the arm on 2026-09-15, for five distinct notes, and the last run of that

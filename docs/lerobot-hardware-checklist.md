@@ -196,9 +196,9 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    ```
 
    That line is for an arm that answered the close's own read. An arm that stopped answering
-   gets a different one, because nothing can read whether its torque is on: `quackd cannot tell
-   whether the arm is holding itself up (...), so it kept whatever torque the arm has: hold it,
-   and cut its power`. `robot list --probe` shortens that one to `torque unknown`.
+   gets a different one, because nothing can read whether its torque is on:
+   `quackd cannot tell whether the arm is holding itself up (...), so it kept whatever torque the arm has: hold it, and cut its power`.
+   `robot list --probe` shortens that one to `torque unknown`.
 
    > [!WARNING]
    > That is a change in behaviour and it is the one to read twice. A probe or a dry run on an
@@ -243,12 +243,12 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    anything is hot. This is the first thing to point at a real arm, and it is what the arm on
    the bench ran first on 2026-09-15.
 
-   The rest pose is the only thing in this run that can move the arm. At each end the run
-   prints `moving to the rest pose`, before it has read where the arm is, then `already at the
-   rest pose` if it found the arm there and drove nothing, or `at the rest pose` once it has
-   driven it back. On an arm still folded where you left it in step 6, both ends say `already
-   at the rest pose` and nothing moves. On an arm whose pose was recorded past its travel, the
-   first end adds the one note from step 6 naming the joint.
+   The rest pose is the only thing in this run that can move the arm. At each end the run prints
+   `moving to the rest pose`, before it has read where the arm is, then
+   `already at the rest pose` if it found the arm there and drove nothing, or `at the rest pose`
+   once it has driven it back. On an arm still folded where you left it in step 6, both ends say
+   `already at the rest pose` and nothing moves. On an arm whose pose was recorded past its
+   travel, the first end adds the one note from step 6 naming the joint.
 
 8. **Add a camera, if you brought one.** No SO-101 has one built in: it is a USB webcam into
    the laptop, and the arm's own cable carries no video. Find which index it is, which is the
@@ -411,11 +411,11 @@ means, and which moments move the arm without anybody asking for it.
     reach: the arm stays where it stopped, holding itself up, which is the safe half of the two
     ways this could end. The note the run closes with cannot say so: it says quackd cannot tell
     whether the arm is holding itself up, and to hold it and cut its power, and no release is
-    offered, because the arm did not answer. Before you plug it back in, put a hand under the arm: every
-    command that reconnects, a run, `doctor` or `quackd robot release arm-01`, takes torque off
-    every motor for a moment. Either cut its power with your hand under it, or hold it and run
-    `quackd robot release arm-01`, or `quackd doctor --robot arm-01` to park it, before the next
-    step.
+    offered, because the arm did not answer. Before you plug it back in, put a hand under the
+    arm: every command that reconnects, a run, `doctor` or `quackd robot release arm-01`, takes
+    torque off every motor for a moment. Either cut its power with your hand under it, or hold
+    it and run `quackd robot release arm-01`, or `quackd doctor --robot arm-01` to park it,
+    before the next step.
 14. **Ctrl-C mid-move.** quackd's kill switch sends `stop`, which re-sends the present
     position as the goal. The arm should freeze where it is rather than sag, and rather than
     finish the motion it was in the middle of. Then, with a rest pose recorded in step 6, the
@@ -431,11 +431,11 @@ means, and which moments move the arm without anybody asking for it.
 `--by-hand` is one of the two ways a person can have quackd take torque off a robot, and it
 takes it off at the one pose the arm is known to hold without any: the fold you recorded in
 step 6. The other, `quackd robot release` and the offer at the end of a run that missed its
-fold, takes it off wherever the arm stands, and only after telling you to hold the arm. Everything
-below rests on that pose being right, which is why these two steps come after the ones that
-drove the arm there and back rather than before them. The flag wants the registered name from
-step 6 with a pose against it, and a terminal, because somebody has to press Enter. Without the
-pose it refuses before anything is touched, and there is no rehearsing this one with
+fold, takes it off wherever the arm stands, and only after telling you to hold the arm.
+Everything below rests on that pose being right, which is why these two steps come after the
+ones that drove the arm there and back rather than before them. The flag wants the registered
+name from step 6 with a pose against it, and a terminal, because somebody has to press Enter.
+Without the pose it refuses before anything is touched, and there is no rehearsing this one with
 `--dry-run`, because a dry run moves nothing and this takes torque off an arm:
 
 ```
@@ -585,7 +585,7 @@ and a password or a credential-named query parameter taken out of `--base-url`, 
 and `--camera-url`. Nothing else on the screen is, so read it before you paste it
 ([SECURITY.md](../SECURITY.md)).
 
-**Five things one afternoon on one bench did not answer**, and which still need a real arm:
+**Four things one afternoon on one bench did not answer**, and which still need a real arm:
 
 - **Whether the holding band is anywhere near right.** quackd calls it holding when the
   gripper is told to close, settles, and settles between 8 and 90 of 100. Nobody has yet seen
@@ -597,10 +597,6 @@ and `--camera-url`. Nothing else on the screen is, so read it before you paste i
 - **Whether 5 degrees an action felt right.** The figure is quackd's own choice for a first
   run, not anything upstream recommends for this arm, and nobody has said whether it looked
   right standing next to the arm.
-- **Whether a slow move is smooth.** `move_joints` walks its goal out a tenth of a second at a
-  time across the `duration_s` it is given, and nothing has watched a servo follow a goal that
-  creeps. Say whether a move of several seconds looked like one motion or a staircase, and
-  whether it arrived when the time was up.
 - **Whether a stall is caught.** Hold a joint gently against its goal and see whether the verb
   fails with where it stopped. It is called once the move's `duration_s` is up, so on a slow
   move the joint pushes that long first. Nobody has done this on purpose yet. It has happened
@@ -650,6 +646,14 @@ as recorded past its travel:
   arm's weight and its servos to answer. Say which joint, how far the note said it had to go,
   and what it did, then calibrate folded, record the pose again, and say whether the note went
   away.
+
+**And one the paced `move_joints` brought with it**, which postdates both afternoons and has run
+only against `lerobot:mock` and the test suite:
+
+- **Whether a slow move is smooth.** `move_joints` walks its goal out a tenth of a second at a
+  time across the `duration_s` it is given, and nothing has watched a servo follow a goal that
+  creeps. Say whether a move of several seconds looked like one motion or a staircase, and
+  whether it arrived when the time was up.
 
 **And two with one answer each, from one arm on one laptop.** A second answer is what turns
 either of them from an anecdote into a fact:

@@ -303,11 +303,11 @@ it probed ([safety.md](safety.md)). A probe's connect still takes torque off eve
 moment, like any connect, and it prints no warning first, so hold an arm that is holding itself
 up before you probe it.
 
-Two rarer endings read differently. `torque unknown: the arm did not answer the close` is an
-arm that stopped answering before the close could read it, which is also how an arm whose power
-was cut at the switch looks, so hold it as though it may be limp. `torque could NOT be kept: the
-arm was released where it stood` is an arm quackd could not keep powered, so check whether it is
-still where you left it.
+Two rarer endings read differently. `torque unknown: the arm did not answer the close` is an arm
+that stopped answering before the close could read it, which is also how an arm whose power was
+cut at the switch looks, so hold it as though it may be limp.
+`torque could NOT be kept: the arm was released where it stood` is an arm quackd could not keep
+powered, so check whether it is still where you left it.
 
 No registered robot has been probed on hardware. The one real robot quackd has driven, the
 SO-101 arm, was reached on 2026-09-15 as `--robot lerobot:real --address COM3` on the command
