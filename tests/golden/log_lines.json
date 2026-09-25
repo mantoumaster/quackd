@@ -613,6 +613,16 @@
    "dim"
   ]
  ],
+ "run_start_host_detector": [
+  [
+   "run     find-and-kick provider=ollama model=qwen3:8b robot=toddlerbot:bridge detector=yolo@host connected in 0.25 s",
+   "bold"
+  ],
+  [
+   "tools   observe, go_to, stop",
+   "dim"
+  ]
+ ],
  "llm_full@thinking-cut": [
   [
    "think   the ball is behind me, so I turn. the ball is behind me, so I turn. the ball is behind me, so I turn... (+2960 chars in transcript.jsonl)",

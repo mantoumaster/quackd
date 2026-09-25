@@ -350,14 +350,107 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
     return counters
 
 
+def _detector_row(
+    detector: Any, hello: Any, backend: str | None, *, sees: bool = True
+) -> str | None:
+    """Which detector reads the frames, and where it runs, in one line, or None for a body with
+    nothing to look at. The board's is named with the board and what the daemon said it runs,
+    because "yolo" alone would not say whether the laptop or the Jetson is doing the work.
+
+    `sees` is whether the body, with the board's camera if it has one, is described with a
+    camera. The board's detector is chosen for a body described without one, because it may
+    report a camera when it connects, and the row says that it reads nothing until then."""
+    if detector is None:
+        return None
+    from quackd.perception import is_simulated
+    from quackd.perception.host import HostDetector
+
+    if isinstance(detector, HostDetector):
+        text = f"{detector.name}  {detector.address}"
+        if hello is not None and (label := hello.label()):
+            text += f"  {label}"
+        if is_simulated(backend):
+            # never chosen by itself on a simulator, so a reader seeing it there is told it
+            # was asked for, and that it is not what this simulator's colours are tuned for
+            text += "  (asked for on a simulator)"
+        if not sees:
+            text += "  (once the body reports a camera)"
+        return text
+    return f"{getattr(detector, 'name', type(detector).__name__)} on this machine"
+
+
+def _host_row(board: Any, hello: Any, host_camera: dict[str, Any] | None) -> str:
+    """The board: where it is, which daemon answered, and what it has. The camera says whether
+    it is the view the run steers by or one it is only shown.
+
+    That is settled at connect, from what the body reports (`HostCameraAdapter.connect`), and
+    this is written before. A body described with a camera keeps it, so the board's is an
+    extra view. For one described without, the board's is the primary view only if the body
+    does not report a camera of its own when it connects (an arm given --camera-url, a
+    rosbridge base), so the row says so; `run_start` records which it was."""
+    has: list[str] = []
+    if hello.has_camera:
+        primary = bool((host_camera or {}).get("primary"))
+        has.append(
+            "camera as the primary view unless the body reports its own"
+            if primary
+            else "camera as an extra view"
+        )
+    if hello.can_detect:
+        has.append("detect")
+    if hello.is_tegra:
+        has.append("tegra")
+    return f"{board.address}  daemon {hello.daemon_version}  " + (
+        ", ".join(has) if has else "health only"
+    )
+
+
+def _host_named(choice: Any) -> str:
+    """The board as the reader named it, so a refusal points at the line they wrote: the flag,
+    the robot's entry in robots.json, or the environment."""
+    if choice.source == "--host":
+        return f"--host {choice.host}"
+    return f"the host {choice.host} from {choice.source}"
+
+
+def _host_unreached_hint(choice: Any, robot: str | None) -> str:
+    """How to run without the board, from wherever it was named: the flag, the robot that
+    stores it, or the environment."""
+    from quackd.host import HOST_ENV
+
+    if choice.source == "--host":
+        undo = "drop --host"
+    elif choice.source == HOST_ENV:
+        undo = f"unset {HOST_ENV}"
+    else:
+        undo = f"quackd robot edit {robot or 'NAME'} --clear host"
+    return f"quackd doctor --host {choice.host} shows what the board says; {undo} to run without it"
+
+
 def _header_rows(
-    *, provider: Any, robot: str, seed: int | None, dry_run: bool, memory: Any
+    *,
+    provider: Any,
+    robot: str,
+    seed: int | None,
+    dry_run: bool,
+    memory: Any,
+    detector: Any = None,
+    board: Any = None,
+    hello: Any = None,
+    backend: str | None = None,
+    host_camera: dict[str, Any] | None = None,
+    sees: bool = True,
 ) -> list[tuple[str, Any]]:
-    """The four things worth knowing before a run starts, and nothing else."""
+    """The things worth knowing before a run starts, and nothing else: who pilots, which body,
+    what reads its frames, and the board when there is one."""
     rows: list[tuple[str, Any]] = [
         ("provider", f"{provider.name} ({provider.model or 'the first model it serves'})"),
         ("robot", robot + (f"  seed {seed}" if seed is not None else "")),
     ]
+    if (seen := _detector_row(detector, hello, backend, sees=sees)) is not None:
+        rows.append(("detector", seen))
+    if board is not None and hello is not None:
+        rows.append(("host", _host_row(board, hello, host_camera)))
     if dry_run:
         rows.append(
             (
@@ -981,9 +1074,12 @@ def _run_impl(
     price: str | None = None,
     host: str | None = None,
     host_token: str | None = None,
+    detector_choice: str | None = None,
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.factory import describe, make_adapter, registry_for
+    from quackd.adapters.host_camera import EXTRAS_KEY as HOST_CAMERA_EXTRAS
+    from quackd.adapters.host_camera import with_host_camera
     from quackd.agent.decision.base import DecisionError
     from quackd.agent.decision.factory import PRICE_ENV as DECISION_PRICE_ENV
     from quackd.agent.decision.factory import (
@@ -1004,7 +1100,7 @@ def _run_impl(
     from quackd.duckfile.validate import validate_duck
     from quackd.flock.pilots import ADVISORY_FIELDS, roster_from_specs
     from quackd.flock.runner import member_specs
-    from quackd.host import HostChoice, resolve_host
+    from quackd.host import HostChoice, HostClient, HostError, HostHello, reach_host, resolve_host
     from quackd.log import (
         ConsoleLog,
         fan_out,
@@ -1012,7 +1108,7 @@ def _run_impl(
         prompt_shown_default,
         thinking_limit_default,
     )
-    from quackd.perception import detector_for
+    from quackd.perception import DETECTOR_CHOICES, detector_for, explicit_detector
     from quackd.registry import RegistryError, Resolved
     from quackd.safety import KillSwitch, allow_all
     from quackd.transport.base import TransportError
@@ -1044,6 +1140,10 @@ def _run_impl(
         except ValueError as e:
             _fail(str(e))
             return
+    detector_choice = (detector_choice or "").strip().lower() or None
+    if detector_choice is not None and detector_choice not in DETECTOR_CHOICES:
+        _fail(f"--detector is one of {', '.join(DETECTOR_CHOICES)}, not {detector_choice!r}")
+        return
     flock_n, roster = _parse_flock_flag(flock, registry_dir)
     flock_name = flock if roster is not None else None
     if roster is not None and (robot or robots):
@@ -1066,57 +1166,16 @@ def _run_impl(
         specs = [r.spec for r in resolved]
         here = resolved[0]
         spec = here.spec
-        if goal is not None:
-            # the union across the flock, so a goal run on mixed bodies allows what any of
-            # them can do; each member is then trimmed to its own half of that
-            safe = sorted(
-                {
-                    v.name
-                    for one in specs
-                    for v in registry_for(one).verbs()
-                    if v.safety_class == "safe"
-                }
-            )
-            duck = duck_from_goal(goal, safe)
-        assert duck is not None
-        # Refuse before connecting, with the validator's words. `serve-mcp` has always done
-        # this; `run` never did, and reached the loop's tool_schemas and died on a raw
-        # VerbNotFound with the robot already connected and a run directory already made.
-        manifests = [describe(s) for s in specs]
-        section = duck.frontmatter.flock
-        method = (
-            section.allocation.method
-            if section is not None
-            else ("pilots" if roster is not None else None)
-        )
-        # a task file with no `flock:` block, run against a stored flock, is still a flock:
-        # judged body by body the arm would be refused for not being able to walk. And a
-        # pilot flock drops the advisory `verbs.allow` line, because trimming each member to
-        # its own vocabulary is its answer to it (`pilots.ADVISORY_FIELDS`).
-        problems = [
-            p
-            for p in validate_duck(duck, manifests, flock=True if roster is not None else None)
-            if not (method == "pilots" and p.field in ADVISORY_FIELDS)
-        ]
     except (DuckParseError, TransportError, RegistryError) as e:
         _fail(str(e))
         return
-    if problems:
-        _fail(
-            f"{duck.name} cannot run on {', '.join(s.key for s in specs)}: "
-            + "; ".join(p.message for p in problems)
-        )
-        return
-    if flock_n is not None and not 2 <= flock_n <= 4:
-        _fail("a flock needs 2 to 4 ducks (drop --flock for a single run)")
-        return
     # Before the dispatch below, because a flock takes neither of the two flags and dropping
     # one silently is the failure both of them exist to prevent: a task about a picture that
-    # never arrived, and an arm nobody was asked to place.
+    # never arrived, and an arm nobody was asked to place. A goal is never a flock.
     several = (
         flock_n is not None
         or roster is not None
-        or duck.frontmatter.flock is not None
+        or (duck is not None and duck.frontmatter.flock is not None)
         or len(specs) > 1
     )
     # A host is one machine: one camera, one detector, the health of one board. A fleet is
@@ -1158,6 +1217,86 @@ def _run_impl(
         )
     except ValueError as e:
         _fail(str(e))
+        return
+    # The board is asked what it is before the task file is judged and before anything is
+    # built, because both depend on the answer: a camera on the board is a camera the body
+    # has, so a camera task on a blind body is not refused for a camera the run will have, and
+    # a board that does not answer is a run refused while nothing is powered.
+    board: HostClient | None = None
+    hello: HostHello | None = None
+    try:
+        reached = reach_host(host_choice)
+    except HostError as e:
+        _fail(
+            f"{_host_named(host_choice)} did not answer: {e}",
+            hint=_host_unreached_hint(
+                host_choice, here.entry.name if here.entry is not None else None
+            ),
+        )
+        return
+    if reached is not None:
+        board, hello = reached
+    try:
+        if goal is not None:
+            # the union across the flock, so a goal run on mixed bodies allows what any of
+            # them can do; each member is then trimmed to its own half of that. With a board,
+            # the one body's vocabulary includes what the board's camera lets it do.
+            safe = sorted(
+                {
+                    v.name
+                    for one in specs
+                    for v in registry_for(
+                        one,
+                        with_host_camera(describe(one), hello) if hello is not None else None,
+                    ).verbs()
+                    if v.safety_class == "safe"
+                }
+            )
+            duck = duck_from_goal(goal, safe)
+        assert duck is not None
+        # Refuse before connecting, with the validator's words. `serve-mcp` has always done
+        # this; `run` never did, and reached the loop's tool_schemas and died on a raw
+        # VerbNotFound with the robot already connected and a run directory already made.
+        manifests = [describe(s) for s in specs]
+        # the body as its adapter describes it, before the board's camera joins it: all a
+        # detector built before connect may know about the lens (below)
+        described = manifests[0]
+        if hello is not None:
+            manifests[0] = with_host_camera(described, hello)
+        section = duck.frontmatter.flock
+        method = (
+            section.allocation.method
+            if section is not None
+            else ("pilots" if roster is not None else None)
+        )
+        # a task file with no `flock:` block, run against a stored flock, is still a flock:
+        # judged body by body the arm would be refused for not being able to walk. And a
+        # pilot flock drops the advisory `verbs.allow` line, because trimming each member to
+        # its own vocabulary is its answer to it (`pilots.ADVISORY_FIELDS`).
+        problems = [
+            p
+            for p in validate_duck(duck, manifests, flock=True if roster is not None else None)
+            if not (method == "pilots" and p.field in ADVISORY_FIELDS)
+        ]
+    except (DuckParseError, TransportError, RegistryError) as e:
+        _fail(str(e))
+        return
+    if problems:
+        _fail(
+            f"{duck.name} cannot run on {', '.join(s.key for s in specs)}: "
+            + "; ".join(p.message for p in problems)
+        )
+        return
+    if flock_n is not None and not 2 <= flock_n <= 4:
+        _fail("a flock needs 2 to 4 ducks (drop --flock for a single run)")
+        return
+    if detector_choice is not None and several:
+        # every flock path builds its own members' detectors, so a choice made here would be
+        # dropped without a word, which is the thing a flag must never do
+        _fail(
+            "--detector is for one robot, and this run has several",
+            hint="drop --detector, or run the task on one body at a time",
+        )
         return
     task_images: list[Any] = []
     if images:
@@ -1335,6 +1474,27 @@ def _run_impl(
             price=price,
         )
         return
+    # The lens a detector built now measures through: --fov-deg, else the body's own. Never
+    # the board's yet: a body described without a camera may report one of its own when it
+    # connects (an arm given --camera-url, a rosbridge base), and the board's camera is then
+    # only an extra view, so its lens would measure the body's camera. The loop sets the lens
+    # again from the live manifest at connect, which carries the board's when the board's
+    # camera turned out to be the only one (`HostCameraAdapter.connect`).
+    lens_fov = fov_deg or described.limits.get("camera_fov_deg")
+    try:
+        # chosen once, before anything is built: a detector asked for that cannot run here is
+        # a sentence now, and the run never changes detector after it starts
+        asked_detector = explicit_detector(
+            detector_choice,
+            client=board,
+            hello=hello,
+            fov_deg=lens_fov,
+            backend=spec.backend,
+            has_camera="camera" in described.sensors,
+        )
+    except (ValueError, ImportError) as e:
+        _fail(str(e))
+        return
     try:
         # a registered robot may name the pilot that drives it; a flag on the line still wins,
         # and `QUACKD_LLM` sits behind both. One spec carries the vendor and the model
@@ -1361,6 +1521,9 @@ def _run_impl(
             spec,
             seed=seed,
             live=live,
+            # the board's camera joins the body here when it has one; the board has answered
+            # its hello already, so building this asks it nothing
+            host=board,
             **here.adapter_kwargs(address=address, camera_url=camera_url, token=token),
         )
     except (ProviderError, TransportError, ImportError) as e:
@@ -1449,10 +1612,11 @@ def _run_impl(
     # simulator. This is the static manifest, so it is only a head start: the loop asks
     # again with the live one at connect, where a robot may report a camera this does not
     # know about (a rosbridge base) or lack one this promises (a duck built without a head).
+    # A detector chosen above is kept as it is, here and at connect. The body's own
+    # description, not the one with the board's camera: a body described without a camera
+    # gets its colour detector at connect, measured through whichever lens is then primary.
     detector = detector_for(
-        manifests[0].sensors,
-        fov_deg=fov_deg or manifests[0].limits.get("camera_fov_deg"),
-        backend=spec.backend,
+        described.sensors, asked_detector, fov_deg=lens_fov, backend=spec.backend
     )
     # the recorder is sim2d only: it draws the world, and only the simulator has one
     if spec.backend in ("sim2d", "mujoco") and gif:
@@ -1515,12 +1679,23 @@ def _run_impl(
         decision=decision,
         decision_llm=decision_pilot,
         decision_price=decision_price,
+        host=hello.record(board.address) if board is not None and hello is not None else None,
     )
     ui.console.print(
         ui.run_header(
             duck.name,
             _header_rows(
-                provider=pilot, robot=here.label, seed=seed, dry_run=dry_run, memory=robot_memory
+                provider=pilot,
+                robot=here.label,
+                seed=seed,
+                dry_run=dry_run,
+                memory=robot_memory,
+                detector=detector,
+                board=board,
+                hello=hello,
+                backend=spec.backend,
+                host_camera=manifests[0].extras.get(HOST_CAMERA_EXTRAS),
+                sees="camera" in manifests[0].sensors,
             ),
             hint="Ctrl-C or q stops the duck. Press it twice to quit at once.",
         )
@@ -2171,6 +2346,16 @@ _HOST_TOKEN = typer.Option(
     "registered one, then QUACKD_HOST_TOKEN.",
     rich_help_panel="Host",
 )
+_DETECTOR = typer.Option(
+    None,
+    "--detector",
+    metavar="color|host|yolo",
+    help="What reads the camera's frames. color is the colour detector on this machine; host "
+    "is YOLO on the board --host names; yolo is YOLO on this machine and needs quackd[yolo]. "
+    "Default: the host's detector on a real body when --host names a daemon that can detect, "
+    "else the colour detector on this machine. The run never changes detector once it starts.",
+    rich_help_panel="Host",
+)
 # The same two flags for `quackd robot add` and `edit`, with help of their own for the reason
 # `--llm` has its own there: those commands have no --robot, they are what does the
 # registering, and the token they take goes into robots.json rather than into a run.
@@ -2433,6 +2618,7 @@ def run(
     fov_deg: float | None = _FOV,
     host: str | None = _HOST,
     host_token: str | None = _HOST_TOKEN,
+    detector: str | None = _DETECTOR,
     gif: bool = typer.Option(
         True,
         "--gif/--no-gif",
@@ -2497,6 +2683,7 @@ def run(
             price=price,
             host=host,
             host_token=host_token,
+            detector_choice=detector,
         )
 
 
@@ -2909,6 +3096,7 @@ def serve_mcp(
     token: str | None = _TOKEN,
     host: str | None = _HOST,
     host_token: str | None = _HOST_TOKEN,
+    detector: str | None = _DETECTOR,
     dry_run: bool = _DRY,
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Allow confirm-gated verbs (there is no terminal to ask)."
@@ -2936,6 +3124,7 @@ def serve_mcp(
             token=token,
             host=host,
             host_token=host_token,
+            detector=detector,
             dry_run=dry_run,
             yes=yes,
             memory=memory,

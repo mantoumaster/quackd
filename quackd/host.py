@@ -295,6 +295,20 @@ def resolve_host(
     return HostChoice()
 
 
+def reach_host(choice: HostChoice) -> tuple[HostClient, HostHello] | None:
+    """The board a run or a server uses, asked what it is, or None when nothing named one.
+
+    `run` and `serve-mcp` both call this before anything connects to the body, and both
+    refuse when it raises `HostError`: a `--host` whose daemon does not answer is a run that
+    was promised a camera or a detector it will not have, and saying so while nothing is
+    powered is the time to say it. Someone who wants only the board's model server has
+    `--base-url` for that, which asks nothing of the daemon."""
+    if choice.host is None:
+        return None
+    client = HostClient(choice.host, token=choice.token)
+    return client, client.hello()
+
+
 def _port(text: str) -> int:
     # isascii as well as isdigit: `int()` accepts Arabic-Indic and full-width digits, and a port
     # that reads as one number on the screen and another on the wire helps nobody
@@ -406,6 +420,23 @@ class HostHello:
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+    def record(self, address: str) -> dict[str, Any]:
+        """What a run's `run_start` says about the board it used: where it was, which daemon
+        answered, what it could do, and the detector's model and device. Enough to tell two
+        runs on two boards apart a month later, and nothing else the daemon said, which is
+        `doctor`'s to show."""
+        detect = self.detect or {}
+        return {
+            "address": address,
+            "daemon_version": self.daemon_version,
+            "capabilities": dict(self.capabilities),
+            "detect": (
+                {"model": detect.get("model"), "device": detect.get("device")}
+                if self.can_detect
+                else None
+            ),
+        }
 
 
 @dataclass(frozen=True)

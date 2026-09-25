@@ -21,7 +21,15 @@ import pytest
 from typer.testing import CliRunner
 
 from quackd.cli import app
-from quackd.host import HOST_ENV, TOKEN_ENV, HostChoice, resolve_host
+from quackd.host import (
+    HOST_ENV,
+    PROTOCOL,
+    PROTOCOL_VERSION,
+    TOKEN_ENV,
+    HostChoice,
+    HostHello,
+    resolve_host,
+)
 from quackd.mcp_server import fleet_from_flags
 from quackd.registry import Registry, RobotEntry, StoredFlock
 from tests.conftest import help_text
@@ -322,6 +330,43 @@ def pilots(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return seen
 
 
+@pytest.fixture
+def any_board(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every board `run` and `serve-mcp` asked for, each answering its hello with no camera and
+    no detector, so the rest of the command is as it would be without one.
+
+    A board has to answer since `--host` began to mean its daemon: a run whose board is down is
+    refused before anything connects. These tests are about which name was chosen, and the
+    names they choose between (`jetson.local`, `stored.local`) are nobody's machine, so the
+    client is replaced where `reach_host` builds it rather than every name being given a fake
+    daemon of its own."""
+    asked: list[str] = []
+
+    class Board:
+        def __init__(self, host: str, *, token: str | None = None) -> None:
+            asked.append(host)
+            self.host = host
+            self.address = host
+
+        def hello(self, *, refresh: bool = False) -> HostHello:
+            return HostHello(
+                protocol=PROTOCOL,
+                protocol_version=PROTOCOL_VERSION,
+                daemon_version="0.1.0",
+                hostname="board",
+                python="3.10.12",
+                capabilities={"camera": False, "detect": False, "tegra": False},
+                camera=None,
+                camera_error="started with --camera none",
+                detect=None,
+                detect_error="started with --no-detect",
+                board_model=None,
+            )
+
+    monkeypatch.setattr("quackd.host.HostClient", Board)
+    return asked
+
+
 def _local_run(tmp_path: Path, *args: str) -> Any:
     return runner.invoke(
         app,
@@ -344,11 +389,15 @@ def _local_run(tmp_path: Path, *args: str) -> Any:
 
 
 def test_the_host_a_run_names_or_its_robot_stored_reaches_the_model_preset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pilots: list[dict[str, Any]]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pilots: list[dict[str, Any]],
+    any_board: list[str],
 ) -> None:
     """The first thing `--host` does for real: the pilot's preset is moved to the board. The
     flag beats the robot's stored host, and a host from the environment is not handed over as
-    an explicit one, because it sits below `QUACKD_BASE_URL` and the provider reads it there."""
+    an explicit one, because it sits below `QUACKD_BASE_URL` and the provider reads it there.
+    Every one of them is still the board the run asks for its daemon's hello."""
     Registry(tmp_path / "reg").add_robot(
         RobotEntry(name="jet", spec="microduck:mock", host="stored.local")
     )
@@ -365,6 +414,7 @@ def test_the_host_a_run_names_or_its_robot_stored_reaches_the_model_preset(
     usual = _local_run(tmp_path, "--robot", "microduck:mock")
     assert usual.exit_code == 0, usual.output
     assert pilots[-1]["host"] is None
+    assert any_board == ["jetson.local", "stored.local", "127.0.0.1", "usual.local"]
 
 
 # ── the record never holds the token ────────────────────────────────────────────────────
@@ -454,11 +504,11 @@ def test_serve_mcp_refuses_a_flock_whose_member_has_a_host_by_that_members_name(
 
 
 def test_serve_mcp_settles_one_robots_board_by_the_same_ladder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, any_board: list[str]
 ) -> None:
     """The plan carries the board for the camera and the detector to read, settled the way
     `run` settles it: the robot's own, a flag over it field by field, and nothing for a fleet
-    even when the environment names one."""
+    even when the environment names one, so a fleet asks no board anything."""
     _seed(tmp_path)
     stored = fleet_from_flags(robot="jet", registry_dir=str(tmp_path)).host
     assert (stored.host, stored.source, stored.token) == (
@@ -473,6 +523,7 @@ def test_serve_mcp_settles_one_robots_board_by_the_same_ladder(
     monkeypatch.setenv(HOST_ENV, "usual.local")
     fleet = fleet_from_flags(robots="a=microduck:mock,b=microduck:mock", registry_dir=str(tmp_path))
     assert fleet.host == HostChoice()
+    assert any_board == ["jetson.local", "127.0.0.1"]
 
 
 def test_serve_mcp_takes_the_flag_on_its_command_line(tmp_path: Path) -> None:

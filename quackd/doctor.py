@@ -713,6 +713,8 @@ def probe(
     camera_url: str | Sequence[str] | None,
     token: str | None,
     rest_pose: dict[str, float] | None = None,
+    *,
+    host: HostClient | None = None,
 ) -> ProbeReport:
     """Connect, and report what the robot itself said.
 
@@ -721,10 +723,16 @@ def probe(
     to see the difference before a run does.
 
     It is also the one command that moves the arm without being given a task, because a probe
-    that dropped torque wherever the arm stood is how the arm fell."""
+    that dropped torque wherever the arm stood is how the arm fell.
+
+    `host` is the board `--host` names, when its daemon answered. Its camera joins the body
+    as a run's would (`quackd.adapters.host_camera`), and the camera rows say whether it is
+    the primary view or an extra one. The body's own cameras are read only with
+    `--camera-url`, as before, because only then was anybody asking about them."""
     import asyncio
 
     from quackd.adapters.factory import make_adapter
+    from quackd.adapters.host_camera import HOST_CAMERA_NAME, HostCameraAdapter
     from quackd.transport.base import DEFAULT_CAMERA_NAME, TransportError, frames_of
 
     async def go() -> tuple[
@@ -736,8 +744,10 @@ def probe(
             camera_url=camera_url,
             token=token,
             rest_pose=rest_pose,
+            host=host,
         )
         live = await adapter.connect()
+        hosted = isinstance(adapter, HostCameraAdapter)
         transport = getattr(adapter, "transport", None)
         # What the robot says about its own guarantees, rather than what quackd's static
         # description claims on its behalf. This is the checklist's go/no-go gate, so a
@@ -755,11 +765,17 @@ def probe(
             # to accept --camera-url, hand it to the transport and never ask for a frame, so a
             # typo'd or unreachable snapshot server passed here and failed at the first observe.
             camera: dict[str, Any] | None = None
-            cam_probe = getattr(transport, "camera_health", None)
+            # The board's camera is the wrapper's to report, beside the body's own; the body's
+            # alone is its transport's.
+            cam_probe = (
+                adapter.camera_health
+                if isinstance(adapter, HostCameraAdapter)
+                else getattr(transport, "camera_health", None)
+            )
             # Only report on a camera the adapter actually reads. `camera_url` is accepted and
             # ignored by rosbridge, and gating its verdict on a frame from an unrelated path
             # fails a healthy robot.
-            if camera_url and callable(cam_probe):
+            if (camera_url or hosted) and callable(cam_probe):
                 # Asked once for the shape and again for the answer: how many cameras there
                 # are decides how they are read, and the read is what fills in the sizes.
                 if dict(cam_probe()).get("cameras"):
@@ -771,6 +787,9 @@ def probe(
                     camera["cameras"] = [
                         {**cam, "size": sizes.get(str(cam.get("name")))}
                         for cam in camera["cameras"]
+                        # --host alone asks about the board's camera, and a body camera that
+                        # nobody configured is not a failure of this probe
+                        if camera_url or cam.get("name") == HOST_CAMERA_NAME
                     ]
                 else:
                     # Frames arrive on a timer, so ask for one and give the capture loop a
@@ -795,7 +814,7 @@ def probe(
 
     try:
         live, health, camera, told, parked, note = asyncio.run(go())
-    except (TransportError, OSError) as e:
+    except (TransportError, OSError, HostError) as e:
         return ProbeReport(address=address, ok=False, error=f"{spec} at {address}: {e}")
 
     report = ProbeReport(address=address, ok=True)
@@ -836,6 +855,7 @@ def probe(
     camera_ok = True
     several = False
     dead: list[str] = []
+    host_role: str | None = None
     if camera is not None:
         cams = camera.get("cameras") or [camera]
         several = len(cams) > 1
@@ -844,13 +864,19 @@ def probe(
             # "frame", which is what one camera printed before any body had a second one
             size = cam.get("frame", cam.get("size"))
             name = str(cam.get("name") or DEFAULT_CAMERA_NAME)
+            # only the rows a board's camera brought carry a role, so every body without one
+            # prints exactly the rows it always did
+            role = cam.get("role")
+            if name == HOST_CAMERA_NAME and role:
+                host_role = str(role)
             if size is None:
                 dead.append(name)
                 camera_ok = False
             add(
                 ProbeRow(
-                    f"camera {name}" if several else "camera",
-                    str(size) if size is not None else "no frame",
+                    f"camera {name}" if several or role else "camera",
+                    (str(size) if size is not None else "no frame")
+                    + (f" ({role})" if role else ""),
                     "ok" if size is not None else "fail",
                 )
             )
@@ -881,13 +907,26 @@ def probe(
             for name in live.verb_names()
             if (req := REQUIREMENTS.get(name)) is not None and req.camera
         ]
-        report.advisories.append(
-            "--camera-url was given but no frame came back"
-            + (f" from {', '.join(dead)}" if several else "")
-            + ", so "
-            + (", ".join(blind) if blind else "nothing that needs a camera")
-            + " cannot see anything on this run"
-        )
+        if host_role == "extra view" and dead == [HOST_CAMERA_NAME]:
+            # the body's own camera answered, so nothing goes blind: the run is shown one view
+            # fewer than it would have been
+            report.advisories.append(
+                "the camera on the --host board gave no frame, so a run is shown the body's "
+                "own camera and not the board's"
+            )
+        else:
+            given = (
+                "the camera on the --host board gave no frame"
+                if dead == [HOST_CAMERA_NAME]
+                else "--camera-url was given but no frame came back"
+                + (f" from {', '.join(dead)}" if several else "")
+            )
+            report.advisories.append(
+                given
+                + ", so "
+                + (", ".join(blind) if blind else "nothing that needs a camera")
+                + " cannot see anything on this run"
+            )
     if note:
         # the arm is still holding itself up, and the one place that says so is the note the
         # disconnect left behind. Not gated on the rest row: the move can report that it
@@ -1340,7 +1379,17 @@ def collect(
             )
             if address:
                 say(f"connecting to {robot} at {address}")
-                report.robot.probe = probe(robot, manifest, address, camera_url, token, rest_pose)
+                # the board's camera joins the body as it would a run's, but only a board that
+                # answered: one that did not has already failed this report with a row of its
+                # own, and asking it again from inside the probe would only say so twice
+                host_camera_from = (
+                    _host_client(host, token=host_token)
+                    if host is not None and report.host is not None and report.host.ok
+                    else None
+                )
+                report.robot.probe = probe(
+                    robot, manifest, address, camera_url, token, rest_pose, host=host_camera_from
+                )
 
     # An adapter that has backends worth probing on this machine says so itself. The
     # Microduck's are the only ones today: whether robotd's socket is where it should be, and

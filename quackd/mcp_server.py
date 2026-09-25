@@ -39,7 +39,7 @@ from quackd.agent.transcript import png_bytes
 from quackd.duckfile.parser import DuckParseError, load_duck
 from quackd.duckfile.schema import Budgets, DuckFile
 from quackd.duckfile.validate import validate_duck
-from quackd.host import HostChoice, resolve_host
+from quackd.host import HostChoice, HostError, reach_host, resolve_host
 from quackd.log import (
     EventLog,
     LogEvent,
@@ -53,7 +53,7 @@ from quackd.log import (
     unless_capturing,
 )
 from quackd.memory import RobotMemory
-from quackd.perception import detector_for
+from quackd.perception import detector_for, explicit_detector
 from quackd.perception.base import Detector
 from quackd.safety import (
     Aborted,
@@ -486,6 +486,9 @@ class RobotSession:
             "health_reason": reason,
             "aborted": self.executor.abort.is_set(),
             "default": default,
+            # which detector reads this robot's frames, the board's included, so a client
+            # can tell "nothing seen" on the laptop's colour detector from the Jetson's YOLO
+            "detector": getattr(self.detector, "name", None) if self.detector else None,
         }
 
     def verbs_payload(self) -> dict[str, Any]:
@@ -846,18 +849,28 @@ def build_fleet_server(
             # claims. `build_fleet_server` can only see a bare transport's backend.
             live = getattr(session.transport, "manifest", None)
             if live is not None:
+                # a detector the server was given is kept, and learns the lens the body
+                # reported: the board's, when the board's camera is the only one it has
+                lens_fov = live.limits.get("camera_fov_deg")
                 session.detector = detector_for(
                     live.sensors,
                     session.detector,
-                    fov_deg=live.limits.get("camera_fov_deg"),
+                    fov_deg=lens_fov,
                     backend=live.backend,
                 )
+                calibrate = getattr(session.detector, "calibrate", None)
+                # only a body with a camera has a lens to learn; one without keeps a detector
+                # that reads nothing, and a warning about its field of view would be about
+                # a camera it has not got
+                if callable(calibrate) and "camera" in live.sensors:
+                    calibrate(lens_fov, backend=live.backend)
                 session.executor.detector = session.detector
             logger.info(
-                "quackd MCP server up: robot=%s transport=%s dry_run=%s",
+                "quackd MCP server up: robot=%s transport=%s dry_run=%s detector=%s",
                 session.name,
                 backend_name(session.transport),
                 dry_run,
+                getattr(session.detector, "name", None) if session.detector else None,
             )
         try:
             yield fleet
@@ -1047,6 +1060,9 @@ class FleetPlan:
     host: HostChoice = field(default_factory=HostChoice)
     """The board this server's one robot uses (`--host`), settled once from the flag, the
     registry and the environment. Empty for a fleet, which may not have one."""
+    detector: Detector | None = None
+    """The detector `--detector` asked for, or the board's when `--host` brings one, for the
+    one robot. None leaves it to `detector_for` at connect, which is the colour detector."""
 
 
 def fleet_from_flags(
@@ -1062,6 +1078,7 @@ def fleet_from_flags(
     token: str | None = None,
     host: str | None = None,
     host_token: str | None = None,
+    detector: str | None = None,
 ) -> FleetPlan:
     """Which robots this server fronts, from the flags that name them.
 
@@ -1070,7 +1087,9 @@ def fleet_from_flags(
     where somebody wrote them down (ADR-0034).
 
     `--host` is for one robot, and refused for a fleet by `quackd run`'s rule and in its
-    words: a host names one machine's camera and detector, and a fleet has several bodies."""
+    words: a host names one machine's camera and detector, and a fleet has several bodies.
+    The board is asked what it is before any body is built, and a board that does not answer
+    refuses the server, as it refuses a run. `--detector` is for one robot too."""
     from quackd.adapters.factory import (
         RobotSpec,
         describe,
@@ -1148,7 +1167,49 @@ def fleet_from_flags(
             )
         except ValueError as e:
             raise SystemExit(str(e)) from e
+    if fleet and (detector or "").strip():
+        raise SystemExit(
+            "--detector is for one robot, and this server has several: drop --detector, or "
+            "serve one robot"
+        )
+    board = None
+    hello = None
+    try:
+        reached = reach_host(host_choice)
+    except HostError as e:
+        board_named = (
+            f"--host {host_choice.host}"
+            if host_choice.source == "--host"
+            else f"the host {host_choice.host} from {host_choice.source}"
+        )
+        raise SystemExit(f"{board_named} did not answer: {e}") from e
+    if reached is not None:
+        board, hello = reached
     manifests = {spec.name or describe(spec).id: describe(spec) for spec in specs}
+    chosen: Detector | None = None
+    if not fleet:
+        (only,) = manifests
+        # the body as its adapter describes it: all a detector built before connect may know
+        # about the lens. Never the board's yet, as `quackd run` says: a body described blind
+        # may report a camera of its own at connect, and the board's is then an extra view.
+        described = manifests[only]
+        if hello is not None:
+            # the board's camera is the one robot's before the contract is judged, so a camera
+            # task on a blind body is not refused for a camera the server will have
+            from quackd.adapters.host_camera import with_host_camera
+
+            manifests[only] = with_host_camera(described, hello)
+        try:
+            chosen = explicit_detector(
+                (detector or "").strip().lower() or None,
+                client=board,
+                hello=hello,
+                fov_deg=described.limits.get("camera_fov_deg"),
+                backend=specs[0].backend,
+                has_camera="camera" in described.sensors,
+            )
+        except (ValueError, ImportError) as e:
+            raise SystemExit(str(e)) from e
     if probe is not None:
         # the contract lands on the default robot: refuse now, with the validator's words
         target = _pick_default(
@@ -1174,13 +1235,15 @@ def fleet_from_flags(
             # None, every guard reading it would be False, and an arm served over MCP would be
             # released wherever the session left it, which is the fall this all exists to stop
             rest_pose=where["rest_pose"],
+            # the board's camera joins the one body here; it answered its hello above
+            host=board,
         )
     memory_keys = {
         name: one.memory_key
         for name, one in zip(manifests, resolved, strict=True)
         if one.registered
     }
-    return FleetPlan(adapters, manifests, memory_keys, fleet_default, host_choice)
+    return FleetPlan(adapters, manifests, memory_keys, fleet_default, host_choice, chosen)
 
 
 def serve(
@@ -1202,6 +1265,7 @@ def serve(
     log: bool | None = None,
     host: str | None = None,
     host_token: str | None = None,
+    detector: str | None = None,
 ) -> None:
     plan = fleet_from_flags(
         robot=robot,
@@ -1215,6 +1279,7 @@ def serve(
         token=token,
         host=host,
         host_token=host_token,
+        detector=detector,
     )
     logging.basicConfig(
         stream=sys.stderr, level=logging.INFO, format="quackd-mcp %(levelname)s %(message)s"
@@ -1231,6 +1296,7 @@ def serve(
         memory_dir=memory_dir,
         # the env is the switch a desktop-spawned server has (no shell, no cwd `.env`)
         log=log if log is not None else log_enabled_default(),
+        detector=plan.detector,
     )
     mcp.run(transport="stdio")
 

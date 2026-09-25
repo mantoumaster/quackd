@@ -604,6 +604,34 @@ def events() -> list[tuple[str, LogEvent]]:
     ]
 
 
+def host_detector_start() -> LogEvent:
+    """A `run_start` whose detector is not the colour one, with the board beside it.
+
+    Its own case rather than one of `events()`, whose cases are also replayed together as
+    `whole_call`: a case added there would move that one's lines, and this is the case that
+    proves no older line moved. The colour detector is never named on the run line, so every
+    transcript written before there was a choice, and every run on a simulator, reads as it
+    did."""
+    return _e(
+        "run_start",
+        0.0,
+        duck="find-and-kick",
+        provider="ollama",
+        model="qwen3:8b",
+        transport="bridge",
+        adapter="toddlerbot",
+        detector="yolo@host",
+        host={
+            "address": "jetson.local:9874",
+            "daemon_version": "0.1.0",
+            "capabilities": {"camera": True, "detect": True, "tegra": True},
+            "detect": {"model": "yolov8n.pt", "device": "cuda"},
+        },
+        tools=["observe", "go_to", "stop"],
+        connect_s=0.25,
+    )
+
+
 def golden() -> dict[str, Any]:
     """Every branch, plus the two knobs a view is built with, plus the burst coalescing,
     plus two whole calls through the path the MCP tool result actually uses."""
@@ -613,6 +641,7 @@ def golden() -> dict[str, Any]:
     out["run_start_full@no-prompt"] = [
         list(line) for line in render_lines(by_name["run_start_full"], prompt=False)
     ]
+    out["run_start_host_detector"] = [list(line) for line in render_lines(host_detector_start())]
     for label, chars in (("cut", 100), ("none", 0), ("all", None)):
         out[f"llm_full@thinking-{label}"] = [
             list(line) for line in render_lines(by_name["llm_full"], thinking_chars=chars)

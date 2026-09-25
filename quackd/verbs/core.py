@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Literal
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
-from quackd.perception.base import Detection, summarize_detections
+from quackd.perception.base import Detection, detect_off_loop, summarize_detections
 from quackd.transport.base import Intent, camera_names_of, frames_of, primary_of
 from quackd.verbs.registry import NoParams, Verb, VerbContext, VerbResult
 
@@ -111,7 +111,10 @@ async def _see(
     if img is None:
         return None, []
     ctx.on_frame(img, caption)
-    dets = ctx.detector.detect(img) if ctx.detector else []
+    # off the loop when the detector waits on a board, so `_see_holding` keeps re-sending the
+    # twist while it does: a detector that blocked here would starve the very resend that
+    # exists to outlast a slow frame
+    dets = await detect_off_loop(ctx.detector, img) if ctx.detector else []
     return img, [d for d in dets if d.label == label]
 
 
@@ -209,9 +212,20 @@ async def observe(ctx: VerbContext, _: NoParams) -> VerbResult:
     primary = primary_of(frames)
     ctx.on_frame(primary if primary is not None else frames[0].image, "observe")
     ctx.on_frames(frames, "observe")
-    detections = ctx.detector.detect(primary) if (ctx.detector and primary is not None) else []
+    detections = (
+        await detect_off_loop(ctx.detector, primary)
+        if (ctx.detector and primary is not None)
+        else []
+    )
     dumped = [d.model_dump() for d in detections]
     seen = summarize_detections(detections)
+    # A detector on another machine can fail, and a failed call is a frame with no detections,
+    # which reads exactly like an empty room. The board's detector keeps its reason, and the
+    # pilot is told it beside "nothing detected" rather than being left to search a room that
+    # may have the target in plain view.
+    failed = getattr(ctx.detector, "error", None)
+    if primary is not None and isinstance(failed, str) and failed:
+        seen += f" (host detector: {failed})"
     # the body's cameras, not this step's frames: a two-camera arm down to one lens still has
     # two views to tell apart, and the picture that did arrive is the one that most needs
     # saying which lens it came off

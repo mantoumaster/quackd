@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -62,7 +63,7 @@ from quackd.duckfile.schema import DuckFile
 from quackd.log import EventLog, Sink, a_person_was_asked, fmt_params
 from quackd.memory import RobotMemory
 from quackd.perception import detector_for
-from quackd.perception.base import Detection, Detector
+from quackd.perception.base import Detection, Detector, detect_off_loop
 from quackd.safety import (
     Aborted,
     Budget,
@@ -235,6 +236,11 @@ class RunConfig:
     price: str | None = None
     """What the model costs, as `--price` spells it, overriding the catalogue and
     `QUACKD_PRICE` (`providers.pricing`). None asks the catalogue, which is the usual path."""
+    host: dict[str, Any] | None = None
+    """The board `--host` named, as `HostHello.record` describes it for `run_start`: its
+    address, the daemon's version, what it can do, and its detector's model and device. None
+    is every run without a board. The loop never talks to the board itself: the camera is in
+    the transport and the detector is `detector`, and this is only what the record says."""
 
 
 @dataclass
@@ -359,6 +365,11 @@ class AgentLoop:
         self.summary: dict[str, Any] = {}
         """What `run_end` said, kept for a caller that never gets a `RunResult` because the
         run raised its way out. A flock reads it off the loop to cost a member that died."""
+        self._detector_reasons: set[str] = set()
+        """The kinds of detector failure the record was told about in the outage going on
+        now, empty while the detector answers, so a board that stops answering is one note
+        when it stops and one when it answers again, rather than one on every frame in
+        between (`_detector_said`)."""
 
     # ── narration ───────────────────────────────────────────────────────────────────
 
@@ -609,8 +620,11 @@ class AgentLoop:
         detections: list[Detection] = []
         if img is not None and self.cfg.detector is not None:
             # the primary camera and only it: the detections line describes one view, and a
-            # bearing is only meaningful from the lens --fov-deg measured
-            detections = self.cfg.detector.detect(img)
+            # bearing is only meaningful from the lens --fov-deg measured. Off the loop when
+            # the detector waits on a board, so a body's keepalives are not held up by it.
+            detections = await detect_off_loop(self.cfg.detector, img)
+            error = getattr(self.cfg.detector, "error", None)
+            self._detector_said(error if isinstance(error, str) and error else None)
         if frames:
             # saved even when the primary gave nothing, because the other views are still what
             # the model is about to be shown
@@ -656,6 +670,62 @@ class AgentLoop:
             ),
             img,
         )
+
+    def _detector_said(self, error: str | None) -> None:
+        """One note when a detector that reports its failures starts failing, one when it
+        answers again, and one for each new kind of reason in between. The board's detector is
+        the one that does: a failed call is a frame with no detections, which reads exactly
+        like an empty room, and the record has to say which it was. The run keeps the same
+        detector either way, because a quiet switch to another would change what `go_to`
+        steers at with nothing here to say so.
+
+        A kind of reason is its text with the numbers taken out. A daemon's reasons carry
+        figures that change from one request to the next (`the body ended after 812 of 30416
+        bytes`, a model's out-of-memory sizes), so comparing the raw text would write a note
+        for every frame of a flaky link, which is the noise one note per outage exists to
+        avoid. A kind already noted in this outage is not noted again, so a link that
+        alternates between two failures is two notes rather than one per frame."""
+        name = getattr(self.cfg.detector, "name", "the detector")
+        if error is None:
+            if self._detector_reasons:
+                self._note(f"{name} answers again")
+                self._detector_reasons.clear()
+            return
+        kind = re.sub(r"\d+", "#", error)
+        if kind in self._detector_reasons:
+            return
+        if self._detector_reasons:
+            self._note(f"{name} still fails, now: {error}")
+        else:
+            self._note(
+                f"{name} failed, so frames have no detections until it answers again, and "
+                f"this run keeps it rather than switching: {error}"
+            )
+        self._detector_reasons.add(kind)
+
+    def _detector_record(self, manifest: RobotManifest | None) -> str | None:
+        """The detector `run_start` names: the one the run kept, or None when the body it
+        connected to has no camera, because a detector with no frames reads nothing. A
+        detector asked for before connect can be in that position: the board's is chosen for a
+        body described without a camera, in case it reports one, and this is where a body that
+        did not is told apart. A bare transport has no manifest and keeps its detector."""
+        detector = self.cfg.detector
+        if detector is None or (manifest is not None and "camera" not in manifest.sensors):
+            return None
+        return getattr(detector, "name", None)
+
+    def _host_record(self, manifest: RobotManifest | None) -> dict[str, Any] | None:
+        """The board as `run_start` records it, with the role its camera took at connect:
+        `primary` when the body reported no camera of its own, else `extra view`. The run
+        header is written before connect and can only say what the description suggests, so
+        this is where a reader finds which one it was."""
+        from quackd.adapters.host_camera import EXTRAS_KEY
+
+        record = self.cfg.host
+        placed = manifest.extras.get(EXTRAS_KEY) if manifest is not None else None
+        if record is None or not isinstance(placed, dict):
+            return record
+        return {**record, "camera_role": "primary" if placed.get("primary") else "extra view"}
 
     def _attachments(self) -> list[NamedPng]:
         """The task's own pictures, on the first observation and on no other.
@@ -889,13 +959,22 @@ class AgentLoop:
                     self.registry = registry_from_manifest(manifest, cfg.transport)
                     self.executor.registry = self.registry
                 self.executor.manifest = manifest
-                # the CLI guessed from the description; this is what the robot actually has
+                # the CLI guessed from the description; this is what the robot actually has.
+                # A detector the run was given is kept, and learns the lens the body reported
+                # (the board's, when the board's camera is the only one this body has).
+                lens_fov = cfg.fov_deg or manifest.limits.get("camera_fov_deg")
                 cfg.detector = detector_for(
                     manifest.sensors,
                     cfg.detector,
-                    fov_deg=cfg.fov_deg or manifest.limits.get("camera_fov_deg"),
+                    fov_deg=lens_fov,
                     backend=backend_name(cfg.transport),
                 )
+                calibrate = getattr(cfg.detector, "calibrate", None)
+                # only a body with a camera has a lens to learn; one without keeps a detector
+                # that reads nothing, and a warning about its field of view would be about a
+                # camera it has not got
+                if callable(calibrate) and "camera" in manifest.sensors:
+                    calibrate(lens_fov, backend=backend_name(cfg.transport))
                 self.executor.detector = cfg.detector
             registry = self.registry
             allow = self.fm.verbs.allow
@@ -1011,6 +1090,11 @@ class AgentLoop:
                 images=[p.name for p in cfg.task_images],
                 flock=cfg.link.describe() if cfg.link is not None else None,
                 connect_s=connect_s,
+                # Which detector read the frames, or null for a body with nothing to look at,
+                # and the board when `--host` named one. The same detector for the whole run,
+                # so this is the answer for every detection in the transcript.
+                detector=self._detector_record(manifest),
+                **({"host": self._host_record(manifest)} if cfg.host is not None else {}),
                 # What this run was called and when it began. The directory name held both
                 # until now, at second precision on the local clock, and stopped being
                 # evidence the moment anybody renamed the folder or copied it off the machine.

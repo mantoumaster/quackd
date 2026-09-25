@@ -7,6 +7,7 @@ stream, the rest of quackd does not care.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol, runtime_checkable
 
 from PIL import Image
@@ -52,6 +53,21 @@ class Detector(Protocol):
     name: str
 
     def detect(self, image: Image.Image) -> list[Detection]: ...
+
+
+async def detect_off_loop(detector: Detector, image: Image.Image) -> list[Detection]:
+    """`detector.detect(image)`, in a worker thread when the detector says it waits on
+    something outside this process.
+
+    Such a detector sets `blocking = True`; today that is `HostDetector`, whose model runs on
+    the board `--host` names. Called on the event loop, its round trip would hold up
+    everything else the loop runs, the twist `go_to` re-sends while it looks among them, so a
+    board slower than a body's deadman would stop the body on every frame. Every other
+    detector runs where it always has, on the loop, so a run without a board is scheduled
+    exactly as it was."""
+    if getattr(detector, "blocking", False):
+        return await asyncio.to_thread(detector.detect, image)
+    return detector.detect(image)
 
 
 def summarize_detections(detections: list[Detection]) -> str:
