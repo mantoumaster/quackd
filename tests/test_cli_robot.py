@@ -365,7 +365,7 @@ def test_a_body_that_reads_one_camera_refuses_a_second(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1, result.output
     flat = " ".join(result.output.split())
-    assert "only lerobot:real takes several" in flat, flat
+    assert "only lerobot:real and lerobot:mujoco take several" in flat, flat
     assert Registry(tmp_path).get_robot("duck-a") is None
 
 

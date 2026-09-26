@@ -354,9 +354,49 @@ async def test_the_recorder_draws_the_physics_panes(tmp_path: Path) -> None:
     await t.sleep(0.6)
     rec.capture(await t.get_frame(), "observe")
     gif = rec.save_gif(tmp_path / "run.gif")
-    assert gif.exists() and gif.stat().st_size > 500
+    assert gif is not None and gif.exists() and gif.stat().st_size > 500
     assert len(rec.frames) >= 3 and rec.frames[0].size == (64 * 2 + 4, 64 + 22)
     await t.close()
+
+
+def test_a_physics_run_on_the_puppet_still_writes_its_gif(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`quackd run` on `microduck:mujoco` as a person types it, with no `--no-gif`. The
+    recorder is built only for a body that has a world to draw, and the Microduck's physics
+    transport has none until connect() builds it, after the recorder is made. A gate that read
+    the world's value rather than asking whether the body has one would quietly stop every
+    physics GIF, so this pins that the duck still gets its run.gif."""
+    from typer.testing import CliRunner
+
+    from quackd.cli import app
+    from quackd_microduck.transports.mujoco import BODY_ENV
+
+    probe = MujocoWorld(seed=0, body=Puppet())
+    require_render(probe)
+    probe.close()
+    monkeypatch.setenv(BODY_ENV, "puppet")
+    runs = tmp_path / "runs"
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "hello-world",
+            "--llm",
+            "fake",
+            "--robot",
+            "microduck:mujoco",
+            "--no-memory",
+            "--runs-dir",
+            str(runs),
+            "--no-log",
+            "--gif-size",
+            "64",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    gif = next(runs.rglob("run.gif"))
+    assert gif.stat().st_size > 0, "an empty GIF is a README with a broken image in it"
 
 
 # ── standing back up ────────────────────────────────────────────────────────────────────

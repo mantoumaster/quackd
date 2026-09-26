@@ -12,9 +12,11 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import http.client
+import importlib.metadata
 import os
 import socket
 import socketserver
+import sys
 import threading
 import time
 from pathlib import Path
@@ -31,6 +33,7 @@ from quackd_lerobot.sim.assets import (
     NOTICE_FILE,
     AssetError,
     cache_root,
+    cached_so101,
     ensure_so101,
 )
 
@@ -628,4 +631,103 @@ def test_a_cache_that_cannot_be_made_says_which_variable_moves_it(
     monkeypatch.setenv("QUACKD_CACHE_DIR", str(in_the_way))
     with pytest.raises(AssetError, match="QUACKD_CACHE_DIR"):
         ensure_so101()
+    assert upstream["fetches"] == []
+
+
+# ── what doctor says, which only looks ──────────────────────────────────────────────────
+
+
+def test_looking_for_the_model_fetches_nothing_and_writes_nothing(
+    upstream: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    """`quackd doctor` asks whether the model is here, and asking must not be the thing that
+    fetches it, waits on another quackd's lock, or writes into somebody's checkout."""
+    assert cached_so101() is None
+    assert upstream["fetches"] == []
+    assert not _home().exists(), "looking made the cache"
+    first = ensure_so101()
+    upstream["fetches"].clear()
+    (first.directory / NOTICE_FILE).unlink()
+    assert cached_so101() == first
+    assert upstream["fetches"] == []
+    assert not (first.directory / NOTICE_FILE).exists(), "looking wrote the licence notice"
+    (first.directory / up.MODEL_FILE).write_bytes(b"<mujoco/>")
+    assert cached_so101() is None, "a cache that no longer matches the pin is not the model"
+
+    newer = {**BODIES, up.MODEL_FILE: BODIES[up.MODEL_FILE] + b"<!-- my own edit -->"}
+    own = _checkout(tmp_path / "checkout", newer)
+    monkeypatch.setenv(ASSETS_ENV, str(own))
+    with caplog.at_level("WARNING"):
+        found = cached_so101()
+    assert found is not None and found.model_path == own / up.MODEL_FILE and not found.pinned
+    assert ASSETS_ENV not in caplog.text, "doctor reports the difference; it does not warn"
+    monkeypatch.setenv(ASSETS_ENV, str(tmp_path / "empty"))
+    assert cached_so101() is None
+
+
+def test_doctors_row_for_the_simulator_names_the_extra_the_pin_and_the_cache(
+    upstream: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Doctor asks every installed adapter for its rows with no robot named, so the row says
+    only what is true of this machine: MuJoCo's version, read from the installer's metadata
+    rather than by importing it, the SO-101 model's pin, and whether it is in the cache. It
+    makes no GL context, because it never imports MuJoCo at all: that check is the simulator's
+    own connect, which `doctor --robot NAME` reaches for a registered simulator."""
+    from quackd_lerobot import doctor_rows
+    from quackd_lerobot.sim import SIM_EXTRA
+
+    monkeypatch.setitem(sys.modules, "mujoco", None)  # any import of it now fails
+    real_version = importlib.metadata.version
+
+    def version(dist: str) -> str:
+        if dist == "mujoco":
+            return "3.99.0"
+        return real_version(dist)
+
+    monkeypatch.setattr(importlib.metadata, "version", version)
+    (row,) = doctor_rows()
+    assert (row.name, row.status) == ("lerobot:mujoco", "mujoco 3.99.0")
+    assert row.note == (
+        f"SO-ARM100 at {up.PIN[:7]}: not in the cache yet, and the first connect fetches it"
+    )
+    assert not row.found
+    assert upstream["fetches"] == [], "doctor fetched the model"
+
+    model = ensure_so101()
+    (row,) = doctor_rows()
+    assert row.note == f"SO-ARM100 at {up.PIN[:7]}: in the cache at {model.directory}"
+    assert row.found
+
+    def missing(dist: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(dist)
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+    (row,) = doctor_rows()
+    assert row.status == f"missing ({SIM_EXTRA})" and not row.found
+
+
+def test_doctors_row_for_a_checkout_never_calls_it_the_cache_or_promises_a_fetch(
+    upstream: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`QUACKD_LEROBOT_SIM_ASSETS` names somebody's own checkout, which a connect uses in place
+    of the cache and never fetches for. So a checkout without the model is the one thing doctor
+    can catch before a connect refuses it, and a checkout at the pin is not in the cache."""
+    from quackd_lerobot import doctor_rows
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv(ASSETS_ENV, str(empty))
+    (row,) = doctor_rows()
+    assert "fetches" not in row.note and not row.found
+    assert row.note.startswith(f"{ASSETS_ENV} points at {empty}, which has no {up.MODEL_FILE}")
+    assert up.SIM_DIR in row.note and "unset it" in row.note
+    with pytest.raises(AssetError):
+        ensure_so101()  # the connect this row speaks for does refuse
+    assert upstream["fetches"] == []
+
+    own = _checkout(tmp_path / "checkout", BODIES)
+    monkeypatch.setenv(ASSETS_ENV, str(own))
+    (row,) = doctor_rows()
+    assert row.note == f"SO-ARM100 at {up.PIN[:7]} from {ASSETS_ENV} at {own}"
+    assert "cache" not in row.note
     assert upstream["fetches"] == []

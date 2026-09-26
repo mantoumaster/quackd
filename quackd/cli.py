@@ -1721,8 +1721,11 @@ def _run_impl(
     detector = detector_for(
         described.sensors, asked_detector, fov_deg=lens_fov, backend=spec.backend
     )
-    # the recorder is sim2d only: it draws the world, and only the simulator has one
-    if spec.backend in ("sim2d", "mujoco") and gif:
+    # The recorder draws a simulator's world, so it needs a body that has one. The backend
+    # name alone no longer says so, because the LeRobot arm's simulator is `mujoco` too and
+    # keeps its world as `sim_world`, which is not a world this can draw. `hasattr` and not
+    # the value: the Microduck's physics transport builds its world in connect(), after this.
+    if spec.backend in ("sim2d", "mujoco") and gif and hasattr(duck_transport, "world"):
         from quackd.sim2d.recorder import FrameRecorder
 
         recorder = FrameRecorder(duck_transport, size=gif_size)
@@ -2734,7 +2737,8 @@ def run(
     gif: bool = typer.Option(
         True,
         "--gif/--no-gif",
-        help="Simulators: write run.gif into the run dir.",
+        help="Simulators: write run.gif into the run dir. The arm's simulator, "
+        "lerobot:mujoco, writes none.",
         rich_help_panel="Output",
     ),
     gif_size: int = _GIFSIZE,
@@ -3095,7 +3099,8 @@ def doctor(
     """Check the environment: keys, optional extras, adapters, upstream assumptions.
 
     With `--robot X --address Y` it also connects, which is the only way to see what a
-    robot actually reports before a run does. With `--host` it asks the daemon on that board
+    robot actually reports before a run does. A registered simulator is connected without
+    an address too, because nothing real moves. With `--host` it asks the daemon on that board
     what it is, reads the board's health over the network, and probes the local model
     presets there."""
     from quackd.doctor import HostReport, collect, refused_host, render
@@ -3162,8 +3167,10 @@ def doctor(
         # whose connect takes torque off: the arm's close note sends a person here when it is
         # holding itself up away from its fold. On stderr under --json, whose stdout is one
         # JSON document and nothing else.
+        # A simulator of such a body says it is one instead of asking for a hand under it.
         if getattr(adapter, "supports_hand_off", False):
-            (ui.err_console if as_json else ui.console).print(_warn_line(_doctor_warning()))
+            line = _doctor_warning(simulator=_is_simulator(adapter))
+            (ui.err_console if as_json else ui.console).print(_warn_line(line))
 
     if as_json:
         report = collect(
@@ -3811,32 +3818,57 @@ def robot_rest_pose(
     )
 
 
-def _connect_warning() -> str:
+def _is_simulator(adapter: Any) -> bool:
+    """Whether this body is a simulator of a real one (`lerobot:mujoco`), asked of the built
+    adapter, which says so itself. A body that does not say is not one, so every real arm
+    keeps the warnings it had."""
+    return getattr(adapter, "is_simulator", False) is True
+
+
+def _connect_warning(*, simulator: bool = False) -> str:
     """What connecting does to a body that is handed to a person, and why, in the one wording
     `quackd robot release`, `quackd doctor` and the arm's own close note share
     (`adapters.base.CONNECTING_TAKES_TORQUE_OFF`). Imported here rather than at the top, like
-    every other `quackd.adapters` import in this file, so `quackd --help` stays quick."""
+    every other `quackd.adapters` import in this file, so `quackd --help` stays quick.
+
+    A simulator's connect does the same to its model, because it runs the real backend's
+    connect, and says it is the simulator: a line telling somebody to hold an arm that is a
+    picture on their screen teaches them to skim the line that matters when the arm is real."""
+    if simulator:
+        return (
+            "this is the arm's simulator: connecting takes torque off every simulated motor "
+            "for a moment, as LeRobot's connect does on a real arm"
+        )
     from quackd.adapters.base import CONNECTING_TAKES_TORQUE_OFF
 
     return f"{CONNECTING_TAKES_TORQUE_OFF}, because LeRobot configures them with it off"
 
 
-def _release_warning() -> str:
+def _release_warning(*, simulator: bool = False) -> str:
     """Said before anything connects, and before the question, because both halves happen to
     an arm a person has to be holding already. The first is upstream's (`configure()` runs
     inside `torque_disabled()`), and it is the reason this cannot wait until after the
-    connect: by then the arm has already been limp once."""
+    connect: by then the arm has already been limp once. On a simulator the simulated arm
+    falls, and nobody holds it."""
+    if simulator:
+        return (
+            f"{_connect_warning(simulator=True)}, and the release then lets the simulated arm "
+            "fall from wherever it is, with no arm to hold"
+        )
     return (
         f"{_connect_warning()}, and the release then lets the arm fall from wherever it is: "
         "hold it now, and keep hold of it until it is down"
     )
 
 
-def _doctor_warning() -> str:
+def _doctor_warning(*, simulator: bool = False) -> str:
     """`_release_warning`'s first half, for `doctor --robot` on a body handed to people. A
     probe connects, and an arm left holding itself up, which is when its close note sends a
     person to `doctor`, is limp for that moment like any other, so the person is told to
-    support it before the connect rather than finding out during it."""
+    support it before the connect rather than finding out during it. A simulator has no arm
+    to support, and the line says so rather than asking for a hand under one."""
+    if simulator:
+        return f"{_connect_warning(simulator=True)}, and there is no arm to support"
     return f"{_connect_warning()}: support the arm until doctor has finished with it"
 
 
@@ -3886,17 +3918,21 @@ def robot_release(
         return
 
     label = f"{entry.name} ({entry.key})"
+    # the arm's simulator releases a simulated arm, and every line said before its connect
+    # says so rather than asking for a hand under an arm that is not there
+    simulated = _is_simulator(adapter)
     if not yes and not _can_prompt():
         # refused before the warning, because nothing is going to happen that a person has to
         # get hold of the arm for
+        again = f"quackd robot release {name} --yes"
         _fail(
             "no terminal to ask on: pass --yes to release it",
-            hint=f"hold the arm, then quackd robot release {name} --yes",
+            hint=again if simulated else f"hold the arm, then {again}",
         )
         return
     # Before anything connects: connecting is the first thing that takes torque off, so a
     # warning printed after it would arrive after the arm had already been limp once.
-    ui.console.print(_warn_line(_release_warning()))
+    ui.console.print(_warn_line(_release_warning(simulator=simulated)))
     if not yes:
         with ui.pause_status():
             if not typer.confirm(f"release torque on {name}?"):
@@ -3932,11 +3968,12 @@ def robot_release(
         released, note = asyncio.run(release())
     except (TransportError, OSError) as e:
         where = f" at {kwargs['address']}" if kwargs.get("address") else ""
-        _fail(
-            f"{entry.key}{where}: {e}",
-            hint="nothing was released by quackd, and a connect that failed part way can leave "
-            "some motors limp: keep hold of the arm",
+        after = (
+            "this was the arm's simulator, so there is no arm to hold"
+            if simulated
+            else "a connect that failed part way can leave some motors limp: keep hold of the arm"
         )
+        _fail(f"{entry.key}{where}: {e}", hint=f"nothing was released by quackd, and {after}")
         return
 
     failed = True
@@ -3966,7 +4003,18 @@ def robot_release(
                 hint="run it again, or hold the arm and cut its power",
             )
         )
-    if note:
+    if note and simulated:
+        # The close note is the real backend's, written for somebody holding a real arm, and
+        # the warning above has just told this person that nobody is. The simulator's close
+        # let the released arm settle under the model's gravity, so that is the line to end on.
+        ui.console.print(
+            Text(
+                "  this was the arm's simulator: the simulated arm settled where the model's "
+                "physics left it when it closed, and there is nothing to put down",
+                style=ui.STYLES["muted"],
+            )
+        )
+    elif note:
         # after a release this is the limp-in-your-hands line, which is the one to end on
         ui.console.print(_warn_line(note))
     if failed:

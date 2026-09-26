@@ -581,7 +581,7 @@ uvx --from "quackd[microduck,anthropic]" quackd run --goal "find the ball and ki
 uvx --from "quackd[microduck]" quackd run find-and-kick --llm fake --seed 3
 ```
 
-Every run writes `runs/<timestamp>-<name>/` (`--runs-dir` replaces `runs/`, and `--run-name "Example 1"` adds your own label to the end of that directory, `runs/20260921-155518-find-and-kick-example-1/`) with `transcript.jsonl` (every prompt, tool call, gate, intent, result and token count, what each model call cost and what the run has cost so far, when the run started and when it ended, plus the robot's manifest in `run_start`), every frame quackd captured, `summary.json`, `terminal.txt` (everything that was on the terminal during the run, as plain text, opening with the command that started it and the version that ran it), and `run.gif` on the simulator. `quackd log` replays any of it afterwards.
+Every run writes `runs/<timestamp>-<name>/` (`--runs-dir` replaces `runs/`, and `--run-name "Example 1"` adds your own label to the end of that directory, `runs/20260921-155518-find-and-kick-example-1/`) with `transcript.jsonl` (every prompt, tool call, gate, intent, result and token count, what each model call cost and what the run has cost so far, when the run started and when it ended, plus the robot's manifest in `run_start`), every frame quackd captured, `summary.json`, `terminal.txt` (everything that was on the terminal during the run, as plain text, opening with the command that started it and the version that ran it), and `run.gif` on a simulator, though the arm's simulator, `lerobot:mujoco`, writes none. `quackd log` replays any of it afterwards.
 
 Cloud or local, same command.
 
@@ -908,7 +908,7 @@ browser test.
 | AlohaMini | `alohamini:zmq --address tcp://alohamini.local:5555` | `quackd[alohamini]` |
 | ToddlerBot | `toddlerbot:bridge --address tcp://toddlerbot.local:9873 --token <the daemon token>` | `quackd[toddlerbot]`, and no robot library: the daemon runs on the robot |
 
-**Several cameras, on the arm and nowhere else.** `--camera-url` repeats, and `lerobot:real` is the only body that reads a second one. Every other body refuses a second url, with a message naming who takes several.
+**Several cameras, on the arm and nowhere else.** `--camera-url` repeats, and the LeRobot arm is the only body that reads a second one, on the desk (`lerobot:real`) and in its simulator (`lerobot:mujoco`). Every other body refuses a second url, with a message naming who takes several.
 
 ```bash
 quackd robot add arm-01 lerobot:real --address COM5 \

@@ -22,3 +22,8 @@ Nothing here may import `mujoco` when the module is imported. It is an optional 
 `make()` and `describe()` have to work without it (`tests/test_extras_absent.py`), so the
 modules that need it import it inside `connect()` or later.
 """
+
+SIM_EXTRA = "quackd[lerobot-sim]"
+"""What installs MuJoCo for the arm's simulator: named by a connect that finds it missing and
+by doctor's row for the simulator. Here rather than in `transport.py`, so that doctor can name
+it without importing the backend."""

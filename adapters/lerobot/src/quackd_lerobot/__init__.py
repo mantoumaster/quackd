@@ -600,6 +600,7 @@ __all__ = [
     "LeRobotAdapter",
     "conditions",
     "describe",
+    "doctor_rows",
     "implementations",
     "lerobot_manifest",
     "make",
@@ -635,3 +636,54 @@ def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
 
 
 UPSTREAMS = _upstream_rows()
+
+
+def doctor_rows() -> list[Any]:
+    """What `quackd doctor` says about the arm's simulator on this machine: whether the extra
+    that installs MuJoCo is here and at which version, which commit of the SO-101's model the
+    simulator runs, and whether that model is in the cache yet or the first connect fetches it.
+
+    Doctor asks every installed adapter this with no arguments, so it cannot know which robot,
+    if any, a person asked about, and it answers only what is true of the machine. Nothing here
+    imports `mujoco`, makes a GL context or fetches anything: the version is read from the
+    installer's metadata and the cache is only looked at. Whether this machine can draw the
+    scene is the simulator's own connect, which renders once, and `doctor --robot NAME`
+    reaches it for a registered `lerobot:mujoco` robot, with the address it was registered
+    with or, when it has none, on the calibration LeRobot keeps under its name."""
+    import importlib.metadata
+    import os
+    from pathlib import Path
+
+    from quackd.doctor import TransportRow
+    from quackd_lerobot.sim import SIM_EXTRA
+    from quackd_lerobot.sim import upstream_api as so
+    from quackd_lerobot.sim.assets import ASSETS_ENV, cached_so101
+
+    try:
+        version: str | None = importlib.metadata.version("mujoco")
+    except importlib.metadata.PackageNotFoundError:
+        version = None
+    pin = so.PIN[:7]
+    model = cached_so101()
+    # A checkout named by the variable is not the cache, and a connect never fetches in its
+    # place: one without the model is refused, so that is what the row has to say, with what
+    # to do about it, rather than promising a fetch that will not happen.
+    override = os.environ.get(ASSETS_ENV)
+    if override and model is None:
+        note = (
+            f"{ASSETS_ENV} points at {Path(override).expanduser()}, which has no "
+            f"{so.MODEL_FILE}, so a connect refuses: point it at the {so.SIM_DIR} directory "
+            f"of an SO-ARM100 checkout, or unset it to let quackd fetch {pin}"
+        )
+    elif override and model is not None and model.pinned:
+        note = f"SO-ARM100 at {pin} from {ASSETS_ENV} at {model.directory}"
+    elif model is None:
+        note = f"SO-ARM100 at {pin}: not in the cache yet, and the first connect fetches it"
+    elif model.pinned:
+        note = f"SO-ARM100 at {pin}: in the cache at {model.directory}"
+    else:
+        note = f"SO-ARM100 from {ASSETS_ENV} at {model.directory}, which differs from {pin}"
+    status = f"mujoco {version}" if version is not None else f"missing ({SIM_EXTRA})"
+    # found only when a connect has both things it needs here, the physics and the model
+    ready = version is not None and model is not None
+    return [TransportRow("lerobot:mujoco", status, note, found=ready)]

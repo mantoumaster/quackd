@@ -130,12 +130,13 @@ detections line reports, and the only one the verbs that steer by sight read. Ev
 reaches a provider that takes images, each labelled with its camera's name, which is also what
 `frames/NNNN-<name>.png` in the run directory is named by.
 
-Only the LeRobot arm reads several. Every other body refuses a second one where it is
-registered, rather than opening the first and dropping the rest:
+Only the LeRobot arm reads several, on the desk (`lerobot:real`) or in its simulator
+(`lerobot:mujoco`). Every other body refuses a second one where it is registered, rather than
+opening the first and dropping the rest:
 
 ```
 $ quackd robot add duck-a microduck:mock --camera-url a --camera-url b
-x error: microduck:mock takes one camera url; only lerobot:real takes several
+x error: microduck:mock takes one camera url; only lerobot:real and lerobot:mujoco take several
 ```
 
 The rules the urls themselves keep, a `?name=` on each, unique names and no index used twice,

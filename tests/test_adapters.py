@@ -205,7 +205,8 @@ ONE_CAMERA = (
     "toddlerbot:mock",
     "lerobot:mock",
 )
-"""Every spec outside `MULTI_CAMERA_SPECS`, which is `lerobot:real` and nothing else."""
+"""Every spec outside `MULTI_CAMERA_SPECS`, which is the LeRobot arm, `lerobot:real` and its
+simulator `lerobot:mujoco`, and nothing else."""
 
 
 @pytest.mark.parametrize("spec", PARKS_NOTHING)
@@ -239,5 +240,6 @@ def test_a_one_camera_body_refuses_a_second_camera_url_instead_of_dropping_it(sp
     with pytest.raises(AdapterError) as refusal:
         make_adapter(spec, camera_url=["opencv://0?name=top", "opencv://1?name=side"])
     assert str(refusal.value) == (
-        f"{spec} takes one --camera-url and 2 were given; only lerobot:real takes several"
+        f"{spec} takes one --camera-url and 2 were given; "
+        "only lerobot:real and lerobot:mujoco take several"
     )

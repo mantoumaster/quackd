@@ -46,6 +46,7 @@ from quackd.adapters.base import AdapterError, AdapterNotInstalled, HandResult, 
 from quackd.perception.color_blob import DEFAULT_FOV_DEG
 from quackd.transport.base import DuckState, HeartbeatError, TransportError
 from quackd_lerobot.real import MAX_STEP_DEG, CameraSpec, LeRobotReal
+from quackd_lerobot.sim import SIM_EXTRA
 from quackd_lerobot.sim import upstream_api as so
 from quackd_lerobot.sim.camera import SimCamera, open_renderer, render
 from quackd_lerobot.sim.clock import SimClock
@@ -64,8 +65,6 @@ from quackd_lerobot.sim.model import (
 )
 from quackd_lerobot.sim.world import ArmWorld
 
-SIM_EXTRA = "quackd[lerobot-sim]"
-"""What installs MuJoCo for the arm's simulator, which a connect names when it is missing."""
 PLACE_SETTLE_S = 1.0
 """How long a take-hold lets a released arm fall before it takes hold, in sim time. At the
 bench a person places the arm and a take-hold meets it where they left it; here nobody does,

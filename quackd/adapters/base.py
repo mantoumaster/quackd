@@ -242,9 +242,20 @@ def refuse_rest_pose(adapter: str, rest_pose: Any) -> None:
 
 # ── cameras ─────────────────────────────────────────────────────────────────────────────
 
-MULTI_CAMERA_SPECS = ("lerobot:real",)
+MULTI_CAMERA_SPECS = ("lerobot:real", "lerobot:mujoco")
 """The bodies that read more than one `--camera-url`. Every other `make()` refuses a
-second one rather than opening the first and silently dropping the rest."""
+second one rather than opening the first and silently dropping the rest. The arm's simulator
+is here because it renders one view per named url, so a task that runs on the arm's cameras
+rehearses on the same flags."""
+
+
+def who_takes_several() -> str:
+    """The end of the refusal a one-camera body gives a second url: which bodies take several,
+    as a clause that reads as English whether the list holds one name or more."""
+    specs = list(MULTI_CAMERA_SPECS)
+    if len(specs) == 1:
+        return f"only {specs[0]} takes several"
+    return f"only {', '.join(specs[:-1])} and {specs[-1]} take several"
 
 
 def camera_urls(value: str | Sequence[str] | None) -> tuple[str, ...]:
@@ -264,8 +275,7 @@ def one_camera_url(value: str | Sequence[str] | None, *, spec: str) -> str | Non
     urls = camera_urls(value)
     if len(urls) > 1:
         raise AdapterError(
-            f"{spec} takes one --camera-url and {len(urls)} were given; "
-            f"only {', '.join(MULTI_CAMERA_SPECS)} takes several"
+            f"{spec} takes one --camera-url and {len(urls)} were given; {who_takes_several()}"
         )
     return urls[0] if urls else None
 
@@ -338,7 +348,8 @@ def backend_name(transport: Any) -> str:
     """The backend name: `sim2d` for a bare `Sim2DTransport` and for an adapter over one.
 
     The prompt's simulator note, the CLI's detector and recorder gating and the pinned
-    `transport` keys in transcripts all key on this string."""
+    `transport` keys in transcripts all key on this string. The note and the recorder ask more
+    than the name, because the Microduck and the LeRobot arm both have a `mujoco`."""
     backend = getattr(transport, "backend", None)
     return str(backend) if backend else str(getattr(transport, "name", "unknown"))
 

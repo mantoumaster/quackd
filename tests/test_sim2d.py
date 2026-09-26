@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
 from quackd.perception.color_blob import ColorBlobDetector
+from quackd.sim2d.recorder import FrameRecorder
 from quackd.sim2d.render import render_duckcam, render_topdown
 from quackd.sim2d.world import DEADMAN_S, DT, World
 
@@ -113,3 +115,17 @@ def test_ball_behind_duck_is_not_seen() -> None:
     w.duck.x = w.duck.y = w.duck.theta = 0.0
     _place_ball(w, 0.5, 180.0)
     assert ColorBlobDetector().detect(render_duckcam(w)) == []
+
+
+def test_a_recorder_with_nothing_drawn_writes_no_gif(tmp_path: Path) -> None:
+    """A GIF of no frames cannot be encoded, and a recorder whose world was never built has
+    none: a physics run that ended before its connect built the world. The run has finished
+    by the time this is asked, so it writes nothing and says so, rather than raising an
+    IndexError over a run that was otherwise fine."""
+
+    class NoWorld:
+        world = None
+
+    recorder = FrameRecorder(NoWorld())
+    assert recorder.save_gif(tmp_path / "run.gif") is None
+    assert not (tmp_path / "run.gif").exists()

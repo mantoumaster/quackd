@@ -1671,7 +1671,7 @@ touched by anything in the first block: these all happen before or during connec
 | `lerobot real: --camera-url 'opencv://2': it has no ?name= and 2 cameras were given` | several cameras, and one of them is unnamed | add `?name=` to every url. The message shows the shape, `opencv://1?name=top --camera-url opencv://2?name=side`, and says what the name is for |
 | `lerobot real: --camera-url 'opencv://2?name=top': name='top' is already the name of 'opencv://1?name=top'` | two cameras with one name | rename one. Two views the model cannot tell apart are worse than one view |
 | `lerobot real: --camera-url 'opencv://1?name=side': 1 is already 'opencv://1?name=top'` | the same index given twice | drop the duplicate, or find the other camera's index with `lerobot-find-cameras opencv`. Two handles on one webcam is not two views |
-| `microduck:mock takes one --camera-url and 2 were given; only lerobot:real takes several` | a body that reads one camera was handed more | pass one url to that body. Only this arm reads more than one, and the message names it rather than opening the first and dropping the rest |
+| `microduck:mock takes one --camera-url and 2 were given; only lerobot:real and lerobot:mujoco take several` | a body that reads one camera was handed more | pass one url to that body. Only this arm reads more than one, on the desk or in its simulator, and the message names both rather than opening the first and dropping the rest |
 
 And once it is running:
 

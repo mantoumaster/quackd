@@ -1584,6 +1584,7 @@ class AgentLoop:
                 flock_text=cfg.link.prompt_section() if cfg.link is not None else None,
                 task_images=[p.name for p in cfg.task_images] or None,
                 by_hand=cfg.hand_off is not None and not cfg.dry_run,
+                adapter=adapter_name(cfg.transport),
             )
             system += getattr(cfg.provider, "prompt_hint", "") or ""  # e.g. the local JSON fallback
             # before `run_start`, so a reader of the record meets the pictures the task is

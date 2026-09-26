@@ -1771,12 +1771,29 @@ async def test_an_exit_that_skips_the_close_leaves_the_simulated_arm_holding(mjc
     world.close()
 
 
+def test_the_gif_flag_and_the_readme_say_the_arm_simulator_writes_no_gif() -> None:
+    """`--gif` is on by default and said that simulators write run.gif, and the arm's
+    simulator is one that writes none, because the recorder draws only the 2D world and the
+    Microduck's. A person who reads the help and finds no GIF has to be told why somewhere,
+    and the help and the README's list of what a run writes are the two places they look."""
+    from tests.conftest import help_text
+
+    run_help = help_text(["run", "--help"])
+    assert "Simulators: write run.gif into the run dir. The arm's simulator," in run_help
+    assert "lerobot:mujoco, writes none." in run_help
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    assert "the arm's simulator, `lerobot:mujoco`, writes none" in readme
+
+
 def test_the_lookout_runs_on_the_simulated_arm_end_to_end(
     mjcf: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`quackd run` as a person types it, on the stand-in, with the scripted pilot and memory
-    off: the task connects, reads the arm back, succeeds and closes. `--no-gif`, because the
-    recorder draws a world the arm's simulator does not hand it."""
+    off: the task connects, reads the arm back, succeeds and closes. With the GIF left on, as
+    it is by default: the recorder draws a world the arm's simulator does not have, so no GIF
+    is written, and the run used to finish and then crash writing a GIF of no frames. The
+    pilot is told about the arm's simulator, and not about the Microduck's arena and ball,
+    which it was while both notes keyed on the backend name alone."""
     from typer.testing import CliRunner
 
     from quackd.agent.transcript import Transcript
@@ -1797,16 +1814,125 @@ def test_the_lookout_runs_on_the_simulated_arm_end_to_end(
             "--runs-dir",
             str(runs),
             "--no-log",
-            "--no-gif",
         ],
     )
     if "no OpenGL context" in result.output and os.environ.get(REQUIRE_ENV) != "1":
         pytest.skip("no OpenGL context for offscreen rendering")
     assert result.exit_code == 0, result.output
     assert "SUCCESS" in result.output, result.output
+    assert not list(runs.rglob("run.gif")), "a GIF was written of a world this does not have"
     events = Transcript.read(next(runs.rglob("transcript.jsonl")))
     verbs = [e.get("name") for e in events if e["kind"] == "verb_end"]
     assert "report_state" in verbs, verbs
+    system = next(e["system_prompt"] for e in events if e["kind"] == "run_start")
+    assert "the arm's physics simulator (MuJoCo)" in system
+    assert "arena" not in system and "orange ball" not in system
+    # run with no camera, which the note says rather than pointing at cameras it has not got
+    assert "This run has no camera" in system and "what the cameras show" not in system
+
+
+def test_doctor_and_release_on_a_registered_simulated_arm_say_it_is_the_simulator(
+    mjcf: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The arm's simulator is handed to people as the arm is, so `doctor --robot` and
+    `robot release` warn before they connect it. What they used to say was the arm's: support
+    it, hold it now. Nobody can hold a simulated arm, so each says it is the simulator instead.
+    `doctor --robot NAME` also reaches the simulator through the calibration the robot was
+    registered with, and its connect, which renders once, is the check that this machine
+    can draw the scene."""
+    from typer.testing import CliRunner
+
+    from quackd import doctor
+    from quackd.cli import app
+
+    monkeypatch.setattr("quackd_lerobot.sim.transport.default_model", lambda: mjcf)
+    monkeypatch.setattr(doctor, "_probe_models", lambda url, timeout_s=1.5: ("down", "not running"))
+    given = tmp_path / "arm-sim.json"
+    given.write_text(json.dumps(_synthetic(_arm(mjcf))), encoding="utf-8")
+    reg = ["--registry-dir", str(tmp_path / "registry")]
+    runner = CliRunner()
+    added = runner.invoke(
+        app, ["robot", "add", "arm-sim", "lerobot:mujoco", "--address", str(given), *reg]
+    )
+    assert added.exit_code == 0, added.output
+
+    probed = runner.invoke(app, ["doctor", "--robot", "arm-sim", *reg])
+    flat = " ".join(probed.output.split())
+    if "no OpenGL context" in flat and os.environ.get(REQUIRE_ENV) != "1":
+        pytest.skip("no OpenGL context for offscreen rendering")
+    assert (
+        "this is the arm's simulator: connecting takes torque off every simulated motor for a "
+        "moment, as LeRobot's connect does on a real arm, and there is no arm to support"
+    ) in flat, flat
+    assert "support the arm until doctor" not in flat, flat
+    report = json.loads(runner.invoke(app, ["doctor", "--robot", "arm-sim", "--json", *reg]).stdout)
+    probe = report["robot"]["probe"]
+    assert probe["ok"] is True, probe
+
+    released = runner.invoke(app, ["robot", "release", "arm-sim", "--yes", *reg])
+    flat = " ".join(released.output.split())
+    assert (
+        "this is the arm's simulator: connecting takes torque off every simulated motor for a "
+        "moment, as LeRobot's connect does on a real arm, and the release then lets the "
+        "simulated arm fall from wherever it is, with no arm to hold"
+    ) in flat, flat
+    assert "hold it now" not in flat, flat
+    assert released.exit_code == 0, flat
+    # and it does not end, as a real arm's release does, by putting the arm in somebody's hands
+    assert "in your hands" not in flat and "put it down before" not in flat, flat
+    assert (
+        "this was the arm's simulator: the simulated arm settled where the model's physics "
+        "left it when it closed, and there is nothing to put down"
+    ) in flat, flat
+
+
+def test_doctor_connects_a_registered_simulator_that_was_given_no_address(
+    mjcf: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A simulator registered without `--address` runs on the calibration LeRobot keeps under
+    its name, and doctor only ever connected a robot that had an address. So it reported a
+    machine healthy on which `quackd run --robot NAME` was refused at connect, and never made
+    the one render that says this machine can draw the scene. It connects the simulator now,
+    and a real body with no address is still never guessed at."""
+    from typer.testing import CliRunner
+
+    from quackd import doctor
+    from quackd.cli import app
+
+    monkeypatch.setattr("quackd_lerobot.sim.transport.default_model", lambda: mjcf)
+    monkeypatch.setattr(doctor, "_probe_models", lambda url, timeout_s=1.5: ("down", "not running"))
+    reg = ["--registry-dir", str(tmp_path / "registry")]
+    runner = CliRunner()
+    added = runner.invoke(app, ["robot", "add", "arm-sim", "lerobot:mujoco", *reg])
+    assert added.exit_code == 0, added.output
+
+    def report() -> dict[str, Any]:
+        out = runner.invoke(app, ["doctor", "--robot", "arm-sim", "--json", *reg]).stdout
+        return dict(json.loads(out))
+
+    missing = report()
+    probe = missing["robot"]["probe"]
+    assert probe is not None, "doctor never connected the simulator"
+    assert probe["ok"] is False and missing["ok"] is False
+    assert "arm-sim has no calibration file where LeRobot would look" in probe["error"]
+    assert " at :" not in probe["error"], probe["error"]
+
+    found = calibration_path("arm-sim")
+    found.parent.mkdir(parents=True, exist_ok=True)
+    found.write_text(json.dumps(_synthetic(_arm(mjcf))), encoding="utf-8")
+    probed = runner.invoke(app, ["doctor", "--robot", "arm-sim", *reg])
+    flat = " ".join(probed.output.split())
+    if "no OpenGL context" in flat and os.environ.get(REQUIRE_ENV) != "1":
+        pytest.skip("no OpenGL context for offscreen rendering")
+    assert "what the robot itself reported" in flat and "at : what" not in flat, flat
+    probe = report()["robot"]["probe"]
+    assert probe["ok"] is True, probe
+
+    # the same registry, a real arm with no address: described, and never connected
+    real = runner.invoke(app, ["robot", "add", "arm-real", "lerobot:real", *reg])
+    assert real.exit_code == 0, real.output
+    out = runner.invoke(app, ["doctor", "--robot", "arm-real", "--json", *reg]).stdout
+    assert json.loads(out)["robot"]["probe"] is None
 
 
 # ── the real model ──────────────────────────────────────────────────────────────────────

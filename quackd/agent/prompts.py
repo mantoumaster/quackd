@@ -445,13 +445,18 @@ def build_system_prompt(
     flock_text: str | None = None,
     task_images: Sequence[str] | None = None,
     by_hand: bool = False,
+    adapter: str | None = None,
 ) -> str:
     """`memory_text` is what the robot remembers from earlier runs (`RobotMemory.recall`);
     None means memory is off for this run, "" means on but empty.
 
     `assumptions` is what the robot says quackd is standing in for on this backend, read from
     `state.extras` when the run connects. It belongs in the prompt rather than in every
-    observation because the list is sentences and an observation line is a line."""
+    observation because the list is sentences and an observation line is a line.
+
+    `adapter` is whose backend `transport_name` is (`base.adapter_name`), because two bodies
+    now have a backend called `mujoco` and their simulators are nothing alike. None is a bare
+    transport, which in quackd is only ever the Microduck's, as the blurb's fallback assumes."""
     fm = duck.frontmatter
     blurb = manifest.blurb if manifest is not None and manifest.blurb else DUCK_BLURB
     names = {v.name for v in verbs}
@@ -559,7 +564,7 @@ above.
             "\nYou are in the built-in 2D simulator: a cartoon top-down world. Distances are "
             "metres, the arena is about 2 m across, and the ball is orange.\n"
         )
-    elif transport_name == "mujoco":
+    elif transport_name == "mujoco" and adapter in (None, "microduck"):
         # Deliberately only the arena. What the body is, and what its legs can do, differs
         # between the real duck and the kinematic stand-in behind this one backend name, and
         # both describe themselves in the stand-ins block below. Saying it here as well
@@ -576,6 +581,32 @@ above.
             "person here to find, follow or walk up to, so do not scan for one, and treat any "
             "`person` detection as scenery misread rather than somebody standing there. "
             "Distances are metres.\n"
+        )
+    elif transport_name == "mujoco" and adapter == "lerobot":
+        # The arm's simulator has no arena and no ball, and until this was keyed on the adapter
+        # it was told about both, because the duck's note keyed on the backend name alone.
+        # What it has to be told is that nothing it sees or does here was measured on an arm:
+        # the servo dynamics are the model's, which the simulator lists among its assumptions,
+        # so a grasp that holds here is a rehearsal and not a result. What lies on the table
+        # is left to the cameras, because the scene is the simulator's and not the task file's,
+        # and a run given no camera is told it has none: the scene has things on the table
+        # either way, and a sentence about what the cameras show would have it think not.
+        if manifest is not None and "camera" in manifest.sensors:
+            seen = (
+                "What is on the table is what the cameras show, and every camera is a rendered "
+                "view of the model, not a webcam's picture. "
+            )
+        else:
+            seen = (
+                "This run has no camera, so whatever is on the table goes unseen: the arm "
+                "reports only its own joints. "
+            )
+        sim_note = (
+            "\nYou are in the arm's physics simulator (MuJoCo): a model of this arm on a "
+            f"table, with the table in front of it. {seen}"
+            "How the joints move and how an object grips, slides or falls is the model's "
+            "physics, not anything measured on a real SO-101, so a grasp that works here "
+            "rehearses the task rather than showing that the arm can do it.\n"
         )
     return f"""You are the brain of {blurb}. You are a high-level pilot:
 you choose ONE verb per turn; {pilot_line}. Do not micro-manage.

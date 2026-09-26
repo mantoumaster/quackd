@@ -142,7 +142,7 @@ helper in `quackd/adapters/base.py` that answers for you:
 
 | Keyword | What arrives | What you do |
 |---|---|---|
-| `camera_url` | whatever `--camera-url` was given, as a tuple, because the flag repeats | `one_camera_url(camera_url, spec=...)` for a body with one camera: it returns the url or refuses the second with a message naming who takes several. A body that genuinely reads more (today that is `lerobot:real`, and `MULTI_CAMERA_SPECS` is the list) keeps the tuple and implements `get_frames()` |
+| `camera_url` | whatever `--camera-url` was given, as a tuple, because the flag repeats | `one_camera_url(camera_url, spec=...)` for a body with one camera: it returns the url or refuses the second with a message naming who takes several. A body that genuinely reads more (today that is `lerobot:real` and its simulator `lerobot:mujoco`, and `MULTI_CAMERA_SPECS` is the list) keeps the tuple and implements `get_frames()` |
 | `rest_pose` | degrees per joint, from the registry, for a body that parks | drive to it, or `refuse_rest_pose(name, rest_pose)`, which raises when one is present. Never accept it and ignore it |
 
 ### Two more the module may declare, both for `doctor`

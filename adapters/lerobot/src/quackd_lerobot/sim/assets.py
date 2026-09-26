@@ -345,6 +345,26 @@ def _ensure_notice(directory: Path) -> None:
             notice.write_text(NOTICE, encoding="utf-8")
 
 
+def cached_so101() -> SO101Model | None:
+    """The SO-101's model where a connect would find it, or None when it is not there yet.
+
+    The question `quackd doctor` asks, and only asks: it never fetches, never waits on another
+    quackd's lock and never writes, not even the licence notice. `QUACKD_LEROBOT_SIM_ASSETS`
+    is honoured as `ensure_so101` honours it, so a checkout that differs from the pin is found
+    and reported as not pinned, without the warning a run gives."""
+    override = os.environ.get(ASSETS_ENV)
+    if override:
+        directory = Path(override).expanduser()
+        if not (directory / up.MODEL_FILE).is_file():
+            return None
+        pinned = not _mismatches(directory, checkout=True)
+        return SO101Model(model_path=directory / up.MODEL_FILE, pinned=pinned)
+    directory = cache_root() / CACHE_SUBDIR / up.PIN
+    if _mismatches(directory):
+        return None
+    return SO101Model(model_path=directory / up.MODEL_FILE, pinned=True)
+
+
 def ensure_so101(*, offline: bool = False) -> SO101Model:
     """The SO-101's model, fetched if it is not here yet.
 
