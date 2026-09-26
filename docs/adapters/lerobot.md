@@ -1786,6 +1786,9 @@ If you hit one of these, or fail to, that is exactly what the
 | `Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>` | what a single write or read that failed raises. quackd reads the id out of it to name the joint; a sync read or write names several and quackd names none |
 | `_handshake` | what `MotorsBus.connect()` runs once the port is open: a ping per motor and the firmware reads, and no write. `configure()`, where every write of a connect is, comes after it, so a connect refused in the handshake left every motor's torque as it was, and its refusal does not tell you to keep a hand under the arm. quackd tells the two apart by this frame in the error's traceback |
 | `Missing motor IDs: / Motors with incorrect model numbers: - <N> (...)` | what the handshake raises for a servo that did not answer its ping, or answered as another model: one line per motor. A servo answering with its error bit set, an overload say, is listed as missing too. quackd names the joint of the first id listed, through the bus's motor table |
+| `Failed to sync read '<register>' on ids=[<N>, ...] after <k> tries. <result>` | what a read of several motors at once raises when no good reply came back, and a sync write says `Failed to sync write` when its packet could not go out: it waits for no reply, so a lost one cannot fail it. The result is the servo SDK's own words, `[TxRxResult] There is no status packet!` for a reply that never came. Neither names one motor, so quackd names no joint. The arm simulator fails its reads and goal writes in these words |
+| `sts3215 model number 777` | what an SO-101 servo answers a ping with, and what the handshake prints beside each id it lists. The arm simulator's handshake fault prints it where the arm's would |
+| `check_if_not_connected refuses a call on a port that is not open` | ``<class> is not connected. Run `.connect()` first.``, a ConnectionError, on the follower's observation, send and disconnect and on every bus read and write, and its twin says `<class> is already connected.` for a connect. The arm simulator refuses in the same words under upstream's class names |
 | `MotorsBus.is_connected is port_handler.is_open` | a port flag, not a reply: why the heartbeat reads the arm |
 | `FeetechMotorsBus.is_calibrated reads the motors back` | a missing, stale or foreign file all read as not calibrated |
 | `write_calibration() is reached only through calibrate()` | quackd cannot move an arm's zero by accident |
@@ -1845,8 +1848,17 @@ quackd is growing a simulator for this arm: the `real` backend's own code over a
 of the SO-101, so that a task file can be rehearsed at home through the code that will drive
 the arm in the lab. It is not a backend yet. What exists so far is the model's upstream, the
 fetcher for it, a loader that sets the model in a scene of quackd's own with a primitives-only
-stand-in arm for CI, and the physics world that steps it, and nothing in a run calls any of
-them.
+stand-in arm for CI, the physics world that steps it, and the follower the `real` backend
+drives over that world, with the bus faults it can be told to have. Nothing in a run calls any
+of them.
+
+The follower carries exactly what the `real` backend reads and writes on a LeRobot follower,
+and does under it what the arm does. It reads in whole encoder ticks through the calibration,
+caps each send at the step, clamps a goal to the calibrated travel as the servo does, without
+a word, and lets a limp joint keep its goal until torque drives it there. Its faults are
+seeded, and each is raised in LeRobot's own words from a function named as LeRobot's, so the
+`real` backend says of it what it would say of the arm. `tests/test_lerobot_sim_parity.py`
+runs the `real` backend over it and over the fake arm its own tests use, side by side.
 
 The model is the maker's own, [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100),
 pinned at

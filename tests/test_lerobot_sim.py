@@ -1,9 +1,14 @@
-"""The arm simulator's model and world, on the stand-in arm: no network and nothing fetched.
+"""The arm simulator's model, world, follower and faults, on the stand-in arm: no network and
+nothing fetched.
 
 `quackd_lerobot/sim/model.py` sets an arm in quackd's scene and maps LeRobot's units onto it;
-`sim/world.py` steps it, holds or drops its joints and keeps the truth about the table. Every
-test here runs on the primitives-only stand-in, which is what CI's physics job has, except the
-one marked `so101_model`, which needs the maker's model already fetched and skips without it.
+`sim/world.py` steps it, holds or drops its joints and keeps the truth about the table;
+`sim/follower.py` is the follower the real backend drives over it, and `sim/faults.py` the
+seeded bus faults that follower can be told to have. What the real backend makes of the
+follower is `tests/test_lerobot_sim_parity.py`'s; here is what the follower does on its own.
+Every test here runs on the primitives-only stand-in, which is what CI's physics job has, except
+the one marked `so101_model`, which needs the maker's model already fetched and skips without
+it.
 
 No number here comes off an arm. Ranges come from the loaded model, travel from calibrations
 built in the test out of the model's own ranges, and motor ids from upstream's bus table.
@@ -11,19 +16,42 @@ built in the test out of the model's own ranges, and motor ids from upstream's b
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import gc
 import json
 import math
+import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
+from quackd.adapters.base import AdapterError
 from quackd_lerobot import REACH, lerobot_manifest
 from quackd_lerobot import upstream_api as lr
-from quackd_lerobot.real import ENCODER_TICKS, joint_ranges
+from quackd_lerobot.real import (
+    ENCODER_TICKS,
+    MAX_STEP_DEG,
+    TORQUE_RETRIES,
+    joint_ranges,
+    may_have_written_torque,
+    motor_in_error,
+)
 from quackd_lerobot.sim import standin
 from quackd_lerobot.sim import upstream_api as up
+from quackd_lerobot.sim.faults import EXAMPLE, TORQUE_READ, FaultPlan
+from quackd_lerobot.sim.follower import (
+    NO_STATUS,
+    NOT_SENT,
+    DeviceAlreadyConnectedError,
+    DeviceNotConnectedError,
+    SimFollower,
+    SimFollowerConfig,
+    ensure_safe_goal_position,
+)
 from quackd_lerobot.sim.model import (
     CUBE,
     FIXED_PAD,
@@ -43,6 +71,7 @@ from quackd_lerobot.sim.model import (
     GripperMap,
     JointMap,
     ModelError,
+    MotorCalibration,
     calibration_path,
     generic_calibration,
     load,
@@ -634,6 +663,419 @@ def test_a_step_shorter_than_the_physics_is_refused(mjcf: str) -> None:
     with pytest.raises(ValueError, match="advance nothing"):
         world.step(world.timestep / 4)
     assert world.step(world.timestep * 2.4) == pytest.approx(world.timestep * 2)
+
+
+# ── the follower ────────────────────────────────────────────────────────────────────────
+
+SETTLE_S = 1.0
+"""Time enough for a joint of the stand-in to reach a goal a step or two away and stop there."""
+PAN = "shoulder_pan"
+"""The joint most tests move: it turns about the vertical, so gravity does not load it and a
+limp one stays where it is."""
+
+
+def _calibration(arm: ArmModel) -> dict[str, MotorCalibration]:
+    """`_synthetic`'s calibration as LeRobot's dataclass holds it."""
+    return {name: MotorCalibration(**fields) for name, fields in _synthetic(arm).items()}
+
+
+def _follower(
+    arm: ArmModel,
+    *,
+    cap: float | None = MAX_STEP_DEG,
+    faults: FaultPlan | None = None,
+    start: dict[str, float] | None = None,
+    releases: bool = True,
+) -> SimFollower:
+    """A follower over a fresh world, on `_synthetic`'s calibration and a bus table with its ids,
+    which are not in the table's order, so a joint named by its place in the table is named
+    wrong."""
+    calibration = _calibration(arm)
+    config = SimFollowerConfig(disable_torque_on_disconnect=releases, max_relative_target=cap)
+    return SimFollower(
+        ArmWorld(arm, rest_pose=start),
+        calibration,
+        None,
+        config,
+        faults,
+        motor_ids={name: cal.id for name, cal in calibration.items()},
+    )
+
+
+def test_the_step_cap_is_lerobots_errors_and_all() -> None:
+    goals = {"a": (10.0, 0.0), "b": (-10.0, 0.0), "c": (1.0, 0.0)}
+    assert ensure_safe_goal_position(goals, 2.0) == {"a": 2.0, "b": -2.0, "c": 1.0}
+    per_motor = {"a": 1.0, "b": 3.0, "c": 0.5}
+    assert ensure_safe_goal_position(goals, per_motor) == {"a": 1.0, "b": -3.0, "c": 0.5}
+    with pytest.raises(TypeError):
+        ensure_safe_goal_position(goals, 2)  # type: ignore[arg-type]  # an int raises
+    with pytest.raises(ValueError, match="keys must match"):
+        ensure_safe_goal_position(goals, {"a": 1.0})
+    assert ensure_safe_goal_position(goals, math.nan) == {k: g for k, (g, _) in goals.items()}
+
+
+def test_a_reading_is_a_whole_tick_and_is_never_clamped(mjcf: str) -> None:
+    arm = _arm(mjcf)
+    _, hi = joint_ranges(_calibration(arm))["elbow_flex"]
+    folded = (hi + arm.joints["elbow_flex"].stops[1]) / 2
+    follower = _follower(arm, start={"elbow_flex": folded, JOINTS[-1]: GRIPPER_OPEN / 3})
+    follower.connect(False)
+    obs = follower.get_observation()
+    assert list(obs) == [f"{name}.pos" for name in JOINTS]
+    for name, cal in follower.calibration.items():
+        value = obs[f"{name}.pos"]
+        if name == JOINTS[-1]:
+            tick = cal.range_min + value / GRIPPER_OPEN * (cal.range_max - cal.range_min)
+        else:
+            tick = value / TICK_DEG + (cal.range_min + cal.range_max) / 2
+        assert tick == pytest.approx(round(tick), abs=1e-6), name
+    assert obs["elbow_flex.pos"] > hi, "a reading past the travel was clamped"
+    assert obs["elbow_flex.pos"] == pytest.approx(folded, abs=TICK_DEG)
+    raw = follower.bus.sync_read("Present_Position", normalize=False)
+    assert all(isinstance(tick, int) for tick in raw.values())
+
+
+def test_a_goal_past_the_travel_stops_at_the_limit_and_nothing_says_so(mjcf: str) -> None:
+    """The servo clamps a goal to the limits calibration wrote into it, and LeRobot reports the
+    goal it wrote, so the send says the whole way and the joint stops at the limit."""
+    arm = _arm(mjcf)
+    follower = _follower(arm, cap=None)
+    follower.connect(False)
+    _, hi = joint_ranges(follower.calibration)[PAN]
+    past = (hi + arm.joints[PAN].stops[1]) / 2
+    assert follower.send_action({f"{PAN}.pos": past}) == {f"{PAN}.pos": past}
+    follower.world.step(SETTLE_S)
+    assert _deg(follower.world, PAN) == pytest.approx(hi, abs=TICK_DEG)
+
+
+def test_the_cap_is_read_off_the_config_at_every_send(mjcf: str) -> None:
+    follower = _follower(_arm(mjcf))
+    follower.connect(False)
+    far = joint_ranges(follower.calibration)[PAN][1] / 2
+    for cap in (MAX_STEP_DEG, 2 * MAX_STEP_DEG):
+        follower.config.max_relative_target = cap
+        present = follower.get_observation()[f"{PAN}.pos"]
+        sent = follower.send_action({f"{PAN}.pos": far})
+        assert sent[f"{PAN}.pos"] == pytest.approx(present + cap)
+        follower.world.step(SETTLE_S)
+        assert _deg(follower.world, PAN) == pytest.approx(present + cap, abs=2 * TICK_DEG)
+
+
+def test_a_send_writes_only_the_goals_it_is_given(mjcf: str) -> None:
+    follower = _follower(_arm(mjcf))
+    follower.connect(False)
+    world = follower.world
+    before = {name: world.goal(name) for name in JOINTS}
+    follower.send_action({"elbow_flex.pos": 1.0, "gripper.pos": GRIPPER_OPEN, "front": None})
+    changed = {name for name in JOINTS if world.goal(name) != before[name]}
+    assert changed == {"elbow_flex", "gripper"}
+
+
+def test_a_torque_call_switches_only_the_motors_it_names(mjcf: str) -> None:
+    """Named as upstream's bus names them (`upstream_api.BUS_MOTORS`): by name, by the id the
+    table gives, or a sequence of either, and no other motor is written. A torque fault lands
+    on one of the motors named."""
+    arm = _arm(mjcf)
+    follower = _follower(arm)
+    follower.connect(False)
+    bus, world = follower.bus, follower.world
+
+    def limp() -> set[str]:
+        return {name for name, on in world.torques().items() if not on}
+
+    gripper = JOINTS[-1]
+    bus.disable_torque(gripper, num_retry=TORQUE_RETRIES)
+    assert limp() == {gripper}, "releasing the gripper let go of the arm"
+    bus.disable_torque([bus.motors[PAN].id, "elbow_flex"])
+    assert limp() == {gripper, PAN, "elbow_flex"}
+    bus.enable_torque(bus.motors[gripper].id)
+    assert limp() == {PAN, "elbow_flex"}
+    with pytest.raises(TypeError):
+        bus.enable_torque(1.5)  # type: ignore[arg-type]  # neither a name nor an id
+    with pytest.raises(KeyError):
+        bus.enable_torque(max(motor.id for motor in bus.motors.values()) + 1)
+    assert limp() == {PAN, "elbow_flex"}, "a call the table could not resolve wrote torque"
+
+    faulty = _follower(arm, faults=FaultPlan.parse("torque=1", seed=0))
+    faulty.connect(False)
+    with pytest.raises(ConnectionError, match=rf"on id_={faulty.bus.motors[gripper].id} "):
+        faulty.bus.disable_torque(gripper)
+    assert all(faulty.world.torques().values())
+
+
+def test_a_limp_joint_keeps_its_goal_until_torque_drives_it_there(mjcf: str) -> None:
+    """The worst case of TORQUE_ENABLE_HOLDS_PRESENT, through the bus the real backend uses."""
+    follower = _follower(_arm(mjcf))
+    follower.connect(False)
+    present = follower.get_observation()[f"{PAN}.pos"]
+    follower.bus.disable_torque(num_retry=TORQUE_RETRIES)
+    follower.send_action({f"{PAN}.pos": present + MAX_STEP_DEG})
+    follower.world.step(SETTLE_S)
+    assert _deg(follower.world, PAN) == pytest.approx(present, abs=TICK_DEG), "a limp joint moved"
+    follower.bus.enable_torque(num_retry=TORQUE_RETRIES)
+    follower.world.step(SETTLE_S)
+    assert _deg(follower.world, PAN) == pytest.approx(present + MAX_STEP_DEG, abs=2 * TICK_DEG)
+
+
+def test_a_failed_connect_leaves_the_port_open_until_the_bus_closes_it(mjcf: str) -> None:
+    """Upstream's order: nothing closes the port when configure() raises, every connect after
+    it is refused as already connected, and a close through the bus that writes nothing is
+    what lets the next one through. The torque writes stopped where the reply went missing."""
+    follower = _follower(_arm(mjcf), faults=FaultPlan.parse("configure=1", seed=0))
+    with pytest.raises(ConnectionError, match=r"^Failed to write 'Lock' on id_=\d+ with '1'"):
+        follower.connect(False)
+    assert follower.is_connected
+    with pytest.raises(DeviceAlreadyConnectedError, match=r"^SOFollower is already connected\.$"):
+        follower.connect(False)
+    (fault,) = follower.faults.injected
+    at = JOINTS.index(fault.motor(list(JOINTS)))
+    torque = follower.world.torques()
+    assert [torque[name] for name in JOINTS] == [k <= at for k in range(len(JOINTS))]
+    follower.bus.disconnect(disable_torque=False)
+    assert not follower.is_connected
+    assert follower.world.torques() == torque, "closing the port wrote torque"
+
+
+def test_a_closed_port_refuses_in_lerobots_words(mjcf: str) -> None:
+    follower = _follower(_arm(mjcf))
+    said = r"^SOFollower is not connected\. Run `\.connect\(\)` first\.$"
+    for call in (
+        follower.get_observation,
+        lambda: follower.send_action({f"{PAN}.pos": 0.0}),
+        follower.disconnect,
+    ):
+        with pytest.raises(DeviceNotConnectedError, match=said):
+            call()
+    with pytest.raises(DeviceNotConnectedError, match=r"^FeetechMotorsBus is not connected"):
+        follower.bus.sync_read("Torque_Enable", normalize=False)
+
+
+@pytest.mark.parametrize("releases", [False, True])
+def test_a_follower_collected_while_connected_goes_by_its_flag(mjcf: str, releases: bool) -> None:
+    """LeRobot disconnects a follower nobody closed as it is collected, by whatever its config
+    says by then (`upstream_api.ROBOT_DEL`): the arm is left as a run that skipped its close
+    leaves it."""
+    follower = _follower(_arm(mjcf), releases=not releases)
+    world = follower.world
+    follower.connect(False)
+    follower.config.disable_torque_on_disconnect = releases
+    del follower
+    gc.collect()
+    assert all(world.torques().values()) is not releases
+
+
+def test_every_injected_fault_is_sorted_as_lerobots_own_would_be(mjcf: str) -> None:
+    """The real backend decides what a failed connect may have left energised, and which joint
+    to send a person to, from LeRobot's words and the frames they were raised in
+    (`real.may_have_written_torque`, `real.motor_in_error`). A fault the simulator injects has
+    to be read the same way, or a rehearsal says something the arm never would."""
+    arm = _arm(mjcf)
+
+    def raised(spec: str, call: Any) -> tuple[SimFollower, BaseException]:
+        follower = _follower(arm, faults=FaultPlan.parse(spec, seed=0))
+        with pytest.raises(Exception) as caught:
+            call(follower)
+        return follower, caught.value
+
+    def named(follower: SimFollower) -> tuple[str, str]:
+        joint = follower.faults.injected[-1].motor(list(JOINTS))
+        return f"{joint} (id {follower.bus.motors[joint].id})", joint
+
+    def connected(f: SimFollower) -> SimFollower:
+        f.connect(False)
+        return f
+
+    follower, error = raised("handshake=1", lambda f: f.connect(False))
+    assert isinstance(error, RuntimeError) and "motor check failed on port" in str(error)
+    assert not may_have_written_torque(error), "a ping wrote nothing"
+    assert motor_in_error(str(error), follower.bus.motors) == named(follower)
+    assert all(follower.world.torques().values()), "the handshake touched torque"
+
+    follower, error = raised("configure=1", lambda f: f.connect(False))
+    assert may_have_written_torque(error)
+    assert motor_in_error(str(error), follower.bus.motors) == named(follower)
+    assert str(error).endswith(f"after 1 tries. {NO_STATUS}")
+
+    follower, error = raised(
+        "torque=1", lambda f: connected(f).bus.disable_torque(num_retry=TORQUE_RETRIES)
+    )
+    assert f"with '0' after {TORQUE_RETRIES + 1} tries. {NO_STATUS}" in str(error)
+    assert str(error).startswith("Failed to write 'Torque_Enable' on id_=")
+    assert motor_in_error(str(error), follower.bus.motors) == named(follower)
+    at = JOINTS.index(named(follower)[1])
+    torque = follower.world.torques()
+    assert [torque[name] for name in JOINTS] == [k >= at for k in range(len(JOINTS))]
+
+    for spec, register in (
+        ("torque_read=1", "Torque_Enable"),
+        ("temperature_read=1", "Present_Temperature"),
+    ):
+        follower, error = raised(
+            spec, lambda f, r=register: connected(f).bus.sync_read(r, normalize=False, num_retry=2)
+        )
+        ids = [motor.id for motor in follower.bus.motors.values()]
+        assert (
+            str(error)
+            == f"Failed to sync read '{register}' on ids={ids} after 3 tries. {NO_STATUS}"
+        )
+        assert motor_in_error(str(error), follower.bus.motors) is None, "a sync read names no joint"
+
+    follower, error = raised("write=1", lambda f: connected(f).send_action({f"{PAN}.pos": 1.0}))
+    assert str(error).startswith("Failed to sync write 'Goal_Position' with ids_values={")
+    assert str(error).endswith(f"after 1 tries. {NOT_SENT}")
+    assert motor_in_error(str(error), follower.bus.motors) is None
+    assert follower.world.goal(PAN) == pytest.approx(0.0), "a packet that never went out moved it"
+
+
+def test_reads_lost_stay_lost_for_everyone_but_the_heartbeat(mjcf: str) -> None:
+    follower = _follower(_arm(mjcf), faults=FaultPlan.parse("read_loss_from=3", seed=0))
+    follower.connect(False)
+    heartbeat = follower.as_heartbeat(follower.get_observation)
+    assert heartbeat.__name__ == "get_observation", "a wedge is reported by the call's name"
+    follower.get_observation()
+    heartbeat()  # not the second observation: the heartbeat's are not counted
+    follower.get_observation()
+    lost = r"^Failed to sync read 'Present_Position' on ids=\[[\d, ]+\] after 3 tries\. "
+    with pytest.raises(ConnectionError, match=lost):
+        follower.get_observation()
+    with pytest.raises(ConnectionError, match="Failed to sync read 'Torque_Enable'"):
+        follower.bus.sync_read("Torque_Enable", normalize=False)
+    with pytest.raises(ConnectionError, match="Failed to sync read 'Present_Position'"):
+        follower.send_action({f"{PAN}.pos": 1.0})  # the cap reads the positions first
+    assert heartbeat()[f"{PAN}.pos"] == pytest.approx(0.0, abs=TICK_DEG)
+    # an arm that answers nothing is every motor missing, which names no joint: it is the
+    # arm's cables or its power, and a ping writes nothing
+    follower.bus.disconnect(disable_torque=False)
+    with pytest.raises(RuntimeError, match="motor check failed") as unanswered:
+        follower.connect(False)
+    assert motor_in_error(str(unanswered.value), follower.bus.motors) is None
+    assert not may_have_written_torque(unanswered.value)
+
+
+def test_a_lost_arm_answers_no_torque_write_and_takes_no_goal(mjcf: str) -> None:
+    """An arm whose reads are lost has dropped off the bus. A torque write waits for its status
+    packet as a read does, so the first one raises in upstream's words with nothing written,
+    and a disconnect asked to drop torque leaves the port open, as upstream's does
+    (`upstream_api.BUS_DISCONNECT`). A goal's sync write waits for no reply, so it raises
+    nothing, and no motor takes it."""
+    follower = _follower(_arm(mjcf), cap=None, faults=FaultPlan.parse("read_loss_from=1", seed=0))
+    follower.connect(False)
+    with pytest.raises(ConnectionError, match="Failed to sync read 'Present_Position'"):
+        follower.get_observation()
+    bus, world = follower.bus, follower.world
+    holding = world.torques()
+    assert all(holding.values())
+    first = next(iter(bus.motors))
+    for call, value in ((bus.disable_torque, 0), (bus.enable_torque, 1)):
+        with pytest.raises(ConnectionError) as unanswered:
+            call(num_retry=TORQUE_RETRIES)
+        assert str(unanswered.value) == (
+            f"Failed to write 'Torque_Enable' on id_={bus.motors[first].id} with '{value}' "
+            f"after {TORQUE_RETRIES + 1} tries. {NO_STATUS}"
+        )
+    assert world.torques() == holding, "a motor on a bus that answers nothing took a torque write"
+    goal = world.goal(PAN)
+    sent = follower.send_action({f"{PAN}.pos": MAX_STEP_DEG})
+    assert sent == {f"{PAN}.pos": MAX_STEP_DEG}
+    assert world.goal(PAN) == goal, "a motor on a bus that answers nothing took a goal"
+    assert follower.config.disable_torque_on_disconnect
+    with pytest.raises(ConnectionError, match=r"^Failed to write 'Torque_Enable' on id_="):
+        follower.disconnect()
+    assert follower.is_connected, "a disconnect whose torque-off raised closed the port"
+    assert world.torques() == holding
+    follower.bus.disconnect(disable_torque=False)
+    assert not follower.is_connected
+
+
+def test_a_fault_lands_on_the_same_call_of_its_kind_whatever_else_is_called(mjcf: str) -> None:
+    """Keyed on the call's ordinal among its own kind: reads of another register, observations,
+    and the heartbeat's reads from the worker thread a transport runs them in, do not move it."""
+    arm = _arm(mjcf)
+    plan = FaultPlan.parse("torque_read=0.5,temperature_read=0.5", seed=0)
+    calls = 16
+    expected = [plan.fires(TORQUE_READ, n) for n in range(1, calls + 1)]
+    assert any(expected) and not all(expected)
+
+    async def torque_failures(noisy: bool) -> list[bool]:
+        follower = _follower(arm, faults=plan)
+        follower.connect(False)
+        loop = asyncio.get_running_loop()
+        heartbeat = follower.as_heartbeat(follower.bus.sync_read)
+        failed = []
+        for _ in range(calls):
+            if noisy:
+                with contextlib.suppress(ConnectionError):
+                    follower.bus.sync_read("Present_Temperature", normalize=False)
+                follower.get_observation()
+                await loop.run_in_executor(None, heartbeat, "Torque_Enable")
+            try:
+                follower.bus.sync_read("Torque_Enable", normalize=False)
+            except ConnectionError:
+                failed.append(True)
+            else:
+                failed.append(False)
+        return failed
+
+    assert asyncio.run(torque_failures(False)) == expected
+    assert asyncio.run(torque_failures(True)) == expected
+
+
+def test_the_heartbeat_mark_stays_in_its_own_thread(mjcf: str) -> None:
+    follower = _follower(_arm(mjcf), faults=FaultPlan.parse("torque_read=1", seed=0))
+    follower.connect(False)
+    with follower.heartbeat(), ThreadPoolExecutor(1) as pool:
+        follower.bus.sync_read("Torque_Enable", normalize=False)  # this thread's: exempt
+        other = pool.submit(follower.bus.sync_read, "Torque_Enable", normalize=False)
+        with pytest.raises(ConnectionError):
+            other.result()
+    assert [fault.ordinal for fault in follower.faults.injected] == [1]
+
+
+def test_a_fault_spec_is_read_strictly() -> None:
+    plan = FaultPlan.parse(" handshake = 0.2, configure=0.3 ,read_loss_from=40", seed=7)
+    assert dict(plan.rates) == {"handshake": 0.2, "configure": 0.3}
+    assert plan.read_loss_from == 40 and plan.seed == 7
+    assert FaultPlan.parse(plan.spec, seed=7) == plan
+    assert FaultPlan.parse(EXAMPLE, seed=0).spec == EXAMPLE
+    # a record shows the plan that ran, every digit of it, so replaying it meets the same faults
+    precise = FaultPlan.parse("configure=0.30000000000000004,write=1e-05", seed=7)
+    assert FaultPlan.parse(precise.spec, seed=7) == precise, precise.spec
+    off = FaultPlan.parse("", seed=0)
+    assert not off.rates and off.read_loss_from is None
+    for spec, why in (
+        ("handshake", "which is not name=value"),
+        ("handshake=", "which is not name=value"),
+        ("handshake=1.5", "not a rate from 0 to 1"),
+        ("handshake=nan", "not a rate from 0 to 1"),
+        ("handshake=often", "not a rate from 0 to 1"),
+        ("configure=0.1,configure=0.2", "gives configure twice"),
+        ("connect=0.3", "names 'connect', which is not a fault the simulator has"),
+        ("read_loss_from=0", "not a whole number from 1"),
+        ("read_loss_from=2.5", "not a whole number from 1"),
+        ("write=0.1,,torque=0.1", "an empty entry between two commas"),
+    ):
+        with pytest.raises(AdapterError, match=re.escape(why)) as refused:
+            FaultPlan.parse(spec, seed=0)
+        said = str(refused.value)
+        assert said.startswith(f"lerobot mujoco: the fault spec {spec!r} "), said
+        assert said.endswith(f"such as {EXAMPLE}."), said
+
+
+def test_a_follower_is_built_only_the_way_quackd_builds_one(mjcf: str) -> None:
+    arm = _arm(mjcf)
+    calibration = _calibration(arm)
+    for config, why in (
+        (SimFollowerConfig(True, MAX_STEP_DEG, use_degrees=False), "use_degrees=True"),
+        (SimFollowerConfig(True, MAX_STEP_DEG, cameras={"front": object()}), "cameras={}"),
+    ):
+        with pytest.raises(ValueError, match=re.escape(why)):
+            SimFollower(ArmWorld(arm), calibration, None, config)
+    config = SimFollowerConfig(True, MAX_STEP_DEG)
+    for table in ({**lr.SO_MOTOR_IDS, "elbow": 9}, dict.fromkeys(JOINTS, 1)):
+        with pytest.raises(ValueError, match="an id of its own"):
+            SimFollower(ArmWorld(arm), calibration, None, config, motor_ids=table)
+    follower = SimFollower(ArmWorld(arm), calibration, None, config)
+    assert {name: motor.id for name, motor in follower.bus.motors.items()} == lr.SO_MOTOR_IDS
 
 
 # ── the real model ──────────────────────────────────────────────────────────────────────

@@ -41,10 +41,12 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
         {
             "adapters/lerobot/upstream_api.py",
             "adapters/lerobot/real.py",
-            # the arm simulator's model and world, which reproduce what these assumptions say
-            # of a real arm: the gripper's open end, and a goal kept through torque off
+            # the arm simulator's model, world and follower, which reproduce what these
+            # assumptions say of a real arm: the gripper's open end, and a goal kept through
+            # torque off
             "adapters/lerobot/sim/model.py",
             "adapters/lerobot/sim/world.py",
+            "adapters/lerobot/sim/follower.py",
         },
         ("https://github.com/huggingface/lerobot",),
     ),
@@ -299,6 +301,14 @@ def test_the_simulators_lerobot_facts_are_the_ones_its_refs_read() -> None:
     assert step_cap.status == "VERIFIED" and lerobot_api.PIN in step_cap.source
     for word in ("ValueError", "TypeError", "present", "NaN"):
         assert word in step_cap.note, word
+    # the words the simulated bus fails in, and the model number its handshake prints
+    assert lerobot_api.STS3215_MODEL_NUMBER.name.endswith(f" {lerobot_api.STS3215_MODEL}")
+    sync = lerobot_api.BUS_SYNC_READ_ERROR
+    assert sync.name.startswith("Failed to sync read '") and "sync write" in sync.note
+    for result in ("There is no status packet!", "Failed transmit instruction packet!"):
+        assert result in sync.note, result
+    assert "is not connected. Run `.connect()` first." in lerobot_api.NOT_CONNECTED.note
+    assert "is already connected." in lerobot_api.NOT_CONNECTED.note
     # the finger meshes the simulator cuts pads from are files the pin fetches
     for mesh in (so_arm100_api.FIXED_FINGER_MESH, so_arm100_api.MOVING_JAW_MESH):
         assert mesh in so_arm100_api.FINGER_MESHES.name

@@ -78,14 +78,20 @@ make_adapter("microduck:mujoco")
 make_adapter("lerobot:real", address="COM5")
 make_adapter("rosbridge:ws", address="ws://robot.local:9090")
 # the arm simulator's upstream and its fetcher find files and never load them, and its model,
-# stand-in and world import the physics only when a model is loaded, so none of them may pull
-# it in just by being imported
+# stand-in, world and follower import the physics only when a model is loaded, so none of them
+# may pull it in just by being imported. Its follower reimplements the one LeRobot function it
+# needs rather than import LeRobot, and a fault plan is parsed before anything is built.
 import quackd_lerobot.sim.assets
+import quackd_lerobot.sim.faults
+import quackd_lerobot.sim.follower
 import quackd_lerobot.sim.model
 import quackd_lerobot.sim.standin
 import quackd_lerobot.sim.upstream_api
 import quackd_lerobot.sim.world
 quackd_lerobot.sim.standin.mjcf()
+quackd_lerobot.sim.faults.FaultPlan.parse(quackd_lerobot.sim.faults.EXAMPLE, seed=0)
+capped = quackd_lerobot.sim.follower.ensure_safe_goal_position({{"a": (9.0, 0.0)}}, 1.0)
+assert capped == {{"a": 1.0}}, capped
 for name in {HEAVY!r}:
     assert sys.modules.get(name) is None, name
 print("OK")

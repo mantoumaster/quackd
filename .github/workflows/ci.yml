@@ -134,4 +134,4 @@ jobs:
         # this job fetches nothing. The nightly `microduck-assets` job runs them, as a user
         # would, into a runner that is then destroyed. `not so101_model` is the same half for
         # the arm: those need SO-ARM100's model, which this job does not fetch either.
-        run: uv run pytest tests/test_sim3d.py tests/test_acceptance_mujoco.py tests/test_lerobot_sim.py -m "not real_duck and not so101_model"
+        run: uv run pytest tests/test_sim3d.py tests/test_acceptance_mujoco.py tests/test_lerobot_sim.py tests/test_lerobot_sim_parity.py -m "not real_duck and not so101_model"

@@ -286,11 +286,32 @@ class ArmWorld:
             self._goal[name] = q
             self._data.ctrl[joint.actuator] = q
 
+    def set_goals(self, goals: Mapping[str, float]) -> None:
+        """Write several goal registers at once, between two physics steps and never across
+        one, as one packet reaches every servo on the bus together."""
+        written: dict[str, tuple[Any, float]] = {}
+        for name, q in goals.items():
+            value = float(q)
+            if not math.isfinite(value):
+                raise ValueError(f"{LABEL} a goal for {name} must be a number, not {value}.")
+            written[name] = (self._joint(name), value)
+        with self._lock:
+            self._open()
+            for name, (joint, value) in written.items():
+                self._goal[name] = value
+                self._data.ctrl[joint.actuator] = value
+
     def torque(self, name: str) -> bool:
         self._joint(name)
         with self._lock:
             self._open()
             return self._torque[name]
+
+    def torques(self) -> dict[str, bool]:
+        """Every joint's torque, on or off, in LeRobot's order, read at one instant."""
+        with self._lock:
+            self._open()
+            return dict(self._torque)
 
     def set_torque(self, name: str, on: bool) -> None:
         """Torque on or off for one joint. Off zeroes its actuator's gains, so it pushes on

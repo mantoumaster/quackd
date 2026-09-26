@@ -459,12 +459,18 @@ class FakeArm:
         self.calibration = {joint: FakeCalibration(DEFAULT_TRAVEL_DEG) for joint in JOINTS}
         self.calibration_fpath = "/tmp/lerobot/calibration/robots/so_follower/arm-01.json"
         self.bus = FakeBus(self)
-        self.config = SimpleNamespace(disable_torque_on_disconnect=True)
+        self.config = SimpleNamespace(disable_torque_on_disconnect=True, max_relative_target=step)
         """`disconnect()` reads this flag off the config instance when it runs rather than
         copying it at construction (`up.SO_DISCONNECT_READS_ITS_CONFIG_LATE`), which is the
         seam `close()` uses to leave an arm holding a pose it could not reach. It starts at
         upstream's default, True, as a follower handed in by whoever built it would; `built_arm`
-        gives it the flag quackd builds its own follower with."""
+        gives it the flag quackd builds its own follower with.
+
+        `send_action()` reads the step cap off it the same way, on every send, as upstream's
+        does (`up.SO_ACTION_CLAMP`), so a test, or a later change to the cap between two sends,
+        reaches this fake and the simulated follower through the same seam. It starts at
+        `step`. A config a test swaps in to model the flag alone carries no cap, and the fake
+        then keeps capping at `step`, as it did before the cap was on the config."""
 
     @property
     def observation_features(self) -> dict[str, Any]:
@@ -530,11 +536,16 @@ class FakeArm:
             raise ConnectionError("Failed to sync write 'Goal_Position'")
         self.actions.append(dict(action))
         self.timeline.append("send")
+        step = getattr(self.config, "max_relative_target", self.step)
         sent = {}
         for key, value in action.items():
             joint = key.removesuffix(".pos")
             present = self.positions[joint]
-            capped = present + max(-self.step, min(self.step, float(value) - present))
+            capped = (
+                float(value)
+                if step is None  # upstream's None: no cap at all
+                else present + max(-step, min(step, float(value) - present))
+            )
             # what LeRobot reports sending is the step-capped goal; the clamp to the limits is
             # the servo's own, below that, and nothing reports it
             sent[key] = capped

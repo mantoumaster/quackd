@@ -49,6 +49,7 @@ _OPENCV_CFG = "src/lerobot/cameras/opencv/configuration_opencv.py"
 _CAM_CFG = "src/lerobot/cameras/configs.py"
 _CAMERAS_INIT = "src/lerobot/cameras/__init__.py"
 _KINEMATICS = "src/lerobot/model/kinematics.py"
+_DECORATORS = "src/lerobot/utils/decorators.py"
 
 # ── package ─────────────────────────────────────────────────────────────────────────────
 
@@ -473,7 +474,13 @@ BUS_MOTORS = UpstreamRef(
     "the table the bus addresses every servo through (kept at line 73), which the SO follower "
     "fills at so_follower.py lines 53 to 60. quackd reads a Motor's id to name the joint a bus "
     "error is about, and looks it up there rather than assume the order SO_MOTORS lists, "
-    "because the table is what gave each servo its address",
+    "because the table is what gave each servo its address. A bus call that takes motors "
+    "resolves them through it (_get_motors_list, line 431): None is every motor in the table's "
+    "order, a name is itself, an id is the motor the table gives it, a sequence is each of those "
+    "in its own order, and anything else is a TypeError. The Feetech torque calls write to "
+    "those motors and no others, in that order (feetech.py lines 291 to 305). The arm "
+    "simulator's bus resolves them the same way. Read on 2026-09-26, at the same commit, and "
+    "the same in lerobot 0.6.1",
 )
 BUS_WRITE_ERROR_NAMES_THE_ID = UpstreamRef(
     "Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>",
@@ -516,6 +523,49 @@ HANDSHAKE_NAMES_THE_ID = UpstreamRef(
     "so an overloaded servo is listed as missing too. The id is the bus address, and quackd names "
     "the joint through BUS_MOTORS as for a write. Read in lerobot 0.6.1, the same lines at the "
     "pin",
+)
+BUS_SYNC_READ_ERROR = UpstreamRef(
+    "Failed to sync read '<register>' on ids=[<N>, ...] after <k> tries. <result>",
+    "VERIFIED",
+    src(_BUS, 1160),
+    "the ConnectionError MotorsBus.sync_read() raises when no good reply came back (line 1194), "
+    "listing every motor it read by bus id, in the table's order. sync_write() says \"Failed to "
+    "sync write '<register>' with ids_values={<N>: <tick>, ...} after <k> tries. <result>\" "
+    "(line 1257) and raises it (line 1282) only when the packet could not be sent, because it "
+    "waits for no reply (line 1231). <result> is the servo SDK's getTxRxResult text: "
+    "'[TxRxResult] There is no status packet!' for a reply that never came and '[TxRxResult] "
+    "Failed transmit instruction packet!' for a packet that never went (scservo_sdk "
+    "protocol_packet_handler.py lines 43 and 35, in the feetech-servo-sdk 1.0.0 installed beside "
+    "lerobot 0.6.1). Neither names one motor, so quackd names no joint for either "
+    "(BUS_WRITE_ERROR_NAMES_THE_ID). The arm simulator raises these words for the read and goal "
+    "write faults it injects. Read on 2026-09-26, at the same commit, and at the same lines in "
+    "lerobot 0.6.1",
+)
+STS3215_MODEL_NUMBER = UpstreamRef(
+    "sts3215 model number 777",
+    "VERIFIED",
+    src(_TABLES, 243),
+    "what a servo of the SO-101's model answers a ping with, which the handshake expects of every "
+    "motor in the bus table and prints beside each id it lists (HANDSHAKE_NAMES_THE_ID). The arm "
+    "simulator's handshake fault prints it where the arm's would. Read on 2026-09-26, at the same "
+    "commit, and the same in lerobot 0.6.1",
+)
+STS3215_MODEL = 777
+"""STS3215_MODEL_NUMBER's number."""
+NOT_CONNECTED = UpstreamRef(
+    "check_if_not_connected refuses a call on a port that is not open",
+    "VERIFIED",
+    src(_DECORATORS, 22),
+    "a DeviceNotConnectedError, which is a ConnectionError (utils/errors.py line 16), saying "
+    "'<class> is not connected. Run `.connect()` first.' (line 27). SOFollower's "
+    "get_observation(), send_action() and disconnect() carry it (so_follower.py lines 179, 204 "
+    "and 232), and so do MotorsBus's disconnect(), read(), write(), sync_read() and sync_write() "
+    "(motors_bus.py lines 546, 994, 1066, 1127 and 1220), so nothing reaches a motor through a "
+    "port that is shut. Its twin check_if_already_connected (line 34) says '<class> is already "
+    "connected.' (SO_CONNECT_REFUSES_WHILE_OPEN). The arm simulator's follower and bus refuse in "
+    "the same words under upstream's class names, SOFollower and FeetechMotorsBus, so a "
+    "rehearsal fails where the arm would and says what the arm would. Read on 2026-09-26, at the "
+    "same commit, and the same in lerobot 0.6.1",
 )
 SO_CONNECT_REFUSES_WHILE_OPEN = UpstreamRef(
     "SOFollower.connect() refuses while the port is open",

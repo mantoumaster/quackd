@@ -13,8 +13,9 @@ The model is the maker's own, TheRobotStudio's SO-ARM100, fetched at a pinned co
 time and never shipped: `upstream_api.py` says what it is and what quackd assumes about it,
 and `assets.py` fetches it. `standin.py` is a primitives-only arm for wherever that model cannot
 be fetched, CI above all. `model.py` sets either one in quackd's scene and maps LeRobot's units
-onto it, and `world.py` steps it and keeps the truth about the table. No backend uses any of
-them yet.
+onto it, and `world.py` steps it and keeps the truth about the table. `follower.py` is the
+follower the real backend drives over that world, and `faults.py` the seeded bus faults it can
+be told to have. No backend uses any of them yet.
 
 Nothing here may import `mujoco` when the module is imported. It is an optional extra, and
 `make()` and `describe()` have to work without it (`tests/test_extras_absent.py`), so the
