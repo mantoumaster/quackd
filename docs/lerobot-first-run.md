@@ -447,7 +447,7 @@ registry instead of from your hand.
 ### 07. Record the rest pose
 
 An SO-101 has no brake. It holds its own weight up because torque is on, and LeRobot's
-`disconnect()` disables torque by its own default, which quackd keeps. So until quackd had a
+`disconnect()` disables torque by its own default, which quackd asked for. So until quackd had a
 rest pose, the arm went limp and fell at the end of every clean run, and at the end of every
 `doctor` probe: that is what happened on the bench on 2026-09-15, on every run of the day.
 Runs also began from wherever the last one left the arm, so no two started from the same
@@ -1110,9 +1110,11 @@ same thing. Then watch what follows, because Ctrl-C is an exit path like any oth
 to its rest pose before quackd lets go of it, and if it cannot get there it stays energised and
 says so rather than dropping. Press Ctrl-C a second time and quackd quits at once, which is what
 the hint under the header offers; if that lands while the arm is on its way to the pose, the
-process exits without disconnecting at all and the arm holds where it stopped. That is the safe
-direction and it is still a surprise, so expect it rather than pressing twice out of habit
-([safety.md](safety.md)).
+close is skipped and the arm holds where it stopped. LeRobot may still disconnect the arm as the
+process lets go of it, and that disconnect keeps torque, because quackd builds the arm asking it
+to. In 0.14 and before it was built asking for the release, so the arm could fall there instead.
+That is the safe direction and it is still a surprise, so expect it rather than pressing twice
+out of habit ([safety.md](safety.md)).
 
 A [hand-placed run](#or-start-from-a-pose-you-set-by-hand) opens two more Ctrl-C windows, and
 neither behaves like the one above. **During the placement wait**, with the arm limp in your
@@ -2890,12 +2892,12 @@ terminal running `quackd run`, and an MCP session has no terminal of its own:
   one.
 - **End the session.** A client disconnect, stdin closing, or quitting the client unwinds the
   server, which stops, parks and disconnects every robot it holds. The disconnect releases torque,
-  which is LeRobot's default and quackd keeps it, so the ordinary end leaves the arm limp at the
-  rest pose. A rest pose your arm does not hold by itself is a falling arm, which is what the bench
-  saw at the end of every run on 2026-09-15 before the rest pose existed. quackd keeps torque on
-  when the park did not get there, and that fallback has fired on hardware: on 2026-09-23, on
-  every run that got to its end, because the fold lay past the arm's calibrated travel, and the
-  arm held itself up until its power was cut.
+  which is LeRobot's default and what quackd asks for over an arm at its rest pose, so the
+  ordinary end leaves the arm limp at the rest pose. A rest pose your arm does not hold by
+  itself is a falling arm, which is what the bench saw at the end of every run on 2026-09-15
+  before the rest pose existed. quackd keeps torque on when the park did not get there, and
+  that fallback has fired on hardware: on 2026-09-23, on every run that got to its end, because
+  the fold lay past the arm's calibrated travel, and the arm held itself up until its power was cut.
 - **Cut power.** Still the only thing that works in every case, including the one where the process
   holding the goal has died.
 

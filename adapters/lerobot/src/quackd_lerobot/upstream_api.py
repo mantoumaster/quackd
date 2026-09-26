@@ -114,6 +114,17 @@ ROBOT_CONFIGURE = UpstreamRef("Robot.configure()", "VERIFIED", src(_ROBOT, 174))
 ROBOT_CONTEXT = UpstreamRef(
     "Robot.__enter__/__exit__", "VERIFIED", src(_ROBOT, 61), "connect on enter, disconnect on exit"
 )
+ROBOT_DEL = UpstreamRef(
+    "Robot.__del__ disconnects a robot still connected",
+    "VERIFIED",
+    src(_ROBOT, 76),
+    "a destructor safety net: a robot collected while is_connected is still true is "
+    "disconnected, and whatever that raises is swallowed. So an exit that never reaches "
+    "quackd's close() can still end in the follower's own disconnect(), and what that does to "
+    "torque is whatever the config holds by then (SO_DISCONNECT_READS_ITS_CONFIG_LATE), "
+    "which is why quackd builds the follower asking to keep it (SO_DISCONNECT_TORQUE). "
+    "Read again on 2026-09-26, at the same commit",
+)
 TYPES = UpstreamRef(
     "RobotAction = dict[str, Any]; RobotObservation = dict[str, Any]",
     "VERIFIED",
@@ -186,7 +197,9 @@ SO_CONFIG = UpstreamRef(
     src(_SO_CFG, 25),
     "an alias of SOFollowerRobotConfig; id and calibration_dir come from RobotConfig. quackd "
     "passes every safety-shaped field explicitly rather than inheriting a default it has not "
-    "read, and sets max_relative_target, which upstream leaves at None",
+    "read, sets max_relative_target, which upstream leaves at None, and passes "
+    "disable_torque_on_disconnect as False, the opposite of upstream's default "
+    "(SO_DISCONNECT_TORQUE)",
 )
 SO_MOTORS = UpstreamRef(
     "shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper",
@@ -247,22 +260,29 @@ SO_DISCONNECT_TORQUE = UpstreamRef(
     "VERIFIED",
     src(_SO, 234),
     "disable_torque_on_disconnect defaults to True (config line 31): LeRobot lets the arm go "
-    "limp when the session ends, and quackd keeps that default and says so. It fires on "
-    "every clean exit, a doctor probe included, and not at all when the process is killed. "
-    "Since the rest pose, quackd turns it off for the one case where letting go would drop "
-    "the arm: one that did not reach the pose it was recorded resting in "
-    "(SO_DISCONNECT_READS_ITS_CONFIG_LATE)",
+    "limp whenever the follower is disconnected, and that includes the disconnect it makes of "
+    "a follower nobody closed (ROBOT_DEL), so under that default an exit that skipped quackd's "
+    "close(), a second Ctrl-C during the rest move or a crash, could drop the arm. quackd builds "
+    "the follower with it False, and close() writes it on the instance every time: True over "
+    "an arm at its recorded rest pose or with none recorded, which is the limp end of every "
+    "clean session, a doctor probe included, and False over one that did not reach its pose, "
+    "where letting go would drop it (SO_DISCONNECT_READS_ITS_CONFIG_LATE). A connect quackd "
+    "refuses once the arm is energised (not calibrated, no calibration file, no motors bus) "
+    "writes True before its own disconnect, and one that fails any other way closes the port "
+    "and keeps torque. Nothing runs when the process is killed",
 )
 SO_DISCONNECT_READS_ITS_CONFIG_LATE = UpstreamRef(
     "disconnect() reads config.disable_torque_on_disconnect when it runs",
     "VERIFIED",
     src(_SO, 234),
     "the flag is read off the config instance inside disconnect() rather than copied at "
-    "construction, and SOFollowerConfig is a plain dataclass, so setting it False on the "
-    "instance just before the call is what leaves an arm holding. quackd uses that for one "
-    "case only, an arm that is not at its rest pose; _config_kwargs() still asks for True, "
-    "and MotorsBus.disconnect(False) closes the port with every motor still holding its goal "
-    "(BUS_DISCONNECT). Read against lerobot 0.6.1, the version the first real arm ran",
+    "construction, and SOFollowerConfig is a plain dataclass, so the value on the instance when "
+    "disconnect() runs is what it does, whoever calls it. _config_kwargs() asks for False and "
+    "every connect asks again, so a disconnect quackd did not make, ROBOT_DEL's included, "
+    "keeps torque, and MotorsBus.disconnect(False) closes the port with every motor still "
+    "holding its goal (BUS_DISCONNECT). quackd writes True just before its own disconnect "
+    "only over an arm that may be let go. Read against lerobot 0.6.1, the version the first "
+    "real arm ran",
 )
 SO_GRIPPER_TORQUE_LIMIT = UpstreamRef(
     "Max_Torque_Limit 500 on the gripper",

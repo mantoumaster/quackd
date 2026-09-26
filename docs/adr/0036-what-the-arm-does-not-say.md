@@ -56,6 +56,26 @@ tenth unless a tenth would round it onto that travel, in which case as it was gi
 degrees a goal in that sliver was named inside the range the same sentence gave, and so would a
 tenth name a goal a few hundredths past an edge.
 
+**Amended 2026-09-26:** the decision below that opens "Nothing here changes what quackd never
+does" kept LeRobot's default of dropping torque on `disconnect()`, documented rather than
+overridden, and the first amendment above said it still did. It is overridden now, because that
+default reached a disconnect quackd never makes. LeRobot disconnects a robot that is still
+connected when it is garbage collected (`up.ROBOT_DEL`), so an exit that skipped `close()`, a
+second Ctrl-C during the end-of-run rest move or a crash, could drop the arm wherever it stood,
+while `docs/safety.md` said it was left holding. Nobody saw it happen: it was found by reading
+upstream while planning the arm's simulator. The follower is now built with
+`disable_torque_on_disconnect` False, and every connect asks for False again, so a transport
+connected twice does not carry a release into its second session. `close()` already wrote the
+flag just before its own disconnect every time, True at the rest pose or with none recorded and
+False away from it, so every close lets go where it did before. The three connects quackd
+refuses once the arm is energised (not calibrated, no calibration file, no motors bus) now
+write True before their disconnect, so they let go as they did. A connect that fails any other
+way once the arm is energised, a first read the arm does not answer among them, was left to
+that same collection with nothing said. It now closes the port with torque kept, as a close
+over an arm that did not answer does, and says so. Only the endings nobody decided changed,
+and they keep torque. Where the flag will not take, the close reads it back and says what the
+disconnect will do rather than assuming it.
+
 ## Context
 
 The LeRobot adapter drives an SO-101 follower through the `Robot` interface of

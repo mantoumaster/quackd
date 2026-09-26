@@ -658,7 +658,7 @@ robots (--robot NAME)
 
 The two mocks answer because a mock always answers. `scout` is a real robot's address with nothing at it, which is what a robot that is switched off looks like, and it makes the command exit 1 so a script can branch on it. Both files live under `~/.quackd/`, `--registry-dir` or `QUACKD_REGISTRY_DIR` moves them, and **tokens are stored there in plain text**. What a name changes, and what happens when a flock's member goes missing: [docs/registry.md](docs/registry.md).
 
-**A name also carries where an arm should be left.** A LeRobot arm goes limp the moment it is disconnected, because LeRobot's `disconnect()` disables torque by its own default and quackd keeps that default. So on the bench the arm fell at the end of every run, and every run started from wherever the last one had left it. `quackd robot rest-pose` closes both ends. Fold the arm by hand, which you can do because nothing is connected to it and it is limp, then record the pose it is in:
+**A name also carries where an arm should be left.** A LeRobot arm goes limp the moment it is disconnected, because LeRobot's `disconnect()` disables torque by its own default, and a clean close with no rest pose recorded asks for exactly that. So on the bench the arm fell at the end of every run, and every run started from wherever the last one had left it. `quackd robot rest-pose` closes both ends. Fold the arm by hand, which you can do because nothing is connected to it and it is limp, then record the pose it is in:
 
 ```
 $ quackd robot rest-pose arm-01 --yes     # without --yes it prints the joints and asks

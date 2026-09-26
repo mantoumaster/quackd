@@ -12,7 +12,10 @@ deadline wedges the transport rather than letting a second thread onto a half-du
 `stop` re-sends the present position as the goal (hold). quackd disables torque in exactly
 one place, `let_go()`, which a person asks for with `--by-hand` and which refuses anywhere but
 the recorded rest pose; `take_hold()` is how the arm is picked back up. LeRobot's own
-`disconnect()` disables it too, by its default, which quackd keeps and documents.
+`disconnect()` disables it too, where its config asks, which is upstream's default. quackd
+builds the follower asking it not to, and `close()` asks for the release only over an arm at
+its recorded rest pose or with none recorded, so an exit that never reaches `close()`, where
+LeRobot disconnects the follower as it is collected (`up.ROBOT_DEL`), leaves the arm holding.
 
 What this backend refuses to take on faith, because upstream cannot tell it:
 
@@ -53,7 +56,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
@@ -154,6 +157,17 @@ one that failed on a write, inside `configure()` or somewhere nothing can place
 `configure()` writes torque off on every motor and back on one motor after another
 (`up.CONFIGURE_TORQUE_WRITES_ONCE`), so where it stopped, the motors before that write can be
 holding and the ones after it limp."""
+KEPT_OVER_A_FAILED_CONNECT = (
+    "Nothing has read where the arm is, so quackd kept whatever torque connecting switched on "
+    "rather than let it go where it stands: hold the arm, and cut its power."
+)
+"""What a connect says when it fails after LeRobot's own connect went through, on something
+other than one of quackd's refusals: a first read the arm did not answer, a calibration check
+that raised, a calibration quackd could not read the travel out of. `configure()` has switched
+torque on by then, and no read has said where the arm stands, so whether letting go would drop
+it is not something quackd knows. It keeps the torque, as a close does over an arm that did not
+answer (`TORQUE_UNKNOWN_AT_CLOSE`), and cutting the power is the way out, because
+`quackd robot release` connects the same way and would fail in the same place."""
 TORQUE_RETRIES = 5
 """Extra tries LeRobot gives each `Torque_Enable` and `Lock` write when quackd lets go of the
 arm or takes hold of it again: the count upstream's own `disconnect()` gives its torque-off
@@ -950,12 +964,21 @@ class LeRobotReal:
 
         Inheriting a default is fine until upstream changes one. `max_relative_target` is the
         field upstream leaves at None, and it has to be a float, not an int
-        (`up.SO_ACTION_CLAMP_IS_FLOAT`)."""
+        (`up.SO_ACTION_CLAMP_IS_FLOAT`).
+
+        `disable_torque_on_disconnect` is False, the opposite of upstream's default, because
+        quackd's own disconnects are not the only ones. LeRobot disconnects a follower that is
+        still connected when it is collected (`up.ROBOT_DEL`), so under True any exit that
+        skipped `close()`, a second Ctrl-C during the rest move or a crash, could let the arm
+        fall wherever it stood. `close()` and `_give_up` write the flag just before their own
+        disconnect (`up.SO_DISCONNECT_READS_ITS_CONFIG_LATE`), and no other disconnect lets
+        go: a connect that fails any other way once the arm is energised closes the port and
+        keeps the torque (`_keep_over_a_failure`)."""
         return {
             "port": self.port,
             "id": self.robot_id,
             "use_degrees": True,
-            "disable_torque_on_disconnect": True,
+            "disable_torque_on_disconnect": False,
             # quackd owns its camera instead: up.SO_CAMERAS_ARE_THE_FOLLOWERS
             "cameras": {},
             "max_relative_target": float(self.max_step_deg),
@@ -1002,32 +1025,75 @@ class LeRobotReal:
         self.connect_notes = []
         if self._robot is None:
             self._robot = await asyncio.to_thread(self._build_robot)
+        with contextlib.suppress(Exception):
+            # Asked for again on every connect, and not only at the build: a close at rest and
+            # a refused connect both leave the flag asking for the release, and a transport
+            # connected a second time would carry that into a session whose exit may skip the
+            # close. A robot handed in, which is built by whoever handed it, is asked too.
+            self._robot.config.disable_torque_on_disconnect = False
         # the camera first, before the arm is touched: a bad index then refuses with the
         # arm never energised, never de-torqued on the way back out, and nothing to undo
         await self._connect_cameras()
         await self._connect_arm()
+        # From here the arm is energised. quackd's own refusals let it go (`_give_up`), and
+        # anything else that raises before the connect is done keeps it (`_keep_over_a_failure`)
+        # rather than leaving the choice to whatever disconnects the follower later.
+        try:
+            refusal = self._refusal()
+            if refusal is None:
+                calibration = dict(getattr(self._robot, "calibration", None) or {})
+                self.joint_range_deg = joint_ranges(calibration)
+                path = getattr(self._robot, "calibration_fpath", None)
+                self.calibration_file = str(path) if path else None
+                # the follower is built with cameras={}, so its observation_features never
+                # name one; the only camera here is the one quackd opened
+                # (up.SO_CAMERAS_ARE_THE_FOLLOWERS)
+                await self._probe()
+        except Exception as e:
+            await self._keep_over_a_failure(e)
+        if refusal is not None:
+            await self._give_up(refusal)
+
+    def _refusal(self) -> str | None:
+        """Why quackd will not drive the arm LeRobot has just connected, or None. A refusal
+        here is quackd's own decision about an arm that answered, and lets go of it
+        (`_give_up`). A check that raises instead is a failure, and keeps the arm's torque
+        (`_keep_over_a_failure`)."""
         if not bool(self._robot.is_calibrated):
-            await self._give_up(
+            return (
                 "lerobot real: the arm is not calibrated; run LeRobot's calibration first "
                 "(it is interactive, quackd never triggers it)"
             )
-        calibration = dict(getattr(self._robot, "calibration", None) or {})
-        if not calibration:
-            await self._give_up(
+        if not dict(getattr(self._robot, "calibration", None) or {}):
+            return (
                 "lerobot real: the arm reports no calibration file, so nothing knows how far "
                 "each joint travels; run LeRobot's calibration first"
             )
         if getattr(self._robot, "bus", None) is None:
-            await self._give_up(
+            return (
                 "lerobot real: this robot has no motors bus, so torque and temperature "
                 "cannot be read; quackd drives an SO-101 follower and nothing else"
             )
-        self.joint_range_deg = joint_ranges(calibration)
-        path = getattr(self._robot, "calibration_fpath", None)
-        self.calibration_file = str(path) if path else None
-        # the follower is built with cameras={}, so its observation_features never name
-        # one; the only camera here is the one quackd opened (up.SO_CAMERAS_ARE_THE_FOLLOWERS)
-        await self._probe()
+        return None
+
+    async def _keep_over_a_failure(self, error: Exception) -> NoReturn:
+        """Refuse a connect that failed once the arm was energised, keeping its torque.
+
+        The follower is built asking its disconnect to keep torque (`_config_kwargs`), so an
+        arm left connected here would be held by whatever disconnected it later, LeRobot's
+        own as the follower is collected included (`up.ROBOT_DEL`), and nothing would have
+        said so. So the port is closed now with every motor still holding its goal
+        (`_close_port`, which writes nothing to a motor), the cameras are let go of, and the
+        refusal says the arm is still energised and what to do about it
+        (`KEPT_OVER_A_FAILED_CONNECT`). A read that blew its deadline has wedged the
+        transport, and then the port is not closed, but the torque is kept all the same."""
+        said = _one_line(error) if str(error).strip() else self.stop_error or type(error).__name__
+        await self._close_port()
+        await self._close_cameras()
+        raise TransportError(
+            f"lerobot real: connect failed once the arm was energised: {_sentence(said)} "
+            f"{KEPT_OVER_A_FAILED_CONNECT}"
+        ) from error
 
     async def _connect_arm(self) -> None:
         """LeRobot's connect, tried again when the bus loses a packet. Raises TransportError.
@@ -1345,8 +1411,16 @@ class LeRobotReal:
 
     async def _give_up(self, why: str) -> None:
         """Let go of everything opened so far, then say why. The arm's disconnect is the one
-        LeRobot ships, and it drops torque (`up.SO_DISCONNECT_TORQUE`)."""
+        LeRobot ships, asked to drop torque (`up.SO_DISCONNECT_TORQUE`), which is what a
+        refusal of a freshly built follower has always done. The follower is built asking it
+        to keep torque (`_config_kwargs`), so the flag is written here, just before the call
+        that reads it (`up.SO_DISCONNECT_READS_ITS_CONFIG_LATE`). One refusal changed with
+        that: a transport connected again after a close that kept torque used to carry that
+        close's flag into this disconnect, and keep the arm energised with nothing said, and
+        now lets go like any other."""
         await self._close_cameras()
+        with contextlib.suppress(Exception):
+            self._robot.config.disable_torque_on_disconnect = True
         with contextlib.suppress(Exception):
             await self._call(self._robot.disconnect, deadline_s=5.0)
         raise TransportError(why)
@@ -1354,11 +1428,14 @@ class LeRobotReal:
     async def close(self) -> None:
         """Let go of the arm, and let go of its torque only where it can be let go of.
 
-        LeRobot's `disconnect()` disables torque by its own default, which quackd keeps: an
-        arm at rest should be limp, because that is what "at rest" means. An arm that is not
-        at rest is an arm that would fall, so this reads the joints one last time and, where
-        they are not the recorded pose, turns that default off and says so. Without a rest
-        pose recorded there is nothing to check against and nothing changes.
+        LeRobot's `disconnect()` disables torque where its config asks, which is upstream's
+        default, and this close asks for it over an arm at rest: an arm at rest should be limp,
+        because that is what "at rest" means. An arm that is not at rest is an arm that would
+        fall, so this reads the joints one last time and, where they are not the recorded pose,
+        asks for torque to be kept instead and says so. Without a rest pose recorded there is
+        nothing to check against, and the close asks for the release as a session always has.
+        The follower is built asking to keep torque (`_config_kwargs`), so an exit that never
+        gets here leaves the arm holding rather than dropping it.
 
         "The recorded pose" is judged the way the rest move judges it (`verbs.at_rest`): a
         joint recorded past its travel is at rest parked at the edge of it or anywhere beyond,
@@ -1447,19 +1524,26 @@ class LeRobotReal:
             self.close_note = TORQUE_KEPT_AFTER_REFUSAL.format(why=why)
         elif why is not None:
             self.close_note = torque_left_on(why, self.registered_name)
-        wrote = False
         with contextlib.suppress(Exception):
             # up.SO_DISCONNECT_READS_ITS_CONFIG_LATE: the flag is read off the config instance
             # inside disconnect() rather than copied at construction, so this is the seam.
-            # _config_kwargs() still asks for True.
+            # _config_kwargs() asks for False, so this write is the one thing that lets an arm
+            # go at a close.
             #
-            # Written every time rather than only when torque has to stay on. The flag lives
-            # on the robot, not on this call, so a transport that missed its pose once and
-            # reached it the next time would have kept the arm energised on the strength of
-            # the earlier session, with nothing said about it.
+            # Written every time, both ways. The flag lives on the robot, not on this call, so
+            # writing it one way only would let an earlier session of this transport decide
+            # this one: a close that reached its pose once and missed it the next time would
+            # drop the arm, and the other way round would keep an arm energised with nothing
+            # said about it.
             self._robot.config.disable_torque_on_disconnect = why is None
-            wrote = True
-        if why is not None and not wrote:
+        # What the disconnect below will do, read back rather than assumed: a write that did
+        # not take leaves whatever the config already held, which for a follower quackd built
+        # is the hold and for one handed in may be upstream's release. None is a config that
+        # cannot be read either, and is treated as the release.
+        releases: bool | None = None
+        with contextlib.suppress(Exception):
+            releases = bool(self._robot.config.disable_torque_on_disconnect)
+        if why is not None and releases is not False:
             # the seam did not take, so the disconnect below releases torque after all. Saying
             # the arm is being held when it is about to be let go is worse than saying nothing.
             self.close_note = TORQUE_COULD_NOT_BE_KEPT.format(why=why)
@@ -1467,7 +1551,7 @@ class LeRobotReal:
         with contextlib.suppress(Exception):
             await self._call(self._robot.disconnect, deadline_s=5.0)  # up.SO_DISCONNECT_TORQUE
             disconnected = True
-        if why is None and self._release_refused and disconnected:
+        if why is None and self._release_refused and disconnected and releases is not False:
             # only once the disconnect came back, because its `Torque_Enable` 0 writes raise on
             # a bus that lost them, and "the close took torque off" is a thing to say only of a
             # close that sent it

@@ -517,12 +517,13 @@ the arm has not already refused, which is the switch, and the hold that has to c
 def released_by_the_close(at_rest: bool) -> str:
     """The close's line for an arm whose release was refused and which the close then let go.
 
-    A close lets go of an arm at its rest pose, or of one with no rest pose recorded, by
-    LeRobot's own `disconnect()` default, and says nothing, because that is every session's
-    ending. After a refused release it is not every session's ending: the person was just told
-    the release did not take, and the same `Torque_Enable` 0 then went out again with the
-    disconnect, with nothing to read it back. What they were told has to match what quackd did,
-    so it is said, with the one thing they can do if the servos ignored it a second time."""
+    A close lets go of an arm at its rest pose, or of one with no rest pose recorded, by asking
+    LeRobot's own `disconnect()` for the release that is upstream's default, and says nothing,
+    because that is every session's ending. After a refused release it is not every session's
+    ending: the person was just told the release did not take, and the same `Torque_Enable` 0
+    then went out again with the disconnect, with nothing to read it back. What they were told
+    has to match what quackd did, so it is said, with the one thing they can do if the servos
+    ignored it a second time."""
     where = (
         "at the rest pose, as every close there does"
         if at_rest
@@ -650,9 +651,12 @@ TORQUE_COULD_NOT_BE_KEPT = (
 """When the one seam that holds torque did not take.
 
 `close()` keeps an arm up by writing a flag on LeRobot's config object just before the
-disconnect that reads it. If that write raises, the disconnect releases torque anyway, and
-the note promising the opposite would be the worst line quackd could print: somebody reads
-that the arm is being held and walks away from an arm that is not."""
+disconnect that reads it. If that write raises, the disconnect does whatever the config already
+held. A follower quackd built holds, because it is built asking to, but one handed in may still
+carry upstream's default, and then the disconnect releases torque anyway. So `close()` reads
+the flag back and says this where it still asks for the release, or cannot be read: the note
+promising the opposite would be the worst line quackd could print, because somebody reads that
+the arm is being held and walks away from an arm that is not."""
 
 LIMP_IN_HAND = (
     "the arm is limp and in your hands ({why}): put it down before you let go of it, because "

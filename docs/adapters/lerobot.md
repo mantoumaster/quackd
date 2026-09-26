@@ -706,11 +706,12 @@ quackd, side by side, is [safety.md](../safety.md).
   a half-duplex bus, so the transport refuses every later call until that thread comes back
   rather than starting a second one. The arm holds its goal meanwhile.
 - **Torque is released only where the arm is known to be at its recorded rest pose, unless a
-  person holding it asks.** `disconnect()` disables it by LeRobot's default, which quackd
-  keeps, because an arm at rest should be limp: that is what "at rest" means. So before the
-  disconnect quackd reads the joints one last time, and where they are not the pose you
-  recorded, or as near it as the calibrated travel lets the servo go, it turns that default off
-  and leaves the arm holding itself up, with one line saying so and naming the ways out:
+  person holding it asks.** `disconnect()` disables it where LeRobot's config asks, which is
+  LeRobot's default, and quackd asks for it over an arm at rest, because an arm at rest should
+  be limp: that is what "at rest" means. So before the disconnect quackd reads the joints one
+  last time, and where they are not the pose you recorded, or as near it as the calibrated
+  travel lets the servo go, it asks for torque to be kept instead and leaves the arm holding
+  itself up, with one line saying so and naming the ways out:
 
   ```
   the arm is not at its rest pose (...), so torque was left on and it will not fall as it
@@ -726,6 +727,16 @@ quackd, side by side, is [safety.md](../safety.md).
   against, nothing changes, and the arm goes limp at the end of every clean session exactly as
   it did in 0.9. See [The rest pose](#the-rest-pose), and for the person holding an arm left up
   this way, [Releasing it where it stands](#releasing-it-where-it-stands).
+
+  An exit that never reaches that read, a second Ctrl-C during the rest move or a crash, leaves
+  the arm holding too. LeRobot can still disconnect an arm nobody closed as the process lets go
+  of it, and quackd builds the arm asking that disconnect to keep torque, so the release is
+  asked for only by quackd's own close, or by a connect it refused because the arm is not
+  calibrated, has no calibration file or has no motors bus. In 0.14 and before the arm was built
+  asking that disconnect for the release, so it could fall wherever it stood. Hold the arm and
+  run `quackd robot release NAME`, or cut its power. A connect that fails any other way once the
+  arm is energised keeps its torque as well, and says so
+  ([When it will not work](#when-it-will-not-work)).
 - **Connecting still drops torque briefly, and that has not changed.** `configure()` runs
   inside `torque_disabled()`, so the arm is limp for the moment between the port opening and
   the configuration landing, whatever any rest pose says. Support the arm when a session
@@ -790,9 +801,9 @@ quackd, side by side, is [safety.md](../safety.md).
 
 ## The rest pose
 
-A LeRobot arm goes limp when it is disconnected, because `disconnect()` disables torque by its
-own default and quackd keeps that default. On the bench on 2026-09-15 that meant the arm fell
-at the end of every single run. Runs also started from wherever the previous one had left the
+A LeRobot arm goes limp when a session ends, because `disconnect()` disables torque by its own
+default, and a clean close with no rest pose recorded asks for exactly that. On the bench on
+2026-09-15 that meant the arm fell at the end of every single run. Runs also started from wherever the previous one had left the
 arm, so the pose a model was improvising from was different every time.
 
 A rest pose fixes both. You fold the arm by hand, tell quackd where that is, and quackd drives
@@ -1294,9 +1305,8 @@ it as its calibration lets the servos go. A joint is at its recorded angle when 
 the pose has to be reported and within it. A joint recorded past its travel is at rest within
 the same 5 degrees of the edge of that travel, or anywhere beyond the edge on the side its fold
 lies, for the reasons in [A pose past the travel](#a-pose-past-the-travel). Where that does not
-hold, quackd turns LeRobot's `disable_torque_on_disconnect` off on the
-config instance before the call, closes the port with every motor still holding its goal, and
-prints one line:
+hold, quackd writes LeRobot's `disable_torque_on_disconnect` as False on the config instance
+before the call, closes the port with every motor still holding its goal, and prints one line:
 
 ```
 the arm is not at its rest pose (...), so torque was left on and it will not fall as it
@@ -1651,9 +1661,10 @@ touched by anything in the first block: these all happen before or during connec
 | `lerobot real: connect failed 3 times: FeetechMotorsBus motor check failed on port ...: Missing motor IDs: - <N> ...` with every motor listed and `Full found motor list (id: model_number): {}` | no servo answered its ping on any attempt. That is what a servo supply that is switched off looks like, which is how the arm is after a power cut, and a cable out between the board and the first servo looks the same, so no joint is named | check that the servo supply is on, then the arm's cables and their connectors, and that nothing else has the port open, then connect again. Nothing was written, so the message says nothing about torque unless an earlier attempt got as far as writing |
 | `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to read 'Min_Position_Limit' on id_=<N> ...` (or `Max_Position_Limit`, `Homing_Offset`) | every attempt lost a reply in the calibration check LeRobot's connect makes after the handshake and before `configure()`. It reads and writes nothing, so the message says nothing about torque unless an earlier attempt got as far as writing | check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again |
 | `lerobot real: connect stopped after attempt <k> of 3, because a stop was asked for. ...` | a Ctrl-C, or `q`, while the connect was failing. The attempt's own failure follows, LeRobot's words and the joint they name, then that the port was closed without a write and connect was not tried again | nothing to fix for the stop. Read the failure as the rows above, and where the message says some motors may be left with torque on and others off, keep a hand under the arm |
-| `lerobot real: connect failed: a LeRobot call (connect) has not come back; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
+| `lerobot real: connect failed: a LeRobot call (connect) has not come back; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm, and cut its power to let go of it: whatever torque the connect switched on stays on once quackd has exited. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
 | `lerobot real: the arm is not calibrated; run LeRobot's calibration first` | LeRobot read the motors back and they do not match a calibration | run `lerobot-calibrate` under the id quackd will use, and see [the id section](#the-name-you-give-the-arm-is-its-calibration-id) |
 | `lerobot real: the arm reports no calibration file, so nothing knows how far each joint travels` | there is no file for this id | the same fix, and check the path `doctor` prints |
+| `lerobot real: connect failed once the arm was energised: ... Nothing has read where the arm is, so quackd kept whatever torque connecting switched on rather than let it go where it stands: hold the arm, and cut its power.` | LeRobot's connect went through and switched torque on, and then something that is not one of the refusals above failed: the first read of the joints, the calibration check, or the travel read out of the calibration. LeRobot's own words follow `energised:`. No read has said where the arm stands, so the port is closed with every motor still holding. In 0.14 and before this was left to the disconnect LeRobot makes as the process lets go of the arm, which could drop it | hold the arm, and cut its power. `quackd robot release` connects the same way, so it fails in the same place. Then check the cables and the servo supply for a read that failed, or run LeRobot's calibration again for a calibration quackd could not read the travel out of |
 | `lerobot real: only so101_follower is wired` / `this robot has no motors bus` | the config is not an SO-101 follower | quackd drives this one body; an SO-100 shares the calibration directory but is not wired here |
 | `lerobot real: --camera-url 'opencv://7' did not open: ...` | the index is wrong, or the camera will not open under this backend | try the index `lerobot-find-cameras opencv` printed, add `?backend=msmf` on Windows, or drop a `width`/`height`/`fps` you pinned. The arm was not touched |
 | `lerobot real: --camera-url '...': fps='abc' is not a whole number` | a query key or value quackd does not accept | the message lists every key; this is refused before LeRobot is imported |
@@ -1673,7 +1684,7 @@ And once it is running:
 | `cannot move_joints: the arm's torque is off, so a goal would reach a limp servo` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so torque still off after one points at a tripped servo or the supply. On a `--by-hand` run this is also what the arm reads like between the release and the moment quackd takes hold again, which is before the first turn |
 | `cannot place: nothing is held: pick something first` | the `holding` precondition | holding is inferred from the gripper stopping short of shut, so an empty hand reads as nothing held. After a `--by-hand` start it is also what a pilot gets for the pencil you put between the jaws yourself: closing the gripper by hand sets a position and not a grip, and the pilot has to close on the object itself first |
 | the run ends saying the arm did not answer | the heartbeat's round trip to the motors failed | the cable, the power, or a servo that has tripped. The arm holds its last goal under torque |
-| the arm sags when the run ends | no rest pose is recorded, so LeRobot's `disconnect()` disables torque by its own default, at the end of every clean session | record one: `quackd robot rest-pose <name>`. Until you do, support it or fold it somewhere it can rest before you exit |
+| the arm sags when the run ends | no rest pose is recorded, so quackd asks LeRobot's `disconnect()` for the release that is its own default, at the end of every clean session | record one: `quackd robot rest-pose <name>`. Until you do, support it or fold it somewhere it can rest before you exit |
 | `the arm is not at its rest pose (...), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release NAME, or quackd doctor --robot NAME to park it, or cut its power` | the arm did not reach the pose you recorded, or the edge of its travel where the pose lies past it, so quackd kept torque rather than dropping it. A run at a terminal offered to release it first, and nobody pressed Enter | hold the arm before anything else, since both commands connect and connecting drops torque for a moment. Then run `quackd robot release NAME` to have it let go into your hands ([Releasing it where it stands](#releasing-it-where-it-stands)), or run `quackd doctor --robot NAME` to let the rest move try again from where it now is, or cut the servo supply. The parenthesis names the joints that fell short |
 | `quackd cannot tell whether the arm is holding itself up (the arm did not answer: ...), so it kept whatever torque the arm has: hold it, and cut its power` | the arm did not answer the close's last read, so nothing says where it is or whether its servos are powered. Cutting the supply looks exactly like this, and so does a cable that came out in front of live servos | hold it, and cut the servo supply. No offer is made at the end of a run over an arm that went quiet |
 | `torque still reads on for <joints>: cut the power` from `quackd robot release` | those motors kept their torque through the release | cut the servo supply while you hold the arm. The motors not named are limp, and the line after it says what the close then did ([Releasing it where it stands](#releasing-it-where-it-stands)) |
@@ -1734,6 +1745,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `Robot.calibrate() is interactive` | it calls `input()`; quackd never triggers it |
 | `Robot.configure()` | |
 | `Robot.__enter__/__exit__` | connect on enter, disconnect on exit |
+| `Robot.__del__ disconnects a robot still connected` | a follower collected while still connected is disconnected, and anything that raises is swallowed. So an exit that skipped quackd's close can still end in the follower's `disconnect()`, and what that does to torque is whatever the config holds by then, which is why quackd builds the follower asking to keep it |
 | `RobotAction = dict[str, Any]; RobotObservation = dict[str, Any]` | |
 | `Robot.calibration` | motor name -> MotorCalibration, loaded from the file; where joint ranges come from |
 | `Robot.calibration_fpath` | `calibration_dir / '<id>.json'`; reported so a wrong id is visible |
@@ -1743,7 +1755,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `so101_follower` | the registered config type |
 | `lerobot.robots.so_follower.SO101Follower` | an alias of SOFollower |
 | `SOFollower.name is so_follower` | the calibration subdirectory, shared by SO-100 and SO-101 |
-| `SO101FollowerConfig(port, disable_torque_on_disconnect=True, max_relative_target=None, cameras={}, use_degrees=True, position_p_coefficient=16, position_i_coefficient=0, position_d_coefficient=32, num_read_retries=2)` | every safety-shaped field is passed explicitly rather than inherited |
+| `SO101FollowerConfig(port, disable_torque_on_disconnect=True, max_relative_target=None, cameras={}, use_degrees=True, position_p_coefficient=16, position_i_coefficient=0, position_d_coefficient=32, num_read_retries=2)` | every safety-shaped field is passed explicitly rather than inherited, and `disable_torque_on_disconnect` is passed as False, the opposite of upstream's default, so a disconnect quackd did not ask for keeps torque |
 | `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | six Feetech sts3215 motors, ids 1..6 |
 | `'<motor>.pos'` | the observation and action keys |
 | `get_observation() reads Present_Position and nothing else` | no torque, current, temperature or fault: why quackd reads registers |
@@ -1753,8 +1765,8 @@ If you hit one of these, or fail to, that is exactly what the
 | `send_action() returns the goal actually sent` | the clipped goal, not the measured position |
 | `use_degrees=True -> body joints in degrees` | |
 | `gripper is 0..100` | whatever use_degrees says |
-| `disconnect() disables torque by default` | `disable_torque_on_disconnect` defaults to True, so the arm goes limp at every clean exit, a `doctor` probe included, and not at all when the process is killed. quackd keeps that default, and turns it off for the one case where letting go would drop the arm: one that did not reach the pose it was recorded resting in |
-| `disconnect() reads config.disable_torque_on_disconnect when it runs` | the flag is read off the config instance inside `disconnect()` rather than copied at construction, and the config is a plain dataclass, so setting it False on the instance immediately before the call is what leaves an arm holding. quackd uses that seam for an arm away from its rest pose and nothing else; the config is still built asking for True. Read against lerobot 0.6.1, the version the first real arm ran |
+| `disconnect() disables torque by default` | `disable_torque_on_disconnect` defaults to True, so LeRobot lets the arm go limp at every disconnect, the one it makes of a follower nobody closed included. Under that default an exit that skipped quackd's close, a second Ctrl-C during the rest move or a crash, could drop the arm, so quackd builds the follower with it False and its close writes it every time: True over an arm at its recorded rest pose or with none recorded, which is the limp end of every clean session, a `doctor` probe included, and False over one that did not reach the pose it was recorded resting in. A connect quackd refuses once the arm is energised (not calibrated, no calibration file, no motors bus) writes True before its own disconnect, and one that fails any other way closes the port and keeps torque. Nothing runs when the process is killed |
+| `disconnect() reads config.disable_torque_on_disconnect when it runs` | the flag is read off the config instance inside `disconnect()` rather than copied at construction, and the config is a plain dataclass, so the value on the instance when `disconnect()` runs is what it does, whoever calls it. The config is built asking for False and every connect asks again, so a disconnect quackd did not make keeps torque, and quackd writes True immediately before its own only over an arm that may be let go. Read against lerobot 0.6.1, the version the first real arm ran |
 | `Max_Torque_Limit 500 on the gripper` | with Protection_Current 250 and Overload_Torque 25: the native authority |
 | `the five body joints get no torque or current cap` | the caps sit inside a check for the gripper's name |
 | `configure_motors() writes Return_Delay_Time 0 and Acceleration 254` | called inside torque_disabled(), so connecting drops torque briefly |

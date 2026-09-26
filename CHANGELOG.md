@@ -144,6 +144,25 @@ unmeasured.
   `docker_default_runtime`, which means nothing from a laptop. A malformed `QUACKD_HOST` is a
   row in the report rather than a line of prose, so `--json` still prints one document.
 
+### Fixed
+
+- **An exit that skipped the close could drop a LeRobot arm.** quackd built the SO-101 follower
+  with LeRobot's `disable_torque_on_disconnect` at upstream's True, and only `close()` wrote it.
+  LeRobot disconnects a robot that is still connected when it is garbage collected, so a second
+  Ctrl-C during the end-of-run rest move, or a crash, could end in that disconnect with torque
+  off, and the arm fall wherever it stood, while `docs/safety.md` said it was left holding.
+  Nobody saw it on an arm: it was found by reading upstream. The follower is now built with the
+  flag False, and every connect asks for False again, so a disconnect quackd did not ask for
+  keeps torque. `close()` still writes the flag just before its own disconnect, True at the rest
+  pose or with none recorded and False away from it, and a connect quackd refuses because the
+  arm is not calibrated, has no calibration file or has no motors bus writes True before it
+  lets go, so every clean ending lets go where it did. A connect that fails any other way once
+  the arm is energised, such as a first read the arm does not answer, used to be left to that
+  same disconnect with nothing said. It now closes the port with torque kept and says so: hold
+  the arm, and cut its power. Where the flag will not take, the close reads it back and says
+  what the disconnect will do, where it used to assume a release
+  ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
+
 ### Removed
 
 - **Breaking. quackd's Jetson container, the workflow that built it and its `.dockerignore`.**

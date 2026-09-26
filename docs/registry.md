@@ -195,10 +195,11 @@ they read it with no room for a field they do not know, and two installs on one 
 ## The rest pose
 
 A LeRobot arm goes limp the moment it is disconnected, because LeRobot's own `disconnect()`
-disables torque by its default and quackd keeps that default. On the bench that meant the arm
-fell at the end of every run, and every run started from wherever the last one had left it. A
-rest pose answers both: one pose, kept under the robot's name, that a run drives the arm to
-before the pilot gets control and returns it to before torque is released.
+disables torque by its default, and a clean close with no rest pose recorded asks for exactly
+that. On the bench that meant the arm fell at the end of every run, and every run started from
+wherever the last one had left it. A rest pose answers both: one pose, kept under the robot's
+name, that a run drives the arm to before the pilot gets control and returns it to before torque
+is released.
 
 It is **read off the arm, never typed.** Nothing is connected while you set it up, so the arm
 is limp. Fold it by hand into a pose it holds with the power off, then record where it ended
