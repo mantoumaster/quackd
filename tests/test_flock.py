@@ -21,7 +21,7 @@ from quackd.flock.messages import BidMsg, FlockMessage, TaskMsg
 from quackd.flock.planner import equal_wedges, plan_flock_task
 from quackd.flock.transcript import FlockTranscript
 from quackd.log import EventLog, LogEvent
-from quackd.sim2d.clock import FlockClock
+from quackd.sim2d.clock import FlockClock, HookInterrupt
 from quackd.sim2d.world import DT, World
 
 # ── schema ──────────────────────────────────────────────────────────────────────────────
@@ -374,6 +374,105 @@ async def test_clock_unregister_mid_sleep_does_not_deadlock_the_rest() -> None:
     clock.unregister("holder")  # now only duck-0 is left, and it is parked
     await asyncio.wait_for(survivor, timeout=2)
     assert world.steps >= 2
+    await clock.stop()
+
+
+async def test_clock_a_task_parking_under_an_id_that_just_woke_is_never_stranded() -> None:
+    """The advancer marks a woken participant awake before resolving its future, and the task
+    only runs its `finally` when it resumes. A second task sleeping under the same id can park
+    in between, because the slot reads awake. The first task's `finally` cleared whatever
+    waiter sat under the id, so it cleared the second one's: that future never resolved and B
+    hung with no error. The cartoon's transport and microduck's MuJoCo one share one id across
+    their tasks, so concurrent MCP calls can do this."""
+    world = World(seed=0)
+    clock = FlockClock(world)
+    order: list[str] = []
+    second: list[asyncio.Task[None]] = []
+
+    async def b() -> None:
+        order.append("b parks")  # clock.sleep parks before it first awaits, so nothing between
+        await clock.sleep("duck-0", DT)
+        order.append("b wakes")
+
+    def park_b_before_a_resumes(_w: World) -> None:
+        # A tick hook runs after the step and before the advancer wakes A, so B's first step
+        # is queued ahead of A's resumption, and asyncio runs ready callbacks in order.
+        if not second:
+            second.append(asyncio.get_running_loop().create_task(b()))
+
+    clock.add_tick_hook(park_b_before_a_resumes)
+    # Awaited in this task, not wrapped in wait_for, which on 3.11 runs it as a task of its
+    # own and so reorders what this test records.
+    await clock.sleep("duck-0", DT)  # this test is task A
+    order.append("a wakes")
+    await asyncio.wait_for(second[0], timeout=2)  # stranded, this timed out
+    assert order == ["b parks", "a wakes", "b wakes"]  # B really parked before A resumed
+    assert world.steps == 2
+    # nothing of A or B is left in the slot, so the id sleeps again rather than meet the guard
+    await asyncio.wait_for(clock.sleep("duck-0", 0.1), timeout=2)
+    assert world.steps == 4
+    await clock.stop()
+
+
+@pytest.mark.parametrize("leaves_by", ["cancel", "unregister", "interrupt"])
+async def test_clock_a_sleep_that_ends_early_never_strands_the_next_under_its_id(
+    leaves_by: str,
+) -> None:
+    """The same gap on the other ways out of `sleep`: a task cancelled as it comes due, an
+    unregistered id and a closed live window each resume the first task after a second one has
+    parked, and its `finally` must leave that waiter alone."""
+    world = World(seed=0)
+    clock = FlockClock(world)
+    order: list[str] = []
+    second: list[asyncio.Task[None]] = []
+
+    async def a() -> None:
+        try:
+            await clock.sleep("duck-0", DT)
+        finally:
+            order.append("a leaves")
+
+    async def b() -> None:
+        order.append("b parks")
+        await clock.sleep("duck-0", DT)
+        order.append("b wakes")
+
+    first = asyncio.create_task(a())
+
+    def park_b_then_end_a(_w: World) -> None:
+        if second:
+            return
+        second.append(asyncio.get_running_loop().create_task(b()))  # queued ahead of A
+        if leaves_by == "cancel":
+            first.cancel()
+        elif leaves_by == "unregister":
+            clock.unregister("duck-0")
+        else:
+            raise KeyboardInterrupt  # what the live window's close button raises
+
+    clock.add_tick_hook(park_b_then_end_a)
+    with pytest.raises((asyncio.CancelledError, HookInterrupt)):
+        await first
+    await asyncio.wait_for(second[0], timeout=2)  # stranded, this timed out
+    assert order == ["b parks", "a leaves", "b wakes"]  # B really parked before A resumed
+    await clock.stop()
+
+
+async def test_clock_a_cancelled_sleep_frees_its_id() -> None:
+    """A task cancelled while parked clears its own waiter on the way out. Left behind, that
+    dead waiter would make the next sleep under the id look like a second sleeper and be
+    refused."""
+    world = World(seed=0)
+    clock = FlockClock(world)
+    clock.register("holder")  # stays awake: freezes time so duck-0 stays parked
+    parked = asyncio.create_task(clock.sleep("duck-0", 5 * DT))
+    await asyncio.sleep(0)
+    parked.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await parked
+    clock.unregister("holder")
+    await asyncio.wait_for(clock.sleep("duck-0", DT), timeout=2)
+    assert world.steps == 1  # the cancelled sleep never counted as parked
     await clock.stop()
 
 

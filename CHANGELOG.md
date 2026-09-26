@@ -162,6 +162,15 @@ unmeasured.
   the arm, and cut its power. Where the flag will not take, the close reads it back and says
   what the disconnect will do, where it used to assume a release
   ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
+- **Two tasks sleeping as one simulated body could leave one of them asleep for good, with no
+  error.** The lockstep clock lets go of a participant's id before the task that slept there
+  resumes and cleans up: it marks a due sleeper awake before it resolves that sleep, a closed
+  live window does the same for every sleeper, and `unregister` drops the id. A second task
+  sleeping under the same id could park in that gap, because the slot read awake, and the first
+  task's cleanup then cleared the second one's wait rather than its own, so its call never
+  returned. The cartoon's transport and microduck's MuJoCo one sleep every task under the
+  body's one id, so two MCP calls in flight could reach it. A sleep now clears only its own
+  wait on the way out ([ADR-0016](docs/adr/0016-flock-lockstep-clock.md)).
 
 ### Removed
 

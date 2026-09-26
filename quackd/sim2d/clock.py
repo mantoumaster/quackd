@@ -134,8 +134,13 @@ class FlockClock:
         try:
             await future
         finally:
-            # normal wake: the advancer already marked us awake; cancellation: do it here
-            if self._waiters.get(pid) is not None:
+            # Normal wake: the advancer already marked us awake. Cancellation: do it here. Only
+            # ever our own waiter, though. Between the clock letting go of this pid (a wake, an
+            # interrupt or an unregister) and this task resuming, another task sleeping as the
+            # same pid can park, because the slot reads awake and the guard above lets it in.
+            # Clearing that waiter would leave its future unresolved and that task hung for good.
+            waiter = self._waiters.get(pid)
+            if waiter is not None and waiter.future is future:
                 self._waiters[pid] = None
                 self._nudge()
 
