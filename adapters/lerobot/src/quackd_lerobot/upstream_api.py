@@ -48,6 +48,7 @@ _OPENCV = "src/lerobot/cameras/opencv/camera_opencv.py"
 _OPENCV_CFG = "src/lerobot/cameras/opencv/configuration_opencv.py"
 _CAM_CFG = "src/lerobot/cameras/configs.py"
 _CAMERAS_INIT = "src/lerobot/cameras/__init__.py"
+_KINEMATICS = "src/lerobot/model/kinematics.py"
 
 # ── package ─────────────────────────────────────────────────────────────────────────────
 
@@ -327,6 +328,16 @@ NO_CLIENT_DEADMAN = UpstreamRef(
     "send_action writes Goal_Position and returns. A position-controlled arm holds its last "
     "goal under torque until the next write or disconnect(). quackd's stop re-sends the "
     "present position as the goal (hold) and never disables torque",
+)
+KINEMATICS_DEG2RAD = UpstreamRef(
+    "RobotKinematics sets a URDF joint to np.deg2rad(degrees)",
+    "VERIFIED",
+    src(_KINEMATICS, 86),
+    "forward_kinematics hands each joint in its joint_names the reading in radians with no "
+    "offset and no sign, and inverse_kinematics seeds its solve the same way (line 119). It is "
+    "LeRobot's own precedent for putting a calibrated reading on a model of the arm, and the "
+    "one the arm simulator follows for the five arm joints, whose zero and sign are its "
+    "assumptions in quackd_lerobot.sim.upstream_api. Read on 2026-09-26, at the same commit",
 )
 
 # ── the Feetech bus, below the Robot interface, where the registers are ─────────────────

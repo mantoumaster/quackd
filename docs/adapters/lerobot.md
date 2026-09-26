@@ -1775,6 +1775,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `configure() switches torque off and on again with no retry` | `torque_disabled()` calls `disable_torque()` and `enable_torque()` with `num_retry` 0, each a `Torque_Enable` then a `Lock` write per motor, so one status packet lost or garbled fails the whole connect with the motors in two torque states. The bench arm did this on three connects on 2026-09-23; quackd connects again, up to three attempts |
 | `SOFollower.bus is a FeetechMotorsBus` | the attribute registers are read through |
 | `no deadman: nothing stops the arm when the client goes quiet` | the class has no thread, timer or timeout; a goal stands until the next write |
+| `RobotKinematics sets a URDF joint to np.deg2rad(degrees)` | LeRobot's own kinematics helper puts a reading on a model of the arm in radians with no offset and no sign, in forward and inverse kinematics alike. The arm simulator follows it for the five arm joints, which is what [`JOINT_ZERO` and `JOINT_SIGN`](#unverified-our-assumptions-about-the-model-and-what-quackd-does-about-each) assume |
 | `MotorsBus.disable_torque()` | never called on quackd's own initiative. The one call is `let_go()`, and it has two doors, each opened by a person at a terminal. `let_go()` is `quackd run --by-hand`'s, and refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to decide that letting go will not drop it. `let_go(anywhere=True)` is `quackd robot release`'s and the end-of-run offer's, after each has told the person to hold the arm, and releases wherever the arm stands, with or without a rest pose recorded. No verb reaches either and no model can ask for it. On a Feetech bus it writes `Torque_Enable` 0 then `Lock` 0 per motor, and quackd asks for `num_retry=5`, the count upstream's own `disconnect()` uses |
 | `MotorsBus.enable_torque()` | called by `take_hold()`, to pick up an arm a person has just placed, with `num_retry=5` as for the release. It writes `Torque_Enable` 1 **and then `Lock` 1** per motor, two writes a motor rather than one |
 | `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling, and how the port is closed between two connect attempts without a write to any motor. The same branch clears the port handler's busy flag (`port_handler.is_using = False`, motors_bus.py lines 557 and 558), which a serial error in the middle of a packet leaves set and which reopening the port does not clear, so quackd clears it after its own close: without that, every packet of the next attempt is answered "port in use" and the connect is refused as every motor missing |
@@ -1833,6 +1834,58 @@ If you hit one of these, or fail to, that is exactly what the
 | `THREAD_SAFETY` | every call is serialised under one lock in a worker thread with a deadline; a blown deadline wedges the transport |
 | `CAMERA_INDEX_MOVES` | an index is a scan position, not an identity: it can move on a replug or a reboot, and a laptop's own webcam usually holds 0. quackd records the index it opened and cannot tell you it is the camera you meant |
 | `WINDOWS_CAMERA_BACKEND` | which backend a Windows machine needs for a given webcam is not knowable in advance, so quackd keeps upstream's ANY and gives the owner `?backend=msmf` |
+
+## The simulator's upstream: SO-ARM100
+
+quackd is growing a simulator for this arm: the `real` backend's own code over a physics model
+of the SO-101, so that a task file can be rehearsed at home through the code that will drive
+the arm in the lab. It is not a backend yet. What exists so far is the model's upstream and the
+fetcher for it, and nothing in a run calls either.
+
+The model is the maker's own, [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100),
+pinned at
+[`5f6d2b8`](https://github.com/TheRobotStudio/SO-ARM100/tree/5f6d2b876a53a4872e405b991dd925556c9e38a4)
+(`main`, 2026-09-23) and read on 2026-09-26. Every name quackd spells from it lives in
+[`adapters/lerobot/src/quackd_lerobot/sim/upstream_api.py`](../../adapters/lerobot/src/quackd_lerobot/sim/upstream_api.py).
+
+**The model and its meshes are fetched at run time and never shipped.** Neither the wheel, the
+repository nor a test fixture carries a byte of them, although their Apache-2.0 licence would
+allow it, because no upstream asset is ever committed here.
+[`sim/assets.py`](../../adapters/lerobot/src/quackd_lerobot/sim/assets.py) fetches
+`so101_new_calib_camera.xml` and the meshes it names one file at a time from
+raw.githubusercontent.com at the pin, rather than the whole repository, and checks each one
+against the sha256 recorded for it. Only once every file matches does it install the set in
+`~/.quackd/cache/so-arm100/<pin>/`, with a licence notice beside it. `QUACKD_CACHE_DIR` moves
+the cache. `QUACKD_LEROBOT_SIM_ASSETS` points at the `Simulation/SO101` directory of a checkout
+of your own instead. A file there that differs from the pin is a warning rather than an error,
+because a newer model is what a checkout is for, and the model is then reported as not pinned.
+Line endings in the model do not count, because Git for Windows checks it out with CRLF.
+
+### VERIFIED (read from the model and its README at the pin)
+
+| Name | Why quackd relies on it |
+|---|---|
+| `the repository's LICENSE is the Apache License 2.0` | no other licence file sits beside the simulation files and neither README names one, so the model and its meshes are under it. quackd fetches them rather than shipping them all the same |
+| `so101_new_calib_camera.xml` | the model quackd loads: new_calib, the default calibration, plus upstream's wrist camera mount. It includes no other file, so it needs nothing of upstream's but its meshes |
+| `no <option>, <camera>, <light> or table in the model` | the arm and nothing around it, so the physics settings, the table, the lights and every camera the simulator renders from are quackd's and not upstream's. Upstream's `scene.xml` wraps the variant without the camera mount, and quackd does not use it |
+| `<compiler angle="radian" meshdir="assets" autolimits="true"/>` | every range in the file is in radians, and quackd reads each one from the loaded model rather than copying a number out of the file |
+| `15 STL meshes under Simulation/SO101/assets` | every mesh the model names and nothing else from that directory, each fetched on its own and checked against its hash |
+| `wrist_camera_mount and wrist_camera` | two bodies under the gripper, meshes only, with no camera element in either: where a wrist view is rendered from is quackd's |
+| `joints and actuators named shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | exactly LeRobot's motor names in LeRobot's order, so a `'<motor>.pos'` key reaches its joint and its actuator by name |
+| `new_calib: each joint's zero is the middle of its range` | the README's words, which the file bears out for the five arm joints: four ranges are symmetric about zero, and `wrist_roll`'s middle is a few degrees from it. LeRobot's degrees for those joints are centred on the middle of the calibrated travel too, which is why the two zeros are expected to meet. Not for the gripper: its hinge has its zero near one end of its range and LeRobot's gripper is 0..100, so it is `GRIPPER_MAP`'s |
+| `<position kp="998.22" kv="2.731" forcerange="-2.94 2.94"/>` | the gains every joint uses, which the file says were calculated following [RBE501-RL-arm-project](https://github.com/Gregory119/RBE501-RL-arm-project/blob/main/gymnasium_env/README.md) with the servo's proportional gain assumed to be 16, LeRobot's default, and which it says are not a one to one mapping of LeRobot's servo gains. Each of the six actuators overrides the force range with -3.35 3.35. quackd uses them as written |
+| `STS3215 motor properties adapted from the Open Duck Mini project` | the README's account of where the servo properties in the model came from: another robot |
+| `LeRobot's gripper 0..100 is not yet reflected in the URDF and MuJoCo files` | the model's gripper is a hinge in radians, so the map from LeRobot's 0..100 is quackd's (`GRIPPER_MAP`) |
+
+### UNVERIFIED (our assumptions about the model, and what quackd does about each)
+
+| Name | What quackd does |
+|---|---|
+| `SERVO_DYNAMICS` | the gains, damping and friction are a calculation and another robot's properties, not a measurement of an SO-101. quackd treats the simulated dynamics as the model's and never as the arm's: a settle time, a push or a grasp that holds in the simulator is evidence about the model, and only the bench can say it about an arm |
+| `JOINT_ZERO` | whether a real arm's calibrated middle of travel is the model's zero, on the five arm joints. A calibration records the travel one person swept on one arm, and nothing says that matches the CAD. quackd assumes an offset of zero on each of them until the bench measures one, as LeRobot's own kinematics helper does (`RobotKinematics sets a URDF joint to np.deg2rad(degrees)`, in the LeRobot table above). The gripper is `GRIPPER_MAP`'s |
+| `JOINT_SIGN` | whether a positive degree turns the model's joint the positive way. That depends on how each servo was mounted and calibrated, which the model cannot know. quackd assumes it does on the five arm joints, as LeRobot's kinematics helper does. Which end of the gripper is closed is `GRIPPER_MAP`'s, found from the model |
+| `GRIPPER_MAP` | LeRobot's 0..100 is mapped linearly over the model's gripper hinge, with the closed end found from the loaded model rather than assumed, and a reading is clipped to 0..100 |
+| `WRIST_CAMERA_POSE` | whether upstream's printed mount sits where your wrist camera sits. quackd renders the wrist view from the mount as the model places it and never claims it is your camera's view |
 
 ## Status
 

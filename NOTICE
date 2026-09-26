@@ -52,6 +52,15 @@ This project builds on, interoperates with, and is grateful to:
     lerobot adapter targets. Apache-2.0. Optional extra quackd[lerobot].
     https://github.com/huggingface/lerobot
 
+  * SO-ARM100 (TheRobotStudio/SO-ARM100) - the repository of the SO-101
+    arm's designers, and the source of the MuJoCo model for the lerobot
+    adapter's arm simulator, which is still being built and is not a
+    backend yet. Apache-2.0. The model (so101_new_calib_camera.xml) and its
+    15 STL meshes are NOT included in this project: quackd-lerobot's fetcher
+    downloads them from upstream at a pinned commit into ~/.quackd/cache and
+    checks each against a recorded sha256.
+    https://github.com/TheRobotStudio/SO-ARM100
+
   * roslibpy (gramaziokohler/roslibpy, MIT) and rosbridge_suite
     (RobotWebTools/rosbridge_suite, BSD-3-Clause) — the client library and
     the protocol the rosbridge adapter speaks. Optional extra

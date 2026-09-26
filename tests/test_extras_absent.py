@@ -77,6 +77,10 @@ for adapter, backends in BACKENDS.items():
 make_adapter("microduck:mujoco")
 make_adapter("lerobot:real", address="COM5")
 make_adapter("rosbridge:ws", address="ws://robot.local:9090")
+# the arm simulator's upstream and its fetcher find files and never load them, so neither may
+# pull in the physics just by being imported
+import quackd_lerobot.sim.assets
+import quackd_lerobot.sim.upstream_api
 for name in {HEAVY!r}:
     assert sys.modules.get(name) is None, name
 print("OK")

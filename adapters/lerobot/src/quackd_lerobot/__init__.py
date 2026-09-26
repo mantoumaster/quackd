@@ -567,15 +567,23 @@ __all__ = [
 # import is deferred so that naming the upstream costs nothing until doctor asks.
 def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
     from quackd_lerobot import upstream_api
+    from quackd_lerobot.sim import upstream_api as so_arm100
 
-    # The one row in this table that is not a list of what nobody has tried. An SO-101 ran the
-    # real backend on 2026-09-15, so the column says what that run did and did not cover.
+    # The first row is the one in this table that is not a list of what nobody has tried. An
+    # SO-101 ran the real backend on 2026-09-15, so the column says what that run did and did
+    # not cover. The second is the arm's simulator model, which nothing has run yet.
     return (
         (
             "lerobot",
             upstream_api,
             "docs/adapters/lerobot.md",
             "run on an SO-101 on 2026-09-15; the pick policy was not exercised",
+        ),
+        (
+            "SO-ARM100",
+            so_arm100,
+            "docs/adapters/lerobot.md",
+            "anything: a model only, which no backend loads yet",
         ),
     )
 

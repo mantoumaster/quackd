@@ -67,7 +67,8 @@ def _asset_cache_in_tmp(
     """The physics backend's downloaded model lives in `~/.quackd/cache`, and a developer who
     has one was running a different suite from CI: `ensure_microduck(offline=True)` found it
     and the tests that skip everywhere else ran here. Everything gets a throwaway cache and no
-    checkout override, so a skip is a skip on both machines.
+    checkout override, the Microduck's or the arm simulator's, so a skip is a skip on both
+    machines.
 
     Except the `real_duck` tests, whose whole purpose is the developer's real cache. They
     still never fetch — an empty one skips them — so this decides which machine they run on,
@@ -76,6 +77,7 @@ def _asset_cache_in_tmp(
         return
     monkeypatch.setenv("QUACKD_CACHE_DIR", str(tmp_path_factory.mktemp("quackd-cache")))
     monkeypatch.delenv("QUACKD_MICRODUCK_ASSETS", raising=False)
+    monkeypatch.delenv("QUACKD_LEROBOT_SIM_ASSETS", raising=False)
 
 
 @pytest.fixture(autouse=True)

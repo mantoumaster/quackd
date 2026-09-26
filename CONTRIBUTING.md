@@ -327,7 +327,8 @@ and arrive 🧪 in the status tables until someone runs it against the real thin
   sharper in 0.8: a real `--robot microduck:mujoco` run puts upstream's `robot_walk.xml` and
   38 CC BY-NC-SA meshes in `~/.quackd/cache`. quackd's whole licence position is that it
   redistributes none of them, and a public history does not forget. `.gitignore` now catches
-  `.stl` and `robot_walk.xml` as well as `.onnx`, but do not rely on it.
+  `.stl`, `robot_walk.xml` and the SO-101's `so101_*.xml` as well as `.onnx`, but do not rely
+  on it.
 - Tone: confident, playful, honest about status.
 
 ## How your PR gets handled

@@ -69,6 +69,31 @@ def test_adapter_doc_lists_every_upstream_ref(adapter: str) -> None:
     assert api.PIN[:7] in doc and "never" in doc.lower()  # the honesty label
 
 
+def test_adapter_doc_lists_every_simulator_upstream_ref() -> None:
+    """The arm's simulator reads a second upstream, TheRobotStudio's SO-ARM100, whose refs live
+    in `quackd_lerobot.sim.upstream_api`. The guard above reads `quackd_lerobot.upstream_api`
+    only, so without this one the model's table could go stale in silence.
+
+    Each ref needs a row of its own in the table for its status. A name found anywhere on the
+    page is not enough: the model's file name is in the prose, and `GRIPPER_MAP` is named in a
+    VERIFIED row, so either row could go and a looser check would stay green."""
+    from quackd_lerobot.sim import upstream_api as so_arm100
+
+    doc = (REPO / "docs" / "adapters" / "lerobot.md").read_text(encoding="utf-8")
+    section = doc.split("\n## The simulator's upstream: SO-ARM100\n", 1)[1].split("\n## ", 1)[0]
+    verified, unverified = section.split("\n### UNVERIFIED (", 1)
+    tables = {"VERIFIED": verified.split("\n### VERIFIED (", 1)[1], "UNVERIFIED": unverified}
+    missing = [
+        f"{ref.status} {ref.name}"
+        for ref in so_arm100.all_refs()
+        if f"\n| `{ref.name}` |" not in tables[ref.status]
+    ]
+    assert not missing, f"docs/adapters/lerobot.md has no row for these SO-ARM100 refs: {missing}"
+    assert so_arm100.PIN[:7] in section and so_arm100.READ_ON in section
+    assert "fetched at run time and never shipped" in section  # the honesty label
+    assert "QUACKD_LEROBOT_SIM_ASSETS" in section
+
+
 def test_readme_promises() -> None:
     for needle in (
         "not affiliated with or endorsed by Pollen Robotics",

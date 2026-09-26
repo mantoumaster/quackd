@@ -1,0 +1,20 @@
+"""The arm's simulator: the real backend with a MuJoCo follower underneath.
+
+`lerobot:real` reaches the arm through two builders, one for the follower and one for each
+camera, and nothing else it does touches hardware. The connect retries, the calibrated travel
+and its refusals, the rest pose, hold and stop, release and take-hold are all code about an
+arm rather than the arm. So the simulator keeps every line of that and changes only what the
+builders return: a follower and cameras backed by a physics model of the SO-101. A task file
+rehearsed at home then runs through the same code that will drive the arm in the lab. The
+faults the lab bench found on 2026-09-23 were integration faults rather than the pilot's, and
+that integration is exactly what a rehearsal here exercises.
+
+The model is the maker's own, TheRobotStudio's SO-ARM100, fetched at a pinned commit at run
+time and never shipped: `upstream_api.py` says what it is and what quackd assumes about it,
+and `assets.py` fetches it. That is all this package holds so far. No backend loads the model
+yet.
+
+Nothing here may import `mujoco` when the module is imported. It is an optional extra, and
+`make()` and `describe()` have to work without it (`tests/test_extras_absent.py`), so the
+modules that need it import it inside `connect()` or later.
+"""
