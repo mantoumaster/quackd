@@ -18,6 +18,9 @@ dependencies = ["quackd>=0.14,<0.15"]
 # the arm's port fails, which is a worse thing to find out at a bench than at an install.
 [project.optional-dependencies]
 sdk = ["lerobot[feetech]>=0.6; python_version >= '3.12'"]
+# The arm's simulator, `lerobot:mujoco`: MuJoCo on the CPU and nothing of LeRobot's, so it
+# installs on 3.11 as well. The SO-101's model is fetched at run time and never shipped.
+sim = ["mujoco>=3.12,<4"]
 
 [project.entry-points."quackd.adapters"]
 lerobot = "quackd_lerobot"

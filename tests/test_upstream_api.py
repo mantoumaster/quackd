@@ -124,9 +124,11 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
             "adapters/lerobot/sim/upstream_api.py",
             "adapters/lerobot/sim/assets.py",
             # the arm simulator's model and world, which map LeRobot's degrees and gripper
-            # onto the model through the assumptions this module names
+            # onto the model through the assumptions this module names, and its transport,
+            # which lists them among the state's assumptions
             "adapters/lerobot/sim/model.py",
             "adapters/lerobot/sim/world.py",
+            "adapters/lerobot/sim/transport.py",
         },
         (
             "https://github.com/TheRobotStudio/SO-ARM100",

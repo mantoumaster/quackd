@@ -15,7 +15,8 @@ and `assets.py` fetches it. `standin.py` is a primitives-only arm for wherever t
 be fetched, CI above all. `model.py` sets either one in quackd's scene and maps LeRobot's units
 onto it, and `world.py` steps it and keeps the truth about the table. `follower.py` is the
 follower the real backend drives over that world, and `faults.py` the seeded bus faults it can
-be told to have. No backend uses any of them yet.
+be told to have. `clock.py` is the world's time, `camera.py` its cameras, and `transport.py`
+the backend all of it makes, `lerobot:mujoco`.
 
 Nothing here may import `mujoco` when the module is imported. It is an optional extra, and
 `make()` and `describe()` have to work without it (`tests/test_extras_absent.py`), so the

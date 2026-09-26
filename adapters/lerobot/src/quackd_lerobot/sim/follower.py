@@ -631,8 +631,11 @@ class SimFollower:
 
     def heartbeat(self) -> contextlib.AbstractContextManager[None]:
         """Mark every call made inside this, in this thread, as the heartbeat's, which no fault
-        lands on and no ordinal counts (`faults.py` says why). Entered in the thread that makes
-        the calls, which for the real backend is the worker thread `_call` runs them in."""
+        a rate draws lands on and no ordinal counts (`faults.py` says why). Once the arm has
+        dropped off the bus its reads fail too, as a pulled cable fails every read: the
+        observation the loss starts at is seeded, and whether the heartbeat or a verb meets it
+        first is timing. Entered in the thread that makes the calls, which for the real
+        backend is the worker thread `_call` runs them in."""
         return self.faults.heartbeat()
 
     def as_heartbeat(self, fn: Callable[..., T]) -> Callable[..., T]:

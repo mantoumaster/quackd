@@ -3,6 +3,8 @@
 `load()` takes either the maker's model, fetched by `assets.py`, or the stand-in arm that CI
 uses in its place, and sets it in a scene of quackd's own: the physics options, a table at the
 height of the arm's base, lights, three camera mounts and a few objects laid out from a seed.
+The arm itself is drawn in greys, however its model colours it (`_grey`), so that the colour
+detector finds nothing on the arm and a blob it finds is something on the table.
 Upstream's model is the arm and nothing around it (`upstream_api.MODEL_HAS_NO_SCENE`), so every
 one of those is quackd's, and each is laid out from the arm's own geometry and the datasheet's
 reach rather than from numbers typed in here.
@@ -107,6 +109,19 @@ TABLE_REACHES = 1.25
 TABLE_THICKNESS_M = 0.02
 TABLE_RGBA = (0.55, 0.56, 0.58, 1.0)
 """A grey table: no colour a detector looks for."""
+AMBIENT = 0.6
+"""The light every face meets whichever way it faces, as a share of full light: most of it, so
+that a side turned from every lamp still shows its colour bright enough for the colour
+detector's floor (`perception.color_blob.HSVRange.v_lo`)."""
+HEADLIGHT = 0.15
+"""What the camera's own lamp adds to a face turned full on to it: enough to tell one face of
+a box from the next."""
+LAMP_DIRECTIONS = ((-0.3, 0.2, -1.0), (0.3, -0.2, -1.0))
+"""Two lamps shining down from above, one from either side, so no face is left in the ambient
+alone. How bright they are is what the ambient and the headlight leave (`_lamp_diffuse`)."""
+LUMA = (0.299, 0.587, 0.114)
+"""How much red, green and blue each count for in the grey an arm's colour becomes (`_grey`):
+the weights OpenCV's own conversion to grey uses."""
 
 VIEW_HFOV_DEG = 90.0
 """The horizontal field of view the default views are laid out for: what quackd's colour
@@ -188,8 +203,10 @@ class SceneObject:
 
 CUBE = SceneObject("cube", "box", (0.0125, 0.0125, 0.0125), 0.02, (0.8, 0.15, 0.12, 1.0))
 """A 25 mm cube, about the size of a toy block, which either model's gripper opens past."""
-PEN = SceneObject("pen", "capsule", (0.0045, 0.065), 0.01, (0.15, 0.3, 0.8, 1.0))
-"""A 9 mm by 14 cm capsule, the size of a ballpoint pen."""
+PEN = SceneObject("pen", "capsule", (0.0045, 0.065), 0.01, (0.1, 0.1, 0.12, 1.0))
+"""A 9 mm by 14 cm capsule, the size of a ballpoint pen, and black, as most are. Neither it
+nor the cube is a colour the detector looks for (`perception.color_blob.DEFAULT_TARGETS`): a
+blue pen read as a person on every run."""
 DEFAULT_OBJECTS = (CUBE, PEN)
 
 
@@ -385,6 +402,7 @@ def load(
             spec = mujoco.MjSpec.from_string(source)
         except Exception as e:
             raise ModelError(f"{LABEL} could not read {label} ({e}). {_remedy(label)}") from e
+    _grey(spec)
     first = _compile(spec, label)
     data = mujoco.MjData(first)
     _require(first, label)
@@ -409,6 +427,20 @@ def load(
     _wrist_view(spec, first, data, pads, hand, jaw)
     model = _compile(spec, label)
     return _arm(model, label, workspace, tuple(objects), hand)
+
+
+def _grey(spec: Any) -> None:
+    """Take the hue out of every material and geom the arm's model comes with, keeping how light
+    each one is. The colour detector's every target is a saturated hue
+    (`perception.color_blob.DEFAULT_TARGETS`), and the SO-101's printed parts are drawn in a
+    yellow it reads as a duck, so a view with the arm in it would never be empty. A grey has no
+    hue for any target to match. Run before the scene is laid over the model, so the table and
+    the objects keep their own colours."""
+    red, green, blue = LUMA
+    for item in (*spec.materials, *spec.geoms):
+        r, g, b, a = (float(x) for x in item.rgba)
+        light = red * r + green * g + blue * b
+        item.rgba = [light, light, light, a]
 
 
 def _compile(spec: Any, label: str) -> Any:
@@ -748,19 +780,38 @@ def _table_and_lights(spec: Any, workspace: Workspace) -> None:
         rgba=TABLE_RGBA,
         friction=MUJOCO_FRICTION,
     )
-    # Two directional lights from above, one to either side, so that no face of an object is
-    # left black, and no shadows: a shadow is a dark patch a detector could take for an
-    # object, and casting one costs every render time.
+    # No face may meet more than full light, or its colour's brightest channel clips and the
+    # colour changes hue: under MuJoCo's own headlight and two brighter lamps, the ball's
+    # orange read as the duck's cream from above, and a blue and a green washed out below the
+    # detector's saturation. So the camera's lamp is turned down, nothing shines (a highlight
+    # is a white patch on a colour), and no lamp casts a shadow, a dark patch a detector could
+    # take for an object and one that costs every render time.
+    headlight = spec.visual.headlight
+    headlight.ambient = [AMBIENT] * 3
+    headlight.diffuse = [HEADLIGHT] * 3
+    headlight.specular = [0.0] * 3
     height = 2 * float(REACH.value)
-    for name, direction in (("quackd_key", (-0.3, 0.2, -1.0)), ("quackd_fill", (0.3, -0.2, -1.0))):
+    lamp = _lamp_diffuse()
+    for name, direction in zip(("quackd_key", "quackd_fill"), LAMP_DIRECTIONS, strict=True):
         spec.worldbody.add_light(
             name=name,
             type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL,
             pos=[cx, cy, workspace.table_top + height],
-            dir=direction,
+            dir=list(direction),
             castshadow=False,
-            diffuse=[0.5, 0.5, 0.5],
+            ambient=[0.0] * 3,
+            diffuse=[lamp] * 3,
+            specular=[0.0] * 3,
         )
+
+
+def _lamp_diffuse() -> float:
+    """How bright each of the two lamps is: what is left of full light once the ambient and the
+    headlight are counted, shared so that the face that meets the most, one lying flat and
+    seen from straight above, meets exactly full light. The lamps shine from either side of
+    straight down, so no other face meets more from them than a flat one does."""
+    down = sum(-d[2] / math.sqrt(sum(c * c for c in d)) for d in LAMP_DIRECTIONS)
+    return (1.0 - AMBIENT - HEADLIGHT) / down
 
 
 def _objects(

@@ -14,13 +14,16 @@ shared across kinds, which a heartbeat or a retry of something else would shift,
 the physics' step, which the clock decides. One more draw from the same key says which motor a
 fault that needs one lands on.
 
-The heartbeat is exempt. It reads the arm on its own clock, the wall's, so how many times it
-has read by any given call is chance, and a plan that counted it would put a fault on a
-different call every run. Its reads take no ordinal and draw no fault, and they go on answering
-after the reads are lost, so a lost arm is found by the verb that reads it. The follower cannot
-tell its callers apart, so whoever makes the heartbeat's calls marks them (`Faults.heartbeat`),
-in the thread that makes them: a context variable would not reach the worker thread a call runs
-in.
+The heartbeat is exempt from every fault a rate draws. It reads the arm on its own clock, the
+wall's, so how many times it has read by any given call is chance, and a plan that counted it
+would put a fault on a different call every run. Its reads take no ordinal and draw no fault.
+The one fault it is not exempt from is the arm dropping off the bus (`READ_LOSS`): a pulled
+cable fails every read at the lab, the heartbeat's included, and a heartbeat that still heard
+the arm would keep a run going that the bench would have stopped. So which observation starts
+the loss is seeded, and which caller meets it first, the heartbeat or a verb, depends on
+timing. The follower cannot tell its callers apart, so whoever makes the heartbeat's calls marks
+them (`Faults.heartbeat`), in the thread that makes them: a context variable would not reach
+the worker thread a call runs in.
 
 Nothing here imports anything heavy: a plan is parsed and checked where the run is built,
 before the simulator is.
@@ -179,7 +182,8 @@ class Faults:
 
     @contextlib.contextmanager
     def heartbeat(self) -> Iterator[None]:
-        """Every call made inside this, in this thread, is the heartbeat's: exempt."""
+        """Every call made inside this, in this thread, is the heartbeat's: exempt from the
+        faults a rate draws, and not from the arm dropping off the bus."""
         depth = getattr(self._local, "depth", 0)
         self._local.depth = depth + 1
         try:
@@ -225,5 +229,5 @@ class Faults:
     @property
     def reads_lost(self) -> bool:
         """Whether a call made now gets no reply: the arm has dropped off the bus
-        (`READ_LOSS`), and this is not the heartbeat's call."""
-        return self._lost and not self.exempt
+        (`READ_LOSS`). The heartbeat's calls too, which never start the loss but meet it."""
+        return self._lost

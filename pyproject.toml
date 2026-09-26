@@ -104,6 +104,10 @@ lan = ["zeroconf>=0.132", "paho-mqtt>=2,<3"]
 # base dependency of lerobot). Without it `import lerobot` succeeds and opening the arm's port
 # fails, so it belongs in the extra rather than in a paragraph somebody has to read.
 lerobot = ["quackd-lerobot[sdk]>=0.14,<0.15"]
+# The arm's simulator (`--robot lerobot:mujoco`): the real backend's code over a physics model
+# of the SO-101, with MuJoCo and no LeRobot, so no torch and no 3.12 floor. The model is
+# fetched at run time and never shipped (docs/licenses.md).
+lerobot-sim = ["quackd-lerobot[sim]>=0.14,<0.15"]
 rosbridge = ["quackd-rosbridge[sdk]>=0.14,<0.15"]
 # XLeRobot is not an installable package: its own install is copying files into a lerobot
 # tree. So quackd speaks its ZeroMQ host protocol instead and needs only pyzmq, which keeps

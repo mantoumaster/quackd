@@ -221,6 +221,17 @@ def describe(spec: RobotSpec) -> RobotManifest:
     return _module(spec.adapter).describe(spec.backend, spec.robot_id)
 
 
+def is_simulator(spec: RobotSpec | str) -> bool:
+    """Whether this robot is a simulator of a real body rather than the body, asked before
+    anything is built: the adapter module's own `SIMULATOR_BACKENDS`, and a module that
+    declares none has none. `lerobot:mujoco` is one. What a command that must never touch a
+    real arm refuses by, and not `perception.is_simulated`, which counts a mock too."""
+    if isinstance(spec, str):
+        spec = parse_robot_spec(spec)
+    backends = getattr(_module(spec.adapter), "SIMULATOR_BACKENDS", ())
+    return spec.backend in tuple(backends)
+
+
 def registry_for(spec: RobotSpec, manifest: RobotManifest | None = None) -> VerbRegistry:
     """The vocabulary of a robot that is not connected (`list-verbs --robot`, `--goal`).
 
@@ -245,6 +256,7 @@ def make_adapter(
     token: str | None = None,
     rest_pose: Mapping[str, float] | None = None,
     host: HostClient | None = None,
+    faults: str | None = None,
 ) -> RobotAdapter:
     """Build a robot. `camera_url` may name several cameras; every `make()` is handed the
     tuple and decides whether this body reads more than one (`MULTI_CAMERA_SPECS`), and a
@@ -253,9 +265,13 @@ def make_adapter(
     `host` is the board `--host` names. When its daemon has a camera, the body is wrapped in a
     `HostCameraAdapter`, which adds that camera to any body and changes nothing else. The
     board is asked for its `/hello` here unless the client already has it, so a caller that
-    must refuse a board that does not answer asks first; this raises `HostError` otherwise."""
+    must refuse a board that does not answer asks first; this raises `HostError` otherwise.
+
+    `faults` is a spec of faults for a simulator to meet, passed to `make()` only when given,
+    so every adapter that has no simulator is called exactly as it always was."""
     if isinstance(spec, str):
         spec = parse_robot_spec(spec)
+    extra: dict[str, Any] = {} if faults is None else {"faults": faults}
     adapter: RobotAdapter = _module(spec.adapter).make(
         spec.backend,
         robot_id=spec.robot_id,
@@ -265,6 +281,7 @@ def make_adapter(
         camera_url=camera_urls(camera_url),
         token=token,
         rest_pose=dict(rest_pose) if rest_pose else None,
+        **extra,
     )
     if host is not None:
         hello = host.hello()

@@ -82,6 +82,7 @@ EXTRAS = {
     "lan (mqtt)": ("paho.mqtt.client", "quackd[lan]"),
     "lerobot": ("lerobot", "quackd[lerobot]"),
     "lerobot (feetech bus)": ("scservo_sdk", "quackd[lerobot]"),
+    "lerobot-sim (mujoco)": ("mujoco", "quackd[lerobot-sim]"),
     "rosbridge": ("roslibpy", "quackd[rosbridge]"),
     "microduck camera (webrtc)": ("aiortc", "quackd[microduck-camera]"),
     "xlerobot": ("zmq", "quackd[xlerobot]"),

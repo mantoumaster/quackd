@@ -3,9 +3,10 @@
 An arm has no legs, no head and no voice, so its manifest lists none of that: `move`,
 `go_to`, `search_scan`, `say` and `gaze` do not exist here. What it has is joints, a
 gripper, `place`, and, when a policy is available, `pick` as one skill intent that the
-arm's own learned controller executes (the thesis, unchanged). Two backends: `mock`
-(offline, scripted) and `real` (LeRobot behind `quackd[lerobot]`, Python 3.12 or newer,
-first driven on an arm on 2026-09-15).
+arm's own learned controller executes (the thesis, unchanged). Three backends: `mock`
+(offline, scripted), `real` (LeRobot behind `quackd[lerobot]`, Python 3.12 or newer,
+first driven on an arm on 2026-09-15) and `mujoco` (the real backend's own code over a
+physics model of the SO-101, behind `quackd[lerobot-sim]`, for rehearsing a task at home).
 """
 
 from __future__ import annotations
@@ -59,7 +60,11 @@ __version__ = "0.14.0"
 """Kept in step with quackd's own version by scripts/set_version.py. It lives here rather
 than being read from the core, because this file is all an adapter's sdist contains."""
 
-BACKENDS = ("mock", "real")
+BACKENDS = ("mock", "real", "mujoco")
+SIMULATOR_BACKENDS = ("mujoco",)
+"""The backends that drive a simulated arm rather than one on a desk. Read before anything is
+built (`quackd.adapters.factory.is_simulator`), so a command that must only ever run on a
+simulator refuses a real arm before connecting to it."""
 DEFAULT_ID = "arm-01"
 ROBOT_TYPE = "so101_follower"
 BLURB = (
@@ -460,6 +465,14 @@ class LeRobotAdapter:
         return "none"
 
     @property
+    def is_simulator(self) -> bool:
+        """Whether this arm is the simulator's (`lerobot:mujoco`) rather than one on a desk. Not
+        `perception.is_simulated`, which counts the mock too."""
+        from quackd_lerobot.sim.transport import LeRobotSim
+
+        return isinstance(self.transport, LeRobotSim)
+
+    @property
     def post_sleep(self) -> Callable[[], None] | None:
         return getattr(self.transport, "post_sleep", None)
 
@@ -474,7 +487,8 @@ class LeRobotAdapter:
 def describe(backend: str, robot_id: str | None = None) -> RobotManifest:
     """Static: the mock always has its camera and its scripted policy; the real backend
     claims neither until connect() finds them, and claims no joint ranges either, because
-    they are read off the arm's calibration file."""
+    they are read off the arm's calibration file. The simulator is the real backend's code and
+    describes itself as the real backend does."""
     offline = backend == "mock"
     return lerobot_manifest(backend, robot_id, camera=offline, policy=offline)
 
@@ -514,8 +528,17 @@ def make(
     camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
     rest_pose: dict[str, float] | None = None,
+    faults: str | None = None,
 ) -> LeRobotAdapter:
+    """`faults` is a spec of bus faults for the simulator to meet (`sim.faults.FaultPlan`),
+    seeded by `seed`, and refused on any other backend: an arm on a desk has the faults it
+    has."""
     _check_rest_pose(rest_pose)
+    if faults is not None and backend != "mujoco":
+        raise AdapterError(
+            f"lerobot:{backend} has no faults to be told of: only the simulator, "
+            "lerobot:mujoco, takes a fault spec."
+        )
     # The name the arm was asked for by, before the default fills it in: the registered name
     # for every robot built from the registry, which is the only place a rest pose comes from.
     # The close note names it in the commands it gives a person, and says NAME where there
@@ -530,6 +553,27 @@ def make(
         one_camera_url(camera_url, spec="lerobot:mock")
         return LeRobotAdapter(
             LeRobotMock(rest_pose=rest_pose, registered_name=registered_name), robot_id=robot_id
+        )
+    if backend == "mujoco":
+        from quackd_lerobot.real import parse_camera_urls, step_from_env
+        from quackd_lerobot.sim.camera import CAMERA_HINT
+        from quackd_lerobot.sim.faults import FaultPlan
+        from quackd_lerobot.sim.transport import LeRobotSim
+
+        start = seed if seed is not None else 0
+        return LeRobotAdapter(
+            LeRobotSim(
+                address=address,
+                robot_id=robot_id or DEFAULT_ID,
+                seed=start,
+                live=live,
+                faults=None if faults is None else FaultPlan.parse(faults, seed=start),
+                max_step_deg=step_from_env(),
+                cameras=parse_camera_urls(camera_urls(camera_url), label=backend, hint=CAMERA_HINT),
+                rest_pose=rest_pose,
+                registered_name=registered_name,
+            ),
+            robot_id=robot_id,
         )
     if backend == "real":
         from quackd_lerobot.real import LeRobotReal, parse_camera_urls, step_from_env
@@ -552,6 +596,7 @@ __all__ = [
     "BACKENDS",
     "DEFAULT_ID",
     "JOINTS",
+    "SIMULATOR_BACKENDS",
     "LeRobotAdapter",
     "conditions",
     "describe",
@@ -571,7 +616,8 @@ def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
 
     # The first row is the one in this table that is not a list of what nobody has tried. An
     # SO-101 ran the real backend on 2026-09-15, so the column says what that run did and did
-    # not cover. The second is the arm's simulator model, which nothing has run yet.
+    # not cover. The second is the arm's simulator model, which lerobot:mujoco loads and no arm
+    # has been compared against.
     return (
         (
             "lerobot",
@@ -583,7 +629,7 @@ def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
             "SO-ARM100",
             so_arm100,
             "docs/adapters/lerobot.md",
-            "anything: a model only, which no backend loads yet",
+            "anything against an arm: lerobot:mujoco loads it, and nobody has compared the two",
         ),
     )
 

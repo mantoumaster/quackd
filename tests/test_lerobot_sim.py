@@ -1,11 +1,15 @@
-"""The arm simulator's model, world, follower and faults, on the stand-in arm: no network and
+"""The arm simulator on the stand-in arm, from its model to `quackd run`: no network and
 nothing fetched.
 
 `quackd_lerobot/sim/model.py` sets an arm in quackd's scene and maps LeRobot's units onto it;
 `sim/world.py` steps it, holds or drops its joints and keeps the truth about the table;
 `sim/follower.py` is the follower the real backend drives over it, and `sim/faults.py` the
-seeded bus faults that follower can be told to have. What the real backend makes of the
-follower is `tests/test_lerobot_sim_parity.py`'s; here is what the follower does on its own.
+seeded bus faults that follower can be told to have. `sim/clock.py` is the world's time,
+`sim/camera.py` its cameras, and `sim/transport.py` the backend they make, `lerobot:mujoco`.
+What the real backend makes of the follower is `tests/test_lerobot_sim_parity.py`'s; here is
+what the follower does on its own, and what the backend adds to the real one's code. The tests
+that render skip where no GL context can be made, unless `QUACKD_REQUIRE_GL=1` says they must
+not (`tests/gl.py`).
 Every test here runs on the primitives-only stand-in, which is what CI's physics job has, except
 the one marked `so101_model`, which needs the maker's model already fetched and skips without
 it.
@@ -17,20 +21,28 @@ built in the test out of the model's own ranges, and motor ids from upstream's b
 from __future__ import annotations
 
 import asyncio
+import colorsys
 import contextlib
 import gc
 import json
 import math
+import os
 import re
+import sys
+import weakref
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+from PIL import Image
 
-from quackd.adapters.base import AdapterError
-from quackd_lerobot import REACH, lerobot_manifest
+from quackd.adapters.base import AdapterError, AdapterNotInstalled
+from quackd.perception.color_blob import DEFAULT_FOV_DEG, DEFAULT_TARGETS, ColorBlobDetector
+from quackd.transport.base import HeartbeatError, TransportError
+from quackd_lerobot import REACH, LeRobotAdapter, lerobot_manifest, make
 from quackd_lerobot import upstream_api as lr
 from quackd_lerobot.real import (
     ENCODER_TICKS,
@@ -39,9 +51,12 @@ from quackd_lerobot.real import (
     joint_ranges,
     may_have_written_torque,
     motor_in_error,
+    parse_camera_url,
 )
 from quackd_lerobot.sim import standin
 from quackd_lerobot.sim import upstream_api as up
+from quackd_lerobot.sim.camera import CAMERA_HINT, RenderError, SimCamera, vertical_fov
+from quackd_lerobot.sim.clock import SUBSTEPS, SimClock
 from quackd_lerobot.sim.faults import EXAMPLE, TORQUE_READ, FaultPlan
 from quackd_lerobot.sim.follower import (
     NO_STATUS,
@@ -54,6 +69,7 @@ from quackd_lerobot.sim.follower import (
 )
 from quackd_lerobot.sim.model import (
     CUBE,
+    DEFAULT_OBJECTS,
     FIXED_PAD,
     MOUNTS,
     MOVING_PAD,
@@ -72,13 +88,24 @@ from quackd_lerobot.sim.model import (
     JointMap,
     ModelError,
     MotorCalibration,
+    SceneObject,
     calibration_path,
     generic_calibration,
     load,
     read_calibration,
 )
+from quackd_lerobot.sim.transport import SIM_EXTRA, LeRobotSim
 from quackd_lerobot.sim.world import LIFT_MIN_M, ROOM_TEMPERATURE_C, ArmWorld, WorldError
-from quackd_lerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN, JOINTS, TOL_DEG
+from quackd_lerobot.verbs import (
+    GRIPPER_CLOSED,
+    GRIPPER_OPEN,
+    JOINTS,
+    PICK_POLL_S,
+    TICK_S,
+    TOL_DEG,
+)
+from tests.gl import REQUIRE_ENV
+from tests.test_lerobot_adapter import _executor
 
 mujoco = pytest.importorskip("mujoco")
 
@@ -927,7 +954,9 @@ def test_every_injected_fault_is_sorted_as_lerobots_own_would_be(mjcf: str) -> N
     assert follower.world.goal(PAN) == pytest.approx(0.0), "a packet that never went out moved it"
 
 
-def test_reads_lost_stay_lost_for_everyone_but_the_heartbeat(mjcf: str) -> None:
+def test_reads_lost_stay_lost_for_everyone_the_heartbeat_included(mjcf: str) -> None:
+    """The heartbeat never starts the loss, because its reads are not counted, and it meets
+    the loss like everyone else once it has started, as a pulled cable fails every read."""
     follower = _follower(_arm(mjcf), faults=FaultPlan.parse("read_loss_from=3", seed=0))
     follower.connect(False)
     heartbeat = follower.as_heartbeat(follower.get_observation)
@@ -935,6 +964,7 @@ def test_reads_lost_stay_lost_for_everyone_but_the_heartbeat(mjcf: str) -> None:
     follower.get_observation()
     heartbeat()  # not the second observation: the heartbeat's are not counted
     follower.get_observation()
+    assert heartbeat()[f"{PAN}.pos"] == pytest.approx(0.0, abs=TICK_DEG)
     lost = r"^Failed to sync read 'Present_Position' on ids=\[[\d, ]+\] after 3 tries\. "
     with pytest.raises(ConnectionError, match=lost):
         follower.get_observation()
@@ -942,7 +972,10 @@ def test_reads_lost_stay_lost_for_everyone_but_the_heartbeat(mjcf: str) -> None:
         follower.bus.sync_read("Torque_Enable", normalize=False)
     with pytest.raises(ConnectionError, match="Failed to sync read 'Present_Position'"):
         follower.send_action({f"{PAN}.pos": 1.0})  # the cap reads the positions first
-    assert heartbeat()[f"{PAN}.pos"] == pytest.approx(0.0, abs=TICK_DEG)
+    with pytest.raises(ConnectionError, match=lost):
+        heartbeat()
+    with pytest.raises(ConnectionError, match="Failed to sync read 'Torque_Enable'"):
+        follower.as_heartbeat(follower.bus.sync_read)("Torque_Enable", normalize=False)
     # an arm that answers nothing is every motor missing, which names no joint: it is the
     # arm's cables or its power, and a ping writes nothing
     follower.bus.disconnect(disable_torque=False)
@@ -1078,6 +1111,704 @@ def test_a_follower_is_built_only_the_way_quackd_builds_one(mjcf: str) -> None:
     assert {name: motor.id for name, motor in follower.bus.motors.items()} == lr.SO_MOTOR_IDS
 
 
+# ── the clock ───────────────────────────────────────────────────────────────────────────
+
+WALL_S = 60.0
+"""How long a test waits, in the wall's time, for something the simulator does in a fraction of
+it: long enough for a slow runner, and a hang still ends in a failure rather than a stuck job."""
+LONG_S = 3600.0
+"""A sleep, in sim time, that nothing in a test waits out."""
+WALL_TURNS = 100
+"""How many turns of the event loop a test gives something that settles in a few."""
+
+
+def test_a_clock_step_divides_every_wait_the_verbs_make(mjcf: str) -> None:
+    world = ArmWorld(_arm(mjcf))
+    clock = SimClock(world)
+    assert clock.dt == pytest.approx(world.timestep * SUBSTEPS)
+    for period in (TICK_S, PICK_POLL_S):
+        steps = period / clock.dt
+        assert steps == pytest.approx(round(steps)) and steps >= 1
+    arm = _arm(mjcf)
+    arm.model.opt.timestep = TICK_S / (SUBSTEPS * 1.5)  # a clock step of two thirds of a tick
+    with pytest.raises(ValueError, match="does not divide TICK_S"):
+        SimClock(ArmWorld(arm))
+
+
+async def test_a_wait_of_nothing_registers_nothing(mjcf: str) -> None:
+    """The flock clock registers an id even for a zero wait and never lets it go, and a
+    registered id that nobody parks stops time for good: the one sleep after these would never
+    wake."""
+    clock = SimClock(ArmWorld(_arm(mjcf)))
+    try:
+        await clock.sleep(0)
+        await clock.sleep(-TICK_S)
+        assert clock.now() == 0.0
+        await asyncio.wait_for(clock.sleep(TICK_S), WALL_S)
+        assert clock.now() == pytest.approx(TICK_S)
+    finally:
+        await clock.close()
+
+
+async def test_time_stands_still_while_nobody_sleeps_and_runs_for_every_sleeper(
+    mjcf: str,
+) -> None:
+    """Think time and a lone task's work between two sleeps cost nothing, and two sleeps at
+    once overlap rather than queue: the shorter wakes at its time and the longer at its own."""
+    clock = SimClock(ArmWorld(_arm(mjcf)))
+    try:
+        await asyncio.to_thread(lambda: None)  # a bus call, say
+        await asyncio.sleep(TICK_S)  # a pilot thinking, on the wall's clock
+        assert clock.now() == 0.0
+        woke: list[float] = []
+
+        async def sleeper(seconds: float) -> None:
+            await clock.sleep(seconds)
+            woke.append(clock.now())
+
+        short, long_ = 3 * TICK_S, 5 * TICK_S
+        await asyncio.wait_for(asyncio.gather(sleeper(long_), sleeper(short)), WALL_S)
+        assert woke == pytest.approx([short, long_])
+        assert clock.now() == pytest.approx(long_)
+    finally:
+        await clock.close()
+
+
+async def test_a_close_ends_a_parked_sleep_and_refuses_the_next(mjcf: str) -> None:
+    clock = SimClock(ArmWorld(_arm(mjcf)))
+    ticked = asyncio.Event()
+    clock.add_tick_hook(lambda _: ticked.set())
+    parked = asyncio.create_task(clock.sleep(LONG_S))
+    await asyncio.wait_for(ticked.wait(), WALL_S)  # parked, and time running for it
+    await clock.close()
+    with pytest.raises(TransportError, match="closed during a wait"):
+        await asyncio.wait_for(parked, WALL_S)
+    assert clock.now() < LONG_S
+    with pytest.raises(TransportError, match=r"^lerobot mujoco: the simulator is closed\.$"):
+        await clock.sleep(TICK_S)
+    await clock.close()  # twice is nothing
+
+
+async def test_the_viewer_closing_reaches_a_direct_sleep_as_an_abort(mjcf: str) -> None:
+    """The rest move, the take-hold and the policy loop sleep on the clock itself rather than
+    through the transport, and a person closing the viewer must stop them as it stops a verb.
+    Time goes on afterwards, because the teardown still has to move the arm."""
+    from quackd.safety import Aborted
+
+    clock = SimClock(ArmWorld(_arm(mjcf)))
+
+    def window_closed(_: Any) -> None:
+        raise KeyboardInterrupt
+
+    try:
+        clock.add_tick_hook(window_closed)
+        with pytest.raises(Aborted):
+            await asyncio.wait_for(clock.sleep(LONG_S), WALL_S)
+        before = clock.now()
+        await asyncio.wait_for(clock.sleep(TICK_S), WALL_S)
+        assert clock.now() == pytest.approx(before + TICK_S)
+    finally:
+        await clock.close()
+
+
+async def test_physics_that_cannot_step_on_fail_every_sleep_after(mjcf: str) -> None:
+    world = ArmWorld(_arm(mjcf))
+    clock = SimClock(world)
+    try:
+        await clock.sleep(TICK_S)
+        with world.locked() as (_, data):
+            data.qvel[world.arm.joints["elbow_flex"].dof] = math.nan
+        for _ in range(2):
+            with pytest.raises(TransportError, match="diverged"):
+                await asyncio.wait_for(clock.sleep(TICK_S), WALL_S)
+        assert clock.failure is not None
+    finally:
+        await clock.close()
+
+
+# ── the cameras ─────────────────────────────────────────────────────────────────────────
+
+
+@contextlib.contextmanager
+def _needs_gl() -> Iterator[None]:
+    """Skip where no GL context can be made, unless the job says it must be (`tests/gl.py`)."""
+    try:
+        yield
+    except RenderError as e:
+        if os.environ.get(REQUIRE_ENV) == "1":
+            raise
+        pytest.skip(f"no OpenGL context for offscreen rendering: {e!r}")
+
+
+async def _camera(world: ArmWorld, url: str) -> SimCamera:
+    spec = parse_camera_url(url, label="mujoco", hint=CAMERA_HINT)
+    camera = SimCamera(spec, world, spec.name, asyncio.get_running_loop())
+    with _needs_gl():
+        await asyncio.to_thread(camera.connect)
+    return camera
+
+
+async def test_every_mount_renders_for_a_read_from_a_worker_thread(mjcf: str) -> None:
+    """The real backend reads a camera from a worker thread; the render happens on the loop's,
+    and a frame is drawn again only once the world has stepped since the last one."""
+    world = ArmWorld(_arm(mjcf))
+    size = (160, 120)
+    frames = {}
+    for mount in ("front", "wrist"):
+        camera = await _camera(world, f"opencv://0?name={mount}&width={size[0]}&height={size[1]}")
+        try:
+            frame = await asyncio.to_thread(camera.read_latest)
+            assert frame.shape == (size[1], size[0], 3) and frame.dtype == np.uint8
+            assert frame.std() > 0, f"{mount} rendered a blank"
+            assert await asyncio.to_thread(camera.read_latest) is frame, "nothing had stepped"
+            world.step(world.timestep)
+            assert await asyncio.to_thread(camera.read_latest) is not frame
+            frames[mount] = frame
+        finally:
+            await asyncio.to_thread(camera.disconnect)
+        with pytest.raises(RuntimeError, match="not connected"):
+            await asyncio.to_thread(camera.read_latest)
+    assert not np.array_equal(frames["front"], frames["wrist"])
+    turned = await _camera(world, "opencv://0?name=wrist&width=96&height=128&rotation=90")
+    try:
+        assert (await asyncio.to_thread(turned.read_latest)).shape == (128, 96, 3)
+    finally:
+        await asyncio.to_thread(turned.disconnect)
+    # a url with no size gets the camera's own mode, which a quarter turn hands over on its
+    # side, as LeRobot turns a webcam's (`upstream_api.OPENCV_MODE_DEFAULTS_TO_THE_CAMERA`)
+    mode = world.arm.model.vis.global_
+    wide, high = int(mode.offwidth), int(mode.offheight)
+    for rotation, shape in ((0, (high, wide)), (90, (wide, high))):
+        own = await _camera(world, f"opencv://0?name=front&rotation={rotation}")
+        try:
+            assert (await asyncio.to_thread(own.read_latest)).shape[:2] == shape, rotation
+        finally:
+            await asyncio.to_thread(own.disconnect)
+
+
+async def test_a_camera_the_scene_does_not_have_is_refused_with_the_ones_it_does(
+    mjcf: str,
+) -> None:
+    with pytest.raises(AdapterError) as refused:
+        make("mujoco", camera_url="opencv://0?name=side")
+    said = str(refused.value)
+    assert said.startswith("lerobot mujoco: --camera-url 'opencv://0?name=side'"), said
+    assert all(mount in said for mount in MOUNTS), said
+    spec = parse_camera_url("opencv://0?name=side")
+    with pytest.raises(RenderError, match="no camera called 'side'") as unknown:
+        SimCamera(spec, ArmWorld(_arm(mjcf)), "side", asyncio.get_running_loop())
+    assert all(mount in str(unknown.value) for mount in MOUNTS)
+    # a url the parser refuses says whose refusal it is and what a camera is there
+    with pytest.raises(AdapterError) as bad:
+        make("mujoco", camera_url="opencv://0?rotation=45")
+    assert str(bad.value).startswith("lerobot mujoco: --camera-url"), str(bad.value)
+    assert str(bad.value).endswith(CAMERA_HINT)
+
+
+async def test_the_field_of_view_is_published_horizontal_and_rendered_vertical(
+    mjcf: str,
+) -> None:
+    """MuJoCo's fovy is vertical and the detector's is horizontal: a camera is rendered at the
+    vertical angle that shows the asked-for horizontal one across its frame, and the manifest
+    publishes the horizontal one, the detector's default where the url gave none."""
+    width, height = 160, 90  # a wide frame, so the two angles differ a great deal
+    asked = DEFAULT_FOV_DEG / 2
+    assert vertical_fov(asked, width, height, 0) < asked
+    assert vertical_fov(asked, width, height, 90) == asked  # a quarter turn swaps the axes
+    adapter = make(
+        "mujoco",
+        camera_url=[
+            f"opencv://0?name=front&width={width}&height={height}&fov={asked:g}",
+            "opencv://1?name=top",
+        ],
+    )
+    transport = adapter.transport
+    assert isinstance(transport, LeRobotSim)
+    assert [s.fov_deg for s in transport.camera_specs] == [asked, DEFAULT_FOV_DEG]
+    transport.model_source = mjcf
+    with _needs_gl():
+        manifest = await adapter.connect()
+    try:
+        assert manifest.limits["camera_fov_deg"] == asked
+        world = transport.sim_world
+        assert world is not None
+        with world.locked() as (model, _):
+            fovy = float(model.cam_fovy[model.camera("front").id])
+        # the frame's half width over its depth is the tangent of half the angle asked for
+        half_high = math.tan(math.radians(fovy) / 2)
+        assert half_high * width / height == pytest.approx(math.tan(math.radians(asked) / 2))
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.parametrize(
+    ("objects", "seeds"), [((), (0,)), (DEFAULT_OBJECTS, (0, 1, 2))], ids=["empty", "default"]
+)
+async def test_nothing_the_scene_brings_reads_as_a_target(
+    mjcf: str, objects: tuple[SceneObject, ...], seeds: tuple[int, ...]
+) -> None:
+    """The table, the lights, the arm and the objects the scene lays out by default are all
+    colours the detector looks for none of, so a blob it finds in a rehearsal is an object
+    someone put there. A blue pen read as a person on every run."""
+    detector = ColorBlobDetector()
+    for seed in seeds:
+        world = ArmWorld(load(mjcf, seed=seed, objects=objects))
+        for mount in MOUNTS:
+            camera = await _camera(world, f"opencv://0?name={mount}")
+            try:
+                frame = await asyncio.to_thread(camera.read_latest)
+            finally:
+                await asyncio.to_thread(camera.disconnect)
+            assert detector.detect(Image.fromarray(frame)) == [], (seed, mount)
+
+
+OPENCV_HUES = 180
+"""OpenCV's hue runs from 0 to 179, half a degree each, which is how a target's band is given."""
+
+
+async def test_every_target_reads_as_itself_from_both_views_of_the_table(mjcf: str) -> None:
+    """The lighting never clips a colour, which changes its hue, and never leaves one too dark
+    or too pale for the detector: a box in the middle of each target's band of hue, halfway
+    between the band's floors and full, reads as that target and nothing else from the front
+    and from the top. Too much light read the ball as a duck from the top, and saw neither a
+    person nor a pet there."""
+    probe = SceneObject("probe", "box", CUBE.size, CUBE.mass_kg, (1.0, 1.0, 1.0, 1.0))
+    world = ArmWorld(load(mjcf, seed=0, objects=(probe,)))
+    detector = ColorBlobDetector()
+    views = ("front", "top")
+    cameras = [await _camera(world, f"opencv://0?name={m}&width=320&height=240") for m in views]
+    try:
+        for target in DEFAULT_TARGETS:
+            band = target.hsv
+            hue = (band.h_lo + band.h_hi) / 2 / OPENCV_HUES
+            saturation, value = ((floor / 255 + 1) / 2 for floor in (band.s_lo, band.v_lo))
+            with world.locked() as (model, _):
+                model.geom_rgba[model.geom(probe.name).id] = [
+                    *colorsys.hsv_to_rgb(hue, saturation, value),
+                    1.0,
+                ]
+            world.step(world.timestep)  # so each camera draws the box anew
+            for view, camera in zip(views, cameras, strict=True):
+                frame = await asyncio.to_thread(camera.read_latest)
+                seen = [d.label for d in detector.detect(Image.fromarray(frame))]
+                assert seen == [target.label], (target, view, seen)
+    finally:
+        for camera in cameras:
+            await asyncio.to_thread(camera.disconnect)
+
+
+# ── the backend ─────────────────────────────────────────────────────────────────────────
+
+
+async def _sim_arm(mjcf: str, **kw: Any) -> tuple[LeRobotAdapter, LeRobotSim]:
+    """The real backend over the stand-in, connected, and the adapter over it."""
+    transport = LeRobotSim(model=mjcf, **kw)
+    transport.connect_pause_s = 0.0
+    adapter = LeRobotAdapter(transport)
+    with _needs_gl():
+        await adapter.connect()
+    return adapter, transport
+
+
+def _hand_height(world: ArmWorld) -> float:
+    with world.locked() as (_, data):
+        return float(data.geom_xpos[world.arm.fixed_pad][2])
+
+
+async def test_a_machine_without_the_physics_is_told_the_extra_before_anything_is_fetched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The simulator needs MuJoCo, which only its extra installs, and a connect would otherwise
+    fetch the SO-101's model first, which is no use with nothing to load it in."""
+
+    def fetched() -> str:
+        raise AssertionError("the model was fetched with no physics to load it in")
+
+    monkeypatch.setattr("quackd_lerobot.sim.transport.default_model", fetched)
+    monkeypatch.setitem(sys.modules, "mujoco", None)  # any import of it now fails
+    adapter = make("mujoco")
+    with pytest.raises(AdapterNotInstalled, match=re.escape(SIM_EXTRA)):
+        await adapter.connect()
+    # the extra doctor's row names for MuJoCo on this adapter, the same words
+    from quackd.doctor import EXTRAS
+
+    assert ("mujoco", SIM_EXTRA) in EXTRAS.values()
+
+
+def test_the_simulator_is_known_before_anything_is_built(mjcf: str) -> None:
+    from quackd.adapters.factory import describe, is_simulator, make_adapter, parse_robot_spec
+
+    assert is_simulator("lerobot:mujoco")
+    assert not any(is_simulator(s) for s in ("lerobot:real", "lerobot:mock", "microduck:mujoco"))
+    adapter = make_adapter("lerobot:mujoco")
+    assert isinstance(adapter, LeRobotAdapter) and adapter.is_simulator
+    assert isinstance(adapter.transport, LeRobotSim) and adapter.transport.sim_world is None
+    assert adapter.transport.faults is None
+    mock = make_adapter("lerobot:mock")
+    assert isinstance(mock, LeRobotAdapter) and not mock.is_simulator
+    real, sim = (describe(parse_robot_spec(f"lerobot:{b}")) for b in ("real", "mujoco"))
+    assert sim.backend == "mujoco"
+    assert sim.model_dump(exclude={"backend"}) == real.model_dump(exclude={"backend"})
+    seeded = make_adapter("lerobot:mujoco", seed=3, faults=EXAMPLE)
+    assert isinstance(seeded, LeRobotAdapter) and isinstance(seeded.transport, LeRobotSim)
+    assert seeded.transport.faults == FaultPlan.parse(EXAMPLE, seed=3)
+    with pytest.raises(AdapterError, match="only the simulator, lerobot:mujoco, takes a fault"):
+        make_adapter("lerobot:real", address="COM5", faults=EXAMPLE)
+
+
+async def test_the_calibration_is_the_one_named_and_the_generic_arm_otherwise(
+    mjcf: str, tmp_path: Path
+) -> None:
+    """`--address` names a file, a registered name finds its file where LeRobot would, and a
+    run that names no arm gets the generic arm and says so, rather than LeRobot's default id
+    finding the file of whatever arm this machine last calibrated."""
+    arm = _arm(mjcf)
+    adapter, transport = await _sim_arm(mjcf)
+    try:
+        assert transport.calibration_file is None
+        assert any("generic arm" in note for note in transport.connect_notes)
+        assert transport.joint_range_deg == joint_ranges(generic_calibration(arm))
+    finally:
+        await adapter.close()
+
+    given = tmp_path / "given.json"
+    given.write_text(json.dumps(_synthetic(arm)), encoding="utf-8")
+    adapter, transport = await _sim_arm(mjcf, address=str(given))
+    try:
+        assert transport.calibration_file == str(given)
+        assert transport.joint_range_deg == joint_ranges(read_calibration(given))
+        assert not any("generic arm" in note for note in transport.connect_notes)
+    finally:
+        await adapter.close()
+
+    lost = LeRobotSim(model=mjcf, robot_id="arm-9", registered_name="arm-9")
+    with pytest.raises(CalibrationError, match="arm-9 has no calibration file where LeRobot"):
+        await lost.connect()
+    found = calibration_path("arm-9")
+    found.parent.mkdir(parents=True)
+    found.write_text(json.dumps(_synthetic(arm, share=0.25)), encoding="utf-8")
+    adapter, transport = await _sim_arm(mjcf, robot_id="arm-9", registered_name="arm-9")
+    try:
+        assert transport.calibration_file == str(found)
+    finally:
+        await adapter.close()
+
+
+async def test_two_moves_at_once_on_one_arm_both_finish_in_their_own_time(mjcf: str) -> None:
+    """Two tool calls over MCP run at once. Each tick of each sleeps under an id of its own, so
+    time runs while both are parked, and each move reaches its goal in about the time it was
+    asked for rather than the two taking turns."""
+    adapter, transport = await _sim_arm(mjcf)
+    try:
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest)
+        goals = {joint: transport.joint_range_deg[joint][1] / 4 for joint in (PAN, "wrist_roll")}
+        duration = 20 * TICK_S
+        start = transport.now()
+        moved = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    executor.run_verb(
+                        "move_joints", {"positions": {joint: goal}, "duration_s": duration}
+                    )
+                    for joint, goal in goals.items()
+                )
+            ),
+            WALL_S,
+        )
+        assert all(result.ok for result in moved), [result.summary for result in moved]
+        took = transport.now() - start
+        assert duration <= took < 2 * duration, took
+        state = await adapter.get_state()
+        for joint, goal in goals.items():
+            assert state.extras["joints"][joint] == pytest.approx(goal, abs=TOL_DEG), joint
+    finally:
+        await adapter.close()
+
+
+async def test_a_rest_move_a_hand_off_and_a_verb_all_run_in_one_task(mjcf: str) -> None:
+    """One task sleeps through all of it, one sleep at a time, and time runs for each: the rest
+    move, the settle before the take-hold, and the verb after it."""
+    rest = dict.fromkeys(BODY, 0.0)
+    adapter, transport = await _sim_arm(mjcf, rest_pose=rest)
+    try:
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest)
+        away = transport.joint_range_deg[PAN][1] / 8
+
+        async def session() -> None:
+            first = await executor.run_verb("move_joints", {"positions": {PAN: away}})
+            assert first.ok, first.summary
+            parked = await adapter.go_to_rest()
+            assert parked.how == "arrived", parked.reason
+            released = await adapter.let_go()
+            assert released.how == "released", released.reason
+            before = transport.now()
+            held = await adapter.take_hold()
+            assert held.how == "held", held.reason
+            assert transport.now() - before >= transport.place_settle_s
+            again = await executor.run_verb("move_joints", {"positions": {PAN: away}})
+            assert again.ok, again.summary
+
+        await asyncio.wait_for(session(), WALL_S)
+    finally:
+        await adapter.close()
+
+
+async def test_a_released_arm_falls_before_it_is_taken_hold_of(mjcf: str) -> None:
+    """Nobody places a simulated arm, so the take-hold lets gravity do it first: an arm let go
+    tipped forward reads lower after the settle than at the release, and is taken hold of
+    where it came to rest."""
+    tilt = _arm(mjcf).joints["shoulder_lift"].stops[1] / 6  # forward, so gravity pulls it over
+    adapter, transport = await _sim_arm(mjcf, rest_pose={"shoulder_lift": tilt})
+    try:
+        world = transport.sim_world
+        assert world is not None
+        released = await transport.let_go(anywhere=True)
+        assert released.how == "released", released.reason
+        height, lift = _hand_height(world), released.joints["shoulder_lift"]
+        held = await transport.take_hold()
+        assert held.how == "held", held.reason
+        assert _hand_height(world) < height - LIFT_MIN_M
+        assert held.joints["shoulder_lift"] > lift + TOL_DEG  # the way gravity pulls it
+    finally:
+        await adapter.close()
+
+
+async def test_an_arm_that_falls_past_its_travel_is_left_in_the_hand(
+    mjcf: str, tmp_path: Path
+) -> None:
+    """The fall is what places the arm, so it can place a joint past the travel its calibration
+    records, and the take-hold refuses that before it writes anything: torque stays off."""
+    arm = _arm(mjcf)
+    calibration = tmp_path / "arm.json"
+    calibration.write_text(json.dumps(_synthetic(arm, share=0.25)), encoding="utf-8")
+    tilt = arm.joints["shoulder_lift"].stops[1] / 6
+    adapter, transport = await _sim_arm(
+        mjcf, address=str(calibration), rest_pose={"shoulder_lift": tilt}
+    )
+    try:
+        lo, hi = transport.joint_range_deg["shoulder_lift"]
+        assert lo < tilt < hi, "the arm must start inside its travel"
+        await transport.let_go(anywhere=True)
+        held = await transport.take_hold()
+        assert held.how == "refused" and held.energised is False, held.reason
+        assert "shoulder_lift" in held.outside and held.joints["shoulder_lift"] > hi
+        assert transport.in_hand
+        assert transport.sim_world is not None
+        assert not any(transport.sim_world.torques().values()), "torque came on"
+    finally:
+        await adapter.close()
+
+
+async def test_a_take_hold_that_meets_a_falling_arm_refuses_on_the_slip(mjcf: str) -> None:
+    """A person who lets go before the arm has come to rest, of an arm whose shoulder can hold
+    it where it was let go and no lower: torque comes on while it falls, the arm goes on
+    falling, and the take-hold says it is not holding the pose it was given."""
+    tilt = _arm(mjcf).joints["shoulder_lift"].stops[1] / 6
+    adapter, transport = await _sim_arm(mjcf, rest_pose={"shoulder_lift": tilt})
+    try:
+        world = transport.sim_world
+        assert world is not None
+        lift = world.arm.joints["shoulder_lift"]
+        with world.locked() as (model, data):
+            mujoco.mj_forward(model, data)
+            holding = abs(float(data.qfrc_bias[lift.dof]))  # gravity, where it stands
+            model.actuator_forcerange[lift.actuator] = [-holding, holding]
+        transport.place_settle_s = 3 * TICK_S  # too soon: it is still on its way down
+        await transport.let_go(anywhere=True)
+        held = await transport.take_hold()
+        assert held.how == "refused" and "moved as torque came on" in held.reason, held.reason
+        assert "shoulder_lift" in held.reason and held.energised is True
+        assert not transport.in_hand, "an energised arm is not limp in anybody's hands"
+    finally:
+        await adapter.close()
+
+
+async def test_the_viewer_closing_while_the_arm_falls_stops_the_take_hold(mjcf: str) -> None:
+    """Closing the viewer during the settle is a person's stop, as it is during a verb. The
+    take-hold ends there with torque still off, and the run's own take-hold reports it as a
+    refusal, rather than going on to energise an arm nobody is watching any more."""
+    from quackd.adapters.base import take_hold_if_any
+    from quackd.safety import Aborted
+
+    tilt = _arm(mjcf).joints["shoulder_lift"].stops[1] / 6
+    adapter, transport = await _sim_arm(mjcf, rest_pose={"shoulder_lift": tilt})
+    world, clock = transport.sim_world, transport.clock
+    assert world is not None and isinstance(clock, SimClock)
+
+    def window_closed(_: Any) -> None:
+        raise KeyboardInterrupt  # what the live viewer's tick hook raises
+
+    try:
+        await transport.let_go(anywhere=True)
+        clock.add_tick_hook(window_closed)
+        with pytest.raises(Aborted):
+            await asyncio.wait_for(transport.take_hold(), WALL_S)
+        assert transport.in_hand
+        assert not any(world.torques().values()), "torque came on after the stop"
+        clock.add_tick_hook(window_closed)
+        refused = await asyncio.wait_for(take_hold_if_any(transport), WALL_S)
+        assert refused.how == "refused" and "Aborted" in refused.reason, refused.reason
+        assert not any(world.torques().values()), "torque came on after the stop"
+    finally:
+        await adapter.close()
+
+
+async def test_the_truth_is_latched_on_the_way_into_a_stop_and_a_rest_move(mjcf: str) -> None:
+    rest = dict.fromkeys(BODY, 0.0)
+    adapter, transport = await _sim_arm(mjcf, rest_pose=rest)
+    world = transport.sim_world
+    assert world is not None
+    try:
+        assert world.latched("stop") is None and world.latched("rest") is None
+        at = transport.now()
+        await adapter.stop()
+        stopped = world.latched("stop")
+        assert stopped is not None and stopped.t == pytest.approx(at)
+        assert adapter.manifest is not None
+        away = transport.joint_range_deg[PAN][1] / 4
+        moved = await _executor(adapter, adapter.manifest).run_verb(
+            "move_joints", {"positions": {PAN: away}}
+        )
+        assert moved.ok, moved.summary
+        at = transport.now()
+        parked = await adapter.go_to_rest()
+        assert parked.how == "arrived", parked.reason
+        latched = world.latched("rest")
+        assert latched is not None and latched.t == pytest.approx(at)
+        assert transport.now() > at, "the rest move took no time, so the latch proves nothing"
+        state = await adapter.get_state()
+        said = json.dumps(state.extras)
+        assert not any(obj.name in said for obj in world.arm.objects), "the truth reached extras"
+    finally:
+        await adapter.close()
+    assert world.closed and world.latched("rest") is latched, "a latch outlives the close"
+
+
+async def test_the_heartbeat_draws_no_fault_and_feeds_no_grasp_but_meets_a_lost_arm(
+    mjcf: str,
+) -> None:
+    """Its reads run on the wall's clock, so a seeded fault on them would land on a different
+    call every run, and a grasp judged on them would be judged differently every run. A lost
+    arm is lost to it too, and it stops the run as a pulled cable would."""
+    plan = FaultPlan.parse("torque_read=1,temperature_read=1,read_loss_from=2", seed=0)
+    adapter, transport = await _sim_arm(mjcf, faults=plan)
+    try:
+        follower = transport._robot
+        assert isinstance(follower, SimFollower)
+        assert transport._register_error is not None, "the connect's own read drew the faults"
+        drawn, trace = len(follower.faults.injected), len(transport._gripper_trace)
+        await transport.heartbeat()
+        assert transport._register_error is None, "the heartbeat's register reads failed"
+        assert len(follower.faults.injected) == drawn
+        assert len(transport._gripper_trace) == trace
+        with pytest.raises(ConnectionError, match="Failed to sync read"):
+            await transport.get_state()  # the second observation: the arm drops off the bus
+        with pytest.raises(HeartbeatError, match="did not answer"):
+            await transport.heartbeat()
+    finally:
+        await adapter.close()
+
+
+async def test_a_refusal_from_the_simulator_says_it_is_the_simulator(mjcf: str) -> None:
+    with pytest.raises(TransportError) as refused:
+        await _sim_arm(mjcf, faults=FaultPlan.parse("handshake=1", seed=0))
+    said = str(refused.value)
+    assert said.startswith("lerobot mujoco: connect failed"), said
+    assert "lerobot real" not in said
+
+
+async def test_physics_that_cannot_step_on_stop_the_heartbeat(mjcf: str) -> None:
+    adapter, transport = await _sim_arm(mjcf)
+    try:
+        world = transport.sim_world
+        assert world is not None
+        with world.locked() as (_, data):
+            data.qvel[world.arm.joints["elbow_flex"].dof] = math.nan
+        with pytest.raises(TransportError, match="diverged"):
+            await asyncio.wait_for(transport.sleep(TICK_S), WALL_S)
+        with pytest.raises(HeartbeatError, match="could not step"):
+            await transport.heartbeat()
+    finally:
+        await adapter.close()
+
+
+async def test_an_exit_that_skips_the_close_leaves_the_simulated_arm_holding(mjcf: str) -> None:
+    """ADR-0036's second Ctrl-C: a rest move under way, then the process ends before the close.
+    LeRobot disconnects a follower nobody closed as it is collected, by whatever its config
+    says by then (`upstream_api.ROBOT_DEL`), and the real backend builds it asking to keep the
+    torque, so the arm is left holding rather than dropped where it stood."""
+    adapter, transport = await _sim_arm(mjcf, rest_pose=dict.fromkeys(BODY, 0.0))
+    world, clock = transport.sim_world, transport.clock
+    assert world is not None and isinstance(clock, SimClock)
+    assert adapter.manifest is not None
+    away = transport.joint_range_deg[PAN][1] / 4
+    moved = await _executor(adapter, adapter.manifest).run_verb(
+        "move_joints", {"positions": {PAN: away}}
+    )
+    assert moved.ok, moved.summary
+    under_way = asyncio.Event()
+    start = clock.now()
+    clock.add_tick_hook(lambda s: under_way.set() if s.t >= start + 2 * TICK_S else None)
+    resting = asyncio.create_task(transport.go_to_rest())
+    await asyncio.wait_for(under_way.wait(), WALL_S)
+    resting.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await resting
+    if (wedged := transport._wedged) is not None:
+        await asyncio.wait([wedged])  # a call cut off on the wire still holds the follower
+    collected = weakref.ref(transport._robot)
+    del adapter, transport, resting
+    for _ in range(WALL_TURNS):  # the cancelled task lets go of its frames a loop turn later
+        gc.collect()
+        if collected() is None:
+            break
+        await asyncio.sleep(0)
+    assert collected() is None, "the follower was not collected"
+    assert all(world.torques().values()), "a follower nobody closed dropped the arm"
+    await clock.close()
+    world.close()
+
+
+def test_the_lookout_runs_on_the_simulated_arm_end_to_end(
+    mjcf: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`quackd run` as a person types it, on the stand-in, with the scripted pilot and memory
+    off: the task connects, reads the arm back, succeeds and closes. `--no-gif`, because the
+    recorder draws a world the arm's simulator does not hand it."""
+    from typer.testing import CliRunner
+
+    from quackd.agent.transcript import Transcript
+    from quackd.cli import app
+
+    monkeypatch.setattr("quackd_lerobot.sim.transport.default_model", lambda: mjcf)
+    runs = tmp_path / "runs"
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "lerobot-lookout",
+            "--llm",
+            "fake",
+            "--robot",
+            "lerobot:mujoco",
+            "--no-memory",
+            "--runs-dir",
+            str(runs),
+            "--no-log",
+            "--no-gif",
+        ],
+    )
+    if "no OpenGL context" in result.output and os.environ.get(REQUIRE_ENV) != "1":
+        pytest.skip("no OpenGL context for offscreen rendering")
+    assert result.exit_code == 0, result.output
+    assert "SUCCESS" in result.output, result.output
+    events = Transcript.read(next(runs.rglob("transcript.jsonl")))
+    verbs = [e.get("name") for e in events if e["kind"] == "verb_end"]
+    assert "report_state" in verbs, verbs
+
+
 # ── the real model ──────────────────────────────────────────────────────────────────────
 
 
@@ -1092,6 +1823,10 @@ def test_the_so101_model_loads_with_its_fingers_cut_to_pads() -> None:
     raw = mujoco.MjSpec.from_file(str(so101.model_path)).compile()
     arm = load(so101.model_path, seed=0)
     model = arm.model
+    # drawn in greys, however upstream colours it, so the colour detector finds nothing on it
+    assert raw.nmat and any(len(set(rgba[:3])) > 1 for rgba in raw.mat_rgba)
+    for rgba in model.mat_rgba:
+        assert rgba[0] == pytest.approx(rgba[1]) and rgba[1] == pytest.approx(rgba[2]), rgba
     for pad in (FIXED_PAD, MOVING_PAD, PALM_PAD):
         g = model.geom(pad).id
         assert model.geom_type[g] == mujoco.mjtGeom.mjGEOM_BOX and (model.geom_size[g] > 0).all()

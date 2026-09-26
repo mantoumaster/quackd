@@ -111,6 +111,8 @@ from quackd_lerobot.verbs import (
 
 STATUS = "LeRobot names verified at a pinned commit; one SO-101 driven on 2026-09-15"
 POLICY_HZ = 10.0
+POLICY_TASK = "quackd-lerobot-policy"
+"""The name `pick`'s policy loop runs under as an asyncio task."""
 
 logger = logging.getLogger("quackd.lerobot")
 """Under `quackd`, not under this module's own name (`quackd_lerobot.real`): `quackd`'s logger is
@@ -225,6 +227,14 @@ CAMERA_NAME = "front"
 CAMERA_BACKENDS = ("any", "v4l2", "dshow", "avfoundation", "msmf")
 CAMERA_ROTATIONS = (0, 90, 180, 270)
 CAMERA_KEYS = ("name", "width", "height", "fps", "fourcc", "backend", "rotation", "fov")
+CAMERA_HINT = (
+    "A camera is one USB webcam named by its OpenCV index, opencv://0, or by a device path, "
+    f"opencv:///dev/video2, with any of {', '.join(CAMERA_KEYS)} after a ?. Run "
+    "`lerobot-find-cameras opencv` to see which index is which: it saves a frame per camera"
+)
+"""What a refused `--camera-url` is told a camera is, after why it was refused. The simulator
+parses the same urls and passes a hint of its own (`sim/camera.py`), because a camera there is
+a mount in a scene and not a webcam on a USB port."""
 CAMERA_CONNECT_S = 15.0
 """Long enough for the open plus upstream's warmup, which reads frames before returning."""
 CAMERA_CLOSE_S = 10.0
@@ -256,26 +266,25 @@ class CameraSpec:
     thing telling two views apart; with one it may, and `front` is the default."""
 
 
-def _camera_int(key: str, raw: str, url: str) -> int:
+def _camera_int(key: str, raw: str, url: str, label: str, hint: str) -> int:
     try:
         value = int(raw)
     except ValueError:
-        raise _camera_refusal(f"{key}={raw!r} is not a whole number", url) from None
+        raise _camera_refusal(f"{key}={raw!r} is not a whole number", url, label, hint) from None
     if value <= 0:
-        raise _camera_refusal(f"{key}={raw!r} must be above 0", url)
+        raise _camera_refusal(f"{key}={raw!r} must be above 0", url, label, hint)
     return value
 
 
-def _camera_refusal(why: str, url: str) -> AdapterError:
-    return AdapterError(
-        f"lerobot real: --camera-url {url!r}: {why}. A camera is one USB webcam named by "
-        "its OpenCV index, opencv://0, or by a device path, opencv:///dev/video2, with any "
-        f"of {', '.join(CAMERA_KEYS)} after a ?. Run `lerobot-find-cameras opencv` to see "
-        "which index is which: it saves a frame per camera"
-    )
+def _camera_refusal(
+    why: str, url: str, label: str = "real", hint: str = CAMERA_HINT
+) -> AdapterError:
+    """A refused `--camera-url`, from the backend `label` names (`LeRobotReal.label`), with
+    `hint` saying what a camera is there."""
+    return AdapterError(f"lerobot {label}: --camera-url {url!r}: {why}. {hint}")
 
 
-def parse_camera_url(url: str) -> CameraSpec:
+def parse_camera_url(url: str, *, label: str = "real", hint: str = CAMERA_HINT) -> CameraSpec:
     """`opencv://0?width=640&height=480&fps=30&backend=msmf` into a `CameraSpec`.
 
     Strict, in the shape of the rosbridge adapter's address parser: an unknown scheme, key
@@ -285,18 +294,29 @@ def parse_camera_url(url: str) -> CameraSpec:
 
     Size and rate are left unset by default, which keeps whatever mode the camera already
     has (`up.OPENCV_MODE_DEFAULTS_TO_THE_CAMERA`). Asking for one it cannot do is a refusal
-    at connect (`up.OPENCV_MODE_IS_A_DEMAND`), and the webcam in a lab drawer is unknown."""
+    at connect (`up.OPENCV_MODE_IS_A_DEMAND`), and the webcam in a lab drawer is unknown.
+
+    `label` and `hint` are whose refusal it is and what it says a camera is: the simulator
+    parses the same urls, so that a task's camera flags rehearse unchanged, and refuses them
+    in its own name."""
+
+    def refused(why: str) -> AdapterError:
+        return _camera_refusal(why, url, label, hint)
+
+    def whole(key: str, raw: str) -> int:
+        return _camera_int(key, raw, url, label, hint)
+
     parts = urlsplit(url)
     if parts.scheme != CAMERA_SCHEME:
         seen = f"{parts.scheme!r} is not a scheme quackd knows" if parts.scheme else "no scheme"
-        raise _camera_refusal(seen, url)
+        raise refused(seen)
     target = (parts.netloc + parts.path).rstrip("/")
     if not target:
-        raise _camera_refusal("no camera index or device path", url)
+        raise refused("no camera index or device path")
     index_or_path: int | str = int(target) if target.isdigit() else target
     query = parse_qs(parts.query, keep_blank_values=True)
     if unknown := sorted(set(query) - set(CAMERA_KEYS)):
-        raise _camera_refusal(f"unknown {'keys' if len(unknown) > 1 else 'key'} {unknown}", url)
+        raise refused(f"unknown {'keys' if len(unknown) > 1 else 'key'} {unknown}")
 
     def one(key: str) -> str | None:
         values = query.get(key)
@@ -305,43 +325,43 @@ def parse_camera_url(url: str) -> CameraSpec:
     given = one("name")
     name = given or CAMERA_NAME
     if not name.replace("_", "").replace("-", "").isalnum():
-        raise _camera_refusal(f"name={name!r} is not a plain name", url)
+        raise refused(f"name={name!r} is not a plain name")
     fourcc = one("fourcc")
     if fourcc is not None and len(fourcc) != 4:
-        raise _camera_refusal(f"fourcc={fourcc!r} must be four characters", url)
+        raise refused(f"fourcc={fourcc!r} must be four characters")
     backend = (one("backend") or "any").lower()
     if backend not in CAMERA_BACKENDS:
-        raise _camera_refusal(f"backend={backend!r} is not one of {CAMERA_BACKENDS}", url)
+        raise refused(f"backend={backend!r} is not one of {CAMERA_BACKENDS}")
     raw_rotation = one("rotation")
     rotation = 0
     if raw_rotation:
         try:
             rotation = int(raw_rotation)
         except ValueError:
-            raise _camera_refusal(f"rotation={raw_rotation!r} is not a whole number", url) from None
+            raise refused(f"rotation={raw_rotation!r} is not a whole number") from None
     if rotation not in CAMERA_ROTATIONS:
-        raise _camera_refusal(f"rotation={rotation} is not one of {CAMERA_ROTATIONS}", url)
+        raise refused(f"rotation={rotation} is not one of {CAMERA_ROTATIONS}")
     fov_deg: float | None = None
     if raw_fov := one("fov"):
         try:
             fov_deg = float(raw_fov)
         except ValueError:
-            raise _camera_refusal(f"fov={raw_fov!r} is not a number of degrees", url) from None
+            raise refused(f"fov={raw_fov!r} is not a number of degrees") from None
         if not 0.0 < fov_deg < 180.0:
-            raise _camera_refusal(f"fov={raw_fov!r} must be between 0 and 180", url)
-    width = _camera_int("width", w, url) if (w := one("width")) else None
-    height = _camera_int("height", h, url) if (h := one("height")) else None
+            raise refused(f"fov={raw_fov!r} must be between 0 and 180")
+    width = whole("width", w) if (w := one("width")) else None
+    height = whole("height", h) if (h := one("height")) else None
     if (width is None) != (height is None):
         # upstream keeps the camera's own mode unless BOTH are set, so one alone would be
         # accepted here and quietly dropped there
-        raise _camera_refusal("width and height come together or not at all", url)
+        raise refused("width and height come together or not at all")
     return CameraSpec(
         url=url,
         name=name,
         index_or_path=index_or_path,
         width=width,
         height=height,
-        fps=_camera_int("fps", f, url) if (f := one("fps")) else None,
+        fps=whole("fps", f) if (f := one("fps")) else None,
         fourcc=fourcc,
         backend=backend,
         rotation=rotation,
@@ -350,15 +370,18 @@ def parse_camera_url(url: str) -> CameraSpec:
     )
 
 
-def parse_camera_urls(urls: Sequence[str]) -> tuple[CameraSpec, ...]:
+def parse_camera_urls(
+    urls: Sequence[str], *, label: str = "real", hint: str = CAMERA_HINT
+) -> tuple[CameraSpec, ...]:
     """Every `--camera-url` this arm was given, in order. The first is the primary.
 
     With one camera this is `parse_camera_url` and nothing more. With several, each url has
     to name its own camera and the names have to differ, because the name is what the model
     reading two pictures, a policy's observation dict and `frames/NNNN-<name>.png` all tell
     them apart by. An index may only appear once: two handles on one webcam is not two
-    views, it is a camera that will not open twice."""
-    specs = tuple(parse_camera_url(url) for url in urls)
+    views, it is a camera that will not open twice. `label` and `hint` are
+    `parse_camera_url`'s."""
+    specs = tuple(parse_camera_url(url, label=label, hint=hint) for url in urls)
     if len(specs) < 2:
         return specs
     by_name: dict[str, CameraSpec] = {}
@@ -371,17 +394,23 @@ def parse_camera_urls(urls: Sequence[str]) -> tuple[CameraSpec, ...]:
                 "opencv://2?name=side, because the name is what the model, a pick policy "
                 "and frames/NNNN-<name>.png tell them apart by",
                 spec.url,
+                label,
+                hint,
             )
         if (clash := by_name.get(spec.name)) is not None:
             raise _camera_refusal(
                 f"name={spec.name!r} is already the name of {clash.url!r}. With several "
                 "cameras every name is its own",
                 spec.url,
+                label,
+                hint,
             )
         if (same := by_index.get(spec.index_or_path)) is not None:
             raise _camera_refusal(
                 f"{spec.index_or_path} is already {same.url!r}. One url per camera",
                 spec.url,
+                label,
+                hint,
             )
         by_name[spec.name] = spec
         by_index[spec.index_or_path] = spec
@@ -403,15 +432,15 @@ def step_from_env(default: float = MAX_STEP_DEG) -> float:
     return value
 
 
-def check_port(port: str) -> None:
+def check_port(port: str, *, label: str = "real") -> None:
     """A serial port, or a clear refusal. The shape is all quackd checks: which port is the
     arm is the owner's business (`up.SERIAL_PORT`), but an empty --address, or a robot name
     that never resolved, is worth catching before LeRobot opens something."""
     if not port:
-        raise TransportError("lerobot real: --address must be the arm's serial port")
+        raise TransportError(f"lerobot {label}: --address must be the arm's serial port")
     if not PORT_SHAPE.match(port):
         raise TransportError(
-            f"lerobot real: --address {port!r} is not a serial port; it looks like COM5 on "
+            f"lerobot {label}: --address {port!r} is not a serial port; it looks like COM5 on "
             "Windows or /dev/ttyACM0 elsewhere"
         )
 
@@ -636,6 +665,10 @@ class WallClock:
 
 class LeRobotReal:
     name = "real"
+    label = "real"
+    """What every refusal this backend makes says it is, after `lerobot`. The simulator runs
+    this same code under its own (`sim/transport.py`), and a refusal from a rehearsal must not
+    read as one from the arm on the desk."""
     mobility = "none"
 
     def __init__(
@@ -992,9 +1025,9 @@ class LeRobotReal:
         except ImportError as e:
             raise AdapterNotInstalled("lerobot", "quackd[lerobot]") from e
         self.lerobot_version = getattr(lerobot, "__version__", None)
-        check_port(self.port)
+        check_port(self.port, label=self.label)
         if self.robot_type != up.ROBOT_TYPE_SO101.name:
-            raise TransportError(f"lerobot real: only {up.ROBOT_TYPE_SO101.name} is wired")
+            raise TransportError(f"lerobot {self.label}: only {up.ROBOT_TYPE_SO101.name} is wired")
         config = SO101FollowerConfig(**self._config_kwargs())
         return make_robot_from_config(config)
 
@@ -1061,18 +1094,18 @@ class LeRobotReal:
         (`_keep_over_a_failure`)."""
         if not bool(self._robot.is_calibrated):
             return (
-                "lerobot real: the arm is not calibrated; run LeRobot's calibration first "
-                "(it is interactive, quackd never triggers it)"
+                f"lerobot {self.label}: the arm is not calibrated; run LeRobot's calibration "
+                "first (it is interactive, quackd never triggers it)"
             )
         if not dict(getattr(self._robot, "calibration", None) or {}):
             return (
-                "lerobot real: the arm reports no calibration file, so nothing knows how far "
-                "each joint travels; run LeRobot's calibration first"
+                f"lerobot {self.label}: the arm reports no calibration file, so nothing knows "
+                "how far each joint travels; run LeRobot's calibration first"
             )
         if getattr(self._robot, "bus", None) is None:
             return (
-                "lerobot real: this robot has no motors bus, so torque and temperature "
-                "cannot be read; quackd drives an SO-101 follower and nothing else"
+                f"lerobot {self.label}: this robot has no motors bus, so torque and "
+                "temperature cannot be read; quackd drives an SO-101 follower and nothing else"
             )
         return None
 
@@ -1091,8 +1124,8 @@ class LeRobotReal:
         await self._close_port()
         await self._close_cameras()
         raise TransportError(
-            f"lerobot real: connect failed once the arm was energised: {_sentence(said)} "
-            f"{KEPT_OVER_A_FAILED_CONNECT}"
+            f"lerobot {self.label}: connect failed once the arm was energised: "
+            f"{_sentence(said)} {KEPT_OVER_A_FAILED_CONNECT}"
         ) from error
 
     async def _connect_arm(self) -> None:
@@ -1154,7 +1187,7 @@ class LeRobotReal:
                 why = str(e) or self.stop_error or type(e).__name__
                 await self._close_port()
                 await self._close_cameras()
-                said = f"lerobot real: connect failed: {why}"
+                said = f"lerobot {self.label}: connect failed: {why}"
                 if split or isinstance(e, TimeoutError):
                     said = f"{_sentence(said)} {SPLIT_TORQUE}"
                 raise TransportError(said) from e
@@ -1210,7 +1243,7 @@ class LeRobotReal:
         since a servo with no power fails the same way as a cable that came out, and whatever
         else might be holding the port, because the bus has one owner at a time. Where LeRobot
         named no joint, every motor it had missing included, the arm's cables and power."""
-        head = f"lerobot real: connect failed {CONNECT_ATTEMPTS} times"
+        head = f"lerobot {self.label}: connect failed {CONNECT_ATTEMPTS} times"
         said = [f"{head}, the last on {where[0]}" if where else head]
         said[0] += f": {_one_line(error)}"
         if split:
@@ -1250,8 +1283,8 @@ class LeRobotReal:
             else "The port never opened, so nothing reached a motor"
         )
         said = [
-            f"lerobot real: connect stopped after attempt {attempt} of {CONNECT_ATTEMPTS}, "
-            "because a stop was asked for.",
+            f"lerobot {self.label}: connect stopped after attempt {attempt} of "
+            f"{CONNECT_ATTEMPTS}, because a stop was asked for.",
             f"Attempt {attempt} failed" + (f" on {where[0]}" if where else "") + ":",
             _one_line(error),
         ]
@@ -1396,8 +1429,8 @@ class LeRobotReal:
             except Exception as e:
                 await self._close_cameras()
                 raise TransportError(
-                    f"lerobot real: --camera-url {spec.url!r} did not open: {e}. The arm was "
-                    "not touched, and it connects without --camera-url"
+                    f"lerobot {self.label}: --camera-url {spec.url!r} did not open: {e}. The "
+                    "arm was not touched, and it connects without --camera-url"
                 ) from e
             opened.append(spec.name)
         self.camera_keys = tuple(opened)
@@ -1616,13 +1649,30 @@ class LeRobotReal:
             errors.temperature = f"{type(e).__name__}: {e}"
         return obs, torque, temperature, errors, written
 
-    async def _probe(self) -> dict[str, Any]:
+    def _heartbeat_reads(self) -> Callable[[], Any]:
+        """What the heartbeat's probe runs in the worker thread: the same three transactions
+        as every other probe (`_read_all`). The simulator marks them as the heartbeat's, in
+        that thread, so that no seeded fault lands on a read whose timing is the wall's
+        (`sim/faults.py`). An arm on a desk is told nothing: whose read it answers makes no
+        difference to it."""
+        return self._read_all
+
+    async def _probe(self, trace: bool = True) -> dict[str, Any]:
+        """Read the arm: its joints and both status registers, in one worker thread.
+
+        `trace` is whether the gripper's reading joins `_gripper_trace`, which `_holding` judges
+        a grasp by. Every probe feeds it but the heartbeat's (`heartbeat` passes False), which
+        reads on the wall's clock: where its samples land among a verb's polls is chance, and a
+        grasp judged on them is judged differently every time the same run is played. On an
+        arm that can cost `pick` one poll before it sees a grasp settle; the verb's own polls
+        still feed it."""
         self._answered = False
-        obs, torque, temperature, errors, written = await self._call(self._read_all)
+        reads = self._read_all if trace else self._heartbeat_reads()
+        obs, torque, temperature, errors, written = await self._call(reads)
         self._answered = True
         self._joints = self._joints_of(obs)
         gripper = self._joints.get("gripper")
-        if gripper is not None:
+        if gripper is not None and trace:
             self._gripper_trace.append((self.now(), gripper))
         self._register_error = errors.summary()
         self._torque_error = errors.torque
@@ -1878,7 +1928,8 @@ class LeRobotReal:
             await self._cancel_policy()
             self._policy_error = None
             self._policy_name = f"policy:pick:{task}"
-            self._policy_task = asyncio.create_task(self._run_policy(task))
+            # named, so a task left running at a close says whose it is wherever it is listed
+            self._policy_task = asyncio.create_task(self._run_policy(task), name=POLICY_TASK)
         return Ack()
 
     async def _run_policy(self, task: str) -> None:
@@ -1998,13 +2049,13 @@ class LeRobotReal:
         """A round trip to the arm, not a flag. `is_connected` is the serial port's own open
         flag (`up.BUS_IS_CONNECTED`): pull the cable and it stays True until a read fails."""
         if self._closed:
-            raise HeartbeatError("lerobot real transport is closed")
+            raise HeartbeatError(f"lerobot {self.label} transport is closed")
         if self._robot is None or not bool(self._robot.is_connected):
             raise HeartbeatError("the arm is not connected")
         if self._wedged is not None and not self._wedged.done():
             raise HeartbeatError(self.stop_error or "a LeRobot call has not come back")
         try:
-            await self._probe()
+            await self._probe(trace=False)
         except HeartbeatError:
             raise
         except Exception as e:
