@@ -81,6 +81,13 @@ they skip until you have run `--robot microduck:mujoco` once, and a nightly job 
 The gait arithmetic itself lives in that package's `sim3d/gait.py`, which imports no `mujoco`, so
 `tests/test_sim3d_gait.py` runs whether you installed the extra or not.
 
+Touching the arm's simulator under `adapters/lerobot/src/quackd_lerobot/sim/`? The same extra
+gives you `mujoco`, and `tests/test_lerobot_sim.py` vanishes without it the same way. It runs on
+`sim/standin.py`, a primitives-only arm that needs nothing fetched, and CI's `physics` job runs
+it too. The test marked `so101_model` needs the maker's model already in `~/.quackd/cache`, or
+`QUACKD_LEROBOT_SIM_ASSETS` pointing at the `Simulation/SO101` directory of a checkout, and
+skips without either.
+
 Touching anything under `bridge/`? That is the code that runs on a robot, or on the board
 `--host` names, and there are four lots of it now (`open_duck/`, `alohamini/`,
 `toddlerbot/`, `jetson/`). It plays by different rules: it must never import quackd (its

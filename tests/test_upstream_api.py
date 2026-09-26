@@ -41,6 +41,10 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
         {
             "adapters/lerobot/upstream_api.py",
             "adapters/lerobot/real.py",
+            # the arm simulator's model and world, which reproduce what these assumptions say
+            # of a real arm: the gripper's open end, and a goal kept through torque off
+            "adapters/lerobot/sim/model.py",
+            "adapters/lerobot/sim/world.py",
         },
         ("https://github.com/huggingface/lerobot",),
     ),
@@ -272,6 +276,33 @@ def test_the_arm_models_joints_are_lerobots_motors_and_every_ref_is_pinned() -> 
         "GRIPPER_MAP",
         "WRIST_CAMERA_POSE",
     }
+
+
+def test_the_simulators_lerobot_facts_are_the_ones_its_refs_read() -> None:
+    """The arm simulator takes a few numbers and names from LeRobot as data rather than prose:
+    the bus table's ids, the gripper's torque limit and its full scale, the calibration search.
+    Each sits beside the VERIFIED ref that read it, and has to say what that ref says."""
+    assert list(lerobot_api.SO_MOTOR_IDS) == lerobot_api.SO_MOTORS.name.split(", ")
+    assert len(set(lerobot_api.SO_MOTOR_IDS.values())) == len(lerobot_api.SO_MOTOR_IDS)
+    assert f"Max_Torque_Limit {lerobot_api.GRIPPER_MAX_TORQUE_LIMIT} " in (
+        lerobot_api.SO_GRIPPER_TORQUE_LIMIT.name + " "
+    )
+    assert lerobot_api.GRIPPER_MAX_TORQUE_LIMIT / lerobot_api.MAX_TORQUE_LIMIT_FULL == 0.5
+    assert "50%" in lerobot_api.SO_GRIPPER_TORQUE_LIMIT.note
+    chain = lerobot_api.CALIBRATION_DIR
+    assert chain.name.startswith(lerobot_api.CALIBRATION_ENV)
+    assert f"/{lerobot_api.ROBOTS_SUBDIR}/{lerobot_api.SO_FOLLOWER_NAME}/" in chain.name
+    for name in (lerobot_api.LEROBOT_HOME_ENV, lerobot_api.HF_HOME_ENV, lerobot_api.XDG_CACHE_ENV):
+        assert name in chain.note, name
+    assert lerobot_api.SO_FOLLOWER_NAME in lerobot_api.SO_NAME.name
+    step_cap = lerobot_api.ENSURE_SAFE_GOAL_POSITION
+    assert step_cap.status == "VERIFIED" and lerobot_api.PIN in step_cap.source
+    for word in ("ValueError", "TypeError", "present", "NaN"):
+        assert word in step_cap.note, word
+    # the finger meshes the simulator cuts pads from are files the pin fetches
+    for mesh in (so_arm100_api.FIXED_FINGER_MESH, so_arm100_api.MOVING_JAW_MESH):
+        assert mesh in so_arm100_api.FINGER_MESHES.name
+        assert f"assets/{mesh}.stl" in so_arm100_api.FILES
 
 
 def test_the_arm_models_zero_and_sign_cite_lerobot_at_its_pin_and_leave_out_the_gripper() -> None:

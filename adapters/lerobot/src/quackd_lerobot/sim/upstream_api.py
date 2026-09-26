@@ -155,6 +155,24 @@ WRIST_CAMERA_MOUNT = UpstreamRef(
     "<camera> element. Where a rendered wrist view comes from, and which way it looks, is "
     "quackd's overlay",
 )
+WRIST_CAMERA_BODY = "wrist_camera"
+"""The camera shell's body, which quackd's wrist view is mounted on (WRIST_CAMERA_MOUNT)."""
+FIXED_FINGER_MESH = "wrist_roll_follower_so101_v1"
+MOVING_JAW_MESH = "moving_jaw_so101_v1"
+"""The two meshes FINGER_MESHES says the fingers are part of."""
+FINGER_MESHES = UpstreamRef(
+    f"the fingers are part of the meshes {FIXED_FINGER_MESH} and {MOVING_JAW_MESH}",
+    "VERIFIED",
+    src(_MODEL, 110),
+    "the gripper body has no finger of its own. The fixed finger is one printed part with the "
+    "housing the wrist_roll servo turns, the mesh at this line, and the moving finger is the "
+    "far end of the moving jaw's mesh (line 134), on the body the gripper joint turns. Each "
+    "part has a collision copy of the whole of it, class collision, and MuJoCo collides a mesh "
+    "as its convex hull, so the fixed part's hull reaches from the housing to the fingertip and "
+    "fills the opening the moving finger closes into. Read from the model and those two meshes "
+    "at the pin: quackd turns both copies off and collides the fingers and the palm as boxes "
+    "cut from the meshes' own vertices when the model loads, finding the two by these names",
+)
 JOINT_NAMES = UpstreamRef(
     "joints and actuators named shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, "
     "wrist_roll, gripper",

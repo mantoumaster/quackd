@@ -271,9 +271,13 @@ testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]
 markers = [
-    # The only tests allowed to read the developer's own asset cache, and the only ones the
-    # conftest does not redirect to a throwaway one. They never fetch: an empty cache skips.
+    # The tests allowed to read the developer's own asset cache, with so101_model below: the
+    # conftest does not redirect them to a throwaway one. They never fetch: an empty cache skips.
     "real_duck: needs upstream's Microduck model and policies already cached",
+    # The arm simulator's counterpart: the SO-101's model from SO-ARM100, fetched at run time
+    # and never shipped. The conftest leaves them the real cache too, and they never fetch
+    # either: an empty cache, with no QUACKD_LEROBOT_SIM_ASSETS checkout, skips them.
+    "so101_model: needs the SO-101's MuJoCo model from SO-ARM100 already fetched",
     # Cost money and reach the network. Opt-in twice: this marker and QUACKD_LIVE_LLM=1, so a
     # bare `pytest -m live_llm` on a machine with a key still skips until it is asked for.
     "live_llm: calls a real LLM over the network (needs OPENAI_API_KEY and QUACKD_LIVE_LLM=1)",

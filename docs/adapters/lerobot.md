@@ -1750,24 +1750,27 @@ If you hit one of these, or fail to, that is exactly what the
 | `Robot.calibration` | motor name -> MotorCalibration, loaded from the file; where joint ranges come from |
 | `Robot.calibration_fpath` | `calibration_dir / '<id>.json'`; reported so a wrong id is visible |
 | `calibrate() records wrist_roll as a full turn` | upstream sweeps every joint except that one and writes 0..4095 for it, so quackd's range refusal is real on four body joints and inert on the fifth |
-| `HF_LEROBOT_CALIBRATION/robots/so_follower/` | the default calibration directory; two arms sharing an id share a file |
+| `HF_LEROBOT_CALIBRATION/robots/so_follower/` | the default calibration directory: `$HF_LEROBOT_CALIBRATION`, else `$HF_LEROBOT_HOME/calibration`, else `lerobot/calibration` under `$HF_HOME`, which is huggingface_hub's own `$XDG_CACHE_HOME/huggingface` or `~/.cache/huggingface` when unset, and a variable set to nothing still counts as set. The arm simulator walks the same search without importing LeRobot. Two arms sharing an id share a file |
+| `a calibration file is draccus JSON of motor name -> MotorCalibration` | one object with a key per motor, each holding exactly the five integer fields. The arm simulator reads it with the json module and refuses a file that names other motors or leaves a field out |
+| `draccus>=0.11.6,<0.12.0` | how LeRobot decodes each field of a calibration file: a float is refused and anything else goes through `int()`, so `true` reads as 1 and `"3"` as 3, and a null passes through. The arm simulator decodes the fields the same way, so a twin loads the file its arm loads, and refuses a null, because it builds the travel from every field |
 | `lerobot.robots.make_robot_from_config(config)` | |
 | `so101_follower` | the registered config type |
 | `lerobot.robots.so_follower.SO101Follower` | an alias of SOFollower |
 | `SOFollower.name is so_follower` | the calibration subdirectory, shared by SO-100 and SO-101 |
 | `SO101FollowerConfig(port, disable_torque_on_disconnect=True, max_relative_target=None, cameras={}, use_degrees=True, position_p_coefficient=16, position_i_coefficient=0, position_d_coefficient=32, num_read_retries=2)` | every safety-shaped field is passed explicitly rather than inherited, and `disable_torque_on_disconnect` is passed as False, the opposite of upstream's default, so a disconnect quackd did not ask for keeps torque |
-| `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | six Feetech sts3215 motors, ids 1..6 |
+| `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | six Feetech sts3215 motors, ids 1..6 in the bus table, which are the ids the arm simulator gives the generic arm it builds when no calibration file is named |
 | `'<motor>.pos'` | the observation and action keys |
 | `get_observation() reads Present_Position and nothing else` | no torque, current, temperature or fault: why quackd reads registers |
 | `camera name -> array` | `cam.read_latest()` under each configured camera's name |
 | `max_relative_target caps each step` | clips a goal to present +/- the cap per send_action |
 | `max_relative_target must be a float or a dict per motor` | an int raises; a dict must name exactly the action's joints |
+| `ensure_safe_goal_position(goal_present_pos, max_relative_target)` | the whole step cap: a float caps every motor, a dict with other keys than the goal's raises ValueError and anything else raises TypeError, and each goal is clipped to the cap either side of the present reading, which `send_action()` reads just before. A NaN cap caps nothing. The arm simulator reimplements it rather than importing LeRobot, which needs Python 3.12 and torch |
 | `send_action() returns the goal actually sent` | the clipped goal, not the measured position |
 | `use_degrees=True -> body joints in degrees` | |
 | `gripper is 0..100` | whatever use_degrees says |
 | `disconnect() disables torque by default` | `disable_torque_on_disconnect` defaults to True, so LeRobot lets the arm go limp at every disconnect, the one it makes of a follower nobody closed included. Under that default an exit that skipped quackd's close, a second Ctrl-C during the rest move or a crash, could drop the arm, so quackd builds the follower with it False and its close writes it every time: True over an arm at its recorded rest pose or with none recorded, which is the limp end of every clean session, a `doctor` probe included, and False over one that did not reach the pose it was recorded resting in. A connect quackd refuses once the arm is energised (not calibrated, no calibration file, no motors bus) writes True before its own disconnect, and one that fails any other way closes the port and keeps torque. Nothing runs when the process is killed |
 | `disconnect() reads config.disable_torque_on_disconnect when it runs` | the flag is read off the config instance inside `disconnect()` rather than copied at construction, and the config is a plain dataclass, so the value on the instance when `disconnect()` runs is what it does, whoever calls it. The config is built asking for False and every connect asks again, so a disconnect quackd did not make keeps torque, and quackd writes True immediately before its own only over an arm that may be let go. Read against lerobot 0.6.1, the version the first real arm ran |
-| `Max_Torque_Limit 500 on the gripper` | with Protection_Current 250 and Overload_Torque 25: the native authority |
+| `Max_Torque_Limit 500 on the gripper` | with Protection_Current 250 and Overload_Torque 25: the native authority. The line's own comment calls 500 half the maximum, so the arm simulator gives its model gripper half of that model's force range |
 | `the five body joints get no torque or current cap` | the caps sit inside a check for the gripper's name |
 | `configure_motors() writes Return_Delay_Time 0 and Acceleration 254` | called inside torque_disabled(), so connecting drops torque briefly |
 | `SOFollower.is_connected is the serial port plus the cameras` | |
@@ -1789,6 +1792,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `MotorsBus.sync_read(data_name, motors=None, normalize=True, num_retry=0)` | one transaction for every motor named |
 | `NORMALIZED_DATA is Goal_Position and Present_Position` | every other register comes back raw |
 | `MotorCalibration(id, drive_mode, homing_offset, range_min, range_max)` | raw encoder ticks, not degrees |
+| `Invalid calibration for motor '<motor>': min and max are equal.` | LeRobot loads a file whose range_min equals its range_max and refuses the first reading or goal through that motor. The arm simulator refuses the file as it reads it |
 | `degrees = (raw - mid) * 360 / 4095` | how a calibration file becomes a range in degrees, centred on zero |
 | `a degrees goal is not clamped to the calibrated range` | the two 0..100 modes are clamped and DEGREES is not, so the servo's own clamp is what stops a goal past the travel, silently: why quackd refuses |
 | `write_calibration() writes Min_Position_Limit and Max_Position_Limit, and the servo clamps Goal_Position to them` | the servo clamps every goal to the calibrated travel and never a reading, seen on an SO-101 on 2026-09-23: why a rest pose is clipped into the travel and a joint past it gets no goal |
@@ -1839,8 +1843,10 @@ If you hit one of these, or fail to, that is exactly what the
 
 quackd is growing a simulator for this arm: the `real` backend's own code over a physics model
 of the SO-101, so that a task file can be rehearsed at home through the code that will drive
-the arm in the lab. It is not a backend yet. What exists so far is the model's upstream and the
-fetcher for it, and nothing in a run calls either.
+the arm in the lab. It is not a backend yet. What exists so far is the model's upstream, the
+fetcher for it, a loader that sets the model in a scene of quackd's own with a primitives-only
+stand-in arm for CI, and the physics world that steps it, and nothing in a run calls any of
+them.
 
 The model is the maker's own, [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100),
 pinned at
@@ -1871,6 +1877,7 @@ Line endings in the model do not count, because Git for Windows checks it out wi
 | `<compiler angle="radian" meshdir="assets" autolimits="true"/>` | every range in the file is in radians, and quackd reads each one from the loaded model rather than copying a number out of the file |
 | `15 STL meshes under Simulation/SO101/assets` | every mesh the model names and nothing else from that directory, each fetched on its own and checked against its hash |
 | `wrist_camera_mount and wrist_camera` | two bodies under the gripper, meshes only, with no camera element in either: where a wrist view is rendered from is quackd's |
+| `the fingers are part of the meshes wrist_roll_follower_so101_v1 and moving_jaw_so101_v1` | the fixed finger is one printed part with the wrist housing, and each part collides as the whole of its mesh. MuJoCo collides a mesh as its convex hull, so the fixed part's hull fills the opening the other finger closes into and throws a pen out of the grasp. quackd turns both off and collides the two fingers and the palm as boxes cut from the meshes' own vertices when the model loads |
 | `joints and actuators named shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | exactly LeRobot's motor names in LeRobot's order, so a `'<motor>.pos'` key reaches its joint and its actuator by name |
 | `new_calib: each joint's zero is the middle of its range` | the README's words, which the file bears out for the five arm joints: four ranges are symmetric about zero, and `wrist_roll`'s middle is a few degrees from it. LeRobot's degrees for those joints are centred on the middle of the calibrated travel too, which is why the two zeros are expected to meet. Not for the gripper: its hinge has its zero near one end of its range and LeRobot's gripper is 0..100, so it is `GRIPPER_MAP`'s |
 | `<position kp="998.22" kv="2.731" forcerange="-2.94 2.94"/>` | the gains every joint uses, which the file says were calculated following [RBE501-RL-arm-project](https://github.com/Gregory119/RBE501-RL-arm-project/blob/main/gymnasium_env/README.md) with the servo's proportional gain assumed to be 16, LeRobot's default, and which it says are not a one to one mapping of LeRobot's servo gains. Each of the six actuators overrides the force range with -3.35 3.35. quackd uses them as written |

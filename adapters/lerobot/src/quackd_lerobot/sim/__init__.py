@@ -11,8 +11,10 @@ that integration is exactly what a rehearsal here exercises.
 
 The model is the maker's own, TheRobotStudio's SO-ARM100, fetched at a pinned commit at run
 time and never shipped: `upstream_api.py` says what it is and what quackd assumes about it,
-and `assets.py` fetches it. That is all this package holds so far. No backend loads the model
-yet.
+and `assets.py` fetches it. `standin.py` is a primitives-only arm for wherever that model cannot
+be fetched, CI above all. `model.py` sets either one in quackd's scene and maps LeRobot's units
+onto it, and `world.py` steps it and keeps the truth about the table. No backend uses any of
+them yet.
 
 Nothing here may import `mujoco` when the module is imported. It is an optional extra, and
 `make()` and `describe()` have to work without it (`tests/test_extras_absent.py`), so the
