@@ -11,7 +11,7 @@ physics model of the SO-101, behind `quackd[lerobot-sim]`, for rehearsing a task
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
 
 from PIL import Image
@@ -529,15 +529,23 @@ def make(
     token: str | None = None,
     rest_pose: dict[str, float] | None = None,
     faults: str | None = None,
+    scene: Sequence[Mapping[str, Any]] | None = None,
 ) -> LeRobotAdapter:
     """`faults` is a spec of bus faults for the simulator to meet (`sim.faults.FaultPlan`),
     seeded by `seed`, and refused on any other backend: an arm on a desk has the faults it
-    has."""
+    has. `scene` is the objects the simulator lays on its table in place of its default ones
+    (`sim.model.parse_scene`), refused on any other backend for the same reason: the table in
+    front of a real arm has on it what somebody put there."""
     _check_rest_pose(rest_pose)
     if faults is not None and backend != "mujoco":
         raise AdapterError(
             f"lerobot:{backend} has no faults to be told of: only the simulator, "
             "lerobot:mujoco, takes a fault spec."
+        )
+    if scene is not None and backend != "mujoco":
+        raise AdapterError(
+            f"lerobot:{backend} has no scene to lay out: only the simulator, lerobot:mujoco, "
+            "takes one."
         )
     # The name the arm was asked for by, before the default fills it in: the registered name
     # for every robot built from the registry, which is the only place a rest pose comes from.
@@ -572,6 +580,7 @@ def make(
                 cameras=parse_camera_urls(camera_urls(camera_url), label=backend, hint=CAMERA_HINT),
                 rest_pose=rest_pose,
                 registered_name=registered_name,
+                scene=scene,
             ),
             robot_id=robot_id,
         )

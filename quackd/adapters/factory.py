@@ -257,6 +257,7 @@ def make_adapter(
     rest_pose: Mapping[str, float] | None = None,
     host: HostClient | None = None,
     faults: str | None = None,
+    scene: Sequence[Mapping[str, Any]] | None = None,
 ) -> RobotAdapter:
     """Build a robot. `camera_url` may name several cameras; every `make()` is handed the
     tuple and decides whether this body reads more than one (`MULTI_CAMERA_SPECS`), and a
@@ -267,11 +268,15 @@ def make_adapter(
     board is asked for its `/hello` here unless the client already has it, so a caller that
     must refuse a board that does not answer asks first; this raises `HostError` otherwise.
 
-    `faults` is a spec of faults for a simulator to meet, passed to `make()` only when given,
-    so every adapter that has no simulator is called exactly as it always was."""
+    `faults` is a spec of faults for a simulator to meet, and `scene` the objects it lays out
+    in place of its own (`quackd preflight` reads them from a task's sidecar). Each is passed to
+    `make()` only when given, so every adapter that has no simulator is called exactly as it
+    always was."""
     if isinstance(spec, str):
         spec = parse_robot_spec(spec)
     extra: dict[str, Any] = {} if faults is None else {"faults": faults}
+    if scene is not None:
+        extra["scene"] = [dict(item) for item in scene]
     adapter: RobotAdapter = _module(spec.adapter).make(
         spec.backend,
         robot_id=spec.robot_id,

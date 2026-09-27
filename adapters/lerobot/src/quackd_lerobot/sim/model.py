@@ -44,10 +44,11 @@ from typing import Any, Literal
 
 import numpy as np
 
+from quackd.adapters.base import AdapterError
 from quackd.transport.base import TransportError
 from quackd_lerobot import REACH
 from quackd_lerobot import upstream_api as lr
-from quackd_lerobot.real import ENCODER_TICKS
+from quackd_lerobot.real import ENCODER_TICKS, PORT_SHAPE
 from quackd_lerobot.sim import upstream_api as up
 from quackd_lerobot.verbs import GRIPPER_CLOSED, GRIPPER_OPEN, JOINTS
 
@@ -185,7 +186,9 @@ class SceneObject:
     size: tuple[float, ...]
     """MuJoCo's size for the shape: a box's three half sizes, a capsule's radius and half
     length."""
-    mass_kg: float
+    mass_kg: float | None
+    """None for the mass MuJoCo gives a solid of that size at its own default density, which is
+    what a scene that names no mass gets."""
     rgba: tuple[float, float, float, float]
 
     @property
@@ -209,6 +212,111 @@ nor the cube is a colour the detector looks for (`perception.color_blob.DEFAULT_
 blue pen read as a person on every run."""
 DEFAULT_OBJECTS = (CUBE, PEN)
 
+ON_TABLE = "table"
+BETWEEN_JAWS = "jaws"
+PLACES = (ON_TABLE, BETWEEN_JAWS)
+"""Where a scene can put an object: on the table at a spot its seed picks, as the default
+objects are laid, or on the table between the gripper's fingers as the arm starts
+(`world.ArmWorld.place_between_jaws`)."""
+SIZES = MappingProxyType({"box": 3, "capsule": 2})
+"""How many numbers MuJoCo's size takes for each shape an object can have."""
+SHAPE_RGBA = MappingProxyType({"box": CUBE.rgba, "capsule": PEN.rgba})
+"""The colour of an object a scene gives none: the default object of the same shape's, which
+no target of the colour detector matches. A scene object that should be seen names a colour
+the detector looks for (`perception.color_blob.DEFAULT_TARGETS`)."""
+
+
+@dataclass(frozen=True)
+class Scene:
+    """The objects a scene lays on the table, in place of the default ones."""
+
+    objects: tuple[SceneObject, ...]
+    jaws: str | None = None
+    """The one object laid between the jaws as the arm starts, or None."""
+
+
+def parse_scene(scene: Sequence[Mapping[str, Any]]) -> Scene:
+    """A scene as `quackd preflight` hands one over from a task's sidecar: each object's `name`,
+    `kind` (box or capsule), `size` as MuJoCo gives it, `place` (table or jaws), and optionally
+    its `mass_kg` and `rgba`. Refused whole, saying what is wrong, rather than laid out in part:
+    a rehearsal on a table other than the one its file describes would be judged against the
+    wrong world."""
+    objects: list[SceneObject] = []
+    jaws: list[str] = []
+    for raw in scene:
+        name = str(raw.get("name") or "")
+        given = raw.get("kind")
+        if not name or given not in SIZES:
+            raise AdapterError(
+                f"{LABEL} a scene object needs a name and a kind, box or capsule, and "
+                f"{dict(raw)!r} gives {'no name' if not name else f'the kind {given!r}'}."
+            )
+        kind: Literal["box", "capsule"] = "box" if given == "box" else "capsule"
+        size = _numbers(raw.get("size"))
+        if size is None or len(size) != SIZES[kind] or not all(v > 0 for v in size):
+            raise AdapterError(
+                f"{LABEL} the scene's {name} is a {kind}, whose size is {SIZES[kind]} positive "
+                f"numbers in metres, and it gives {raw.get('size')!r}."
+            )
+        place = raw.get("place") or ON_TABLE
+        if place not in PLACES:
+            raise AdapterError(
+                f"{LABEL} the scene puts {name} at {place!r}, and an object goes on the "
+                f"{ON_TABLE} or between the {BETWEEN_JAWS}."
+            )
+        if place == BETWEEN_JAWS:
+            jaws.append(name)
+        mass = None if raw.get("mass_kg") is None else _numbers([raw.get("mass_kg")])
+        if raw.get("mass_kg") is not None and (mass is None or not mass[0] > 0):
+            raise AdapterError(
+                f"{LABEL} the scene's {name} weighs {raw.get('mass_kg')!r}, and a mass is a "
+                "positive number of kilograms."
+            )
+        rgba = None if raw.get("rgba") is None else _numbers(raw.get("rgba"))
+        if raw.get("rgba") is not None and (
+            rgba is None or len(rgba) != 4 or not all(0.0 <= v <= 1.0 for v in rgba)
+        ):
+            raise AdapterError(
+                f"{LABEL} the scene's {name} has the rgba {raw.get('rgba')!r}, and a colour is "
+                "four numbers from 0 to 1."
+            )
+        objects.append(
+            SceneObject(
+                name,
+                kind,
+                size,
+                None if mass is None else mass[0],
+                SHAPE_RGBA[kind] if rgba is None else (rgba[0], rgba[1], rgba[2], rgba[3]),
+            )
+        )
+    names = [obj.name for obj in objects]
+    if not objects or len(set(names)) != len(names):
+        raise AdapterError(
+            f"{LABEL} a scene lays out one or more objects, each under a name of its own, and "
+            f"this one names {', '.join(names) or 'none'}."
+        )
+    if len(jaws) > 1:
+        raise AdapterError(
+            f"{LABEL} the scene puts {' and '.join(jaws)} between the jaws, and there is room "
+            "there for one."
+        )
+    return Scene(tuple(objects), jaws[0] if jaws else None)
+
+
+def _numbers(value: Any) -> tuple[float, ...] | None:
+    """A list of finite numbers as floats, or None for anything else: a string, a bool, a
+    number standing alone, a NaN."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    out: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        if not math.isfinite(float(item)):
+            return None
+        out.append(float(item))
+    return tuple(out)
+
 
 @dataclass(frozen=True)
 class Workspace:
@@ -231,15 +339,10 @@ def object_poses(
     `PLACE_SPREAD_DEG` of straight ahead (+x, the way both models face at zero), and no two
     closer than `PLACE_GAP_M`."""
     rng = np.random.default_rng(seed)
-    near, far = PLACE_NEAR * workspace.reach, PLACE_FAR * workspace.reach
-    spread = math.radians(PLACE_SPREAD_DEG)
-    cx, cy = workspace.center
     placed: list[tuple[float, float, float, float]] = []
     for obj in objects:
         for _ in range(PLACE_TRIES):
-            r = float(rng.uniform(near, far))
-            bearing = float(rng.uniform(-spread, spread))
-            x, y = cx + r * math.cos(bearing), cy + r * math.sin(bearing)
+            x, y = table_spot(workspace, rng)
             if all(
                 math.hypot(x - px, y - py) >= obj.footprint + other.footprint + PLACE_GAP_M
                 for (px, py, _, _), other in zip(placed, objects, strict=False)
@@ -253,6 +356,18 @@ def object_poses(
         yaw = float(rng.uniform(0.0, math.pi))
         placed.append((x, y, workspace.table_top + obj.rest_height, yaw))
     return tuple(placed)
+
+
+def table_spot(workspace: Workspace, rng: np.random.Generator) -> tuple[float, float]:
+    """One spot on the table in the ring objects are laid out in, drawn from `rng`: its
+    distance from the pan axis, then its bearing, in that order, so a seed lays a table out the
+    same way whoever draws from it."""
+    near, far = PLACE_NEAR * workspace.reach, PLACE_FAR * workspace.reach
+    spread = math.radians(PLACE_SPREAD_DEG)
+    cx, cy = workspace.center
+    r = float(rng.uniform(near, far))
+    bearing = float(rng.uniform(-spread, spread))
+    return cx + r * math.cos(bearing), cy + r * math.sin(bearing)
 
 
 # ── the maps ────────────────────────────────────────────────────────────────────────────
@@ -832,10 +947,11 @@ def _objects(
             type=mujoco.mjtGeom.mjGEOM_BOX if obj.shape == "box" else mujoco.mjtGeom.mjGEOM_CAPSULE,
             size=size,
             quat=[1.0, 0.0, 0.0, 0.0] if obj.shape == "box" else lying,
-            mass=obj.mass_kg,
             rgba=obj.rgba,
             condim=OBJECT_CONDIM,
             friction=MUJOCO_FRICTION,
+            # no mass is MuJoCo's own default density over the shape's volume
+            **({} if obj.mass_kg is None else {"mass": obj.mass_kg}),
         )
 
 
@@ -1074,6 +1190,37 @@ def _decode_int(value: Any) -> int | None:
         return None
 
 
+DEVICE_PREFIX = "//./"
+"""How a Windows device path starts once its backslashes are turned round, which is how a port
+past COM9 is written."""
+
+
+def names_a_port(address: str | Path) -> bool:
+    """Whether an address is a serial port, shaped as the real backend's `--address` is
+    (`real.PORT_SHAPE`), or a Windows device path.
+
+    The simulator's address is a calibration file and never a port, and one that names a port
+    is refused on its shape alone, before the filesystem is asked anything about it: on Windows
+    `COM5` is the device itself in whatever directory it is looked for, and reading it would
+    hold the arm's own port open waiting for an end a serial port never sends."""
+    text = str(address).strip()
+    return any(
+        bool(PORT_SHAPE.match(form)) or form.startswith(DEVICE_PREFIX)
+        for form in (text, text.replace("\\", "/"))
+    )
+
+
+def port_refusal(address: str | Path) -> str:
+    """Why an address that names a port is refused (`names_a_port`), and what to give instead."""
+    return (
+        f"{LABEL} --address {str(address)!r} is a serial port, and the address of a "
+        "lerobot:mujoco robot is the calibration file the arm's runs read, never the arm's "
+        "port, so nothing was opened there. Give --address the file lerobot-calibrate wrote "
+        "for the arm, which quackd robot twin finds for a registered one, or leave it out to "
+        "rehearse on the generic arm."
+    )
+
+
 def read_calibration(path: Path) -> dict[str, MotorCalibration]:
     """A calibration file, read as LeRobot reads one (`upstream_api.CALIBRATION_FILE`).
 
@@ -1086,6 +1233,10 @@ def read_calibration(path: Path) -> dict[str, MotorCalibration]:
         "Point --address at the file lerobot-calibrate wrote for this arm, or leave it out to "
         "rehearse on the generic arm."
     )
+    if names_a_port(path):
+        raise CalibrationError(port_refusal(path))
+    if not Path(path).is_file():
+        raise CalibrationError(f"{LABEL} there is no calibration file at {path}. {fix}")
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:

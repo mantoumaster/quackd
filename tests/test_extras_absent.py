@@ -87,6 +87,13 @@ make_adapter(
     faults="handshake=0.2",
     seed=3,
 )
+# and with a scene of its own, as `quackd preflight` hands it one from a task's sidecar, which
+# reads no physics either: the scene is laid out at connect
+make_adapter(
+    "lerobot:mujoco",
+    scene=[{{"name": "block", "kind": "box", "size": [0.01, 0.01, 0.01], "place": "jaws"}}],
+)
+import quackd.preflight
 from quackd.adapters.factory import is_simulator
 assert is_simulator("lerobot:mujoco") and not is_simulator("lerobot:real")
 # the arm simulator's upstream and its fetcher find files and never load them, and its model,

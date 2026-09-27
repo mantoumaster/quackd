@@ -876,7 +876,7 @@ def test_an_unknown_bare_name_names_both_things_it_could_have_been(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    "command", ["add", "list", "show", "edit", "remove", "rest-pose", "release"]
+    "command", ["add", "list", "show", "edit", "remove", "rest-pose", "release", "twin"]
 )
 def test_every_robot_command_answers_help(command: str) -> None:
     result = runner.invoke(app, ["robot", command, "--help"])

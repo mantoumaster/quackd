@@ -39,7 +39,16 @@ from typing import Any
 import numpy as np
 
 from quackd.transport.base import TransportError
-from quackd_lerobot.sim.model import LABEL, ArmModel, GripperMap, object_poses
+from quackd_lerobot.sim.model import (
+    LABEL,
+    PLACE_GAP_M,
+    PLACE_TRIES,
+    ArmModel,
+    GripperMap,
+    ModelError,
+    object_poses,
+    table_spot,
+)
 from quackd_lerobot.verbs import JOINTS
 
 ROOM_TEMPERATURE_C = 25
@@ -51,6 +60,11 @@ LIFT_MIN_M = 0.01
 """How far an object's centre must rise above where it was laid, off the table and touching
 the gripper, before it counts as lifted. Closing on an object can nudge it up a few
 millimetres, and that is not a lift."""
+
+JAWS_CLEARANCE = 0.2
+"""How far off the fixed finger's inner face an object laid between the jaws starts, as a share
+of its own half width: clear of the finger, so it starts untouched, and near enough that the
+moving finger, closing, presses it into the fixed one rather than pushing it out of the jaws."""
 
 _TABLE, _GRIPPER, _FIXED, _MOVING = 1, 2, 4, 8
 """What a geom is to an object touching it, as bits: the table, anything on the gripper, and
@@ -367,6 +381,135 @@ class ArmWorld:
             self._put(i, position, quat)
             self._mj.mj_forward(self._model, self._data)
             self._lay(only=i)
+
+    def place_between_jaws(self, name: str) -> None:
+        """Lay one object on the table between the gripper's fingers as they are now, and make
+        that where it was laid: the cube a task says the jaws are open around.
+
+        Where is read off the model. The object stands on the table just clear of the fixed
+        finger's inner face (`JAWS_CLEARANCE`), toward the moving finger, a box turned square to
+        the fingers and a capsule lying across them, so that closing the gripper swings the
+        moving finger onto it and presses it into the fixed one. It is refused, saying why,
+        where the fixed finger ends above the top of the object, which is not between the jaws
+        at all, and where the object laid there would touch the gripper, which is jaws open
+        narrower than it: the first step of physics would throw it."""
+        names = [obj.name for obj in self.arm.objects]
+        if name not in names:
+            raise ValueError(
+                f"{LABEL} there is no object {name!r} on the table; there is "
+                f"{', '.join(names) or 'nothing'}."
+            )
+        i = names.index(name)
+        obj = self.arm.objects[i]
+        table = self.arm.workspace.table_top
+        fixed, moving = self.arm.fixed_pad, self.arm.moving_pad
+        with self._lock:
+            self._open()
+            data = self._data
+            here = np.array(data.geom_xpos[fixed], dtype=float)
+            across = np.array(data.geom_xpos[moving], dtype=float) - here
+            across[2] = 0.0
+            span = float(np.linalg.norm(across))
+            tall = 2 * obj.rest_height
+            lowest = float(here[2]) - self._reach(fixed, np.array([0.0, 0.0, 1.0]))
+            if lowest - table > tall:
+                raise ModelError(
+                    f"{LABEL} the scene lays {name} between the jaws, and as the arm starts its "
+                    f"fixed finger ends {(lowest - table) * 1000:.0f} mm above the table, over "
+                    f"the top of {name}, which stands {tall * 1000:.0f} mm tall. Give the robot "
+                    f"a rest pose with its jaws down at the table, or lay {name} on the table "
+                    "instead."
+                )
+            u = across / span if span > 0 else np.array([1.0, 0.0, 0.0])
+            half = obj.size[0]  # a box's half size along u, a capsule's radius across it
+            x, y = (
+                float(v)
+                for v in (here + u * (self._reach(fixed, u) + half * (1 + JAWS_CLEARANCE)))[:2]
+            )
+            # a box's x axis runs from finger to finger; a capsule lies along its body's x
+            yaw = math.atan2(float(u[1]), float(u[0])) + (
+                0.0 if obj.shape == "box" else math.pi / 2
+            )
+            self._put(
+                i,
+                (x, y, table + obj.rest_height),
+                (math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)),
+            )
+            self._mj.mj_forward(self._model, self._data)
+            self._lay(only=i)
+            if span == 0 or self._flags[i] & _GRIPPER:
+                raise ModelError(
+                    f"{LABEL} the scene lays {name} between the jaws, and as the arm starts they "
+                    f"are open narrower than {name}, which would start inside a finger. Give the "
+                    f"robot a rest pose with the gripper open, or lay {name} on the table instead."
+                )
+
+    def lay_clear(self, seed: int, *, keep: str | None = None) -> None:
+        """Lay again, drawn from `seed`, each object that as the arm starts touches anything but
+        the table or lies closer to another than `PLACE_GAP_M`, then make where every object
+        lies now where it was laid: the table a run starts on.
+
+        The seed lays the table out knowing nothing of the arm, and an object between the jaws
+        is put there after it. So a hand that starts down at the table, or the object moved to
+        the jaws, can find another already where it is. The first step of physics would shove
+        that one before the pilot did anything, and a check on how far it moved would pass on
+        some seeds and not on others. `keep` stays where it is, the object between the jaws,
+        and the others make room for it. Refused, naming the object, where `PLACE_TRIES` draws
+        find no spot in reach clear of the arm and the rest."""
+        names = [obj.name for obj in self.arm.objects]
+        if keep is not None and keep not in names:
+            raise ValueError(
+                f"{LABEL} there is no object {keep!r} on the table; there is "
+                f"{', '.join(names) or 'nothing'}."
+            )
+        rng = np.random.default_rng(seed)
+        table = self.arm.workspace.table_top
+        with self._lock:
+            self._open()
+            self._mj.mj_forward(self._model, self._data)
+            for i, obj in enumerate(self.arm.objects):
+                if obj.name == keep:
+                    continue
+                tries = 0
+                while not self._clear(i):
+                    if tries == PLACE_TRIES:
+                        raise ModelError(
+                            f"{LABEL} there is no room on the table for {obj.name} clear of the "
+                            "arm as it starts and of the other objects. Ask for fewer or smaller "
+                            "objects."
+                        )
+                    tries += 1
+                    x, y = table_spot(self.arm.workspace, rng)
+                    yaw = float(rng.uniform(0.0, math.pi))
+                    self._put(
+                        i,
+                        (x, y, table + obj.rest_height),
+                        (math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)),
+                    )
+                    self._mj.mj_forward(self._model, self._data)
+            self._lay()
+
+    def _clear(self, i: int) -> bool:
+        """One object touches nothing but the table, and lies at least `PLACE_GAP_M` from every
+        other object's footprint, as the seed lays them. Under the lock, after a forward pass."""
+        table, owner = self.arm.table, self._owner
+        for a, b in self._data.contact.geom[: self._data.ncon].tolist():
+            if (owner[a] == i and b != table) or (owner[b] == i and a != table):
+                return False
+        positions = self._data.xpos[self._bodies].tolist()
+        x, y = positions[i][:2]
+        obj = self.arm.objects[i]
+        return all(
+            math.hypot(x - p[0], y - p[1]) >= obj.footprint + other.footprint + PLACE_GAP_M
+            for j, (p, other) in enumerate(zip(positions, self.arm.objects, strict=True))
+            if j != i
+        )
+
+    def _reach(self, geom: int, direction: np.ndarray) -> float:
+        """How far a box geom reaches from its centre along a unit direction: half its extent
+        that way, from its half sizes and its rotation now. Under the lock."""
+        rot = np.asarray(self._data.geom_xmat[geom], dtype=float).reshape(3, 3)
+        return float(np.abs(rot.T @ direction) @ np.asarray(self._model.geom_size[geom]))
 
     def _put(
         self,

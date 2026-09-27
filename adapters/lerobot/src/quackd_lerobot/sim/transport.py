@@ -37,7 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -58,9 +58,13 @@ from quackd_lerobot.sim.model import (
     ArmModel,
     CalibrationError,
     MotorCalibration,
+    Scene,
     calibration_path,
     generic_calibration,
     load,
+    names_a_port,
+    parse_scene,
+    port_refusal,
     read_calibration,
 )
 from quackd_lerobot.sim.world import ArmWorld
@@ -139,11 +143,14 @@ class LiveViewer:
 class LeRobotSim(LeRobotReal):
     """The real backend over a simulated SO-101: `--robot lerobot:mujoco`.
 
-    `address` is a calibration file rather than a serial port. `seed` lays out the objects and
+    `address` is a calibration file rather than a serial port, and one shaped like a port is
+    refused as the robot is built, before anything could open it. `seed` lays out the objects and
     seeds `faults`, a plan of bus faults or None for a bus with none. `live` opens MuJoCo's
     viewer and paces the clock on the wall's. `model` is the model to load, a path or MJCF
     text, and None for the SO-101's own (`default_model`). A camera url must name one of the
-    scene's mounts."""
+    scene's mounts. `scene` is the objects to lay on the table in place of the default ones, as
+    `quackd preflight` reads them from a task's sidecar (`model.parse_scene`), and None for the
+    default ones."""
 
     name = "mujoco"
     label = "mujoco"
@@ -161,8 +168,12 @@ class LeRobotSim(LeRobotReal):
         rest_pose: dict[str, float] | None = None,
         registered_name: str | None = None,
         model: str | Path | None = None,
+        scene: Sequence[Mapping[str, Any]] | None = None,
         timeout_s: float = 1.0,
     ) -> None:
+        if address and names_a_port(address):
+            # for every other lerobot robot --address is the port, so this is an easy slip
+            raise AdapterError(port_refusal(address))
         for spec in cameras:
             if spec.name not in MOUNTS:
                 raise AdapterError(
@@ -191,6 +202,9 @@ class LeRobotSim(LeRobotReal):
         self.live = live
         self.faults = faults
         self.model_source = model
+        # parsed here rather than at connect, so a scene that cannot be laid out is refused as
+        # the robot is built, before anything is loaded
+        self.scene: Scene | None = None if scene is None else parse_scene(scene)
         self.place_settle_s = PLACE_SETTLE_S
         self.sim_world: ArmWorld | None = None
         """The world the last connect built, kept readable after the close for its latches."""
@@ -213,7 +227,10 @@ class LeRobotSim(LeRobotReal):
         each thing a person should hear about them. In a worker thread: loading compiles the
         model twice and may fetch it, and none of it draws."""
         source = self.model_source if self.model_source is not None else default_model()
-        arm = load(source, seed=self.seed)
+        if self.scene is None:
+            arm = load(source, seed=self.seed)
+        else:
+            arm = load(source, seed=self.seed, objects=self.scene.objects)
         notes: list[str] = []
         path: Path | None = None
         if self.calibration_address:
@@ -233,6 +250,22 @@ class LeRobotSim(LeRobotReal):
             notes.append(GENERIC_ARM)
         self._calibration = (calibration, path)
         return arm, notes
+
+    def _lay_out(self, arm: ArmModel) -> ArmWorld:
+        """The world the arm starts in: at its rest pose, with the scene's object between its
+        jaws where the scene puts one there, which is read off the arm as it starts, and every
+        other object clear of the arm and of that one (`ArmWorld.lay_clear`), so nothing is
+        moved before the pilot moves it."""
+        world = ArmWorld(arm, rest_pose=self.rest_pose)
+        jaws = self.scene.jaws if self.scene is not None else None
+        try:
+            if jaws is not None:
+                world.place_between_jaws(jaws)
+            world.lay_clear(self.seed, keep=jaws)
+        except BaseException:
+            world.close()
+            raise
+        return world
 
     def _render_once(self, world: ArmWorld) -> None:
         """Draw one small frame on this thread, the event loop's, and let the renderer go: a
@@ -255,7 +288,7 @@ class LeRobotSim(LeRobotReal):
         await self._shut()
         self._loop = asyncio.get_running_loop()
         arm, notes = await asyncio.to_thread(self._load)
-        world = await asyncio.to_thread(ArmWorld, arm, rest_pose=self.rest_pose)
+        world = await asyncio.to_thread(self._lay_out, arm)
         self.sim_world = world
         self.clock = SimClock(world, realtime=self.live)
         try:
@@ -315,6 +348,30 @@ class LeRobotSim(LeRobotReal):
             await super().close()
         finally:
             await self._shut()
+
+    # ── what a rehearsal reads back ─────────────────────────────────────────────────────
+    #
+    # `quackd preflight` judges a run by these once it has ended, with `sim_world`'s latched
+    # truth. None of it is in the state's extras, which reach the pilot.
+
+    @property
+    def last_rest(self) -> RestResult | None:
+        """What the last rest move did, which at the end of a run is the teardown's, or None
+        where none was made: an arm with no rest pose is not moved to one."""
+        return self._rest_result
+
+    @property
+    def wedged(self) -> bool:
+        """A call to the simulated bus has not come back, so every call after it is refused
+        until it does (`LeRobotReal._call`). On the simulator that is quackd's own code stuck,
+        since nothing on the other end of the bus can be slow."""
+        return self._wedged is not None and not self._wedged.done()
+
+    @property
+    def sim_dt(self) -> float | None:
+        """One step of the simulator's clock in seconds, or None before the first connect."""
+        clock = self._sim_clock()
+        return None if clock is None else clock.dt
 
     # ── what the arm does that a model does not ─────────────────────────────────────────
 

@@ -92,6 +92,7 @@ from quackd_lerobot.sim.model import (
     calibration_path,
     generic_calibration,
     load,
+    parse_scene,
     read_calibration,
 )
 from quackd_lerobot.sim.transport import SIM_EXTRA, LeRobotSim
@@ -106,6 +107,7 @@ from quackd_lerobot.verbs import (
 )
 from tests.gl import REQUIRE_ENV
 from tests.test_lerobot_adapter import _executor
+from tests.test_robot_twin import PORTS, guard_ports
 
 mujoco = pytest.importorskip("mujoco")
 
@@ -403,9 +405,22 @@ def test_each_field_is_decoded_as_draccus_decodes_it_for_lerobot(mjcf: str, tmp_
         read_calibration(path)
 
 
-def test_a_missing_or_unreadable_calibration_file_says_how_to_go_on(tmp_path: Path) -> None:
+def test_a_missing_or_unreadable_calibration_file_says_how_to_go_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     with pytest.raises(CalibrationError, match=r"no calibration file .*generic arm"):
         read_calibration(tmp_path / "nope.json")
+    # a directory is not a file, whatever reading one raises on this system
+    with pytest.raises(CalibrationError, match=r"no calibration file .*generic arm"):
+        read_calibration(tmp_path)
+    # a port is refused on its shape, and neither opened nor looked for
+    guard_ports(monkeypatch)
+    for port in PORTS:
+        with pytest.raises(CalibrationError, match=r"is a serial port, .* nothing was opened"):
+            read_calibration(Path(port))
+        with pytest.raises(AdapterError, match="is a serial port"):
+            make("mujoco", address=port)
+    monkeypatch.undo()
     (tmp_path / "bad.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(CalibrationError, match="not a calibration file LeRobot could read"):
         read_calibration(tmp_path / "bad.json")
@@ -612,6 +627,134 @@ def test_the_truth_follows_a_grasp_and_a_latch_keeps_what_it_saw(mjcf: str) -> N
     assert peaks.moved_m >= up_.moved_m - 1e-9 and peaks.moved_m >= LIFT_MIN_M
     assert world.latched("stop") is latched and latched.objects[CUBE.name].lifted
     assert world.latched("rest") is None
+
+
+def _jaws_scene(**block: Any) -> list[dict[str, Any]]:
+    """A scene as `quackd preflight` reads one from a sidecar: a box between the jaws, the size
+    of the simulator's own cube, and a capsule on the table, both under names of their own."""
+    return [
+        {"name": "block", "kind": "box", "size": list(CUBE.size), "place": "jaws", **block},
+        {"name": "stick", "kind": "capsule", "size": [CUBE.size[0] / 3, CUBE.size[0] * 4]},
+    ]
+
+
+def test_a_scene_lays_its_own_objects_and_one_between_the_jaws(mjcf: str) -> None:
+    """A scene's objects replace the cube and the pen. The one it puts between the jaws starts
+    on the table against the inside of the fixed finger, found from the model as the arm starts,
+    untouched, and closing the gripper pinches it there. An object given no mass weighs what
+    MuJoCo makes of its volume."""
+    scene = parse_scene(_jaws_scene())
+    assert scene.jaws == "block" and [o.name for o in scene.objects] == ["block", "stick"]
+    assert all(o.mass_kg is None for o in scene.objects)
+    arm = load(mjcf, seed=0, objects=scene.objects)
+    assert [o.name for o in arm.objects] == ["block", "stick"]
+    half = CUBE.size[0]
+    world = ArmWorld(arm, rest_pose=_pointing_down(arm, (PLACE_NEAR + PLACE_FAR) / 2, half / 2))
+    world.place_between_jaws("block")
+    laid = world.truth().objects["block"]
+    assert laid.on_table and not laid.touching and laid.moved_m == 0.0
+    assert laid.position[2] == pytest.approx(arm.workspace.table_top + half, abs=1e-6)
+    with world.locked() as (model, data):
+        assert model.body_mass[arm.object_bodies[0]] > 0
+        fixed, moving = (np.array(data.geom_xpos[g][:2]) for g in (arm.fixed_pad, arm.moving_pad))
+        # on the line from one pad to the other, and between them
+        across = moving - fixed
+        share = float((np.array(laid.position[:2]) - fixed) @ across) / float(across @ across)
+        assert 0.0 < share < 1.0, share
+    world.set_goal(JOINTS[-1], arm.gripper.to_model(GRIPPER_CLOSED))
+    world.step(1.0)
+    held = world.truth()
+    assert held.objects["block"].pinched and held.peaks["block"].pinched
+
+
+def test_the_jaws_are_refused_where_nothing_on_the_table_is_between_them(mjcf: str) -> None:
+    arm = load(mjcf, seed=0, objects=parse_scene(_jaws_scene()).objects)
+    down = _pointing_down(arm, (PLACE_NEAR + PLACE_FAR) / 2, CUBE.size[0] / 2)
+    # at the model's zero the hand is nowhere near the table
+    with pytest.raises(ModelError, match=r"fixed finger ends .* above the table, over the top"):
+        ArmWorld(arm).place_between_jaws("block")
+    # down at the table with the gripper shut, the block would start inside a finger
+    with pytest.raises(ModelError, match="open narrower than block"):
+        ArmWorld(arm, rest_pose={**down, JOINTS[-1]: GRIPPER_CLOSED}).place_between_jaws("block")
+    with pytest.raises(ValueError, match="no object 'cube'"):
+        ArmWorld(arm, rest_pose=down).place_between_jaws("cube")
+
+
+CLEAR_SEEDS = 10
+"""Tables laid out below. The seed draws each one knowing nothing of the arm, so a hand down at
+the table, and the block between its jaws, land on another object on most of them."""
+
+
+def test_a_scene_starts_with_nothing_but_the_table_touching_anything(
+    mjcf: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The seed lays the table out knowing nothing of the arm, and the block goes between the
+    jaws after it, so the hand lowered to the table, or the block itself, can land on another
+    object. The simulator lays those again clear of both, as it builds the world a connect
+    starts in, so physics moves nothing before the pilot does, on any seed, and a check on how
+    far an object moved measures the pilot."""
+    half = CUBE.size[0]
+    scene = [
+        *_jaws_scene(),
+        {"name": "slab", "kind": "box", "size": [half * 2.4, half * 2.4, half]},
+    ]
+    objects = parse_scene(scene).objects
+    down = _pointing_down(_arm(mjcf), (PLACE_NEAR + PLACE_FAR) / 2, half / 2)
+    crowded: list[int] = []
+    for seed in range(CLEAR_SEEDS):
+        arm = load(mjcf, seed=seed, objects=objects)
+        sim = LeRobotSim(model=mjcf, seed=seed, rest_pose=down, scene=scene)
+        # with no draws to spare, a table the seed laid on the arm or the block is refused,
+        # which is how the ones below that needed laying again are known to have been met
+        with monkeypatch.context() as m:
+            m.setattr("quackd_lerobot.sim.world.PLACE_TRIES", 0)
+            try:
+                sim._lay_out(arm).close()
+            except ModelError as e:
+                assert "no room on the table for" in str(e) and "Ask for fewer" in str(e)
+                crowded.append(seed)
+        world = sim._lay_out(arm)
+        try:
+            start = world.truth()
+            assert not any(o.touching for o in start.objects.values()), seed
+            world.step(1.0)
+            peaks = world.truth().peaks
+            for obj in objects:
+                # a share of its own smallest half size: settling onto the table, not a shove
+                assert peaks[obj.name].moved_m < min(obj.size) / 4, (seed, obj.name, peaks)
+        finally:
+            world.close()
+    assert crowded, "no seed laid anything on the arm, so nothing here was tested"
+
+
+@pytest.mark.parametrize(
+    ("scene", "needle"),
+    [
+        ([{"name": "a", "kind": "cone", "size": [0.01]}], "the kind 'cone'"),
+        ([{"kind": "box", "size": [0.01, 0.01, 0.01]}], "no name"),
+        ([{"name": "a", "kind": "box", "size": [0.01, 0.01]}], "3 positive numbers"),
+        ([{"name": "a", "kind": "capsule", "size": [0.01, "long"]}], "2 positive numbers"),
+        ([{"name": "a", "kind": "box", "size": [0.01, 0.01, 0.01], "place": "shelf"}], "shelf"),
+        ([{"name": "a", "kind": "box", "size": [0.01, 0.01, 0.01], "mass_kg": 0}], "a mass is"),
+        ([{"name": "a", "kind": "box", "size": [0.01, 0.01, 0.01], "rgba": [2, 0, 0, 1]}], "rgba"),
+        ([*_jaws_scene(), {**_jaws_scene()[0], "name": "other"}], "room there for one"),
+        ([*_jaws_scene(), _jaws_scene()[1]], "a name of its own"),
+        ([], "one or more objects"),
+    ],
+)
+def test_a_scene_is_refused_whole_as_the_robot_is_built(
+    scene: list[dict[str, Any]], needle: str
+) -> None:
+    with pytest.raises(AdapterError, match=re.escape(needle)):
+        make("mujoco", scene=scene)
+
+
+def test_only_the_simulator_takes_a_scene() -> None:
+    """The table in front of a real arm has on it what somebody put there."""
+    for backend in ("real", "mock"):
+        with pytest.raises(AdapterError, match="only the simulator, lerobot:mujoco, takes one"):
+            make(backend, scene=_jaws_scene())
+    assert make("mujoco", scene=_jaws_scene()).transport.scene.jaws == "block"  # type: ignore[attr-defined]
 
 
 def _pressed_into(world: ArmWorld, pad: int, other: int) -> Any:

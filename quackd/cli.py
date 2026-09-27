@@ -38,6 +38,7 @@ from quackd.agent.providers.catalogue import (
     vendor_of,
 )
 from quackd.command import command_text
+from quackd.preflight import DEFAULT_CONNECT_CYCLES, DEFAULT_SEEDS
 
 if TYPE_CHECKING:  # every heavy module is imported inside the command that needs it
     from quackd.safety import KillSwitch
@@ -2869,6 +2870,276 @@ def record(
         )
 
 
+# ── preflight: task files rehearsed on the arm's simulator ─────────────────────────────
+
+
+@app.command(rich_help_panel="Run a duck")
+def preflight(
+    duckfiles: list[str] = typer.Argument(
+        ...,
+        help=".duck files or globs to rehearse. A <task>.sim.yaml beside a file, if there is "
+        "one, lays out the table for it and says what has to be so when each run ends.",
+    ),
+    robot: str = typer.Option(
+        ...,
+        "--robot",
+        "-r",
+        help="The simulator to rehearse on: a robot registered as lerobot:mujoco, which "
+        "`quackd robot twin` makes of a registered arm, or lerobot:mujoco itself for the "
+        "generic arm. Anything else is refused before it is built.",
+        rich_help_panel="Robot",
+    ),
+    llm: str | None = typer.Option(
+        None,
+        "--llm",
+        "-l",
+        help="The pilot to rehearse with, as VENDOR[:MODEL]. Default: the robot's own, then "
+        f"{LLM_ENV}, and preflight refuses where neither names one: the scripted pilot runs "
+        "only when typed as --llm fake.",
+        autocompletion=_complete_llm,
+        rich_help_panel="Model",
+    ),
+    camera_url: list[str] = typer.Option(
+        [],
+        "--camera-url",
+        help="A camera the simulator renders, as opencv://N?name=front, top or wrist, with "
+        "?width, ?height and ?fov. The index is ignored. Repeatable, and replaces the robot's "
+        "registered cameras, as it does on run.",
+        rich_help_panel="Robot",
+    ),
+    image: list[str] = _IMAGE,
+    max_steps: int | None = _MAXSTEPS,
+    seeds: int = typer.Option(
+        DEFAULT_SEEDS,
+        "--seeds",
+        min=1,
+        help="Runs per file, the first on seed 0 and each after it on the next.",
+        rich_help_panel="Task",
+    ),
+    connect_cycles: int = typer.Option(
+        DEFAULT_CONNECT_CYCLES,
+        "--connect-cycles",
+        min=0,
+        help="Connects and closes per file before its first run, the first on seed 0. An error "
+        "that escapes any of them fails the file and no run is made. A connect that gives up "
+        "in words on the --faults it met is noted and fails nothing.",
+        rich_help_panel="Task",
+    ),
+    faults: str | None = typer.Option(
+        None,
+        "--faults",
+        metavar="SPEC",
+        help="Bus faults for the connect cycles to meet, seeded by each cycle's seed: rates "
+        "for handshake, configure, write, torque, torque_read and temperature_read, and "
+        "read_loss_from=N, as handshake=0.2,configure=0.3. A connect that retries and then "
+        "gives up on them, as the arm's does, is noted rather than failed, and the runs after "
+        "the cycles meet no faults.",
+        rich_help_panel="Task",
+    ),
+    runs_dir: str = _RUNS,
+    registry_dir: str | None = _REGISTRY_DIR,
+    as_json: bool = _JSON,
+) -> None:
+    """Rehearse task files on the arm's simulator, and exit 1 unless every run passed."""
+    _preflight_impl(
+        duckfiles,
+        robot=robot,
+        llm=llm,
+        camera_url=camera_url,
+        images=image,
+        max_steps=max_steps,
+        seeds=seeds,
+        connect_cycles=connect_cycles,
+        faults=faults,
+        runs_dir=runs_dir,
+        registry_dir=registry_dir,
+        as_json=as_json,
+    )
+
+
+def _preflight_impl(
+    duckfiles: list[str],
+    *,
+    robot: str,
+    llm: str | None,
+    camera_url: list[str],
+    images: Sequence[str],
+    max_steps: int | None,
+    seeds: int,
+    connect_cycles: int,
+    faults: str | None,
+    runs_dir: str,
+    registry_dir: str | None,
+    as_json: bool,
+) -> None:
+    from quackd.adapters.base import AdapterError
+    from quackd.adapters.factory import describe, make_adapter
+    from quackd.agent.images import TaskImageError, load_task_images
+    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.factory import make_provider, resolve_llm
+    from quackd.preflight import PreflightError, Rehearsal, refuse_default_pilot, refuse_real
+    from quackd.registry import Registry, RegistryError, resolve_robot_ref
+    from quackd.transport.base import TransportError
+
+    # Which robot, and that it is a simulator, before anything is built: a real arm refused
+    # after it was made would already have had its port opened by somebody's typo.
+    try:
+        here = resolve_robot_ref(robot, Registry(registry_dir))
+        refuse_real(here.spec, here.label)
+    except PreflightError as e:
+        _fail(str(e), hint="then quackd preflight FILES --robot NAME-sim")
+        return
+    except (AdapterError, RegistryError) as e:
+        _fail(str(e))
+        return
+    try:
+        vendor, model_id, source = resolve_llm(
+            llm, here.llm, robot=here.entry.name if here.entry is not None else None
+        )
+        refuse_default_pilot(source)
+        # one pilot built now and thrown away: a missing key or extra is a sentence before any
+        # world is loaded, rather than the same error on every seed of every file
+        probe = make_provider(vendor, model=model_id, source=source)
+    except (PreflightError, ProviderError) as e:
+        _fail(str(e))
+        return
+    task_images: list[Any] = []
+    if images:
+        try:
+            task_images = load_task_images(list(images))
+        except TaskImageError as e:
+            _fail(str(e))
+            return
+        if not probe.supports_vision:
+            _fail(
+                f"{probe.name} {probe.model} does not take images, so it cannot be given "
+                f"{_plural(len(task_images), 'picture')}",
+                hint="quackd list-models marks the models that take no frames",
+            )
+            return
+    kwargs = here.adapter_kwargs(camera_url=camera_url)
+    try:
+        # built once and never connected, so a camera, a fault spec or a stored field the
+        # simulator refuses is one sentence now rather than a failed connect on every file
+        make_adapter(here.spec, seed=0, faults=faults, **kwargs)
+        manifest = describe(here.spec)
+    except (AdapterError, TransportError, ImportError, ValueError) as e:
+        _fail(str(e))
+        return
+
+    def pilot(duck: Any) -> Any:
+        return make_provider(vendor, model=model_id, source=source, duck_name=duck.name)
+
+    rehearsal = Rehearsal(
+        spec=here.spec,
+        manifest=manifest,
+        pilot=pilot,
+        adapter_kwargs=kwargs,
+        seeds=seeds,
+        connect_cycles=connect_cycles,
+        faults=faults,
+        max_steps=max_steps,
+        runs_dir=runs_dir,
+        task_images=task_images,
+    )
+    files = _expand(duckfiles)
+    ui.install_logging()
+
+    async def main() -> list[Any]:
+        # one file at a time, and one run at a time within it: the simulator's clock is seeded
+        # and deterministic only for runs that do not overlap
+        return [await rehearsal.file(path) for path in files]
+
+    with ui.spinner(f"rehearsing {_plural(len(files), 'file')} on {here.label}") as say:
+        rehearsal.progress = say
+        reports = asyncio.run(main())
+    failed = [r for r in reports if not r.ok]
+    if as_json:
+        for report in reports:
+            print(json.dumps(report.public(), ensure_ascii=False))
+        raise typer.Exit(code=1 if failed else 0)
+    for report in reports:
+        _print_preflight(report)
+    runs = [run for report in reports for run in report.runs]
+    costs = [run.cost_usd for run in runs]
+    if runs:
+        from quackd.agent.providers.pricing import fmt_usd
+
+        cost = (
+            f"model cost {fmt_usd(sum(c for c in costs if c is not None))} over "
+            f"{_plural(len(runs), 'run')}"
+            if all(c is not None for c in costs)
+            else f"model cost unpriced over {_plural(len(runs), 'run')}: quackd has no rate "
+            f"for {probe.name} {probe.model}"
+        )
+        ui.console.print(Text(cost, style=ui.STYLES["muted"]), soft_wrap=True)
+    dt = next((r.sim_dt_s for r in reports if r.sim_dt_s is not None), None)
+    if dt is not None:
+        ui.console.print(Text(f"sim dt {dt:g} s", style=ui.STYLES["muted"]))
+    if failed:
+        _fail(
+            f"{len(failed)} of {len(reports)} {_files(len(reports))} failed preflight",
+            hint="each run's directory has its transcript, and quackd log DIR replays it",
+        )
+    ui.console.print(_ok_line(f"{len(reports)} {_files(len(reports))} passed preflight"))
+
+
+def _print_preflight(report: Any) -> None:
+    """One file: a row per run, then every reason one of them failed, as plain lines."""
+    from quackd.agent.providers.pricing import fmt_usd
+    from quackd.preflight import sidecar_path
+
+    title = f"quackd preflight {report.file}"
+    if report.runs:
+        table = ui.table(title)
+        table.add_column("seed", justify="right")
+        table.add_column("outcome")
+        table.add_column("steps", justify="right")
+        table.add_column("close", ratio=2, overflow="fold")
+        table.add_column("checks", justify="right")
+        table.add_column("cost", justify="right")
+        table.add_column("result")
+        for run in report.runs:
+            checks = [v for v in run.verdicts if v.check != "close"]
+            close = next((v for v in run.verdicts if v.check == "close"), None)
+            ok = run.ok
+            table.add_row(
+                str(run.seed),
+                Text(run.outcome),
+                str(run.steps),
+                Text(close.detail if close is not None else "-"),
+                f"{sum(v.ok for v in checks)} of {len(checks)}" if checks else "-",
+                fmt_usd(run.cost_usd) if run.cost_usd is not None else "unpriced",
+                Text("pass" if ok else "FAIL", style=ui.STYLES["ok" if ok else "fail"]),
+            )
+        ui.console.print(table)
+    else:
+        ui.console.print(Text(title, style=ui.STYLES["key"]))
+    lines = [f"{report.file}: {p}" for p in report.problems]
+    lines += [f"connect on seed {c.seed}: {c.error}" for c in report.cycles if not c.ok]
+    lines += [f"seed {run.seed}: {why}" for run in report.runs for why in run.failures]
+    for line in lines:
+        ui.console.print(Text(f"  {line}"), soft_wrap=True)
+    for cycle in report.cycles:
+        if cycle.gave_up is not None:
+            ui.console.print(
+                Text(
+                    f"  connect on seed {cycle.seed} gave up on the faults, as it should: "
+                    f"{cycle.gave_up}",
+                    style=ui.STYLES["muted"],
+                ),
+                soft_wrap=True,
+            )
+    if report.sidecar is None and not report.problems:
+        ui.console.print(
+            Text(
+                f"  no {sidecar_path(report.file).name} beside it, so only the close was judged",
+                style=ui.STYLES["muted"],
+            ),
+            soft_wrap=True,
+        )
+
+
 # ── log: replay a finished run ──────────────────────────────────────────────────────────
 
 
@@ -3441,6 +3712,234 @@ def _one_line(e: Exception) -> Exception:
             )
         )
     return e
+
+
+_TWIN_SPEC = "lerobot:mujoco"
+"""What `quackd robot twin` registers: the arm's simulator, the real backend's own code over a
+physics model of the arm, which reads the arm's travel off the calibration file it is given."""
+
+
+def _twin_address(entry: Any, address: str | None) -> str | None:
+    """The calibration file a twin of this arm is told to read, as it was given: `--address`,
+    else the file a simulator given as the source already reads, else None for the one LeRobot
+    keeps under the arm's registered name."""
+    if address:
+        return address
+    if entry.key == _TWIN_SPEC and entry.address:
+        return str(entry.address)
+    return None
+
+
+def _twin_calibration(given: str | None, name: str) -> Path:
+    """The calibration file a twin reads, as an absolute path so the twin reads it from any
+    directory: the one given (`_twin_address`), else the one LeRobot keeps under the arm's
+    registered name, found as the simulator finds it
+    (`quackd_lerobot.sim.model.calibration_path`). Never called on an address shaped like a
+    port, which resolving would already reach for."""
+    if given:
+        return Path(given).expanduser().resolve()
+    from quackd_lerobot.sim.model import calibration_path
+
+    return calibration_path(name).resolve()
+
+
+def _twin_cameras(urls: Sequence[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """The source's camera urls a simulator renders, and each one it does not, with why. The
+    simulator renders only the views its scene mounts (`quackd_lerobot.sim.model.MOUNTS`), and
+    a twin that stored another would be refused by every run and preflight on it, naming a
+    --camera-url nobody typed."""
+    from quackd.transport.base import TransportError
+    from quackd_lerobot.real import parse_camera_url
+    from quackd_lerobot.sim.model import MOUNTS
+
+    kept: list[str] = []
+    left: list[tuple[str, str]] = []
+    for url in urls:
+        try:
+            view = parse_camera_url(url, label="mujoco").name
+        except (TransportError, ValueError) as e:
+            left.append((url, " ".join(str(e).split()).rstrip(".")))
+            continue
+        if view in MOUNTS:
+            kept.append(url)
+        else:
+            left.append((url, f"it is named {view}, and the simulator renders only {_and(MOUNTS)}"))
+    return kept, left
+
+
+def _and(items: Sequence[str]) -> str:
+    """`a`, `a and b`, `a, b and c`."""
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+@robot_app.command("twin")
+def robot_twin(
+    source: str = typer.Argument(..., help="The registered LeRobot arm to make a simulator of."),
+    name: str | None = typer.Argument(
+        None, help="What to register the simulator as. Default: SOURCE-sim."
+    ),
+    address: str | None = typer.Option(
+        None,
+        "--address",
+        help="The calibration file to give it, where it is not the one LeRobot keeps under "
+        "SOURCE's name.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Replace NAME where it is already a lerobot:mujoco robot. Anything else "
+        "registered under NAME is never replaced.",
+    ),
+    registry_dir: str | None = _REGISTRY_DIR,
+) -> None:
+    """Register a simulator of a registered arm, on its calibration, to rehearse its tasks on."""
+    from quackd.adapters.base import AdapterError, AdapterNotInstalled
+    from quackd.agent.providers.base import ProviderError
+    from quackd.registry import RegistryError, RobotEntry
+
+    target = name or f"{source}-sim"
+    if target == source:
+        _fail(
+            f"{source} cannot be its own twin: the simulator is registered beside the arm it "
+            "copies, never over it",
+            hint=f"leave NAME out for {source}-sim, or name another",
+        )
+        return
+    try:
+        registry = _registry(registry_dir)
+        entry = registry.get_robot(source)
+        existing = registry.get_robot(target)
+    except RegistryError as e:
+        _registry_fail(e)
+        return
+    if entry is None:
+        _fail(
+            f"no robot called {source!r} is registered, so there is no arm to twin",
+            hint="quackd robot list",
+        )
+        return
+    if entry.adapter != "lerobot":
+        _fail(
+            f"{source} is {entry.key}, and only a LeRobot arm has a simulator to be twinned on",
+            hint="quackd robot twin takes a robot registered as lerobot:real",
+        )
+        return
+    if existing is not None and force and existing.key != _TWIN_SPEC:
+        _fail(
+            f"{target} is registered as {existing.key}, and --force replaces only a "
+            f"{_TWIN_SPEC} robot",
+            hint=f"quackd robot remove {target} first, if you mean to lose it",
+        )
+        return
+    given = _twin_address(entry, address)
+    try:
+        from quackd_lerobot.sim.model import names_a_port
+
+        if given and names_a_port(given):
+            # for every other lerobot robot the address is the port, so this is an easy slip,
+            # and it is refused on its shape before anything opens or even looks for the file
+            whose = "--address" if address else f"{source}'s own address"
+            _fail(
+                f"{whose} {given} is a serial port, and a twin reads the arm's calibration "
+                "file, never its port, so nothing was opened there",
+                hint="give --address PATH the file lerobot-calibrate wrote for the arm",
+            )
+            return
+        calibration = _twin_calibration(given, entry.name)
+        cameras, left_out = _twin_cameras(entry.camera_urls)
+    except ImportError:
+        _fail(str(AdapterNotInstalled("lerobot", "quackd[lerobot-sim]")))
+        return
+    if not calibration.is_file():
+        where = (
+            ("--address names" if address else "its own address names")
+            if given
+            else "LeRobot would keep one for it at"
+        )
+        _fail(
+            f"{source} has no calibration file for its twin to read: {where} {calibration}, "
+            "and nothing is there",
+            hint="give --address PATH the file lerobot-calibrate wrote for the arm",
+        )
+        return
+    fields: dict[str, Any] = {
+        "spec": _TWIN_SPEC,
+        "address": str(calibration),
+        "camera_url": cameras or None,
+        "rest_pose": dict(entry.rest_pose) if entry.rest_pose else None,
+        "llm": entry.llm,
+    }
+    try:
+        if existing is not None and force:
+            # every field, the ones the source leaves empty included, so what was under the
+            # name before is gone rather than half kept
+            registry.update_robot(
+                target,
+                {**fields, "token": None, "host": None, "host_token": None, "note": None},
+            )
+        else:
+            registry.add_robot(RobotEntry(name=target, **fields))
+    except (RegistryError, AdapterError, ValueError, ProviderError) as e:
+        _registry_fail(_one_line(e))
+        return
+    kept = (
+        ("rest pose", "rest pose", entry.rest_pose),
+        ("pilot", f"pilot {entry.llm}", entry.llm),
+        ("camera", _plural(len(cameras), "camera url"), cameras),
+    )
+    copied = [said for _, said, present in kept if present]
+    # a source whose every camera was left out had cameras, and the lines below say why
+    missing = [
+        what for what, _, present in kept if not present and not (what == "camera" and left_out)
+    ]
+    replaced = existing is not None and force
+    ui.console.print(
+        _ok_line(
+            f"{'replaced' if replaced else 'added'} {target}: {_TWIN_SPEC}, a simulator of "
+            f"{source} on {calibration}"
+        )
+    )
+    said = []
+    if copied:
+        said.append(f"copied from {source}: {', '.join(copied)}")
+    if missing:
+        said.append(f"{source} has no {' or '.join(missing)} to copy")
+    for line in said:
+        ui.console.print(Text(f"  {line}", style=ui.STYLES["muted"]), soft_wrap=True)
+    for url, why in left_out:
+        ui.console.print(
+            _warn_line(
+                f"{source}'s camera {url} was not copied: {why}. quackd robot edit {target} "
+                "--camera-url sets the twin's cameras"
+            ),
+            soft_wrap=True,
+        )
+    # every simulator in the file, not only this one: one is enough for 0.14 to refuse it
+    twins = [target]
+    with contextlib.suppress(RegistryError):
+        twins = sorted(n for n, e in registry.robots().items() if e.key == _TWIN_SPEC) or twins
+    holds, remove = (
+        (f"a {_TWIN_SPEC} robot", f"quackd robot remove {twins[0]}")
+        if len(twins) == 1
+        else (
+            f"{len(twins)} {_TWIN_SPEC} robots, {_and(twins)}",
+            "quackd robot remove each of them",
+        )
+    )
+    ui.console.print(
+        _warn_line(
+            f"robots.json now holds {holds}, and quackd 0.14 and earlier cannot read the file "
+            f"at all: {remove} before going back to one"
+        ),
+        soft_wrap=True,
+    )
+    ui.console.print(
+        Text(
+            f"  quackd preflight <duck> --robot {target}"
+            + ("" if entry.llm else " --llm VENDOR[:MODEL]"),
+            style=ui.STYLES["muted"],
+        )
+    )
 
 
 @robot_app.command("list")
