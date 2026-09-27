@@ -353,12 +353,23 @@ body honestly and the robot has a task worth running end to end; it is not worth
 body the world would have to lie about. It earns a ✅ only with a seeded acceptance sweep that
 checks the world's ground truth, not merely a run that does not crash.
 
-There is a second simulator, it is not a general one, and it is not in the core: the
-`sim3d/` package inside `quackd-microduck` holds one arena and a
-`Body` protocol with two implementations, a kinematic puppet and the Microduck on its own
-trained policy, so a physics body for a new robot means its MJCF, its own controller and a
-reason the cartoon cannot serve, usually that you need to know whether a gait works. Nobody has
-written a second one, and `sim2d` is what the shared world and the flock are built on.
+There are two physics simulators, neither is a general one, and neither is in the core. The
+`sim3d/` package inside `quackd-microduck` holds one arena and a `Body` protocol with two
+implementations, a kinematic puppet and the Microduck on its own trained policy. The `sim/`
+package inside `quackd-lerobot` is the arm's, `lerobot:mujoco`, and it is built the other way
+round: not a world a body is dropped into, but the arm's real backend with a simulated follower
+under it, so a task rehearsed there runs through the code that drives the arm
+([ADR-0047](adr/0047-the-arms-simulator-runs-the-real-backend.md)). Both fetch their model from
+upstream at a pinned commit and hash every file, and CI runs each on a stand-in that needs
+nothing fetched. A physics body for a new robot means its MJCF, its own controller and a reason
+the cartoon cannot serve, usually that you need to know whether a gait works, or that its real
+backend has enough logic of its own to be worth rehearsing. `sim2d` is still what the shared
+world and the flock are built on.
+
+A simulator of a real body declares itself: the module lists it in `SIMULATOR_BACKENDS`, and
+`quackd.adapters.factory.is_simulator(spec)` reads that before anything is built. That is what
+`quackd preflight` refuses anything else by, so a command meant for a model never opens a real
+body's port. A module that declares none has none.
 
 ## `upstream_api.py`: never guess a name
 

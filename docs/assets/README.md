@@ -29,7 +29,7 @@ caption says so. Two files are not: `lerobot.gif` and `lerobot-what-it-saw.png` 
 under a real cloud model, OpenAI's `gpt-6-astra`, on 2026-09-15. The transcripts are the other
 real model runs in this directory: four of them, two contributors, two local servers, no API key
 and no frame between them. So one cloud model has been recorded here, on hardware, and none has
-yet been recorded in either simulator.
+yet been recorded in any simulator.
 For the `quackd record` and `quackd run` assets, replacing one with a real model run is
 a matter of swapping `--llm fake` for `--llm anthropic`, copying
 `runs/<timestamp>/run.gif` over the file, and dropping the word *scripted* from the caption and

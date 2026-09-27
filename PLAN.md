@@ -62,6 +62,23 @@ before.
   [CHANGELOG.md](CHANGELOG.md) for 0.14.0, and
   [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to take
   the arm through, with a hand on the switch.
+- ⬜ **The SO-101 against its simulator.** `lerobot:mujoco` runs the arm's real backend over the
+  maker's model, and what it assumes about the arm only the arm can settle
+  ([ADR-0047](docs/adr/0047-the-arms-simulator-runs-the-real-backend.md)). Each of these is a
+  bench step of its own, and none of them replaces the seven above:
+  - joint signs and zero offsets: nudge each real joint by a small positive angle and check that
+    it turns the same way in the simulator, and read the calibrated value at each mechanical stop
+    against the model's stop, which also says whether a recorded fold can be represented at all
+    (`JOINT_SIGN`, `JOINT_ZERO`);
+  - the gripper on a real pen: what it reads against the band that infers holding, which the
+    simulator's pen cannot say;
+  - the front and wrist cameras' placement and field of view, measured, to replace the
+    simulator's default mounts (`WRIST_CAMERA_POSE`);
+  - the policy loop's achieved rate on the real bus, with a policy server inferring on the same
+    laptop once there is one, which the simulator's lockstep clock can never measure.
+
+  Until then the simulator's ✅ says it does what it says, not that it moves like an arm, and it
+  never raises `lerobot:real`'s row.
 - ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
   with neither a lookout task nor a checklist. A coordinator flock across two machines needs a
   distributed clock first; a pilot flock needs none and has simply never been tried across two.

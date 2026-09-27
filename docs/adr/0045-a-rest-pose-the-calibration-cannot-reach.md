@@ -24,6 +24,16 @@ alone: nothing takes hold of it again, nothing writes it a goal, and nothing fol
 the person does with the joint afterwards ([ADR-0039](0039-an-arm-placed-by-hand.md)'s amendment
 of the same day has the rule for every refused take-hold).
 
+**Amended 2026-09-27 by [ADR-0047](0047-the-arms-simulator-runs-the-real-backend.md):** the
+arm's simulator reproduces the servo behaviour this ADR rests on, from the arm's own
+calibration file: a goal past the travel is clamped to it without a word and a reading is not.
+So wherever the model's own stop lies beyond the calibrated travel, a rest pose recorded past
+the travel parks at its edge or is found already folded past it, as on the arm, and a
+`--by-hand` take-hold meets whatever pose gravity left the released arm in and refuses a joint
+past its travel in the same words. What it cannot reproduce is a fold past the model's own
+stops, which truncate the pose the simulated arm starts in, with a connect note, until the bench
+reads the real stops against the model's. Nothing in the decision below changes.
+
 ## Context
 
 

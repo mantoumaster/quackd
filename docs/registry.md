@@ -353,7 +353,9 @@ That warning is the one cost of a twin. quackd 0.14 and earlier check every robo
 against the backends they know, and `lerobot:mujoco` is not one of them, so one of those
 installs sharing `~/.quackd` refuses every command that reads the registry until every
 `lerobot:mujoco` robot in it is removed, not only the twin just made. Where the file holds more
-than one, the warning names them all.
+than one, the warning names them all. To try a twin while an older quackd still reads
+`~/.quackd`, give this one a registry of its own with `QUACKD_REGISTRY_DIR` or `--registry-dir`,
+and register the arm there as well.
 
 `--address PATH` names the calibration file instead, for an arm calibrated under another id or
 on another machine. A source that is not registered, is not a LeRobot arm or has no

@@ -23,6 +23,16 @@ one id, so two MCP calls in flight could reach this gap. `tests/test_flock.py` b
 interleaving step by step on each of those paths, and checks that a cancelled sleep still
 frees its id. Nothing else in this ADR changes.
 
+**Amended 2026-09-27 by [ADR-0047](0047-the-arms-simulator-runs-the-real-backend.md):** the
+arm's simulator runs this clock for one body and many tasks, where an auction runs it for many
+bodies. Its `SimClock` gives every sleep a participant of its own, a fresh id numbered in the
+order the sleeps arrive, registered for that sleep and unregistered as it wakes. So time runs
+while every sleeper is parked, stands still while nobody sleeps, and two tool calls over MCP
+sleeping at once both wake, where one id for the whole arm would have had the second refused
+and one gate held by a single task would have frozen the rest. A sleep of zero never reaches
+`sleep` here, which registers the id and returns without letting it go. The amendment above
+was found while that clock was planned. Nothing here changes for the auction.
+
 ## Context
 
 In a solo sim run, whoever calls `transport.sleep()` steps the world. With N concurrent

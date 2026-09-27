@@ -32,9 +32,10 @@ This project builds on, interoperates with, and is grateful to:
     https://huggingface.co/pollen-robotics/microduck-policies
 
   * MuJoCo (google-deepmind/mujoco) — the physics behind
-    --robot microduck:mujoco, and as its official WebAssembly build the
-    physics in the browser demo. Apache-2.0. Optional extra quackd[mujoco],
-    imported only inside connect(). Nothing vendored.
+    --robot microduck:mujoco and --robot lerobot:mujoco, and as its official
+    WebAssembly build the physics in the browser demo. Apache-2.0. Optional
+    extras quackd[mujoco] and quackd[lerobot-sim], imported only inside
+    connect(). Nothing vendored.
     https://github.com/google-deepmind/mujoco
 
   * ONNX Runtime (microsoft/onnxruntime) — what runs the robot's own walking
@@ -53,12 +54,13 @@ This project builds on, interoperates with, and is grateful to:
     https://github.com/huggingface/lerobot
 
   * SO-ARM100 (TheRobotStudio/SO-ARM100) - the repository of the SO-101
-    arm's designers, and the source of the MuJoCo model for the lerobot
-    adapter's arm simulator, which is still being built and is not a
-    backend yet. Apache-2.0. The model (so101_new_calib_camera.xml) and its
-    15 STL meshes are NOT included in this project: quackd-lerobot's fetcher
-    downloads them from upstream at a pinned commit into ~/.quackd/cache and
-    checks each against a recorded sha256.
+    arm's designers, and the source of the MuJoCo model the lerobot
+    adapter's arm simulator (lerobot:mujoco, optional extra
+    quackd[lerobot-sim]) runs on. Apache-2.0. The model
+    (so101_new_calib_camera.xml) and its 15 STL meshes are NOT included in
+    this project: quackd-lerobot's fetcher downloads them from upstream at a
+    pinned commit into ~/.quackd/cache and checks each against a recorded
+    sha256.
     https://github.com/TheRobotStudio/SO-ARM100
 
   * roslibpy (gramaziokohler/roslibpy, MIT) and rosbridge_suite

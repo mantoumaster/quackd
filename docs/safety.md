@@ -265,6 +265,25 @@ LeRobot arm with a pose recorded that is a change of behaviour worth knowing bef
 Ctrl-C and walk away: the arm ends the dry run holding itself up, with a line saying so,
 instead of going limp.
 
+## Rehearsing on the arm's simulator
+
+`lerobot:mujoco` runs the arm's real backend over a physics model, and it never touches
+hardware. It imports no LeRobot and opens no port: its follower and its cameras are simulated,
+its address is a calibration file read as a regular file, and an address shaped like a serial
+port, `COM5` or `/dev/ttyACM0`, is refused on its shape before anything looks at it, because on
+Windows a port answers to its name in any directory. `quackd preflight`, which drives a robot
+through task file after task file and seed after seed with nobody watching, refuses any robot
+that is not a simulator before building it, so a typo cannot send a rehearsal to the arm
+([adapters/lerobot.md](adapters/lerobot.md#rehearsing-a-task-file-quackd-preflight)).
+`quackd doctor` and `quackd robot release` say it is the simulator rather than asking you to
+support or hold an arm that is not there.
+
+A rehearsal that passes is not a safety claim about the arm. The simulated servos do what the
+arm's do with a goal, a step cap and a clamp, but the dynamics are the model's and the joint
+signs, zeros and camera positions are assumed, so a task that holds on the simulator can still
+drop, stall or collide on the desk. Rehearse at home, then `--dry-run` at the bench, then run it
+with a hand near the switch.
+
 ## On hardware
 
 One of the seven bodies has run on hardware, on two afternoons. On 2026-09-15 a LeRobot SO-101
@@ -282,8 +301,10 @@ caught on purpose rather than by luck. The other six bodies have not been on har
 
 If the body is a Microduck, run the contract in the physics simulator first
 (`--robot microduck:mujoco`): it is the only place quackd can show you a body that undershoots,
-refuses and falls over, and nothing there can be hurt. When you do reach the robot, start with
-`--dry-run` every time, then a `.duck` whose `allow` list is the smallest thing that could work,
+refuses and falls over, and nothing there can be hurt. If it is the LeRobot arm, rehearse it on
+the arm's simulator first (`quackd robot twin`, then `quackd preflight`), which runs the code
+that will drive the arm and says nothing about how the arm will move. When you do reach the
+robot, start with `--dry-run` every time, then a `.duck` whose `allow` list is the smallest thing that could work,
 then widen it. **You are responsible for your robot.**
 
 **There are two places where quackd takes torque off a robot, and only a person can ask for

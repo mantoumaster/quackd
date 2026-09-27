@@ -21,9 +21,10 @@ For each file, in this order:
    run has ended and the command does not hand its transport back.
 
 A run passes when nothing escaped it, no call to the simulated bus was left hanging, its close
-ended at the rest pose, or refused where the sidecar says to expect that, and every check in the
-sidecar holds. The pilot's own verdict is reported and is not one of those: a model that says it
-succeeded is the thing being rehearsed, not the judge of it.
+ended at the rest pose, found none to return to on a robot without one, or was refused where the
+sidecar says to expect that (`judge_close`), and every check in the sidecar holds. The pilot's
+own verdict is reported and is not one of those: a model that says it succeeded is the thing
+being rehearsed, not the judge of it.
 
 The sidecar is `<task>.sim.yaml` beside the task file, and never the file's frontmatter, because
 `robot_load_duckfile` hands an MCP pilot the whole frontmatter, and a pilot that can read what it

@@ -41,6 +41,7 @@ from PIL import Image
 
 from quackd.adapters.base import AdapterError, AdapterNotInstalled
 from quackd.perception.color_blob import DEFAULT_FOV_DEG, DEFAULT_TARGETS, ColorBlobDetector
+from quackd.preflight import load_sidecar
 from quackd.transport.base import HeartbeatError, TransportError
 from quackd_lerobot import REACH, LeRobotAdapter, lerobot_manifest, make
 from quackd_lerobot import upstream_api as lr
@@ -95,7 +96,7 @@ from quackd_lerobot.sim.model import (
     parse_scene,
     read_calibration,
 )
-from quackd_lerobot.sim.transport import SIM_EXTRA, LeRobotSim
+from quackd_lerobot.sim.transport import GENERIC_ARM, SIM_EXTRA, LeRobotSim
 from quackd_lerobot.sim.world import LIFT_MIN_M, ROOM_TEMPERATURE_C, ArmWorld, WorldError
 from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
@@ -755,6 +756,28 @@ def test_only_the_simulator_takes_a_scene() -> None:
         with pytest.raises(AdapterError, match="only the simulator, lerobot:mujoco, takes one"):
             make(backend, scene=_jaws_scene())
     assert make("mujoco", scene=_jaws_scene()).transport.scene.jaws == "block"  # type: ignore[attr-defined]
+
+
+def test_the_sidecar_the_arms_page_shows_lays_out_on_a_bare_lerobot_mujoco(
+    mjcf: str, tmp_path: Path
+) -> None:
+    """The one sidecar docs/adapters/lerobot.md shows is the one a reader copies, and the same
+    page starts that reader on a bare `--robot lerobot:mujoco`. So its table has to lay out on
+    the generic arm, as `quackd preflight` would build it. An object it put between the jaws
+    could not: the generic arm starts at the model's zero, its hand nowhere near the table, and
+    every connect of every rehearsal refused it."""
+    page = Path(__file__).resolve().parents[1] / "docs" / "adapters" / "lerobot.md"
+    section = page.read_text(encoding="utf-8").split("\n### The sidecar\n", 1)[1]
+    sidecar_yaml = section.split("```yaml\n", 1)[1].split("```", 1)[0]
+    (tmp_path / "task.sim.yaml").write_text(sidecar_yaml, encoding="utf-8")
+    sidecar = load_sidecar(tmp_path / "task.duck", joints=JOINTS)
+    assert sidecar is not None and sidecar.scene is not None
+    transport = make("mujoco", scene=sidecar.scene_items()).transport
+    assert isinstance(transport, LeRobotSim)
+    transport.model_source = mjcf
+    arm, notes = transport._load()
+    assert notes == [GENERIC_ARM]
+    transport._lay_out(arm).close()
 
 
 def _pressed_into(world: ArmWorld, pad: int, other: int) -> Any:

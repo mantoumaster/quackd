@@ -2,11 +2,11 @@
 
 ## Simulators and the browser demo
 
-**Which simulator should I use?** Both come with the Microduck adapter, `quackd[microduck]`
-for the cartoon and `quackd[mujoco]` for the physics, and the cartoon is still the default. `sim2d`
-starts in a second, needs no network, runs anywhere, and is what the three other bodies that have a simulator and
-every CI sweep use. It tests the *agent loop* — search, approach, act, verify — and it will
-never tell you whether a gait works, because it has no joints
+**Which simulator should I use?** For the duck, both come with the Microduck adapter,
+`quackd[microduck]` for the cartoon and `quackd[mujoco]` for the physics, and the cartoon is
+still the default. `sim2d` starts in a second, needs no network, runs anywhere, and is what the
+three other bodies that have a simulator and every CI sweep use. It tests the *agent loop* —
+search, approach, act, verify — and it will never tell you whether a gait works, because it has no joints
 ([ADR-0007](adr/0007-sim2d-cartoon.md)). `--robot microduck:mujoco` is upstream's own Microduck
 model in MuJoCo, walking on `alpha_walking.onnx`, the policy Pollen trained, at 50 Hz on the
 CPU. The ball rolls, the duck undershoots what you asked for, and a pilot that works there has
@@ -17,7 +17,25 @@ cartoon stands a person in its arena and the physics world does not, so `follow-
 whole task is to follow somebody, is cartoon only.
 Neither one installed? [`web/`](../web/README.md) is the same physics and the same two policies
 in a page, and it does one thing neither Python simulator does: the sentence box and the
-keyboard drive the same duck at the same time.
+keyboard drive the same duck at the same time. For the LeRobot arm there is a third, its own,
+and the next answer is about it.
+
+**Is there a simulator for the arm?** Yes, `lerobot:mujoco`, behind `quackd[lerobot-sim]`, and
+it is a different kind of thing from the duck's two. It is the arm's real backend, the code that
+drives an SO-101 on a desk, running over a physics model of the arm in MuJoCo, so a task file
+rehearsed on it goes through the lines that will drive the arm in the lab: the connect and its
+retries, the travel read off your calibration, the rest pose, the refusals and the close.
+`quackd robot twin SOURCE` registers one of an arm you registered, on the calibration file its
+runs read, and `quackd preflight` rehearses task files on it seed after seed, with a
+`<task>.sim.yaml` beside a file to lay out the table and say what has to be so when a run ends.
+The first connect fetches the maker's own model, `so101_new_calib_camera.xml` and 15 meshes
+from TheRobotStudio's SO-ARM100 at a pinned commit, about 16 MB, one file at a time, each
+checked against a recorded sha256, into `~/.quackd/cache`. `QUACKD_LEROBOT_SIM_ASSETS` points
+at a checkout of your own instead. It needs no LeRobot and no torch, so it installs on Python
+3.11. What it cannot tell you is how the arm moves: the dynamics are the model's, which way each
+joint turns and where its zero sits are assumed until a bench checks them, and nothing measured
+on it is a rate. [adapters/lerobot.md](adapters/lerobot.md#the-simulator-lerobotmujoco) has
+the rest, and [ADR-0047](adr/0047-the-arms-simulator-runs-the-real-backend.md) the reasoning.
 
 **How do I run the physics simulator, and what does it download?**
 `uvx --from "quackd[mujoco]" quackd run find-and-kick --robot microduck:mujoco --llm fake`.
@@ -67,13 +85,15 @@ What was asked and what was sent are both in the state (`twist_commanded`, `twis
 `gait_floor`) and in the prompt. Upstream trains and deploys with a different actuator model, so
 a real Microduck may track commands directly.
 
-**Do I need a GPU for the physics simulator?** No. MuJoCo steps on the CPU and the policy runs
-under onnxruntime's CPU provider. Upstream needs CUDA to *train* that policy, never to run it.
-What the head camera needs is an OpenGL context to render into: a laptop has one, a bare server
+**Do I need a GPU for the physics simulator?** No, for either body. MuJoCo steps on the CPU and
+the duck's policy runs under onnxruntime's CPU provider. Upstream needs CUDA to *train* that
+policy, never to run it. What the head camera needs is an OpenGL context to render into: a laptop has one, a bare server
 may not, and the frames are what fails first there. On a headless Linux box, install `libosmesa6`
 and set `MUJOCO_GL=osmesa`, which renders into process memory and needs no display, no GPU and no
 `/dev/dri` — it is what CI's own physics job does. quackd names both in the error rather than
-letting an OpenGL traceback out. Rendering is this backend's real cost, not physics.
+letting an OpenGL traceback out. The arm's simulator needs the same context for its cameras,
+and renders once as it connects, so a machine that cannot draw is told at connect rather than
+at the first frame. Rendering is the real cost of both, not physics.
 
 ## Models and providers
 
@@ -292,8 +312,9 @@ scripted pilot has no `remember` in its script, so `--llm fake` accumulates run
 outcomes and never a note. [memory.md](memory.md), [ADR-0025](adr/0025-memory-between-runs.md)
 
 **Who decides the run succeeded?** The LLM, via `declare_success(reason)` — that is the
-honest state of the art. In either simulator the run summary also records ground truth
-(`ball_displacement_m`) and the tests check the claim against it.
+honest state of the art. In the duck's two simulators the run summary also records ground truth
+(`ball_displacement_m`) and the tests check the claim against it. The arm's simulator keeps its
+truth where the pilot cannot read it, and `quackd preflight` judges a rehearsal by it.
 
 **What if the robot cannot do what I asked?** It says so before it moves. Every robot carries
 a datasheet of what it weighs, can carry and can reach, and the pilot has to judge the task
@@ -435,6 +456,7 @@ you choose the bodies:
 ```bash
 uv pip install "quackd[microduck]"    # the duck: the cartoon, the mock and the real one
 uv pip install "quackd[lerobot]"      # an SO-101 arm, with LeRobot on Python 3.12 or newer
+uv pip install "quackd[lerobot-sim]"  # the same arm's simulator, MuJoCo and no LeRobot
 uv pip install "quackd[robots]"       # all seven, each with the SDK its real backend needs
 ```
 

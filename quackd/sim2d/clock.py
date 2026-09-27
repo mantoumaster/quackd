@@ -11,9 +11,12 @@ is awake, so LLM latency costs zero sim time — same semantics a solo run has t
 Rule for participants: every await in your loop must bottom out in `sleep()` here, and you
 must `unregister()` when you finish (or you wedge time for everyone else).
 
-The clock asks nothing of the world beyond a time and a way to advance it, so the cartoon and
-the MuJoCo world (`quackd_microduck.sim3d`) share it, each at its own `dt`: 50 ms for the cartoon's
-kinematics, 20 ms for a walking policy that runs at 50 Hz.
+The clock asks nothing of the world beyond a time and a way to advance it, so the cartoon, the
+Microduck's MuJoCo world (`quackd_microduck.sim3d`) and the arm's (`quackd_lerobot.sim.clock`)
+share it, each at its own `dt`: 50 ms for the cartoon's kinematics, 20 ms for a walking policy
+that runs at 50 Hz, and for the arm the model's timestep times its `SUBSTEPS`. The arm's makes
+each sleep a participant of its own, because two tool calls over MCP are two tasks sleeping at
+once (ADR-0047).
 """
 
 from __future__ import annotations

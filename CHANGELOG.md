@@ -24,6 +24,18 @@ Jetson by this project. The daemon, the client, doctor, the camera and the detec
 exercised in-process against fakes, and Known limitations, below, says what that leaves
 unmeasured.
 
+The SO-101 has a simulator. `lerobot:mujoco` is the arm's real backend, its own code from the
+connect and its retries to the close, running over a physics model of the arm in MuJoCo: the
+maker's own model from TheRobotStudio's SO-ARM100, fetched at a pinned commit and hash checked,
+and never shipped. `quackd robot twin` makes one of a registered arm, on that arm's own
+calibration, and `quackd preflight` rehearses task files on it seed after seed and refuses
+anything that is not a simulator before building it. Most of what went wrong at the bench on
+2026-09-23 was in the code between the pilot and the bus, and this is where that code now meets
+a task file before the arm does
+([ADR-0047](docs/adr/0047-the-arms-simulator-runs-the-real-backend.md)). It rehearses the code
+and the contract, not the arm. Nothing has compared it against one, and Known limitations says
+what only the bench can settle.
+
 ### Added
 
 - **`--host HOST[:PORT]` names a board quackd uses and never runs on.** `--robot` still names
@@ -123,6 +135,74 @@ unmeasured.
   frame gains `detect`: how many it sent, how many failed, the laptop's wait for each from
   encoding it to reading the answer, and the board's own `ms` in the model, each as a mean and a
   maximum, so a `go_to`'s record says what its steering loop waited for, however it ended.
+- **`lerobot:mujoco`, the SO-101's simulator, runs the arm's real backend over a physics
+  model.** `LeRobotSim` is `LeRobotReal` with a simulated follower and the scene's cameras
+  where LeRobot's follower and the webcams would be, and the world's clock where the wall's
+  would be, so the connect and its retries, the travel read off a calibration and every
+  refusal past it, the rest move, the hold, `--by-hand` and the close are the arm's own code.
+  The follower plays what LeRobot and the servo do with a goal: LeRobot caps each send at the
+  step, the servo clamps the goal to the calibrated travel and leaves the reading alone, and a
+  limp joint drives to its last goal when torque returns. The model is
+  `so101_new_calib_camera.xml` and its 15 meshes from SO-ARM100 at `5f6d2b8`, fetched on the
+  first connect one file at a time, about 16 MB, each checked against a recorded sha256, into
+  `~/.quackd/cache`, with `QUACKD_LEROBOT_SIM_ASSETS` pointing at a checkout of your own
+  instead. The scene is quackd's: a table, lights, a cube and a pen laid out by `--seed`, and
+  front, top and wrist cameras that the arm's own `opencv://` urls name with `?name=`.
+  `--address` names the calibration file, a registered name reads the one LeRobot keeps under
+  it, and a bare `--robot lerobot:mujoco` runs a generic arm with the model's own ranges and
+  says so, rather than reading the calibration under `arm-01`, the id quackd gives an arm nobody
+  named. An address shaped like a serial port is refused before anything opens it. Time is
+  lockstep and moves only while something sleeps on the clock, so a pilot's thinking costs none
+  and under one seed the simulator does the same again. A `--by-hand` take-hold first lets the
+  released arm fall for a second of sim time, since nobody places it, and then holds or refuses
+  as on the desk. The pilot is told it is on a model, the run writes no GIF, and `--live` opens
+  MuJoCo's viewer.
+  `quackd doctor --robot` connects a registered one with or without an address and renders once,
+  and it and `quackd robot release` say it is the simulator rather than asking anybody to hold an
+  arm. Its ✅ rests on a seeded grasp sweep on the maker's model, judged by the world's truth,
+  and it never raises `lerobot:real`'s
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#the-simulator-lerobotmujoco)).
+- **`quackd robot twin SOURCE [NAME]` registers a simulator of a registered arm.** NAME is
+  `SOURCE-sim` unless given, its address is the calibration file SOURCE's runs read, and it
+  copies SOURCE's rest pose, pilot and each camera the simulator renders, naming any it leaves
+  out. Its memory is its own. It refuses a NAME that is SOURCE, a source that is not a
+  registered LeRobot arm, a missing calibration file, a serial port where the file goes, and
+  `--force` over anything but a `lerobot:mujoco` robot, so no arm is ever overwritten by its own
+  simulator. `--robot arm-01:mujoco` does not parse, and this is the command instead
+  ([docs/registry.md](docs/registry.md#a-simulator-of-an-arm)).
+- **`quackd preflight FILES --robot NAME --llm VENDOR[:MODEL]` rehearses task files on a
+  simulator.** A robot that is not a simulator is refused before it is built, with a pointer to
+  `robot twin`, and so is a pilot nobody named: the scripted one runs only when typed as
+  `--llm fake`. Each file is checked as `validate` checks it, the simulator is connected and
+  closed `--connect-cycles` times, and the task is run `--seeds` times, three of each unless
+  you say, with memory off. A run passes when nothing escaped it, no call to the simulated bus
+  was left hanging, its close ended at the rest pose (or, on a robot with none, such as a bare
+  `lerobot:mujoco`, found none to return to, unless the sidecar asks `at_rest: true`), and every
+  check in the task's sidecar held. `--faults` gives the connects a seeded bus that drops
+  packets in LeRobot's own words, from rates for `handshake`, `configure`, `write`, `torque`,
+  `torque_read` and `temperature_read` and a `read_loss_from=N`. It prints a row per file and
+  seed, the model's cost and the simulator's time step, `--json` prints the same, and it exits
+  1 unless every run passed. `FILES` may be globs, quoted, since PowerShell does not expand
+  them.
+- **A task's sidecar, `<task>.sim.yaml`, says what a rehearsal of it has to leave behind.** It
+  lays out the table, with an object on it or between the jaws, and checks `at_rest`,
+  `joint_moved`, `lifted` and `moved`, each threshold measured from the run's own start. Joint
+  checks read the transcript. Object checks read the simulator's truth, latched on the way into
+  the teardown's stop or at its peak before then, which is kept off the state's extras, so the
+  pilot and an MCP client never see it. It is never the frontmatter, which an MCP pilot is
+  handed whole ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#the-sidecar)).
+- **`quackd[lerobot-sim]` installs the simulator.** It is `quackd-lerobot[sim]`, the arm's
+  package with MuJoCo and without LeRobot, so it needs no torch and installs on Python 3.11.
+  `quackd doctor` gains a `lerobot-sim (mujoco)` row, and a row in its transports table saying
+  whether the SO-101's model is in the cache at its pin, which it only looks at and never
+  fetches.
+- **A nightly job, `lerobot-sim-assets`, fetches the SO-101's model and grasps with it.** It
+  fetches the pinned files the way a first connect does, into a runner that is then destroyed,
+  and runs the tests marked `so101_model` asking ten seeds of ten: the seeded grasp, the
+  rehearsal sweeps, the real meshes rendered and the physics timed against the wall. It is also
+  the watchdog on the pin, since a file that stops arriving at its hash fails there by name. CI's
+  `physics` job runs the simulator's other tests on every push, on a primitives-only stand-in arm
+  that needs nothing fetched.
 
 ### Changed
 
@@ -143,6 +223,26 @@ unmeasured.
   `host.jetson`. The top-level `jetson` key 0.13.0 added is gone, and so is its
   `docker_default_runtime`, which means nothing from a laptop. A malformed `QUACKD_HOST` is a
   row in the report rather than a line of prose, so `--json` still prints one document.
+- **A body that reads one camera names both that read several.** Handed a second
+  `--camera-url`, it now says `only lerobot:real and lerobot:mujoco take several`, and a
+  registry entry with a second camera on such a body says the same, where both said
+  `only lerobot:real takes several`.
+- **The system prompt's simulator note is keyed on the adapter as well as the backend.** Only
+  the Microduck's `mujoco` hears about the 2 m arena and the orange ball, because the arm's
+  simulator now has a backend of the same name and neither. The arm's gets a note of its own:
+  a model of the arm on a table, physics nobody measured on an SO-101, and cameras that are
+  rendered views, or, on a run with no camera, that whatever is on the table goes unseen.
+- **`quackd doctor`'s transports section is no longer headed as the Microduck's.** It is what
+  an installed adapter checks on this machine, a row per `adapter:backend`, and the arm's
+  simulator is the row there today.
+- **The arm's heartbeat no longer feeds the gripper trace `pick` watches.** Its reads go
+  through a seam of their own, which the simulator's fault plan leaves alone, and a grasp is
+  noticed on the verb's own reads. On an arm, `pick` can notice a grasp one poll later than it
+  did, and nothing in quackd loads a policy for `pick` yet.
+- **A refusal from the arm's backend names the backend.** The real arm's still begin
+  `lerobot real:`, and the simulator's begin `lerobot mujoco:`. The `--camera-url` parser takes
+  the same label and says, on the simulator, that a camera there is one of the scene's mounts
+  named with `?name=`.
 
 ### Fixed
 
@@ -218,6 +318,40 @@ unmeasured.
   resolving can take longer than that to fail, and is paid again on every call. A reply trickled
   in a byte at a time can take longer too, which only a hostile board would send. An address
   given to `--host` is never looked up.
+- **The arm's simulator is not the arm, and only the bench can settle these.** PLAN.md carries
+  each as an open item.
+  1. Joint signs and zero offsets: nudge each real joint by a small positive angle and check it
+     turns the same way in the simulator, and read the calibrated value at each mechanical stop
+     against the model's stop. That also says whether a recorded fold can be represented at all.
+     Until then a rest pose past one of the model's stops starts at the stop, with a note.
+  2. The gripper on a real pen: what it reads against the band that infers holding. The
+     simulator's pen is a capsule in the model's physics and says nothing about that band.
+  3. The front and wrist cameras' placement and field of view, which would replace the default
+     mounts. Front and top are quackd's views of the table, and the wrist view is rendered from
+     upstream's printed mount, which may not be where the lab's camera sits.
+  4. The policy loop's rate on the real bus. The simulator's clock is lockstep, `--live`
+     included, so nothing timed on it is a rate.
+  5. The seven bench steps 0.14.0 owes, under its Known limitations below, which the simulator
+     does not replace.
+- **Its dynamics are the model's.** The gains are a calculation and the servo properties another
+  robot's, so a settle time, a push or a grasp that holds is evidence about the model
+  (`SERVO_DYNAMICS`). Its servos never warm, so the heat refusal is never rehearsed.
+- **What a rehearsal costs is its connects and its cameras, not its physics.** On this
+  project's laptop, with integrated graphics, the physics steps several times faster than the
+  wall with nothing rendering. Each connect loads the model and renders once, and each camera a
+  run names renders again whenever it is read after the world has moved. `quackd preflight` of
+  `lerobot-lookout`, three connect cycles and three runs, took about 15 seconds there on a twin
+  with no camera and under half a minute with two.
+- **A `lerobot:mujoco` robot makes `robots.json` unreadable to quackd 0.14 and earlier**, which
+  check every robot against the backends they know, every robot in the file included, until
+  each `lerobot:mujoco` robot is removed. `robot twin` says so and names them all.
+  `QUACKD_REGISTRY_DIR` keeps a registry for this release apart from an older install's.
+- **An MCP session on the simulator is not seeded.** A run through the agent loop or
+  `quackd preflight` makes one call at a time, and under one seed the simulator does the same
+  again. An MCP session runs tool calls at once.
+- **The nightly job has not run yet.** GitHub runs a scheduled workflow only from the default
+  branch, so until it has, the simulator's ten of ten on the maker's model is the sweep run by
+  hand on 2026-09-27.
 
 ## [0.14.0] — 2026-09-25
 

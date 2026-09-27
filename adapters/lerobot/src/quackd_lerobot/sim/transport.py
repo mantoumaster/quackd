@@ -15,9 +15,10 @@ What it adds is what an arm has and a model does not:
   machine that cannot draw the cameras says so at connect rather than at the first frame.
   `close()` stops the clock and frees every renderer, the viewer and the world on the loop.
 - **Which calibration.** The file `--address` names, or for a named robot the one LeRobot
-  would find under that name. A bare `--robot lerobot:mujoco` names no arm, and LeRobot's
-  default id would find whatever arm this machine last calibrated, so it gets the generic arm
-  instead, whose travel is the model's own, and says so.
+  would find under that name. A bare `--robot lerobot:mujoco` names no arm, and quackd's
+  default id for an arm nobody named (`DEFAULT_ID`) would find whatever arm this machine last
+  calibrated under it, so it gets the generic arm instead, whose travel is the model's own, and
+  says so.
 - **A person's hands.** Nobody is there to place a released arm, so a take-hold first lets
   gravity act on it (`PLACE_SETTLE_S`) and meets whatever pose physics left: the arm falls, and
   the take-hold's refusals for a slip or a joint past its travel are rehearsed as they happen.

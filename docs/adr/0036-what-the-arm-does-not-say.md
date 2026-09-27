@@ -76,6 +76,20 @@ over an arm that did not answer does, and says so. Only the endings nobody decid
 and they keep torque. Where the flag will not take, the close reads it back and says what the
 disconnect will do rather than assuming it.
 
+**Amended 2026-09-27 by [ADR-0047](0047-the-arms-simulator-runs-the-real-backend.md):** the arm
+now has a simulator, and it runs this ADR's code rather than a copy of it. `lerobot:mujoco` is
+`LeRobotReal` over a follower that plays what LeRobot and the servo do with a goal: LeRobot's
+step cap, as a copy of `ensure_safe_goal_position`, then the servo's clamp to the calibrated
+travel with the reading left alone, and a limp joint driving to the last goal it was written
+once torque returns. That last is `TORQUE_ENABLE_HOLDS_PRESENT` played at its worst, not
+answered. The simulated bus answers only the registers the real backend reads on an arm, the
+positions, the torque flag and the temperatures, so it says nothing the arm cannot: no grip
+force, temperatures that read as a room's, and dynamics that are the model's (`SERVO_DYNAMICS`).
+The world's truth about a grasp is kept where neither the pilot nor MCP can read it. One change
+reaches the arm itself. The heartbeat's reads no longer feed the gripper trace `pick` watches,
+so a grasp is noticed on the loop's own reads, up to one poll later. Nothing else below
+changes, and nothing in it is settled by the simulator.
+
 ## Context
 
 The LeRobot adapter drives an SO-101 follower through the `Robot` interface of
