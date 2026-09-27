@@ -84,9 +84,13 @@ The gait arithmetic itself lives in that package's `sim3d/gait.py`, which import
 Touching the arm's simulator under `adapters/lerobot/src/quackd_lerobot/sim/`? The same extra
 gives you `mujoco`, and `tests/test_lerobot_sim.py` vanishes without it the same way. It runs on
 `sim/standin.py`, a primitives-only arm that needs nothing fetched, and CI's `physics` job runs
-it too. The test marked `so101_model` needs the maker's model already in `~/.quackd/cache`, or
-`QUACKD_LEROBOT_SIM_ASSETS` pointing at the `Simulation/SO101` directory of a checkout, and
-skips without either.
+it too. The tests marked `so101_model`, the model check in that file and the whole of
+`tests/test_lerobot_sim_model.py` (the seeded grasp sweep, the rehearsal sweeps, the real
+meshes rendered and the physics timed), need the maker's model already in `~/.quackd/cache`,
+or `QUACKD_LEROBOT_SIM_ASSETS` pointing at the `Simulation/SO101` directory of a checkout, and
+skip without either. The nightly `lerobot-sim-assets` job fetches the model and runs them, and
+no job a pull request waits on does. So a contact setting changed in `sim/model.py` meets the
+grasp sweep only that night: run `uv run pytest tests/test_lerobot_sim_model.py` yourself first.
 
 Touching anything under `bridge/`? That is the code that runs on a robot, or on the board
 `--host` names, and there are four lots of it now (`open_duck/`, `alohamini/`,

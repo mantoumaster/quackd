@@ -63,11 +63,18 @@ below keeps its time constant above the two timesteps MuJoCo's refsafe flag enfo
 IMPRATIO = 10.0
 """MuJoCo's documentation says an impratio above 1 makes friction harder than the normal force,
 which keeps a held object from slipping without raising any friction coefficient. It describes
-that for elliptic cones, which is why the scene uses them rather than the default pyramid."""
+that for elliptic cones, which is why the scene uses them rather than the default pyramid.
+
+It and NOSLIP_ITERATIONS are what the grasp sweep (`tests/test_lerobot_sim_model.py`) guards.
+With both at MuJoCo's defaults the stiff pads below let the cube slide out of the fingers on
+every seed, and with either one alone the sweep still lifts it on every seed."""
 NOSLIP_ITERATIONS = 3
 """Passes of MuJoCo's noslip solver, which the documentation describes as a post-processing
 step that suppresses the slip the soft contact model otherwise allows. The default of 0 turns it
-off. A few passes are what quackd starts from; the nightly grasp sweep is what judges them."""
+off. A few passes are what quackd starts from, and IMPRATIO says what the grasp sweep showed of
+the two. Of the pair this is the one a longer hold needs: without it the sweep still lifts the
+cube, but held a few seconds past the lift the cube creeps down the pads, where with it the
+cube stays put."""
 
 MUJOCO_FRICTION = (1.0, 0.005, 0.0001)
 """MuJoCo's default geom friction: sliding, torsional and rolling. Nobody has measured a printed
@@ -75,12 +82,20 @@ finger against a pen, so the scene starts from the documented defaults and names
 nightly grasp sweep is what would move them."""
 PAD_CONDIM = 4
 """A finger pad's contact dimensions: sliding plus torsional friction, so an object held
-between two pads resists spinning about the line between them, not only sliding along it."""
+between two pads resists spinning about the line between them, not only sliding along it.
+At 3 the grasp sweep lifts its cube just as well, so the sweep does not guard it."""
 PAD_SOLREF = (0.01, 1.0)
 """A pad's contact time constant and damping ratio: half MuJoCo's default time constant, so the
 pad is stiffer and a squeezed object sinks less far into it, and still five timesteps, above
 the two that MuJoCo's refsafe flag takes as the floor. A damping ratio of 1 is critical
-damping, the default."""
+damping, the default.
+
+The grasp sweep lifts the cube at MuJoCo's default time constant too, so it does not guard
+this. What the stiffness changes is how far the gripper closes into what it holds: at the
+default it settles about at `real.HOLD_MIN`, the reading below which quackd takes a close to
+be on nothing, and with every contact setting here at MuJoCo's default it settles below it on
+every seed. The sweep prints quackd's verdict beside the world's and never asserts it, since
+whether a real gripper settles where this one does is a question for the bench."""
 OBJECT_CONDIM = 6
 """An object's contact dimensions. Six adds rolling friction, the third coefficient, which does
 nothing below it: without it a capsule touched on the table rolls until something stops it."""
@@ -90,7 +105,8 @@ of equal priority touch, MuJoCo mixes their settings: the larger condim and fric
 solref averaged between the two. A pad would then meet an object at the object's condim, and
 at a time constant halfway between the object's and its own. The higher priority makes a pad's
 own settings the ones anything touching it meets, which is what PAD_CONDIM and PAD_SOLREF are
-for."""
+for. At 0 the grasp sweep still lifts the cube, and the gripper settles a little further shut
+on it, as PAD_SOLREF says a softer pad does."""
 
 # ── the scene ───────────────────────────────────────────────────────────────────────────
 

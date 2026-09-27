@@ -58,8 +58,9 @@ OFFICIAL: tuple[AdapterInfo, ...] = (
         backends=("mock", "real", "mujoco"),
         status=(
             "✅ in the package: mock · ✅ real (one SO-101, driven on 2026-09-15 and again on "
-            "2026-09-23; Python 3.12+) · 🧪 mujoco (the real backend over a physics model of "
-            "the SO-101, needs quackd[lerobot-sim]; never compared against the arm)"
+            "2026-09-23; Python 3.12+) · ✅ mujoco (the real backend over a physics model of "
+            "the SO-101, needs quackd[lerobot-sim]; passes a seeded grasp sweep on the maker's "
+            "model, never compared against the arm)"
         ),
         summary="an SO-101 class desktop arm driven by LeRobot",
         extra="quackd[lerobot]",
