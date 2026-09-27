@@ -1,0 +1,1145 @@
+"""The two halves of the policy protocol, talking to each other, and the arm's loop behind one.
+
+The server here is the real one (`quackd_lerobot.policy.server`), in-process on port 0 on
+loopback, serving a scripted policy by the name `quackd policy serve --policy scripted:NAME`
+takes, and the client is the real `RemoteRunner`. So a field renamed on one side, a shape one
+side sends and the other refuses, or a bound one side moved is caught here, and the segments
+below run the real policy loop over the backend and the test suite's `FakeArm`, through HTTP,
+end to end. It runs in-process rather than as a subprocess for the reason the Jetson daemon's
+contract test gives: subprocess servers flake on this project's Windows machine.
+
+What it cannot catch is anything about a checkpoint: this server serves scripted policies only
+(`upstream_api.POLICY_PIPELINE`).
+"""
+
+from __future__ import annotations
+
+import http.client
+import importlib.util
+import json
+import math
+import re
+import socket
+import sys
+import threading
+import time
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import numpy as np
+import pytest
+from typer.testing import CliRunner
+
+from quackd import host
+from quackd.cli import app
+from quackd.command import HIDDEN
+from quackd.safety import Executor, allow_all
+from quackd.verbs.registry import registry_from_manifest
+from quackd_lerobot import LeRobotAdapter
+from quackd_lerobot.policy import protocol as wire
+from quackd_lerobot.policy import server as S
+from quackd_lerobot.policy.client import (
+    STEP_TIMEOUT_S,
+    PolicyServerError,
+    RemoteRunner,
+    client_token,
+    policy_address,
+)
+from quackd_lerobot.policy.loop import FIRST_CHUNK_S, STARVE_S
+from quackd_lerobot.policy.runner import Chunk, Observation
+from quackd_lerobot.policy.scripted import SCRIPTED_HZ, SCRIPTS, SWEEP_DEG, SWEEP_JOINT
+from quackd_lerobot.real import CAMERA_ROTATIONS, LeRobotReal
+from quackd_lerobot.verbs import JOINTS, MANIPULATE_S
+from tests.test_lerobot_adapter import FakeArm, SteppedClock, _segment_arm
+from tests.test_policy_loop import STEP, LockstepClock, _segment_end
+
+REPO = Path(__file__).resolve().parents[1]
+HOSTD = REPO / "bridge" / "jetson" / "quackd_jetson_hostd.py"
+TOKEN = "5f0c2a8e9d7b41c3a6e8f0d2b4c6a8e0f1d3b5c7a9e1f3d5b7c9a1e3f5d7b9c1"
+"""Shaped like `secrets.token_hex(32)`, which is what the server writes."""
+FRAME = wire.CameraInfo(name="front", height=24, width=32)
+"""A small camera, so a raw frame is a few kilobytes and a test does not measure base64."""
+
+
+# ── a server, a client, and an arm behind the client ────────────────────────────────────
+
+
+@dataclass
+class Serving:
+    app: S.PolicyServer
+    http: Any
+
+    @property
+    def port(self) -> int:
+        return int(self.http.server_address[1])
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def client(self, *, token: str = TOKEN, **kw: Any) -> RemoteRunner:
+        return RemoteRunner(self.url, token=token, motors=kw.pop("motors", JOINTS), **kw)
+
+    def raw(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        *,
+        token: str | None = TOKEN,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[int, dict[str, Any], bool]:
+        """One request by hand, as (status, the reply's JSON, whether the server closed)."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            sent = dict(headers or {})
+            if token is not None:
+                sent[wire.TOKEN_HEADER] = token
+            if body is not None:
+                sent.setdefault("Content-Type", "application/json")
+            conn.request(method, path, body=body, headers=sent)
+            reply = conn.getresponse()
+            payload = json.loads(reply.read() or b"{}")
+            return reply.status, payload, reply.will_close
+        finally:
+            conn.close()
+
+
+def _serving(options: S.ServeOptions, runner: Any = None, token: str = TOKEN) -> Serving:
+    built, info = S.served_policy(options)
+    app_ = S.PolicyServer(runner if runner is not None else built, info, token)
+    return Serving(app_, S.serve(app_, "127.0.0.1", 0))
+
+
+@pytest.fixture
+def served() -> Iterator[Serving]:
+    """`quackd policy serve --policy scripted:sweep`, on loopback, with a token."""
+    serving = _serving(S.ServeOptions(policy="scripted:sweep"))
+    try:
+        yield serving
+    finally:
+        serving.http.shutdown()
+        serving.http.server_close()
+        serving.app.close()
+
+
+def _reading(value: float = 0.0, **frames: Any) -> dict[str, Any]:
+    return {**{f"{m}.pos": value for m in JOINTS}, **frames}
+
+
+async def _arm_on(
+    runner: RemoteRunner, arm: FakeArm | None = None, clock: Any = None
+) -> tuple[Any, Any, Any]:
+    """The real backend over the fake arm, its policy the server behind `runner`, on a clock
+    that moves only when slept, so a segment of many seconds costs none of the wall's."""
+    arm = arm if arm is not None else _segment_arm()
+    clock = clock if clock is not None else SteppedClock()
+    transport = LeRobotReal("COM5", robot=arm, policy=runner, clock=clock, max_step_deg=STEP)
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
+    return transport, adapter, ex
+
+
+def _hostd() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("quackd_jetson_hostd_policy", HOSTD)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# ── what the two sides agree on ─────────────────────────────────────────────────────────
+
+
+def test_the_port_sits_next_to_the_daemons_and_every_page_that_lists_ports_has_it() -> None:
+    """9871 and 9872 are the Open Duck Mini's, 9873 the ToddlerBot daemon's and 9874 the Jetson
+    host daemon's, and SECURITY.md tells people which ports quackd opens."""
+    assert wire.DEFAULT_PORT == host.DEFAULT_PORT + 1
+    assert str(wire.DEFAULT_PORT) in (REPO / "SECURITY.md").read_text(encoding="utf-8")
+    result = CliRunner().invoke(app, ["policy", "serve", "--help"])
+    assert result.exit_code == 0 and str(wire.DEFAULT_PORT) in result.output
+
+
+def test_the_servers_bounds_are_the_jetson_daemons() -> None:
+    """Copied as named constants, because a daemon under `bridge/` never imports quackd, so a
+    change to one has to be a change to the other, and this is where it shows."""
+    hostd = _hostd()
+    for name in (
+        "REQUEST_TIMEOUT_S",
+        "REQUEST_DEADLINE_S",
+        "MAX_HEAD_BYTES",
+        "MAX_CONNECTIONS",
+        "LINGER_S",
+        "DRAIN_CHUNK_BYTES",
+    ):
+        assert getattr(S, name) == getattr(hostd, name), name
+    assert wire.TOKEN_HEADER == hostd.TOKEN_HEADER
+    assert S._Server.allow_reuse_address is (sys.platform != "win32")
+
+
+def test_a_camera_declares_the_rotations_a_camera_url_takes() -> None:
+    assert wire.ROTATIONS == CAMERA_ROTATIONS
+    for rotation in CAMERA_ROTATIONS:
+        assert wire.CameraInfo(name="front", height=4, width=4, rotation=rotation)
+    with pytest.raises(wire.ProtocolError):
+        wire.validate(wire.CameraInfo, {"name": "front", "height": 4, "width": 4, "rotation": 45})
+
+
+def test_the_handshake_says_what_is_served(served: Serving) -> None:
+    info = served.client().policy()
+    assert (info.protocol, info.protocol_version) == (wire.PROTOCOL, wire.PROTOCOL_VERSION)
+    assert info.policy == "scripted:sweep" and info.rate_hz == SCRIPTED_HZ
+    assert "scripted:sweep" in info.rate_source
+    assert 1 <= info.n_action_steps <= info.chunk_size <= wire.MAX_CHUNK
+    assert info.per_tick is False and info.gpu is False and info.latency_s == 0
+    assert info.jpeg_quality is None, "frames travel raw on loopback"
+    assert info.state_quantiles is None and info.features.state is None
+
+
+# ── a segment, end to end ───────────────────────────────────────────────────────────────
+
+
+async def test_manipulate_runs_its_segment_through_the_server(served: Serving) -> None:
+    """The verb, the executor, the policy loop, the client, HTTP and the server's scripted
+    policy, and back: the segment runs its time, ok, and the arm got the sweep's goals."""
+    arm = _segment_arm()
+    start = arm.positions[SWEEP_JOINT]
+    runner = served.client()
+    _, adapter, ex = await _arm_on(runner, arm)
+    try:
+        ran = await ex.run_verb("manipulate", {"instruction": "wave"})
+        assert ran.ok and ran.data["ended"] == "time", ran.summary
+        assert ran.data["seconds"] == pytest.approx(MANIPULATE_S)
+        assert ran.data["chunks"] >= 2 and ran.data["hz"] == pytest.approx(SCRIPTED_HZ, abs=0.1)
+        goals = [a[f"{SWEEP_JOINT}.pos"] for a in arm.actions if f"{SWEEP_JOINT}.pos" in a]
+        assert goals and max(abs(g - start) for g in goals) <= SWEEP_DEG + 1e-6
+        assert max(goals) > start and min(goals) < start, "it swung both ways"
+        assert served.app.runner.instruction == "wave"  # type: ignore[attr-defined]
+        assert served.app.steps == runner.seq and runner.dropped == 0
+    finally:
+        await adapter.close()
+
+
+async def test_a_manipulate_of_hold_ends_on_a_stall_and_is_ok() -> None:
+    """What the arm's page says `scripted:hold` is for: a policy that answers and leaves the arm
+    where it is, so the segment ends as an arm that stopped moving, which is a segment that ran."""
+    serving = _serving(S.ServeOptions(policy="scripted:hold"))
+    arm = _segment_arm()
+    here = dict(arm.positions)
+    _, adapter, ex = await _arm_on(serving.client(), arm)
+    try:
+        ran = await ex.run_verb("manipulate", {"instruction": "stay"})
+        assert ran.ok and ran.data["ended"] == "stall", ran.summary
+        assert arm.positions == pytest.approx(here)
+    finally:
+        await adapter.close()
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+async def test_a_segment_ends_on_its_chunks(served: Serving) -> None:
+    runner = served.client()
+    transport, adapter, _ = await _arm_on(runner)
+    try:
+        ended = await _segment_end(transport, max_s=1e6, max_chunks=3)
+        assert ended.how == "chunks" and ended.stats.chunks == 3, ended
+        assert served.app.steps == 3
+    finally:
+        await adapter.close()
+
+
+async def test_a_server_that_stops_answering_starves_the_segment() -> None:
+    """The server takes the third step and never answers it. The loop's patience runs out long
+    before the client's timeout, so the segment ends starved, with the arm held, and says so.
+    The sweep keeps the arm moving, so nothing before the hang ends it as a stall."""
+    gate = threading.Event()
+    built, _ = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    script = built.script
+
+    def stalls(observation: Observation, sent: Mapping[str, float]) -> Any:
+        if built.requests > 2:
+            gate.wait(30)
+        return script(observation, sent)
+
+    built.script = stalls
+    serving = _serving(S.ServeOptions(policy="scripted:sweep"), runner=built)
+    runner = serving.client()
+    assert runner.step_timeout_s == STEP_TIMEOUT_S > FIRST_CHUNK_S > STARVE_S
+    transport, adapter, _ = await _arm_on(runner)
+    loop = transport._policy_loop
+    assert loop is not None
+    loop.starve_s = 0.3  # the wall's seconds: the bound this test waits out
+    try:
+        ended = await _segment_end(transport, max_s=1e6)
+        assert ended.how == "starved", ended
+        assert "gave no action for 0.3 s, waiting for a chunk" in ended.reason
+        assert ended.stats.chunks >= 1
+    finally:
+        gate.set()
+        await adapter.close()
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+async def test_manipulate_is_not_ok_when_the_server_stops_answering() -> None:
+    gate = threading.Event()
+    built, _ = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    script = built.script
+
+    def stalls(observation: Observation, sent: Mapping[str, float]) -> Any:
+        if built.requests > 1:
+            gate.wait(30)
+        return script(observation, sent)
+
+    built.script = stalls
+    serving = _serving(S.ServeOptions(policy="scripted:sweep"), runner=built)
+    transport, adapter, ex = await _arm_on(serving.client())
+    assert transport._policy_loop is not None
+    transport._policy_loop.starve_s = 0.3
+    try:
+        ran = await ex.run_verb("manipulate", {"instruction": "wave"})
+        assert not ran.ok and ran.data["ended"] == "starved", ran.summary
+    finally:
+        gate.set()
+        await adapter.close()
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+# ── sessions and sequences ──────────────────────────────────────────────────────────────
+
+
+def test_a_second_client_waits_for_the_live_session_and_a_stale_one_is_refused(
+    served: Serving,
+) -> None:
+    """A check run against a server an arm is driving through must not end the arm's segment:
+    another client's reset is refused while the live session is in use, the session's own
+    client replaces it freely, and one quiet for the lease is anyone's. A step for the session
+    a reset replaced is refused."""
+    first, second = served.client(), served.client()
+    first.reset("wave")
+    first.next_chunk(Observation(0, _reading()), {})
+    with pytest.raises(PolicyServerError) as busy:
+        second.reset("bench")
+    assert busy.value.status == 409 and "another client's session is live" in str(busy.value)
+    assert str(busy.value).endswith("--port"), "the whole sentence, not one cut short"
+    first.reset("wave again")  # its own client replaces it, however recently it was used
+    assert first.next_chunk(Observation(0, _reading()), {}).actions
+    served.app.lease_s = 0.0  # as if it had been quiet for the lease
+    second.reset("bench")
+    with pytest.raises(PolicyServerError) as stale:
+        first.next_chunk(Observation(1, _reading()), {})
+    assert stale.value.status == 409 and "session is over" in str(stale.value)
+    assert second.next_chunk(Observation(0, _reading()), {}).actions
+
+
+def test_a_client_that_closes_ends_its_session_so_another_starts_at_once(
+    served: Serving,
+) -> None:
+    first, second = served.client(), served.client()
+    first.reset("wave")
+    first.close()
+    assert first.session is None
+    second.reset("bench")  # no lease to wait out
+    assert second.next_chunk(Observation(0, _reading()), {}).actions
+    stale = wire.dumps(wire.EndRequest(session="0" * 32))
+    assert served.raw("POST", wire.END_PATH, stale)[:2] == (200, {"ended": False})
+    first.close()  # a client with no session sends nothing, and ending one twice is no error
+
+
+def _until(done: Callable[[], bool], within: float = 5.0) -> None:
+    end = time.monotonic() + within
+    while not done():
+        assert time.monotonic() < end, "it did not happen in time"
+        time.sleep(0.02)
+
+
+def test_a_reset_whose_reply_was_lost_leaves_its_client_the_session_it_made() -> None:
+    """A reset the server finished after its client stopped waiting for the reply made a
+    session the client never heard of, and the client still holds the one before. Its next
+    reset and its close are still its own, never another client's, which is refused while the
+    session is in use as before."""
+    built, _ = S.served_policy(S.ServeOptions(policy="scripted:hold"))
+    real = built.reset
+    slow = threading.Event()
+
+    def reset(instruction: str) -> None:
+        if slow.is_set():
+            slow.clear()
+            time.sleep(1.0)
+        real(instruction)
+
+    built.reset = reset
+    serving = _serving(S.ServeOptions(policy="scripted:hold"), runner=built)
+
+    def moved_on(held: str | None) -> bool:
+        live = serving.app._session
+        return live is not None and live.id != held
+
+    try:
+        arm, other = serving.client(), serving.client()
+        arm.reset("first")
+        held = arm.session
+        arm.call_timeout_s = 0.5
+        slow.set()
+        with pytest.raises(PolicyServerError, match="did not answer /v1/reset"):
+            arm.reset("second")
+        _until(lambda: moved_on(held))
+        assert arm.session == held, "the reply never came, so the client holds what it held"
+        with pytest.raises(PolicyServerError) as busy:
+            other.reset("bench")
+        assert busy.value.status == 409
+        arm.reset("third")  # its own, however recently the session it never heard of was made
+        assert arm.next_chunk(Observation(0, _reading()), {}).actions
+        held = arm.session
+        slow.set()
+        with pytest.raises(PolicyServerError, match="did not answer /v1/reset"):
+            arm.reset("fourth")
+        _until(lambda: moved_on(held))
+        arm.close()
+        assert serving.app._session is None, "its close ends the session its lost reset made"
+        other.reset("bench")
+    finally:
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+def test_the_lease_outlasts_every_wait_between_a_segments_requests(served: Serving) -> None:
+    """A segment asks again before its chunk runs out, or ends on its patience, which is at
+    most the first chunk's grace, so a session quiet for longer has no segment behind it."""
+    info = served.client().policy()
+    assert served.app.lease_s >= info.n_action_steps / info.rate_hz + FIRST_CHUNK_S
+    assert FIRST_CHUNK_S >= STARVE_S
+
+
+def test_a_step_sent_twice_is_inferred_once_and_an_older_one_is_refused(served: Serving) -> None:
+    """The client sends a step again on a new socket when the kept-alive one turns out closed,
+    and the first may have been answered with the reply lost: the second gets that reply."""
+    runner = served.client()
+    runner.reset("wave")
+    assert runner.session is not None
+    step = wire.dumps(
+        wire.StepRequest(session=runner.session, seq=1, tick=0, state=[0.0] * len(JOINTS))
+    )
+    asked = served.app.runner.requests  # type: ignore[attr-defined]
+    status, once, _ = served.raw("POST", wire.STEP_PATH, step)
+    status2, twice, _ = served.raw("POST", wire.STEP_PATH, step)
+    assert status == status2 == 200 and once == twice
+    assert served.app.runner.requests == asked + 1  # type: ignore[attr-defined]
+    newer = wire.dumps(
+        wire.StepRequest(session=runner.session, seq=2, tick=1, state=[0.0] * len(JOINTS))
+    )
+    assert served.raw("POST", wire.STEP_PATH, newer)[0] == 200
+    status, said, _ = served.raw("POST", wire.STEP_PATH, step)
+    assert status == 409 and "older than step 2" in said["reason"]
+
+
+@pytest.mark.parametrize("wrong", ["seq", "session"])
+def test_a_reply_for_another_sequence_or_session_is_dropped(
+    served: Serving, monkeypatch: pytest.MonkeyPatch, wrong: str
+) -> None:
+    real = served.app.step
+
+    def answers_another(request: wire.StepRequest) -> wire.StepReply:
+        reply = real(request)
+        if wrong == "seq":
+            return reply.model_copy(update={"seq": request.seq + 1})
+        return reply.model_copy(update={"session": "0" * 32})
+
+    monkeypatch.setattr(served.app, "step", answers_another)
+    runner = served.client()
+    runner.reset("wave")
+    chunk = runner.next_chunk(Observation(0, _reading()), {})
+    assert chunk == Chunk(0) and runner.dropped == 1
+
+
+def test_a_policy_that_is_done_answers_null_and_is_not_asked_again() -> None:
+    built, _ = S.served_policy(S.ServeOptions(policy="scripted:hold"))
+    built.script = lambda observation, sent: None
+    serving = _serving(S.ServeOptions(policy="scripted:hold"), runner=built)
+    try:
+        runner = serving.client()
+        runner.reset("wave")
+        assert runner.next_chunk(Observation(0, _reading()), {}).done
+        assert runner.next_chunk(Observation(1, _reading()), {}).done
+        assert built.requests == 1
+    finally:
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+# ── the token ───────────────────────────────────────────────────────────────────────────
+
+
+def test_a_wrong_token_is_refused_in_constant_time_and_never_repeated(
+    served: Serving, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Driven rather than grepped, as the ToddlerBot daemon's test is: the server module's own
+    `hmac` is replaced, never the standard library's."""
+    calls: list[tuple[bytes, bytes]] = []
+
+    class _Watched:
+        @staticmethod
+        def compare_digest(a: bytes, b: bytes) -> bool:
+            calls.append((a, b))
+            return a == b
+
+    monkeypatch.setattr(S, "hmac", _Watched)
+    wrong = "not-the-token-" + TOKEN[14:]
+    with pytest.raises(PolicyServerError) as refused:
+        served.client(token=wrong).policy()
+    assert refused.value.status == 401 and wrong not in str(refused.value)
+    assert "--policy-token" in str(refused.value)
+    assert (wrong.encode(), TOKEN.encode()) in calls
+    status, said, closed = served.raw("GET", wire.POLICY_PATH, token=None)
+    assert status == 401 and said["reason"] == "bad or missing token" and closed
+    assert served.client().policy().policy == "scripted:sweep"
+
+
+def test_a_request_with_no_token_is_answered_on_its_head_and_its_body_is_never_read(
+    served: Serving,
+) -> None:
+    status, _, closed = served.raw(
+        "POST", wire.STEP_PATH, b"x" * 1000, token="wrong", headers={"Content-Length": "1000"}
+    )
+    assert status == 401 and closed and served.app.steps == 0
+
+
+def test_the_token_is_scrubbed_from_what_the_server_says(
+    served: Serving, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def echoes(request: wire.ResetRequest) -> wire.ResetReply:
+        raise S.Refused(400, f"I was sent {TOKEN} and did not like it")
+
+    monkeypatch.setattr(served.app, "reset", echoes)
+    with pytest.raises(PolicyServerError) as refused:
+        served.client().reset("wave")
+    assert TOKEN not in str(refused.value) and "<token>" in str(refused.value)
+
+
+def test_the_token_file_is_written_once_readable_by_its_owner_and_read_by_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "home" / ".quackd" / "policy.token"
+    monkeypatch.setattr(wire, "DEFAULT_TOKEN_FILE", str(path))
+    monkeypatch.delenv(wire.TOKEN_ENV, raising=False)
+    token, where, written = S.server_token(None)
+    assert where == path and written and len(token) == 64
+    assert set(token) <= set("0123456789abcdef")
+    if sys.platform != "win32":
+        assert path.stat().st_mode & 0o777 == 0o600
+    again, _, written_again = S.server_token(None)
+    assert again == token and not written_again, "a second server reads the same token"
+    assert client_token(None) == token
+    monkeypatch.setenv(wire.TOKEN_ENV, "from-the-environment")
+    assert client_token(None) == "from-the-environment"
+    assert client_token("from-the-flag-given") == "from-the-flag-given"
+
+
+SPLIT = "SECRET-PART-ONE\nSECRET-PART-TWO"
+"""A token read from a file of two lines: `http.client` refuses it in a header with an error
+that quotes it whole."""
+
+
+@pytest.mark.parametrize(
+    "bad", [SPLIT, "SECRET-PART-ONE SECRET-PART-TWO", "SECRET-PART-ONE\x01", "SECRET-1"]
+)
+def test_a_token_no_header_can_carry_or_too_short_to_guard_an_arm_is_never_sent_or_quoted(
+    served: Serving, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    with pytest.raises(ValueError) as refused:
+        served.client(token=bad)
+    assert "SECRET" not in str(refused.value) and "openssl rand -hex 32" in str(refused.value)
+    for given in (bad, None):
+        monkeypatch.setenv(wire.TOKEN_ENV, bad)
+        with pytest.raises(ValueError) as refused:
+            client_token(given)
+        assert "SECRET" not in str(refused.value)
+        assert ("--policy-token" if given else wire.TOKEN_ENV) in str(refused.value)
+    monkeypatch.delenv(wire.TOKEN_ENV)
+    result = CliRunner().invoke(
+        app, ["policy", "check", "--policy-url", served.url, "--policy-token", bad]
+    )
+    assert result.exit_code == 1 and "SECRET" not in result.output, result.output
+    assert served.app.steps == served.app.resets == 0
+
+
+@pytest.mark.parametrize("bad", [SPLIT, "SECRET-1"])
+def test_the_server_refuses_to_start_on_a_token_no_client_could_send_or_one_too_short(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    named = tmp_path / "policy.token"
+    named.write_text(bad + "\n", encoding="utf-8")
+    with pytest.raises(S.ServeRefused) as refused:
+        S.server_token(str(named))
+    assert "SECRET" not in str(refused.value) and str(named) in str(refused.value)
+    monkeypatch.setattr(wire, "DEFAULT_TOKEN_FILE", str(named))
+    with pytest.raises(S.ServeRefused):
+        S.server_token(None)
+    with pytest.raises(ValueError) as refused:
+        _serving(S.ServeOptions(policy="scripted:hold"), token=bad)
+    assert "SECRET" not in str(refused.value)
+    result = CliRunner().invoke(
+        app, ["policy", "serve", "--policy", "scripted:hold", "--token-file", str(named)]
+    )
+    assert result.exit_code == 1 and "SECRET" not in result.output, result.output
+
+
+def test_a_named_token_file_that_is_missing_or_empty_refuses_to_start(tmp_path: Path) -> None:
+    with pytest.raises(S.ServeRefused, match="cannot read the token file"):
+        S.server_token(str(tmp_path / "nowhere.token"))
+    empty = tmp_path / "empty.token"
+    empty.write_text("\n", encoding="utf-8")
+    with pytest.raises(S.ServeRefused, match="is empty"):
+        S.server_token(str(empty))
+
+
+def test_a_client_with_no_token_anywhere_says_where_to_put_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wire, "DEFAULT_TOKEN_FILE", str(tmp_path / "none" / "policy.token"))
+    monkeypatch.delenv(wire.TOKEN_ENV, raising=False)
+    with pytest.raises(ValueError, match="--policy-token") as refused:
+        client_token(None)
+    assert wire.TOKEN_ENV in str(refused.value)
+
+
+def test_serve_writes_a_token_and_says_where(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / ".quackd" / "policy.token"
+    monkeypatch.setattr(wire, "DEFAULT_TOKEN_FILE", str(path))
+    monkeypatch.setattr(S.Served, "wait", lambda self: None)
+    result = CliRunner().invoke(
+        app, ["policy", "serve", "--policy", "scripted:hold", "--port", "0"]
+    )
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "(written now)" in flat and path.read_text(encoding="utf-8").strip()
+    assert "scripted:hold at http://127.0.0.1:" in flat
+
+
+# ── numbers, sizes and frames ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity", "1e999", "true", '"1.0"'])
+def test_a_number_that_is_not_finite_is_refused_by_the_server(served: Serving, bad: str) -> None:
+    runner = served.client()
+    runner.reset("wave")
+    state = ", ".join(["0.0"] * (len(JOINTS) - 1) + [bad])
+    body = (
+        f'{{"session": "{runner.session}", "seq": 1, "tick": 0, "state": [{state}], '
+        f'"frames": [], "sent": {{}}}}'
+    ).encode()
+    status, said, _ = served.raw("POST", wire.STEP_PATH, body)
+    assert status == 400, said
+    assert served.app.steps == 0
+
+
+def test_a_number_that_is_not_finite_is_refused_by_the_client(
+    served: Serving, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the way out, before anything is sent, and on the way in, from a server that sent one
+    anyway."""
+    runner = served.client()
+    runner.reset("wave")
+    for bad in (math.nan, math.inf, True):
+        with pytest.raises(ValueError, match="not a finite number"):
+            runner.next_chunk(Observation(0, {**_reading(), "elbow_flex.pos": bad}), {})
+        with pytest.raises(ValueError, match="could not be asked"):
+            runner.next_chunk(Observation(0, _reading()), {"elbow_flex": bad})
+    assert served.app.steps == 0
+    for literal in (b"NaN", b"1e999"):
+        raw = b'{"session": "%s", "seq": 1, "chunk": [{"wrist_flex": %s}], "inference_s": 0}' % (
+            runner.session.encode(),  # type: ignore[union-attr]
+            literal,
+        )
+        monkeypatch.setattr(runner, "_exchange", lambda *a, _raw=raw: _raw)
+        runner.seq = 0
+        with pytest.raises(PolicyServerError, match="the protocol refuses"):
+            runner.next_chunk(Observation(0, _reading()), {})
+
+
+def test_the_schema_refuses_what_neither_side_ever_sends() -> None:
+    """A sequence counts from 1 and a tick from 0, a session id is the server's hex, and a
+    message with a number that is not finite cannot even be written."""
+    step = {"session": "0" * 32, "seq": 1, "tick": 0, "state": [0.0]}
+    assert wire.validate(wire.StepRequest, step).seq == 1
+    for field, value in (("seq", 0), ("tick", -1), ("state", []), ("session", "x"), ("seq", 1.0)):
+        with pytest.raises(wire.ProtocolError):
+            wire.validate(wire.StepRequest, {**step, field: value})
+    with pytest.raises(ValueError):
+        wire.dumps({"state": [math.nan]})
+
+
+@pytest.mark.parametrize("field", ["protocol", "server_version", "policy", "rate_source"])
+@pytest.mark.parametrize(
+    "said",
+    [
+        "0.15.0\x1b[1A\x1b[2K\x1b]52;c;ZWNobyBwd25lZA==\x1b\\",  # cursor up, erase, clipboard
+        "\x1b]8;;https://example.com\x1b\\policy\x1b]8;;\x1b\\",  # a link
+        "scripted:‮loh",  # a bidi override
+        "scripted:hold\n",
+        "",
+    ],
+    ids=["cursor-erase-clipboard", "link", "bidi", "newline", "empty"],
+)
+def test_a_server_that_describes_itself_in_anything_but_printable_ascii_is_refused(
+    monkeypatch: pytest.MonkeyPatch, field: str, said: str
+) -> None:
+    """`quackd policy check` prints what a server says it serves, and a refusal of its rate
+    quotes where the rate came from, so an escape in either would reach the user's terminal:
+    both ends refuse the message instead."""
+    _, info = S.served_policy(S.ServeOptions(policy="scripted:hold"))
+    raw = json.dumps({**info.model_dump(), field: said}).encode()
+    runner = RemoteRunner("http://127.0.0.1:9", token=TOKEN, motors=JOINTS)
+    monkeypatch.setattr(runner, "_exchange", lambda *a: raw)
+    if field == "protocol":
+        match = "not as quackd-policy"  # the client knows its own protocol by name first
+    else:
+        match = f"reply the protocol refuses: {field}"
+    with pytest.raises(PolicyServerError, match=match) as refused:
+        runner.policy()
+    assert str(refused.value).isascii() and str(refused.value).isprintable()
+    with pytest.raises(wire.ProtocolError):
+        wire.validate(wire.PolicyInfo, {**info.model_dump(), field: said})
+
+
+def test_a_policy_that_answers_a_non_finite_goal_is_refused_by_its_own_server() -> None:
+    """The server checks what its policy answered before it sends it, so it never sends a goal
+    the client would have to refuse."""
+    built, _ = S.served_policy(S.ServeOptions(policy="scripted:hold"))
+    built.script = lambda observation, sent: [{"wrist_flex": math.nan}]
+    serving = _serving(S.ServeOptions(policy="scripted:hold"), runner=built)
+    try:
+        runner = serving.client()
+        runner.reset("wave")
+        with pytest.raises(PolicyServerError) as refused:
+            runner.next_chunk(Observation(0, _reading()), {})
+        assert refused.value.status == 500 and "not a finite number" in str(refused.value)
+    finally:
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+def test_a_body_too_large_is_refused_before_it_is_read(served: Serving) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", served.port, timeout=10)
+    try:
+        conn.putrequest("POST", wire.STEP_PATH)
+        conn.putheader(wire.TOKEN_HEADER, TOKEN)
+        conn.putheader("Content-Length", str(wire.MAX_BODY_BYTES + 1))
+        conn.endheaders()
+        reply = conn.getresponse()
+        said = json.loads(reply.read())
+    finally:
+        conn.close()
+    assert reply.status == 413 and str(wire.MAX_BODY_BYTES) in said["reason"]
+    assert reply.will_close
+
+
+def test_a_reply_too_large_is_cut_off_by_the_client(
+    served: Serving, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wire, "MAX_REPLY_BYTES", 64)
+    with pytest.raises(PolicyServerError, match="more than"):
+        served.client().policy()
+
+
+@pytest.mark.parametrize("where", ["head", "body"])
+def test_a_server_that_trickles_its_reply_is_cut_off_at_the_calls_deadline(where: str) -> None:
+    """A socket timeout bounds one read, and a server sending a byte every tenth of a second
+    never trips one: the call's deadline is what cuts it off, in the head or in the body, and
+    the loop's worker is free again that soon rather than when the server stops."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    stop = threading.Event()
+
+    def trickles() -> None:
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(1 << 16)
+            if where == "head":
+                conn.sendall(b"HTTP/1.1 200 OK\r\n")
+                drip = b"X-Pad: a\r\n" * 20
+            else:
+                body = b'{"ok":false,"reason":"x"}' + b" " * 40
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body))
+                drip = body
+            for byte in drip:
+                if stop.wait(0.1):
+                    return
+                try:
+                    conn.sendall(bytes([byte]))
+                except OSError:
+                    return
+
+    thread = threading.Thread(target=trickles, daemon=True)
+    thread.start()
+    runner = RemoteRunner(
+        f"http://127.0.0.1:{listener.getsockname()[1]}", token=TOKEN, motors=JOINTS
+    )
+    runner.call_timeout_s = 0.5
+    started = time.monotonic()
+    try:
+        with pytest.raises(PolicyServerError, match=r"did not answer /v1/policy within 0\.5 s"):
+            runner.policy()
+        took = time.monotonic() - started
+    finally:
+        stop.set()
+        thread.join(5)
+        listener.close()
+    assert took < 0.5 + 1.0, f"cut off after {took:.1f} s against a deadline of 0.5 s"
+    assert runner._conn is None, "a connection cut off mid-reply is not kept"
+
+
+@pytest.mark.parametrize(
+    ("declared", "said"),
+    [
+        (b"9" * 5000, "more than"),  # longer than Python reads as an int
+        ("²".encode("latin-1"), "not a byte count"),  # a digit to str.isdigit, not to int
+        (b"12abc", "not a byte count"),
+        (b"2, 2", "not a byte count"),  # the header twice
+    ],
+    ids=["5000-digits", "superscript-two", "not-digits", "twice"],
+)
+def test_a_reply_whose_length_is_not_a_byte_count_is_the_servers_fault(
+    declared: bytes, said: str
+) -> None:
+    """A broken reply is said to be the server's. It is never taken for a request that could
+    not be sent, which would send the user to their token."""
+    listener = socket.create_server(("127.0.0.1", 0))
+
+    def answers() -> None:
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(1 << 16)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Length: "
+                + declared
+                + b"\r\nConnection: close\r\n\r\n{}"
+            )
+
+    thread = threading.Thread(target=answers, daemon=True)
+    thread.start()
+    runner = RemoteRunner(
+        f"http://127.0.0.1:{listener.getsockname()[1]}", token=TOKEN, motors=JOINTS
+    )
+    try:
+        with pytest.raises(PolicyServerError, match=said) as refused:
+            runner.policy()
+    finally:
+        thread.join(5)
+        listener.close()
+    assert "was not asked" not in str(refused.value) and len(str(refused.value)) < 300
+
+
+def test_a_request_http_cannot_carry_is_never_quoted(served: Serving) -> None:
+    """The guard behind `clean_token`: a header `http.client` refuses is said without its value,
+    which would be the token."""
+    runner = served.client()
+    runner._token = "SECRET-PART-ONE\r\nSECRET-PART-TWO"
+    with pytest.raises(PolicyServerError, match="was not asked /v1/policy") as refused:
+        runner.policy()
+    assert "SECRET" not in str(refused.value)
+
+
+def test_frames_travel_raw_on_loopback_and_as_jpeg_when_the_server_asks() -> None:
+    seen: list[Any] = []
+    for quality in (None, wire.DEFAULT_JPEG_QUALITY):
+        built, _ = S.served_policy(S.ServeOptions(policy="scripted:hold"))
+        hold = built.script
+
+        def looks(observation: Observation, sent: Mapping[str, float], _hold: Any = hold) -> Any:
+            seen.append(observation.reading["front"])
+            return _hold(observation, sent)
+
+        built.script = looks
+        options = S.ServeOptions(
+            policy="scripted:hold", cameras="front=observation.images.front", jpeg_quality=quality
+        )
+        serving = _serving(options, runner=built)
+        try:
+            runner = serving.client(cameras=[FRAME])
+            runner.reset("look")
+            assert runner.info is not None and runner.info.jpeg_quality == quality
+            picture = np.full((FRAME.height, FRAME.width, 3), 200, dtype=np.uint8)
+            chunk = runner.next_chunk(Observation(0, _reading(front=picture)), {})
+            assert chunk.actions
+            wrong = np.zeros((FRAME.height + 1, FRAME.width, 3), dtype=np.uint8)
+            with pytest.raises(PolicyServerError) as refused:
+                runner.next_chunk(Observation(1, _reading(front=wrong)), {})
+            assert refused.value.status == 400 and "declared it 32x24" in str(refused.value)
+        finally:
+            serving.http.shutdown()
+            serving.http.server_close()
+    raw, jpeg = seen
+    assert raw.shape == jpeg.shape == (FRAME.height, FRAME.width, 3)
+    assert np.array_equal(raw, np.full_like(raw, 200)), "a raw frame arrives exact"
+    assert np.abs(jpeg.astype(int) - 200).max() <= 3, "a JPEG of a flat frame arrives near it"
+
+
+def test_a_camera_the_server_maps_and_the_arm_lacks_refuses_the_reset() -> None:
+    serving = _serving(S.ServeOptions(policy="scripted:hold", cameras="wrist=observation.w"))
+    try:
+        with pytest.raises(PolicyServerError, match="maps the wrist camera"):
+            serving.client(cameras=[FRAME]).reset("look")
+    finally:
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+# ── where the client goes, and where the server listens ─────────────────────────────────
+
+
+def test_localhost_is_refused_with_the_address_to_write_instead() -> None:
+    with pytest.raises(ValueError, match=r"write 127\.0\.0\.1"):
+        RemoteRunner("http://localhost:9875", token=TOKEN, motors=JOINTS)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://10.0.0.5:9875", "http://gpu.example.com:9875", "http://127.0.0.2:9875"]
+)
+def test_plain_http_to_anything_but_the_loopback_literals_is_refused(url: str) -> None:
+    with pytest.raises(ValueError, match="ssh -L") as refused:
+        policy_address(url)
+    assert "https://" in str(refused.value)
+
+
+def test_loopback_literals_and_https_anywhere_are_taken() -> None:
+    assert policy_address("http://127.0.0.1:9875") == ("http", "127.0.0.1", 9875, "")
+    assert policy_address("http://[::1]:9875") == ("http", "::1", 9875, "")
+    assert policy_address("http://127.0.0.1")[2] == wire.DEFAULT_PORT
+    assert policy_address("https://gpu.example.com/policy/") == (
+        "https",
+        "gpu.example.com",
+        443,
+        "/policy",
+    )
+
+
+def test_the_url_is_held_redacted_from_construction() -> None:
+    runner = RemoteRunner("http://127.0.0.1:9875", token=TOKEN, motors=JOINTS)
+    assert runner.url == "http://127.0.0.1:9875" and TOKEN not in repr(runner)
+    for url, secret in (
+        ("https://rok:hunter2@gpu.example.com:9875", "hunter2"),
+        ("http://127.0.0.1:9875/?token=abc123", "abc123"),
+    ):
+        with pytest.raises(ValueError) as refused:
+            RemoteRunner(url, token=TOKEN, motors=JOINTS)
+        assert secret not in str(refused.value) and HIDDEN in str(refused.value)
+
+
+def test_a_bind_beyond_loopback_needs_behind_tls() -> None:
+    for bind in ("127.0.0.1", "::1"):
+        assert S.bind_refusal(bind, behind_tls=False) is None
+    refusal = S.bind_refusal("0.0.0.0", behind_tls=False)
+    assert refusal is not None and "--behind-tls" in refusal and "ssh -L" in refusal
+    assert S.bind_refusal("0.0.0.0", behind_tls=True) is None
+    for elsewhere, url in (
+        ("127.0.0.2", "http://127.0.0.2:9875"),
+        ("0:0:0:0:0:0:0:1", "http://[0:0:0:0:0:0:0:1]:9875"),
+    ):
+        # loopback, and still not an address the client sends plain http to
+        refusal = S.bind_refusal(elsewhere, behind_tls=False)
+        assert refusal is not None and "bind 127.0.0.1 or ::1" in refusal, elsewhere
+        with pytest.raises(ValueError, match="plain http goes only to"):
+            policy_address(url)
+    localhost = S.bind_refusal("localhost", behind_tls=True)
+    assert localhost is not None and "127.0.0.1" in localhost
+    result = CliRunner().invoke(
+        app, ["policy", "serve", "--policy", "scripted:hold", "--bind", "0.0.0.0"]
+    )
+    assert result.exit_code == 1 and "--behind-tls" in " ".join(result.output.split())
+
+
+def test_serve_names_a_url_the_client_takes_whatever_it_binds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A server behind a TLS proxy may bind 0.0.0.0, and the check it suggests must still be
+    one the client runs: plain http goes to loopback alone. The bind itself is made on loopback
+    here, so the test opens nothing to the network."""
+    token_file = tmp_path / "policy.token"
+    token_file.write_text(TOKEN, encoding="utf-8")
+    serve = S.serve
+    monkeypatch.setattr(S, "serve", lambda app_, host, port: serve(app_, "127.0.0.1", 0))
+    monkeypatch.setattr(S.Served, "wait", lambda self: None)
+    argv = ["policy", "serve", "--policy", "scripted:hold", "--port", "0"]
+    for bind in ("0.0.0.0", "::"):
+        result = CliRunner().invoke(
+            app, [*argv, "--bind", bind, "--behind-tls", "--token-file", str(token_file)]
+        )
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        suggested = re.search(r"--policy-url (\S+) asks it", flat)
+        assert suggested is not None, flat
+        assert policy_address(suggested.group(1))[1] in ("127.0.0.1", "::1"), flat
+        assert "TLS proxy's https://" in flat
+
+    def bound(address: str) -> S.Served:
+        return S.Served(
+            app=None,  # type: ignore[arg-type]
+            http=type("H", (), {"server_address": (address, 9875)})(),
+            host=address,
+            token_path=None,
+            token_written=False,
+        )
+
+    for bind in ("192.0.2.7", "127.0.0.2"):
+        # binds only --behind-tls allows: the client reaches either through the proxy alone
+        assert bound(bind).local_url is None, bind
+    for bind in wire.LOOPBACK:
+        local = bound(bind).local_url
+        assert local is not None and policy_address(local)[1] == bind
+
+
+def test_a_checkpoint_is_refused_until_this_build_can_load_one() -> None:
+    for spec, needle in (
+        ("lerobot/smolvla_base@main", "serves scripted policies only"),
+        ("lerobot/smolvla_base", "has no revision"),
+        ("scripted:dance", "no scripted policy called 'dance'"),
+        ("nonsense", "REPO@REVISION or scripted:NAME"),
+    ):
+        with pytest.raises(S.ServeRefused, match=needle):
+            S.served_policy(S.ServeOptions(policy=spec))
+    for name in SCRIPTS:
+        S.served_policy(S.ServeOptions(policy=f"scripted:{name}"))
+
+
+@pytest.mark.parametrize(
+    ("options", "needle"),
+    [
+        (S.ServeOptions(policy="scripted:hold", fps=math.nan), "Hz"),
+        (S.ServeOptions(policy="scripted:hold", fps=1000.0), "Hz"),
+        (S.ServeOptions(policy="scripted:hold", latency_s=-1.0), "--latency-s"),
+        (S.ServeOptions(policy="scripted:hold", latency_s=FIRST_CHUNK_S), "first chunk"),
+        (S.ServeOptions(policy="scripted:hold", jpeg_quality=10), "--jpeg-quality"),
+        (S.ServeOptions(policy="scripted:hold", cameras="front"), "--cameras"),
+        (S.ServeOptions(policy="scripted:hold", threads=0), "--threads"),
+    ],
+)
+def test_a_server_not_worth_starting_says_why(options: S.ServeOptions, needle: str) -> None:
+    with pytest.raises(S.ServeRefused, match=needle):
+        S.served_policy(options)
+
+
+def test_a_latency_the_arm_could_never_play_a_chunk_under_is_refused() -> None:
+    """The protocol and the server both hold a declared latency under the loop's grace for a
+    first chunk, and the server refuses one as long as a chunk's span: every chunk would land
+    after its last action's tick."""
+    assert wire.MAX_LATENCY_S == FIRST_CHUNK_S
+    _, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    with pytest.raises(wire.ProtocolError, match="latency_s"):
+        wire.validate(wire.PolicyInfo, {**info.model_dump(), "latency_s": FIRST_CHUNK_S})
+    span = info.n_action_steps / info.rate_hz
+    with pytest.raises(S.ServeRefused, match="none would play") as refused:
+        S.served_policy(S.ServeOptions(policy="scripted:sweep", latency_s=span))
+    assert f"under {span:g} s" in str(refused.value)
+    result = CliRunner().invoke(
+        app, ["policy", "check", "--policy", "scripted:sweep", "--latency-s", f"{span:g}"]
+    )
+    assert result.exit_code == 1 and "none would play" in " ".join(result.output.split())
+
+
+async def test_the_longest_latency_the_server_takes_still_plays_on_the_simulators_clock() -> None:
+    """One tick under a chunk's span, on a lockstep clock, which holds each chunk back its
+    declared latency as the simulator does: chunks land with an action still to play, and the
+    segment ends on its chunks, not starved."""
+    _, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    latest = (info.n_action_steps - 1) / info.rate_hz
+    serving = _serving(S.ServeOptions(policy="scripted:sweep", latency_s=latest))
+    transport, adapter, _ = await _arm_on(serving.client(), clock=LockstepClock())
+    try:
+        ended = await _segment_end(transport, max_s=1e6, max_chunks=2)
+        assert ended.how == "chunks" and ended.stats.chunks == 2, ended
+    finally:
+        await adapter.close()
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+# ── quackd policy check ─────────────────────────────────────────────────────────────────
+
+
+def test_the_bench_streams_through_the_real_client(served: Serving) -> None:
+    result = S.bench(served.client(), seconds=0.5)
+    assert result.ticks >= 1 and result.played >= 1 and result.rtt_s
+    assert result.rate_hz == SCRIPTED_HZ and result.achieved_hz > 0
+    rows = dict(S.describe_bench(result))
+    assert "Hz of" in rows["achieved"] and "round trip" in rows
+
+
+def test_check_serves_a_scripted_policy_for_itself_and_benches_it() -> None:
+    result = CliRunner().invoke(
+        app, ["policy", "check", "--policy", "scripted:sweep", "--bench", "--seconds", "0.5"]
+    )
+    assert result.exit_code == 0, result.output
+    out = " ".join(result.output.split())
+    for needle in ("scripted:sweep", "Hz, from", "achieved", "round trip"):
+        assert needle in out, needle
+
+
+def test_check_reaches_a_running_server_with_its_token(served: Serving) -> None:
+    runner = CliRunner()
+    ok = runner.invoke(
+        app, ["policy", "check", "--policy-url", served.url, "--policy-token", TOKEN]
+    )
+    assert ok.exit_code == 0 and "scripted:sweep" in ok.output, ok.output
+    for argv, needle in (
+        (["policy", "check"], "--policy-url"),
+        (["policy", "check", "--policy-url", "http://10.0.0.5:9875"], "ssh -L"),
+        (["policy", "check", "--policy-url", served.url, "--fps", "5"], "--fps"),
+        (
+            ["policy", "check", "--policy", "scripted:hold", "--policy-token", "x"],
+            "--policy-token goes with --policy-url",
+        ),
+    ):
+        refused = runner.invoke(app, argv)
+        assert refused.exit_code == 1 and needle in " ".join(refused.output.split()), argv
+
+
+def test_the_policy_commands_name_the_extra_when_the_adapter_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quackd_lerobot.policy
+
+    # the package keeps its imported submodule as an attribute, which `from ... import` finds
+    # before it looks in sys.modules, so both go
+    monkeypatch.delattr(quackd_lerobot.policy, "server")
+    monkeypatch.setitem(sys.modules, "quackd_lerobot.policy.server", None)
+    result = CliRunner().invoke(app, ["policy", "check", "--policy", "scripted:hold"])
+    assert result.exit_code == 1 and "quackd[lerobot]" in result.output
+
+
+def test_every_scripted_policy_runs_a_chunk_in_process() -> None:
+    """The scripts by name, asked directly, so a broken one is found without HTTP between."""
+    for name in SCRIPTS:
+        runner, info = S.served_policy(S.ServeOptions(policy=f"scripted:{name}"))
+        runner.reset("wave")
+        chunk = runner.next_chunk(Observation(0, _reading(1.0)), {})
+        assert len(chunk.actions) == info.chunk_size, name
+        assert all(math.isfinite(v) for a in chunk.actions for v in a.values()), name
+
+
+def test_a_kept_alive_socket_the_server_closed_is_replaced_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server closes a connection idle past `REQUEST_TIMEOUT_S`, as the arm's is between two
+    segments while the pilot thinks. The client finds out only when it next sends on it, and
+    sends once more on a new one rather than failing the segment's start."""
+    monkeypatch.setattr(S, "REQUEST_TIMEOUT_S", 0.2)
+    serving = _serving(S.ServeOptions(policy="scripted:hold"))
+    try:
+        runner = serving.client()
+        runner.reset("wave")
+        before = runner._conn
+        time.sleep(0.6)
+        runner.reset("wave again")
+        assert runner._conn is not None and runner._conn is not before
+        assert runner.next_chunk(Observation(0, _reading()), {}).actions
+    finally:
+        serving.http.shutdown()
+        serving.http.server_close()

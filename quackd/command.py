@@ -21,19 +21,21 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-SECRET_FLAGS = ("--api-key", "--token", "--host-token")
+SECRET_FLAGS = ("--api-key", "--token", "--host-token", "--policy-token")
 """Flags whose VALUE never appears in a record. The flag itself does, so a reader can see
 that one was given, which is often the thing they are checking. `--host-token` is the Jetson
 host daemon's, which guards a camera and a GPU rather than a body, and is hidden all the same:
-a run directory is copied off the bench whatever it holds."""
+a run directory is copied off the bench whatever it holds. `--policy-token` is the policy
+server's, whose answers move the arm."""
 
-URL_FLAGS = ("--base-url", "--address", "--camera-url", "--decision-url")
+URL_FLAGS = ("--base-url", "--address", "--camera-url", "--decision-url", "--policy-url")
 """Flags that take a URL, which is a second way to type a password.
 
 `https://user:pass@gateway/v1` is how an LLM proxy is reached, `ws://user:pass@host:9090` how
 a rosbridge is, and `http://user:pass@host/snapshot.jpg` is the standard way an IP camera's
 snapshot is authenticated. A System One server you run yourself is reached the same way, over
-`--decision-url`, so a credential sitting in that URL is redacted like any other. The host is
+`--decision-url`, so a credential sitting in that URL is redacted like any other, and so is a
+policy server's `--policy-url`, which refuses one outright but is typed all the same. The host is
 the useful half of one of these and the credential is never the useful half, so the host stays
 and the credential goes. A query string is searched too, because `?api_key=` is the other
 place vendors put one.

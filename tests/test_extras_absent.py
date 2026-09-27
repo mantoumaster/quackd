@@ -112,6 +112,16 @@ import quackd_lerobot.sim.transport
 import quackd_lerobot.sim.upstream_api
 import quackd_lerobot.sim.world
 quackd_lerobot.sim.standin.mjcf()
+# a policy server, its client and their protocol need no torch either: a checkpoint is loaded
+# in the server's own process when it starts, never when any of them is imported, and a
+# scripted policy is served with nothing loaded at all
+import quackd_lerobot.policy.client
+import quackd_lerobot.policy.protocol
+import quackd_lerobot.policy.server
+import quackd_lerobot.policy.upstream_api
+quackd_lerobot.policy.server.served_policy(
+    quackd_lerobot.policy.server.ServeOptions(policy="scripted:sweep")
+)
 # and connecting it says which extra installs the physics, before it fetches a model to load
 import asyncio
 from quackd.adapters.base import AdapterNotInstalled

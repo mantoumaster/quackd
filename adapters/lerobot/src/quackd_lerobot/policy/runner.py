@@ -25,9 +25,9 @@ class PolicyLike(Protocol):
 
     A policy may also have a `reset()`, which takes nothing and is called at the start of every
     segment, before the first `act`. A LeRobot policy keeps a queue of the actions its last
-    chunk predicted (`up.POLICY_SELECT_ACTION`), and without a reset a second pick would play
-    out the first one's queue from wherever the arm now is. It is looked up rather than
-    declared here, so a policy that keeps nothing between calls need not have one."""
+    chunk predicted (`POLICY_SELECT_ACTION` in `upstream_api.py`), and without a reset a second
+    pick would play out the first one's queue from wherever the arm now is. It is looked up
+    rather than declared here, so a policy that keeps nothing between calls need not have one."""
 
     def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None: ...
 

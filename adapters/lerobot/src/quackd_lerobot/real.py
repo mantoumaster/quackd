@@ -41,9 +41,9 @@ What this backend refuses to take on faith, because upstream cannot tell it:
 
 `pick` and `manipulate` run an injected policy, a `PolicyRunner` or a `PolicyLike` object, one
 segment at a time in the policy loop (`policy/loop.py`); building one from a Hub checkpoint
-(`load_policy`) uses verified names but has never been exercised
-(`upstream_api.POLICY_PIPELINE`). LeRobot is imported inside `connect()` and `load_policy()`
-only: `quackd[lerobot]` is an extra.
+(`load_policy`) uses verified names but has never been exercised (POLICY_PIPELINE, in
+`policy/upstream_api.py`). LeRobot is imported inside `connect()` and `load_policy()` only:
+`quackd[lerobot]` is an extra.
 """
 
 from __future__ import annotations
@@ -3250,7 +3250,7 @@ class LeRobotReal:
 
 def load_policy(path: str, *, device: str = "cpu") -> PolicyLike:
     """A `PolicyLike` from a LeRobot checkpoint, from verified names. UNTESTED end to end
-    (`upstream_api.POLICY_PIPELINE`); inject your own `policy=` to bypass this."""
+    (`policy/upstream_api.py`'s POLICY_PIPELINE); inject your own `policy=` to bypass this."""
     try:
         import torch
         from lerobot.configs.policies import PreTrainedConfig
@@ -3272,8 +3272,8 @@ def load_policy(path: str, *, device: str = "cpu") -> PolicyLike:
             return {str(k): float(v) for k, v in dict(out).items()}
 
         def reset(self) -> None:
-            # the queue of actions the last chunk predicted (up.POLICY_SELECT_ACTION), which a
+            # the queue of actions the last chunk predicted (POLICY_SELECT_ACTION), which a
             # new segment must not play out from wherever the arm now is
-            policy.reset()  # up.POLICY_RESET
+            policy.reset()  # POLICY_RESET, in policy/upstream_api.py
 
     return _HubPolicy()

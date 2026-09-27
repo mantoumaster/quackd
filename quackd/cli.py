@@ -3556,6 +3556,252 @@ def serve_mcp(
         _fail(str(e))
 
 
+# ── policy (a policy server the user starts) ────────────────────────────────────────────
+
+policy_app = typer.Typer(
+    name="policy",
+    help="A learned policy for the arm, in a process of its own: quackd policy serve starts "
+    "one, and quackd policy check asks one what it serves.",
+    no_args_is_help=True,
+)
+app.add_typer(policy_app, name="policy", rich_help_panel="Serve")
+
+_POLICY_HELP = (
+    "What to serve: REPO@REVISION for a checkpoint, or scripted:NAME for a scripted policy "
+    "that needs no torch (scripted:hold holds the arm where it is, scripted:sweep swings its "
+    "wrist). This build serves the scripted ones only."
+)
+_POLICY_FPS = typer.Option(
+    None, "--fps", help="The rate the policy runs at, in Hz. A scripted one has its own."
+)
+_POLICY_CAMERAS = typer.Option(
+    None,
+    "--cameras",
+    help="Which of the arm's cameras is which of the policy's images: "
+    "NAME=KEY,... such as front=observation.images.front.",
+)
+_POLICY_LATENCY = typer.Option(
+    None,
+    "--latency-s",
+    help="How long the policy takes to answer a step, declared. The simulator holds each "
+    "chunk back that long, and quackd policy check --bench measures the real one. It has to "
+    "be shorter than the 5 s a segment waits for its first chunk, and than one chunk takes "
+    "to play.",
+)
+_POLICY_THREADS = typer.Option(None, "--threads", help="The threads the policy may use.")
+_POLICY_JPEG = typer.Option(
+    None,
+    "--jpeg-quality",
+    help="Ask for frames as JPEG at this quality (50 to 100) rather than raw. Raw is the "
+    "default on loopback. A tunnel looks like loopback to both ends, so give it one for a "
+    "server reached through ssh -L.",
+)
+
+
+def _policy_server() -> Any:
+    """`quackd_lerobot.policy.server`, imported only when a policy command runs, or a failure
+    that names the extra that installs it."""
+    try:
+        from quackd_lerobot.policy import server
+    except ImportError:
+        from quackd.adapters.base import AdapterNotInstalled
+
+        _fail(str(AdapterNotInstalled("lerobot", "quackd[lerobot]")))
+    return server
+
+
+@policy_app.command("serve")
+def policy_serve(
+    policy: str = typer.Option(..., "--policy", help=_POLICY_HELP),
+    fps: float | None = _POLICY_FPS,
+    cameras: str | None = _POLICY_CAMERAS,
+    latency_s: float | None = _POLICY_LATENCY,
+    bind: str = typer.Option(
+        "127.0.0.1",
+        "--bind",
+        help="The address to listen on: 127.0.0.1 or ::1, the addresses the client sends plain "
+        "HTTP to, unless --behind-tls says a TLS proxy stands in front of it. Reach a server on "
+        "another machine through ssh -L.",
+    ),
+    port: int | None = typer.Option(
+        None, "--port", help="The port to listen on (default 9875, the one after 9874)."
+    ),
+    token_file: str | None = typer.Option(
+        None,
+        "--token-file",
+        help="A file holding the token clients must send. Without it, the token in "
+        "~/.quackd/policy.token, written there the first time.",
+    ),
+    behind_tls: bool = typer.Option(
+        False,
+        "--behind-tls",
+        help="A TLS proxy stands in front of this server, so it may bind beyond loopback, and "
+        "it asks for JPEG frames unless --jpeg-quality says otherwise.",
+    ),
+    threads: int | None = _POLICY_THREADS,
+    jpeg_quality: int | None = _POLICY_JPEG,
+) -> None:
+    """Serve a policy for the arm, in this terminal, until Ctrl+C."""
+    server = _policy_server()
+    options = server.ServeOptions(
+        policy=policy,
+        fps=fps,
+        cameras=cameras,
+        latency_s=latency_s,
+        bind=bind,
+        port=server.wire.DEFAULT_PORT if port is None else port,
+        token_file=token_file,
+        behind_tls=behind_tls,
+        threads=threads,
+        jpeg_quality=jpeg_quality,
+    )
+    try:
+        served = server.open_server(options)
+    except server.ServeRefused as e:
+        _fail(str(e))
+        return
+    how = "written now" if served.token_written else "read"
+    info = served.app.info
+    ui.console.print(
+        ui.kv_grid(
+            [
+                ("serving", f"{info.policy} at {served.url}"),
+                ("token", f"{served.token_path} ({how})"),
+                ("rate", f"{info.rate_hz:g} Hz, from {info.rate_source}"),
+            ]
+        ),
+        soft_wrap=True,
+    )
+    # the client sends plain http to loopback alone, so the hint names a loopback address,
+    # never the 0.0.0.0 a server behind a TLS proxy may bind
+    local = served.local_url
+    if local is not None:
+        check = f"quackd policy check --policy-url {local} asks it what it serves."
+    else:
+        check = (
+            "quackd policy check --policy-url https://PROXY asks it what it serves, through the "
+            "TLS proxy in front of it."
+        )
+    if behind_tls and local is not None:
+        check += " From another machine, give it the TLS proxy's https:// address."
+    ui.console.print(
+        Text(f"  {check} Ctrl+C stops it.", style=ui.STYLES["muted"]),
+        soft_wrap=True,
+    )
+    try:
+        served.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        served.close()
+
+
+@policy_app.command("check")
+def policy_check(
+    policy: str | None = typer.Option(None, "--policy", help=_POLICY_HELP),
+    policy_url: str | None = typer.Option(
+        None,
+        "--policy-url",
+        help="A policy server that is running, as http://127.0.0.1:PORT, or https:// for one "
+        "behind TLS. Instead of --policy.",
+    ),
+    policy_token: str | None = typer.Option(
+        None,
+        "--policy-token",
+        help="The token the --policy-url server wants. Without it, QUACKD_POLICY_TOKEN, then "
+        "the one quackd policy serve wrote to ~/.quackd/policy.token.",
+    ),
+    bench: bool = typer.Option(
+        False,
+        "--bench",
+        help="Stream synthetic observations at the policy's rate through the client, and say "
+        "the rate it achieved, the ticks with nothing to send, and the round trip.",
+    ),
+    seconds: float | None = typer.Option(
+        None, "--seconds", help="How long --bench streams for (default 10)."
+    ),
+    fps: float | None = _POLICY_FPS,
+    cameras: str | None = _POLICY_CAMERAS,
+    latency_s: float | None = _POLICY_LATENCY,
+    threads: int | None = _POLICY_THREADS,
+    jpeg_quality: int | None = _POLICY_JPEG,
+) -> None:
+    """Ask a policy what it serves, and with --bench how well it keeps up."""
+    if (policy is None) == (policy_url is None):
+        _fail(
+            "give --policy to check a policy served here for the check, or --policy-url to "
+            "check a server that is running, and not both",
+            hint="quackd policy check --policy scripted:hold",
+        )
+        return
+    given = {
+        "--fps": fps,
+        "--cameras": cameras,
+        "--latency-s": latency_s,
+        "--threads": threads,
+        "--jpeg-quality": jpeg_quality,
+    }
+    if policy_url is not None and (named := [k for k, v in given.items() if v is not None]):
+        _fail(
+            f"{', '.join(named)} set how a policy is served, and the server at --policy-url "
+            "was started with its own: give them to its quackd policy serve"
+        )
+        return
+    if policy is not None and policy_token is not None:
+        _fail("--policy-token goes with --policy-url: a policy served here gets its own token")
+        return
+    if seconds is not None and not (seconds > 0 and seconds < float("inf")):
+        _fail(f"--seconds {seconds!r} is not a number of seconds to bench for")
+        return
+    server = _policy_server()
+    from quackd_lerobot.policy.client import (
+        PolicyServerError,
+        RemoteRunner,
+        client_token,
+        policy_address,
+    )
+    from quackd_lerobot.verbs import JOINTS
+
+    served: Any = None
+    runner: Any = None
+    try:
+        if policy is not None:
+            import secrets
+
+            served = server.open_server(
+                server.ServeOptions(
+                    policy=policy,
+                    fps=fps,
+                    cameras=cameras,
+                    latency_s=latency_s,
+                    port=0,
+                    threads=threads,
+                    jpeg_quality=jpeg_quality,
+                ),
+                token=secrets.token_hex(32),
+            )
+            url, token = served.url, served.token
+        else:
+            url = str(policy_url)
+            policy_address(url)  # a URL that will be refused is said before a missing token
+            token = client_token(policy_token)
+        runner = RemoteRunner(url, token=token, motors=JOINTS)
+        info = runner.policy()
+        where = f"served here for the check, at {url}" if served is not None else runner.url
+        ui.console.print(Text(f"  {where}", style=ui.STYLES["muted"]), soft_wrap=True)
+        ui.console.print(ui.kv_grid(server.describe(info)), soft_wrap=True)
+        if bench:
+            result = server.bench(runner, seconds=server.BENCH_S if seconds is None else seconds)
+            ui.console.print(ui.kv_grid(server.describe_bench(result)), soft_wrap=True)
+    except (server.ServeRefused, PolicyServerError, ValueError) as e:
+        _fail(str(e))
+    finally:
+        if runner is not None:
+            runner.close()
+        if served is not None:
+            served.close()
+
+
 # ── robot (the registry) ────────────────────────────────────────────────────────────────
 
 robot_app = typer.Typer(

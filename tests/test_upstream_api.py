@@ -15,6 +15,7 @@ import pytest
 
 from quackd_alohamini import upstream_api as alohamini_api
 from quackd_lerobot import upstream_api as lerobot_api
+from quackd_lerobot.policy import upstream_api as lerobot_policy_api
 from quackd_lerobot.sim import upstream_api as so_arm100_api
 from quackd_microduck import upstream_api
 from quackd_microduck.sim3d import upstream_api as microduck_rl_api
@@ -47,6 +48,17 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
             "adapters/lerobot/sim/model.py",
             "adapters/lerobot/sim/world.py",
             "adapters/lerobot/sim/follower.py",
+        },
+        ("https://github.com/huggingface/lerobot",),
+    ),
+    (
+        lerobot_policy_api,
+        {
+            "adapters/lerobot/policy/upstream_api.py",
+            # the policy server, which refuses a checkpoint because of POLICY_PIPELINE, and the
+            # arm's backend, whose untested load_policy() it describes
+            "adapters/lerobot/policy/server.py",
+            "adapters/lerobot/real.py",
         },
         ("https://github.com/huggingface/lerobot",),
     ),
@@ -139,6 +151,7 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
 IDS = [
     "microduck",
     "lerobot",
+    "lerobot_policy",
     "rosbridge",
     "open_duck",
     "xlerobot",
@@ -315,6 +328,35 @@ def test_the_simulators_lerobot_facts_are_the_ones_its_refs_read() -> None:
     for mesh in (so_arm100_api.FIXED_FINGER_MESH, so_arm100_api.MOVING_JAW_MESH):
         assert mesh in so_arm100_api.FINGER_MESHES.name
         assert f"assets/{mesh}.stl" in so_arm100_api.FILES
+
+
+def test_the_policy_refs_are_read_at_the_version_the_laptop_runs() -> None:
+    """LeRobot's policy names are read against the release a policy server installs, 0.6.1,
+    at the commit its tag names, and not at the `main` commit the arm's own refs are pinned
+    to. Every one of them cites that commit, none of them is left in the arm's file, and the
+    file says which version it read."""
+    pin = lerobot_policy_api.PIN
+    assert len(pin) == 40 and pin.isalnum() and pin != lerobot_api.PIN
+    for ref in lerobot_policy_api.all_refs():
+        assert pin in ref.source, ref
+    assert lerobot_policy_api.VERSION == lerobot_api.PYPI_VERSION_READ
+    assert f"lerobot {lerobot_policy_api.VERSION}" in (lerobot_policy_api.__doc__ or "")
+    moved = {
+        "POLICY_BASE",
+        "PRETRAINED_CONFIG",
+        "POLICY_FROM_PRETRAINED",
+        "POLICY_SELECT_ACTION",
+        "POLICY_RESET",
+        "GET_POLICY_CLASS",
+        "MAKE_PRE_POST_PROCESSORS",
+        "MAKE_POLICY",
+        "POLICY_PIPELINE",
+    }
+    for name in moved:
+        assert isinstance(getattr(lerobot_policy_api, name), type(lerobot_api.PACKAGE)), name
+        assert not hasattr(lerobot_api, name), f"{name} is still in the arm's own file"
+    unverified = {r.name for r in lerobot_policy_api.refs_by_status("UNVERIFIED")}
+    assert unverified == {"POLICY_PIPELINE"}
 
 
 def test_the_arm_models_zero_and_sign_cite_lerobot_at_its_pin_and_leave_out_the_gripper() -> None:

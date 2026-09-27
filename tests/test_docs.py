@@ -110,6 +110,33 @@ def test_adapter_doc_lists_every_simulator_upstream_ref() -> None:
     assert "QUACKD_LEROBOT_SIM_ASSETS" in section
 
 
+def test_adapter_doc_lists_every_policy_upstream_ref() -> None:
+    """LeRobot's policy names are read at another pin than the arm's, the release a policy
+    server installs, in `quackd_lerobot.policy.upstream_api`, and the arm's page carries them
+    in a section of their own. As with the simulator's, each ref needs a row of its own in the
+    table for its status, because a name found anywhere on the page is not enough: the moved
+    rows used to sit in the arm's own tables, and a leftover there would keep a looser check
+    green."""
+    from quackd_lerobot.policy import upstream_api as policies
+
+    doc = (REPO / "docs" / "adapters" / "lerobot.md").read_text(encoding="utf-8")
+    heading = f"\n## The policies' upstream: LeRobot {policies.VERSION}\n"
+    section = doc.split(heading, 1)[1].split("\n## ", 1)[0]
+    verified, unverified = section.split("\n### UNVERIFIED (", 1)
+    tables = {"VERIFIED": verified.split("\n### VERIFIED (", 1)[1], "UNVERIFIED": unverified}
+    missing = [
+        f"{ref.status} {ref.name}"
+        for ref in policies.all_refs()
+        if f"\n| `{ref.name}` |" not in tables[ref.status]
+    ]
+    assert not missing, f"docs/adapters/lerobot.md has no row for these policy refs: {missing}"
+    assert policies.PIN[:7] in section and policies.READ_ON in section
+    assert "No checkpoint has ever been loaded by quackd" in section  # the honesty label
+    arm = doc.split("\n## Upstream API\n", 1)[1].split("\n## ", 1)[0]
+    stale = [ref.name for ref in policies.all_refs() if f"\n| `{ref.name}` |" in arm]
+    assert not stale, f"the arm's own tables still carry policy rows: {stale}"
+
+
 def test_readme_promises() -> None:
     for needle in (
         "not affiliated with or endorsed by Pollen Robotics",

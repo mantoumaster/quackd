@@ -212,6 +212,32 @@ Also in scope:
   record on the laptop, or a password in a camera pipeline reaching a reply or a log. None of
   it has been run on a Jetson by this project, so treat the arrangement as reviewed rather
   than proven.
+- **The policy server** (`quackd policy serve`, `adapters/lerobot/src/quackd_lerobot/policy/`),
+  an HTTP server on port 9875 whose answers move an arm: it serves the goals a learned policy
+  chooses, and the arm's process sends them. It runs as a process of its own, never the one
+  that owns the arm's serial bus, because a LeRobot checkpoint's processors can name code to
+  import. It binds `127.0.0.1` or `::1`, and refuses any other address, the rest of 127/8
+  included, unless `--behind-tls` says a TLS proxy stands in front of it. A token is always
+  required: with no `--token-file` it writes one to `~/.quackd/policy.token`, readable by its
+  owner alone where the OS allows, and a named file that is missing, unreadable or empty
+  refuses to start. The token is read from the `X-Quackd-Token` header only and compared with
+  `hmac.compare_digest`, a request without it is refused on its headers alone, and what a
+  client can make it hold is bounded as the Jetson host daemon bounds it, plus a cap on a
+  request's body. Both ends refuse a token shorter than 16 characters or with whitespace
+  inside it, without quoting it. Every number in a message is checked to be finite on both
+  sides, what a server says about itself in words is printable ASCII or refused, a reset from
+  a second client is refused while another client's session is in use, and a step for an
+  ended session is refused. The client, in the arm's process, sends plain HTTP only to
+  `127.0.0.1` and `::1`, so a policy on another machine is reached through
+  `ssh -L 9875:127.0.0.1:9875` or over `https://` with the certificate verified. It follows no
+  proxy and no redirect, keeps the token out of every error, and holds every reply to a
+  deadline however slowly it arrives, then caps and validates it before a goal in it reaches
+  the arm. This build serves scripted policies only, which are quackd's own code, so no
+  checkpoint has been loaded by it. What would be a security issue: a goal reaching the arm
+  from anything but the server the arm was pointed at, a request served without the token,
+  a number that is not finite getting through, the token reaching a URL or any record, a
+  server's words reaching a terminal with an escape in them, or a client without the token
+  making the server keep what it sent or a thread past its bounds.
 - **The bridge daemon** (`bridge/open_duck/quackd_duck_bridge.py`), a TCP listener on port
   9871 that walks a 42 cm biped. It binds loopback by default and compares a token with
   `hmac.compare_digest`, but a token is only required if one is configured, and binding it
@@ -233,8 +259,9 @@ Also in scope:
   going limp is unreachable by construction and must stay that way, and here it matters
   more: torque off on this body means the robot falls over.
 - The recommended deployment for all of them is an ssh tunnel
-  (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 -L 9873:127.0.0.1:9873 -L 9874:127.0.0.1:9874`)
-  rather than exposing any of these ports.
+  (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 -L 9873:127.0.0.1:9873 -L 9874:127.0.0.1:9874`,
+  and `-L 9875:127.0.0.1:9875` for a policy server on another machine) rather than exposing
+  any of these ports.
 
 ## Supported versions
 

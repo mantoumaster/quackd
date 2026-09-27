@@ -11,12 +11,45 @@ The SO-101's `pick` runs its policy as a segment the backend owns, and the verb 
 This is the ground a learned policy will stand on as the arm's executor, and it is made safe on
 the one policy path there is today, an injected object with one action per call. On that ground
 stands the loop a chunked policy needs, paced on the arm's clock at the policy's own rate, and
-`manipulate`, the verb that hands the arm to a policy for one short subtask. Nothing here has run
-on the arm: it was exercised against the test suite's fake arm and on the simulator's stand-in
-model.
+`manipulate`, the verb that hands the arm to a policy for one short subtask. A policy runs in a
+server of its own, which the arm reaches over HTTP, so no checkpoint is ever loaded beside the
+arm's serial bus, and that server serves scripted policies for now. Nothing here has run on the
+arm: it was exercised against the test suite's fake arm and on the simulator's stand-in model.
 
 ### Added
 
+- **`quackd policy serve` and `quackd policy check`: a policy in a process of its own.** A
+  LeRobot checkpoint's processors can import any code their JSON names, so a policy never runs
+  in the process that owns the arm's bus. It runs in a server you start, on port 9875 on
+  loopback, and the arm's side reaches it with `RemoteRunner`, a client that needs no torch and
+  no LeRobot, over a protocol of four calls (`GET /v1/policy`, `POST /v1/reset`,
+  `POST /v1/step`, `POST /v1/end`). This build serves scripted policies only, `scripted:hold`
+  and `scripted:sweep`, and refuses a checkpoint. `check` asks a server what it serves, or
+  serves `--policy` itself for the check, and `--bench` streams synthetic observations through
+  the real client at the policy's rate and says the rate it achieved, the ticks with nothing to
+  send and the round trip. `quackd run` cannot point the arm at a server yet.
+- **The policy server is hardened as the Jetson host daemon is, and more.** A token is always
+  required: with no `--token-file` it writes one to `~/.quackd/policy.token`, readable by its
+  owner alone where the OS allows, and the client reads it there, or `--policy-token`, or
+  `QUACKD_POLICY_TOKEN`. It is compared in constant time, read from a header only, and a request
+  without it is answered on its headers alone. Both ends refuse a token shorter than 16
+  characters or with a space or a line break inside it, and never quote it. The daemon's bounds
+  on connections, headers and a request's time are copied as named constants, with a cap on a
+  body besides, and a bind to anything but `127.0.0.1` or `::1` is refused without
+  `--behind-tls`. Every number in a message is checked to be finite on both sides, JSON's `NaN`
+  and `Infinity` included, and what a server says about itself in words is printable ASCII or
+  refused, so `check` never prints an escape a server sent. A reset from a second client is
+  refused while another client's session is in use, so a check run against a server an arm is
+  driving through never ends the arm's segment, a reset whose reply was lost leaves the
+  session to the client that asked for it, and a step for an ended session is refused. The
+  client sends plain HTTP to `127.0.0.1` and `::1` and nowhere else, refuses `localhost` with a
+  sentence saying to write `127.0.0.1`, follows no proxy and no redirect, keeps the token out of
+  every error, holds the URL redacted, holds every reply to a deadline however slowly it
+  trickles in, caps every reply, sends a request once more on a new socket when the server has
+  closed the kept-alive one, drops a reply for another session or sequence, and ends its
+  session when it closes. A step sent again is answered from its first answer, never inferred
+  twice. A declared `--latency-s` of 5 s or more, or as long as a chunk
+  takes to play, is refused, since no chunk would ever play under it.
 - **`manipulate(instruction)`, one segment of the arm's learned policy.** Present beside `pick`
   whenever the arm has a policy, confirm-gated, with `pick`'s preconditions. The segment runs
   for 10 s (`MANIPULATE_S`) unless it ends sooner, on its chunks played or on the arm no longer
@@ -63,6 +96,11 @@ model.
 
 ### Changed
 
+- **LeRobot's policy names have a table of their own, read at 0.6.1.** They moved out of the
+  arm's own refs, which are pinned to a `main` commit, into `policy/upstream_api.py`, read
+  against the `v0.6.1` tag, the version the laptop that drives the arm runs, with the async
+  inference facts that are why quackd's policy server is its own. `quackd doctor` prints its pin
+  as `LeRobot policies`, and the arm's page has the table.
 - **A policy's step cap is the verbs' speed at the policy's rate.** Per send it is
   `max_step_deg / TICK_S` over the rate, and never more than one verb step, so
   `QUACKD_LEROBOT_MAX_STEP_DEG` governs both, and a policy faster than the verbs' tick takes a

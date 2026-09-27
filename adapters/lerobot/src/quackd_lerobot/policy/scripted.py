@@ -6,6 +6,11 @@ it is handed to the backend: `ScriptedRunner.wrapping(policy)` asks it for one a
 as `pick` always did. Everything here is deterministic. The same script, asked at the same ticks
 with the same readings, answers the same chunks, which is what lets a test say that the
 simulator's lockstep and a run on the wall's clock played the same trajectory.
+
+A few scripts have names (`SCRIPTS`), and `named` builds a runner from one. They are what
+`quackd policy serve --policy scripted:NAME` serves, so the policy server, its client and the
+loop behind them can be run end to end, on the simulator or on the arm, with no checkpoint and
+no torch anywhere: `hold` holds the arm where it reads, and `sweep` swings the wrist to and fro.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from quackd_lerobot.policy.runner import Chunk, Features, Observation, PolicyLike
+from quackd_lerobot.verbs import TICK_S
 
 Script = Callable[[Observation, Mapping[str, float]], Sequence[Mapping[str, Any]] | None]
 """A scripted policy: an observation and the command last sent in, the chunk's actions out, one
@@ -28,8 +34,10 @@ class ScriptedRunner:
     loaded from a checkpoint declares them. `latency_ticks` is how many ticks it declares it
     takes to answer, which on the simulator holds every chunk back that many ticks before it is
     played, and which it never actually spends: a script answers as fast as Python does.
-    `per_tick` makes it a runner asked every tick (tick mode). `instruction` and `resets` are
-    what the last `reset` was told and how many there have been, for a test to read."""
+    `per_tick` makes it a runner asked every tick (tick mode). `chunk` is how many actions its
+    script answers with, where it says, which a policy server reports. `instruction` and
+    `resets` are what the last `reset` was told and how many there have been, for a test to
+    read."""
 
     def __init__(
         self,
@@ -39,6 +47,7 @@ class ScriptedRunner:
         rate_source: str = "the script",
         latency_ticks: int = 0,
         per_tick: bool = False,
+        chunk: int | None = None,
     ) -> None:
         if latency_ticks < 0:
             raise ValueError(f"latency_ticks={latency_ticks} must be 0 or more")
@@ -47,6 +56,7 @@ class ScriptedRunner:
         self.rate_source = rate_source
         self.latency_ticks = latency_ticks
         self.per_tick = per_tick
+        self.chunk = chunk
         self.instruction = ""
         self.resets = 0
         self.requests = 0
@@ -96,4 +106,107 @@ class ScriptedRunner:
         self.closed = True
 
 
-__all__ = ["Script", "ScriptedRunner"]
+# ── the scripts a policy server serves by name ──────────────────────────────────────────
+
+SCRIPTED_HZ = 1.0 / TICK_S
+"""The rate a named script runs at unless it is given one: the verbs' own tick, which is the
+pace every other goal quackd sends the arm is written for."""
+SCRIPTED_CHUNK_S = 1.0
+"""How much of the arm's time one chunk of a named script covers, which at its rate is how many
+actions it holds: long enough that the loop asks a few times a second, short enough that a
+chunk dropped for a newer one costs nothing."""
+SWEEP_JOINT = "wrist_flex"
+"""The joint `sweep` swings: the lightest of the arm's, whose swing moves nothing else."""
+SWEEP_DEG = 5.0
+"""How far either side of where it started `sweep` swings its joint. Small, so it is a test of
+the path from a policy to the arm and not a move, and well inside a joint's travel."""
+SWEEP_PERIOD_S = 2.0
+"""How long one swing there and back takes."""
+
+
+def _positions(observation: Observation) -> dict[str, float]:
+    """Every motor's reading in an observation, by motor name."""
+    return {
+        key.removesuffix(".pos"): float(value)
+        for key, value in observation.reading.items()
+        if key.endswith(".pos")
+    }
+
+
+def _hold(length: int) -> Script:
+    """A chunk of `length` goals, each every motor where it reads now: an arm that stays put."""
+
+    def script(observation: Observation, _sent: Mapping[str, float]) -> list[dict[str, float]]:
+        here = _positions(observation)
+        return [dict(here) for _ in range(length)]
+
+    return script
+
+
+class _Sweep:
+    """`SWEEP_JOINT` swung `SWEEP_DEG` either side of where the segment found it, one swing a
+    `SWEEP_PERIOD_S`, timed by the tick so the same ticks always get the same goals."""
+
+    def __init__(self, length: int, rate_hz: float) -> None:
+        self.length = length
+        self.ticks_a_swing = SWEEP_PERIOD_S * rate_hz
+        self.anchor: tuple[int, float] | None = None
+
+    def reset(self) -> None:
+        self.anchor = None
+
+    def __call__(self, observation: Observation, _sent: Mapping[str, float]) -> list[Any]:
+        here = _positions(observation)
+        if SWEEP_JOINT not in here:
+            raise ValueError(
+                f"scripted:sweep swings {SWEEP_JOINT}, and this arm has no motor by that name"
+            )
+        if self.anchor is None:
+            self.anchor = (observation.tick, here[SWEEP_JOINT])
+        start, middle = self.anchor
+        return [
+            {
+                SWEEP_JOINT: middle
+                + SWEEP_DEG
+                * math.sin(2 * math.pi * (observation.tick + i - start) / self.ticks_a_swing)
+            }
+            for i in range(self.length)
+        ]
+
+
+SCRIPTS = {
+    "hold": "holds every motor where it reads, so a segment of it ends on a stall",
+    "sweep": f"swings {SWEEP_JOINT} {SWEEP_DEG:g} degrees either side of where it started",
+}
+"""The scripts `named` builds, and what each does, as `quackd policy serve` lists them."""
+
+
+def named(name: str, *, rate_hz: float | None = None) -> ScriptedRunner:
+    """The runner for the script called `name`, at `rate_hz` (from `--fps`) or at its own rate,
+    `SCRIPTED_HZ`. A name that is not in `SCRIPTS` is a ValueError that lists them."""
+    if name not in SCRIPTS:
+        raise ValueError(
+            f"there is no scripted policy called {name!r}: the scripted ones are "
+            f"{', '.join(f'scripted:{n}' for n in SCRIPTS)}"
+        )
+    rate = SCRIPTED_HZ if rate_hz is None else rate_hz
+    source = "--fps" if rate_hz is not None else f"scripted:{name}'s own, the verbs' tick"
+    length = max(1, round(rate * SCRIPTED_CHUNK_S)) if math.isfinite(rate) else 1
+    if name == "hold":
+        return ScriptedRunner(_hold(length), rate_hz=rate, rate_source=source, chunk=length)
+    sweep = _Sweep(length, rate)
+    runner = ScriptedRunner(sweep, rate_hz=rate, rate_source=source, chunk=length)
+    runner._on_reset = sweep.reset
+    return runner
+
+
+__all__ = [
+    "SCRIPTED_CHUNK_S",
+    "SCRIPTED_HZ",
+    "SCRIPTS",
+    "SWEEP_DEG",
+    "SWEEP_JOINT",
+    "Script",
+    "ScriptedRunner",
+    "named",
+]

@@ -146,6 +146,28 @@ def test_a_secret_flag_given_nothing_after_the_sign_is_left_as_it_was() -> None:
     ]
 
 
+def test_the_policy_servers_url_and_token_are_redacted_like_the_rest() -> None:
+    """The policy server's two flags, which reach a server whose answers move the arm: its
+    token is hidden whole, and a password typed into its URL is taken out."""
+    assert "--policy-token" in SECRET_FLAGS and "--policy-url" in URL_FLAGS
+    line = redacted_argv(
+        [
+            "policy",
+            "check",
+            "--policy-url",
+            "https://rok:hunter2@gpu.example.com:9875",
+            "--policy-token=0123abcd",
+        ]
+    )
+    assert line == [
+        "policy",
+        "check",
+        "--policy-url",
+        f"https://rok:{HIDDEN}@gpu.example.com:9875",
+        f"--policy-token={HIDDEN}",
+    ]
+
+
 @pytest.mark.parametrize("flag", URL_FLAGS)
 def test_both_shell_spellings_of_a_url_flag_lose_the_password(flag: str) -> None:
     """Parametrised over the real tuple, so a fourth URL flag cannot be added untested."""
@@ -336,6 +358,9 @@ def test_no_flag_that_could_carry_a_credential_is_missing_from_the_two_lists() -
         # a machine, never a URL: `parse_host` refuses a value with an `@` in it, without
         # quoting it, before any record exists, so no credential it could carry gets that far
         "--host",
+        # `quackd policy serve`'s: it names the file the token is in and never holds the value,
+        # which is the reason the flag exists rather than a `--token` on that command
+        "--token-file",
     }
     secret_words = ("key", "token", "secret", "password", "passwd", "credential")
     url_words = ("url", "address", "endpoint", "host", "broker")

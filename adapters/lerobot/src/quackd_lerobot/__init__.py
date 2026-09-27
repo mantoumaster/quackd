@@ -638,12 +638,14 @@ __all__ = [
 # import is deferred so that naming the upstream costs nothing until doctor asks.
 def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
     from quackd_lerobot import upstream_api
+    from quackd_lerobot.policy import upstream_api as policies
     from quackd_lerobot.sim import upstream_api as so_arm100
 
     # The first row is the one in this table that is not a list of what nobody has tried. An
     # SO-101 ran the real backend on 2026-09-15, so the column says what that run did and did
     # not cover. The second is the arm's simulator model, which lerobot:mujoco loads and no arm
-    # has been compared against.
+    # has been compared against. The third is LeRobot's policies, read at the version the
+    # laptop runs, which the policy server is to load and has not yet.
     return (
         (
             "lerobot",
@@ -656,6 +658,13 @@ def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
             so_arm100,
             "docs/adapters/lerobot.md",
             "anything against an arm: lerobot:mujoco loads it, and nobody has compared the two",
+        ),
+        (
+            "LeRobot policies",
+            policies,
+            "docs/adapters/lerobot.md",
+            f"any checkpoint: read at lerobot {policies.VERSION}, and the policy server serves "
+            "scripted policies only",
         ),
     )
 
