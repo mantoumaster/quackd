@@ -1124,6 +1124,8 @@ def fleet_from_flags(
     host: str | None = None,
     host_token: str | None = None,
     detector: str | None = None,
+    policy_url: str | None = None,
+    policy_token: str | None = None,
 ) -> FleetPlan:
     """Which robots this server fronts, from the flags that name them.
 
@@ -1134,7 +1136,14 @@ def fleet_from_flags(
     `--host` is for one robot, and refused for a fleet by `quackd run`'s rule and in its
     words: a host names one machine's camera and detector, and a fleet has several bodies.
     The board is asked what it is before any body is built, and a board that does not answer
-    refuses the server, as it refuses a run. `--detector` is for one robot too."""
+    refuses the server, as it refuses a run. `--detector` is for one robot too.
+
+    So is `--policy-url`, the policy server an arm hands its `pick` and `manipulate` segments
+    to, by the same rule and in `quackd run`'s words. The server is asked what it serves once
+    the arm is built, and one that does not answer refuses the server, as the board does. Both
+    verbs are confirm gated, so an MCP client reaches them only on a server started with
+    `--yes`."""
+    from quackd.adapters.base import policy_choice, policy_hint
     from quackd.adapters.factory import (
         RobotSpec,
         describe,
@@ -1147,6 +1156,11 @@ def fleet_from_flags(
     named = [name for name, value in given if value]
     if len(named) > 1:
         raise SystemExit(f"choose one: {', '.join(named)}")
+    try:
+        policy = policy_choice(policy_url, policy_token)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
+    policy_kw: dict[str, Any] = {} if policy is None else {"policy": policy}
     if flock and (address or camera_url or token):
         raise SystemExit(
             "--flock takes every member's address, token and camera from the registry: "
@@ -1201,6 +1215,11 @@ def fleet_from_flags(
             "--host-token is one board's token, and a fleet has several bodies and no board: "
             "drop --host-token, or serve one robot"
         )
+    if fleet and policy is not None:
+        raise SystemExit(
+            "--policy-url is one arm's policy server, and a fleet has several bodies: drop "
+            "--policy-url, or serve one arm"
+        )
     # The one place this server's board is settled, carried on the plan so everything that
     # uses the board reads this value rather than deriving its own.
     host_choice = HostChoice()
@@ -1230,7 +1249,9 @@ def fleet_from_flags(
         raise SystemExit(unreached(host_choice, e)) from e
     if reached is not None:
         board, hello = reached
-    manifests = {spec.name or describe(spec).id: describe(spec) for spec in specs}
+    manifests = {
+        spec.name or describe(spec, **policy_kw).id: describe(spec, **policy_kw) for spec in specs
+    }
     chosen: Detector | None = None
     if not fleet:
         (only,) = manifests
@@ -1262,9 +1283,21 @@ def fleet_from_flags(
         )
         problems = validate_duck(probe, [manifests[target]])
         if problems:
+            # an arm's pick and manipulate come only from --policy-url, which a fleet refuses
+            hint = (
+                None
+                if fleet or policy is not None
+                else policy_hint(
+                    [p.verb for p in problems if p.verb],
+                    [dict(zip(manifests, specs, strict=True))[target].key],
+                    "quackd serve-mcp",
+                )
+            )
             raise SystemExit(
                 f"{duckfile} cannot run on {target} ({manifests[target].model}): "
                 + "; ".join(p.message for p in problems)
+                # on a line of its own, as `quackd run` prints a hint under its refusal
+                + (f"\n  {hint}" if hint else "")
             )
     adapters = {}
     for (name, spec), one in zip(zip(manifests, specs, strict=True), resolved, strict=True):
@@ -1282,7 +1315,17 @@ def fleet_from_flags(
             rest_pose=where["rest_pose"],
             # the board's camera joins the one body here; it answered its hello above
             host=board,
+            **policy_kw,
         )
+        if policy is not None:
+            # asked now, as the board was, so a server that is not there refuses this one in
+            # a sentence rather than the first tool call's connect
+            ask = getattr(adapters[name], "ask_policy", None)
+            try:
+                if callable(ask):
+                    ask()
+            except RuntimeError as e:
+                raise SystemExit(str(e)) from e
     memory_keys = {
         name: one.memory_key
         for name, one in zip(manifests, resolved, strict=True)
@@ -1311,6 +1354,8 @@ def serve(
     host: str | None = None,
     host_token: str | None = None,
     detector: str | None = None,
+    policy_url: str | None = None,
+    policy_token: str | None = None,
 ) -> None:
     plan = fleet_from_flags(
         robot=robot,
@@ -1325,6 +1370,8 @@ def serve(
         host=host,
         host_token=host_token,
         detector=detector,
+        policy_url=policy_url,
+        policy_token=policy_token,
     )
     logging.basicConfig(
         stream=sys.stderr, level=logging.INFO, format="quackd-mcp %(levelname)s %(message)s"

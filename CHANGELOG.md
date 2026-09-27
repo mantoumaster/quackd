@@ -30,7 +30,42 @@ model, and the only checkpoint loaded is a tiny random ACT in CI.
   `--policy` itself for the check, and `--bench` times one warm step, the latency to declare
   with `--latency-s`, then streams synthetic observations through the real client at the
   policy's rate and says the rate it achieved, the ticks with nothing to send and the round
-  trip. `quackd run` cannot point the arm at a server yet.
+  trip.
+- **`--policy-url` and `--policy-token` point the arm at a policy server.** On `quackd run`,
+  `quackd preflight` and `quackd serve-mcp`. `lerobot:real` and `lerobot:mujoco` build the
+  server's client from them (`RemoteRunner`) and take it as their policy, so `pick` and
+  `manipulate` are in the arm's static manifest and a task that allows them is judged before
+  anything connects. Only the flag names the address: no variable and no registered robot does,
+  so a policy drives the arm only on a command that says so. The token is the flag, then
+  `QUACKD_POLICY_TOKEN`, then the file the server wrote. The server is asked what it serves
+  before anything connects, and the run header names it, redacted, and its checkpoint. The
+  mock, which runs its own script, refuses one, and so does a flock and every other body, in
+  words naming the arm: `make_adapter` and `describe` pass `policy=` only when one was given,
+  and refuse an adapter whose `make()` or `describe()` has no parameter by that name rather
+  than handing it a keyword it would drop or raise on. Over MCP both verbs need `--yes`. A
+  task refused on the arm for allowing either verb without the flag says to start a server and
+  give the command `--policy-url`, and an address redaction cannot read is refused without
+  being quoted, since it may hold a password.
+- **A `--goal` run with a policy server allows `manipulate`, behind a confirm.** A goal's
+  contract allows safe verbs alone, and `manipulate` is not one, so a goal could never have
+  used a policy. With `--policy-url` it is allowed and listed under `confirm`, so a person says
+  yes to each segment. Without one a goal is what it was.
+- **The pilot is told what executes.** A run whose verbs include `manipulate` has a
+  `Your executor` section in its system prompt: one short subtask per call, a fresh look after
+  each, and never success on the verb's ok alone, since it says only that the segment ran. The
+  fresh look is the frame the next observation brings when the arm has a camera and the pilot
+  can see, and a reading of the arm otherwise.
+- **A run's record keeps what its policy did.** `run_start` names the server and the
+  checkpoint, and `summary.json` has a `policy` block, beside the stepper's `decision` block
+  and by the same rule, only when there was one: the server, the policy, its rate and where
+  that came from, every repository the server loaded at its revision, the JPEG quality, the
+  segments, their seconds on the arm's clock and on the wall's, ticks, late ticks, chunks,
+  starved ticks and clipped goals, the rate the ticks were achieved at, and the mean and
+  longest round trip. On the simulator the arm's clock is the simulator's own, which the block
+  says (`clock: sim`). The time counter under the verdict gains the policy's wall seconds, and
+  a `policy` counter says the rest. The counts come from the policy loop (`PolicyLoop.tally`),
+  a segment stopped from outside included, and no action goes into a verb's result or the
+  record.
 - **The policy server loads a LeRobot checkpoint.** `quackd policy serve --policy
   OWNER/NAME@REVISION` serves an ACT, a SmolVLA or a pi05 checkpoint through LeRobot's own
   loop (`policy/pipeline.py`): the arm's reading through `build_inference_frame` and the

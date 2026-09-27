@@ -68,7 +68,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel
 
-from quackd.command import redacted_url
+from quackd.command import readable_url, redacted_url
 from quackd_lerobot.policy import protocol as wire
 from quackd_lerobot.policy.fit import Fit, PolicyMisfit, fit
 from quackd_lerobot.policy.loop import FIRST_CHUNK_S
@@ -157,10 +157,16 @@ def _bounded_reply(deadline: _Deadline) -> type[http.client.HTTPResponse]:
 
 def policy_address(url: str) -> tuple[str, str, int, str]:
     """`--policy-url` as (scheme, host, port, path prefix), or a ValueError in a sentence that
-    says what to write instead. The sentence quotes the URL redacted."""
-    shown = redacted_url(url)
+    says what to write instead. The sentence quotes the URL redacted, and one redaction cannot
+    read not at all, since that one would be quoted as typed, password and all."""
+    given = url.strip()
+    if not readable_url(given):
+        raise ValueError(
+            "--policy-url is not a URL: give the policy server as http://127.0.0.1:PORT"
+        )
+    shown = redacted_url(given)
     try:
-        parts = urlsplit(url.strip())
+        parts = urlsplit(given)
         port = parts.port
     except ValueError:
         raise ValueError(
@@ -247,8 +253,10 @@ class RemoteRunner:
     `CALL_TIMEOUT_S` and `STEP_TIMEOUT_S`, as attributes a test can shorten. `dropped` counts
     replies thrown away for a session or a sequence that was not the request's, and
     `last_rtt_s` and `last_inference_s` are the last step's round trip and the inference time
-    the server reported for it, for `quackd policy check --bench` to read. `accept_frame_size`
-    and `accept_other_frame` are the two overrides `fit_arm` takes."""
+    the server reported for it, for `quackd policy check --bench` to read. Every step's round
+    trip is added up as well, for a run's record (`round_trips`), which also names the server
+    and what it serves (`record`). `accept_frame_size` and `accept_other_frame` are the two
+    overrides `fit_arm` takes."""
 
     def __init__(
         self,
@@ -276,6 +284,9 @@ class RemoteRunner:
         self.dropped = 0
         self.last_rtt_s: float | None = None
         self.last_inference_s: float | None = None
+        self._trips = 0
+        self._trip_total_s = 0.0
+        self._trip_longest_s = 0.0
         self._fitted: tuple[dict[str, tuple[float, float]], float, Identity] | None = None
         self._conn: http.client.HTTPConnection | None = None
         self._deadline = _Deadline()
@@ -434,6 +445,9 @@ class RemoteRunner:
         started = time.perf_counter()
         raw = self._exchange("POST", wire.STEP_PATH, body, self.step_timeout_s)
         self.last_rtt_s = time.perf_counter() - started
+        self._trips += 1
+        self._trip_total_s += self.last_rtt_s
+        self._trip_longest_s = max(self._trip_longest_s, self.last_rtt_s)
         reply = self._read(wire.StepReply, self._json(raw, wire.STEP_PATH), wire.STEP_PATH)
         self.last_inference_s = reply.inference_s
         if reply.session != self.session or reply.seq != seq:
@@ -448,6 +462,39 @@ class RemoteRunner:
                 "of this arm"
             )
         return Chunk(observation.tick, tuple(dict(action) for action in reply.chunk))
+
+    # ── the record ──────────────────────────────────────────────────────────────────────
+
+    def record(self) -> dict[str, Any]:
+        """The server and what it serves, as a run's record names them, from what it said when
+        it was last asked and with nothing asked now: its address, redacted, the policy, the rate
+        it runs at and where that rate came from, every repository it loaded at the revision it
+        loaded it at, and the JPEG quality frames go to it at, or None for raw frames. The
+        address alone before the server has answered."""
+        said: dict[str, Any] = {"server": self.url}
+        info = self.info
+        if info is not None:
+            said.update(
+                policy=info.policy,
+                rate_hz=info.rate_hz,
+                rate_source=info.rate_source,
+                loaded=list(info.loaded),
+                jpeg_quality=info.jpeg_quality,
+            )
+        return said
+
+    def round_trips(self) -> dict[str, Any] | None:
+        """How many steps went to the server and came back, and their mean and longest round
+        trip in milliseconds, on the wall's clock and the whole exchange included, or None before
+        the first. A report, and never a latency anything is set from: the latency a segment is
+        paced by is the one the server declares."""
+        if not self._trips:
+            return None
+        return {
+            "count": self._trips,
+            "mean": round(1000.0 * self._trip_total_s / self._trips, 1),
+            "max": round(1000.0 * self._trip_longest_s, 1),
+        }
 
     def close(self) -> None:
         """End this client's session, so another client may start one at once rather than

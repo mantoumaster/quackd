@@ -447,6 +447,40 @@ def test_task_pictures_are_documented_where_they_are_configured() -> None:
             assert needle in text, f"{path} does not mention {needle!r}"
 
 
+def test_the_policy_server_flags_are_documented_where_they_are_configured() -> None:
+    """`--policy-url` names the server a LeRobot arm hands its segments to, on `run`,
+    `preflight` and `serve-mcp`, and a flag nobody can find is a policy nobody points the arm at.
+    The front page names both flags, in the usage rows of all three commands and in the
+    Configuration table, the MCP page names them for `serve-mcp`, the arm's page says what a run
+    does with one, and `.env.example` names the one variable there is. That is the token's: the
+    address has none on purpose, so the file must never grow a line for it."""
+    from quackd.cli import app
+
+    callbacks = {
+        (c.name or c.callback.__name__).replace("_", "-"): c.callback
+        for c in app.registered_commands
+        if c.callback is not None
+    }
+    for name in ("run", "preflight", "serve-mcp"):
+        params = callbacks[name].__code__.co_varnames
+        assert "policy_url" in params and "policy_token" in params, name
+    rows = [line for line in README.splitlines() if line.startswith("| `quackd ")]
+    for name in ("run", "preflight", "serve-mcp"):
+        row = next(line for line in rows if line.startswith(f"| `quackd {name}"))
+        assert "--policy-url" in row, f"the README's {name} row does not name --policy-url"
+    for path, needles in (
+        ("README.md", ("| Policy |", "--policy-token", "QUACKD_POLICY_TOKEN")),
+        ("docs/mcp.md", ("--policy-url", "--policy-token", "QUACKD_POLICY_TOKEN", "--yes")),
+        ("docs/adapters/lerobot.md", ("--policy-url", "--policy-token", "QUACKD_POLICY_TOKEN")),
+        (".env.example", ("QUACKD_POLICY_TOKEN=",)),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+    env_example = (REPO / ".env.example").read_text(encoding="utf-8")
+    assert "QUACKD_POLICY_URL" not in env_example, "the policy server's address has no variable"
+
+
 def test_the_hand_placed_start_is_documented_where_it_is_configured() -> None:
     """The one place quackd takes torque off a robot. Somebody about to hold an arm while it is
     released should be able to find what happens next in the page they are already reading, and

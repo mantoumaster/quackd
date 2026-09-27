@@ -55,6 +55,7 @@ from quackd_lerobot.real import (
     CameraSpec,
     LeRobotReal,
     PolicyLike,
+    PolicyRunner,
     joint_ranges,
 )
 from quackd_lerobot.sim import SIM_EXTRA
@@ -188,8 +189,9 @@ class LeRobotSim(LeRobotReal):
     text, and None for the SO-101's own (`default_model`). A camera url must name one of the
     scene's mounts. `scene` is the objects to lay on the table in place of the default ones, as
     `quackd preflight` reads them from a task's sidecar (`model.parse_scene`), and None for the
-    default ones. `policy` is what `pick` runs, as for the real backend, and None leaves the
-    arm without `pick`."""
+    default ones. `policy` is what `pick` and `manipulate` run, as for the real backend, a policy
+    object or a runner such as the client of a policy server (`--policy-url`), and None leaves
+    the arm without either."""
 
     name = "mujoco"
     label = "mujoco"
@@ -209,7 +211,7 @@ class LeRobotSim(LeRobotReal):
         model: str | Path | None = None,
         scene: Sequence[Mapping[str, Any]] | None = None,
         timeout_s: float = 1.0,
-        policy: PolicyLike | None = None,
+        policy: PolicyLike | PolicyRunner | None = None,
     ) -> None:
         if address and names_a_port(address):
             # for every other lerobot robot --address is the port, so this is an easy slip

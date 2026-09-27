@@ -259,6 +259,44 @@ def goal_strategy(allow: Sequence[str]) -> str:
     )
 
 
+def executor_section(allow: Sequence[str], *, frames: bool = False) -> str:
+    """The `## Your executor` block, for a run whose verbs include `manipulate`, and empty for
+    every other run, whose prompt is what it was.
+
+    With it the pilot plans and a learned policy executes (llm+vla): the pilot's calls are few
+    and slow, the policy's many and fast, and each has to be told which part is its own. Two
+    things decide whether that works, and both are said here. A policy does one short thing it
+    was trained on, so the pilot asks for one subtask a call rather than the whole task. And
+    `manipulate` is ok when its segment ran, which says nothing about whether the arm did the
+    subtask, so the pilot looks again after every one and judges that, rather than reading an
+    ok as done. Every verb named is in `allow`, as in `goal_strategy`.
+
+    `frames` is whether every observation brings the pilot the body's camera frames, which it
+    does for a body with a camera and a pilot that can see. The frame the observation after a
+    segment brings is then the fresh look, and the one that can show a block in a bowl: an arm
+    that has a camera has no `observe` in its vocabulary, and its joints cannot show that."""
+    names = set(allow)
+    if "manipulate" not in names:
+        return ""
+    if frames:
+        again = "judge from the fresh frame your next observation brings"
+    elif "observe" in names:
+        again = "look again with `observe` and judge from that fresh frame"
+    elif "report_state" in names:
+        again = "read the arm again with `report_state` and judge from that fresh reading"
+    else:
+        again = "look again however this body can and judge from what you find"
+    return f"""
+## Your executor
+A learned policy moves this arm when you call `manipulate`, one short segment at a time: you
+plan, and it executes. Give it one short subtask per call, of the kind a policy like it was
+trained on and in a few plain words ("pick up the red block", "put it in the bowl"), never the
+whole task at once. After every segment, {again} what the arm actually did before you choose
+the next subtask. `manipulate` coming back ok means only that the segment ran, not that the
+subtask was done, so never declare success on its word alone.
+"""
+
+
 def before_verdict_clause(verbs: Sequence[Verb]) -> str:
     """`only `quack` and `stop` run`: which of THIS run's verbs run before the verdict.
 
@@ -446,9 +484,13 @@ def build_system_prompt(
     task_images: Sequence[str] | None = None,
     by_hand: bool = False,
     adapter: str | None = None,
+    sees: bool = False,
 ) -> str:
     """`memory_text` is what the robot remembers from earlier runs (`RobotMemory.recall`);
     None means memory is off for this run, "" means on but empty.
+
+    `sees` is whether the pilot is shown the frames an observation carries (`supports_vision`),
+    which with a manifest that has a camera means every observation brings a fresh one.
 
     `assumptions` is what the robot says quackd is standing in for on this backend, read from
     `state.extras` when the run connects. It belongs in the prompt rather than in every
@@ -479,6 +521,9 @@ def build_system_prompt(
         "\n".join(f"- {a}" for a in advisory) if advisory else "- (none beyond the enforced ones)"
     )
     body = body_section(manifest) if manifest is not None else ""
+    executor = executor_section(
+        sorted(names), frames=sees and manifest is not None and "camera" in manifest.sensors
+    )
     cameras = list(manifest.extras.get("cameras") or []) if manifest is not None else []
     if len(cameras) > 1:
         # more than one, not merely present. `extras["cameras"]` is the adapter's own list and
@@ -627,7 +672,7 @@ you choose ONE verb per turn; {pilot_line}. Do not micro-manage.
 
 ## Verbs
 {verb_lines}
-{body}{placed}{pictures}{stand_ins}{persona}{memory}{flock}{sim_note}
+{body}{executor}{placed}{pictures}{stand_ins}{persona}{memory}{flock}{sim_note}
 ## Task file: {fm.name} — {fm.description}
 
 {duck.body}

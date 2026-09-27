@@ -1222,6 +1222,17 @@ class AgentLoop:
             return record
         return {**record, "camera_role": "primary" if placed.get("primary") else "extra view"}
 
+    def _policy(self, name: str) -> dict[str, Any] | None:
+        """What the body says about the policy it hands segments to, `policy_served` for
+        `run_start` or `policy_record` for the summary, or None for a body with none, which is
+        every body but an arm given one. Asked of whatever the transport is, so a body quackd
+        never shipped is left alone, and never allowed to fail a run over its record."""
+        try:
+            said = getattr(self.cfg.transport, name, None)
+        except Exception:
+            return None
+        return dict(said) if isinstance(said, Mapping) else None
+
     def _attachments(self) -> list[NamedPng]:
         """The task's own pictures, on the first observation and on no other.
 
@@ -1611,6 +1622,8 @@ class AgentLoop:
                 task_images=[p.name for p in cfg.task_images] or None,
                 by_hand=cfg.hand_off is not None and not cfg.dry_run,
                 adapter=adapter_name(cfg.transport),
+                # as `_observe` decides whether an observation carries the frames it read
+                sees=bool(cfg.provider.supports_vision),
             )
             system += getattr(cfg.provider, "prompt_hint", "") or ""  # e.g. the local JSON fallback
             # before `run_start`, so a reader of the record meets the pictures the task is
@@ -1680,6 +1693,10 @@ class AgentLoop:
                     if stepper is not None
                     else {}
                 ),
+                # The policy the arm hands its segments to, when it has one: the server's
+                # address, redacted, and the checkpoint it serves, as the connect heard it.
+                # Only when there is one, so every other run's record stays what it was.
+                **({"policy": served} if (served := self._policy("policy_served")) else {}),
             )
             outcome: Outcome = "error"
             reason = "loop exited unexpectedly"
@@ -2096,6 +2113,9 @@ class AgentLoop:
                 # existed, and every run that does not ask for one, stays byte for byte
                 # what it was
                 **({"decision": stepper.summary()} if stepper is not None else {}),
+                # and the arm's policy by the same rule: what it is, what its segments
+                # counted and the round trips to its server, never an action it sent
+                **({"policy": block} if (block := self._policy("policy_record")) else {}),
             }
             # the only unguarded statements in this teardown used to be these three, so a
             # disk that filled at `run_end` skipped summary.json, leaked the file handle,

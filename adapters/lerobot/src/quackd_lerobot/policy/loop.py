@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import dataclasses
 import math
 import numbers
@@ -270,16 +271,72 @@ class _Run:
     late: int = 0
 
 
+@dataclass
+class Tally:
+    """What every segment a loop ran counted, added up for a run's record: the segments, the
+    seconds they ran on the transport's clock, their ticks, the ticks the pacer skipped for
+    running late, the chunks taken in, the ticks with nothing to send, and the goals clipped
+    into the travel. A segment stopped from outside counts what it had counted when it was
+    stopped. A segment refused before it started is not one. A report, and never a rate
+    anything is set from, as `SegmentStats` is.
+
+    The segments' seconds are kept on two clocks, because on the simulator they are not the
+    same: `seconds`, and the rate the ticks were achieved at, on the transport's clock, which
+    is what the ticks were paced on, and `wall_s` on the wall's, which is the share of a run's
+    wall time the segments had. A lockstep clock's seconds are the simulator's own and run as
+    fast as it steps, so a record of them says so (`clock`), as a verb's does."""
+
+    segments: int = 0
+    seconds: float = 0.0
+    wall_s: float = 0.0
+    ticks: int = 0
+    late: int = 0
+    chunks: int = 0
+    starved: int = 0
+    clips: int = 0
+    lockstep: bool = False
+
+    def add(self, run: _Run, seconds: float, clips: int, *, wall_s: float, lockstep: bool) -> None:
+        self.segments += 1
+        self.seconds += max(0.0, seconds)
+        self.wall_s += max(0.0, wall_s)
+        self.ticks += run.ticks
+        self.late += run.skipped
+        self.chunks += run.chunks
+        self.starved += run.starved
+        self.clips += clips
+        self.lockstep = self.lockstep or lockstep
+
+    def summary(self) -> dict[str, Any]:
+        """The counts as the run's record keeps them, and the rate the ticks were achieved at
+        across every segment, or None before any tick. `clock` is there only for a lockstep
+        clock, and says `sim`, the word `quackd.safety` gives a simulator's clock: on the wall's
+        clock `seconds` and `wall_s` measure the same time and there is nothing to name."""
+        return {
+            "segments": self.segments,
+            "seconds": round(self.seconds, 2),
+            **({"clock": "sim"} if self.lockstep else {}),
+            "wall_s": round(self.wall_s, 2),
+            "ticks": self.ticks,
+            "late_ticks": self.late,
+            "chunks": self.chunks,
+            "starved_ticks": self.starved,
+            "clips": self.clips,
+            "hz": round(self.ticks / self.seconds, 1) if self.seconds > 0 and self.ticks else None,
+        }
+
+
 class PolicyLoop:
     """The loop one runner's segments run in, kept by the backend for as long as it has that
     runner, so that its epoch, its worker and a request an earlier segment left in flight carry
     from one segment to the next.
 
     `starve_s`, `first_chunk_s` and `reset_s` are `STARVE_S`, `FIRST_CHUNK_S` and `RESET_S`,
-    as attributes a test can shorten."""
+    as attributes a test can shorten. `tally` adds up every segment it has run (`record`)."""
 
     def __init__(self, runner: PolicyRunner) -> None:
         self.runner = runner
+        self.tally = Tally()
         self.epoch = 0
         """The segment the loop is on, counted from 1. A chunk asked for under another is
         thrown away when it arrives."""
@@ -353,6 +410,26 @@ class PolicyLoop:
         if self._executor is not None:
             self._executor.submit(self.runner.close)
 
+    def served(self) -> dict[str, Any]:
+        """What the runner says it is, as a run's record names it: for a policy served by
+        another process, where the server is, what it serves and every repository it loaded
+        (`RemoteRunner.record`), as last asked, with nothing asked now. Empty for a runner that
+        says nothing about itself, an in-process one."""
+        said = getattr(self.runner, "record", None)
+        return dict(said()) if callable(said) else {}
+
+    def record(self) -> dict[str, Any]:
+        """The policy block of a run's record: what the runner is (`served`), what every
+        segment counted (`tally`), and the round trips a runner that crosses a wire timed
+        (`RemoteRunner.round_trips`). Numbers and names only, never an action: a chunk is the
+        runner's to play and nobody's to keep."""
+        record = self.served()
+        record.update(self.tally.summary())
+        timed = getattr(self.runner, "round_trips", None)
+        if callable(timed) and (trips := timed()) is not None:
+            record["round_trip_ms"] = trips
+        return record
+
     # ── a segment ───────────────────────────────────────────────────────────────────────
 
     async def start(self, instruction: str, max_step_deg: float) -> Plan | str:
@@ -414,11 +491,24 @@ class PolicyLoop:
         The runner's own error, raised where its answer is judged, ends it `error` with the
         counts up to there, and with no hold: the verb waiting on it stops the arm."""
         run = _Run(started, registers_at, arm._range_clips)
+        # the wall's clock beside the arm's, which on the simulator is the simulator's (`Tally`)
+        walled = time.perf_counter()
         try:
             return await self._ticks(arm, plan, segment, run)
         except Exception as e:
             arm._policy_error = f"{type(e).__name__}: {e}"
             return self._end(arm, run, "error", f"the policy raised {arm._policy_error}")
+        finally:
+            # however it ended, a stop from outside included, which raises through here, and a
+            # count that could not be taken never takes the segment's own ending with it
+            with contextlib.suppress(Exception):
+                self.tally.add(
+                    run,
+                    arm.now() - run.started,
+                    arm._range_clips - run.clips_at,
+                    wall_s=time.perf_counter() - walled,
+                    lockstep=bool(getattr(arm.clock, "lockstep", False)),
+                )
 
     async def _ticks(self, arm: LeRobotReal, plan: Plan, segment: Segment, run: _Run) -> SegmentEnd:
         """The ticks themselves, counted on the segment's `_Run`, which `run` still has to
@@ -788,6 +878,7 @@ __all__ = [
     "Plan",
     "PolicyLoop",
     "Segment",
+    "Tally",
     "clipped_too_long",
     "latency_ticks",
     "rate_refusal",

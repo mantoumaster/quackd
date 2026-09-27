@@ -334,8 +334,15 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
             spent.append(f"model {fmt_duration(llm)}")
         if (stepper := _number((end.get("decision") or {}).get("latency_s"))) is not None:
             spent.append(f"stepper {fmt_duration(stepper)}")
+        # and the seconds the arm's policy drove it, when it had one and it ran, on the wall's
+        # clock as the rest of the split is: on the simulator the policy's own `seconds` are
+        # the simulator's, and a split can never be larger than the whole
+        if policy_s := _number(_block(end, "policy").get("wall_s")):
+            spent.append(f"policy {fmt_duration(policy_s)}")
         where = f" ({', '.join(spent)})" if spent else ""
         counters.append(f"time {fmt_duration(wall)}{where}")
+    if (policy := _policy_counter(end.get("policy"))) is not None:
+        counters.append(policy)
     decision_block = end.get("decision") or {}
     decision_cost = _number(decision_block.get("cost_usd"))
     # On a cost KEY, not on the presence of a stepper block. A stepper block recorded before
@@ -358,6 +365,52 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
             total = model_cost + (decision_cost or 0.0)
             counters.append(f"cost {'~' if estimated else ''}{fmt_usd(total)}")
     return counters
+
+
+def _block(end: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    """A block of a record, or an empty one where it is missing or is not a block at all: a
+    `quackd log` of a hand-edited file is a counter line short, never a traceback."""
+    block = end.get(key)
+    return block if isinstance(block, Mapping) else {}
+
+
+def _policy_counter(block: Any) -> str | None:
+    """What the arm's policy did in a run, as one counter: its segments, the chunks it sent and
+    the rate its ticks were achieved at, the ticks that went wrong and the goals clipped when
+    there were any, and the mean round trip to its server. None for a run with no policy block,
+    which is every run whose arm had no policy, so their counters are what they were, and the
+    segments alone for a run whose policy was never handed the arm.
+
+    On the simulator the rate is the simulator clock's, which the ticks were paced on, so it is
+    said with the simulator's seconds and the clock's name (`20.1 s sim at 10 Hz`), as a verb's
+    seconds are (`quackd.log`), and the wall's share of them is in the time split."""
+    from quackd.log import fmt_duration
+
+    if not isinstance(block, Mapping):
+        return None
+    segments = int(_number(block.get("segments")) or 0)
+    parts = [f"policy {_plural(segments, 'segment')}"]
+    if not segments:
+        return parts[0]
+    if (chunks := _number(block.get("chunks"))) is not None:
+        parts.append(_plural(int(chunks), "chunk"))
+    if (hz := _number(block.get("hz"))) is not None:
+        clock, seconds = block.get("clock"), _number(block.get("seconds"))
+        if isinstance(clock, str) and clock and seconds is not None:
+            parts.append(f"{fmt_duration(seconds)} {clock} at {hz:g} Hz")
+        else:
+            parts.append(f"{hz:g} Hz")
+    for key, noun, how in (
+        ("starved_ticks", "tick", "starved"),
+        ("late_ticks", "tick", "late"),
+        ("clips", "goal", "clipped"),
+    ):
+        if n := int(_number(block.get(key)) or 0):
+            parts.append(f"{_plural(n, noun)} {how}")
+    trips = block.get("round_trip_ms")
+    if isinstance(trips, Mapping) and (mean := _number(trips.get("mean"))) is not None:
+        parts.append(f"round trip {mean:g} ms")
+    return ", ".join(parts)
 
 
 def _detector_row(detector: Any, hello: Any, backend: str | None, *, sees: bool = True) -> str:
@@ -491,9 +544,13 @@ def _header_rows(
     backend: str | None = None,
     host_camera: dict[str, Any] | None = None,
     sees: bool = True,
+    policy: Mapping[str, Any] | None = None,
 ) -> list[tuple[str, Any]]:
     """The things worth knowing before a run starts, and nothing else: who pilots, which body,
-    what reads its frames, and the board when there is one."""
+    what reads its frames, the board when there is one, and the policy server the arm hands its
+    segments to when there is one, with the checkpoint it said it serves when it was asked."""
+    from quackd.log import policy_row
+
     rows: list[tuple[str, Any]] = [
         ("provider", f"{provider.name} ({provider.model or 'the first model it serves'})"),
         ("robot", robot + (f"  seed {seed}" if seed is not None else "")),
@@ -501,6 +558,8 @@ def _header_rows(
     rows.append(("detector", _detector_row(detector, hello, backend, sees=sees)))
     if board is not None and hello is not None:
         rows.append(("host", _host_row(board, hello, host_camera)))
+    if policy is not None:
+        rows.append(("policy", policy_row(policy)))
     if dry_run:
         rows.append(
             (
@@ -583,7 +642,7 @@ def validate(
     registry_dir: str | None = _REGISTRY_DIR,
 ) -> None:
     """Validate .duck files against the spec and a robot's verbs. Exits 1 on any failure."""
-    from quackd.adapters.base import AdapterError
+    from quackd.adapters.base import AdapterError, policy_hint
     from quackd.adapters.factory import describe
     from quackd.duckfile.parser import DuckParseError, load_duck
     from quackd.duckfile.validate import validate_duck
@@ -632,11 +691,23 @@ def validate(
                 problems=[str(p) for p in problems],
                 summary=[p.message for p in problems],
             )
-            # one body, as `run` has a board only for one: a fleet takes none
+            # one body, as `run` has a board only for one: a fleet takes none, and no policy
+            # server either, which is the only way an arm has pick and manipulate
             if len(resolved) == 1 and not robots and duck.frontmatter.flock is None:
-                note = _board_not_asked(resolved[0], manifests[0], "validate")
-                if note is not None:
-                    row["notes"] = [note]
+                notes = [
+                    note
+                    for note in (
+                        _board_not_asked(resolved[0], manifests[0], "validate"),
+                        policy_hint(
+                            [p.verb for p in problems if p.verb],
+                            [resolved[0].spec.key],
+                            "quackd run",
+                        ),
+                    )
+                    if note is not None
+                ]
+                if notes:
+                    row["notes"] = notes
 
     failures = [row for row in rows if not row["ok"]]
     if as_json:
@@ -1175,8 +1246,11 @@ def _run_impl(
     host: str | None = None,
     host_token: str | None = None,
     detector_choice: str | None = None,
+    policy_url: str | None = None,
+    policy_token: str | None = None,
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
+    from quackd.adapters.base import policy_choice, policy_hint
     from quackd.adapters.factory import describe, make_adapter, registry_for
     from quackd.adapters.host_camera import EXTRAS_KEY as HOST_CAMERA_EXTRAS
     from quackd.adapters.host_camera import with_host_camera
@@ -1252,6 +1326,16 @@ def _run_impl(
     if detector_choice is not None and detector_choice not in DETECTOR_CHOICES:
         _fail(f"--detector is one of {', '.join(DETECTOR_CHOICES)}, not {detector_choice!r}")
         return
+    try:
+        # the policy server the arm hands its segments to, from the flags alone: no variable
+        # names one, so a policy drives the arm only on a run that says so
+        policy = policy_choice(policy_url, policy_token)
+    except ValueError as e:
+        _fail(str(e))
+        return
+    # passed to `describe` and `make_adapter` only when there is one, so every other body is
+    # asked exactly as it always was
+    policy_kw: dict[str, Any] = {} if policy is None else {"policy": policy}
     flock_n, roster = _parse_flock_flag(flock, registry_dir)
     flock_name = flock if roster is not None else None
     if roster is not None and (robot or robots):
@@ -1316,6 +1400,14 @@ def _run_impl(
             hint="drop --host-token, or run the task on one body at a time",
         )
         return
+    if fleet and policy is not None:
+        # one server, one session at a time, and one arm's calibration it was checked against:
+        # every flock path builds its own members, so it would be dropped without a word
+        _fail(
+            "--policy-url is one arm's policy server, and a fleet has several bodies",
+            hint="drop --policy-url, or run the task on one arm at a time",
+        )
+        return
     # The one place this run's board is settled, so everything that uses the board reads this
     # value rather than deriving its own. A fleet has none, whatever the environment says.
     stored = here.host_kwargs()
@@ -1351,24 +1443,35 @@ def _run_impl(
         if goal is not None:
             # the union across the flock, so a goal run on mixed bodies allows what any of
             # them can do; each member is then trimmed to its own half of that. With a board,
-            # the one body's vocabulary includes what the board's camera lets it do.
+            # the one body's vocabulary includes what the board's camera lets it do, and with a
+            # policy server what the arm's policy does.
+            vocabularies = []
+            for one in specs:
+                body = describe(one, **policy_kw)
+                vocabularies.append(
+                    registry_for(one, with_host_camera(body, hello) if hello is not None else body)
+                )
             safe = sorted(
                 {
                     v.name
-                    for one in specs
-                    for v in registry_for(
-                        one,
-                        with_host_camera(describe(one), hello) if hello is not None else None,
-                    ).verbs()
+                    for vocabulary in vocabularies
+                    for v in vocabulary.verbs()
                     if v.safety_class == "safe"
                 }
             )
-            duck = duck_from_goal(goal, safe)
+            # and `manipulate` with a policy server, which is no safe verb: allowed, and asked
+            # about before each segment rather than left out, or a goal could never use it
+            gated = (
+                ["manipulate"]
+                if policy is not None and any("manipulate" in v for v in vocabularies)
+                else []
+            )
+            duck = duck_from_goal(goal, safe, confirm=gated)
         assert duck is not None
         # Refuse before connecting, with the validator's words. `serve-mcp` has always done
         # this; `run` never did, and reached the loop's tool_schemas and died on a raw
         # VerbNotFound with the robot already connected and a run directory already made.
-        manifests = [describe(s) for s in specs]
+        manifests = [describe(s, **policy_kw) for s in specs]
         # the body as its adapter describes it, before the board's camera joins it: all a
         # detector built before connect may know about the lens (below)
         described = manifests[0]
@@ -1395,7 +1498,13 @@ def _run_impl(
     if problems:
         _fail(
             f"{duck.name} cannot run on {', '.join(s.key for s in specs)}: "
-            + "; ".join(p.message for p in problems)
+            + "; ".join(p.message for p in problems),
+            # an arm's pick and manipulate come only from --policy-url, which a fleet refuses
+            hint=None
+            if fleet or policy is not None
+            else policy_hint(
+                [p.verb for p in problems if p.verb], [s.key for s in specs], "quackd run"
+            ),
         )
         return
     if flock_n is not None and not 2 <= flock_n <= 4:
@@ -1638,10 +1747,28 @@ def _run_impl(
             # its hello already, so building this asks it nothing
             host=board,
             **here.adapter_kwargs(address=address, camera_url=camera_url, token=token),
+            **policy_kw,
         )
     except (ProviderError, TransportError, ImportError) as e:
         _fail(str(e))
         return
+    # The policy server is asked what it serves before anything connects, as the board is:
+    # the header names the checkpoint, and a server that is not there is a sentence now rather
+    # than a connect refused after the cameras opened. The connect asks again, and checks what
+    # it hears against the arm before any torque.
+    served: dict[str, Any] | None = None
+    if policy is not None:
+        ask = getattr(duck_transport, "ask_policy", None)
+        try:
+            served = ask() if callable(ask) else None
+        except RuntimeError as e:
+            _fail(
+                str(e),
+                hint=f"quackd policy check --policy-url {policy.url} asks it what it serves",
+            )
+            return
+        if served is None:
+            served = {"server": policy.url}
     if by_hand:
         if not getattr(duck_transport, "supports_hand_off", False):
             _fail(
@@ -1819,6 +1946,7 @@ def _run_impl(
                 backend=spec.backend,
                 host_camera=manifests[0].extras.get(HOST_CAMERA_EXTRAS),
                 sees="camera" in manifests[0].sensors,
+                policy=served,
             ),
             hint="Ctrl-C or q stops the duck. Press it twice to quit at once.",
         )
@@ -2679,6 +2807,23 @@ _BY_HAND = typer.Option(
     "gripper opens. Needs a LeRobot arm with a rest pose recorded, and a terminal to ask on.",
     rich_help_panel="Robot",
 )
+_POLICY_URL = typer.Option(
+    None,
+    "--policy-url",
+    help="The policy server the arm hands pick and manipulate to, as http://127.0.0.1:PORT, or "
+    "https:// for one behind TLS: the address quackd policy serve printed. A LeRobot arm only, "
+    "lerobot:real or lerobot:mujoco, and one robot only. It is asked what it serves before the "
+    "arm connects, and the connect checks that the policy fits the arm before any torque. No "
+    "variable sets it, so a policy drives the arm only when a command names one.",
+    rich_help_panel="Robot",
+)
+_POLICY_TOKEN = typer.Option(
+    None,
+    "--policy-token",
+    help="The token the --policy-url server wants. Without it, QUACKD_POLICY_TOKEN, then the "
+    "one quackd policy serve wrote to ~/.quackd/policy.token.",
+    rich_help_panel="Robot",
+)
 _FOV = typer.Option(
     None,
     "--fov-deg",
@@ -2744,6 +2889,8 @@ def run(
     host: str | None = _HOST,
     host_token: str | None = _HOST_TOKEN,
     detector: str | None = _DETECTOR,
+    policy_url: str | None = _POLICY_URL,
+    policy_token: str | None = _POLICY_TOKEN,
     gif: bool = typer.Option(
         True,
         "--gif/--no-gif",
@@ -2810,6 +2957,8 @@ def run(
             host=host,
             host_token=host_token,
             detector_choice=detector,
+            policy_url=policy_url,
+            policy_token=policy_token,
         )
 
 
@@ -2945,6 +3094,8 @@ def preflight(
         "the cycles meet no faults.",
         rich_help_panel="Task",
     ),
+    policy_url: str | None = _POLICY_URL,
+    policy_token: str | None = _POLICY_TOKEN,
     runs_dir: str = _RUNS,
     registry_dir: str | None = _REGISTRY_DIR,
     as_json: bool = _JSON,
@@ -2963,6 +3114,8 @@ def preflight(
         runs_dir=runs_dir,
         registry_dir=registry_dir,
         as_json=as_json,
+        policy_url=policy_url,
+        policy_token=policy_token,
     )
 
 
@@ -2980,8 +3133,10 @@ def _preflight_impl(
     runs_dir: str,
     registry_dir: str | None,
     as_json: bool,
+    policy_url: str | None = None,
+    policy_token: str | None = None,
 ) -> None:
-    from quackd.adapters.base import AdapterError
+    from quackd.adapters.base import AdapterError, policy_choice
     from quackd.adapters.factory import describe, make_adapter
     from quackd.agent.images import TaskImageError, load_task_images
     from quackd.agent.providers.base import ProviderError
@@ -2990,6 +3145,11 @@ def _preflight_impl(
     from quackd.registry import Registry, RegistryError, resolve_robot_ref
     from quackd.transport.base import TransportError
 
+    try:
+        policy = policy_choice(policy_url, policy_token)
+    except ValueError as e:
+        _fail(str(e))
+        return
     # Which robot, and that it is a simulator, before anything is built: a real arm refused
     # after it was made would already have had its port opened by somebody's typo.
     try:
@@ -3027,14 +3187,29 @@ def _preflight_impl(
             )
             return
     kwargs = here.adapter_kwargs(camera_url=camera_url)
+    if policy is not None:
+        # every connect cycle and every run is built with it, and checks it at connect
+        kwargs["policy"] = policy
     try:
         # built once and never connected, so a camera, a fault spec or a stored field the
         # simulator refuses is one sentence now rather than a failed connect on every file
-        make_adapter(here.spec, seed=0, faults=faults, **kwargs)
-        manifest = describe(here.spec)
+        built = make_adapter(here.spec, seed=0, faults=faults, **kwargs)
+        manifest = describe(here.spec, **({} if policy is None else {"policy": policy}))
     except (AdapterError, TransportError, ImportError, ValueError) as e:
         _fail(str(e))
         return
+    if policy is not None:
+        # and a policy server that is not there is one sentence now too, as it is for a run
+        ask = getattr(built, "ask_policy", None)
+        try:
+            if callable(ask):
+                ask()
+        except RuntimeError as e:
+            _fail(
+                str(e),
+                hint=f"quackd policy check --policy-url {policy.url} asks it what it serves",
+            )
+            return
 
     def pilot(duck: Any) -> Any:
         return make_provider(vendor, model=model_id, source=source, duck_name=duck.name)
@@ -3518,6 +3693,8 @@ def serve_mcp(
     host: str | None = _HOST,
     host_token: str | None = _HOST_TOKEN,
     detector: str | None = _DETECTOR,
+    policy_url: str | None = _POLICY_URL,
+    policy_token: str | None = _POLICY_TOKEN,
     dry_run: bool = _DRY,
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Allow confirm-gated verbs (there is no terminal to ask)."
@@ -3551,6 +3728,8 @@ def serve_mcp(
             memory=memory,
             memory_dir=memory_dir,
             log=log,
+            policy_url=policy_url,
+            policy_token=policy_token,
         )
     except (AdapterError, RegistryError) as e:
         _fail(str(e))

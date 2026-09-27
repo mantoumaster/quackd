@@ -406,6 +406,14 @@ def _price_line(
     return text
 
 
+def policy_row(policy: Mapping[str, Any]) -> str:
+    """The policy server a run's arm hands its segments to, and the checkpoint it serves, for
+    the `policy` row of a run's header: the live one `quackd run` prints and the one a replay
+    opens with. The address is the record's, which was redacted before it was ever written."""
+    served = policy.get("policy")
+    return f"{policy.get('server')}  {served}" if served else str(policy.get("server"))
+
+
 def _ok(outcome: str) -> bool:
     return outcome == "ok"
 
@@ -1163,6 +1171,10 @@ class ConsoleLog(LineLog):
             )
         if tools := d.get("tools"):
             rows.append(("tools", ", ".join(tools)))
+        # the row the live header had, from what the connect heard, and only for a run whose
+        # arm had a policy server, so every other replay opens as it always did
+        if isinstance(policy := d.get("policy"), Mapping) and policy.get("server"):
+            rows.append(("policy", policy_row(policy)))
         # A replay has no CLI header in front of it and, until the record carried a wall clock,
         # no way at all of saying when the run it is showing you happened: the directory name
         # was the only answer, and a directory gets renamed and copied.

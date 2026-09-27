@@ -114,6 +114,18 @@ def redacted_url(value: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
 
 
+def readable_url(value: str) -> bool:
+    """Whether `redacted_url` can read `value`, which is a URL with a scheme and a host, and
+    so take its credentials out. What it cannot read it returns unchanged, which is right for
+    a record of what was typed and wrong for a refusal quoting it: `http://rok:pw@[::1` has a
+    password in it and no host redaction can find, so a sentence about it must not quote it."""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return bool(parts.scheme and parts.netloc)
+
+
 def redacted_body(body: Any) -> Any:
     """An `--extra-body` object with anything credential-shaped in it replaced.
 

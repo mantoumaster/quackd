@@ -258,7 +258,15 @@ quackd serve-mcp --robots duck=microduck:sim2d,arm=lerobot:mock             # a 
 quackd serve-mcp --flock kitchen                                            # the same, from a stored flock
 quackd serve-mcp --no-log                            # no result carries a log of what happened
 quackd serve-mcp --robot open_duck:sim2d                                     # a buildable duck, no hardware needed
+quackd serve-mcp --robot lerobot:mujoco --policy-url http://127.0.0.1:9875 --yes  # the arm's pick and manipulate, run by a policy server
 ```
+
+`--policy-url` names the policy server one LeRobot arm hands its `pick` and `manipulate`
+segments to (`quackd policy serve`, [the arm's page](adapters/lerobot.md#a-policy-in-a-process-of-its-own-quackd-policy-serve)),
+with `--policy-token`, or else `QUACKD_POLICY_TOKEN`, or else the token file the server wrote.
+It is asked what it serves as the server starts, and one that does not answer refuses it. Both
+verbs are confirm gated, so a client can call them only on a server started with `--yes`, and
+both are refused with `--robots` or `--flock`, since one policy server drives one arm.
 
 > [!NOTE]
 > `--decision-llm` is not among these, on purpose. Over MCP the model *is* the client, so

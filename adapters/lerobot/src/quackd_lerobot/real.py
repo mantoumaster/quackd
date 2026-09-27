@@ -1000,6 +1000,14 @@ class LeRobotReal:
         return self._policy_loop is not None
 
     @property
+    def policy_loop(self) -> PolicyLoop | None:
+        """The loop this backend's policy segments run in, or None without a policy. Read for
+        what the run's record says about the policy (`PolicyLoop.record`) and for what the run's
+        header names before the connect (`LeRobotAdapter.ask_policy`), and never driven from
+        outside: a segment starts through a `do` and nothing else."""
+        return self._policy_loop
+
+    @property
     def policy_running(self) -> bool:
         return self._policy_task is not None and not self._policy_task.done()
 

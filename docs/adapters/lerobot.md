@@ -244,11 +244,12 @@ port ([registry.md](../registry.md)). It is also the only place a
 }
 ```
 
-That is the mock's static manifest. The static manifest of `lerobot:real` claims neither a
-camera nor a policy; `connect()` adds `observe` when `--camera-url` named a camera and it
-opened, and `pick` and `manipulate` when a policy was injected. It also adds what cannot be
-known until
-the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
+That is the mock's static manifest. The static manifest of `lerobot:real` claims no camera, and
+claims `pick` and `manipulate` only when `--policy-url` names a policy server
+([below](#a-run-with-a-policy-server)), so a task that allows them is judged before anything
+connects. `connect()` adds `observe` when `--camera-url` named a camera and it opened, and `pick`
+and `manipulate` when a policy object was injected in code. It also adds what cannot be known
+until the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
 the calibration file, to a tenth of a degree rounded inward so that every angle it names is one
 the arm accepts (`wrist_roll` included, where that travel is the whole turn upstream
 records rather than anything swept, see Safety), `extras.calibration_file`, the path that came
@@ -781,8 +782,9 @@ It serves a LeRobot checkpoint named as `REPO@REVISION`
 ([below](#serving-a-checkpoint)), and two scripted policies that need no torch either:
 `scripted:hold` holds the arm where it reads, so a `manipulate` of it ends on a stall, and
 `scripted:sweep` swings `wrist_flex` 5 degrees either side of where it started, one swing every
-2 s. `quackd run` has no flag to point the arm at a server yet, so for now `quackd policy
-check` is what talks to one from the CLI.
+2 s. `quackd run`, `quackd preflight` and `quackd serve-mcp` point the arm at a server with
+`--policy-url` ([below](#a-run-with-a-policy-server)), and `quackd policy check` asks one what it
+serves.
 
 ```bash
 quackd policy serve --policy scripted:sweep
@@ -992,14 +994,58 @@ each camera's size is a frame it just gave, and the travel is the calibration fi
 
 The two refusals that can be overridden are the frame's size and the frame of reference, and
 for now they are the `accept_frame_size=True` and `accept_other_frame=True` keywords of
-`RemoteRunner`, since the arm reaches a server from Python alone until `quackd run` takes its
-address. The record says when either was taken.
+`RemoteRunner`, from Python alone: `quackd run` takes a server's address and has no flag for
+either yet. The record says when either was taken.
 
 The check is made again as every segment starts, on what the server says then. The arm's
 process lives as long as a pilot's session, and a server can be started again on the same
 port and token in that time. A policy other than the one the connect checked starts no
 segment, with a sentence saying to connect the arm again so the new one is checked and named
 in the record, and the same policy starts none once it no longer fits.
+
+### A run with a policy server
+
+`--policy-url` hands the arm's `pick` and `manipulate` to a server that is running, on
+`quackd run`, `quackd preflight` and `quackd serve-mcp`:
+
+```bash
+quackd run --goal "put the block in the bowl" --robot lerobot:mujoco --policy-url http://127.0.0.1:9875
+```
+
+- **Only the flag names it.** No variable and no registered robot carries the address, so a
+  policy drives the arm only on a command that says so. The token is `--policy-token`, else
+  `QUACKD_POLICY_TOKEN`, else the file `quackd policy serve` wrote, and an address the client
+  refuses, or a token found nowhere, is refused as the arm is built, before anything connects.
+  A task that allows `pick` or `manipulate` on the arm, run without the flag, is refused with a
+  line saying to start a server and give the command its address.
+- **One arm.** `lerobot:real` and `lerobot:mujoco` take it. The mock runs its own scripted
+  policy and refuses one, every other body refuses it naming these two, and a flock refuses it,
+  because one server drives one arm.
+- **Asked before the arm connects.** The server is asked what it serves before anything
+  connects, so a server that is not there is one sentence with nothing energised, and the run
+  header names the server and its checkpoint. The connect then checks the policy against the
+  arm before any torque ([above](#whether-the-policy-fits-the-arm)).
+- **A goal run asks about each segment.** A `--goal` allows only verbs that are safe, and
+  `manipulate` is not one. With a policy server it is allowed all the same, behind a confirm, so
+  a person says yes to each segment, and without one a goal is what it was. `--yes` answers
+  every confirm, as it does for every other gated verb.
+- **The pilot is told what executes.** A run whose verbs include `manipulate` has a
+  `Your executor` section in its prompt: hand the policy one short subtask per call, look again
+  after each, and never read the verb's ok as the subtask done. With a camera and a pilot that
+  can see, the look is the frame the next observation brings, and otherwise a reading of the
+  arm with `report_state`, which cannot show where a block went.
+- **The record keeps what the policy did.** `run_start` names the server and the checkpoint,
+  and `summary.json` has a `policy` block: the server, the policy, its rate, every repository
+  its server loaded at the revision it loaded, the JPEG quality, the segments and their
+  seconds, ticks, late ticks, chunks, starved ticks and clipped goals, the rate the ticks were
+  achieved at, and the mean and longest round trip to the server. The seconds and the rate are
+  on the arm's clock, which the ticks were paced on, and on the simulator that clock is the
+  simulator's own and runs as fast as it steps, so the block says `clock: sim` there and keeps
+  the segments' seconds on the wall's clock beside them (`wall_s`). The line under the verdict
+  says the same in one counter, and the time it splits gains the policy's wall seconds. No
+  action goes into a verb's result or the record.
+- **Over MCP** both verbs are confirm gated, so a client reaches them only on a server started
+  with `--yes`.
 
 ## The simulator: `lerobot:mujoco`
 
