@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -50,6 +52,7 @@ from typing import Any
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, HandResult, RestResult
 from quackd.perception.color_blob import DEFAULT_FOV_DEG
 from quackd.transport.base import DuckState, HeartbeatError, TransportError
+from quackd_lerobot.policy.loop import FIRST_CHUNK_S, latency_ticks, rate_refusal
 from quackd_lerobot.real import (
     MAX_STEP_DEG,
     CameraSpec,
@@ -254,6 +257,11 @@ class LeRobotSim(LeRobotReal):
         self._calibration: tuple[dict[str, MotorCalibration], Path | None] = ({}, None)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._viewer: LiveViewer | None = None
+        self._thinking: tuple[float, float, int] = (0.0, 0.0, 1)
+        """The policy's rate, the wall seconds one of its requests stands the clock still for,
+        and the fewest ticks between two of its requests, as the last connect found them
+        (`_time_thinking`), or zeros for an arm with no policy, or one whose policy could not
+        say."""
 
     # ── the world ───────────────────────────────────────────────────────────────────────
 
@@ -374,6 +382,63 @@ class LeRobotSim(LeRobotReal):
         if views := default_views(self.camera_keys):
             notes.append(views)
         self.connect_notes.extend(notes)
+        await self._time_thinking()
+
+    async def _time_thinking(self) -> None:
+        """What a request of this arm's policy costs on the wall's clock while the simulator's
+        stands still: the latency the runner declares, asked on the runner's own worker as every
+        call on it is, and one frame from every open camera, drawn and timed here, since a
+        request carries one from each. Kept with the runner's rate for `frozen_inference_s`,
+        and with how far apart its requests come: every tick for a runner asked every tick, and
+        otherwise no closer than the ticks its answer is held back, since the loop asks again
+        only once the last answer is let go (`PolicyLoop._wants`). A runner that cannot say
+        leaves the zeros, and its segments are refused at their start for the same reason
+        (`PolicyLoop.start`).
+
+        So does a rate the loop will not pace (`rate_refusal`), whose segments are refused at
+        their start too, and a latency of `FIRST_CHUNK_S` or more, whose segments starve before
+        their first chunk lands: neither has thinking to wait for, and a rate or a latency past
+        any a policy has made a bound too large to be a number of requests."""
+        self._thinking = (0.0, 0.0, 1)
+        loop = self._policy_loop
+        if loop is None:
+            return
+        try:
+            features = await loop.call(loop.runner.features)
+            latency = float(await loop.call(loop.runner.latency_s))
+            refused = rate_refusal(features)
+            rate, per_tick = float(features.rate_hz), bool(features.per_tick)
+        except Exception:
+            return
+        if refused is not None or not (math.isfinite(latency) and 0 <= latency < FIRST_CHUNK_S):
+            return
+        apart = 1 if per_tick else max(1, latency_ticks(latency, rate))
+        started = time.perf_counter()
+        for name in self.camera_keys:
+            camera = self._cameras.get(name)
+            if camera is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(camera.read_latest)
+        self._thinking = (rate, latency + time.perf_counter() - started, apart)
+
+    def frozen_inference_s(self, segment_s: float) -> float:
+        """The wall seconds this simulator's clock stands still over a segment of `segment_s`
+        while its policy thinks, which the executor's timeout for `manipulate` has to cover on
+        top of the segment's own seconds (`quackd.duckfile.narrow`). A lockstep clock waits for
+        every request, so it is a request's cost (`_time_thinking`) for as many requests as the
+        segment's ticks can hold, one every so many ticks, and one more: a bound on what the
+        policy declared, never an estimate. A policy slower than it declares can still outrun
+        it, as it would outrun its own delay line. `--live` paces the clock on the wall's and it
+        still waits, so it is the same there. A segment too long to count its ticks is bounded
+        by nothing, which the narrowing holds to its own maximum."""
+        rate, per_request, apart = self._thinking
+        clock = self._sim_clock()
+        if clock is None or not clock.lockstep or rate <= 0 or per_request <= 0:
+            return 0.0
+        ticks = segment_s * rate
+        if not math.isfinite(ticks):
+            return math.inf if ticks > 0 else 0.0
+        return (math.ceil(math.ceil(ticks) / apart) + 1) * per_request
 
     def _build_robot(self) -> SimFollower:
         calibration, path = self._calibration

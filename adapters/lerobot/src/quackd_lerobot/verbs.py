@@ -31,6 +31,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from quackd.adapters.base import CONNECTING_TAKES_TORQUE_OFF
+from quackd.duckfile.schema import DEFAULT_SEGMENT_S, INSTRUCTION_MAX_CHARS, instruction_line
 from quackd.transport.base import DuckState, Intent
 from quackd.verbs.core import send_or_fail
 from quackd.verbs.registry import NoParams, Precondition, Verb, VerbContext, VerbResult
@@ -102,15 +103,18 @@ closing. This is the same window `_drive` calls a stall, which is this file's ow
 of a joint that has stopped moving, and it is comfortably wider than that gap."""
 
 
-MANIPULATE_S = 10.0
+MANIPULATE_S = DEFAULT_SEGMENT_S
 """How long one `manipulate` segment runs, in the transport's time, unless something ends it
-sooner. quackd's own default and nothing a policy declares: long enough for a learned policy to
-do one short subtask, short enough that the pilot looks at the arm again before the next."""
-MANIPULATE_HEADROOM_S = 10.0
-"""How far past `MANIPULATE_S` the executor's timeout for `manipulate` lies. The segment's own
-time starts once the policy is reset and the step cap written, and a guard's hold and the
-verb's stop follow its end; all of that has to land before the executor's clock does, as `pick`
-has ten seconds past its longest `max_s`."""
+sooner, on a backend nobody has told otherwise: the task file's own default
+(`quackd.duckfile.schema.DEFAULT_SEGMENT_S`), and nothing a policy declares. A run tells the
+backend its task's `policy.segment_s` through `set_segment_s` (`quackd.duckfile.narrow`), and
+the verb runs what the backend was told."""
+MANIPULATE_TIMEOUT_S = 70.0
+"""The executor's timeout for `manipulate` as the arm registers it, before a task narrows it to
+its own segment. It covers the longest segment a task may ask for
+(`quackd.duckfile.schema.SEGMENT_MAX_S`) and the headroom every segment is given past its own
+seconds (`SEGMENT_HEADROOM_S`), as `pick` has ten seconds past its longest `max_s`, and a test
+holds the three together."""
 
 SegmentHow = Literal[
     "holding", "finished", "time", "chunks", "stall", "guard", "starved", "error", "refused"
@@ -204,8 +208,22 @@ class GripperParams(BaseModel):
 class PickParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target: str = Field(default="object", description="What to pick, as the policy's task text.")
+    target: str = Field(
+        default="object",
+        max_length=INSTRUCTION_MAX_CHARS,
+        description="What to pick, as the policy's task text.",
+    )
     max_s: float = Field(default=20.0, ge=1, le=60, description="Give up after this long.")
+
+    @field_validator("target")
+    @classmethod
+    def _one_line(cls, value: str) -> str:
+        # the words `pick` hands the policy are held to what `manipulate`'s are, one line of
+        # plain text and no longer (`instruction_line`). A blank one is left as it always was:
+        # the backend tells a pick's policy its target and refuses no blank one
+        if value.strip():
+            instruction_line(value, what="target")
+        return value
 
 
 class ManipulateParams(BaseModel):
@@ -214,6 +232,7 @@ class ManipulateParams(BaseModel):
     instruction: str = Field(
         ...,
         min_length=1,
+        max_length=INSTRUCTION_MAX_CHARS,
         description=(
             "One short subtask for the arm's learned policy, in the words it was trained on, "
             "such as 'pick up the red block'."
@@ -227,6 +246,9 @@ class ManipulateParams(BaseModel):
         # too, for an intent that never came through here
         if not value.strip():
             raise ValueError(NO_INSTRUCTION)
+        # and the pilot's own words are held to what a task file's list is, one line of plain
+        # text and no longer (`instruction_line`), whether a task lists instructions or not
+        instruction_line(value)
         return value
 
 
@@ -1256,7 +1278,7 @@ async def pick(ctx: VerbContext, p: PickParams) -> VerbResult:
     `do` is acknowledged, is watched by polling as `pick` always did (`_pick_polled`)."""
     intent = Intent(kind="do", params={"skill": f"policy:pick:{p.target}", "max_s": p.max_s})
     if (fail := await send_or_fail(ctx, intent)) is not None:
-        return fail
+        return _unstarted(fail)
     t0 = ctx.transport.now()
     # read now, with nothing awaited since the acknowledgement: it is this pick's segment
     segment: asyncio.Task[SegmentEnd] | None = getattr(ctx.transport, "policy_segment", None)
@@ -1293,6 +1315,15 @@ async def pick(ctx: VerbContext, p: PickParams) -> VerbResult:
         error=ended.reason if ended.how == "error" else None,
         timing=await _timing(ctx),
     )
+
+
+def _unstarted(refused: VerbResult) -> VerbResult:
+    """A `pick` or a `manipulate` whose `do` was refused, which says it ran 0 s: no segment
+    began, so nothing of `policy.total_s` is spent, however long the refusal took on the wall's
+    clock. A reset that raises is refused once it has, and one that hangs once the start gives
+    up on it (`policy.loop.RESET_S`), and without a word of its own the executor would charge
+    that wait as the robot's clock across the call."""
+    return VerbResult.fail(refused.summary, **{**refused.data, "seconds": 0.0})
 
 
 async def _timing(ctx: VerbContext) -> Any:
@@ -1344,7 +1375,7 @@ async def manipulate(ctx: VerbContext, p: ManipulateParams) -> VerbResult:
     does (`asyncio.wait`, a stop from elsewhere said as `stopped:`, its own cancellation passed
     on to the segment).
 
-    The segment ends on its time (`MANIPULATE_S`), on its chunks, on the arm no longer moving
+    The segment ends on its time (`segment_seconds`), on its chunks, on the arm no longer moving
     under the policy, on a starved policy, on a guard, or on a stop. The first three are a
     segment that ran and are ok, and a stall holds the arm where it stopped, since what stopped
     it may be in its way. The verb's own stop holds it again, as it does after every ending
@@ -1356,17 +1387,18 @@ async def manipulate(ctx: VerbContext, p: ManipulateParams) -> VerbResult:
     A backend with no segment task, the mock, whose scripted policy has moved by the time its
     `do` is acknowledged, runs the segment on its own clock and is watched by polling
     (`_manipulate_polled`)."""
+    max_s = segment_seconds(ctx.transport)
     intent = Intent(
         kind="do",
-        params={"skill": f"policy:manipulate:{p.instruction}", "max_s": MANIPULATE_S},
+        params={"skill": f"policy:manipulate:{p.instruction}", "max_s": max_s},
     )
     if (fail := await send_or_fail(ctx, intent)) is not None:
-        return fail
+        return _unstarted(fail)
     t0 = ctx.transport.now()
     # read now, with nothing awaited since the acknowledgement: it is this call's segment
     segment: asyncio.Task[SegmentEnd] | None = getattr(ctx.transport, "policy_segment", None)
     if segment is None:
-        return await _manipulate_polled(ctx, p, t0)
+        return await _manipulate_polled(ctx, p, t0, max_s)
     try:
         await asyncio.wait({segment})
     finally:
@@ -1427,9 +1459,31 @@ def _ran(instruction: str, seconds: float, reason: str, counts: str | None) -> s
     )
 
 
-async def _manipulate_polled(ctx: VerbContext, p: ManipulateParams, t0: float) -> VerbResult:
+def segment_seconds(transport: Any) -> float:
+    """How long a `manipulate` segment runs on `transport`: what the run told it
+    (`set_segment_s`), or `MANIPULATE_S` for one nobody told, or that says something that is not
+    a finite number of seconds above 0."""
+    said = getattr(transport, "segment_s", None)
+    if isinstance(said, bool) or not isinstance(said, int | float):
+        return MANIPULATE_S
+    return float(said) if math.isfinite(said) and said > 0 else MANIPULATE_S
+
+
+def checked_segment_s(seconds: Any) -> float:
+    """`seconds` as a segment's length, for a backend's `set_segment_s`, or a ValueError that
+    says why it is not one: a finite number of seconds above 0, and never a bool."""
+    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+        raise ValueError(f"segment_s={seconds!r} must be a number of seconds above 0")
+    if not (math.isfinite(seconds) and seconds > 0):
+        raise ValueError(f"segment_s={seconds!r} must be a number of seconds above 0")
+    return float(seconds)
+
+
+async def _manipulate_polled(
+    ctx: VerbContext, p: ManipulateParams, t0: float, max_s: float
+) -> VerbResult:
     """`manipulate` on a backend that runs no segment task, the mock: its segment runs until
-    its time is up on the transport's clock, and the verb looks at it every `PICK_POLL_S`
+    its `max_s` is up on the transport's clock, and the verb looks at it every `PICK_POLL_S`
     meanwhile. Something that ends it first, a stop, a release, a rest move or the next
     segment, is a failed `manipulate` naming it (`policy_stopped_by`), as on the arm, so a
     rehearsal fails where the arm would. The backend's state says whose segment is running,
@@ -1438,7 +1492,7 @@ async def _manipulate_polled(ctx: VerbContext, p: ManipulateParams, t0: float) -
     told = p.instruction
     name = f"policy:manipulate:{told}"
     ours = (await ctx.transport.get_state()).extras.get("segment")
-    end = t0 + MANIPULATE_S
+    end = t0 + max_s
     while (left := end - ctx.transport.now()) > 0:
         await ctx.transport.sleep(min(PICK_POLL_S, left))
         if ctx.transport.now() >= end:
@@ -1453,7 +1507,7 @@ async def _manipulate_polled(ctx: VerbContext, p: ManipulateParams, t0: float) -
                 ended="stopped",
             )
     seconds = round(ctx.transport.now() - t0, 1)
-    reason = f"its {MANIPULATE_S:g} s ran out"
+    reason = f"its {max_s:g} s ran out"
     return VerbResult.success(
         _ran(told, seconds, reason, None), instruction=told, seconds=seconds, ended="time"
     )
@@ -1512,11 +1566,11 @@ def lerobot_verbs(*, policy: bool) -> dict[str, Verb]:
             Verb(
                 "manipulate",
                 "Hand the arm to its own learned policy for one short subtask, told in a few "
-                f"words. Runs up to {MANIPULATE_S:g} s and ends early if the arm stops moving. "
-                "It never says the task is done: look at the arm afterwards to judge.",
+                "words. Runs one segment and ends early if the arm stops moving. It never says "
+                "the task is done: look at the arm afterwards to judge.",
                 manipulate,
                 ManipulateParams,
-                timeout_s=MANIPULATE_S + MANIPULATE_HEADROOM_S,
+                timeout_s=MANIPULATE_TIMEOUT_S,
                 safety_class="confirm",
             )
         )

@@ -14,9 +14,11 @@ stands the loop a chunked policy needs, paced on the arm's clock at the policy's
 `manipulate`, the verb that hands the arm to a policy for one short subtask. A policy runs in a
 server of its own, which the arm reaches over HTTP, so no checkpoint is ever loaded beside the
 arm's serial bus. That server loads a LeRobot checkpoint, checked before it is built, and the arm
-checks at connect that the policy fits it before any motor is energised. Nothing here has run on
-the arm: it was exercised against the test suite's fake arm and on the simulator's stand-in
-model, and the only checkpoint loaded is a tiny random ACT in CI.
+checks at connect that the policy fits it before any motor is energised. A `duck: 3` task file
+says which subtasks the policy may be told and how long it may drive, and a decision LLM is shown
+each of those subtasks and never let start one. Nothing here has run on the arm: it was
+exercised against the test suite's fake arm and on the simulator's stand-in model, and the only
+checkpoint loaded is a tiny random ACT in CI.
 
 ### Added
 
@@ -150,16 +152,57 @@ model, and the only checkpoint loaded is a tiny random ACT in CI.
   takes to play, is refused, since no chunk would ever play under it.
 - **`manipulate(instruction)`, one segment of the arm's learned policy.** Present beside `pick`
   whenever the arm has a policy, confirm-gated, with `pick`'s preconditions. The segment runs
-  for 10 s (`MANIPULATE_S`) unless it ends sooner, on its chunks played or on the arm no longer
-  moving under it (`STALL_S`), which holds the arm where it stopped in case something is in
-  its way, and the verb holds it again after, failing if that hold did not reach the arm. The
-  verb is ok on those three endings and on nothing else, and its summary says why it ended,
-  how long it ran, the chunks, the clips and the ticks a second it achieved, and never that
-  the task is done: the pilot judges that from a fresh look. A starved policy, a guard, an
-  error or a stop end it with the arm held and the verb failed. The mock scripts it, moving
-  part of the way to its object and ending on its time unless a stop, a release, a rest move
-  or the next segment ends it first, and refuses, in the arm's own words, a verb's goal sent
-  while it runs and an instruction of blanks.
+  for 10 s (`MANIPULATE_S`), or what the task file's `policy.segment_s` says, unless it ends
+  sooner, on its chunks played or on the arm no longer moving under it (`STALL_S`), which holds
+  the arm where it stopped in case something is in its way, and the verb holds it again after,
+  failing if that hold did not reach the arm. The verb is ok on those three endings and on
+  nothing else, and its summary says why it ended, how long it ran, the chunks, the clips and
+  the ticks a second it achieved, and never that the task is done: the pilot judges that from a
+  fresh look. A starved policy, a guard, an error or a stop end it with the arm held and the
+  verb failed. The mock scripts it, moving part of the way to its object and ending on its time
+  unless a stop, a release, a rest move or the next segment ends it first, and refuses, in the
+  arm's own words, a verb's goal sent while it runs and an instruction of blanks.
+- **`duck: 3`, and a `policy` section that holds `manipulate` to the task.** A task file lists
+  the instructions the arm's learned policy may be told (at most 12, the stepper's own limit,
+  each one line of at most 200 characters), how long each segment runs (`segment_s`, at most
+  60 s) and how long they may run in all (`total_s`, at most an hour). A `.duck` is untrusted
+  input, so every bound is checked as it is parsed, `manipulate` must be allowed beside it, a
+  flock duck cannot carry one, and a list refuses `pick` beside it, since `pick` tells the
+  policy a target of the pilot's own. The pilot's own instruction, when a task lists none, is
+  held to the same one line and the same length, and so is any target given `pick` that says
+  something. One helper (`quackd.duckfile.narrow`) rebuilds `manipulate` from the arm's own
+  verb every time, never from the last narrowing: its instruction becomes an inline enum of the
+  list, which the executor enforces and the stepper can read (an enum of one for a list of
+  one, since Gemini refuses the `const` pydantic would write), its segment reaches the backend
+  through `set_segment_s`, and its timeout becomes the segment plus 10 s.
+  On the simulator the timeout also covers the wall time the clock stands still while the
+  policy thinks, bounded from the latency the policy declares and a frame from each camera
+  timed at connect, and held to ten minutes (`FROZEN_INFERENCE_MAX_S`). A rate the loop would
+  not pace, or a latency that starves every segment, adds nothing. The loop calls the helper
+  once the allowlist is final and before the tools are built, and an MCP session calls it at
+  connect and on each task file it loads, before it adopts the file, so the model, the stepper
+  and the executor read one verb, and a file its body's `manipulate` cannot be held to is
+  refused before anything of the last task changes. The executor charges each segment, a
+  `pick`'s as well as a `manipulate`'s, the seconds it said it ran, or the robot's clock across
+  the call when it said none or ended with no result, cancelled or aborted mid-segment
+  (`Budget.policy_s`). A `do` refused before its segment began says it ran 0 s. The executor
+  refuses the next segment once `total_s` is spent, and a second while one runs (a `segment`
+  gate), so concurrent MCP calls are never each checked against seconds not yet charged, and
+  the last segment overruns `total_s` by its own length at most. An MCP session carries the
+  seconds across every task file it loads, the first included, since a session with no task
+  spends its own default total. A run with no section, a `--goal` run, a v2 file or an MCP
+  session with no task, gets 10 s segments and 120 s of them, and the budget line in each
+  observation names the seconds once one has run. The arm registers the verb with a 70 s
+  timeout (`MANIPULATE_TIMEOUT_S`), past the longest segment a task may ask for and its
+  headroom.
+- **The discrete stepper is shown `manipulate` and never takes it.** With a task file's list it
+  is a closed set, and which subtask comes next is exactly a between-segment choice, but it is
+  confirm-gated, and under `--yes` nobody is asked at that gate, so a stepper that cleared the
+  confirm floor would start a learned policy driving the arm with no person and no model
+  involved. It is offered, an answer that clears every other gate ends on `gate: shadow_only`,
+  the model takes the turn, and in `--decision-mode on` as in shadow a `decision_shadow` record
+  sets the two answers side by side on every turn that offered one, which is the agreement rate
+  promoting it would need.
 - **The policy loop (`policy/loop.py`), with a rate, a pace and a queue.** A policy is asked
   through a runner (`policy/runner.py`), and a policy object with one `act` a call is wrapped in
   a `ScriptedRunner`, so it runs as it always did, one `act` a tick at 10 Hz. The rate is the

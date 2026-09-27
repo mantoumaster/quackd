@@ -456,6 +456,29 @@ class LeRobotAdapter:
         by = getattr(self.transport, "policy_stopped_by", None)
         return str(by) if by else None
 
+    @property
+    def segment_s(self) -> float | None:
+        """How long the backend runs a `manipulate` segment, which the verb reads off whatever
+        it was handed, and that is this adapter. Proxied for `stop_error`'s reason."""
+        seconds = getattr(self.transport, "segment_s", None)
+        return None if seconds is None else float(seconds)
+
+    def set_segment_s(self, seconds: float) -> None:
+        """Tell the backend how long each `manipulate` segment runs from now on: the task
+        file's `policy.segment_s`, as the run narrows the verb to it
+        (`quackd.duckfile.narrow`). The run holds this adapter, so it is passed on here."""
+        forward = getattr(self.transport, "set_segment_s", None)
+        if not callable(forward):
+            raise TypeError(f"the {self.backend} backend cannot be told a segment's length")
+        forward(seconds)
+
+    def frozen_inference_s(self, segment_s: float) -> float:
+        """The wall seconds the backend's clock stands still over a segment that long while its
+        policy thinks: the simulator's, and nothing on any other. Passed on for
+        `set_segment_s`'s reason."""
+        ask = getattr(self.transport, "frozen_inference_s", None)
+        return float(ask(segment_s)) if callable(ask) else 0.0
+
     def ask_policy(self) -> dict[str, Any] | None:
         """Ask the policy server what it serves, now, and say it as the record names it
         (`RemoteRunner.record`), or None for an arm whose policy is not served by another

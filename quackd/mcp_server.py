@@ -36,6 +36,7 @@ from quackd.adapters.base import adapter_name, backend_name, go_to_rest_if_any
 from quackd.adapters.manifest import RobotManifest, apply_datasheet_override
 from quackd.agent.prompts import body_summary
 from quackd.agent.transcript import png_bytes
+from quackd.duckfile.narrow import narrow_policy_verb
 from quackd.duckfile.parser import DuckParseError, load_duck
 from quackd.duckfile.schema import Budgets, DuckFile
 from quackd.duckfile.validate import validate_duck
@@ -284,7 +285,9 @@ class RobotSession:
         `robot_load_duckfile` is a tool the *model* holds, so a fresh `Budget` here was the
         way out of one: a pilot that had spent its steps, or been refused a verb, could load
         a wider duck and start counting from zero. The limits become the new contract's. The
-        steps, the llm calls, the clock and the failure tallies stay the session's."""
+        steps, the llm calls, the clock and the failure tallies stay the session's. The seconds
+        a learned policy has driven the body stay the session's from the first load on, since
+        a session with no task has a policy budget of its own to spend first."""
         # "First contract" used to be spelled `budget is None`, which stopped being true when
         # a contractless session gained a default budget of its own. Ask the question
         # directly: it is the first if no duck has been adopted yet.
@@ -294,7 +297,17 @@ class RobotSession:
         self.executor.contract = duck.frontmatter
         if self.manifest is not None:
             self.executor.manifest = self._merged(self.manifest)
-        self.executor.budget = Budget(duck.frontmatter.budgets, now=self.transport.now)
+        self.executor.budget = Budget(
+            duck.frontmatter.budgets,
+            now=self.transport.now,
+            policy_total_s=duck.frontmatter.effective_policy.total_s,
+        )
+        if spent is not None:
+            # the seconds a policy has driven the body are the body's and not the task's, the
+            # first load's included: a session with no task spends the default total, and a
+            # load that zeroed it would hand the model a fresh `policy.total_s` for the price
+            # of a tool call
+            self.executor.budget.policy_s = spent.policy_s
         if first or spent is None:
             # The contract's budget is the task's, counted from when the task starts. The
             # carry-over below exists to stop a *second* load refunding a spent budget, and
@@ -360,6 +373,17 @@ class RobotSession:
             if not self.explicit_registry:
                 self.registry = registry_from_manifest(connected, self.transport)
                 self.executor.registry = self.registry
+        self._narrow()
+
+    def _narrow(self) -> None:
+        """Hold `manipulate` to the loaded task's `policy:` section, or to the named defaults
+        when no task is loaded, so a session with no contract still runs segments of the default
+        length under a timeout that covers them (`narrow_policy_verb`)."""
+        narrow_policy_verb(
+            self.registry,
+            self.duck.frontmatter if self.duck is not None else None,
+            self.transport,
+        )
 
     async def close(self) -> None:
         await self.heartbeat.stop()
@@ -659,6 +683,14 @@ class RobotSession:
                     "error": "; ".join(p.message for p in problems),
                     "problems": [p.message for p in problems],
                 }
+        # Validated, so its policy section is the one the verb is held to from now on. Narrowed
+        # before anything is adopted, so a file this body's verb cannot be held to leaves the
+        # session's task, its verdict and its verb as they were; and nothing is awaited from
+        # here to the verdict being cleared, so no call runs under the one and not the other.
+        try:
+            narrow_policy_verb(self.registry, duck.frontmatter, self.transport)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
         reloaded = self.executor.budget is not None
         self.adopt(duck)
         # a new task is a new question about this body; the last task's verdict does not

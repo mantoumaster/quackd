@@ -59,6 +59,7 @@ from quackd.agent.providers.catalogue import Price
 from quackd.agent.providers.pricing import cost_usd, resolve_price
 from quackd.agent.transcript import Transcript, new_run_dir, png_bytes, run_label
 from quackd.command import command_line, redacted_body, redacted_url
+from quackd.duckfile.narrow import narrow_policy_verb
 from quackd.duckfile.schema import DuckFile
 from quackd.log import EventLog, Sink, a_person_was_asked, fmt_params
 from quackd.memory import RobotMemory
@@ -324,7 +325,11 @@ class AgentLoop:
             record=self.transcript.sink,
             observers=[cfg.view] if cfg.view is not None else [],
         )
-        self.budget = Budget(self.fm.budgets, now=cfg.transport.now)
+        self.budget = Budget(
+            self.fm.budgets,
+            now=cfg.transport.now,
+            policy_total_s=self.fm.effective_policy.total_s,
+        )
         self.registry = cfg.registry or default_registry()
         self.executor = Executor(
             registry=self.registry,
@@ -1576,6 +1581,12 @@ class AgentLoop:
                         raise Aborted(
                             "nobody confirmed they were watching a robot that cannot see a fall"
                         )
+            # The task file's word on the body's learned policy, made into the verb itself: its
+            # listed instructions the only ones `manipulate` takes, its segment the one the
+            # verb runs and its timeout covers. Here, between the allowlist becoming final and
+            # the tools being built, because the model's tools, the stepper's choices and the
+            # executor's check are all read off this one registry from now on.
+            narrow_policy_verb(registry, self.fm, cfg.transport)
             tools = registry.tool_schemas(allow) + META_TOOLS
             if cfg.link is not None:
                 tools = [*tools, TELL]
@@ -1898,9 +1909,13 @@ class AgentLoop:
                     self.history[-1].decision = Decision(
                         tool_call=call, text=turn.text, raw=turn.raw
                     )
-                    if advice is not None and cfg.decision == "shadow":
+                    if advice is not None and (
+                        cfg.decision == "shadow" or stepper.compares(advice)  # type: ignore[union-attr]
+                    ):
                         # Shadow mode's whole point: what the stepper would have done, beside
-                        # what the model did, on the same reading, in one record.
+                        # what the model did, on the same reading, in one record. And in `on`
+                        # for a turn that offered a call the stepper may never take, which is
+                        # how its answers on those turns are ever measured.
                         self._emit(
                             "decision_shadow",
                             step=self.budget.steps,

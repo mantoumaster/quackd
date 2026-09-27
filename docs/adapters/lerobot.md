@@ -270,7 +270,7 @@ naming it in sentences nobody needs.
 | `move_joints(positions, duration_s)` | extension | goal angles for one or more of the six joints, walked there across `duration_s` seconds one goal a tick at 10 Hz, then re-sent until the measurement arrives; the step cap is the ceiling on speed, and a joint that stops short is a failure |
 | `gripper(open)` | extension | open or close the gripper, and report where it stopped |
 | `place` | extension | open the gripper where the arm is; needs `holding` |
-| `pick(target, max_s)` | extension, **confirm** | one skill intent; the arm's learned policy runs its own observe/act loop at its own rate until something is held or the time is up |
+| `pick(target, max_s)` | extension, **confirm** | one skill intent; the arm's learned policy runs its own observe/act loop at its own rate until something is held or the time is up, told a target held to the one line of plain text `manipulate`'s instruction is |
 | `manipulate(instruction)` | extension, **confirm** | one skill intent. The arm's learned policy is told one short subtask and runs for one segment, which ends on its time, its chunks or the arm no longer moving. It never says the task is done: the pilot looks at the arm to judge |
 
 Joints are named, not numbered, and a `move_joints` call may name any subset of them:
@@ -719,14 +719,28 @@ and it is there for a bench session to say how fast this arm's bus and a policy'
 `manipulate(instruction)` has one parameter, the subtask in a few words, and hands the arm to
 the policy for one segment. Its preconditions are `pick`'s, torque on and nothing hot, and it
 is confirm-gated like `pick`. An instruction of nothing but blanks is refused on every
-backend, the mock included, in the same words. On the mock the segment runs its 10 s on the
-mock's clock, and a stop, a release, a rest move or the next segment ends it sooner, while a
-verb that sends a goal meanwhile is refused, as on the arm.
+backend, the mock included, in the same words, and the verb takes one line of plain text no
+longer than a task file may list, whether a task lists any or not. On the mock the segment
+runs its time on the mock's clock, and a stop, a release, a rest move or the next segment ends
+it sooner, while a verb that sends a goal meanwhile is refused, as on the arm.
 
-- **It runs for 10 s unless it ends sooner.** Its chunks played, or a policy that says it is
-  done, end it, and so does the arm no longer moving under it: every joint within 0.5 degrees
-  of where it was for 1 s of goals. That stall holds the arm where it stopped, because what
-  stopped it may be in its way, and the policy's last goal would leave the servo pushing on.
+- **A task file can hold it to its own words and its own time.** A v3 file's `policy` section
+  ([duck-spec.md](../duck-spec.md#policy-v3)) lists the instructions `manipulate` may give, and
+  the verb then takes those and no others. It sets `segment_s`, which the run tells the backend
+  before the first segment (`set_segment_s`), and the executor's timeout for the verb becomes
+  that plus 10 s. On the simulator it adds the wall time the clock stands still while the
+  policy thinks, which it bounds from the latency the policy declares and one frame from each
+  camera, timed at connect, and holds to ten minutes (`FROZEN_INFERENCE_MAX_S`). A policy whose
+  rate the loop would refuse, or whose latency starves every segment before its first chunk,
+  adds nothing, since its segments end at their start. And it sets `total_s`, the seconds of segments the run may spend,
+  `pick`'s among them, after which the next `pick` or `manipulate` is refused. A file that
+  lists instructions cannot allow `pick` as well, since `pick` tells the policy a target of the
+  pilot's own.
+- **It runs for 10 s unless it ends sooner,** when the task file says nothing else. Its chunks
+  played, or a policy that says it is done, end it, and so does the arm no longer moving under
+  it: every joint within 0.5 degrees of where it was for 1 s of goals. That stall holds the
+  arm where it stopped, because what stopped it may be in its way, and the policy's last goal
+  would leave the servo pushing on.
   The verb then holds it again, as it does after every ending that held, since a bus can lose
   a hold's packet, and a stall whose last hold did not reach the arm is a failure that says
   so. Otherwise those three are a segment that ran, and the verb is ok on them and on nothing

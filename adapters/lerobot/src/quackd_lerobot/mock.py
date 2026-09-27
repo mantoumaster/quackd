@@ -33,6 +33,7 @@ from quackd_lerobot.verbs import (
     LET_GO_WHERE_IT_STOOD,
     LIMP_AT_REST,
     LIMP_IN_HAND,
+    MANIPULATE_S,
     NO_INSTRUCTION,
     TOL_DEG,
     TORQUE_KEPT_AFTER_REFUSAL,
@@ -40,6 +41,7 @@ from quackd_lerobot.verbs import (
     UNREAD_IN_HAND,
     Clip,
     at_rest,
+    checked_segment_s,
     past_reach,
     placed_past_travel,
     range_refusal,
@@ -128,6 +130,9 @@ class LeRobotMock(MockTransport):
         self.object_distance_m = object_distance_m
         self.actions: list[dict[str, float]] = []
         self.policy_runs: list[str] = []
+        self.segment_s = MANIPULATE_S
+        """How long `manipulate` runs its scripted segment, as on the real backend: what the
+        run told it from the task file (`set_segment_s`), and the default until then."""
         self.rest_pose = dict(rest_pose) if rest_pose else None
         self.rest_fails = rest_fails
         """Set to a reason and the rest move stalls without moving, which is the one thing
@@ -296,6 +301,11 @@ class LeRobotMock(MockTransport):
         # a gripper that closes on something stops where the something is
         self.holding = self._near_object()
         self._goto({"gripper": GRIP_ON_OBJECT if self.holding else GRIPPER_CLOSED})
+
+    def set_segment_s(self, seconds: float) -> None:
+        """The real backend's setter, in its words, so a rehearsal runs the segment the arm
+        would."""
+        self.segment_s = checked_segment_s(seconds)
 
     async def send_intent(self, intent: Intent) -> Ack:
         ack = await super().send_intent(intent)

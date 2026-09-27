@@ -18,6 +18,7 @@ from PIL import Image
 
 from quackd.adapters.manifest import Health, RobotManifest
 from quackd.command import readable_url, redacted_url
+from quackd.duckfile.schema import POLICY_VERBS
 from quackd.transport.base import Ack, DuckState, Intent, TransportError
 from quackd.verbs.registry import Precondition, Verb
 
@@ -339,11 +340,6 @@ def policy_choice(url: str | None, token: str | None = None) -> PolicyChoice | N
             )
         return None
     return PolicyChoice(url, token)
-
-
-POLICY_VERBS = ("pick", "manipulate")
-"""The verbs the arms in `POLICY_SPECS` have only from a policy server, since a policy is what
-performs them."""
 
 
 def policy_hint(verbs: Sequence[str], specs: Sequence[str], command: str) -> str | None:

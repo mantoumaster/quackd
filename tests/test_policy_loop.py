@@ -47,7 +47,7 @@ from quackd_lerobot.policy.loop import (
 from quackd_lerobot.policy.runner import Chunk, Features, Observation
 from quackd_lerobot.policy.scripted import ScriptedRunner
 from quackd_lerobot.real import HOT_C, MAX_STEP_DEG, POLICY_HZ, LeRobotReal
-from quackd_lerobot.verbs import MANIPULATE_HEADROOM_S, MANIPULATE_S, TICK_S, SegmentEnd
+from quackd_lerobot.verbs import MANIPULATE_S, MANIPULATE_TIMEOUT_S, TICK_S, SegmentEnd
 from tests.test_lerobot_adapter import (
     FakeArm,
     SteppedClock,
@@ -1172,7 +1172,7 @@ async def test_manipulate_is_ok_when_it_ran_and_never_says_the_task_is_done() ->
     assert ran.data["chunks"] == round(MANIPULATE_S * RATE)
     assert ran.data["hz"] == pytest.approx(RATE, abs=0.1)
     assert runner.instruction == "put the block in the cup"
-    assert ex.registry.get("manipulate").timeout_s == MANIPULATE_S + MANIPULATE_HEADROOM_S
+    assert ex.registry.get("manipulate").timeout_s == MANIPULATE_TIMEOUT_S
     await adapter.close()
 
 

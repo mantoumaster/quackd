@@ -2163,6 +2163,113 @@ async def test_a_policy_thinks_in_no_sim_time_and_its_chunk_lands_its_latency_la
         await adapter.close()
 
 
+async def test_manipulates_timeout_covers_the_thinking_the_simulators_clock_waits_for(
+    mjcf: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow policy on the simulator: its thinking costs no sim time and all of the executor's,
+    which runs on the wall's clock. Asked every tick and taking a tick of wall time to answer, as
+    it declares, it thinks for as long as the segment runs, so with the headroom taken away a
+    timeout sized for the segment alone would end the verb early. The narrowed timeout adds what
+    the backend says its clock stands still for, from the latency the policy declares, and the
+    segment runs out on its own time."""
+    import time as wall
+
+    from quackd.duckfile import narrow
+    from quackd.duckfile.schema import DuckFrontmatter
+    from quackd_lerobot.policy.runner import Observation
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 1 / TICK_S
+    swing: dict[str, float] = {}
+
+    def thinks(observation: Observation, _sent: Any) -> list[dict[str, float]]:
+        wall.sleep(1 / rate)
+        # this tick's goal and the next, since the answer is let go a tick later
+        return [{PAN: swing[PAN] * ((observation.tick + i) % 2)} for i in range(2)]
+
+    runner = ScriptedRunner(thinks, rate_hz=rate, latency_ticks=1, per_tick=True)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    try:
+        swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+        segment_s = 10 / rate
+        contract = DuckFrontmatter.model_validate(
+            {
+                "duck": 3,
+                "name": "slow",
+                "description": "d",
+                "verbs": {"allow": ["manipulate"]},
+                "success": ["x"],
+                "policy": {"segment_s": segment_s, "total_s": segment_s},
+            }
+        )
+        monkeypatch.setattr(narrow, "SEGMENT_HEADROOM_S", 0.0)
+        assert adapter.manifest is not None
+        ex = _executor(adapter, adapter.manifest, confirm=allow_all)
+        narrowed = narrow.narrow_policy_verb(ex.registry, contract, adapter)
+        frozen = transport.frozen_inference_s(segment_s)
+        assert frozen >= segment_s, "a tick of thinking every tick is the segment's length"
+        assert narrowed is not None and narrowed.timeout_s == pytest.approx(segment_s + frozen)
+        started = wall.perf_counter()
+        ran = await asyncio.wait_for(ex.run_verb("manipulate", {"instruction": "wave"}), WALL_S)
+        took = wall.perf_counter() - started
+        assert ran.ok and ran.data["ended"] == "time", ran.summary
+        assert ran.data["seconds"] == pytest.approx(segment_s, abs=TICK_S)
+        assert took > segment_s, "the thinking never outlasted the segment, so this proves nothing"
+    finally:
+        await adapter.close()
+
+
+async def test_a_rate_or_a_latency_the_loop_would_not_run_leaves_no_thinking_to_wait_for(
+    mjcf: str,
+) -> None:
+    """A runner whose declared rate the loop refuses has its segments refused at their start, and
+    one whose declared latency is `FIRST_CHUNK_S` or more has them starve before a chunk lands,
+    so neither has thinking the timeout must cover. Their numbers are left out of the bound,
+    which a rate past any policy's made too large to count requests in, and which raised out of
+    the narrowing, at connect over MCP or after a task file was adopted."""
+    from quackd.duckfile.narrow import (
+        FROZEN_INFERENCE_MAX_S,
+        frozen_inference_s,
+        narrow_policy_verb,
+    )
+    from quackd.duckfile.schema import SEGMENT_HEADROOM_S, SEGMENT_MAX_S, DuckFrontmatter
+    from quackd_lerobot.policy.loop import FIRST_CHUNK_S
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 1 / TICK_S
+    runner = ScriptedRunner(lambda _o, _s: None, rate_hz=rate, latency_ticks=1)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    try:
+        assert transport.frozen_inference_s(SEGMENT_MAX_S) > 0, "nothing to take away"
+        # a segment too long to count its ticks in is bounded by nothing, and says so
+        assert transport.frozen_inference_s(sys.float_info.max) == math.inf
+        assert frozen_inference_s(adapter, sys.float_info.max) == FROZEN_INFERENCE_MAX_S
+        contract = DuckFrontmatter.model_validate(
+            {
+                "duck": 3,
+                "name": "long",
+                "description": "d",
+                "verbs": {"allow": ["manipulate"]},
+                "success": ["x"],
+                "policy": {"segment_s": SEGMENT_MAX_S, "total_s": SEGMENT_MAX_S},
+            }
+        )
+        assert adapter.manifest is not None
+        registry = _executor(adapter, adapter.manifest).registry
+        slow = math.ceil(FIRST_CHUNK_S * rate)
+        for declared in ({"rate_hz": sys.float_info.max}, {"latency_ticks": slow}):
+            for key, value in declared.items():
+                setattr(runner, key, value)
+            await transport._time_thinking()
+            assert transport.frozen_inference_s(SEGMENT_MAX_S) == 0.0, declared
+            narrowed = narrow_policy_verb(registry, contract, adapter)
+            assert narrowed is not None
+            assert narrowed.timeout_s == SEGMENT_MAX_S + SEGMENT_HEADROOM_S, declared
+            runner.rate_hz, runner.latency_ticks = rate, 1
+    finally:
+        await adapter.close()
+
+
 async def test_a_policy_whose_period_is_no_whole_number_of_steps_still_sends_once_a_period(
     mjcf: str,
 ) -> None:

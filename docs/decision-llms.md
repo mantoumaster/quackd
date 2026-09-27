@@ -302,9 +302,20 @@ to be explained and where it has to be right.
 | **A choice** | `report_state`, `stop`, `place`, `gripper`, `observe`¹ | **6** -- `report_state`, `stop`, `place`, `gripper(open=true)`, `gripper(open=false)`, `observe` | the stepper, or the model |
 | **A number** | `move_joints`, `pick` | -- | **always the model** |
 | **A sentence** | `assess_task`, `declare_success`, `declare_failure`, `remember` | -- | **always the model** |
+| **A segment** | `manipulate`, when a task file lists its instructions² | one per instruction | **always the model**, with the stepper's answer recorded beside it |
 
 ¹ `observe` is in the manifest only when a camera is configured, which is why
 [`lerobot-lookout`](../ducks/lerobot-lookout.duck) leaves it out.
+
+² With no list its instruction is a free string, a sentence, and it is not offered at all. A v3
+task file's `policy.instructions` ([duck-spec.md](duck-spec.md#policy-v3)) make it a closed set,
+one call per instruction, and which subtask to hand the policy next is then exactly the choice a
+decision LLM might one day make between segments. It is offered and never taken, under
+`--decision-mode on` too: it answers to the confirm floor, and under `--yes` nobody is asked at
+the confirm gate, so a stepper that cleared the floor would start a learned policy driving the
+arm with no person and no model involved. An answer that clears every gate a taken one clears is
+recorded with `gate: shadow_only`, the model takes the turn, and the two answers are recorded
+side by side (`decision_shadow`), which is the agreement rate a decision to promote it would need.
 
 Nothing here is a special case for the arm, and nothing here is a special case for a vendor. A
 verb is a **choice** when every parameter it has is a closed set -- an enum, a constant, or a
@@ -618,8 +629,8 @@ model's verdict rather than write it.
 
 ## What it is never allowed to do
 
-Four of these are structural rather than enforced, which is the stronger kind, and all six hold
-whichever decision LLM answered.
+Four of these are structural rather than enforced, which is the stronger kind, and all seven
+hold whichever decision LLM answered.
 
 - **Author a number.** Not by rule but by construction: a verb with a free number in its schema is
   never a label, so there is no value for the stepper to choose.
@@ -630,6 +641,8 @@ whichever decision LLM answered.
 - **See anything.** These are text models -- Jev is documented as text only, and no row here takes
   an image -- so no camera frame ever reaches one. A turn that needs eyes escalates rather than
   guessing.
+- **Start a policy segment.** `manipulate` is offered and compared, and never taken, in either
+  mode, so every segment of a learned policy driving the arm is one the model asked for.
 - **Get past a gate.** The allowlist, the budgets, the confirm gates, the preconditions and the
   robot's own safety authority are exactly what they were. A `.duck` binds the stepper the way it
   binds the model, because it binds the executor and both of them go through it.
@@ -650,8 +663,9 @@ distribution, its confidence, the floor that applied, which gate fired, both Nou
 it took, how large the state was and what was trimmed to fit, and, on the turns that actually
 reached the network, what the question spent and what that cost.
 
-`decision_shadow`, only in shadow mode and only after that step's `llm` record: what the stepper
-would have chosen beside what the model actually chose, whether they agree, whether the stepper
+`decision_shadow`, in shadow mode, and in `on` for a turn that offered a `manipulate` it may not
+take, only after that step's `llm` record: what the stepper would have chosen beside what the
+model actually chose, whether they agree, whether the stepper
 cleared its floor, and what each of them cost. Its fields are `decision_choice`,
 `decision_confidence`, `decision_gate`, `decision_latency_s` and `decision_cost_usd` beside
 `model_verb`, `llm_latency_s`, `llm_usage` and `llm_cost_usd`. Agreement is about the whole call

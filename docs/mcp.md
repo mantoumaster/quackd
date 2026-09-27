@@ -50,7 +50,9 @@ first member, else the first Microduck, else the first declared.
 
 Without a loaded `.duck`, every verb that is not `dangerous` is allowed and the session runs
 on a default budget of 40 verb steps and five minutes, counted from when its robot connected.
-Load one to get the guard rails and the task's own budget. Contracts, budgets and abort
+An arm's `manipulate` runs segments of 10 s each, 120 s of them in all, the defaults a task
+file's `policy` section would otherwise set ([duck-spec.md](duck-spec.md#policy-v3)). Load one
+to get the guard rails and the task's own budget. Contracts, budgets and abort
 flags are per robot: loading a contract on `duck` changes nothing for `arm`.
 
 A flock can also come from the registry, which is the same thing by another door:
@@ -266,7 +268,13 @@ segments to (`quackd policy serve`, [the arm's page](adapters/lerobot.md#a-polic
 with `--policy-token`, or else `QUACKD_POLICY_TOKEN`, or else the token file the server wrote.
 It is asked what it serves as the server starts, and one that does not answer refuses it. Both
 verbs are confirm gated, so a client can call them only on a server started with `--yes`, and
-both are refused with `--robots` or `--flock`, since one policy server drives one arm.
+both are refused with `--robots` or `--flock`, since one policy server drives one arm. A task
+file loaded with `robot_load_duckfile` holds `manipulate` to its own `policy` section: its listed
+instructions, its segment and its total, and a second file loaded after it is held to its own.
+The seconds of segments the session has run still count under each file it loads, those run
+before the first file was loaded among them. One segment runs at a time: a `pick` or a
+`manipulate` sent while one runs is refused, so wait for it or send `stop` first, and a call
+the client cancels mid-segment is charged the seconds its segment ran.
 
 > [!NOTE]
 > `--decision-llm` is not among these, on purpose. Over MCP the model *is* the client, so

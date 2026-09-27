@@ -96,6 +96,10 @@ class Verb:
     """Human-readable: what 'done' means. Shown to the LLM after the description."""
     core: bool = False
     """A core verb (the same on every robot) rather than one robot's extension."""
+    template: Verb | None = field(default=None, repr=False, compare=False)
+    """The verb as its robot registered it, when a task file has narrowed this one
+    (`quackd.duckfile.narrow`), else None. Every narrowing starts again from it, so a second
+    task file is never narrowed through the first one's words."""
 
     def tool_schema(self) -> dict[str, Any]:
         """Provider-neutral tool definition: name, description, JSON schema."""

@@ -92,6 +92,7 @@ from quackd_lerobot.verbs import (
     LET_GO_WHERE_IT_STOOD,
     LIMP_AT_REST,
     LIMP_IN_HAND,
+    MANIPULATE_S,
     NO_INSTRUCTION,
     STALL_DEG,
     STALL_TICKS,
@@ -106,6 +107,7 @@ from quackd_lerobot.verbs import (
     SegmentEnd,
     SegmentHow,
     at_rest,
+    checked_segment_s,
     held_in_part,
     past_reach,
     placed_past_travel,
@@ -846,6 +848,10 @@ class LeRobotReal:
         `ScriptedRunner` and runs one `act` a tick at `POLICY_HZ`, as `pick` always ran it."""
         self._segment_verb = "pick"
         """The verb the last segment was started for, which a refused verb names."""
+        self.segment_s = MANIPULATE_S
+        """How long `manipulate` runs a segment on this arm, in its own time: what the run
+        told it from the task file (`set_segment_s`), and the default until then. The verb reads
+        it and asks for it in its `do`, so the arm runs no segment the run did not size."""
         self._policy_cap_on = False
         """A policy segment's step cap may be on the follower's config: set as a segment writes
         its own, cleared once the verbs' cap reads back (`_verb_cap`). Only a cap quackd wrote
@@ -1022,6 +1028,20 @@ class LeRobotReal:
         The task returns how the segment ended (`verbs.SegmentEnd`), and ends cancelled when
         something else stopped it, which `policy_stopped_by` names."""
         return self._policy_task
+
+    def set_segment_s(self, seconds: float) -> None:
+        """How long each `manipulate` segment runs from now on, in this arm's time: the task
+        file's `policy.segment_s`, as the run narrows the verb to it
+        (`quackd.duckfile.narrow`). Anything but a finite number of seconds above 0 is a
+        ValueError, and the length stays what it was."""
+        self.segment_s = checked_segment_s(seconds)
+
+    def frozen_inference_s(self, segment_s: float) -> float:
+        """The wall seconds this arm's clock stands still over a segment of `segment_s` while
+        its policy thinks, which the executor's timeout has to cover too. Nothing on the
+        wall's clock, where the thinking happens inside the segment's own seconds; the
+        simulator, whose clock waits for it, says otherwise."""
+        return 0.0
 
     @property
     def policy_stopped_by(self) -> str | None:
