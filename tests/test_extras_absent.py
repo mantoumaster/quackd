@@ -122,6 +122,24 @@ import quackd_lerobot.policy.upstream_api
 quackd_lerobot.policy.server.served_policy(
     quackd_lerobot.policy.server.ServeOptions(policy="scripted:sweep")
 )
+# the pipeline a checkpoint loads through imports torch, LeRobot and huggingface_hub only when
+# it loads one, so its checks of a checkpoint's JSON run with none of them, and a checkpoint
+# named without them is refused in words that name the extra, before anything is fetched
+import quackd_lerobot.policy.fit
+import quackd_lerobot.policy.pipeline
+quackd_lerobot.policy.pipeline.check_processor(
+    {{"steps": [{{"registry_name": "device_processor", "config": {{"device": "cpu"}}}}]}},
+    "policy_preprocessor.json",
+    "owner/policy@main",
+)
+try:
+    quackd_lerobot.policy.server.served_policy(
+        quackd_lerobot.policy.server.ServeOptions(policy="owner/policy@main", fps=10.0)
+    )
+except quackd_lerobot.policy.server.ServeRefused as e:
+    assert "quackd[lerobot-vla]" in str(e), e
+else:
+    raise AssertionError("a checkpoint was served with no torch installed")
 # and connecting it says which extra installs the physics, before it fetches a model to load
 import asyncio
 from quackd.adapters.base import AdapterNotInstalled

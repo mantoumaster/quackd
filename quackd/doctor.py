@@ -84,6 +84,7 @@ EXTRAS = {
     "lerobot": ("lerobot", "quackd[lerobot]"),
     "lerobot (feetech bus)": ("scservo_sdk", "quackd[lerobot]"),
     "lerobot-sim (mujoco)": ("mujoco", "quackd[lerobot-sim]"),
+    "lerobot-vla (transformers)": ("transformers", "quackd[lerobot-vla]"),
     "rosbridge": ("roslibpy", "quackd[rosbridge]"),
     "microduck camera (webrtc)": ("aiortc", "quackd[microduck-camera]"),
     "xlerobot": ("zmq", "quackd[xlerobot]"),
@@ -95,8 +96,15 @@ EXTRAS = {
 # `[feetech]` extra imports cleanly and then cannot reach an arm, so doctor asks for it by name.
 # Laya is here for the same reason as lerobot rather than for its own: it is the one decision
 # LLM that runs in this process, so it carries torch too, and the decision table below prints a
-# version for every row on a machine that is only reading the table.
-_METADATA_ONLY = {"lerobot": "lerobot", "scservo_sdk": "feetech-servo-sdk", "laya": "laya"}
+# version for every row on a machine that is only reading the table. transformers is the half
+# of `quackd[lerobot-vla]` the arm's own extra lacks, the one a SmolVLA or a pi05 checkpoint
+# loads its tokenizer with in the policy server, and importing it costs seconds.
+_METADATA_ONLY = {
+    "lerobot": "lerobot",
+    "scservo_sdk": "feetech-servo-sdk",
+    "laya": "laya",
+    "transformers": "transformers",
+}
 
 CORE_MODULES = (
     ("pydantic", "pydantic"),

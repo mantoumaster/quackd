@@ -40,10 +40,11 @@ What this backend refuses to take on faith, because upstream cannot tell it:
   again, a few times, and says each time which joint the bus stopped answering for.
 
 `pick` and `manipulate` run an injected policy, a `PolicyRunner` or a `PolicyLike` object, one
-segment at a time in the policy loop (`policy/loop.py`); building one from a Hub checkpoint
-(`load_policy`) uses verified names but has never been exercised (POLICY_PIPELINE, in
-`policy/upstream_api.py`). LeRobot is imported inside `connect()` and `load_policy()` only:
-`quackd[lerobot]` is an extra.
+segment at a time in the policy loop (`policy/loop.py`). A checkpoint runs in a policy server of
+its own and reaches the arm through `policy/client.py`, whose policy is checked against this arm
+before it is energised (`_fit_policy`). `load_policy` builds one in this process instead, and
+nothing calls it (LOAD_POLICY, in `policy/upstream_api.py`). LeRobot is imported inside
+`connect()` and `load_policy()` only: `quackd[lerobot]` is an extra.
 """
 
 from __future__ import annotations
@@ -1387,6 +1388,8 @@ class LeRobotReal:
         # the camera first, before the arm is touched: a bad index then refuses with the
         # arm never energised, never de-torqued on the way back out, and nothing to undo
         await self._connect_cameras()
+        # then whether a policy served elsewhere fits this arm, still before any torque
+        await self._fit_policy()
         await self._connect_arm()
         # From here the arm is energised. quackd's own refusals let it go (`_give_up`), and
         # anything else that raises before the connect is done keeps it (`_keep_over_a_failure`)
@@ -1754,6 +1757,57 @@ class LeRobotReal:
                 ) from e
             opened.append(spec.name)
         self.camera_keys = tuple(opened)
+
+    async def _fit_policy(self) -> None:
+        """Ask a policy served by another process whether it fits this arm, and refuse the
+        connect when it does not, before a motor is energised.
+
+        Only a runner that can be asked (`RemoteRunner.fit_arm`) is: a policy object handed in
+        is the caller's own. It is told the arm as the files and the hardware say it is, never
+        as anybody typed it: the bus's motors in the bus's order, each camera's size from a
+        frame it gave just now, and each joint's travel from the calibration LeRobot loaded
+        when the follower was built (`up.ROBOT_CALIBRATION_ATTR`), with `OUT_OF_RANGE_DEG` of
+        reading past it forgiven, as everywhere else. What the policy is and what the server
+        loaded go into `connect_notes`, which the run's record keeps. A misfit, a server that
+        cannot be asked, or a camera with no frame refuses with the cameras let go of and the
+        arm untouched. A robot with no bus is left to `_refusal`, which says so after."""
+        loop = self._policy_loop
+        fit_arm = getattr(loop.runner, "fit_arm", None) if loop is not None else None
+        bus = getattr(self._robot, "bus", None)
+        if loop is None or not callable(fit_arm) or bus is None:
+            return
+        from quackd_lerobot.policy.protocol import CameraInfo
+
+        rotations = {spec.name: spec.rotation for spec in self.camera_specs}
+        try:
+            cameras = []
+            for name in self.camera_keys:
+                frame = np.asarray(
+                    await self._camera_call(
+                        self._cameras[name].read_latest, timeout_s=self.camera_connect_s
+                    )
+                )
+                size = {"height": int(frame.shape[0]), "width": int(frame.shape[1])}
+                rotation = rotations.get(name, 0)
+                cameras.append(
+                    CameraInfo.model_validate({"name": name, **size, "rotation": rotation})
+                )
+            travel = joint_ranges(dict(getattr(self._robot, "calibration", None) or {}))
+            motors = tuple(str(m) for m in bus.motors)
+            notes = await loop.call(
+                fit_arm,
+                motors,
+                cameras,
+                travel,
+                OUT_OF_RANGE_DEG,
+                within=getattr(loop.runner, "answer_within_s", None),
+            )
+        except Exception as e:
+            await self._close_cameras()
+            raise TransportError(
+                f"lerobot {self.label}: {_one_line(e)} The arm was not touched"
+            ) from e
+        self.connect_notes.extend(str(note) for note in notes)
 
     async def _close_cameras(self) -> None:
         for camera in list(self._cameras.values()):
@@ -3249,8 +3303,9 @@ class LeRobotReal:
 
 
 def load_policy(path: str, *, device: str = "cpu") -> PolicyLike:
-    """A `PolicyLike` from a LeRobot checkpoint, from verified names. UNTESTED end to end
-    (`policy/upstream_api.py`'s POLICY_PIPELINE); inject your own `policy=` to bypass this."""
+    """A `PolicyLike` from a LeRobot checkpoint, from verified names, in the arm's own process.
+    UNTESTED end to end, and not the path a checkpoint takes (`policy/upstream_api.py`'s
+    LOAD_POLICY): serve it with `quackd policy serve` and hand the arm a `RemoteRunner`."""
     try:
         import torch
         from lerobot.configs.policies import PreTrainedConfig

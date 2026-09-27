@@ -55,8 +55,10 @@ UPSTREAMS: list[tuple[ModuleType, set[str], tuple[str, ...]]] = [
         lerobot_policy_api,
         {
             "adapters/lerobot/policy/upstream_api.py",
-            # the policy server, which refuses a checkpoint because of POLICY_PIPELINE, and the
-            # arm's backend, whose untested load_policy() it describes
+            # the pipeline that loads a checkpoint in the policy server, which says what it does
+            # about SmolVLA and pi05 (VLA_PIPELINE) and about tick mode (TICK_MODE), the server
+            # beside it, and the arm's backend, whose untested load_policy() LOAD_POLICY is
+            "adapters/lerobot/policy/pipeline.py",
             "adapters/lerobot/policy/server.py",
             "adapters/lerobot/real.py",
         },
@@ -356,7 +358,39 @@ def test_the_policy_refs_are_read_at_the_version_the_laptop_runs() -> None:
         assert isinstance(getattr(lerobot_policy_api, name), type(lerobot_api.PACKAGE)), name
         assert not hasattr(lerobot_api, name), f"{name} is still in the arm's own file"
     unverified = {r.name for r in lerobot_policy_api.refs_by_status("UNVERIFIED")}
-    assert unverified == {"POLICY_PIPELINE"}
+    assert unverified == {"VLA_PIPELINE", "TICK_MODE", "LOAD_POLICY"}
+
+
+def test_the_pipeline_is_verified_for_what_the_torch_job_runs_and_no_more() -> None:
+    """POLICY_PIPELINE moved to VERIFIED when CI's torch job began running a tiny ACT through
+    the real server, and it says it was exercised, on ACT alone. The names the pipeline reads
+    as data sit beside the refs that read them and say what those refs say."""
+    api = lerobot_policy_api
+    assert api.POLICY_PIPELINE.status == "VERIFIED"
+    assert "tests/test_policy_pipeline.py" in api.POLICY_PIPELINE.note
+    assert "ACT and nothing else" in api.POLICY_PIPELINE.note
+    for name in ("SmolVLA", "pi05"):
+        assert name in api.VLA_PIPELINE.note, name
+    assert api.CHECKPOINT_FILES.name.split(", ") == [
+        api.CONFIG_FILE,
+        api.WEIGHTS_FILE,
+        api.PREPROCESSOR_FILE,
+        api.POSTPROCESSOR_FILE,
+        api.TRAIN_CONFIG_FILE,
+    ]
+    assert api.DATASET_INFO_FILE in api.TRAIN_DATASET.name
+    assert api.DEFAULT_PROCESSOR_STEPS.name.split(", ") == list(api.DEFAULT_STEP_NAMES)
+    assert api.VLA_PROCESSOR_STEPS.name.split(", ") == list(api.VLA_STEP_NAMES)
+    assert api.DEVICE_STEP in api.DEFAULT_STEP_NAMES and api.DEVICE_STEP in api.DEVICE_OVERRIDE.name
+    assert api.POLICY_TYPES.name == ", ".join(f'"{t}"' for t in api.SERVED_TYPES)
+    assert set(api.SERVED_TYPES) <= set(re.findall(r'"(\w+)"', api.ASYNC_SUPPORTED_POLICIES.name))
+    keys = api.FEATURE_KEYS.name
+    assert api.STATE_KEY in keys and api.IMAGES_PREFIX in keys and api.ACTION_KEY in keys
+    for stat in api.QUANTILE_STATS:
+        assert stat in api.NORMALIZER_STATS.note, stat
+    # the action tokenizer, which trusts remote code by default, is not a step the server allows
+    assert "action_tokenizer_processor" in api.TOKENIZER_TRUSTS_REMOTE_CODE.note
+    assert "action_tokenizer_processor" not in api.DEFAULT_STEP_NAMES + api.VLA_STEP_NAMES
 
 
 def test_the_arm_models_zero_and_sign_cite_lerobot_at_its_pin_and_leave_out_the_gripper() -> None:

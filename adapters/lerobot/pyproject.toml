@@ -21,6 +21,11 @@ sdk = ["lerobot[feetech]>=0.6; python_version >= '3.12'"]
 # The arm's simulator, `lerobot:mujoco`: MuJoCo on the CPU and nothing of LeRobot's, so it
 # installs on 3.11 as well. The SO-101's model is fetched at run time and never shipped.
 sim = ["mujoco>=3.12,<4"]
+# The policy server's, `quackd policy serve --policy REPO@REVISION`, in a process of its own and
+# never the arm's: LeRobot with torch and the transformers SmolVLA and pi05 load their
+# tokenizers with. No `[feetech]`, since the server never opens a serial port. Pi0.5 also wants
+# `lerobot[pi]` and a Hub token for its gated tokenizer (docs/adapters/lerobot.md).
+vla = ["lerobot[smolvla]>=0.6,<0.7; python_version >= '3.12'"]
 
 [project.entry-points."quackd.adapters"]
 lerobot = "quackd_lerobot"

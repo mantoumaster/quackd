@@ -13,8 +13,10 @@ the one policy path there is today, an injected object with one action per call.
 stands the loop a chunked policy needs, paced on the arm's clock at the policy's own rate, and
 `manipulate`, the verb that hands the arm to a policy for one short subtask. A policy runs in a
 server of its own, which the arm reaches over HTTP, so no checkpoint is ever loaded beside the
-arm's serial bus, and that server serves scripted policies for now. Nothing here has run on the
-arm: it was exercised against the test suite's fake arm and on the simulator's stand-in model.
+arm's serial bus. That server loads a LeRobot checkpoint, checked before it is built, and the arm
+checks at connect that the policy fits it before any motor is energised. Nothing here has run on
+the arm: it was exercised against the test suite's fake arm and on the simulator's stand-in
+model, and the only checkpoint loaded is a tiny random ACT in CI.
 
 ### Added
 
@@ -23,11 +25,72 @@ arm: it was exercised against the test suite's fake arm and on the simulator's s
   in the process that owns the arm's bus. It runs in a server you start, on port 9875 on
   loopback, and the arm's side reaches it with `RemoteRunner`, a client that needs no torch and
   no LeRobot, over a protocol of four calls (`GET /v1/policy`, `POST /v1/reset`,
-  `POST /v1/step`, `POST /v1/end`). This build serves scripted policies only, `scripted:hold`
-  and `scripted:sweep`, and refuses a checkpoint. `check` asks a server what it serves, or
-  serves `--policy` itself for the check, and `--bench` streams synthetic observations through
-  the real client at the policy's rate and says the rate it achieved, the ticks with nothing to
-  send and the round trip. `quackd run` cannot point the arm at a server yet.
+  `POST /v1/step`, `POST /v1/end`). It serves a LeRobot checkpoint and two scripted policies,
+  `scripted:hold` and `scripted:sweep`. `check` asks a server what it serves, or serves
+  `--policy` itself for the check, and `--bench` times one warm step, the latency to declare
+  with `--latency-s`, then streams synthetic observations through the real client at the
+  policy's rate and says the rate it achieved, the ticks with nothing to send and the round
+  trip. `quackd run` cannot point the arm at a server yet.
+- **The policy server loads a LeRobot checkpoint.** `quackd policy serve --policy
+  OWNER/NAME@REVISION` serves an ACT, a SmolVLA or a pi05 checkpoint through LeRobot's own
+  loop (`policy/pipeline.py`): the arm's reading through `build_inference_frame` and the
+  pre-processor, `predict_action_chunk` cut to `n_action_steps`, the post-processor over the
+  whole chunk, and `make_robot_action` a row at a time, each row a goal per motor named by the
+  bus's own motors in the bus's order. One lock holds the three together and every session's
+  reset resets the policy and both processors. The rate is `--fps`, or else the fps of the
+  dataset its `train_config.json` names, at the whole commit or the tag it names, or the server
+  refuses to start. A branch is refused there, since the checkpoint chose it and it moves, and
+  so is a tag while `HF_HUB_OFFLINE` is set, when the Hub cannot say it is one. It loads on the
+  device LeRobot picks, gives torch one thread fewer than it would take unless `--threads` says,
+  and names each camera's image by the camera's own name unless `--cameras` maps it. An ACT that
+  ensembles its chunks over time is asked every tick, and is refused without a GPU. A pi05 that
+  learned relative actions is served in chunks, the whole chunk made absolute against the state
+  it was predicted from, as its training made it relative, where LeRobot's own loop makes each
+  one absolute against the state of the tick it is played at. Only ACT has run, and a tiny
+  random one: SmolVLA and pi05 need transformers, which neither the lab's environment nor CI
+  has.
+- **A checkpoint is read before it is built, and refused rather than guessed at.** Its
+  `config.json` and both processor JSONs are fetched first, at the revision named, and nothing
+  else. A policy type other than those three, a feature an arm cannot give, a processor step
+  named by a `class` key, and a step outside the registry names ACT's, SmolVLA's and pi05's
+  processors use are all refused before a byte of weights is fetched, since a step named by
+  class is imported from wherever it says. A step that could trust a repository's own code is
+  told not to. A model the checkpoint names inside itself, SmolVLA's backbone or a tokenizer,
+  is refused unless `--pin REPO@REVISION` fixes its revision at a whole commit or a tag, never a
+  branch, and is fetched with no `.py` and no pickle in what comes down. Its directory in the
+  Hub's cache is refused if it holds any other kind of file, left there by an earlier fetch, or
+  a config that maps a class to code (`auto_map`). A SmolVLA whose config names no backbone is
+  refused too, since LeRobot would fill in a default of its own at no revision. An ACT's
+  ImageNet backbone is never fetched. Every weight in `model.safetensors` is loaded or the
+  server refuses to start: LeRobot's loader only logs a missing one and pi05's hands back a
+  random network when its weights do not load, so the one is asked to be strict and the other's
+  are loaded by quackd. Every repository loaded, with its revision, is in `/v1/policy`, which
+  `serve` and `check` print.
+- **The arm checks at connect that the policy fits it, before any torque.** Once its cameras
+  are open and before its motors are energised, the arm asks the server what it serves and
+  refuses the connect, with the arm untouched, over a policy whose state or action is not as
+  long as the bus has motors, whose action names are not the bus's motors in the bus's order,
+  that looks at an image no camera is mapped to (a SmolVLA or a pi05 runs with it padded, and
+  the record says so), that learned at another frame size than a camera gives, or whose
+  learned state's 1st and 99th percentiles lie outside this arm's calibrated travel. Every
+  limit is read: the motors from the bus, each size from a frame, the travel from the
+  calibration file, and the slack from the backend's own. The frame size and the other frame
+  can be accepted with `RemoteRunner`'s `accept_frame_size` and `accept_other_frame`, and the
+  record says when they were. What the policy is and every repository the server loaded go
+  into the run's record. The check is made again as every segment starts, so a server started
+  again with another policy since the connect starts no segment, and says to connect again.
+- **`quackd[lerobot-vla]`, the policy server's extra.** It is `quackd-lerobot[vla]`, which is
+  `lerobot[smolvla]` on Python 3.12 and no `[feetech]`, since the server never opens a serial
+  port. `quackd doctor` has a row for it, read from the installer's metadata. On Python 3.12 the
+  lock now resolves transformers inside LeRobot's window for every extra that pulls it.
+- **CI's `policy` job loads a checkpoint.** On Python 3.12, with torch from its CPU wheel index
+  and LeRobot 0.6.1, it builds a tiny random ACT with no pretrained backbone and saves it
+  naming LeRobot's default one, puts it in a Hub cache of its own at a commit and a tag, and
+  serves it with the Hub and torchvision offline through the real server to the real client
+  and an arm behind it (`tests/test_policy_pipeline.py`), so a backbone fetched fails it. Every
+  action of a chunk is checked, in order, against what LeRobot's own `select_action` plays
+  from the same files, and the same files with weights that are not the model's are refused.
+  It fails rather than skips when torch did not install.
 - **The policy server is hardened as the Jetson host daemon is, and more.** A token is always
   required: with no `--token-file` it writes one to `~/.quackd/policy.token`, readable by its
   owner alone where the OS allows, and the client reads it there, or `--policy-token`, or
@@ -100,7 +163,9 @@ arm: it was exercised against the test suite's fake arm and on the simulator's s
   arm's own refs, which are pinned to a `main` commit, into `policy/upstream_api.py`, read
   against the `v0.6.1` tag, the version the laptop that drives the arm runs, with the async
   inference facts that are why quackd's policy server is its own. `quackd doctor` prints its pin
-  as `LeRobot policies`, and the arm's page has the table.
+  as `LeRobot policies`, and the arm's page has the table. `POLICY_PIPELINE` is VERIFIED for
+  what CI's `policy` job runs, ACT on the CPU, and `VLA_PIPELINE`, `TICK_MODE` and
+  `LOAD_POLICY` say what has not run.
 - **A policy's step cap is the verbs' speed at the policy's rate.** Per send it is
   `max_step_deg / TICK_S` over the rate, and never more than one verb step, so
   `QUACKD_LEROBOT_MAX_STEP_DEG` governs both, and a policy faster than the verbs' tick takes a
@@ -148,8 +213,12 @@ arm: it was exercised against the test suite's fake arm and on the simulator's s
   actions its last chunk predicted, and nothing cleared them between picks. The policy is now
   reset at the start of every pick, where it has a `reset()`, and `load_policy()`'s does.
 - **The docs said a policy's goal past the travel is refused.** It is clipped and counted, as
-  ADR-0036 decided, and the hardware checklist, the arm's page and the `POLICY_PIPELINE` row
-  now say so.
+  ADR-0036 decided, and the hardware checklist, the arm's page and the `LOAD_POLICY` row now
+  say so.
+- **The ref that says a tokenizer trusts remote code named the wrong step.** It is the action
+  tokenizer, `ActionTokenizerProcessorStep`, whose `trust_remote_code` defaults to True, and
+  the observation tokenizer SmolVLA and pi05 use loads its tokenizer by name at no revision.
+  The ref and the arm's page now say which, and what the server does about each.
 
 ## [0.15.0] — 2026-09-29
 

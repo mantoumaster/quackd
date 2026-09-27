@@ -3567,12 +3567,24 @@ policy_app = typer.Typer(
 app.add_typer(policy_app, name="policy", rich_help_panel="Serve")
 
 _POLICY_HELP = (
-    "What to serve: REPO@REVISION for a checkpoint, or scripted:NAME for a scripted policy "
-    "that needs no torch (scripted:hold holds the arm where it is, scripted:sweep swings its "
-    "wrist). This build serves the scripted ones only."
+    "What to serve: REPO@REVISION for a LeRobot checkpoint (ACT, SmolVLA or pi05, which need "
+    "quackd[lerobot-vla]), or scripted:NAME for a scripted policy that needs no torch "
+    "(scripted:hold holds the arm where it is, scripted:sweep swings its wrist)."
 )
 _POLICY_FPS = typer.Option(
-    None, "--fps", help="The rate the policy runs at, in Hz. A scripted one has its own."
+    None,
+    "--fps",
+    help="The rate the policy runs at, in Hz. Without it a checkpoint's is the fps of the "
+    "dataset its train_config.json names, at the commit or the tag it names, and a scripted one "
+    "has its own.",
+)
+_POLICY_PINS = typer.Option(
+    None,
+    "--pin",
+    help="REPO@REVISION of a model the checkpoint names inside itself, such as SmolVLA's "
+    "backbone, fetched at that revision and never at whatever the Hub has that day. The "
+    "revision is a whole commit or a tag, and never a branch, which moves. Once per model. A "
+    "checkpoint that names one without a pin is refused.",
 )
 _POLICY_CAMERAS = typer.Option(
     None,
@@ -3640,6 +3652,7 @@ def policy_serve(
     ),
     threads: int | None = _POLICY_THREADS,
     jpeg_quality: int | None = _POLICY_JPEG,
+    pins: list[str] | None = _POLICY_PINS,
 ) -> None:
     """Serve a policy for the arm, in this terminal, until Ctrl+C."""
     server = _policy_server()
@@ -3654,6 +3667,7 @@ def policy_serve(
         behind_tls=behind_tls,
         threads=threads,
         jpeg_quality=jpeg_quality,
+        pins=tuple(pins or ()),
     )
     try:
         served = server.open_server(options)
@@ -3662,16 +3676,15 @@ def policy_serve(
         return
     how = "written now" if served.token_written else "read"
     info = served.app.info
-    ui.console.print(
-        ui.kv_grid(
-            [
-                ("serving", f"{info.policy} at {served.url}"),
-                ("token", f"{served.token_path} ({how})"),
-                ("rate", f"{info.rate_hz:g} Hz, from {info.rate_source}"),
-            ]
-        ),
-        soft_wrap=True,
-    )
+    rows = [
+        ("serving", f"{info.policy} at {served.url}"),
+        ("token", f"{served.token_path} ({how})"),
+        ("rate", f"{info.rate_hz:g} Hz, from {info.rate_source}"),
+    ]
+    if info.loaded:
+        # every repository the server fetched, at the revision it fetched it at
+        rows.append(("loaded", "; ".join(info.loaded)))
+    ui.console.print(ui.kv_grid(rows), soft_wrap=True)
     # the client sends plain http to loopback alone, so the hint names a loopback address,
     # never the 0.0.0.0 a server behind a TLS proxy may bind
     local = served.local_url
@@ -3714,8 +3727,9 @@ def policy_check(
     bench: bool = typer.Option(
         False,
         "--bench",
-        help="Stream synthetic observations at the policy's rate through the client, and say "
-        "the rate it achieved, the ticks with nothing to send, and the round trip.",
+        help="Time one warm step, the latency to serve it with as --latency-s, then stream "
+        "synthetic observations at the policy's rate through the client, and say the rate it "
+        "achieved, the ticks with nothing to send, and the round trip.",
     ),
     seconds: float | None = typer.Option(
         None, "--seconds", help="How long --bench streams for (default 10)."
@@ -3725,6 +3739,7 @@ def policy_check(
     latency_s: float | None = _POLICY_LATENCY,
     threads: int | None = _POLICY_THREADS,
     jpeg_quality: int | None = _POLICY_JPEG,
+    pins: list[str] | None = _POLICY_PINS,
 ) -> None:
     """Ask a policy what it serves, and with --bench how well it keeps up."""
     if (policy is None) == (policy_url is None):
@@ -3740,6 +3755,7 @@ def policy_check(
         "--latency-s": latency_s,
         "--threads": threads,
         "--jpeg-quality": jpeg_quality,
+        "--pin": pins or None,
     }
     if policy_url is not None and (named := [k for k, v in given.items() if v is not None]):
         _fail(
@@ -3777,6 +3793,7 @@ def policy_check(
                     port=0,
                     threads=threads,
                     jpeg_quality=jpeg_quality,
+                    pins=tuple(pins or ()),
                 ),
                 token=secrets.token_hex(32),
             )

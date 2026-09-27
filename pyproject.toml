@@ -108,6 +108,10 @@ lerobot = ["quackd-lerobot[sdk]>=0.15,<0.16"]
 # of the SO-101, with MuJoCo and no LeRobot, so no torch and no 3.12 floor. The model is
 # fetched at run time and never shipped (docs/licenses.md).
 lerobot-sim = ["quackd-lerobot[sim]>=0.15,<0.16"]
+# The arm's policy server (`quackd policy serve`), which loads LeRobot checkpoints in a process
+# of its own: LeRobot, torch and transformers on Python 3.12, and nothing the arm's own process
+# imports. Install it where the policy runs, on the laptop beside the arm or on a rented GPU.
+lerobot-vla = ["quackd-lerobot[vla]>=0.15,<0.16"]
 rosbridge = ["quackd-rosbridge[sdk]>=0.15,<0.16"]
 # XLeRobot is not an installable package: its own install is copying files into a lerobot
 # tree. So quackd speaks its ZeroMQ host protocol instead and needs only pyzmq, which keeps

@@ -131,7 +131,7 @@ def test_adapter_doc_lists_every_policy_upstream_ref() -> None:
     ]
     assert not missing, f"docs/adapters/lerobot.md has no row for these policy refs: {missing}"
     assert policies.PIN[:7] in section and policies.READ_ON in section
-    assert "No checkpoint has ever been loaded by quackd" in section  # the honesty label
+    assert "No trained checkpoint has ever been loaded by quackd" in section  # the honesty label
     arm = doc.split("\n## Upstream API\n", 1)[1].split("\n## ", 1)[0]
     stale = [ref.name for ref in policies.all_refs() if f"\n| `{ref.name}` |" in arm]
     assert not stale, f"the arm's own tables still carry policy rows: {stale}"

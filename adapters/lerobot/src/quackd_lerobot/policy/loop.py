@@ -334,6 +334,18 @@ class PolicyLoop:
             return f"the policy was not started: its {name} raised {type(error).__name__}: {error}"
         return future.result()
 
+    async def call(self, fn: Callable[..., T], *args: Any, within: float | None = None) -> T:
+        """`fn(*args)` on the runner's own worker, behind anything it is doing, for a caller
+        outside a segment: the connect asking whether the policy fits the arm. It raises what
+        `fn` raised, and a TimeoutError once `within` seconds, `reset_s` unless it is given,
+        have passed without an answer."""
+        wait = self.reset_s if within is None else within
+        future = self._submit(fn, *args)
+        if not await self._answered(future, wait):
+            name = getattr(fn, "__name__", "call")
+            raise TimeoutError(f"the policy's {name} had not come back after {wait:g} s")
+        return future.result()
+
     def close(self) -> None:
         """Close the runner on its own worker, after whatever it is doing, without waiting for
         it. The worker is kept, so a segment after a reconnect still queues behind anything the

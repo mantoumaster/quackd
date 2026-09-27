@@ -8,8 +8,10 @@ below run the real policy loop over the backend and the test suite's `FakeArm`, 
 end to end. It runs in-process rather than as a subprocess for the reason the Jetson daemon's
 contract test gives: subprocess servers flake on this project's Windows machine.
 
-What it cannot catch is anything about a checkpoint: this server serves scripted policies only
-(`upstream_api.POLICY_PIPELINE`).
+What it cannot catch is anything about a checkpoint, which needs torch: CI's torch job loads a
+tiny one through this same server in `tests/test_policy_pipeline.py`. What the arm's side
+checks of a policy at connect (`fit.py`) is here, against a server that says what a checkpoint
+would say about itself, since the check reads only what the server says.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from quackd import host
 from quackd.cli import app
 from quackd.command import HIDDEN
 from quackd.safety import Executor, allow_all
+from quackd.transport.base import TransportError
 from quackd.verbs.registry import registry_from_manifest
 from quackd_lerobot import LeRobotAdapter
 from quackd_lerobot.policy import protocol as wire
@@ -48,12 +51,19 @@ from quackd_lerobot.policy.client import (
     client_token,
     policy_address,
 )
-from quackd_lerobot.policy.loop import FIRST_CHUNK_S, STARVE_S
+from quackd_lerobot.policy.fit import PolicyMisfit, fit
+from quackd_lerobot.policy.loop import FIRST_CHUNK_S, STARVE_S, Plan
 from quackd_lerobot.policy.runner import Chunk, Observation
 from quackd_lerobot.policy.scripted import SCRIPTED_HZ, SCRIPTS, SWEEP_DEG, SWEEP_JOINT
-from quackd_lerobot.real import CAMERA_ROTATIONS, LeRobotReal
+from quackd_lerobot.real import (
+    CAMERA_ROTATIONS,
+    OUT_OF_RANGE_DEG,
+    LeRobotReal,
+    joint_ranges,
+    parse_camera_url,
+)
 from quackd_lerobot.verbs import JOINTS, MANIPULATE_S
-from tests.test_lerobot_adapter import FakeArm, SteppedClock, _segment_arm
+from tests.test_lerobot_adapter import FakeArm, FakeCamera, SteppedClock, _segment_arm
 from tests.test_policy_loop import STEP, LockstepClock, _segment_end
 
 REPO = Path(__file__).resolve().parents[1]
@@ -996,15 +1006,50 @@ def test_serve_names_a_url_the_client_takes_whatever_it_binds(
         assert local is not None and policy_address(local)[1] == bind
 
 
-def test_a_checkpoint_is_refused_until_this_build_can_load_one() -> None:
+def test_a_checkpoint_goes_to_the_pipeline_and_anything_else_is_named_or_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `REPO@REVISION` is handed to the pipeline with every flag that shapes it, and what the
+    pipeline refuses the server refuses in the same words. Without torch that is a sentence
+    naming the extra (`tests/test_extras_absent.py`), and with it `tests/test_policy_pipeline.py`
+    loads one for real."""
+    asked: list[tuple[str, dict[str, Any]]] = []
+
+    def load(spec: str, **kw: Any) -> Any:
+        asked.append((spec, kw))
+        raise S.pipeline.PipelineRefused("the pipeline says no")
+
+    monkeypatch.setattr(S.pipeline, "load", load)
+    with pytest.raises(S.ServeRefused, match="the pipeline says no"):
+        S.served_policy(
+            S.ServeOptions(
+                policy="lerobot/smolvla_base@abc123",
+                fps=30.0,
+                cameras="front=observation.images.top",
+                pins=("HuggingFaceTB/SmolVLM2-500M-Video-Instruct@def456",),
+                threads=3,
+                latency_s=0.2,
+            )
+        )
+    ((spec, kw),) = asked
+    assert spec == "lerobot/smolvla_base@abc123"
+    assert kw == {
+        "fps": 30.0,
+        "pins": ("HuggingFaceTB/SmolVLM2-500M-Video-Instruct@def456",),
+        "cameras": {"front": "observation.images.top"},
+        "threads": 3,
+        "latency_s": 0.2,
+    }
     for spec, needle in (
-        ("lerobot/smolvla_base@main", "serves scripted policies only"),
         ("lerobot/smolvla_base", "has no revision"),
         ("scripted:dance", "no scripted policy called 'dance'"),
         ("nonsense", "REPO@REVISION or scripted:NAME"),
+        ("ówner/policy@main", "REPO@REVISION or scripted:NAME"),
     ):
         with pytest.raises(S.ServeRefused, match=needle):
             S.served_policy(S.ServeOptions(policy=spec))
+    with pytest.raises(S.ServeRefused, match="--pin"):
+        S.served_policy(S.ServeOptions(policy="scripted:hold", pins=("a/b@c",)))
     for name in SCRIPTS:
         S.served_policy(S.ServeOptions(policy=f"scripted:{name}"))
 
@@ -1070,6 +1115,19 @@ def test_the_bench_streams_through_the_real_client(served: Serving) -> None:
     assert result.rate_hz == SCRIPTED_HZ and result.achieved_hz > 0
     rows = dict(S.describe_bench(result))
     assert "Hz of" in rows["achieved"] and "round trip" in rows
+    # one warm step timed on its own, and the --latency-s it would declare, never shorter
+    assert result.latency_s is not None and result.declare_s is not None
+    assert result.latency_s <= result.declare_s < result.latency_s + S.LATENCY_STEP_S
+    assert f"--latency-s {result.declare_s:.2f}" in rows["latency"]
+
+
+def test_a_measured_latency_rounds_up_to_what_a_person_would_declare() -> None:
+    step = S.LATENCY_STEP_S
+    for measured in (0.0, step / 3, step, 2.5 * step, 7 * step + step / 100):
+        declared = S.BenchResult(1.0, 10.0, 1, 1, 0, 0, latency_s=measured).declare_s
+        assert declared is not None and measured <= declared + 1e-12
+        assert declared - measured < step, measured
+        assert math.isclose(declared / step, round(declared / step)), measured
 
 
 def test_check_serves_a_scripted_policy_for_itself_and_benches_it() -> None:
@@ -1078,8 +1136,9 @@ def test_check_serves_a_scripted_policy_for_itself_and_benches_it() -> None:
     )
     assert result.exit_code == 0, result.output
     out = " ".join(result.output.split())
-    for needle in ("scripted:sweep", "Hz, from", "achieved", "round trip"):
+    for needle in ("scripted:sweep", "Hz, from", "achieved", "round trip", "--latency-s"):
         assert needle in out, needle
+    assert "a scripted policy loads no repository" in out
 
 
 def test_check_reaches_a_running_server_with_its_token(served: Serving) -> None:
@@ -1143,3 +1202,296 @@ def test_a_kept_alive_socket_the_server_closed_is_replaced_once(
     finally:
         serving.http.shutdown()
         serving.http.server_close()
+
+
+# ── whether the policy fits the arm, asked at connect before any torque ─────────────────
+
+IMAGE_KEY = "observation.images.front"
+"""The image a checkpoint trained with a front camera looks at (`upstream_api.FEATURE_KEYS`)."""
+CAMERA_HEIGHT, CAMERA_WIDTH = (int(n) for n in FakeCamera().read_latest().shape[:2])
+"""The size of the frames the test suite's camera gives, read off one of them."""
+
+
+def _as_checkpoint(**said: Any) -> Serving:
+    """A server that says of itself what a checkpoint for this six-motor arm and its front
+    camera would, and answers with the scripted hold: the arm's check reads only what the
+    server says, so this is the check against a checkpoint with no torch anywhere."""
+    runner, base = S.served_policy(
+        S.ServeOptions(policy="scripted:hold", cameras=f"front={IMAGE_KEY}")
+    )
+    image = {"key": IMAGE_KEY, "height": CAMERA_HEIGHT, "width": CAMERA_WIDTH}
+    info = {
+        **base.model_dump(),
+        "policy": "owner/act_front@0123abc",
+        "features": {"state": len(JOINTS), "action": len(JOINTS), "images": [image]},
+        **said,
+    }
+    app_ = S.PolicyServer(runner, wire.validate(wire.PolicyInfo, info), TOKEN)
+    return Serving(app_, S.serve(app_, "127.0.0.1", 0))
+
+
+def _camera_arm(runner: RemoteRunner) -> tuple[FakeArm, FakeCamera, LeRobotReal]:
+    """The fake arm on the synthetic calibration and the rewired bus, with a front camera of
+    quackd's own, and the policy behind `runner`."""
+    arm, camera = _segment_arm(), FakeCamera()
+    transport = LeRobotReal(
+        "COM5",
+        robot=arm,
+        policy=runner,
+        clock=SteppedClock(),
+        max_step_deg=STEP,
+        camera=parse_camera_url("opencv://0?name=front"),
+        camera_object=camera,
+    )
+    return arm, camera, transport
+
+
+def _quantiles(arm: FakeArm, *, below: str | None = None, above: str | None = None) -> Any:
+    """The 1st and 99th percentiles of a state that stayed inside this arm's calibrated travel,
+    in its bus's order, except `below`, which reached past its floor, and `above`, past its
+    ceiling, each by twice the slack the backend forgives."""
+    travel = joint_ranges(arm.calibration)
+    q01, q99 = [], []
+    for motor in arm.bus.motors:
+        low, high = travel[motor]
+        middle, quarter = (low + high) / 2, (high - low) / 4
+        q01.append(low - 2 * OUT_OF_RANGE_DEG if motor == below else middle - quarter)
+        q99.append(high + 2 * OUT_OF_RANGE_DEG if motor == above else middle + quarter)
+    return {"q01": q01, "q99": q99}
+
+
+async def _refused(serving: Serving, **client: Any) -> tuple[str, FakeArm, FakeCamera]:
+    arm, camera, transport = _camera_arm(serving.client(**client))
+    with pytest.raises(TransportError) as refused:
+        await transport.connect()
+    return " ".join(str(refused.value).split()), arm, camera
+
+
+def _stop(serving: Serving) -> None:
+    serving.http.shutdown()
+    serving.http.server_close()
+
+
+async def test_a_policy_learned_on_an_arm_calibrated_another_way_is_refused_before_torque() -> None:
+    """The synthetic calibration puts one joint's learned readings past its floor and another's
+    past its ceiling. Both are named, with the travel each was held against, and the arm is
+    never energised: the check runs between the cameras and the arm."""
+    arm = _segment_arm()
+    serving = _as_checkpoint(
+        state_quantiles=_quantiles(arm, below="shoulder_pan", above="wrist_roll")
+    )
+    try:
+        said, arm, camera = await _refused(serving)
+        outside = said.split("travel:", 1)[1]
+        assert "shoulder_pan" in outside and "wrist_roll" in outside, said
+        for motor in ("shoulder_lift", "elbow_flex", "wrist_flex", "gripper"):
+            assert motor not in outside.split(". It was trained", 1)[0], said
+        assert "accept_other_frame" in said and "The arm was not touched" in said, said
+        assert not arm.connected and not arm.torque_retries and not camera.connected
+        # the one who knows the frames match says so, and the record keeps that they did
+        arm, _, transport = _camera_arm(serving.client(accept_other_frame=True))
+        await transport.connect()
+        try:
+            notes = " ".join(transport.connect_notes)
+            assert "accepted (accept_other_frame)" in notes and "shoulder_pan" in notes
+            assert arm.connected
+        finally:
+            await transport.close()
+    finally:
+        _stop(serving)
+
+
+async def test_learned_readings_inside_the_travel_and_its_slack_connect() -> None:
+    arm = _segment_arm()
+    travel = joint_ranges(arm.calibration)
+    within = _quantiles(arm)
+    first = next(iter(arm.bus.motors))
+    within["q01"][0] = travel[first][0] - OUT_OF_RANGE_DEG / 2  # past the floor, inside the slack
+    serving = _as_checkpoint(
+        state_quantiles=within,
+        loaded=["checkpoint owner/act_front@0123abc", "dataset owner/data@v3.0, its fps"],
+    )
+    try:
+        arm, _, transport = _camera_arm(serving.client())
+        await transport.connect()
+        try:
+            notes = " ".join(transport.connect_notes)
+            assert "owner/act_front@0123abc" in notes and "owner/data@v3.0" in notes, notes
+            assert "accepted" not in notes and "not checked" not in notes, notes
+            assert arm.connected
+        finally:
+            await transport.close()
+    finally:
+        _stop(serving)
+
+
+async def test_a_policy_the_server_swaps_in_after_the_connect_starts_no_segment() -> None:
+    """The arm's process lives for a pilot's whole session, and the server on its port can be
+    started again with another policy in that time. The check made at connect is made again at
+    every segment's reset: another policy than the one checked is refused with a sentence to
+    connect again, and the same one refused if it no longer fits, before any session starts."""
+    arm = _segment_arm()
+    serving = _as_checkpoint(state_quantiles=_quantiles(arm))
+    fitted = serving.app.info
+    try:
+        runner = serving.client()
+        arm, _, transport = _camera_arm(runner)
+        await transport.connect()
+        loop = transport._policy_loop
+        assert loop is not None
+        try:
+            assert isinstance(await loop.start("reach", STEP), Plan), "the one checked starts"
+            # the same checkpoint, now saying it learned from an arm calibrated another way
+            serving.app.info = fitted.model_copy(
+                update={"state_quantiles": wire.Quantiles(**_quantiles(arm, above="gripper"))}
+            )
+            said = await loop.start("reach", STEP)
+            assert isinstance(said, str) and "PolicyMisfit" in said, said
+            assert "gripper" in said and "accept_other_frame" in said, said
+            # another checkpoint that would fit is still not the one the connect checked
+            serving.app.info = fitted.model_copy(update={"policy": "owner/other_act@4567def"})
+            with pytest.raises(PolicyMisfit, match="Connect the arm again") as refused:
+                runner.reset("reach")
+            assert "owner/other_act@4567def" in str(refused.value)
+            assert "owner/act_front@0123abc" in str(refused.value)
+            # and with the one checked back, a segment starts again
+            serving.app.info = fitted
+            assert isinstance(await loop.start("reach", STEP), Plan)
+        finally:
+            await transport.close()
+    finally:
+        _stop(serving)
+
+
+async def test_a_frame_of_another_size_is_refused_unless_it_is_accepted() -> None:
+    image = {"key": IMAGE_KEY, "height": CAMERA_HEIGHT // 2, "width": CAMERA_WIDTH // 2}
+    serving = _as_checkpoint(
+        features={"state": len(JOINTS), "action": len(JOINTS), "images": [image]}
+    )
+    try:
+        said, arm, _ = await _refused(serving)
+        assert f"{CAMERA_WIDTH}x{CAMERA_HEIGHT}" in said, said
+        assert f"{CAMERA_WIDTH // 2}x{CAMERA_HEIGHT // 2}" in said, said
+        assert "width= and height=" in said and "accept_frame_size" in said, said
+        assert not arm.connected
+        _, _, transport = _camera_arm(serving.client(accept_frame_size=True))
+        await transport.connect()
+        try:
+            assert "accepted (accept_frame_size)" in " ".join(transport.connect_notes)
+        finally:
+            await transport.close()
+    finally:
+        _stop(serving)
+
+
+async def test_an_image_with_no_camera_refuses_an_act_and_is_padded_for_one_that_pads() -> None:
+    wrist = {"key": "observation.images.wrist", "height": CAMERA_HEIGHT, "width": CAMERA_WIDTH}
+    front = {"key": IMAGE_KEY, "height": CAMERA_HEIGHT, "width": CAMERA_WIDTH}
+    both = {"state": len(JOINTS), "action": len(JOINTS), "images": [front, wrist]}
+    mapped = {"front": IMAGE_KEY, "wrist": "observation.images.wrist"}
+    act = _as_checkpoint(features=both, cameras=mapped)
+    try:
+        said, arm, _ = await _refused(act)
+        assert "observation.images.wrist" in said and "--cameras" in said, said
+        assert not arm.connected
+        # a client that never asked is refused by the server's own reset the same way
+        with pytest.raises(PolicyServerError, match=r"observation\.images\.wrist"):
+            act.client(cameras=[wire.CameraInfo(name="front", height=4, width=4)]).reset("look")
+    finally:
+        _stop(act)
+    padder = _as_checkpoint(features={**both, "pads_images": True}, cameras=mapped)
+    try:
+        runner = padder.client()
+        _, _, transport = _camera_arm(runner)
+        await transport.connect()
+        try:
+            notes = " ".join(transport.connect_notes)
+            assert "observation.images.wrist has no camera" in notes and "padded" in notes
+            runner.reset("look")  # and the server takes a session with the wrist left out
+            assert runner.session is not None
+        finally:
+            await transport.close()
+        with pytest.raises(PolicyServerError, match="no camera the arm declared"):
+            padder.client(cameras=[]).reset("look")  # but not one with no image at all
+    finally:
+        _stop(padder)
+
+
+async def test_a_policy_for_another_arm_or_with_its_joints_in_another_order_is_refused() -> None:
+    motors = list(_segment_arm().bus.motors)
+    for said_of_it, needle in (
+        ({"state": len(motors) - 1, "action": len(motors) - 1}, "learned from another arm"),
+        ({"state": len(motors), "action": len(motors) + 1}, "learned from another arm"),
+        (
+            {
+                "state": len(motors),
+                "action": len(motors),
+                "action_names": [f"{m}.pos" for m in reversed(motors)],
+            },
+            "wrong joints",
+        ),
+    ):
+        serving = _as_checkpoint(features={**said_of_it, "images": []}, cameras={})
+        try:
+            said, refused_arm, _ = await _refused(serving)
+            assert needle in said and "The arm was not touched" in said, said
+            assert ", ".join(motors) in said, "the bus's own order is what it is held against"
+            assert not refused_arm.connected
+        finally:
+            _stop(serving)
+    # the names in the bus's own order, with or without LeRobot's `.pos`, fit
+    for names in ([f"{m}.pos" for m in motors], motors):
+        features = {"state": len(motors), "action": len(motors), "action_names": names}
+        serving = _as_checkpoint(features={**features, "images": []}, cameras={})
+        try:
+            _, _, transport = _camera_arm(serving.client())
+            await transport.connect()
+            await transport.close()
+        finally:
+            _stop(serving)
+
+
+async def test_a_policy_server_that_is_not_there_refuses_the_connect_before_torque() -> None:
+    serving = _as_checkpoint()
+    url = serving.url
+    _stop(serving)
+    arm, camera, transport = _camera_arm(RemoteRunner(url, token=TOKEN, motors=JOINTS))
+    # refused at once where a closed port says so, and after the connect timeout on Windows,
+    # which tries a refused port again before it gives up: either way the sentence names it
+    with pytest.raises(TransportError, match="quackd policy serve") as refused:
+        await transport.connect()
+    assert "The arm was not touched" in str(refused.value)
+    assert not arm.connected and not camera.connected
+
+
+def test_the_check_reads_what_it_is_given_and_types_nothing() -> None:
+    """The same verdicts from `fit` itself, for motors, cameras and a travel that are nobody's
+    arm, in no order anybody's bus lists, and a slack of whatever the caller says."""
+    motors = ("elbow", "base", "claw")
+    travel = {"elbow": (-30.0, 50.0), "base": (-80.0, 10.0)}
+    cam = wire.CameraInfo(name="cam", height=6, width=8)
+    info = wire.validate(
+        wire.PolicyInfo,
+        {
+            **S.served_policy(S.ServeOptions(policy="scripted:hold"))[1].model_dump(),
+            "features": {
+                "state": 3,
+                "action": 3,
+                "images": [
+                    {"key": "observation.images.a", "height": 6, "width": 8},
+                    {"key": "observation.images.b", "height": 6, "width": 8},
+                ],
+                "pads_images": True,
+            },
+            "cameras": {"cam": "observation.images.a", "gone": "observation.images.b"},
+            "state_quantiles": {"q01": [-30.5, -80.0, 0.0], "q99": [49.0, 10.9, 100.0]},
+        },
+    )
+    ok = fit(info, motors=motors, cameras=[cam], travel=travel, slack_deg=1.0, where="there")
+    assert ok.refusal is None
+    notes = " ".join(ok.notes)
+    assert "observation.images.b has no camera" in notes and "claw has no travel" in notes
+    tight = fit(info, motors=motors, cameras=[cam], travel=travel, slack_deg=0.25, where="x")
+    assert tight.refusal is not None and "elbow" in tight.refusal and "base" in tight.refusal
+    blind = fit(info, motors=motors, cameras=[], travel=travel, slack_deg=1.0, where="there")
+    assert blind.refusal is not None and "any of them" in blind.refusal

@@ -9,7 +9,8 @@ change to both.
 - `GET /v1/policy` says what is being served (`PolicyInfo`): the policy and its revision, the
   features it wants, the rate it runs at and where that rate came from, its chunking, whether
   it is asked every tick, whether the server has a GPU, the quantiles of the state and the
-  actions it learned from, the latency it declares, its threads and how it wants its frames.
+  actions it learned from, the latency it declares, its threads, how it wants its frames, and
+  every repository it loaded, at the revision it loaded it.
 - `POST /v1/reset` starts a session (`ResetRequest`): the instruction, the arm's motor names
   in the bus's order, each camera's name, size and rotation, and the session it replaces. It
   answers the session's id, and the one it replaced is over. A reset from any other client is
@@ -113,6 +114,9 @@ MAX_REPLY_BYTES = 4 << 20
 is under a megabyte of JSON, and nothing else the server sends comes near it."""
 MAX_INSTRUCTION_CHARS = 1000
 MAX_TEXT_CHARS = 200
+MAX_LOADED = 8
+"""The most repositories a server may say it loaded: a checkpoint, the dataset its rate came
+from, and the few models a policy names inside it (a tokenizer, a vision backbone)."""
 MAX_INT_DIGITS = 18
 """The longest integer literal a message may hold. Every integer in the protocol is a count, a
 size or a sequence number, and one longer than this is not any of them."""
@@ -294,11 +298,18 @@ class ImageFeature(_Message):
 
 class PolicyFeatures(_Message):
     """What a policy takes and gives: the size of its state and its action, None for a policy
-    that takes whatever the arm has (a scripted one), and the images it looks at."""
+    that takes whatever the arm has (a scripted one), and the images it looks at.
+
+    `action_names` are its action's dimensions by name, in order, where the checkpoint carries
+    them (`upstream_api.ACTION_FEATURE_NAMES`), which the arm checks against its bus's motors.
+    `pads_images` is a policy that runs with some of its images missing and pads them
+    (`upstream_api.MISSING_IMAGES_PADDED`); one without it needs a camera for every image."""
 
     state: int | None = Field(default=None, ge=1, le=MAX_MOTORS)
     action: int | None = Field(default=None, ge=1, le=MAX_MOTORS)
     images: list[ImageFeature] = Field(default_factory=list, max_length=MAX_CAMERAS)
+    action_names: list[Name] | None = Field(default=None, max_length=MAX_MOTORS)
+    pads_images: bool = False
 
 
 class PolicyInfo(_Message):
@@ -324,6 +335,10 @@ class PolicyInfo(_Message):
     """The quality frames are to come at as JPEG, or None for raw frames."""
     cameras: dict[Name, Name] = Field(default_factory=dict, max_length=MAX_CAMERAS)
     """The arm's camera names the server maps to the policy's image keys (`--cameras`)."""
+    loaded: list[Text] = Field(default_factory=list, max_length=MAX_LOADED)
+    """Every repository the server loaded, each as what it is and `repo@revision`: the
+    checkpoint, the dataset its rate was read from, and every nested model it was pinned to.
+    Empty for a scripted policy, which loads nothing. The arm writes them into its record."""
 
     @model_validator(mode="after")
     def _steps_fit_the_chunk(self) -> PolicyInfo:
@@ -517,6 +532,7 @@ __all__ = [
     "MAX_CAMERAS",
     "MAX_CHUNK",
     "MAX_LATENCY_S",
+    "MAX_LOADED",
     "MAX_MOTORS",
     "MAX_REPLY_BYTES",
     "MIN_TOKEN_CHARS",

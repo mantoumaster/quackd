@@ -645,7 +645,7 @@ def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
     # SO-101 ran the real backend on 2026-09-15, so the column says what that run did and did
     # not cover. The second is the arm's simulator model, which lerobot:mujoco loads and no arm
     # has been compared against. The third is LeRobot's policies, read at the version the
-    # laptop runs, which the policy server is to load and has not yet.
+    # laptop runs, which the policy server loads, and has loaded a tiny random ACT alone.
     return (
         (
             "lerobot",
@@ -663,8 +663,8 @@ def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
             "LeRobot policies",
             policies,
             "docs/adapters/lerobot.md",
-            f"any checkpoint: read at lerobot {policies.VERSION}, and the policy server serves "
-            "scripted policies only",
+            f"a trained checkpoint: read at lerobot {policies.VERSION}, and CI's policy job serves "
+            "a tiny random ACT alone, so SmolVLA, pi05 and tick mode have never run",
         ),
     )
 

@@ -4,9 +4,9 @@
 code (`upstream_api.PROCESSOR_CLASS_IMPORT`), so no checkpoint and no inference ever run in the
 process that owns the serial bus. The user starts this server, in a terminal of its own on the
 laptop or on a rented GPU reached through `ssh -L`, the way a board's daemon is started, and
-`client.py` reaches it with the protocol in `protocol.py`. It serves scripted policies
-(`--policy scripted:NAME`, `scripted.py`), which need no torch, and refuses a checkpoint
-(`upstream_api.POLICY_PIPELINE`).
+`client.py` reaches it with the protocol in `protocol.py`. It serves a LeRobot checkpoint named
+`--policy REPO@REVISION`, loaded and run by `pipeline.py` (`upstream_api.POLICY_PIPELINE`), and
+scripted policies (`--policy scripted:NAME`, `scripted.py`), which need no torch.
 
 It is a standard library `ThreadingHTTPServer` in the shape of the Jetson host daemon
 (`bridge/jetson/quackd_jetson_hostd.py`), and its bounds are that daemon's, copied here as
@@ -33,10 +33,11 @@ a daemon:
 - **no SO_REUSEADDR on Windows**, where it would let a second server bind a port another is
   listening on and answer none of its requests.
 
-`quackd policy check` asks a server what it serves and, with `--bench`, streams synthetic
-observations at the policy's rate through the real client, and says the rate it achieved, how
-often the arm would have had nothing to send, and the round trip. A rate is only ever measured
-on the wall's clock, and this is one of the two places it is (the other is the bench).
+`quackd policy check` asks a server what it serves and, with `--bench`, times one step on its
+own, which is the latency to declare with `--latency-s`, then streams synthetic observations at
+the policy's rate through the real client, and says the rate it achieved, how often the arm
+would have had nothing to send, and the round trip. A rate is only ever measured on the wall's
+clock, and this is one of the two places it is (the other is the bench).
 """
 
 from __future__ import annotations
@@ -68,6 +69,7 @@ import numpy as np
 from pydantic import BaseModel
 
 from quackd_lerobot import __version__
+from quackd_lerobot.policy import pipeline
 from quackd_lerobot.policy import protocol as wire
 from quackd_lerobot.policy.loop import FIRST_CHUNK_S, REFILL_SHARE, latency_ticks, rate_refusal
 from quackd_lerobot.policy.runner import Chunk, Features, Observation, PolicyRunner
@@ -107,6 +109,9 @@ BENCH_FRAME = (640, 480)
 mode a webcam most often starts in."""
 BENCH_INSTRUCTION = "quackd policy check --bench"
 """What a bench's reset tells the policy, so a server's log says what the session was."""
+LATENCY_STEP_S = 0.01
+"""What a measured latency is rounded up to a whole number of, so the `--latency-s` it
+suggests is never shorter than what was measured, and reads as a figure somebody would type."""
 
 
 class Refused(Exception):
@@ -125,7 +130,7 @@ class ServeRefused(ValueError):
 # ── what is served ──────────────────────────────────────────────────────────────────────
 
 SCRIPTED = "scripted:"
-CHECKPOINT = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+@[\w.\-/]+$")
+CHECKPOINT = pipeline.REPO_AT_REVISION
 """`owner/name@revision`: a Hub repository, always at a revision, so what a server loads cannot
 change under it between two runs."""
 
@@ -145,6 +150,9 @@ class ServeOptions:
     behind_tls: bool = False
     threads: int | None = None
     jpeg_quality: int | None = None
+    pins: tuple[str, ...] = ()
+    """`--pin REPO@REVISION`, each a model the checkpoint names inside itself, at the revision
+    to fetch it at, a commit or a tag (`pipeline.pinned_models`, `pipeline.check_fixed`)."""
 
 
 def parse_cameras(text: str | None) -> dict[str, str]:
@@ -200,18 +208,16 @@ def served_policy(options: ServeOptions) -> tuple[PolicyRunner, wire.PolicyInfo]
     `ServeRefused` for anything that would make a server not worth starting."""
     spec = options.policy.strip()
     name = spec.removeprefix(SCRIPTED)
+    checkpoint = bool(CHECKPOINT.match(spec))
     if spec.startswith(SCRIPTED):
         if name not in SCRIPTS:
             raise ServeRefused(
                 f"there is no scripted policy called {name!r}: the scripted ones are "
                 + ", ".join(f"{SCRIPTED}{n} ({what})" for n, what in SCRIPTS.items())
             )
-    elif CHECKPOINT.match(spec):
-        raise ServeRefused(
-            f"{spec} is a checkpoint, and this quackd serves scripted policies only: loading a "
-            "LeRobot checkpoint is not in this build yet. Serve --policy scripted:hold or "
-            "scripted:sweep to check the path from a policy to the arm"
-        )
+    elif checkpoint:
+        if len(spec) > pipeline.MAX_SPEC_CHARS:
+            raise ServeRefused(f"--policy {spec[:60]}... is longer than a Hub id and a revision")
     elif "/" in spec and "@" not in spec:
         raise ServeRefused(
             f"{spec} has no revision: name a checkpoint as REPO@REVISION, a commit or a tag, so "
@@ -245,16 +251,40 @@ def served_policy(options: ServeOptions) -> tuple[PolicyRunner, wire.PolicyInfo]
             "policy sees artefacts it never saw in training"
         )
     cameras = parse_cameras(options.cameras)
-    runner = named(name, rate_hz=options.fps)
+    if options.pins and not checkpoint:
+        raise ServeRefused(
+            "--pin fixes the revision of a model a checkpoint names inside itself, and a "
+            "scripted policy names none"
+        )
+    runner: PolicyRunner
+    loaded: pipeline.LeRobotRunner | None = None
+    if checkpoint:
+        try:
+            loaded = pipeline.load(
+                spec,
+                fps=options.fps,
+                pins=options.pins,
+                cameras=cameras,
+                threads=options.threads,
+                latency_s=latency,
+            )
+        except pipeline.PipelineRefused as e:
+            raise ServeRefused(str(e)) from None
+        runner, spec, cameras = loaded, loaded.checkpoint.spec, loaded.cameras
+        chunk = loaded.chunk
+    else:
+        scripted = named(name, rate_hz=options.fps)
+        runner, chunk = scripted, scripted.chunk or 1
     features = runner.features()
     if (refusal := rate_refusal(features)) is not None:
+        runner.close()
         raise ServeRefused(refusal.replace("the policy was not started", "not serving"))
-    chunk = runner.chunk or 1
     late = latency_ticks(latency, float(features.rate_hz))
     if not features.per_tick and late >= chunk:
         # the loop plays a chunk's actions from the tick it lands at, and a chunk that takes
         # this long lands after its last one: the simulator, which holds each chunk back its
         # declared latency, would play none of them, and neither would an arm
+        runner.close()
         raise ServeRefused(
             f"--latency-s {latency:g} is {late} ticks at {features.rate_hz:g} Hz, and each "
             f"chunk of {spec} holds {chunk} actions, one a tick, so every chunk would land "
@@ -266,17 +296,20 @@ def served_policy(options: ServeOptions) -> tuple[PolicyRunner, wire.PolicyInfo]
         protocol_version=wire.PROTOCOL_VERSION,
         server_version=__version__,
         policy=spec,
-        features=wire.PolicyFeatures(),
+        features=loaded.policy_features() if loaded else wire.PolicyFeatures(),
         rate_hz=float(features.rate_hz),
         rate_source=features.rate_source,
-        chunk_size=chunk,
+        chunk_size=loaded.chunk_size if loaded else chunk,
         n_action_steps=chunk,
         per_tick=features.per_tick,
-        gpu=False,
+        gpu=loaded.gpu if loaded else False,
+        state_quantiles=loaded.state_quantiles if loaded else None,
+        action_quantiles=loaded.action_quantiles if loaded else None,
         latency_s=float(latency),
-        threads=options.threads,
+        threads=loaded.threads if loaded else options.threads,
         jpeg_quality=quality,
         cameras=cameras,
+        loaded=list(loaded.loaded) if loaded else [],
     )
     return runner, info
 
@@ -395,18 +428,15 @@ class PolicyServer:
         return self.info
 
     def reset(self, request: wire.ResetRequest) -> wire.ResetReply:
-        declared = {camera.name for camera in request.cameras}
-        for name, key in self.info.cameras.items():
-            if name not in declared:
-                raise Refused(
-                    400,
-                    f"this server maps the {name} camera to {key}, and the arm declared "
-                    f"{', '.join(sorted(declared)) or 'no camera'}: give the arm that camera, or "
-                    "start the server with --cameras naming the arm's",
-                )
+        self._refuse_another_arm(request)
         with self._runner():
             self._refuse_a_second_client(request.replaces)
             try:
+                # a checkpoint's runner shapes its steps for the arm the reset declares: its
+                # motors in its bus's order, and its cameras (`pipeline.LeRobotRunner.begin`)
+                begin = getattr(self.runner, "begin", None)
+                if callable(begin):
+                    begin(tuple(request.motors), {c.name: c for c in request.cameras})
                 self.runner.reset(request.instruction)
             except Exception as e:
                 raise Refused(500, f"the policy's reset raised {type(e).__name__}: {e}") from None
@@ -478,6 +508,40 @@ class PolicyServer:
                 409, "that session is over: it was ended or replaced, or none was started"
             )
         return session
+
+    def _refuse_another_arm(self, request: wire.ResetRequest) -> None:
+        """Refuse a reset from an arm the policy cannot drive: one with another number of
+        motors than it learned from, or without a camera for an image it needs. The arm's own
+        connect refuses both first (`fit.py`), so this is for a client that did not ask. A
+        policy that pads a missing image (`PolicyFeatures.pads_images`) needs one camera of its
+        own and no more, and a scripted one needs every camera `--cameras` maps."""
+        features = self.info.features
+        declared = {camera.name for camera in request.cameras}
+        if features.state is not None and len(request.motors) != features.state:
+            raise Refused(
+                400,
+                f"the arm declared {len(request.motors)} motors, and {self.info.policy} takes a "
+                f"state of {features.state}: it learned from another arm",
+            )
+        if not features.images:
+            for name, key in self.info.cameras.items():
+                if name not in declared:
+                    raise Refused(
+                        400,
+                        f"this server maps the {name} camera to {key}, and the arm declared "
+                        f"{', '.join(sorted(declared)) or 'no camera'}: give the arm that camera, "
+                        "or start the server with --cameras naming the arm's",
+                    )
+            return
+        seen = {key for name, key in self.info.cameras.items() if name in declared}
+        unseen = [image.key for image in features.images if image.key not in seen]
+        if unseen and (not features.pads_images or len(unseen) == len(features.images)):
+            raise Refused(
+                400,
+                f"{self.info.policy} looks at {', '.join(unseen)}, and no camera the arm declared "
+                f"({', '.join(sorted(declared)) or 'none'}) is mapped to it: give the arm that "
+                "camera, or start the server with --cameras NAME=KEY naming one it has",
+            )
 
     def _refuse_a_second_client(self, replaces: str | None) -> None:
         """Refuse a reset that would end a session another client is still using. Called under
@@ -964,7 +1028,14 @@ def describe(info: wire.PolicyInfo) -> list[tuple[str, str]]:
     features = (
         "whatever the arm has (a scripted policy)"
         if info.features.state is None and not info.features.images
-        else f"state {info.features.state}, action {info.features.action}, images {images}"
+        else f"state {info.features.state}, action {info.features.action}, images "
+        f"{images or 'none'}"
+        + (", a missing one padded" if info.features.pads_images else "")
+        + (
+            f", actions named {', '.join(info.features.action_names)}"
+            if info.features.action_names
+            else ""
+        )
     )
 
     def quantiles(q: wire.Quantiles | None) -> str:
@@ -996,6 +1067,7 @@ def describe(info: wire.PolicyInfo) -> list[tuple[str, str]]:
         ("cameras", ", ".join(f"{k}={v}" for k, v in info.cameras.items()) or "none mapped"),
         ("state q01..q99", quantiles(info.state_quantiles)),
         ("action q01..q99", quantiles(info.action_quantiles)),
+        ("loaded", "; ".join(info.loaded) or "nothing, a scripted policy loads no repository"),
     ]
 
 
@@ -1007,7 +1079,9 @@ class BenchResult:
     """What `policy check --bench` measured, on the wall's clock: the ticks paced at the
     policy's rate, the ones that had an action to play, the ones with nothing (starved), the
     ones the pacer skipped for running late, and each request's round trip and the inference
-    time the server reported for it."""
+    time the server reported for it. `latency_s` is one step timed on its own before the
+    stream, a warm one, from the request going out to its chunk back, which is what a policy's
+    `--latency-s` declares."""
 
     seconds: float
     rate_hz: float
@@ -1018,10 +1092,18 @@ class BenchResult:
     rtt_s: tuple[float, ...] = ()
     inference_s: tuple[float, ...] = ()
     dropped: int = 0
+    latency_s: float | None = None
 
     @property
     def achieved_hz(self) -> float:
         return self.played / self.seconds if self.seconds > 0 else 0.0
+
+    @property
+    def declare_s(self) -> float | None:
+        """The measured latency rounded up to `LATENCY_STEP_S`, for `--latency-s`."""
+        if self.latency_s is None:
+            return None
+        return math.ceil(self.latency_s / LATENCY_STEP_S - 1e-9) * LATENCY_STEP_S
 
 
 def _ticks(n: int) -> str:
@@ -1060,6 +1142,15 @@ def describe_bench(result: BenchResult) -> list[tuple[str, str]]:
         rows.append(("inference", f"median {statistics.median(ms):.1f} ms on the server"))
     if result.dropped:
         rows.append(("dropped", f"{result.dropped} replies for another session or sequence"))
+    if result.latency_s is not None and result.declare_s is not None:
+        rows.append(
+            (
+                "latency",
+                f"{1000 * result.latency_s:.1f} ms measured for one warm step and its chunk "
+                f"back: serve with --latency-s {result.declare_s:.2f} so the simulator holds "
+                "each chunk back as long",
+            )
+        )
     return rows
 
 
@@ -1091,9 +1182,15 @@ def bench(
     latency is waited for in the tick that asked, as the loop waits for it, and any other is
     left to land while the ticks go on. The observation is every motor at 0 and a frame of
     seeded noise per camera the server maps, which JPEG compresses worst, so a round trip
-    measured here is not flattered by an easy picture."""
+    measured here is not flattered by an easy picture. Before the stream one warm step is timed
+    on its own (`BenchResult.latency_s`)."""
     info = runner.policy()
     runner.cameras = tuple(_synthetic_cameras(info))
+    if info.features.state is not None and len(runner.motors) != info.features.state:
+        raise ServeRefused(
+            f"{info.policy} takes a state of {info.features.state}, and the bench streams the "
+            f"SO-101's {len(runner.motors)} motors: bench it on the arm it learned from"
+        )
     runner.reset(BENCH_INSTRUCTION)
     features = runner.features()
     if (refusal := rate_refusal(features)) is not None:
@@ -1107,6 +1204,15 @@ def bench(
         for camera in runner.cameras
     }
     state = {f"{motor}.pos": 0.0 for motor in runner.motors}
+    # One step to warm the policy up, since a first inference pays for whatever torch does
+    # lazily, then one timed on its own: the whole wait for a chunk, both ways of the wire and
+    # the inference, which is what a declared latency stands for. Then a fresh session, so the
+    # stream starts from a policy that has seen nothing.
+    runner.next_chunk(Observation(0, {**state, **frames}), {})
+    started = clock()
+    runner.next_chunk(Observation(1, {**state, **frames}), {})
+    measured = clock() - started
+    runner.reset(BENCH_INSTRUCTION)
     rtts: list[float] = []
     inferences: list[float] = []
 
@@ -1182,6 +1288,7 @@ def bench(
         rtt_s=tuple(rtts),
         inference_s=tuple(inferences),
         dropped=int(getattr(runner, "dropped", 0)),
+        latency_s=measured,
     )
 
 

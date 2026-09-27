@@ -232,12 +232,26 @@ Also in scope:
   `ssh -L 9875:127.0.0.1:9875` or over `https://` with the certificate verified. It follows no
   proxy and no redirect, keeps the token out of every error, and holds every reply to a
   deadline however slowly it arrives, then caps and validates it before a goal in it reaches
-  the arm. This build serves scripted policies only, which are quackd's own code, so no
-  checkpoint has been loaded by it. What would be a security issue: a goal reaching the arm
-  from anything but the server the arm was pointed at, a request served without the token,
-  a number that is not finite getting through, the token reaching a URL or any record, a
-  server's words reaching a terminal with an escape in them, or a client without the token
-  making the server keep what it sent or a thread past its bounds.
+  the arm. It loads a LeRobot checkpoint (`policy/pipeline.py`), whose processors can name
+  code to import, so it fetches `config.json` and both processor JSONs first, at the revision
+  named, and refuses a step named by a `class` key or by any registry name outside the ones
+  ACT's, SmolVLA's and pi05's processors use, before any weights are fetched. It tells a step
+  that could trust a repository's own code not to, and refuses a model the checkpoint names
+  inside itself unless `--pin REPO@REVISION` fixes its revision at a whole commit or a tag,
+  fetching it with no `.py` and no pickle, and refusing it if its directory in the Hub's cache
+  holds anything but configs, tokenizer files and safetensors all the same, or maps a class to
+  code (`auto_map`). A SmolVLA that names no backbone is refused, since LeRobot would load a
+  default of its own, and every weight is loaded strictly, so a checkpoint is never served as a
+  random network. Only a tiny random ACT has been loaded by it, in CI. The arm checks at
+  connect, before any torque, that what the server says it serves fits the arm, and again as
+  every segment starts, so a server started again with another policy drives nothing. What would
+  be a security issue: a goal reaching the arm from anything but the server the arm was pointed
+  at, a request served without the token, a number that is not finite getting through, the token
+  reaching a URL or any record, a server's words reaching a terminal with an escape in them, a
+  client without the token making the server keep what it sent or a thread past its bounds, a
+  checkpoint getting code imported by a path it chose or a repository's own code trusted, a
+  model a checkpoint names loading at a revision nobody pinned, or a policy the arm's connect
+  did not check starting a segment.
 - **The bridge daemon** (`bridge/open_duck/quackd_duck_bridge.py`), a TCP listener on port
   9871 that walks a 42 cm biped. It binds loopback by default and compares a token with
   `hmac.compare_digest`, but a token is only required if one is configured, and binding it

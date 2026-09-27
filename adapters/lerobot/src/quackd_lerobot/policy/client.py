@@ -33,6 +33,15 @@ no dependency from a policy: no torch, no LeRobot, no HTTP library.
   that stops. A step's is longer than any patience the loop has, so a server that stops
   answering starves the segment, which ends it with the arm held, before the call gives up.
 
+**Whether the policy fits the arm** is asked at connect, before the arm is energised
+(`fit_arm`, and `fit.py` for what is checked): the arm hands the client its bus's motors, a
+frame's size from each camera and its calibrated travel, and a policy that could not drive it
+refuses the connect. Two of the refusals can be overridden by a caller who knows better, a
+frame of another size (`accept_frame_size`) and a policy trained on an arm calibrated another
+way (`accept_other_frame`), and the record says so when they are. It is asked again at every
+reset, of what the server says then, so a server started again with another policy since the
+connect starts no segment (`_refit`).
+
 A keep-alive socket the server has closed while the loop was idle is found only when it is
 next used, so a call on a reused socket that fails that way is sent once more on a new one.
 The server answers a repeated step from what it answered the first time (its sequence
@@ -61,6 +70,7 @@ from pydantic import BaseModel
 
 from quackd.command import redacted_url
 from quackd_lerobot.policy import protocol as wire
+from quackd_lerobot.policy.fit import Fit, PolicyMisfit, fit
 from quackd_lerobot.policy.loop import FIRST_CHUNK_S
 from quackd_lerobot.policy.runner import Chunk, Features, Observation
 
@@ -218,6 +228,14 @@ def client_token(given: str | None) -> str:
     )
 
 
+Identity = tuple[str, tuple[str, ...]]
+"""What a policy is, as `fit_arm` keeps it: its name and every repository its server loaded."""
+
+
+def _identity(info: wire.PolicyInfo) -> Identity:
+    return info.policy, tuple(info.loaded)
+
+
 # ── the runner ──────────────────────────────────────────────────────────────────────────
 
 
@@ -229,7 +247,8 @@ class RemoteRunner:
     `CALL_TIMEOUT_S` and `STEP_TIMEOUT_S`, as attributes a test can shorten. `dropped` counts
     replies thrown away for a session or a sequence that was not the request's, and
     `last_rtt_s` and `last_inference_s` are the last step's round trip and the inference time
-    the server reported for it, for `quackd policy check --bench` to read."""
+    the server reported for it, for `quackd policy check --bench` to read. `accept_frame_size`
+    and `accept_other_frame` are the two overrides `fit_arm` takes."""
 
     def __init__(
         self,
@@ -238,12 +257,16 @@ class RemoteRunner:
         token: str,
         motors: Sequence[str],
         cameras: Sequence[wire.CameraInfo] = (),
+        accept_frame_size: bool = False,
+        accept_other_frame: bool = False,
     ) -> None:
         self.scheme, self.host, self.port, self._prefix = policy_address(url)
         self.url = redacted_url(url.strip())
         self._token = wire.clean_token(token, "the caller")
         self.motors = tuple(motors)
         self.cameras = tuple(cameras)
+        self.accept_frame_size = accept_frame_size
+        self.accept_other_frame = accept_other_frame
         self.connect_timeout_s = CONNECT_TIMEOUT_S
         self.call_timeout_s = CALL_TIMEOUT_S
         self.step_timeout_s = STEP_TIMEOUT_S
@@ -253,6 +276,7 @@ class RemoteRunner:
         self.dropped = 0
         self.last_rtt_s: float | None = None
         self.last_inference_s: float | None = None
+        self._fitted: tuple[dict[str, tuple[float, float]], float, Identity] | None = None
         self._conn: http.client.HTTPConnection | None = None
         self._deadline = _Deadline()
         self._reply_class = _bounded_reply(self._deadline)
@@ -281,13 +305,81 @@ class RemoteRunner:
         self.info = self._read(wire.PolicyInfo, said, wire.POLICY_PATH)
         return self.info
 
+    @property
+    def answer_within_s(self) -> float:
+        """The longest one call on the server can take, the second try on a stale socket
+        included, and one call's time more: a caller that waits this long for a call always
+        hears this client's own sentence about what went wrong before its own patience ends."""
+        return 2 * (self.connect_timeout_s + self.call_timeout_s) + self.call_timeout_s
+
+    def fit_arm(
+        self,
+        motors: Sequence[str],
+        cameras: Sequence[wire.CameraInfo],
+        travel: Mapping[str, tuple[float, float]],
+        slack_deg: float,
+    ) -> tuple[str, ...]:
+        """Take the arm as its connect found it, `motors` in its bus's order and `cameras` as a
+        frame of each gave them, ask the server what it serves, and say whether that fits an
+        arm of `travel` (`fit.fit`). What the record should say comes back; a policy that does
+        not fit is a `PolicyMisfit`, and a server that cannot be asked a `PolicyServerError`.
+        Called at connect, before the arm is energised, on the loop's worker. The arm and the
+        policy it was fitted to are kept, and every `reset` asks again (`_refit`)."""
+        self.motors = tuple(motors)
+        self.cameras = tuple(cameras)
+        self._fitted = None
+        info = self.policy()
+        verdict = self._fit(info, dict(travel), float(slack_deg))
+        if verdict.refusal is not None:
+            raise PolicyMisfit(verdict.refusal)
+        self._fitted = (dict(travel), float(slack_deg), _identity(info))
+        return verdict.notes
+
+    def _fit(
+        self, info: wire.PolicyInfo, travel: Mapping[str, tuple[float, float]], slack_deg: float
+    ) -> Fit:
+        return fit(
+            info,
+            motors=self.motors,
+            cameras=self.cameras,
+            travel=travel,
+            slack_deg=slack_deg,
+            where=self.url,
+            accept_frame_size=self.accept_frame_size,
+            accept_other_frame=self.accept_other_frame,
+        )
+
+    def _refit(self, info: wire.PolicyInfo) -> None:
+        """The check `fit_arm` made at connect, made again on what the server says now, before a
+        session starts. The arm's process lives as long as a pilot's session, and the server may
+        have been started again on the same port and token with another policy since: one the
+        connect never checked, which the record does not name, and which might not fit. So a
+        policy other than the one fitted is refused with a sentence saying to connect again, and
+        the same one is checked again, since the server may map its cameras otherwise now."""
+        if self._fitted is None:
+            return
+        travel, slack_deg, fitted = self._fitted
+        now = _identity(info)
+        if now != fitted:
+            raise PolicyMisfit(
+                f"the policy at {self.url} is now {info.policy}, and the arm was connected to "
+                f"{fitted[0]}: the server was started again with another policy since, and "
+                "the check at connect and the record are about the one before. Connect the arm "
+                "again, so the new one is checked and named"
+            )
+        verdict = self._fit(info, travel, slack_deg)
+        if verdict.refusal is not None:
+            raise PolicyMisfit(verdict.refusal)
+
     # ── PolicyRunner ────────────────────────────────────────────────────────────────────
 
     def reset(self, instruction: str) -> None:
         """Ask the server what it serves, then start a session for `instruction` in place of
         this client's last. A segment reads its features and latency right after, so they are
-        the server's as of now. Another client's session still in use refuses it (409)."""
-        self.policy()
+        the server's as of now. Another client's session still in use refuses it (409). An arm
+        fitted at connect is fitted again first, and a policy that is not the one fitted, or no
+        longer fits, is a `PolicyMisfit` before any session starts (`_refit`)."""
+        self._refit(self.policy())
         request = self._message(
             wire.ResetRequest,
             {

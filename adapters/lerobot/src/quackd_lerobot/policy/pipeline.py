@@ -1,0 +1,987 @@
+"""The LeRobot pipeline behind `quackd policy serve --policy REPO@REVISION`.
+
+It runs in the policy server's process and in no other. A checkpoint's processors are code
+(`upstream_api.PROCESSOR_CLASS_IMPORT`), so nothing on the arm's side imports this module, and
+it imports torch, LeRobot and huggingface_hub only inside `load` and the runner that builds: the
+server imports it with none of them installed, and serves a scripted policy that way.
+
+**Loading a checkpoint reads before it builds, and refuses rather than guesses** (`load`):
+
+1. `config.json` and both processor JSONs are fetched at the revision named, and nothing else
+   of the repository yet (`upstream_api.CHECKPOINT_FILES`).
+2. They are checked. The policy is one of the types whose processors were read at the pin
+   (`upstream_api.POLICY_TYPES`), and its features are a state, images and an action. Every
+   processor step is named by a registry name read at the pin (`ALLOWED_STEPS`), and a step
+   named by a `class` key is refused, so nothing is imported from a path a checkpoint chose.
+   A step that could trust a repository's own code is told not to, and a model a checkpoint
+   names inside itself, SmolVLA's backbone or a tokenizer, is refused unless `--pin
+   REPO@REVISION` says which revision to fetch it at (`upstream_api.TOKENIZER_TRUSTS_REMOTE_CODE`).
+   A SmolVLA config that names no backbone is refused too, since LeRobot would fill in its own.
+   A pin is a commit or a tag, and never a branch, which moves (`check_fixed`).
+3. The rate is `--fps`, or else the fps of the dataset `train_config.json` names, read at the
+   revision it names, a commit or a tag, or else the server refuses to start
+   (`upstream_api.TRAIN_DATASET`).
+4. Only then are the weights, the processors' state files and the pinned models fetched, the
+   pinned models with no code and no pickle in what is fetched, and refused if their directory
+   holds any all the same or maps a class to code (`check_pinned`). The policy is built on the
+   device `auto_select_torch_device` picks (`upstream_api.AUTO_DEVICE`), with every weight the
+   file holds loaded into it or none (`build_policy`). An ACT's ImageNet backbone is never
+   fetched (`upstream_api.ACT_BACKBONE_WEIGHTS`), and both processors' device steps are put
+   where the policy runs and where its answers go (`upstream_api.DEVICE_OVERRIDE`).
+
+Every repository fetched is recorded with its revision (`Checkpoint.loaded`), and the server
+says them in `/v1/policy`.
+
+**A step follows upstream's own loop** (`upstream_api.POLICY_PIPELINE`, `LeRobotRunner`): the
+arm's reading goes through `build_inference_frame`, named by the session's motors in its bus's
+order, then the pre-processor, then `predict_action_chunk` cut to `n_action_steps`, then the
+post-processor over the whole chunk at once, and `make_robot_action` makes each row a goal per
+motor. One lock holds the three together, so a reset never lands between them, and a reset
+resets the policy and both processors. A policy asked every tick (an ACT with temporal
+ensembling) goes through `select_action` instead, one action a step. A pi05 that learned
+relative actions stays on chunks: its whole chunk is made absolute against the state it was
+predicted from, which is how its training made it relative, and not re-anchored each tick as
+LeRobot's own loop does (`upstream_api.RELATIVE_ACTIONS`, `VLA_PIPELINE`).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import fnmatch
+import functools
+import json
+import math
+import re
+import threading
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
+
+import numpy as np
+
+from quackd_lerobot.policy import protocol as wire
+from quackd_lerobot.policy import upstream_api as up
+from quackd_lerobot.policy.runner import Chunk, Features, Observation
+
+REPO_AT_REVISION = re.compile(r"^([A-Za-z0-9][\w.\-]*/[\w.\-]+)@([\w.\-/]+)$", re.ASCII)
+"""`owner/name@revision`: a Hub repository at a revision, the way `--policy` names a checkpoint
+and `--pin` a model a checkpoint names inside itself."""
+REPO_ID = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$", re.ASCII)
+MAX_SPEC_CHARS = 150
+"""The longest `REPO@REVISION` taken: a Hub id is at most 96 characters, and a revision a
+commit's 40 or a short tag, with room left for what `/v1/policy` says it is."""
+ALLOWED_STEPS = frozenset(up.DEFAULT_STEP_NAMES + up.VLA_STEP_NAMES)
+"""The processor steps a checkpoint may name, each by the registry name LeRobot registers it
+under: ACT's, which are the steps every policy is built from, and those SmolVLA and pi05 add.
+Each is one of LeRobot's own classes, found in its registry, never imported by a path. The
+action tokenizer is not among them: it trusts a repository's code by default, and it tokenises
+actions for training, which a server never does."""
+NESTED_STEP_KEYS = ("tokenizer_name",)
+"""The keys of a step's config that name a model to load from the Hub
+(`upstream_api.TOKENIZER_TRUSTS_REMOTE_CODE`)."""
+NESTED_CONFIG_KEYS = {"smolvla": ("vlm_model_name",)}
+"""The keys of `config.json` that name one, by the type that has them: SmolVLA's backbone. A
+config that leaves one out is refused, because LeRobot fills it with its own default, a Hub
+name it would then load at no revision (`upstream_api.TOKENIZER_TRUSTS_REMOTE_CODE`)."""
+TRUST_KEY = "trust_remote_code"
+NESTED_FILES = ("*.json", "*.txt", "*.model", "*.jinja", "*.safetensors")
+"""What is fetched of a pinned model: configs, tokenizer files and safetensors weights, and
+never a `.py` that remote code would run from, nor a pickle a load would run."""
+NESTED_DOCS = ("*.md", ".gitattributes")
+"""What else a pinned model's directory may hold: a repository's own words about itself, which
+nothing loads."""
+CODE_MAP_KEY = "auto_map"
+"""The key of a transformers config that maps a class to code of the repository's own, or of
+another repository's (`upstream_api.TOKENIZER_TRUSTS_REMOTE_CODE`)."""
+LENIENT_LOADERS = frozenset({"pi05"})
+"""The policy types whose own `from_pretrained` returns the model without its weights when they
+do not load, having printed why (`upstream_api.PI05_FROM_PRETRAINED`)."""
+MODEL_PREFIX = "model."
+"""What pi05's loader puts in front of each weight's name that lacks it."""
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+"""A commit, as the Hub's cache names the directory a revision's files land in."""
+STATE_FILE = re.compile(r"^[\w.\-]+\.safetensors$", re.ASCII)
+"""A processor step's `state_file`: a plain file name beside the JSON, never a path."""
+PADDED_TYPES = frozenset({"smolvla", "pi05"})
+"""The policy types that run with some of their images missing
+(`upstream_api.MISSING_IMAGES_PADDED`)."""
+
+
+class PipelineRefused(ValueError):
+    """A checkpoint the server will not load, in one sentence that says what to do instead."""
+
+
+# ── reading what a checkpoint says it is ────────────────────────────────────────────────
+
+
+def parse_repo(spec: str, flag: str) -> tuple[str, str]:
+    """`REPO@REVISION` as (repo, revision), or a refusal that names `flag`."""
+    text = spec.strip()
+    match = REPO_AT_REVISION.match(text)
+    if match is None or len(text) > MAX_SPEC_CHARS:
+        raise PipelineRefused(
+            f"{flag} takes REPO@REVISION, a Hub repository at a commit or a tag in ASCII, "
+            f"such as lerobot/smolvla_base@REVISION, and not {text[:60]!r}"
+        )
+    return match.group(1), match.group(2)
+
+
+def parse_pins(pins: Sequence[str]) -> dict[str, str]:
+    """Each `--pin REPO@REVISION` as repo -> revision. A repository pinned twice at two
+    revisions is refused rather than one of them picked."""
+    pinned: dict[str, str] = {}
+    for pin in pins:
+        repo, revision = parse_repo(pin, "--pin")
+        if pinned.get(repo, revision) != revision:
+            raise PipelineRefused(f"--pin names {repo} at {pinned[repo]} and at {revision}")
+        pinned[repo] = revision
+    return pinned
+
+
+@dataclass(frozen=True)
+class Shape:
+    """What a checkpoint's `config.json` says it is, checked: its type, the size of its state
+    and its action, its images as (key, height, width), its chunking, whether it is asked every
+    tick, its action's names where it has them, and whether it pads an image it is not given."""
+
+    policy_type: str
+    state: int
+    action: int
+    images: tuple[tuple[str, int, int], ...]
+    chunk_size: int
+    n_action_steps: int
+    per_tick: bool = False
+    action_names: tuple[str, ...] | None = None
+    pads_images: bool = False
+
+    @property
+    def image_keys(self) -> tuple[str, ...]:
+        return tuple(key for key, _, _ in self.images)
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _feature(features: Any, key: str) -> tuple[str, tuple[int, ...]] | None:
+    """A feature of `config.json` as (type, shape), or None when it is not one."""
+    ft = features.get(key) if isinstance(features, Mapping) else None
+    if not isinstance(ft, Mapping) or not isinstance(ft.get("type"), str):
+        return None
+    shape = ft.get("shape")
+    if not isinstance(shape, list | tuple) or not all(_count(n) for n in shape):
+        return None
+    return ft["type"], tuple(int(n) for n in shape)
+
+
+def check_config(config: Any, spec: str, *, gpu: bool) -> Shape:
+    """A checkpoint's `config.json`, checked, or a refusal that says what is wrong with it.
+
+    The policy is a type the server has read the processors of (`upstream_api.POLICY_TYPES`);
+    its inputs are one state and some images, and its output one action
+    (`upstream_api.FEATURE_TYPES`, `FEATURE_KEYS`); its chunking fits the protocol; and a policy
+    asked every tick is refused without a GPU, since it has to answer inside one
+    (`upstream_api.TICK_MODE`)."""
+    if not isinstance(config, Mapping):
+        raise PipelineRefused(f"{spec}'s {up.CONFIG_FILE} is not a JSON object")
+    policy_type = config.get("type")
+    if policy_type not in up.SERVED_TYPES:
+        raise PipelineRefused(
+            f"{spec} is a {policy_type!r} policy, and quackd serves "
+            f"{', '.join(up.SERVED_TYPES)}, the types whose processors it has read"
+        )
+    inputs, outputs = config.get("input_features"), config.get("output_features")
+    inputs = inputs if isinstance(inputs, Mapping) else {}
+    outputs = outputs if isinstance(outputs, Mapping) else {}
+    state = _feature(inputs, up.STATE_KEY)
+    if state is None or state[0] != "STATE" or len(state[1]) != 1:
+        raise PipelineRefused(
+            f"{spec} takes no {up.STATE_KEY} of one dimension, which is the arm's reading of "
+            "its motors: quackd serves a policy that reads the arm it moves"
+        )
+    images: list[tuple[str, int, int]] = []
+    for key in inputs:
+        if key == up.STATE_KEY:
+            continue
+        ft = _feature(inputs, key)
+        if ft is None or ft[0] != "VISUAL" or len(ft[1]) != 3:
+            raise PipelineRefused(
+                f"{spec} takes {key}, which is not an image, and an arm gives only its motors "
+                "and its cameras"
+            )
+        height, width = ft[1][1], ft[1][2]  # (C, H, W), as config.json keeps an image
+        if not re.match(wire.NAME_PATTERN, str(key)) or max(height, width) > wire.MAX_SIDE:
+            raise PipelineRefused(
+                f"{spec} looks at {str(key)[:80]!r} at {width}x{height}, which is not an image "
+                "key and a size the protocol carries"
+            )
+        images.append((str(key), height, width))
+    action = _feature(outputs, up.ACTION_KEY)
+    if action is None or action[0] != "ACTION" or len(action[1]) != 1 or len(outputs) != 1:
+        raise PipelineRefused(f"{spec} does not answer one {up.ACTION_KEY} of one dimension")
+    if state[1][0] > wire.MAX_MOTORS or action[1][0] > wire.MAX_MOTORS:
+        raise PipelineRefused(f"{spec} has more than the {wire.MAX_MOTORS} motors a session names")
+    if len(images) > wire.MAX_CAMERAS:
+        raise PipelineRefused(f"{spec} looks at more than {wire.MAX_CAMERAS} cameras")
+    chunk_size = _count(config.get("chunk_size"))
+    steps = _count(config.get("n_action_steps"))
+    if chunk_size is None or steps is None or steps > chunk_size or steps > wire.MAX_CHUNK:
+        raise PipelineRefused(
+            f"{spec} says chunk_size {config.get('chunk_size')!r} and n_action_steps "
+            f"{config.get('n_action_steps')!r}, and the server plays at most {wire.MAX_CHUNK} "
+            "of a chunk it predicted (upstream_api.CHUNK_SIZE)"
+        )
+    per_tick = policy_type == "act" and config.get("temporal_ensemble_coeff") is not None
+    if per_tick and not gpu:
+        raise PipelineRefused(
+            f"{spec} ensembles its chunks over time (temporal_ensemble_coeff), which asks it "
+            "every tick, and this machine has no GPU to answer inside one: serve it on a GPU, "
+            "or serve a checkpoint trained without temporal ensembling"
+        )
+    names = config.get("action_feature_names")
+    action_names: tuple[str, ...] | None = None
+    if names is not None:
+        if not isinstance(names, list) or not all(
+            isinstance(n, str) and re.match(wire.NAME_PATTERN, n) for n in names
+        ):
+            raise PipelineRefused(f"{spec}'s action_feature_names are not names of motors")
+        action_names = tuple(names)
+    return Shape(
+        policy_type=str(policy_type),
+        state=state[1][0],
+        action=action[1][0],
+        images=tuple(images),
+        chunk_size=chunk_size,
+        n_action_steps=steps,
+        per_tick=per_tick,
+        action_names=action_names,
+        pads_images=policy_type in PADDED_TYPES,
+    )
+
+
+def check_processor(doc: Any, filename: str, spec: str) -> list[dict[str, Any]]:
+    """A processor JSON's steps, each checked, or a refusal naming the step that is not allowed.
+
+    A step is named by a registry name in `ALLOWED_STEPS` or it is refused, and a step with a
+    `class` key is refused whatever else it says, because loading one imports that path
+    (`upstream_api.PROCESSOR_CLASS_IMPORT`). A state file is a plain `.safetensors` name
+    beside the JSON."""
+    steps = doc.get("steps") if isinstance(doc, Mapping) else None
+    if not isinstance(steps, list):
+        raise PipelineRefused(f"{spec}'s {filename} is not a processor: it has no list of steps")
+    checked: list[dict[str, Any]] = []
+    for n, step in enumerate(steps):
+        if not isinstance(step, Mapping):
+            raise PipelineRefused(f"step {n} of {spec}'s {filename} is not a JSON object")
+        if "class" in step:
+            raise PipelineRefused(
+                f"step {n} of {spec}'s {filename} is named by its class, "
+                f"{str(step['class'])[:80]!r}, which loading it would import from wherever that "
+                "says, so it is code the checkpoint chose: quackd loads a step by a registry "
+                "name it has read, and nothing else"
+            )
+        name = step.get("registry_name")
+        if not isinstance(name, str) or name not in ALLOWED_STEPS:
+            raise PipelineRefused(
+                f"step {n} of {spec}'s {filename} is {str(name)[:80]!r}, which is not one of the "
+                f"processor steps quackd has read and allows: {', '.join(sorted(ALLOWED_STEPS))}"
+            )
+        config = step.get("config", {})
+        if not isinstance(config, Mapping):
+            raise PipelineRefused(f"step {n} of {spec}'s {filename} has a config that is not one")
+        state = step.get("state_file")
+        if state is not None and not (isinstance(state, str) and STATE_FILE.match(state)):
+            raise PipelineRefused(
+                f"step {n} of {spec}'s {filename} keeps its state in {str(state)[:80]!r}, which "
+                "is not a .safetensors file beside it"
+            )
+        checked.append({"registry_name": name, "config": dict(config), "state_file": state})
+    return checked
+
+
+def nested_models(
+    config: Mapping[str, Any], steps: Sequence[Mapping[str, Any]], spec: str
+) -> dict[str, str]:
+    """Every model a checkpoint names inside itself, as repo -> the key that names it. Each is
+    a Hub id, or refused: the server loads nothing by a path a checkpoint wrote. A key of
+    `config.json` its type has (`NESTED_CONFIG_KEYS`) is refused when it is missing, since
+    LeRobot would load its own default in its place, at no revision. A step's is not: a
+    tokenizer step with no name loads nothing and fails to build."""
+    found: dict[str, str] = {}
+    for key in NESTED_CONFIG_KEYS.get(str(config.get("type")), ()):
+        if config.get(key) is None:
+            raise PipelineRefused(
+                f"{spec}'s {up.CONFIG_FILE} names no {key}, and LeRobot would load its own "
+                "default in its place, from the Hub at whatever revision it has that day: serve "
+                f"a copy of the checkpoint whose {up.CONFIG_FILE} names it, and pin that with "
+                "--pin REPO@REVISION"
+            )
+    named = [(key, config.get(key)) for keys in NESTED_CONFIG_KEYS.values() for key in keys]
+    named += [(key, s["config"].get(key)) for s in steps for key in NESTED_STEP_KEYS]
+    for key, value in named:
+        if value is None:
+            continue
+        if not isinstance(value, str) or not REPO_ID.match(value):
+            raise PipelineRefused(
+                f"{spec} names {str(value)[:80]!r} as its {key}, which is not a Hub repository "
+                "quackd can fetch at a revision you pin"
+            )
+        found.setdefault(value, key)
+    return found
+
+
+def pinned_models(nested: Mapping[str, str], pins: Mapping[str, str], spec: str) -> None:
+    """Refuse a nested model with no `--pin`, and a `--pin` for a model nothing names."""
+    for repo, key in nested.items():
+        if repo not in pins:
+            raise PipelineRefused(
+                f"{spec} names {repo} as its {key}, which would load at whatever revision the "
+                f"Hub has that day: pass --pin {repo}@REVISION, a commit or a tag you have read, "
+                "and the server fetches it at that revision and at no other"
+            )
+    for repo in pins:
+        if repo not in nested:
+            raise PipelineRefused(
+                f"--pin names {repo}, and {spec} names no such model: pin only the models it "
+                f"names{', which are ' + ', '.join(nested) if nested else ', and it names none'}"
+            )
+
+
+# ── fetching ────────────────────────────────────────────────────────────────────────────
+
+
+class Hub(Protocol):
+    """Where a checkpoint's files come from: the Hugging Face Hub (`HubFetch`), or a test's."""
+
+    def file(
+        self, repo: str, revision: str, filename: str, *, dataset: bool = False
+    ) -> Path | None:
+        """One file of `repo` at `revision`, or None when the repository has no such file."""
+        ...
+
+    def snapshot(self, repo: str, revision: str, patterns: Sequence[str]) -> Path:
+        """The files of `repo` at `revision` that match `patterns`, as a directory."""
+        ...
+
+    def tags(self, repo: str, *, dataset: bool = False) -> frozenset[str]:
+        """The revisions that name a tag of `repo`, each by its name and by its full ref, and
+        none a branch shares. A `PipelineRefused` when the Hub cannot be asked, whose words go
+        on from a clause (`check_fixed`)."""
+        ...
+
+
+def _one_line(error: BaseException) -> str:
+    text = " ".join(str(error).split()) or type(error).__name__
+    return text if len(text) <= 300 else text[:297] + "..."
+
+
+class HubFetch:
+    """The Hub, through huggingface_hub's own cache, at a revision always. With `HF_HUB_OFFLINE`
+    set it answers from that cache alone, which is how CI's torch job runs."""
+
+    def file(
+        self, repo: str, revision: str, filename: str, *, dataset: bool = False
+    ) -> Path | None:
+        from huggingface_hub import errors, hf_hub_download
+
+        absent = getattr(errors, "RemoteEntryNotFoundError", errors.EntryNotFoundError)
+        try:
+            return Path(
+                hf_hub_download(
+                    repo,
+                    filename,
+                    revision=revision,
+                    repo_type="dataset" if dataset else "model",
+                )
+            )
+        except errors.LocalEntryNotFoundError:
+            raise PipelineRefused(
+                f"{filename} of {repo}@{revision} is not in this machine's Hub cache, and the "
+                "Hub could not be asked for it (no network, or HF_HUB_OFFLINE is set)"
+            ) from None
+        except absent:
+            return None
+        except Exception as e:
+            raise PipelineRefused(
+                f"{filename} of {repo}@{revision} could not be fetched: {_one_line(e)}"
+            ) from None
+
+    def snapshot(self, repo: str, revision: str, patterns: Sequence[str]) -> Path:
+        from huggingface_hub import snapshot_download
+
+        try:
+            return Path(snapshot_download(repo, revision=revision, allow_patterns=list(patterns)))
+        except Exception as e:
+            raise PipelineRefused(
+                f"{repo}@{revision} could not be fetched: {_one_line(e)}"
+            ) from None
+
+    def tags(self, repo: str, *, dataset: bool = False) -> frozenset[str]:
+        from huggingface_hub import HfApi, errors
+
+        try:
+            refs = HfApi().list_repo_refs(repo, repo_type="dataset" if dataset else "model")
+        except errors.OfflineModeIsEnabled:
+            raise PipelineRefused(
+                "HF_HUB_OFFLINE is set, so the Hub cannot be asked which of its revisions are tags"
+            ) from None
+        except Exception as e:
+            raise PipelineRefused(
+                f"the Hub could not say which of its revisions are tags: {_one_line(e)}"
+            ) from None
+        # a name that is a branch's as well as a tag's is refused, rather than guessed at
+        branches = {branch.name for branch in refs.branches}
+        return frozenset(
+            name for tag in refs.tags if tag.name not in branches for name in (tag.name, tag.ref)
+        )
+
+
+def _landed(spec: str, directory: Path, revision: str) -> str:
+    """`spec` as the record keeps it: with the commit its files landed at, where the Hub's
+    cache names their directory by one and it is not the revision given, so a tag or a branch
+    is recorded as the commit it was that day."""
+    commit = directory.name
+    if COMMIT.match(commit) and commit != revision:
+        return f"{spec}, commit {commit[:12]}"
+    return spec
+
+
+def check_fixed(
+    hub: Hub, repo: str, revision: str, what: str, instead: str, *, dataset: bool = False
+) -> None:
+    """Refuse `revision` of `repo` unless it is a commit or a tag, the revisions that name the
+    same files from one day to the next. A branch names whatever was last pushed to it, and a
+    pull request's ref the same, so what was read at one could change under you between two
+    serves. A whole commit is known by its shape, and a tag only by asking the Hub (`Hub.tags`),
+    so with the Hub out of reach only a commit is taken. `what` begins the sentence, and
+    `instead` ends it with what to do."""
+    if COMMIT.match(revision):
+        return
+    try:
+        tagged = revision in hub.tags(repo, dataset=dataset)
+    except PipelineRefused as e:
+        raise PipelineRefused(
+            f"{what} {repo}@{revision}, which is not a whole commit, and {e}: {instead}"
+        ) from None
+    if not tagged:
+        raise PipelineRefused(
+            f"{what} {repo}@{revision}, and {revision} is neither a whole commit nor one of its "
+            f"tags, so what it names could change under you: {instead}"
+        )
+
+
+def _json(path: Path, what: str) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        raise PipelineRefused(f"{what} is not JSON quackd can read: {_one_line(e)}") from None
+
+
+def check_pinned(directory: Path, spec: str) -> None:
+    """A pinned model's directory as it is handed to the build, checked, or a refusal.
+
+    What was fetched of it is `NESTED_FILES` alone, but the Hub's cache keeps one directory per
+    commit, and it holds whatever was fetched at that commit before, a `.py` or a pickle
+    included. So every file in it is one `NESTED_FILES` or `NESTED_DOCS` names, and no JSON in
+    it maps a class to code (`CODE_MAP_KEY`), which is what would have transformers ask to run
+    a repository's own code: SmolVLA's build asks for its backbone without saying
+    `trust_remote_code` either way (`upstream_api.TOKENIZER_TRUSTS_REMOTE_CODE`)."""
+    fresh = (
+        "point HF_HUB_CACHE at a cache that has not fetched this revision before, or delete "
+        f"{directory} and serve again"
+    )
+    for path in sorted(p for p in directory.rglob("*") if p.is_file()):
+        name = path.relative_to(directory).as_posix()
+        if not any(fnmatch.fnmatch(name, p) for p in NESTED_FILES + NESTED_DOCS):
+            raise PipelineRefused(
+                f"{spec} in this machine's Hub cache holds {name[:80]!r}, which is not a "
+                "config, a tokenizer file or safetensors, and could be code or a pickle a "
+                f"load would run: {fresh}"
+            )
+        said = _json(path, f"{spec}'s {name}") if name.endswith(".json") else None
+        if isinstance(said, Mapping) and CODE_MAP_KEY in said:
+            raise PipelineRefused(
+                f"{spec}'s {name} maps its classes to code ({CODE_MAP_KEY}), which loading it "
+                "would ask to run: quackd loads a model transformers has the code for, and "
+                "nothing a repository brings with it"
+            )
+
+
+def _required(hub: Hub, repo: str, revision: str, filename: str, *, beside: Path | None) -> Path:
+    """A file the checkpoint must have, in the same directory as the rest of it."""
+    path = hub.file(repo, revision, filename)
+    if path is None:
+        raise PipelineRefused(
+            f"{repo}@{revision} has no {filename}, so it is not a LeRobot checkpoint quackd can "
+            "serve: name the repository and revision `lerobot-train` pushed, or a copy of it"
+        )
+    if beside is not None and path.parent != beside:
+        raise PipelineRefused(
+            f"{filename} of {repo}@{revision} did not land beside its {up.CONFIG_FILE}, so the "
+            "files would not be one checkpoint"
+        )
+    return path
+
+
+def resolve_rate(
+    fps: float | None, repo: str, revision: str, hub: Hub
+) -> tuple[float, str, list[str]]:
+    """The rate a checkpoint is served at, where it came from, and what was fetched to learn it.
+
+    `--fps` when it is given. Otherwise the fps of the dataset `train_config.json` names, read
+    from its `meta/info.json` at the revision the training run named (`upstream_api.
+    TRAIN_DATASET`), since no config carries a rate (`upstream_api.CONFIG_HAS_NO_RATE`). A
+    dataset named at no revision, or at a branch, is refused rather than read at whatever it is
+    today (`check_fixed`)."""
+    if fps is not None:
+        return float(fps), "--fps", []
+    spec = f"{repo}@{revision}"
+    give = "give --fps, the fps of the dataset it learned from"
+    path = hub.file(repo, revision, up.TRAIN_CONFIG_FILE)
+    if path is None:
+        raise PipelineRefused(
+            f"{spec} has no {up.TRAIN_CONFIG_FILE} to say what data it learned from, and no "
+            f"checkpoint carries a rate: {give}"
+        )
+    train = _json(path, f"{spec}'s {up.TRAIN_CONFIG_FILE}")
+    dataset = train.get("dataset") if isinstance(train, Mapping) else None
+    dataset = dataset if isinstance(dataset, Mapping) else {}
+    name, at = dataset.get("repo_id"), dataset.get("revision")
+    if not isinstance(name, str) or not REPO_ID.match(name):
+        raise PipelineRefused(
+            f"{spec} was trained on {str(name)[:80]!r}, which is not one dataset quackd can "
+            f"read a rate from: {give}"
+        )
+    if not isinstance(at, str) or not re.match(r"^[\w.\-/]+$", at, re.ASCII):
+        raise PipelineRefused(
+            f"{spec} was trained on {name} at no revision, so the rate read from it could "
+            f"change under you: {give}, which is in {name}'s {up.DATASET_INFO_FILE}"
+        )
+    if len(f"{name}@{at}") > MAX_SPEC_CHARS:
+        raise PipelineRefused(f"{spec} names a dataset longer than a Hub id and a revision: {give}")
+    check_fixed(
+        hub,
+        name,
+        at,
+        f"{spec} was trained on",
+        f"{give}, which is in {name}'s {up.DATASET_INFO_FILE}",
+        dataset=True,
+    )
+    info_path = hub.file(name, at, up.DATASET_INFO_FILE, dataset=True)
+    if info_path is None:
+        raise PipelineRefused(f"{name}@{at} has no {up.DATASET_INFO_FILE}: {give}")
+    info = _json(info_path, f"{name}@{at}'s {up.DATASET_INFO_FILE}")
+    rate = info.get("fps") if isinstance(info, Mapping) else None
+    hz = math.nan
+    if isinstance(rate, int | float) and not isinstance(rate, bool):
+        # JSON reads an integer of any length, and a float holds less
+        with contextlib.suppress(OverflowError):
+            hz = float(rate)
+    if not math.isfinite(hz):
+        raise PipelineRefused(f"{name}@{at}'s {up.DATASET_INFO_FILE} has no fps: {give}")
+    root = info_path
+    for _ in Path(up.DATASET_INFO_FILE).parts:
+        root = root.parent  # the directory the dataset's revision landed in
+    landed = _landed(f"{name}@{at}", root, at)
+    return hz, f"{name}@{at} {up.DATASET_INFO_FILE}", [f"dataset {landed}, its fps"]
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    """A checkpoint's files, fetched and checked, and everything the build is to be told."""
+
+    spec: str
+    repo: str
+    revision: str
+    directory: Path
+    shape: Shape
+    device: str
+    rate_hz: float
+    rate_source: str
+    pre_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    post_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    config_overrides: dict[str, Any] = field(default_factory=dict)
+    loaded: tuple[str, ...] = ()
+
+
+def _overrides(
+    steps: Sequence[Mapping[str, Any]], *, device: str, nested: Mapping[str, Path], post: bool
+) -> dict[str, dict[str, Any]]:
+    """Each step's overrides, keyed by its registry name as LeRobot merges them over the saved
+    config (`upstream_api.DEVICE_OVERRIDE`). The device step goes to the policy's device in the
+    pre-processor and to the CPU in the post-processor, where the actions are read; any other
+    step that keeps a device keeps the policy's; a step that could trust remote code does not;
+    and a model a step names is the pinned directory it was fetched to."""
+    out: dict[str, dict[str, Any]] = {}
+    for step in steps:
+        name, config = str(step["registry_name"]), step["config"]
+        wanted: dict[str, Any] = {}
+        if name == up.DEVICE_STEP:
+            wanted["device"] = "cpu" if post else device
+        elif "device" in config:
+            wanted["device"] = device
+        if TRUST_KEY in config:
+            wanted[TRUST_KEY] = False
+        for key in NESTED_STEP_KEYS:
+            if isinstance(config.get(key), str) and config[key] in nested:
+                wanted[key] = str(nested[config[key]])
+        if wanted:
+            out.setdefault(name, {}).update(wanted)
+    return out
+
+
+def fetch_checkpoint(
+    spec: str,
+    *,
+    fps: float | None,
+    pins: Sequence[str] = (),
+    device: str,
+    hub: Hub,
+) -> Checkpoint:
+    """`spec` fetched and checked as the module's docstring says, in that order, or a refusal.
+    Nothing is built here, and nothing that could run code is fetched before the JSON that
+    says what the checkpoint is has been checked."""
+    repo, revision = parse_repo(spec, "--policy")
+    spec = f"{repo}@{revision}"
+    pinned = parse_pins(pins)
+    config_path = _required(hub, repo, revision, up.CONFIG_FILE, beside=None)
+    directory = config_path.parent
+    config = _json(config_path, f"{spec}'s {up.CONFIG_FILE}")
+    shape = check_config(config, spec, gpu=device != "cpu")
+    steps: dict[str, list[dict[str, Any]]] = {}
+    for filename in (up.PREPROCESSOR_FILE, up.POSTPROCESSOR_FILE):
+        path = _required(hub, repo, revision, filename, beside=directory)
+        steps[filename] = check_processor(_json(path, f"{spec}'s {filename}"), filename, spec)
+    every = steps[up.PREPROCESSOR_FILE] + steps[up.POSTPROCESSOR_FILE]
+    nested = nested_models(config, every, spec)
+    pinned_models(nested, pinned, spec)
+    for m in nested:
+        check_fixed(
+            hub,
+            m,
+            pinned[m],
+            "--pin names",
+            "pin a whole commit you have read, or a tag with the Hub in reach",
+        )
+    rate, source, rate_loaded = resolve_rate(fps, repo, revision, hub)
+    # the code-free part is checked: now the weights, the processors' state and the models
+    _required(hub, repo, revision, up.WEIGHTS_FILE, beside=directory)
+    for step in every:
+        if step["state_file"] is not None:
+            _required(hub, repo, revision, step["state_file"], beside=directory)
+    fetched = {m: hub.snapshot(m, pinned[m], NESTED_FILES) for m in nested}
+    for m, where in fetched.items():
+        check_pinned(where, f"{m}@{pinned[m]}")
+    config_overrides: dict[str, Any] = {"device": device}
+    if shape.policy_type == "act":
+        config_overrides["pretrained_backbone_weights"] = None  # up.ACT_BACKBONE_WEIGHTS
+    for key in (key for keys in NESTED_CONFIG_KEYS.values() for key in keys):
+        if isinstance(config.get(key), str) and config[key] in fetched:
+            config_overrides[key] = str(fetched[config[key]])
+    return Checkpoint(
+        spec=spec,
+        repo=repo,
+        revision=revision,
+        directory=directory,
+        shape=shape,
+        device=device,
+        rate_hz=rate,
+        rate_source=source,
+        pre_overrides=_overrides(
+            steps[up.PREPROCESSOR_FILE], device=device, nested=fetched, post=False
+        ),
+        post_overrides=_overrides(
+            steps[up.POSTPROCESSOR_FILE], device=device, nested=fetched, post=True
+        ),
+        config_overrides=config_overrides,
+        loaded=(
+            f"checkpoint {_landed(spec, directory, revision)}",
+            *rate_loaded,
+            *(f"{nested[m]} {_landed(f'{m}@{pinned[m]}', fetched[m], pinned[m])}" for m in nested),
+        ),
+    )
+
+
+def camera_map(given: Mapping[str, str], shape: Shape, spec: str) -> dict[str, str]:
+    """Which of the arm's cameras is which of the checkpoint's images: `--cameras` where it is
+    given, every key it names being one of the checkpoint's, and otherwise each image's own
+    name, `observation.images.front` from the camera called `front` (`upstream_api.
+    FEATURE_KEYS`)."""
+    keys = shape.image_keys
+    if not given:
+        return {
+            key.removeprefix(up.IMAGES_PREFIX): key
+            for key in keys
+            if key.startswith(up.IMAGES_PREFIX)
+            and re.match(wire.NAME_PATTERN, key.removeprefix(up.IMAGES_PREFIX))
+        }
+    unknown = [f"{name}={key}" for name, key in given.items() if key not in keys]
+    if unknown:
+        raise PipelineRefused(
+            f"--cameras maps {', '.join(unknown)}, and {spec} looks at "
+            f"{', '.join(keys) or 'no image'}"
+        )
+    if len(set(given.values())) != len(given):
+        raise PipelineRefused("--cameras maps two cameras to one of the policy's images")
+    return dict(given)
+
+
+# ── running it ──────────────────────────────────────────────────────────────────────────
+
+
+def _quantiles(steps: Sequence[Any], key: str) -> wire.Quantiles | None:
+    """`key`'s 1st and 99th percentiles, from whichever step keeps them
+    (`upstream_api.NORMALIZER_STATS`), or None where none does or they are not finite."""
+    low_name, high_name = (f"{key}.{stat}" for stat in up.QUANTILE_STATS)
+    for step in steps:
+        state = step.state_dict() if callable(getattr(step, "state_dict", None)) else {}
+        low, high = state.get(low_name), state.get(high_name)
+        if low is None or high is None:
+            continue
+        q01 = [float(v) for v in low.detach().cpu().reshape(-1).tolist()]
+        q99 = [float(v) for v in high.detach().cpu().reshape(-1).tolist()]
+        if len(q01) != len(q99) or not all(math.isfinite(v) for v in q01 + q99):
+            return None
+        return wire.Quantiles(q01=q01, q99=q99)
+    return None
+
+
+class LeRobotRunner:
+    """A checkpoint as the policy server runs it (a `PolicyRunner`), for one session's arm at a
+    time and one step at a time, under its own lock.
+
+    `begin` shapes the steps for the arm a session's reset declared: its motors in its bus's
+    order name the state and the action, and each camera it gives is handed to the policy under
+    the image the server maps it to. `chunk` is `n_action_steps`, what one step answers with,
+    and `threads`, `gpu`, `loaded` and the quantiles are what `/v1/policy` reports."""
+
+    def __init__(
+        self,
+        checkpoint: Checkpoint,
+        *,
+        policy: Any,
+        preprocessor: Any,
+        postprocessor: Any,
+        cameras: Mapping[str, str],
+        threads: int,
+        latency_s: float,
+    ) -> None:
+        self.checkpoint = checkpoint
+        self.shape = checkpoint.shape
+        self.chunk = checkpoint.shape.n_action_steps
+        self.chunk_size = checkpoint.shape.chunk_size
+        self.cameras = dict(cameras)
+        self.threads = threads
+        self.gpu = checkpoint.device != "cpu"
+        self.loaded = checkpoint.loaded
+        self.state_quantiles = _quantiles(preprocessor.steps, up.STATE_KEY)
+        self.action_quantiles = _quantiles(
+            [*preprocessor.steps, *postprocessor.steps], up.ACTION_KEY
+        )
+        self._policy = policy
+        self._pre = preprocessor
+        self._post = postprocessor
+        self._latency_s = latency_s
+        self._lock = threading.Lock()
+        self._task = ""
+        self._features: dict[str, dict[str, Any]] | None = None
+        self._frames: dict[str, str] = {}
+
+    def policy_features(self) -> wire.PolicyFeatures:
+        return wire.PolicyFeatures(
+            state=self.shape.state,
+            action=self.shape.action,
+            images=[wire.ImageFeature(key=k, height=h, width=w) for k, h, w in self.shape.images],
+            action_names=list(self.shape.action_names) if self.shape.action_names else None,
+            pads_images=self.shape.pads_images,
+        )
+
+    def begin(self, motors: Sequence[str], cameras: Mapping[str, wire.CameraInfo]) -> None:
+        """The next session's arm: `motors` in its bus's order, and the cameras it declared.
+        Joint order is trusted, not checked: the checkpoint's state and action are taken to be
+        in the order of the bus that recorded its data, which is how LeRobot records one."""
+        names = [f"{motor}.pos" for motor in motors]
+        vector = {"dtype": "float32", "shape": (len(names),), "names": names}
+        features: dict[str, dict[str, Any]] = {up.STATE_KEY: vector, up.ACTION_KEY: dict(vector)}
+        frames: dict[str, str] = {}
+        for camera, key in self.cameras.items():
+            info = cameras.get(camera)
+            if info is None:
+                continue  # a policy that pads it is shown the rest, and one that does not refused
+            features[key] = {
+                "dtype": "video",
+                "shape": (info.height, info.width, 3),
+                "names": ["height", "width", "channels"],
+            }
+            frames[camera] = key.removeprefix(up.IMAGES_PREFIX)
+        with self._lock:
+            self._features, self._frames = features, frames
+
+    def reset(self, instruction: str) -> None:
+        with self._lock:
+            # the policy's queue and every processor's state (up.POLICY_RESET, PROCESSOR_RESET)
+            self._policy.reset()
+            self._pre.reset()
+            self._post.reset()
+            self._task = instruction
+
+    def features(self) -> Features:
+        return Features(
+            self.checkpoint.rate_hz, self.checkpoint.rate_source, per_tick=self.shape.per_tick
+        )
+
+    def latency_s(self) -> float:
+        return self._latency_s
+
+    def next_chunk(self, observation: Observation, sent: Mapping[str, float]) -> Chunk:
+        import torch
+        from lerobot.policies.utils import build_inference_frame, make_robot_action
+
+        with self._lock:
+            features = self._features
+            if features is None:
+                raise RuntimeError("the policy was asked for a step before a session began")
+            reading = observation.reading
+            raw: dict[str, Any] = {n: float(reading[n]) for n in features[up.STATE_KEY]["names"]}
+            for camera, name in self._frames.items():
+                raw[name] = np.array(reading[camera], dtype=np.uint8, copy=True)
+            with torch.inference_mode():
+                frame = build_inference_frame(
+                    raw, torch.device(self.checkpoint.device), features, task=self._task
+                )
+                batch = self._pre(frame)
+                if self.shape.per_tick:
+                    rows = [self._post(self._policy.select_action(batch))]
+                else:
+                    chunk = self._policy.predict_action_chunk(batch)
+                    if chunk.ndim == 2:
+                        chunk = chunk.unsqueeze(0)
+                    chunk = self._post(chunk[:, : self.chunk])
+                    rows = [chunk[:, i] for i in range(chunk.shape[1])]
+                actions = tuple(
+                    {name.removesuffix(".pos"): value for name, value in action.items()}
+                    for action in (make_robot_action(row, features) for row in rows)
+                )
+        return Chunk(observation.tick, actions)
+
+    def close(self) -> None:
+        with self._lock:
+            self._features = None
+
+
+@functools.cache
+def torch_threads() -> int:
+    """How many threads torch takes on its own in this process, asked once, before `load` sets
+    any: asked again after, it would say what the last load set, and each load would take one
+    thread fewer than the one before it."""
+    import torch
+
+    return int(torch.get_num_threads())
+
+
+def build_policy(policy_class: Any, where: Path, config: Any) -> Any:
+    """The policy `config` describes, with every weight the checkpoint in `where` holds loaded
+    into it and none left as it was built, or the error that says why not.
+
+    LeRobot's own loader only logs a weight the file lacks or one it has that the model does
+    not (`upstream_api.POLICY_FROM_PRETRAINED`), so it is asked to be strict. pi05's goes
+    further and hands back the model with none of its weights when they do not load
+    (`upstream_api.PI05_FROM_PRETRAINED`), so a pi05's weights are loaded here as that loader
+    loads them, its own key fixes and all, with nothing caught."""
+    if config.type not in LENIENT_LOADERS:
+        return policy_class.from_pretrained(str(where), config=config, strict=True)
+    from safetensors.torch import load_file
+
+    policy = policy_class(config)
+    weights = policy._fix_pytorch_state_dict_keys(
+        load_file(str(where / up.WEIGHTS_FILE)), policy.config
+    )
+    policy.load_state_dict(
+        {k if k.startswith(MODEL_PREFIX) else MODEL_PREFIX + k: v for k, v in weights.items()},
+        strict=True,
+    )
+    policy.to(config.device)
+    policy.eval()
+    return policy
+
+
+def load(
+    spec: str,
+    *,
+    fps: float | None,
+    pins: Sequence[str] = (),
+    cameras: Mapping[str, str] | None = None,
+    threads: int | None = None,
+    latency_s: float = 0.0,
+    hub: Hub | None = None,
+) -> LeRobotRunner:
+    """The checkpoint `spec` names, fetched, checked and built, as a runner the policy server
+    serves, or a `PipelineRefused` that says why not. The device is the one LeRobot picks, and
+    torch gets `threads` threads, or one fewer than it would take on its own (`torch_threads`),
+    so the machine has a core left for everything else it runs. The weights are loaded strictly
+    (`build_policy`), so a checkpoint whose weights are not its model's is refused rather than
+    served as the random network it would be."""
+    try:
+        import torch
+        from lerobot.configs.policies import PreTrainedConfig
+        from lerobot.policies.factory import get_policy_class, make_pre_post_processors
+        from lerobot.utils.device_utils import auto_select_torch_device
+    except ImportError as e:
+        raise PipelineRefused(
+            f"serving {spec} needs torch and LeRobot, which quackd[lerobot-vla] installs on "
+            f"Python 3.12 ({type(e).__name__}: {e})"
+        ) from None
+    device = auto_select_torch_device().type
+    checkpoint = fetch_checkpoint(spec, fps=fps, pins=pins, device=device, hub=hub or HubFetch())
+    mapped = camera_map(cameras or {}, checkpoint.shape, checkpoint.spec)
+    count = threads if threads is not None else max(1, torch_threads() - 1)
+    torch.set_num_threads(count)
+    where = str(checkpoint.directory)
+    try:
+        config = PreTrainedConfig.from_pretrained(where)
+        for key, value in checkpoint.config_overrides.items():
+            setattr(config, key, value)
+        policy = build_policy(get_policy_class(config.type), checkpoint.directory, config)
+        pre, post = make_pre_post_processors(
+            config,
+            pretrained_path=where,
+            preprocessor_overrides=checkpoint.pre_overrides,
+            postprocessor_overrides=checkpoint.post_overrides,
+        )
+    except Exception as e:
+        raise PipelineRefused(f"{checkpoint.spec} did not load: {_one_line(e)}") from None
+    return LeRobotRunner(
+        checkpoint,
+        policy=policy,
+        preprocessor=pre,
+        postprocessor=post,
+        cameras=mapped,
+        threads=count,
+        latency_s=latency_s,
+    )
+
+
+__all__ = [
+    "ALLOWED_STEPS",
+    "Checkpoint",
+    "Hub",
+    "HubFetch",
+    "LeRobotRunner",
+    "PipelineRefused",
+    "Shape",
+    "build_policy",
+    "camera_map",
+    "check_config",
+    "check_fixed",
+    "check_pinned",
+    "check_processor",
+    "fetch_checkpoint",
+    "load",
+    "nested_models",
+    "parse_pins",
+    "parse_repo",
+    "pinned_models",
+    "resolve_rate",
+    "torch_threads",
+]
