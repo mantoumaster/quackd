@@ -570,9 +570,12 @@ recorded
     flag, `make()` has no policy parameter, and `load_policy()` has no caller outside a test.
     So a trained checkpoint reaches this arm only through code you write around the adapter.
     If you do write it, `pick` is confirm-gated because it hands the whole arm to a controller
-    quackd did not write for up to a minute, and the policy's own actions are step-capped and
-    range-refused exactly like a verb's, which is quackd's rule rather than LeRobot's. Keep a
-    hand on the switch, and please report what happened.
+    quackd did not write for up to a minute. The policy's own actions are step-capped like a
+    verb's, and a goal past the travel is clipped and counted rather than refused, which are
+    quackd's rules rather than LeRobot's. It stops the policy the moment something is held,
+    and stops it and holds the arm on a hot joint, torque off, a dead camera, a goal that is
+    not a number or a goal held past the travel. Keep a hand on the switch, and please report
+    what happened.
 
 ## What to report
 

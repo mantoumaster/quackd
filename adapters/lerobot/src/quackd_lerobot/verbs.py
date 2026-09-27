@@ -22,9 +22,11 @@ be quicker than the arm allows ends later than asked.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections.abc import Callable, Mapping
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -98,6 +100,23 @@ one last time. `_holding` needs two gripper samples at least `SETTLE_GAP_S` apar
 so the read that catches the policy going idle can be too early to see a grasp that is still
 closing. This is the same window `_drive` calls a stall, which is this file's own definition
 of a joint that has stopped moving, and it is comfortably wider than that gap."""
+
+
+@dataclass(frozen=True)
+class SegmentEnd:
+    """How a policy segment ended, as the loop that ran it says (`LeRobotReal._run_policy`).
+
+    `holding` is the gripper closed and settled on something, which is what `pick` is for.
+    `finished` is the policy saying it was done and the grasp not settling on anything in the
+    settle after. `time` is the verb's `max_s` run out. `guard` is the loop ending the segment
+    itself on a reading or an action it would not send, with the arm held where it is:
+    `reason` says which. `error` is the policy raising. `refused` is the segment's first
+    reading ruling it out before anything was sent, which the `do` that started it turns into
+    a refusal, so no verb ever waits on it. A segment stopped from outside, by a stop, a
+    release or the close, ends as a cancelled task and has none of these."""
+
+    how: Literal["holding", "finished", "time", "guard", "error", "refused"]
+    reason: str
 
 
 class MoveJointsParams(BaseModel):
@@ -862,6 +881,27 @@ def unlifted_from_rest(outside: Mapping[str, float], travel: Mapping[str, Any]) 
     )
 
 
+def policy_past_travel(outside: Mapping[str, float], travel: Mapping[str, Any]) -> str:
+    """Why a policy segment was not started: body joints reading further outside their
+    calibrated travel than `real.OUT_OF_RANGE_DEG`, each with its reading and its travel,
+    opening with the clause `placed_past_travel` opens with.
+
+    The consequence is the segment's own rather than the take-hold's, because torque is on and
+    nobody's hand is on the arm. A joint reading past its travel is left out of every goal a
+    policy sends, since the one goal its servo would take there is the end of the travel and it
+    would haul the joint to it (`LeRobotReal._hold` leaves it out for the same reason), so a
+    policy started there could never move that joint. That far out, the arm and its
+    calibration disagree, which is worth putting right before anything learned drives it."""
+    joints = list(outside)
+    it, its = ("it", "its") if len(joints) == 1 else ("them", "their")
+    return (
+        f"{_read_outside(outside, travel)}, so the policy was not started. A joint outside its "
+        "travel is left out of every goal a policy sends, because the one goal its servo takes "
+        f"there is the end of its travel, and the policy could never move {it}. Move "
+        f"{_listed(joints)} inside {its} travel first"
+    )
+
+
 def _read_outside(outside: Mapping[str, float], travel: Mapping[str, Any]) -> str:
     """Each joint in `outside` with its reading, then the travel they are outside of: the
     opening clause of both take-hold refusals over joints outside their travel. Every joint
@@ -1131,10 +1171,77 @@ async def gripper(ctx: VerbContext, p: GripperParams) -> VerbResult:
 
 
 async def pick(ctx: VerbContext, p: PickParams) -> VerbResult:
-    """One skill intent; the policy drives. quackd only watches the clock and `holding`."""
-    if (fail := await send_or_fail(ctx, Intent.do(f"policy:pick:{p.target}"))) is not None:
+    """One skill intent; the policy drives, and the segment it runs in is the backend's.
+
+    The `do` intent carries `max_s`, because the loop is what ends a segment on its time: on a
+    backend that runs one (`policy_segment`), the verb waits for that task and sleeps on no
+    clock meanwhile. The loop is the one sleeper, which on the simulator is what lets time run
+    for it, and it is also what reads `holding` each tick and ends the segment on it, so a
+    grasp stops the policy the moment it settles rather than leaving it driving the arm through
+    the pilot's thinking.
+
+    The wait is `asyncio.wait`, never a bare `await` on the task. Stops arrive from other tasks,
+    the heartbeat's, an MCP `stop`, a concurrent verb whose send is refused and which then stops
+    the arm, and each cancels the segment first. Awaiting a task cancelled elsewhere raises
+    `CancelledError` in the awaiting task, which would end this verb as cancelled rather than
+    say what stopped it. A segment cancelled that way is a failed pick naming the stop, with no
+    stop of its own: whatever cancelled it has already dealt with the arm, and a release or a
+    close must not be followed by a hold. This verb's own cancellation, an executor timeout or
+    an abort, cancels the segment on its way out.
+
+    A backend with no segment task, the mock, whose scripted policy is done by the time its
+    `do` is acknowledged, is watched by polling as `pick` always did (`_pick_polled`)."""
+    intent = Intent(kind="do", params={"skill": f"policy:pick:{p.target}", "max_s": p.max_s})
+    if (fail := await send_or_fail(ctx, intent)) is not None:
         return fail
     t0 = ctx.transport.now()
+    # read now, with nothing awaited since the acknowledgement: it is this pick's segment
+    segment: asyncio.Task[SegmentEnd] | None = getattr(ctx.transport, "policy_segment", None)
+    if segment is None:
+        return await _pick_polled(ctx, p, t0)
+    try:
+        await asyncio.wait({segment})
+    finally:
+        if not segment.done():
+            segment.cancel()
+    seconds = round(ctx.transport.now() - t0, 1)
+    if segment.cancelled():
+        by = getattr(ctx.transport, "policy_stopped_by", None) or "something stopped the policy"
+        return VerbResult.fail(
+            f"pick {p.target!r} stopped: {by}", target=p.target, seconds=seconds, ended="stopped"
+        )
+    ended = segment.result()
+    if ended.how == "holding":
+        return VerbResult.success(
+            f"picked {p.target}",
+            target=p.target,
+            seconds=seconds,
+            ended=ended.how,
+            timing=await _timing(ctx),
+        )
+    await ctx.transport.stop()
+    said = "was stopped" if ended.how == "guard" else "did not end with something held"
+    return VerbResult.fail(
+        f"pick {p.target!r} {said}: {ended.reason}",
+        target=p.target,
+        seconds=seconds,
+        ended=ended.how,
+        error=ended.reason if ended.how == "error" else None,
+        timing=await _timing(ctx),
+    )
+
+
+async def _timing(ctx: VerbContext) -> Any:
+    """How long the bus calls and the policy's ticks took (`extras.timing`), for the pick's
+    record, or None when the arm will not say. A report and never a reason to fail the verb."""
+    try:
+        return (await ctx.transport.get_state()).extras.get("timing")
+    except Exception:
+        return None
+
+
+async def _pick_polled(ctx: VerbContext, p: PickParams, t0: float) -> VerbResult:
+    """`pick` on a backend that runs no segment task: poll `holding` until the time is up."""
 
     def picked() -> VerbResult:
         return VerbResult.success(

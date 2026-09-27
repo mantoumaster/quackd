@@ -50,7 +50,13 @@ from typing import Any
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, HandResult, RestResult
 from quackd.perception.color_blob import DEFAULT_FOV_DEG
 from quackd.transport.base import DuckState, HeartbeatError, TransportError
-from quackd_lerobot.real import MAX_STEP_DEG, CameraSpec, LeRobotReal, joint_ranges
+from quackd_lerobot.real import (
+    MAX_STEP_DEG,
+    CameraSpec,
+    LeRobotReal,
+    PolicyLike,
+    joint_ranges,
+)
 from quackd_lerobot.sim import SIM_EXTRA
 from quackd_lerobot.sim import upstream_api as so
 from quackd_lerobot.sim.camera import SimCamera, open_renderer, render
@@ -182,7 +188,8 @@ class LeRobotSim(LeRobotReal):
     text, and None for the SO-101's own (`default_model`). A camera url must name one of the
     scene's mounts. `scene` is the objects to lay on the table in place of the default ones, as
     `quackd preflight` reads them from a task's sidecar (`model.parse_scene`), and None for the
-    default ones."""
+    default ones. `policy` is what `pick` runs, as for the real backend, and None leaves the
+    arm without `pick`."""
 
     name = "mujoco"
     label = "mujoco"
@@ -202,6 +209,7 @@ class LeRobotSim(LeRobotReal):
         model: str | Path | None = None,
         scene: Sequence[Mapping[str, Any]] | None = None,
         timeout_s: float = 1.0,
+        policy: PolicyLike | None = None,
     ) -> None:
         if address and names_a_port(address):
             # for every other lerobot robot --address is the port, so this is an easy slip
@@ -221,6 +229,7 @@ class LeRobotSim(LeRobotReal):
         )
         super().__init__(
             None,
+            policy=policy,
             robot_id=robot_id,
             timeout_s=timeout_s,
             max_step_deg=max_step_deg,

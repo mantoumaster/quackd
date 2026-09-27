@@ -50,6 +50,7 @@ import asyncio
 import contextlib
 import functools
 import logging
+import math
 import os
 import re
 import time
@@ -82,6 +83,7 @@ from quackd_lerobot.verbs import (
     LET_GO_WHERE_IT_STOOD,
     LIMP_AT_REST,
     LIMP_IN_HAND,
+    PICK_SETTLE_S,
     STALL_DEG,
     STALL_TICKS,
     TICK_S,
@@ -92,10 +94,12 @@ from quackd_lerobot.verbs import (
     UNCONFIRMED_IN_HAND,
     UNREAD_IN_HAND,
     Clip,
+    SegmentEnd,
     at_rest,
     held_in_part,
     past_reach,
     placed_past_travel,
+    policy_past_travel,
     range_refusal,
     reachable_rest_goal,
     released_by_the_close,
@@ -113,6 +117,28 @@ STATUS = "LeRobot names verified at a pinned commit; one SO-101 driven on 2026-0
 POLICY_HZ = 10.0
 POLICY_TASK = "quackd-lerobot-policy"
 """The name `pick`'s policy loop runs under as an asyncio task."""
+REGISTER_PERIOD_S = 0.5
+"""How often a policy segment reads torque and temperature, in the transport's time. Every tick
+reads the joints, which is what the policy and `holding` need; the two registers are two more
+bus transactions each, and neither changes in a tenth of a second. A servo heats over seconds
+and one that trips its overload drops torque for good, so twice a second catches both in time
+to hold the arm, and the heartbeat's own probe was reading them at that rate anyway."""
+FAILED_SENDS = 3
+"""How many sends in a row may fail before a policy segment ends. A Feetech bus loses the odd
+status packet, which is no reason to take the arm off a policy mid grasp; three in a row is a
+bus or an arm that has stopped taking goals, and the segment ends there, holding the arm."""
+CLIP_SUSTAIN_S = 1.0
+"""How long a joint's goal may stay clipped to its travel before a policy segment ends, in the
+transport's time. A policy goal past the travel is clipped and counted rather than refused
+(ADR-0036), because one a tick over should not abort a grasp. A second of them in a row is a
+policy pushing the arm somewhere it cannot go, and the segment ends on it."""
+STATS_WINDOW = 256
+"""How many of the latest timings the median and the 99th percentile are taken over
+(`Timing`): some twenty-five seconds of a policy's ticks, long enough for a 99th percentile to
+be more than the one worst tick, short enough to follow a bus that slows down."""
+FINISH_S = 0.001
+"""The last stretch of every wall-clock sleep, finished by watching `perf_counter` rather than
+left to the event loop's timer (`WallClock.sleep`)."""
 
 logger = logging.getLogger("quackd.lerobot")
 """Under `quackd`, not under this module's own name (`quackd_lerobot.real`): `quackd`'s logger is
@@ -649,9 +675,53 @@ class _Errors:
 
 class PolicyLike(Protocol):
     """What `pick` needs from a policy: one observation in, one joint goal out (or None
-    when it considers the task done). The `real` backend never builds one on its own."""
+    when it considers the task done). The `real` backend never builds one on its own.
+
+    A policy may also have a `reset()`, which takes nothing and is called at the start of every
+    segment, before the first `act`. A LeRobot policy keeps a queue of the actions its last
+    chunk predicted (`up.POLICY_SELECT_ACTION`), and without a reset a second pick would play
+    out the first one's queue from wherever the arm now is. It is looked up rather than
+    declared here, so a policy that keeps nothing between calls need not have one."""
 
     def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None: ...
+
+
+class Timing:
+    """How long one kind of thing took on the wall's clock, `perf_counter`: how many there were,
+    the median and the 99th percentile of the latest `STATS_WINDOW`, and the longest ever.
+
+    Kept by the transport for every bus call (`_call`, the wait for the lock included) and
+    every tick of a policy segment, and shown in the state's extras under `timing`, where a
+    `pick` reports it. It changes nothing the arm does. It is what a bench session needs to
+    say how fast this arm's bus and a policy's loop really are, which nothing measured before."""
+
+    def __init__(self, window: int = STATS_WINDOW) -> None:
+        self.count = 0
+        self.longest_s = 0.0
+        self._recent: deque[float] = deque(maxlen=window)
+
+    def add(self, seconds: float) -> None:
+        self.count += 1
+        self.longest_s = max(self.longest_s, seconds)
+        self._recent.append(seconds)
+
+    def summary(self) -> dict[str, float | int]:
+        """`count`, then `p50_ms`, `p99_ms` and `max_ms` once there is anything to take them
+        of, each rounded to a tenth of a millisecond. Nearest rank, so a percentile is always
+        a time that was measured."""
+        if not self._recent:
+            return {"count": self.count}
+        ordered = sorted(self._recent)
+
+        def rank(share: float) -> float:
+            return ordered[max(0, math.ceil(share * len(ordered)) - 1)]
+
+        return {
+            "count": self.count,
+            "p50_ms": round(rank(0.5) * 1000.0, 1),
+            "p99_ms": round(rank(0.99) * 1000.0, 1),
+            "max_ms": round(self.longest_s * 1000.0, 1),
+        }
 
 
 class Clock(Protocol):
@@ -672,13 +742,32 @@ class Clock(Protocol):
 
 
 class WallClock:
-    """`time.monotonic` and `asyncio.sleep`: the only time a real arm moves in."""
+    """`time.perf_counter`, and `asyncio.sleep` finished on it: the only time a real arm moves in.
+
+    Not `time.monotonic`, which on Windows before Python 3.13 ticks every 15.6 ms (gh-88494),
+    and neither is the event loop's own timer, which runs on it. That loop takes a timer due
+    within one tick of its clock to be due already, so `asyncio.sleep` there wakes up to 15.6
+    ms early, which is a sixth of a policy's tick. So a sleep here sleeps on the loop until
+    the last `FINISH_S` and then yields to it until `perf_counter` says the time is up. Where
+    the loop woke early, as it does there, it goes round again rather than end the sleep: it
+    never wakes early, and on Windows its last tick of the loop's clock costs a little CPU.
+
+    Everything that reads `now()` compares it with another `now()` and never with
+    `time.monotonic`: the verbs' ticks, the rest move's budget, the gripper's trace and the
+    age of a camera's frame."""
 
     def now(self) -> float:
-        return time.monotonic()
+        return time.perf_counter()
 
     async def sleep(self, seconds: float) -> None:
-        await asyncio.sleep(seconds)
+        due = time.perf_counter() + seconds
+        while True:
+            # on the loop's timer down to the last FINISH_S and then a yield at a time, and a
+            # timer that woke early leaves what is left to the next pass
+            left = due - time.perf_counter()
+            await asyncio.sleep(left - FINISH_S if left > FINISH_S else 0)
+            if time.perf_counter() >= due:
+                return
 
 
 class LeRobotReal:
@@ -758,9 +847,32 @@ class LeRobotReal:
         or None while none is. `_call` stamps a call under the lock before its worker can
         start and the worker closes the stamp, one call at a time, and a tuple is swapped
         whole, so neither thread reads it half written."""
-        self._policy_task: asyncio.Task[None] | None = None
+        self._wedged_by: asyncio.Task[Any] | None = None
+        """The task a cancellation took off `_wedged`'s call, or None when the call ran out its
+        time, so a stop can tell a policy segment's own call still on the wire from a bus that
+        stopped answering (`_segment_call`)."""
+        self._wedged_until = 0.0
+        """When, on the event loop's clock, `_wedged`'s call would have run out its budget had
+        nothing cancelled it: the bus is that call's while it is out, so its budget runs out on
+        the loop's clock from there (`_call`). The longest anything waits for a segment's call
+        to come back."""
+        self._policy_task: asyncio.Task[SegmentEnd] | None = None
         self._policy_name = "idle"
         self._policy_error: str | None = None
+        self._policy_stopped_by: str | None = None
+        """What cancelled the last segment that something cancelled: a stop, a rest move, a
+        release, a take-hold, another pick or the close (`_cancel_policy`)."""
+        self._stop_count = 0
+        """How many stops have come through `_cancel_policy`, a segment running or not, and
+        `_last_stop` is what the latest said. A `do` compares the count across its own start,
+        because a stop that lands before its segment's task exists has nothing to cancel."""
+        self._last_stop = "a stop was sent to the arm"
+        self._stops_in_flight = 0
+        """How many stops (`_hold`) have begun and not yet returned. Each is counted in
+        `_stop_count` as it begins, so a `do` that comes while one is under way takes its count
+        from before it, and does not start a segment under a stop that has yet to hold."""
+        self._bus_timing = Timing()
+        self._tick_timing = Timing()
         self._joints: dict[str, float] = {}
         self._torque = True
         self._temperature_c: dict[str, float] = {}
@@ -874,6 +986,28 @@ class LeRobotReal:
     @property
     def policy_running(self) -> bool:
         return self._policy_task is not None and not self._policy_task.done()
+
+    @property
+    def policy_segment(self) -> asyncio.Task[SegmentEnd] | None:
+        """The policy segment the last accepted `do` started, running or ended, for the verb
+        that sent the `do` to wait on (`verbs.pick`). Read straight after the acknowledgement,
+        with nothing awaited in between, so it is that verb's own segment: a later `do` or a
+        stop replaces it or clears it here, and never the task the verb already holds.
+
+        The task returns how the segment ended (`verbs.SegmentEnd`), and ends cancelled when
+        something else stopped it, which `policy_stopped_by` names."""
+        return self._policy_task
+
+    @property
+    def policy_stopped_by(self) -> str | None:
+        """What cancelled the last segment something else stopped, in a clause a verb can say
+        after `stopped:`, or None before anything has.
+
+        Kept until the next one, and not cleared by a `do`: a verb whose segment another pick
+        cancelled can read it after that pick has started. Only a cancelled segment is ever
+        asked about, and only `_cancel_policy` cancels one for anybody but the verb waiting on
+        it, which is gone by then."""
+        return self._policy_stopped_by
 
     @property
     def _torque_read_back(self) -> bool:
@@ -1002,12 +1136,38 @@ class LeRobotReal:
         keeps its place in the queue while its deadline moves on by what is left. A call still
         out when its budget is spent is wedged and refused exactly as before, one that spent it
         waiting behind calls on the bus never goes out, and every timeout says which call it
-        was and its budget."""
-        self._refuse_if_wedged()
+        was and its budget.
+
+        Every call is timed on `perf_counter`, the wait for the lock included, however it ends
+        (`Timing`, the state's `timing.bus_call`).
+
+        A call a policy segment was cancelled in the middle of is waited for before the check,
+        here and once the lock is this call's, inside this call's own budget, as a call ahead
+        of it on the lock would be (`_outwait_segment_call`), rather than refused on: it is the
+        segment's own read or send, and the stop that cancelled it is no bus that stopped
+        answering. That call holds the bus while it is out, so waiting for it spends this
+        call's budget as waiting behind any call on the bus does, and a call whose budget it
+        spent never goes out."""
         loop = asyncio.get_running_loop()
+        started = time.perf_counter()
         budget = deadline_s or self.timeout_s
         asked = loop.time()
         bus_asked = self._busy(asked)
+
+        def budget_end() -> float:
+            # when this call's budget runs out on the loop's clock, should the bus stay busy
+            # from now on, which it is while a call is out on it
+            now = loop.time()
+            return now + budget - (self._busy(now) - bus_asked)
+
+        await self._outwait_segment_call(budget_end())
+        self._refuse_if_wedged()
+        if budget_end() <= loop.time():
+            # the segment's call it waited for spent its budget on the bus, and the loop's
+            # thread was busy past it until that call came back: it does not go out, as a call
+            # that spent its budget queued on the lock does not, and nothing below would judge
+            # it before the free lock handed it the bus
+            raise TimeoutError(_late(fn, budget, None))
         pending: asyncio.Future[Any] | None = None
         spent = False
         timer: asyncio.TimerHandle | None = None
@@ -1037,7 +1197,9 @@ class LeRobotReal:
                 timer = loop.call_at(asked + budget, judge, deadline)
                 async with self._lock:
                     # a caller parked on the lock passed the check above before the call
-                    # ahead of it wedged; the lock's release is what woke it, so ask again
+                    # ahead of it wedged; the lock's release is what woke it, so ask again,
+                    # and wait out a segment's call as above
+                    await self._outwait_segment_call(budget_end())
                     self._refuse_if_wedged()
                     if spent:
                         # its budget ran out while it waited, and the lock reached it before
@@ -1060,6 +1222,12 @@ class LeRobotReal:
             # timed-out one does, and the stop that follows must not join it there
             if pending is not None and not pending.done():
                 self._wedged = pending
+                self._wedged_by = (
+                    asyncio.current_task() if isinstance(e, asyncio.CancelledError) else None
+                )
+                # the call is out on the bus, so the rest of its budget runs on the loop's
+                # clock from here: when it would have run out had nothing cancelled it
+                self._wedged_until = budget_end()
                 self.stop_error = (
                     f"a LeRobot call ({_name_of(fn)}) has not come back; the "
                     "serial bus has one owner, so quackd refuses every call until it does"
@@ -1072,6 +1240,7 @@ class LeRobotReal:
         finally:
             if timer is not None:
                 timer.cancel()
+            self._bus_timing.add(time.perf_counter() - started)
 
     def _busy(self, now: float) -> float:
         """How long LeRobot calls have held the bus up to `now`, the one holding it now
@@ -1094,6 +1263,38 @@ class LeRobotReal:
             raise TransportError(self.stop_error or "a LeRobot call has not come back")
         self._wedged = None
         self.stop_error = None
+
+    def _segment_call(self) -> asyncio.Future[Any] | None:
+        """The call a policy segment was cancelled in the middle of, while it is still on the
+        wire and inside its own time (`_wedged_until`), or None.
+
+        Cancelling a segment, by a stop, the verb waiting on it or the next `do`, leaves the
+        call it was in on the wire, which `_call` files as a wedge. That thread is the
+        segment's own (`_wedged_by`), and on an arm that answers it comes back at once, so
+        whatever lands behind it, the stop's own hold, the executor's read before a verb or a
+        heartbeat, waits for it as it would have waited for it on the lock
+        (`_outwait_segment_call`), rather than be refused. Past its own deadline it is what it
+        would have been had nothing cancelled it, a bus that stopped answering, and so is a
+        call that ran out its time or one anything else left: none of those is waited on."""
+        left, by = self._wedged, self._wedged_by
+        if left is None or left.done() or by is None or by.get_name() != POLICY_TASK:
+            return None
+        if asyncio.get_running_loop().time() >= self._wedged_until:
+            return None
+        return left
+
+    async def _outwait_segment_call(self, until: float | None = None) -> None:
+        """Wait for `_segment_call` to come back, no longer than its own deadline, which is
+        when everything behind it would have been refused had nothing cancelled it, and no
+        longer than `until`, the waiting call's own, on the event loop's clock. So an arm
+        that stopped answering under it is found no later than it was."""
+        left = self._segment_call()
+        if left is None:
+            return
+        end = self._wedged_until if until is None else min(self._wedged_until, until)
+        remaining = end - asyncio.get_running_loop().time()
+        if remaining > 0:
+            await asyncio.wait({left}, timeout=remaining)
 
     def _config_kwargs(self) -> dict[str, Any]:
         """Every safety-shaped field of `up.SO_CONFIG`, spelled out.
@@ -1605,7 +1806,7 @@ class LeRobotReal:
         disconnect as every such close is, which after a refusal is said
         (`released_by_the_close`)."""
         self._closed = True
-        await self._cancel_policy()
+        await self._cancel_policy("the arm's transport was closed")
         # the cameras on their own deadline and never the serial lock, so however long a
         # release takes, the arm's disconnect below still runs
         await self._close_cameras()
@@ -1801,20 +2002,46 @@ class LeRobotReal:
             self._temperature_c = {str(k): float(v) for k, v in temperature.items()}
         return obs
 
-    async def _observe(self) -> dict[str, Any]:
-        """The plain observation for the policy loop. `_probe` is the one that also reads
-        registers; a policy ticking at 10 Hz does not need them.
+    async def _loop_read(self, *, registers: bool) -> dict[str, Any]:
+        """One tick's reading of the arm for a policy segment, which is the policy's
+        observation and everything the tick's guards judge. Raises what the read raised.
 
-        The camera is added under its own name, which is the dict the follower would have
-        built had it owned the camera (`up.SO_CAMERA_KEYS`), so a policy trained against
-        that key sees what it expects. A camera failure here ends the pick and says why,
-        rather than being swallowed the way `observe`'s is."""
-        obs: dict[str, Any] = await self._call(self._robot.get_observation)
+        The joints every tick, and with `registers` the torque and temperature too, which is
+        `_probe` whole: a policy ticking at 10 Hz does not need them each time
+        (`REGISTER_PERIOD_S`). Either way the reading is the arm's latest, as a verb's is: the
+        joints land in `_joints`, and the gripper's in `_gripper_trace`, stamped as the read
+        comes back, so `holding` is judged mid segment on the loop's own reads, which are paced
+        on the transport's clock."""
+        if registers:
+            return dict(await self._probe())
+        self._answered = False
+        obs = dict(await self._call(self._robot.get_observation))
+        self._answered = True
+        self._joints = self._joints_of(obs)
+        gripper = self._joints.get("gripper")
+        if gripper is not None:
+            self._gripper_trace.append((self.now(), gripper))
+        return obs
+
+    async def _loop_frames(self, obs: dict[str, Any]) -> str | None:
+        """Add every camera's newest frame to a policy's observation, or say which camera gave
+        none, in a clause that ends a segment.
+
+        Each is added under its own name, which is the dict the follower would have built had
+        it owned the camera (`up.SO_CAMERA_KEYS`), so a policy trained against that key sees
+        what it expects. A camera that fails here ends the segment and says why, rather than
+        being swallowed the way `observe`'s is: a policy that cannot see is guessing. The
+        failure is kept in `camera_errors`, so the state says `CAMERA DOWN` afterwards too."""
         for name in self.camera_keys:
             camera = self._cameras.get(name)
-            if camera is not None:
+            if camera is None:
+                continue
+            try:
                 obs[name] = await asyncio.to_thread(camera.read_latest)
-        return obs
+            except Exception as e:
+                self.camera_errors[name] = f"{type(e).__name__}: {e}"
+                return f"the {name} camera gave no frame ({self.camera_errors[name]})"
+        return None
 
     @staticmethod
     def _joints_of(obs: dict[str, Any]) -> dict[str, float]:
@@ -1941,6 +2168,12 @@ class LeRobotReal:
                 up.TEMPERATURE_C.name,
             ],
         }
+        # measured on the wall's clock and changing nothing: how long the bus calls take, and a
+        # policy segment's ticks once one has run (`Timing`)
+        timing = {"bus_call": self._bus_timing.summary()}
+        if self._tick_timing.count:
+            timing["policy_tick"] = self._tick_timing.summary()
+        extras["timing"] = timing
         if self._policy_error is not None:
             extras["policy_error"] = self._policy_error
         if self._register_error is not None:
@@ -2017,7 +2250,7 @@ class LeRobotReal:
                     open_ = bool(p.get("open", True))
                     await self._send({"gripper": GRIPPER_OPEN if open_ else GRIPPER_CLOSED})
                 case "do":
-                    return await self._do(str(p.get("skill")))
+                    return await self._do(str(p.get("skill")), p.get("max_s"))
                 case "stop":
                     await self._hold()
                 case "enable":
@@ -2031,48 +2264,317 @@ class LeRobotReal:
             return Ack(accepted=False, reason=f"{intent.kind} failed: {type(e).__name__}: {e}")
         return Ack()
 
-    async def _do(self, skill: str) -> Ack:
+    async def _do(self, skill: str, max_s: Any = None) -> Ack:
+        """Start a policy segment: `policy:pick:<task>`, for at most `max_s` seconds of the
+        transport's time when it is given (`pick` gives it), and until the policy is done or
+        something stops it when it is not.
+
+        The segment's first reading is taken inside its task, registers and all, and judged
+        before it sends anything, and the `do` is acknowledged only once that reading has
+        passed. A refusal sends nothing and asks the policy for nothing: a body joint further
+        outside its travel than `OUT_OF_RANGE_DEG` (`verbs.policy_past_travel`), a hot joint,
+        torque off, or a read the arm did not answer. Two picks at once must not each start a
+        loop, so the lock covers the cancel of the one before and the start.
+
+        The task exists from before that first read, so everything that stops the arm finds it
+        and cancels it, as it would a running segment. Were the reading taken before the task,
+        a stop that landed while it was on the bus would find no task, hold the arm and return,
+        and the policy would start after it. The read's own call is the segment's, so a stop
+        that cancels it there waits for it as it waits for any segment's (`_cancel_policy`). A
+        stop that lands before the task exists, while this `do` waits for the lock or for the
+        segment before it to end, is counted (`_stop_count`), and that count keeps the segment
+        from starting too. So does a stop still under way when this `do` comes, such as one
+        whose hold is queued behind the read the executor makes before `pick`: it began before
+        the `do`, found no segment to cancel, and would otherwise hold the arm and return with
+        the policy started behind it. Either way the `do` is refused, naming the stop. A `do`
+        its own caller abandons while the segment starts, an executor's timeout or an abort,
+        takes the segment with it."""
+        # a stop under way was counted as it began, so the count is taken from before it
+        stops = self._stop_count - self._stops_in_flight
         kind, _, rest = skill.partition(":")
         name, _, task = rest.partition(":")
         if kind != "policy" or name != "pick":
             return Ack(accepted=False, reason=f"unknown skill {skill!r}")
         if self._policy is None:
             return Ack(accepted=False, reason="no policy was given to this backend")
-        async with self._policy_lock:  # two picks at once must not each start a loop
-            await self._cancel_policy()
-            self._policy_error = None
-            self._policy_name = f"policy:pick:{task}"
-            # named, so a task left running at a close says whose it is wherever it is listed
-            self._policy_task = asyncio.create_task(self._run_policy(task), name=POLICY_TASK)
-        return Ack()
+        limit = None if max_s is None else float(max_s)
+        if limit is not None and not (math.isfinite(limit) and limit > 0):
+            return Ack(
+                accepted=False, reason=f"max_s={max_s!r} must be a number of seconds above 0"
+            )
+        async with self._policy_lock:
+            await self._cancel_policy("another pick started", stop=False)
+            if self._stop_count == stops:
+                self._policy_error = None
+                self._policy_name = f"policy:pick:{task}"
+                ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                # named, so a task left running at a close says whose it is wherever it is
+                # listed
+                segment = asyncio.create_task(
+                    self._run_policy(task, limit, ready), name=POLICY_TASK
+                )
+                self._policy_task = segment
+                started: set[asyncio.Future[Any]] = {ready, segment}
+                try:
+                    await asyncio.wait(started, return_when=asyncio.FIRST_COMPLETED)
+                except BaseException:
+                    # this `do`'s caller went, an executor's timeout or an abort, and the
+                    # segment goes with it; the stop that follows waits for its read
+                    segment.cancel()
+                    raise
+                if segment.done() and not segment.cancelled():
+                    ended = segment.result()
+                    if ended.how == "refused":
+                        return Ack(accepted=False, reason=ended.reason)
+                # still this segment's, with nothing awaited from here to the verb that reads
+                # it (`policy_segment`)
+                if ready.done() and self._policy_task is segment:
+                    return Ack()
+        return Ack(
+            accepted=False,
+            reason=f"the policy was not started: {self._last_stop} while it was starting",
+        )
 
-    async def _run_policy(self, task: str) -> None:
-        """The policy's own observe/act loop at its own rate; quackd only says 'pick'.
+    def _start_refusal(self) -> str | None:
+        """Why a policy segment must not start on the reading just taken, or None."""
+        outside = {
+            joint: self._joints[joint]
+            for joint in self._out_of_range()
+            if joint in JOINTS and joint != "gripper"
+        }
+        if outside:
+            return policy_past_travel(outside, self.joint_range_deg)
+        if (why := self._unsafe_to_drive()) is not None:
+            return f"the policy was not started: {why}"
+        return None
 
-        Its actions are clipped and capped exactly like a verb's: a learned policy is still
-        a stranger, and `pick` is confirm-gated because it moves the whole arm."""
-        assert self._policy is not None
+    def _unsafe_to_drive(self) -> str | None:
+        """What in the last reading of the registers rules out another goal, or None: a body
+        joint at or above `HOT_C`, or torque off on any motor. What becomes of the policy is the
+        caller's to say."""
+        if hot := self.hot_joints:
+            worst = max(hot, key=lambda joint: self._temperature_c.get(joint, 0.0))
+            return (
+                f"{worst} reads {self._temperature_c[worst]:.0f}°C, and quackd moves no joint at "
+                f"or above {HOT_C:g}°C: let the arm cool"
+            )
+        if not self._torque:
+            off = [j for j in JOINTS if j in self._joints and j not in self._torque_on]
+            where = f" on {', '.join(off)}" if off else ""
+            return (
+                f"torque reads off{where}, so a goal would reach a limp servo, and a servo that "
+                "trips its own overload protection reads this way"
+            )
+        return None
+
+    async def _run_policy(
+        self, task: str, max_s: float | None, ready: asyncio.Future[None]
+    ) -> SegmentEnd:
+        """One policy segment: the policy's own observe and act loop at its own rate, until
+        something is held, the policy is done, `max_s` runs out, a guard ends it or something
+        else cancels it. quackd only says `pick`, and holds the arm to its rules.
+
+        It starts with a reading of its own, registers and all, which the `do` waits on: one
+        that rules the segment out ends it `refused` before the policy is reset or asked for
+        anything (`_start_refusal`), and one that passes resolves `ready`.
+
+        Each tick reads the arm first (`_loop_read`, the registers every `REGISTER_PERIOD_S`)
+        and judges that reading before the tick sends anything:
+
+        - **holding** ends the segment there, which is `pick` done. It is judged on the loop's
+          own reads, so a grasp that settles mid segment stops the policy the moment it does,
+          rather than leaving it driving the arm through the pilot's thinking.
+        - **a hot joint, torque off or a dead camera** ends it, with the arm held.
+        - **an action that is not a finite number for a motor of this arm** ends it. `_clip`
+          would make a NaN the joint's floor and nothing would count it, and a key that names
+          no motor would be dropped by the send, so the motor the policy meant is missing.
+        - **a joint reading strictly outside its travel** is left out of the action, as `_hold`
+          leaves it out, because a clipped goal there is the end of the travel and the servo
+          would haul the joint to it.
+        - **a goal outside the travel** is clipped and counted (`_range_clips`), unlike a
+          verb's goal, which is refused (ADR-0036), and a joint whose goal stays clipped for
+          `CLIP_SUSTAIN_S` ends the segment.
+        - **a send that fails** is let go `FAILED_SENDS - 1` times in a row, and the next one
+          ends the segment, as does a read that fails.
+
+        A segment a guard ends holds the arm where it is before it returns, whoever waits on
+        it. The step cap is LeRobot's `max_relative_target`, as for a verb's goal. When the
+        policy says it is done, the loop keeps reading, and sends nothing, for `PICK_SETTLE_S`,
+        because a grasp still closing reads as held only once it has settled.
+
+        The loop sleeps on the transport's clock, a tick at a time (`POLICY_HZ`), and is the
+        only thing that does while it runs: the verb that started it waits on the task. Each
+        tick is timed on the wall's clock (`Timing`)."""
+        policy = self._policy
+        assert policy is not None
+        failed_sends = 0
+        clipped_since: dict[str, float] = {}
+        finished_at: float | None = None
         try:
+            try:
+                await self._probe()
+            except Exception as e:
+                said = self.stop_error or f"{type(e).__name__}: {e}"
+                return SegmentEnd(
+                    "refused",
+                    f"the policy was not started: the arm did not answer a read ({said})",
+                )
+            if (refusal := self._start_refusal()) is not None:
+                return SegmentEnd("refused", refusal)
+            if not ready.done():
+                ready.set_result(None)
+            started = self.now()
+            # the start's own reading read the registers
+            registers_at = started
+            reset = getattr(policy, "reset", None)
+            if callable(reset):
+                await asyncio.to_thread(reset)
             while not self._closed:
-                obs = await self._observe()
-                action = await asyncio.to_thread(self._policy.act, obs, task=task)
-                if action is None:
-                    break  # the policy considers the task done; the gripper says if it is
-                await self._send(action)
+                ticked = time.perf_counter()
+                now = self.now()
+                if max_s is not None and now - started >= max_s:
+                    return SegmentEnd("time", f"its {max_s:g} s ran out")
+                registers = now - registers_at >= REGISTER_PERIOD_S
+                try:
+                    obs = await self._loop_read(registers=registers)
+                except Exception as e:
+                    said = self.stop_error or f"{type(e).__name__}: {e}"
+                    return await self._held(f"the arm did not answer a read ({said})")
+                if registers:
+                    registers_at = now
+                if self._holding():
+                    return SegmentEnd("holding", "the gripper closed and settled on something")
+                if (why := self._unsafe_to_drive()) is not None:
+                    return await self._held(why)
+                if finished_at is None:
+                    if (why := await self._loop_frames(obs)) is not None:
+                        return await self._held(why)
+                    action = await asyncio.to_thread(policy.act, obs, task=task)
+                    if action is None:
+                        finished_at = now
+                    else:
+                        goals, why = self._policy_goals(action)
+                        if why is None:
+                            why = self._clipped_too_long(goals, clipped_since, now)
+                        if why is not None:
+                            return await self._held(why)
+                        try:
+                            await self._send(goals)
+                            failed_sends = 0
+                        except Exception as e:
+                            failed_sends += 1
+                            if failed_sends >= FAILED_SENDS:
+                                said = self.stop_error or f"{type(e).__name__}: {e}"
+                                return await self._held(
+                                    f"{failed_sends} sends in a row did not reach the arm, the "
+                                    f"last with {said}"
+                                )
+                elif now - finished_at >= PICK_SETTLE_S:
+                    return SegmentEnd(
+                        "finished",
+                        "the policy finished and the gripper did not settle on anything",
+                    )
+                self._tick_timing.add(time.perf_counter() - ticked)
                 await self.clock.sleep(1.0 / POLICY_HZ)
+            return SegmentEnd("guard", "the arm's transport was closed")
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self._policy_error = f"{type(e).__name__}: {e}"
+            return SegmentEnd("error", f"the policy raised {self._policy_error}")
         finally:
             self._policy_name = "idle"
 
-    async def _cancel_policy(self) -> None:
-        task, self._policy_task = self._policy_task, None
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+    def _policy_goals(self, action: Any) -> tuple[dict[str, float], str | None]:
+        """The goals one policy action asks for, less every joint reading strictly outside its
+        travel, or why the segment ends on it instead."""
+        if not isinstance(action, Mapping) or not action:
+            return {}, f"the policy's action named no motor ({action!r})"
+        unknown = sorted(str(key) for key in action if str(key) not in JOINTS)
+        if unknown:
+            return {}, (
+                f"the policy's action names {', '.join(unknown)}, and this arm's motors are "
+                f"{', '.join(JOINTS)}, so the goal meant for a motor would never have been sent"
+            )
+        goals: dict[str, float] = {}
+        for key, value in action.items():
+            try:
+                goal = float(value)
+            except (TypeError, ValueError):
+                goal = math.nan
+            if not math.isfinite(goal):
+                return {}, (
+                    f"the policy asked for {key}={value!r}, which is not a finite number, and a "
+                    "clip would have sent the joint to the end of its travel"
+                )
+            goals[str(key)] = goal
+        return {
+            joint: goal
+            for joint, goal in goals.items()
+            if joint not in self._joints or not self._outside_travel(joint, self._joints[joint])
+        }, None
+
+    def _clipped_too_long(
+        self, goals: Mapping[str, float], since: dict[str, float], now: float
+    ) -> str | None:
+        """Keep `since`, when each joint's goal first went past its travel in the run of ticks
+        it has stayed there, and say which has stayed there `CLIP_SUSTAIN_S`. A tick whose
+        action leaves a joint out keeps its run going."""
+        for joint, goal in goals.items():
+            span = self.joint_range_deg.get(joint)
+            if span is not None and not span[0] <= goal <= span[1]:
+                since.setdefault(joint, now)
+            else:
+                since.pop(joint, None)
+        stuck = sorted(joint for joint, at in since.items() if now - at >= CLIP_SUSTAIN_S)
+        if not stuck:
+            return None
+        return (
+            f"the policy's goal for {', '.join(stuck)} stayed past the travel for "
+            f"{CLIP_SUSTAIN_S:g} s, clipped to its end on every tick, so it was driving the arm "
+            "somewhere it cannot go"
+        )
+
+    async def _held(self, why: str) -> SegmentEnd:
+        """End a segment on a guard: hold the arm where it is, then say why. Never raises; a
+        hold that did not reach the arm leaves `stop_error` saying so, and the verb's own stop
+        after it tries again."""
+        with contextlib.suppress(Exception):
+            await self._hold()
+        return SegmentEnd("guard", why)
+
+    async def _cancel_policy(self, why: str, *, stop: bool = True) -> None:
+        """Stop the running segment, if there is one, and keep `why` for the verb waiting on it
+        (`policy_stopped_by`). Every stop path starts here. A `do` starting the next segment
+        comes here too, with `stop` False: it is no stop, and only a stop is counted
+        (`_stop_count`), segment or none, so a `do` still starting can tell one landed.
+
+        So does a guard's hold, from inside the segment, which cancels nothing and leaves the
+        segment where it is. It is still running, in that hold, and a close, a rest move or a
+        stop that lands meanwhile has to find it, cancel it and wait for it, or the close would
+        disconnect under the hold.
+
+        The wait is `asyncio.wait`, which neither passes a cancellation of the caller on to
+        the segment nor hides it: a `do` its own caller abandons while it waits here for the
+        segment before it raises, rather than go on to start the next one.
+
+        A segment cancelled in the middle of a bus call, here, by the verb waiting on it or by
+        the `do` that was starting it, leaves that call's thread on the wire, and whatever
+        cancelled it waits for that call before it writes to the arm (`_segment_call`), rather
+        than have its own hold refused on it. It is waited on
+        whichever segment left it, because the stop that comes here may find the segment
+        already gone, cancelled by its own verb or by the next `do`."""
+        if stop:
+            self._stop_count += 1
+            self._last_stop = why
+        task = self._policy_task
+        if task is not None and task is not asyncio.current_task():
+            self._policy_task = None
+            if not task.done():
+                self._policy_stopped_by = why
+                task.cancel()
+                await asyncio.wait({task})
+        await self._outwait_segment_call()
         self._policy_name = "idle"
 
     async def _hold(self) -> None:
@@ -2116,9 +2618,20 @@ class LeRobotReal:
         (`verbs.ramp_start` says the same of the move). What a stop owes the pilot is to say
         which joints it left alone, which is `stop_skipped`. If that leaves nothing to send,
         nothing is sent and the stop is not reported as undelivered, because it started
-        nothing and was never going to halt what it skipped."""
+        nothing and was never going to halt what it skipped.
+
+        A stop is under way (`_stops_in_flight`) from here until it returns, so a `do` that
+        comes meanwhile does not start a segment under a hold that has yet to go out."""
+        self._stops_in_flight += 1
+        try:
+            await self._hold_still()
+        finally:
+            self._stops_in_flight -= 1
+
+    async def _hold_still(self) -> None:
+        """`_hold` itself, counted as under way by its caller."""
         self.stop_skipped = ()
-        await self._cancel_policy()
+        await self._cancel_policy("a stop was sent to the arm")
         if self._in_hand and self._refused_hold is None:
             await self.take_hold()
         if self._in_hand and self._refused_hold is not None:
@@ -2161,12 +2674,27 @@ class LeRobotReal:
 
     async def heartbeat(self) -> None:
         """A round trip to the arm, not a flag. `is_connected` is the serial port's own open
-        flag (`up.BUS_IS_CONNECTED`): pull the cable and it stays True until a read fails."""
+        flag (`up.BUS_IS_CONNECTED`): pull the cable and it stays True until a read fails.
+
+        The closed, connected and wedged checks come first, and then a probe of its own, a
+        policy segment running or not. A segment's reads of the arm would do for a round trip,
+        but every one of them went out before the beat asked: the probe queues behind the read
+        on the bus and asks after it, and an arm that died as that read came back would pass a
+        beat that took its answer, and be found a whole period later. So a beat during a pick
+        costs its loop one read of the arm.
+
+        A call a segment was cancelled in the middle of, by a stop, its own verb or the next
+        pick, is no wedge to this check while it is inside its own time (`_segment_call`): the
+        probe waits for it inside the probe's own deadline, as it would wait for it on the lock
+        had nothing cancelled it. On an arm that answers it comes back at once, and failing on
+        it would abort the run over an arm that is fine. An arm that died under it fails the
+        beat no later than the beat would have failed had nothing cancelled the segment."""
         if self._closed:
             raise HeartbeatError(f"lerobot {self.label} transport is closed")
         if self._robot is None or not bool(self._robot.is_connected):
             raise HeartbeatError("the arm is not connected")
-        if self._wedged is not None and not self._wedged.done():
+        wedged = self._wedged is not None and not self._wedged.done()
+        if wedged and self._segment_call() is None:
             raise HeartbeatError(self.stop_error or "a LeRobot call has not come back")
         try:
             await self._probe(trace=False)
@@ -2241,7 +2769,7 @@ class LeRobotReal:
         if not anywhere and not goal:
             return refused("the recorded pose names no joint this arm drives")
         try:
-            await self._cancel_policy()
+            await self._cancel_policy("the arm was let go of")
             await self._probe()
         except Exception as e:
             return refused(
@@ -2428,7 +2956,7 @@ class LeRobotReal:
             return self._before_writing("the arm's transport is closed")
         enabling = False
         try:
-            await self._cancel_policy()
+            await self._cancel_policy("the arm was taken hold of")
             await self._probe()
             placed = {j: v for j, v in self._joints.items() if j in JOINTS}
             if not placed:
@@ -2563,7 +3091,7 @@ class LeRobotReal:
             return RestResult("refused", "the recorded pose names no joint this arm drives")
         clipped = worth_saying(self.rest_clipped)
         try:
-            await self._cancel_policy()
+            await self._cancel_policy("the arm was sent to its rest pose")
             await self._probe()
             if at_rest(goal, self._joints, recorded):
                 result = RestResult("already", "already at the rest pose")
@@ -2685,5 +3213,10 @@ def load_policy(path: str, *, device: str = "cpu") -> PolicyLike:
                 action = policy.select_action(batch)
             out = postprocess(action)
             return {str(k): float(v) for k, v in dict(out).items()}
+
+        def reset(self) -> None:
+            # the queue of actions the last chunk predicted (up.POLICY_SELECT_ACTION), which a
+            # new segment must not play out from wherever the arm now is
+            policy.reset()  # up.POLICY_RESET
 
     return _HubPolicy()

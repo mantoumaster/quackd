@@ -26,20 +26,37 @@ from quackd.adapters.factory import RobotSpec, describe, make_adapter, parse_rob
 from quackd.duckfile.parser import load_duck, parse_duck_text
 from quackd.duckfile.validate import validate_duck
 from quackd.perception.color_blob import ColorBlobDetector
-from quackd.safety import ConfirmDenied, Executor, VerbNotAllowed, allow_all, deny_all
+from quackd.safety import (
+    Aborted,
+    ConfirmDenied,
+    Executor,
+    Heartbeat,
+    VerbNotAllowed,
+    allow_all,
+    deny_all,
+)
 from quackd.transport.base import HeartbeatError, Intent, TransportError, primary_of
 from quackd.verbs.registry import registry_from_manifest
 from quackd_lerobot import JOINTS, LeRobotAdapter, lerobot_manifest, make, published_travel
 from quackd_lerobot.mock import GRIP_ON_OBJECT, MOCK_RANGES, REST, LeRobotMock
 from quackd_lerobot.real import (
+    CLIP_SUSTAIN_S,
     CONNECT_ATTEMPTS,
     ENCODER_TICKS,
+    FAILED_SENDS,
+    FINISH_S,
+    HOT_C,
     KEPT_OVER_A_FAILED_CONNECT,
     MAX_STEP_DEG,
+    OUT_OF_RANGE_DEG,
+    POLICY_HZ,
+    REGISTER_PERIOD_S,
     SPLIT_TORQUE,
     STEP_ENV,
     TORQUE_RETRIES,
     LeRobotReal,
+    Timing,
+    WallClock,
     check_port,
     joint_ranges,
     load_policy,
@@ -49,6 +66,7 @@ from quackd_lerobot.real import (
     step_from_env,
 )
 from quackd_lerobot.verbs import (
+    GRIPPER_CLOSED,
     HOLD_NOT_CONFIRMED,
     IN_HAND_NOT_MOVED,
     LET_GO_TO_PLACE,
@@ -60,6 +78,7 @@ from quackd_lerobot.verbs import (
     MOVE_MAX_S,
     MOVE_MIN_S,
     MOVE_SETTLE_S,
+    PICK_SETTLE_S,
     RAMP_DECIMALS,
     RAMP_RESOLUTION,
     REST_MAX_S,
@@ -71,10 +90,13 @@ from quackd_lerobot.verbs import (
     UNCONFIRMED_IN_HAND,
     UNREAD_IN_HAND,
     MoveJointsParams,
+    PickParams,
     at_rest,
     lerobot_verbs,
     move_budget_s,
+    pick,
     placed_past_travel,
+    policy_past_travel,
     ramp_target,
     range_refusal,
     reachable_rest_goal,
@@ -6127,3 +6149,1095 @@ async def test_a_wedged_call_made_through_a_partial_is_named_by_its_function() -
         assert "partial" not in transport.stop_error
     finally:
         release.set()
+
+
+# ── a policy segment: what ends it, what stops it, and what it measures ─────────────────
+
+
+class Scripted:
+    """A policy that answers tick `n` (from 1) with `script(n)`, counting its ticks and the
+    tick count each `reset()` found, so a test can tell a reset before a segment's first act
+    from one anywhere else. `script` runs in the worker thread `act` runs in, which is where a
+    test changes the arm under a running segment."""
+
+    def __init__(self, script: Any) -> None:
+        self.script = script
+        self.n = 0
+        self.resets: list[int] = []
+
+    def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
+        self.n += 1
+        return self.script(self.n)  # type: ignore[no-any-return]
+
+    def reset(self) -> None:
+        self.resets.append(self.n)
+
+
+def _pan(n: int) -> dict[str, float]:
+    """A policy that swings the pan a little and never says it is done."""
+    return {"shoulder_pan": float(n % 10)}
+
+
+def _segment_arm(**kwargs: Any) -> FakeArm:
+    """A `FakeArm` on the synthetic `SPANS` calibration, with the `REWIRED` motor table, so
+    nothing a segment does can lean on a travel or an id anybody measured."""
+    arm = _spanned(camera=False, **kwargs)
+    arm.bus = FakeBus(arm, {joint: SimpleNamespace(id=n) for joint, n in REWIRED.items()})
+    return arm
+
+
+async def _segment(
+    policy: Any, arm: FakeArm | None = None, **kwargs: Any
+) -> tuple[FakeArm, LeRobotReal, LeRobotAdapter, Executor]:
+    """The real backend over `arm` with `policy` for `pick`, on a stepped clock, so a segment
+    of many seconds costs none of the wall's and every tick lands a `POLICY_HZ` period after
+    the last."""
+    arm = arm if arm is not None else _segment_arm()
+    transport = LeRobotReal("COM5", robot=arm, policy=policy, clock=SteppedClock(), **kwargs)
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
+    return arm, transport, adapter, ex
+
+
+async def _until(ready: Any) -> None:
+    """Turn the event loop until `ready()` says so, or fail in a few seconds of the wall's."""
+
+    async def turning() -> None:
+        while True:
+            if ready():
+                return
+            await asyncio.sleep(0.001)
+
+    await asyncio.wait_for(turning(), 10.0)
+
+
+REGISTER_TICKS = math.ceil(REGISTER_PERIOD_S * POLICY_HZ)
+"""The most ticks a segment runs between two reads of torque and temperature."""
+CLIP_TICKS = round(CLIP_SUSTAIN_S * POLICY_HZ)
+"""The ticks in `CLIP_SUSTAIN_S`."""
+
+
+def _hold_sent(action: dict[str, float]) -> bool:
+    """`action` is a hold: body joints only, never the gripper, whose squeeze a stop keeps."""
+    return (
+        bool(action)
+        and "gripper.pos" not in action
+        and {k.removesuffix(".pos") for k in action} <= BODY_JOINTS
+    )
+
+
+async def test_a_hot_joint_mid_segment_stops_the_policy_and_holds_the_arm() -> None:
+    arm = _segment_arm()
+
+    def warms(n: int) -> dict[str, float]:
+        if n == 3:
+            arm.temperature["elbow_flex"] = HOT_C + 5
+        return {"shoulder_pan": float(n)}
+
+    policy = Scripted(warms)
+    _, transport, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert not picked.ok and picked.data["ended"] == "guard", picked.summary
+    assert picked.summary.startswith("pick 'cup' was stopped: elbow_flex reads"), picked.summary
+    assert f"{HOT_C:g}°C" in picked.summary
+    # found at the next read of the registers, and nothing asked of the policy after it
+    assert 3 < policy.n <= 3 + REGISTER_TICKS, policy.n
+    assert _hold_sent(arm.actions[-1]), arm.actions[-1]
+    assert not transport.policy_running
+    await adapter.close()
+
+
+async def test_torque_lost_mid_segment_stops_the_policy_and_says_so() -> None:
+    arm = _segment_arm()
+
+    def trips(n: int) -> dict[str, float]:
+        if n == 3:
+            arm.torque = False
+        return {"shoulder_pan": float(n)}
+
+    policy = Scripted(trips)
+    _, _, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert not picked.ok and "torque reads off on shoulder_pan" in picked.summary, picked.summary
+    assert 3 < policy.n <= 3 + REGISTER_TICKS, policy.n
+    await adapter.close()
+
+
+async def test_a_camera_that_dies_mid_segment_stops_the_policy_and_names_the_camera() -> None:
+    camera = FakeCamera()
+
+    def blinds(n: int) -> dict[str, float]:
+        if n == 3:
+            camera.stalled = True
+        return {"shoulder_pan": float(n)}
+
+    policy = Scripted(blinds)
+    arm, transport, adapter, ex = await _segment(
+        policy, camera=parse_camera_url(_camera_url()), camera_object=camera
+    )
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert not picked.ok and "the front camera gave no frame" in picked.summary, picked.summary
+    assert policy.n == 3, "the tick after the camera died asked the policy for nothing"
+    assert transport.camera_error is not None and "too old" in transport.camera_error
+    assert _hold_sent(arm.actions[-1])
+    await adapter.close()
+
+
+async def test_sends_that_fail_end_a_segment_only_when_they_fail_in_a_row() -> None:
+    arm = _segment_arm()
+    # two runs of failures, each one short of the count, with one send that went through
+    # between them: more failures than the count, and never that many in a row
+    first = range(3, 3 + FAILED_SENDS - 1)
+    second = range(first.stop + 1, first.stop + FAILED_SENDS)
+    fails = {*first, *second}
+    policy = Scripted(lambda n: setattr(arm, "send_fails", n in fails) or {"shoulder_pan": 1.0})
+    _, _, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 2})
+    assert len(fails) >= FAILED_SENDS and policy.n > max(fails)
+    assert not picked.ok and picked.data["ended"] == "time", picked.summary
+    assert "its 2 s ran out" in picked.summary
+    await adapter.close()
+
+    arm = _segment_arm()
+    policy = Scripted(lambda n: setattr(arm, "send_fails", n >= 3) or {"shoulder_pan": 1.0})
+    _, _, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert not picked.ok, picked.summary
+    assert f"{FAILED_SENDS} sends in a row did not reach the arm" in picked.summary
+    assert "Failed to sync write" in picked.summary
+    assert policy.n == 3 + FAILED_SENDS - 1
+    arm.send_fails = False
+    await adapter.close()
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, None, "fast"])
+async def test_an_action_that_is_not_a_number_ends_the_segment_before_it_is_sent(
+    value: Any,
+) -> None:
+    """A NaN through `_clip` is the joint's floor, and nothing counts the clip, so a policy
+    that broke would drive a joint to the end of its travel and nobody would know why."""
+    arm = _segment_arm()
+    policy = Scripted(lambda n: {"shoulder_pan": value} if n == 3 else {"shoulder_pan": 1.0})
+    _, transport, adapter, ex = await _segment(policy, arm)
+    clips = transport._range_clips
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert not picked.ok and "which is not a finite number" in picked.summary, picked.summary
+    assert f"shoulder_pan={value!r}" in picked.summary
+    assert policy.n == 3
+    sent = [a["shoulder_pan.pos"] for a in arm.actions if "shoulder_pan.pos" in a]
+    assert all(math.isfinite(goal) for goal in sent)
+    assert arm.positions["shoulder_pan"] > arm.travel("shoulder_pan")[0]
+    assert transport._range_clips == clips
+    await adapter.close()
+
+
+@pytest.mark.parametrize(
+    ("action", "said"),
+    [
+        ({"shoulder_pan.pos": 5.0}, "names shoulder_pan.pos, and this arm's motors are"),
+        ({"shoulder_pan": 5.0, "elbow": 3.0}, "names elbow, and this arm's motors are"),
+        ({}, "named no motor"),
+    ],
+)
+async def test_an_action_missing_a_motor_of_this_arm_ends_the_segment(
+    action: dict[str, float], said: str
+) -> None:
+    """A key that is not a motor of this arm is dropped by the send, so the motor the policy
+    meant would get nothing and the rest of the action would go out as if it were whole."""
+    arm = _segment_arm()
+    policy = Scripted(lambda n: action)
+    _, _, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert not picked.ok and said in picked.summary, picked.summary
+    assert policy.n == 1 and all(_hold_sent(a) for a in arm.actions), arm.actions
+    await adapter.close()
+
+
+async def test_a_pick_refuses_to_start_with_a_joint_far_past_its_travel_at_either_end() -> None:
+    arm = _segment_arm()
+    by = OUT_OF_RANGE_DEG + 3
+    arm.positions["shoulder_lift"] = _past(arm, "shoulder_lift", -by)
+    arm.positions["elbow_flex"] = _past(arm, "elbow_flex", by)
+    policy = Scripted(lambda n: {"shoulder_pan": 1.0})
+    _, transport, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    outside = {j: arm.positions[j] for j in ("elbow_flex", "shoulder_lift")}
+    refusal = policy_past_travel(outside, transport.joint_range_deg)
+    assert not picked.ok and picked.summary == f"do refused: {refusal}", picked.summary
+    assert "so the policy was not started" in refusal
+    assert "shoulder_lift reads" in refusal and "elbow_flex reads" in refusal
+    assert policy.n == 0 and policy.resets == [] and arm.actions == []
+    await adapter.close()
+
+
+async def test_a_segment_is_not_started_over_a_hot_joint_or_torque_off() -> None:
+    """The executor's preconditions refuse these before `pick` runs; the backend's own start
+    judges the reading it takes as the segment starts, whoever sent the `do`."""
+    arm = _segment_arm()
+    policy = Scripted(_pan)
+    _, _, adapter, _ = await _segment(policy, arm)
+    arm.temperature["wrist_flex"] = HOT_C
+    hot = await adapter.send_intent(Intent.do("policy:pick:cup"))
+    assert not hot.accepted and (hot.reason or "").startswith(
+        "the policy was not started: wrist_flex reads"
+    ), hot.reason
+    arm.temperature["wrist_flex"] = HOT_C - 10
+    arm.torque = False
+    limp = await adapter.send_intent(Intent.do("policy:pick:cup"))
+    assert not limp.accepted and "torque reads off" in (limp.reason or ""), limp.reason
+    assert policy.n == 0 and arm.actions == []
+    arm.torque = True
+    await adapter.close()
+
+
+async def test_a_joint_reading_just_past_its_travel_is_left_out_of_every_action() -> None:
+    """Inside the margin a pick starts, and a goal for the joint is never sent, because the
+    one goal its servo takes while it reads there is the end of the travel."""
+    arm = _segment_arm()
+    arm.positions["wrist_flex"] = _past(arm, "wrist_flex", OUT_OF_RANGE_DEG / 2)
+    policy = Scripted(lambda n: {"wrist_flex": 0.0, "shoulder_pan": float(n)})
+    _, _, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 1})
+    assert picked.data["ended"] == "time", picked.summary
+    assert policy.n > 1
+    assert any("shoulder_pan.pos" in a for a in arm.actions)
+    assert not any("wrist_flex.pos" in a for a in arm.actions), arm.actions
+    await adapter.close()
+
+
+async def test_a_goal_held_past_the_travel_ends_the_segment_and_a_passing_one_is_clipped() -> None:
+    """Clipped and counted, never refused (ADR-0036), until it has been past the travel for
+    `CLIP_SUSTAIN_S` in a row."""
+    arm = _segment_arm()
+    beyond = _past(arm, "wrist_flex", 30.0)
+    # past the travel for one tick less than the sustain, back inside for one, and again
+    policy = Scripted(
+        lambda n: {"wrist_flex": beyond if n % CLIP_TICKS else _inside(arm, "wrist_flex", 0.5)}
+    )
+    _, transport, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 3})
+    assert picked.data["ended"] == "time", picked.summary
+    assert transport._range_clips > 0
+    assert all(_within_travel(arm, a) for a in arm.actions), "a clipped goal left the travel"
+    await adapter.close()
+
+    arm = _segment_arm()
+    policy = Scripted(lambda n: {"wrist_flex": beyond})
+    _, transport, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert not picked.ok and "wrist_flex stayed past the travel" in picked.summary, picked.summary
+    assert CLIP_TICKS <= policy.n <= CLIP_TICKS + 2, policy.n
+    # every goal but the last, which ended the segment, went out clipped and counted
+    assert transport._range_clips == policy.n - 1
+    await adapter.close()
+
+
+async def test_a_stop_from_an_mcp_client_during_pick_ends_it_as_stopped_and_names_the_stop() -> (
+    None
+):
+    policy = Scripted(_pan)
+    arm, transport, adapter, ex = await _segment(policy)
+    running = asyncio.create_task(ex.run_verb("pick", {"target": "cup", "max_s": 60}))
+    await _until(lambda: policy.n >= 3)
+    stopped = await ex.run_verb("stop")
+    picked = await running
+    assert stopped.ok, stopped.summary
+    assert not picked.ok and picked.data["ended"] == "stopped"
+    assert picked.summary == "pick 'cup' stopped: a stop was sent to the arm", picked.summary
+    assert not transport.policy_running
+    acted, sent = policy.n, len(arm.actions)
+    await asyncio.sleep(0.05)
+    assert (policy.n, len(arm.actions)) == (acted, sent), "the policy kept driving the arm"
+    await adapter.close()
+
+
+async def test_a_verb_refused_during_pick_stops_it_and_pick_says_it_was_stopped() -> None:
+    policy = Scripted(_pan)
+    _, transport, adapter, ex = await _segment(policy)
+    running = asyncio.create_task(ex.run_verb("pick", {"target": "cup", "max_s": 60}))
+    await _until(lambda: policy.n >= 3)
+    moved = await ex.run_verb(
+        "move_joints", {"positions": {"shoulder_pan": 5.0}, "duration_s": MOVE_MIN_S}
+    )
+    picked = await running
+    assert not moved.ok and "pick is running" in moved.summary, moved.summary
+    assert picked.summary == "pick 'cup' stopped: a stop was sent to the arm", picked.summary
+    assert not transport.policy_running
+    # and with the policy gone, the same move goes through
+    assert (
+        await ex.run_verb(
+            "move_joints", {"positions": {"shoulder_pan": 5.0}, "duration_s": MOVE_MIN_S}
+        )
+    ).ok
+    await adapter.close()
+
+
+async def test_the_heartbeat_s_stop_during_pick_ends_it_as_stopped() -> None:
+    """The heartbeat stops the arm from its own task. Its abort is kept apart from the
+    executor's here, so what the pick says is not raced by the executor's own abort."""
+    policy = Scripted(_pan)
+    _, transport, adapter, ex = await _segment(policy)
+    running = asyncio.create_task(ex.run_verb("pick", {"target": "cup", "max_s": 60}))
+    await _until(lambda: policy.n >= 3)
+
+    async def lost() -> None:
+        raise HeartbeatError("the arm did not answer: TimeoutError")
+
+    transport.heartbeat = lost  # type: ignore[method-assign]
+    abort = asyncio.Event()
+    beat = Heartbeat(adapter, abort, period_s=0.001)
+    beat.start()
+    picked = await running
+    await asyncio.wait_for(abort.wait(), 10.0)
+    await beat.stop()
+    assert picked.summary == "pick 'cup' stopped: a stop was sent to the arm", picked.summary
+    assert not transport.policy_running
+    await adapter.close()
+
+
+async def test_a_close_during_pick_ends_it_as_stopped_and_sends_nothing_after() -> None:
+    policy = Scripted(_pan)
+    arm, _, adapter, ex = await _segment(policy)
+    running = asyncio.create_task(ex.run_verb("pick", {"target": "cup", "max_s": 60}))
+    await _until(lambda: policy.n >= 3)
+    await adapter.close()
+    touched = (len(arm.actions), len(arm.reads), len(arm.calls))
+    picked = await running
+    await asyncio.sleep(0.05)
+    assert picked.summary == "pick 'cup' stopped: the arm's transport was closed", picked.summary
+    assert arm.calls[-1] == ("disconnect",)
+    # no stop of its own after the close: a stop is a read and a hold
+    assert (len(arm.actions), len(arm.reads), len(arm.calls)) == touched
+
+
+def _stalling(arm: FakeArm) -> tuple[dict[str, bool], threading.Event, threading.Event]:
+    """Make `arm`'s next read of its joints, once the test sets the flag, stay on the bus
+    until the test answers it: the flag, an event set as that read goes out, and the event
+    that lets it come back. The read runs in `_call`'s worker thread, as a real one does."""
+    stall = {"next": False}
+    on_bus, answer = threading.Event(), threading.Event()
+    read = arm.get_observation
+
+    def get_observation() -> dict[str, Any]:
+        if stall["next"]:
+            stall["next"] = False
+            on_bus.set()
+            answer.wait(10.0)
+        return read()
+
+    arm.get_observation = get_observation  # type: ignore[method-assign]
+    return stall, on_bus, answer
+
+
+def _stall_the_start(transport: LeRobotReal, stall: dict[str, bool]) -> None:
+    """Make the next `do`'s first read of the arm the one `_stalling` holds on the bus: the
+    segment's start, and never a read the executor makes before the verb runs."""
+    do = transport._do
+
+    async def starting(*args: Any, **kwargs: Any) -> Any:
+        stall["next"] = True
+        return await do(*args, **kwargs)
+
+    transport._do = starting  # type: ignore[method-assign]
+
+
+def _whole_hold(action: dict[str, float]) -> bool:
+    """`action` is a stop's hold of an arm with every body joint inside its travel: each of them
+    where it stands and never the gripper. A policy's goal in these tests names fewer."""
+    return {k.removesuffix(".pos") for k in action} == BODY_JOINTS
+
+
+NOT_STARTED = "the policy was not started: a stop was sent to the arm while it was starting"
+"""What a `do` says when a stop landed while its segment was starting."""
+
+
+async def test_a_stop_that_lands_while_a_pick_is_starting_keeps_its_policy_from_starting() -> None:
+    """The segment's first reading is on the bus when the heartbeat's stop comes. A stop that
+    found no task to cancel there would hold the arm and return, and the policy would start
+    after it and drive the arm for the whole of `max_s`."""
+    arm = _segment_arm()
+    stall, on_bus, answer = _stalling(arm)
+    policy = Scripted(_pan)
+    _, transport, adapter, ex = await _segment(policy, arm)
+    _stall_the_start(transport, stall)
+    running = asyncio.create_task(ex.run_verb("pick", {"target": "cup", "max_s": 5}))
+    await _until(on_bus.is_set)
+    stopping = asyncio.create_task(adapter.stop())
+    await asyncio.sleep(0.05)
+    answer.set()
+    await stopping
+    sent = len(arm.actions)
+    picked = await running
+    assert _whole_hold(arm.actions[-1]), arm.actions[-1]
+    assert picked.summary == f"do refused: {NOT_STARTED}", picked.summary
+    assert policy.n == 0 and policy.resets == []
+    await asyncio.sleep(0.05)
+    assert len(arm.actions) == sent and not transport.policy_running
+    await adapter.close()
+
+
+@pytest.mark.parametrize("who", ["an MCP client", "the heartbeat"])
+async def test_a_stop_queued_behind_the_read_before_a_pick_keeps_its_policy_from_starting(
+    who: str,
+) -> None:
+    """The executor's read before `pick` is on the bus, and a stop queues behind it. An MCP
+    client's stop reads the state first and lands as the segment starts. The heartbeat's, and
+    the executor's own after another verb fails, read nothing first: they are under way before
+    the `do` comes, with no segment to cancel, and their hold waits behind the read. Whichever
+    it is, no goal of the policy's reaches the arm after the stop returns."""
+    arm = _segment_arm()
+    stall, on_bus, answer = _stalling(arm)
+    policy = Scripted(_pan)
+    _, transport, adapter, ex = await _segment(policy, arm)
+    stall["next"] = True
+    running = asyncio.create_task(ex.run_verb("pick", {"target": "cup", "max_s": 5}))
+    await _until(on_bus.is_set)
+    stopping = asyncio.create_task(
+        ex.run_verb("stop") if who == "an MCP client" else adapter.stop()
+    )
+    await asyncio.sleep(0.05)
+    answer.set()
+    stopped = await stopping
+    assert stopped is None or stopped.ok, stopped.summary
+    assert transport.stop_error is None and _whole_hold(arm.actions[-1]), arm.actions[-1]
+    sent = len(arm.actions)
+    picked = await running
+    assert not picked.ok and "a stop was sent to the arm" in picked.summary, picked.summary
+    assert policy.n == 0, "the policy was asked for a goal after the stop"
+    await asyncio.sleep(0.05)
+    assert len(arm.actions) == sent and not transport.policy_running
+    await adapter.close()
+
+
+async def test_a_stop_while_the_next_pick_ends_the_last_one_keeps_the_next_from_starting() -> None:
+    """The second `do` cancels the first segment in the middle of a read and waits for that
+    read to come back, and a stop lands meanwhile, with no task for it to cancel. It is
+    counted, so the second segment never starts, and its hold waits for the first segment's
+    read as the second `do` does, rather than being refused on it."""
+    arm = _segment_arm()
+    stall, on_bus, answer = _stalling(arm)
+    policy = Scripted(_pan)
+    _, transport, adapter, _ = await _segment(policy, arm)
+    assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+    await _until(lambda: policy.n >= 2)
+    stall["next"] = True
+    await _until(on_bus.is_set)
+    second = asyncio.create_task(adapter.send_intent(Intent.do("policy:pick:cup")))
+    await _until(lambda: transport.policy_segment is None)
+    stopping = asyncio.create_task(adapter.stop())
+    await asyncio.sleep(0.05)
+    acted, sent = policy.n, len(arm.actions)
+    answer.set()
+    await stopping
+    ack = await second
+    assert not ack.accepted and ack.reason == NOT_STARTED, ack.reason
+    assert len(arm.actions) == sent + 1 and _whole_hold(arm.actions[-1]), arm.actions[sent:]
+    await asyncio.sleep(0.05)
+    assert policy.n == acted and not transport.policy_running
+    await adapter.close()
+
+
+async def test_an_abort_while_a_pick_is_starting_still_gets_the_stop_to_the_arm() -> None:
+    """The abort cancels the verb in its `do` while the segment's first read is on the bus,
+    and the segment goes with it. The executor's stop then waits for that read to come back
+    and holds the arm, rather than being refused on it while the abort says a stop was sent."""
+    arm = _segment_arm()
+    stall, on_bus, answer = _stalling(arm)
+    policy = Scripted(_pan)
+    _, transport, adapter, ex = await _segment(policy, arm)
+    _stall_the_start(transport, stall)
+    running = asyncio.create_task(ex.run_verb("pick", {"target": "cup", "max_s": 5}))
+    await _until(on_bus.is_set)
+    sent = len(arm.actions)
+    ex.abort.set()
+    await _until(lambda: transport._wedged is not None)
+    await asyncio.sleep(0.05)
+    answer.set()
+    with pytest.raises(Aborted):
+        await running
+    assert len(arm.actions) > sent and _whole_hold(arm.actions[-1]), arm.actions[sent:]
+    assert policy.n == 0 and not transport.policy_running
+    await adapter.close()
+
+
+async def test_a_segment_a_guard_ends_holds_the_arm_itself_with_no_verb_waiting() -> None:
+    """A `do` from anywhere but `pick` has no verb to stop the arm after its segment, so the
+    hold a guard ends it with is the segment's own."""
+    arm = _segment_arm()
+
+    def warms(n: int) -> dict[str, float]:
+        if n == 3:
+            arm.temperature["elbow_flex"] = HOT_C + 5
+        return {"shoulder_pan": float(n)}
+
+    _, transport, adapter, _ = await _segment(Scripted(warms), arm)
+    assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+    segment = transport.policy_segment
+    assert segment is not None
+    await asyncio.wait({segment})
+    assert segment.result().how == "guard", segment.result()
+    assert _whole_hold(arm.actions[-1]), arm.actions[-1]
+    arm.temperature["elbow_flex"] = HOT_C - 10
+    await adapter.close()
+
+
+async def test_a_close_during_a_guard_s_hold_waits_for_the_segment_before_it_disconnects() -> None:
+    """A segment a guard ends is still running while it holds the arm, and still the segment a
+    close, a rest move or a stop finds and waits for. The hold's read stays on the bus here
+    while a close comes, with no rest pose to read first, so the disconnect is its next step."""
+    arm = _segment_arm()
+    stall, on_bus, answer = _stalling(arm)
+
+    def not_a_number(n: int) -> dict[str, float]:
+        if n == 3:
+            stall["next"] = True  # the next read of the joints is the guard's hold's
+            return {"shoulder_pan": math.nan}
+        return {"shoulder_pan": float(n)}
+
+    _, transport, adapter, _ = await _segment(Scripted(not_a_number), arm)
+    assert transport.rest_pose is None
+    assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+    segment = transport.policy_segment
+    assert segment is not None
+    await _until(on_bus.is_set)
+    assert transport.policy_running, "a segment holding the arm read as over"
+    ended: list[bool] = []
+    disconnect = arm.disconnect
+
+    def watched() -> None:
+        ended.append(segment.done())
+        disconnect()
+
+    arm.disconnect = watched  # type: ignore[method-assign]
+    closing = asyncio.create_task(adapter.close())
+    await asyncio.sleep(0.05)
+    answer.set()
+    await asyncio.wait_for(closing, 10.0)
+    assert ended == [True], "the arm was disconnected under the segment's hold"
+
+
+async def test_a_pick_cancelled_while_it_ends_the_last_segment_starts_no_segment() -> None:
+    """The next pick's `do` cancels the running segment and waits for it to end, and the pick
+    itself is cancelled there, by an abort or a dropped call. That cancellation is the pick's
+    own and ends it. A wait that passed it on to the segment and swallowed it there would start
+    the next segment as if nothing had cancelled the pick, to drive the arm for its `max_s`."""
+    policy = Scripted(_pan)
+    arm, transport, adapter, ex = await _segment(policy)
+    assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+    await _until(lambda: policy.n >= 3)
+    first = transport.policy_segment
+    assert first is not None
+    cancel_policy = transport._cancel_policy
+
+    async def abandoned(why: str, *, stop: bool = True) -> None:
+        if not stop:
+            # the second pick's `do`, ending the first segment: its own cancellation lands on
+            # the next turn of the loop, while it waits for that segment
+            me = asyncio.current_task()
+            assert me is not None
+            asyncio.get_running_loop().call_soon(me.cancel)
+        await cancel_policy(why, stop=stop)
+
+    transport._cancel_policy = abandoned  # type: ignore[method-assign]
+    verb = asyncio.create_task(pick(ex.context(), PickParams(target="cup", max_s=5)))
+    with pytest.raises(asyncio.CancelledError):
+        await verb
+    assert first.cancelled()
+    # the first segment's last call, which its cancel left on the bus, comes back first
+    await _until(lambda: transport._wedged is None or transport._wedged.done())
+    acted, sent = policy.n, len(arm.actions)
+    await asyncio.sleep(0.05)
+    assert (policy.n, len(arm.actions)) == (acted, sent), "a segment started for nobody"
+    assert policy.resets == [0] and not transport.policy_running
+    await adapter.close()
+
+
+async def test_an_mcp_stop_right_after_a_pick_timed_out_mid_send_is_not_refused() -> None:
+    """The executor's timeout lands while the policy's goal is on the bus, and the pick's own
+    way out cancels its segment there. An MCP client's stop that comes then reads the state
+    first, behind that send, and waits for it as the executor's own stop does, rather than be
+    refused on it and raise."""
+    policy = Scripted(_pan)
+    arm = _segment_arm()
+    on_bus, answer, stall = threading.Event(), threading.Event(), {"next": False}
+    send = arm.send_action
+
+    def send_action(action: dict[str, float]) -> dict[str, float]:
+        if stall["next"]:
+            stall["next"] = False
+            on_bus.set()
+            answer.wait(10.0)
+        return send(action)
+
+    arm.send_action = send_action  # type: ignore[method-assign]
+    transport = LeRobotReal("COM5", robot=arm, policy=policy, clock=SteppedClock())
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    registry = registry_from_manifest(manifest, adapter)
+    registry.get("pick").timeout_s = 0.3
+    ex = Executor(registry, adapter, confirm=allow_all)
+    try:
+        running = asyncio.create_task(ex.run_verb("pick", {"target": "cup", "max_s": 60}))
+        await _until(lambda: policy.n >= 3)
+        stall["next"] = True  # the policy's next goal stays on the bus
+        await _until(on_bus.is_set)
+        # the executor's timeout, and the pick's own way out, cancelled the segment there
+        await _until(lambda: transport._wedged is not None)
+        sent = len(arm.actions)
+        stopping = asyncio.create_task(ex.run_verb("stop"))
+        await asyncio.sleep(0.02)
+        answer.set()
+        stopped = await asyncio.wait_for(stopping, 10.0)
+        timed_out = await running
+        assert stopped.ok, stopped.summary
+        assert "timed out" in timed_out.summary, timed_out.summary
+        assert any(_whole_hold(action) for action in arm.actions[sent:]), arm.actions[sent:]
+    finally:
+        answer.set()
+        await adapter.close()
+
+
+async def test_every_loop_read_feeds_the_gripper_trace_as_it_comes_back() -> None:
+    """`holding` is judged on the trace. Fed by the reads of the registers alone, a grasp that
+    settled between two of them would be seen up to `REGISTER_PERIOD_S` late, with the policy
+    squeezing it all the while."""
+    thinking, go_on = threading.Event(), threading.Event()
+    ticks = REGISTER_TICKS + 2
+
+    def ponders(n: int) -> dict[str, float]:
+        if n == ticks:
+            thinking.set()
+            go_on.wait(10.0)
+        return {"shoulder_pan": 1.0}
+
+    _, transport, adapter, _ = await _segment(Scripted(ponders))
+    try:
+        assert ticks <= (transport._gripper_trace.maxlen or ticks)
+        assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+        await _until(thinking.is_set)
+        stamps = [at for at, _ in transport._gripper_trace][-ticks:]
+        gaps = {round(later - at, 6) for at, later in itertools.pairwise(stamps)}
+        assert gaps == {round(1.0 / POLICY_HZ, 6)}, stamps
+    finally:
+        go_on.set()
+        await adapter.close()
+
+
+async def test_the_pick_s_own_cancellation_cancels_its_policy_segment() -> None:
+    """An executor timeout or an abort cancels the verb, and nothing else has stopped the
+    segment then: the verb's own way out has to."""
+    policy = Scripted(_pan)
+    _, transport, adapter, ex = await _segment(policy)
+    verb = asyncio.create_task(pick(ex.context(), PickParams(target="cup", max_s=60)))
+    await _until(lambda: policy.n >= 3)
+    segment = transport.policy_segment
+    assert segment is not None and not segment.done()
+    verb.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await verb
+    await asyncio.wait({segment})
+    assert segment.cancelled()
+    assert transport.policy_stopped_by is None, "nothing but the verb stopped it"
+    acted = policy.n
+    await asyncio.sleep(0.05)
+    assert policy.n == acted
+    await adapter.close()
+
+
+async def test_an_executor_timeout_during_pick_cancels_the_segment_and_stops_the_arm() -> None:
+    def slow(n: int) -> dict[str, float]:
+        time.sleep(0.005)  # a policy thinking, in its worker thread
+        return _pan(n)
+
+    policy = Scripted(slow)
+    arm = _segment_arm()
+    transport = LeRobotReal("COM5", robot=arm, policy=policy, clock=SteppedClock())
+    adapter = LeRobotAdapter(transport)
+    manifest = await adapter.connect()
+    registry = registry_from_manifest(manifest, adapter)
+    registry.get("pick").timeout_s = 0.2
+    ex = Executor(registry, adapter, confirm=allow_all)
+    timed_out = await ex.run_verb("pick", {"target": "cup", "max_s": 60})
+    assert not timed_out.ok and "timed out" in timed_out.summary, timed_out.summary
+    assert not transport.policy_running
+    assert _hold_sent(arm.actions[-1]), "the executor's stop did not reach the arm"
+    acted = policy.n
+    await asyncio.sleep(0.05)
+    assert policy.n == acted, "the policy kept driving the arm"
+    await adapter.close()
+
+
+async def test_a_pick_that_holds_stops_its_policy_and_the_next_move_is_not_refused() -> None:
+    """The policy never says it is done, so only `holding` judged on the loop's own reads,
+    mid segment, can end this pick, and nothing but the loop reads the arm meanwhile."""
+    arm = _segment_arm(object_in_jaws=True)
+    policy = Scripted(lambda n: {"shoulder_pan": 2.0} if n < 3 else {"gripper": GRIPPER_CLOSED})
+    _, transport, adapter, ex = await _segment(policy, arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert picked.ok and picked.data["ended"] == "holding", picked.summary
+    assert not transport.policy_running and (await adapter.get_state()).policy == "idle"
+    acted = policy.n
+    moved = await ex.run_verb(
+        "move_joints", {"positions": {"shoulder_pan": 4.0}, "duration_s": MOVE_MIN_S}
+    )
+    assert moved.ok, moved.summary
+    assert policy.n == acted, "the policy was asked for another goal after the pick"
+    assert (await adapter.get_state()).holding
+    await adapter.close()
+
+
+async def test_a_policy_that_finishes_gets_a_settle_and_no_more_goals() -> None:
+    arm = _segment_arm()
+    policy = Scripted(lambda n: None if n > 2 else {"shoulder_pan": 1.0})
+    _, _, adapter, ex = await _segment(policy, arm)
+    sent = len(arm.actions)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert not picked.ok and picked.data["ended"] == "finished", picked.summary
+    assert policy.n == 3, "the policy was asked again after it said it was done"
+    assert picked.data["seconds"] >= PICK_SETTLE_S
+    # two goals, and then the verb's own stop, which is a hold
+    assert len(arm.actions) == sent + 3 and _hold_sent(arm.actions[-1])
+    await adapter.close()
+
+
+async def test_the_policy_is_reset_before_the_first_act_of_every_pick() -> None:
+    policy = Scripted(_pan)
+    _, _, adapter, ex = await _segment(policy)
+    await ex.run_verb("pick", {"target": "cup", "max_s": 1})
+    first = policy.n
+    await ex.run_verb("pick", {"target": "cup", "max_s": 1})
+    assert first > 0 and policy.resets == [0, first], policy.resets
+    await adapter.close()
+
+
+async def test_a_policy_without_a_reset_still_runs() -> None:
+    class Plain:
+        def act(self, observation: dict[str, Any], *, task: str) -> dict[str, float] | None:
+            return {"shoulder_pan": 1.0}
+
+    _, _, adapter, ex = await _segment(Plain())
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 1})
+    assert picked.data["ended"] == "time", picked.summary
+    await adapter.close()
+
+
+async def test_a_beat_during_a_pick_reads_the_arm_itself_after_the_loop_s_read() -> None:
+    """The arm answers the loop's read the beat lands on, and dies as that answer comes back. A
+    beat that took the loop's answer for its own would pass, and leave the dead arm to the next
+    beat a whole period later. Its own probe queues behind the loop's read and goes out next,
+    so it fails on this beat."""
+    arm = _segment_arm()
+    stall, on_bus, answer = {"next": False}, threading.Event(), threading.Event()
+    read = arm.get_observation
+
+    def answers_then_dies() -> dict[str, Any]:
+        if not stall["next"]:
+            return read()
+        stall["next"] = False
+        on_bus.set()
+        answer.wait(10.0)
+        obs = read()
+        arm.dead = True
+        return obs
+
+    arm.get_observation = answers_then_dies  # type: ignore[method-assign]
+    policy = Scripted(_pan)
+    _, _, adapter, _ = await _segment(policy, arm)
+    try:
+        assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+        await _until(lambda: policy.n >= 2)
+        stall["next"] = True
+        await _until(on_bus.is_set)
+        beat = asyncio.create_task(adapter.heartbeat())
+        await asyncio.sleep(0.05)
+        answer.set()
+        with pytest.raises(HeartbeatError, match="did not answer"):
+            await asyncio.wait_for(beat, 10.0)
+    finally:
+        answer.set()
+        arm.dead = False
+        await adapter.close()
+
+
+async def test_a_beat_on_a_loop_read_the_arm_did_not_answer_reads_the_arm_next_and_fails() -> None:
+    """The loop's read fails, which ends the segment on a guard that holds the arm, and that
+    hold begins with a read. The beat's own read was queued first, so it goes out first, and the
+    beat fails on the next read the arm misses rather than on the one after."""
+    arm = _segment_arm()
+    order: list[str] = []
+    read = arm.get_observation
+
+    def counted() -> dict[str, Any]:
+        if arm.dead:
+            order.append("read")
+        return read()
+
+    arm.get_observation = counted  # type: ignore[method-assign]
+    # the stall wraps the count, so the read it holds is counted when it goes on, dead
+    stall, on_bus, answer = _stalling(arm)
+    policy = Scripted(_pan)
+    _, transport, adapter, _ = await _segment(policy, arm)
+
+    def beats() -> Any:
+        def beat_s() -> Any:
+            order.append("beat")
+            return transport._read_all()
+
+        return beat_s
+
+    transport._heartbeat_reads = beats  # type: ignore[method-assign]
+    try:
+        assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+        # taken now: the next `do` or a stop replaces it
+        segment = transport.policy_segment
+        assert segment is not None
+        await _until(lambda: policy.n >= 2)
+        stall["next"] = True
+        await _until(on_bus.is_set)
+        beat = asyncio.create_task(adapter.heartbeat())
+        await asyncio.sleep(0.05)
+        arm.dead = True
+        answer.set()
+        with pytest.raises(HeartbeatError, match="did not answer"):
+            await asyncio.wait_for(beat, 10.0)
+        await asyncio.wait({segment})
+        assert "did not answer a read" in segment.result().reason
+        # the loop's read, then the beat's, then the guard's hold
+        assert order[:4] == ["read", "beat", "read", "read"], order
+    finally:
+        answer.set()
+        arm.dead = False
+        await adapter.close()
+
+
+async def test_an_arm_that_goes_quiet_after_a_loop_read_fails_the_next_beat() -> None:
+    """Mid segment, with the loop's last read answered and the policy thinking, and after a
+    pick that ended on a grasp. A read from before the arm went quiet is no answer to a beat
+    after it, and taking one would put the run's abort a period later than a probe puts it."""
+    thinking, go_on = threading.Event(), threading.Event()
+
+    def ponders(n: int) -> dict[str, float]:
+        if n == 2:
+            thinking.set()
+            go_on.wait(10.0)
+        return {"shoulder_pan": 1.0}
+
+    arm, transport, adapter, _ = await _segment(Scripted(ponders))
+    try:
+        assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+        segment = transport.policy_segment
+        assert segment is not None
+        await _until(thinking.is_set)
+        arm.dead = True
+        with pytest.raises(HeartbeatError, match="did not answer"):
+            await adapter.heartbeat()
+        go_on.set()
+        await asyncio.wait({segment})
+    finally:
+        go_on.set()
+        arm.dead = False
+        await adapter.close()
+
+    arm = _segment_arm(object_in_jaws=True)
+    _, _, adapter, ex = await _segment(Scripted(lambda n: {"gripper": GRIPPER_CLOSED}), arm)
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 30})
+    assert picked.data["ended"] == "holding", picked.summary
+    arm.dead = True
+    with pytest.raises(HeartbeatError, match="did not answer"):
+        await adapter.heartbeat()
+    arm.dead = False
+    await adapter.close()
+
+
+@pytest.mark.parametrize("canceller", ["a stop", "the next pick"])
+async def test_a_beat_behind_a_loop_read_something_cancels_waits_for_it_and_passes(
+    canceller: str,
+) -> None:
+    """A stop or the next pick's `do` cancels the segment while its read is on the bus, with
+    the beat queued behind that read. The read is the segment's own, and it comes back on an
+    arm that answers: the beat waits for it as the stop does, then reads the arm, rather than
+    fail on it and abort the run over an arm that is fine."""
+    arm = _segment_arm()
+    stall, on_bus, answer = _stalling(arm)
+    policy = Scripted(_pan)
+    _, transport, adapter, _ = await _segment(policy, arm)
+    try:
+        assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+        await _until(lambda: policy.n >= 2)
+        stall["next"] = True
+        await _until(on_bus.is_set)
+        beat = asyncio.create_task(adapter.heartbeat())
+        await asyncio.sleep(0.01)
+        other = asyncio.create_task(
+            adapter.stop()
+            if canceller == "a stop"
+            else adapter.send_intent(Intent.do("policy:pick:cup"))
+        )
+        await _until(lambda: transport._wedged is not None)
+        await asyncio.sleep(0.02)
+        answer.set()
+        await asyncio.wait_for(beat, 10.0)
+        await other
+        assert transport.stop_error is None, transport.stop_error
+    finally:
+        answer.set()
+        await adapter.close()
+
+
+async def test_a_segment_s_read_that_never_comes_back_fails_the_beat_at_its_own_deadline() -> None:
+    """A stop cancels the segment in the middle of a read the arm never answers. The beat
+    waits for that read as the stop does, and no longer than the read's own deadline, which is
+    when it would have failed had nothing cancelled the segment. A wait of a whole timeout from
+    when the beat landed would find the dead arm that much later."""
+    arm = _segment_arm()
+    stall, on_bus, answer = _stalling(arm)
+    policy = Scripted(_pan)
+    timeout_s = 0.3
+    _, transport, adapter, _ = await _segment(policy, arm, timeout_s=timeout_s)
+    loop = asyncio.get_running_loop()
+    try:
+        assert (await adapter.send_intent(Intent.do("policy:pick:cup"))).accepted
+        await _until(lambda: policy.n >= 2)
+        stall["next"] = True
+        await _until(on_bus.is_set)
+        out = loop.time()
+        stopping = asyncio.create_task(adapter.stop())
+        await _until(lambda: transport._wedged is not None)
+        await asyncio.sleep(timeout_s / 2)
+        with pytest.raises(HeartbeatError, match="has not come back"):
+            await asyncio.wait_for(adapter.heartbeat(), 10.0)
+        assert loop.time() - out < timeout_s + timeout_s / 3, "the beat waited past the deadline"
+        await stopping
+        assert transport.stop_error is not None and "has not come back" in transport.stop_error
+    finally:
+        answer.set()
+    await _until(lambda: transport._wedged is None or transport._wedged.done())
+    await adapter.close()
+
+
+async def test_a_call_whose_budget_a_segment_s_call_spent_never_goes_out() -> None:
+    """A call behind a segment's call that a stop cancelled waits for it rather than being
+    refused on it, and while it waits that call holds the bus and spends the waiting call's
+    budget, as the call ahead of one queued on the lock does. Where the loop's thread stalled
+    past that budget and the segment's call came back during the stall, the waiting call found
+    the bus free when the loop resumed and went out anyway, before anything judged its budget,
+    and then timed out as late. A call that spent its budget waiting on the bus never goes out,
+    and says so, as one queued on the lock does."""
+    from quackd_lerobot.real import POLICY_TASK
+
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    on_bus, answer = threading.Event(), threading.Event()
+    sent: list[str] = []
+
+    def segment_read() -> str:
+        on_bus.set()
+        answer.wait(5.0)
+        return "read"
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    segment = asyncio.create_task(transport._call(segment_read), name=POLICY_TASK)
+    try:
+        await _until(on_bus.is_set)
+        segment.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await segment
+        assert transport._segment_call() is not None, "the stop left no segment's call out"
+        waiting = asyncio.create_task(transport._call(beat))
+        await asyncio.sleep(budget / 10)  # it waits for the segment's call
+        # the segment's call comes back once the waiting call's budget is spent on the bus,
+        # while the loop's thread is stalled past both
+        threading.Timer(1.5 * budget, answer.set).start()
+        loop.call_soon(time.sleep, 2.4 * budget)
+        with pytest.raises(TimeoutError) as raised:
+            await waiting
+        said = str(raised.value)
+        assert said == f"a LeRobot call (beat) waited {budget:g} s for the bus and never went out"
+        assert sent == []
+    finally:
+        answer.set()
+
+
+async def test_a_call_that_ran_out_its_time_fails_the_beat_at_once_and_so_does_a_close() -> None:
+    """A wedge a timeout left is a bus that stopped answering, and nothing waits for it."""
+    release = threading.Event()
+    _, transport, adapter, _ = await _segment(Scripted(_pan))
+
+    def block() -> None:
+        release.wait(5.0)
+
+    try:
+        with pytest.raises(TimeoutError):
+            await transport._call(block, deadline_s=0.2)
+        with pytest.raises(HeartbeatError, match="one owner"):
+            await asyncio.wait_for(adapter.heartbeat(), transport.timeout_s / 2)
+    finally:
+        release.set()
+    await _until(lambda: transport._wedged is None or transport._wedged.done())
+    await adapter.close()
+    with pytest.raises(HeartbeatError, match="closed"):
+        await asyncio.wait_for(adapter.heartbeat(), 5.0)
+
+
+@pytest.mark.parametrize("seconds", [0.0, FINISH_S / 2, FINISH_S * 3, 0.004, 0.02, 0.05])
+async def test_the_wall_clock_never_wakes_early(seconds: float) -> None:
+    """On Windows before Python 3.13 the event loop's timer wakes a sleep up to 15.6 ms early
+    (gh-88494), which is a sixth of a policy's tick. Measured on `perf_counter`, and on the
+    clock's own `now()`, which is `perf_counter` too.
+
+    The loop is kept busy meanwhile, because only a busy loop wakes early: it runs every timer
+    due within one tick of its clock once it has other work ready, and an idle one waits the
+    timer out. A segment's loop is never idle, with its thread calls coming back and the
+    heartbeat beating, and a plain `asyncio.sleep` fails this test there."""
+    clock = WallClock()
+    passes = 0
+
+    async def busy() -> None:
+        nonlocal passes
+        while True:
+            passes += 1
+            await asyncio.sleep(0)
+
+    peer = asyncio.create_task(busy())
+    try:
+        for _ in range(5):
+            before, then = time.perf_counter(), clock.now()
+            await clock.sleep(seconds)
+            assert time.perf_counter() - before >= seconds
+            assert clock.now() - then >= seconds
+        assert passes > 0, "the loop was idle, and an idle loop never wakes early"
+    finally:
+        peer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await peer
+
+
+def test_a_timing_is_a_count_a_median_a_99th_percentile_and_the_longest() -> None:
+    timing = Timing(window=4)
+    assert timing.summary() == {"count": 0}
+    for ms in (4.0, 1.0, 3.0, 2.0, 9.0, 5.0):
+        timing.add(ms / 1000.0)
+    # the percentiles over the last four, nearest rank, and the longest of all six
+    assert timing.summary() == {"count": 6, "p50_ms": 3.0, "p99_ms": 9.0, "max_ms": 9.0}
+    timing.add(0.5 / 1000.0)
+    assert timing.summary() == {"count": 7, "p50_ms": 2.0, "p99_ms": 9.0, "max_ms": 9.0}
+
+
+async def test_every_bus_call_and_every_tick_is_timed_and_a_pick_reports_both() -> None:
+    policy = Scripted(_pan)
+    _, _, adapter, ex = await _segment(policy)
+    before = (await adapter.get_state()).extras["timing"]
+    assert before["bus_call"]["count"] > 0 and "policy_tick" not in before
+    picked = await ex.run_verb("pick", {"target": "cup", "max_s": 1})
+    timing = picked.data["timing"]
+    assert timing["policy_tick"]["count"] == policy.n
+    for kind in ("bus_call", "policy_tick"):
+        row = timing[kind]
+        assert 0 <= row["p50_ms"] <= row["p99_ms"] <= row["max_ms"], row
+    assert timing["bus_call"]["count"] > before["bus_call"]["count"] + policy.n
+    await adapter.close()

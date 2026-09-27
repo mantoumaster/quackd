@@ -392,7 +392,7 @@ What that means at the bench:
   `--camera-url`.
 - A camera that stops delivering later is **not** a refusal. `observe` fails with what the
   camera said (`the camera gave no frame: TimeoutError: ... too old`), and a `pick` running
-  at that moment ends as a policy error, because the policy is handed the frame. The moving
+  at that moment is stopped with the arm held, because the policy sees through it. The moving
   verbs carry on. `report_state` keeps working and gains a `CAMERA DOWN:` clause with the
   reason, and the health goes into the arm's state, which is what puts a dead webcam in the
   transcript on a run that has no `observe` to call. `quackd doctor` shows the same thing
@@ -661,9 +661,40 @@ Python**, and there is no CLI flag that loads one today. `real.py` has `load_pol
 built entirely from verified upstream names, but nothing has run it end to end: it is the
 `POLICY_PIPELINE` row in the UNVERIFIED table below. So a trained ACT checkpoint reaches this
 arm only through code you write around the adapter, and `quackd run --robot lerobot:real`
-will not offer `pick` at all. Every other verb is fully reachable from the CLI. If you get a
-policy running this way, the policy's own actions still pass the step cap and the range
-refusal, which is quackd's rule and not LeRobot's.
+will not offer `pick` at all. Every other verb is fully reachable from the CLI.
+
+If you get a policy running this way, `pick` runs it as a segment, a loop of its own on the
+arm's clock at 10 Hz that reads the arm, judges the reading, asks the policy for a goal and
+sends it, and the verb waits for that loop to end:
+
+- **It ends as soon as something is held.** `holding` is judged on the loop's own reads, each
+  tick, so the policy stops the moment a grasp settles and the next verb is not refused as
+  `pick is running`. The policy is reset at the start of every pick, where it has a `reset()`,
+  so a second pick does not play out the first one's queued actions.
+- **A goal past the travel is clipped and counted, not refused.** A verb's goal there is
+  refused, and a policy's is clipped to the edge and counted in `extras.range_clips`, because
+  one a tick over should not abort a grasp ([ADR-0036](../adr/0036-what-the-arm-does-not-say.md)).
+  Its actions pass the same step cap as a verb's. A joint reading outside its travel is left
+  out of every action, as a stop leaves it out.
+- **It stops the policy and holds the arm** on a hot joint, torque off, a camera that gave no
+  frame, a goal that is not a finite number or names no motor of this arm, a goal held past the
+  travel for 1 s, 3 sends in a row that did not reach the arm, or a read the arm did not
+  answer. Torque and temperature are read every 0.5 s rather than every tick. A pick refuses to
+  start with a joint more than 2 degrees outside its travel, with the same reading and travel a
+  take-hold would name.
+- **A stop from anywhere ends it and says so.** The heartbeat's stop, a `stop` from an MCP
+  client, and a verb refused while the pick runs, which stops the arm, all end the pick as
+  `stopped:` with what stopped it. A stop that lands while the pick is still starting, before
+  the policy has been asked for anything, keeps it from starting, and the pick is refused
+  with the stop named. So does a stop still under way when the pick begins. A stop that lands
+  while the loop is on the bus waits for that call to come back, no longer than the call's own
+  deadline, and then holds the arm. The heartbeat and the executor's read before a verb wait
+  for it the same way, rather than take the loop's own call for a bus that stopped answering.
+
+The arm's state carries `extras.timing`: how long each bus call took, the wait for the bus
+included, and each of a policy's ticks, as a count, a median, a 99th percentile and the
+longest, measured on the wall's clock. A pick's result carries the same. Nothing acts on it,
+and it is there for a bench session to say how fast this arm's bus and a policy's loop are.
 
 ## The simulator: `lerobot:mujoco`
 
@@ -1014,7 +1045,10 @@ quackd, side by side, is [safety.md](../safety.md).
 
 - **The heartbeat reads the arm.** `is_connected` is the serial port's open flag and stays
   `True` with the cable pulled, so the heartbeat is a round trip to the motors, and a dead arm
-  ends the run.
+  ends the run. It reads the arm itself while a `pick` is running too, queued behind the
+  loop's read. The loop's reads would do for a round trip, but each went out before the beat
+  asked, and an arm that died as one came back would pass the beat and end the run a whole
+  period later. So a beat costs a running pick one read of the arm.
 - **Torque and temperature are measured.** `get_observation()` reads positions only, so
   `Torque_Enable` and `Present_Temperature` are read off the bus. A body joint at or above
   60 °C refuses `move_joints` and `pick`; the servo's own cut-off is 70 °C.
@@ -1140,7 +1174,8 @@ quackd, side by side, is [safety.md](../safety.md).
   the port has shut, so never under another call's packet. Upstream's own disconnect lowers it
   too, and lowering it writes nothing to a motor (`up.BUS_DISCONNECT`).
 - **`pick` is confirm-gated**: a learned policy moves the whole arm. Its actions go through
-  the same step cap and range check as a verb's.
+  the same step cap as a verb's, and a goal past the travel is clipped and counted rather than
+  refused ([What `pick` needs](#what-pick-needs-and-what-it-does-not-have)).
 
 ## The rest pose
 
@@ -2174,7 +2209,7 @@ If you hit one of these, or fail to, that is exactly what the
 
 | Name | What quackd does |
 |---|---|
-| `POLICY_PIPELINE` | `pick` runs an injected policy object; `load_policy()` builds one from verified names and is untested. A policy's actions get the same step cap and range check as a verb's |
+| `POLICY_PIPELINE` | `pick` runs an injected policy object; `load_policy()` builds one from verified names and is untested. A policy's actions get the same step cap as a verb's, and a goal outside the travel is clipped and counted, unlike a verb's goal, which is refused |
 | `TORQUE_ENABLE_HOLDS_PRESENT` | what a servo does with the goal it was last told when torque comes back on. `enable_torque()` writes `Torque_Enable` and then `Lock` on each motor, neither of them a goal, so whether the motor then holds where it is or drives to that stale goal is the firmware's business and is documented nowhere quackd can read. It matters because the goal last written before a hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back to it would happen with somebody's fingers in the way. `take_hold()` writes the present position as the goal **before** enabling torque, writes it again after, and reads the arm back to check it stayed, so the assumption is never relied on in either direction. A joint placed past its calibrated travel is where that cannot work: a goal written there is clamped to the limit (`POSITION_LIMITS_CLAMP_GOALS`), and no goal leaves the servo the last one it had, the rest move's, which only this row could say it ignores. So `take_hold()` leaves torque off and refuses while any body joint reads outside its travel |
 | `GRIPPER_OPEN_VALUE` | 100 is assumed open; which end is open is how the arm was calibrated, and the checklist asks for it by hand |
 | `HOLDING_INFERRED` | holding is the gripper told to close, settled, and short of shut; listed in `extras.assumptions`. A gripper a person closed by hand is a position and not a grip, so an arm placed with `--by-hand` reports nothing held until the pilot closes the gripper itself |

@@ -1788,3 +1788,21 @@ def test_every_step_of_the_arms_first_run_has_a_mirror_or_a_reason() -> None:
                 f"docs/lerobot-first-run.md: Part 1's section {number} has no M{number} in "
                 "Part 2, and the note that opens Part 2 does not say why"
             )
+
+
+def test_the_arms_page_gives_a_policy_segment_s_limits_as_the_code_keeps_them() -> None:
+    """Each limit a `pick`'s loop keeps is a constant in `real.py`, and the arm's page says each
+    as a number, so a change to one that leaves the page behind fails here."""
+    from quackd_lerobot import real
+
+    page = (REPO / "docs" / "adapters" / "lerobot.md").read_text(encoding="utf-8")
+    section = _one_line(page.split("\n### What `pick` needs", 1)[1].split("\n## ", 1)[0])
+    said = [
+        f"at {real.POLICY_HZ:g} hz",
+        f"past the travel for {real.CLIP_SUSTAIN_S:g} s",
+        f"{real.FAILED_SENDS} sends in a row",
+        f"read every {real.REGISTER_PERIOD_S:g} s",
+        f"more than {real.OUT_OF_RANGE_DEG:g} degrees outside its travel",
+    ]
+    for words in said:
+        assert words in section, f"docs/adapters/lerobot.md's pick section no longer says {words!r}"

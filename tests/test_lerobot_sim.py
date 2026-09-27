@@ -24,6 +24,7 @@ import asyncio
 import colorsys
 import contextlib
 import gc
+import itertools
 import json
 import math
 import os
@@ -44,13 +45,14 @@ from PIL import Image
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, RestResult
 from quackd.perception.color_blob import DEFAULT_FOV_DEG, DEFAULT_TARGETS, ColorBlobDetector
 from quackd.preflight import load_sidecar
-from quackd.safety import Heartbeat
+from quackd.safety import Heartbeat, allow_all
 from quackd.transport.base import HeartbeatError, TransportError
 from quackd_lerobot import REACH, LeRobotAdapter, lerobot_manifest, make
 from quackd_lerobot import upstream_api as lr
 from quackd_lerobot.real import (
     ENCODER_TICKS,
     MAX_STEP_DEG,
+    POLICY_HZ,
     TORQUE_RETRIES,
     joint_ranges,
     may_have_written_torque,
@@ -111,13 +113,14 @@ from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     JOINTS,
+    MOVE_MIN_S,
     PICK_POLL_S,
     TICK_S,
     TOL_DEG,
     shortfall,
 )
 from tests.gl import REQUIRE_ENV
-from tests.test_lerobot_adapter import _executor
+from tests.test_lerobot_adapter import Scripted, _executor
 from tests.test_robot_twin import PORTS, guard_ports
 
 mujoco = pytest.importorskip("mujoco")
@@ -2019,6 +2022,89 @@ async def test_a_twin_the_settle_cannot_clear_is_refused_at_connect(mjcf: str) -
     assert "so the simulated arm cannot start there" in said, said
     assert "quackd robot rest-pose NAME" in said, said
     assert transport.sim_world is None
+
+
+async def test_a_pick_ends_on_the_grasp_its_own_loop_reads_and_stops_the_policy(
+    mjcf: str,
+) -> None:
+    """The jaws start down at the table around a block, and the policy closes them and never
+    says it is done. Only `holding`, judged on the loop's own reads mid segment, can end the
+    pick, and it stops the policy there, so the next move is not refused. The verb waits on the
+    segment and sleeps on no clock, so the loop's ticks are all the time that passed."""
+    down = _pointing_down(_arm(mjcf), (PLACE_NEAR + PLACE_FAR) / 2, CUBE.size[0] / 2)
+    policy = Scripted(lambda n: {JOINTS[-1]: GRIPPER_CLOSED})
+    adapter, transport = await _sim_arm(
+        mjcf, scene=_jaws_scene(), rest_pose={**dict.fromkeys(BODY, 0.0), **down}, policy=policy
+    )
+    try:
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest, confirm=allow_all)
+        start = transport.now()
+        picked = await asyncio.wait_for(
+            executor.run_verb("pick", {"target": "block", "max_s": 10}), WALL_S
+        )
+        assert picked.ok and picked.data["ended"] == "holding", picked.summary
+        assert transport.now() - start == pytest.approx(policy.n / POLICY_HZ)
+        assert not transport.policy_running
+        # every tick's read fed the gripper's trace, not the registers' reads alone, which is
+        # what let the grasp be seen on the tick it settled
+        stamps = sorted({round(at, 6) for at, _ in transport._gripper_trace if at >= start})
+        gaps = {round(later - at, 6) for at, later in itertools.pairwise(stamps)}
+        assert gaps == {round(1.0 / POLICY_HZ, 6)}, stamps
+        world = transport.sim_world
+        assert world is not None and world.truth().objects["block"].pinched
+        acted = policy.n
+        lift = JOINTS[1]
+        moved = await executor.run_verb(
+            "move_joints",
+            {"positions": {lift: down[lift] - TOL_DEG}, "duration_s": MOVE_MIN_S},
+        )
+        assert moved.ok, moved.summary
+        assert policy.n == acted, "the policy was asked for another goal after the pick"
+    finally:
+        await adapter.close()
+
+
+async def test_a_pick_on_the_simulator_ends_on_its_time_or_on_a_stop_from_another_task(
+    mjcf: str,
+) -> None:
+    """The loop keeps `max_s` on the simulator's clock, which runs for it because it is the one
+    sleeper. A stop from a task that sleeps on the same clock meanwhile ends the pick as
+    stopped, with the stop named."""
+    swing: dict[str, float] = {}
+    policy = Scripted(lambda n: {PAN: swing[PAN] * (n % 2)})
+    adapter, transport = await _sim_arm(mjcf, policy=policy)
+    swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+    try:
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest, confirm=allow_all)
+        start = transport.now()
+        max_s = 20 * TICK_S
+        timed = await asyncio.wait_for(
+            executor.run_verb("pick", {"target": "cup", "max_s": max_s}), WALL_S
+        )
+        assert timed.data["ended"] == "time", timed.summary
+        # to within half a step of the clock, which the float sum of its steps can miss by
+        half = (transport.sim_dt or TICK_S) / 2
+        assert max_s - half < transport.now() - start < max_s + 2 * TICK_S
+
+        async def stops_later() -> Any:
+            await transport.sleep(10 * TICK_S)
+            return await executor.run_verb("stop")
+
+        start = transport.now()
+        picked, stopped = await asyncio.wait_for(
+            asyncio.gather(
+                executor.run_verb("pick", {"target": "cup", "max_s": 60}), stops_later()
+            ),
+            WALL_S,
+        )
+        assert stopped.ok, stopped.summary
+        assert picked.summary == "pick 'cup' stopped: a stop was sent to the arm", picked.summary
+        assert 10 * TICK_S - half < transport.now() - start < 60
+        assert not transport.policy_running
+    finally:
+        await adapter.close()
 
 
 async def test_a_released_arm_falls_before_it_is_taken_hold_of(mjcf: str) -> None:

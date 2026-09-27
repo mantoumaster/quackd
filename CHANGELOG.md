@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The SO-101's `pick` runs its policy as a segment the backend owns, and the verb waits for it.
+This is the ground a learned policy will stand on as the arm's executor, and it is made safe on
+the one policy path there is today, an injected object with one action per call. Nothing here
+has run on the arm: it was exercised against the test suite's fake arm and on the simulator's
+stand-in model.
+
+### Added
+
+- **A policy segment ends on what it reads, before it sends.** Each tick of `pick`'s loop reads
+  the arm and judges that reading first. A hot joint, torque off, a camera that gave no frame,
+  an action that is not a finite number or names no motor of this arm, a goal held past the
+  travel for a second (`CLIP_SUSTAIN_S`), three sends in a row that did not reach the arm
+  (`FAILED_SENDS`) or a read the arm did not answer each stop the policy and hold the arm where
+  it is, and `pick` says which. A NaN used to be clipped into the joint's floor and counted
+  nowhere. A joint reading outside its travel is left out of every action, as a stop leaves it
+  out, and a pick refuses to start with one more than `OUT_OF_RANGE_DEG` outside, naming its
+  reading and its travel. The loop reads the joints every tick, and torque and temperature
+  every 0.5 s (`REGISTER_PERIOD_S`).
+- **`extras.timing`, how long the bus and a policy's ticks take.** The arm's state carries a
+  count, a median, a 99th percentile and the longest for every bus call, the wait for the bus
+  included, and for every tick of a policy segment, measured on `perf_counter`. A pick's
+  result carries it too. Nothing acts on it: it is for a bench session to measure.
+
+### Changed
+
+- **`pick` stops its policy the moment something is held.** It used to return and leave the
+  policy driving the arm through the pilot's thinking, so the next arm verb was refused once
+  as `pick is running`. `holding` is now judged on the policy loop's own reads, each tick,
+  and the segment ends there. The verb waits for the segment rather than polling on the
+  arm's clock, so on the simulator it no longer takes part in time while the loop runs.
+- **A stop from elsewhere ends `pick` as stopped, and says what stopped it.** The heartbeat's
+  stop, an MCP `stop` or a verb refused while the pick ran used to show up as a pick that
+  ended without a grasp, followed by a stop of its own. It is now `stopped:` with the stop
+  named, and no second stop follows it. A stop that lands while a pick is still starting,
+  before its policy has been asked for anything, keeps the policy from starting, and the pick
+  is refused with the stop named. So does a stop still under way when the pick begins, such as
+  the heartbeat's landing while the executor reads the arm before the pick. It used to hold
+  the arm and return, with the policy started behind it.
+- **The arm's wall clock is `perf_counter`, and its sleeps never end early.** `time.monotonic`
+  ticks every 15.6 ms on Windows before Python 3.13 (gh-88494), and the event loop's timer
+  wakes a sleep up to one of those ticks early. Every sleep now finishes its last millisecond
+  on `perf_counter`.
+
+### Fixed
+
+- **A stop during `pick` could refuse its own hold.** A stop cancels the policy loop first, and
+  a loop cancelled in the middle of a bus call leaves that call's thread on the wire, which
+  quackd files as a wedge and refuses every call behind until it comes back. The hold the stop
+  was about to write was the first call refused, so the stop said it could not be delivered and
+  the arm kept the policy's last goal. A rest move, a release, a take-hold or a close that
+  landed there was refused the same way, and a heartbeat that landed there failed and aborted
+  the run over an arm that was answering. Each now waits for that one call to come back before
+  it reads or writes the arm, and no longer than the call's own deadline, which is when it
+  would have been refused had nothing cancelled the loop. Found in the test suite, where every
+  stop that landed mid call was refused. On the arm it happens as often as a stop lands while
+  one of the loop's calls is on the bus.
+- **A pick abandoned as it ended the one before could run anyway.** A pick waits for the
+  policy loop before it to end, and an abort or a dropped MCP call that cancelled the pick
+  right then was passed on to that loop and lost there. The pick went on as if nothing had
+  cancelled it, and its policy drove the arm for up to its whole `max_s`. The cancellation now
+  ends it.
+- **A second `pick` could replay the first one's queued actions.** A LeRobot policy keeps the
+  actions its last chunk predicted, and nothing cleared them between picks. The policy is now
+  reset at the start of every pick, where it has a `reset()`, and `load_policy()`'s does.
+- **The docs said a policy's goal past the travel is refused.** It is clipped and counted, as
+  ADR-0036 decided, and the hardware checklist, the arm's page and the `POLICY_PIPELINE` row
+  now say so.
+
 ## [0.15.0] — 2026-09-29
 
 This release is two pieces of work. quackd reaches an NVIDIA Jetson from the laptop, and the

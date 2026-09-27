@@ -875,8 +875,9 @@ POLICY_PIPELINE = UpstreamRef(
     "wiring a PreTrainedPolicy end to end (pre-processor, select_action, post-processor, "
     "device) has never been run by us. The real backend takes an injected policy with "
     "act(observation, task=...) -> action; load_policy() builds one from the verified names "
-    "and is untested. A policy's actions go through the same step cap and the same range "
-    "refusal as a verb's, which is quackd's rule and not upstream's",
+    "and is untested. A policy's actions go through the same step cap as a verb's, and a "
+    "goal outside the travel is clipped and counted, unlike a verb's goal, which is refused "
+    "(ADR-0036). Both are quackd's rules and not upstream's",
 )
 TORQUE_ENABLE_HOLDS_PRESENT = UpstreamRef(
     "TORQUE_ENABLE_HOLDS_PRESENT",

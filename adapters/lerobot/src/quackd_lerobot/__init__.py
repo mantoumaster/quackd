@@ -439,6 +439,20 @@ class LeRobotAdapter:
         handed, which is this adapter, and says which joints the hold left alone."""
         return tuple(str(j) for j in getattr(self.transport, "stop_skipped", ()) or ())
 
+    @property
+    def policy_segment(self) -> Any:
+        """The policy segment the backend's last `do` started, for `pick` to wait on, or None
+        on a backend that runs none, the mock. Proxied for `stop_error`'s reason: a verb's
+        `ctx.transport` is this adapter."""
+        return getattr(self.transport, "policy_segment", None)
+
+    @property
+    def policy_stopped_by(self) -> str | None:
+        """What stopped the backend's last segment from outside, which `pick` says after
+        `stopped:`. Proxied for `stop_error`'s reason."""
+        by = getattr(self.transport, "policy_stopped_by", None)
+        return str(by) if by else None
+
     async def heartbeat(self) -> None:
         await self.transport.heartbeat()
 
