@@ -287,7 +287,9 @@ SO_ACTION_CLAMP = UpstreamRef(
     src(_SO, 223),
     "ensure_safe_goal_position (utils.py line 93) clips a goal to present +/- the cap and "
     "logs a warning when it does; None, which is upstream's default, means no cap. Setting "
-    "it costs one extra sync_read of the present position per send_action",
+    "it costs one extra sync_read of the present position per send_action. send_action reads "
+    "it off self.config on every call (lines 223 and 226), so a cap written between two sends "
+    "caps the next, which is how a policy segment gets its own",
 )
 SO_ACTION_CLAMP_IS_FLOAT = UpstreamRef(
     "max_relative_target must be a float or a dict per motor",

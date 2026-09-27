@@ -109,6 +109,11 @@ class SimClock:
     caught up (`_Stepper._pace`), for a person watching the viewer, and it is still lockstep:
     time runs only while every sleeper is parked, so nothing measured on it is a rate."""
 
+    lockstep = True
+    """Time stands still while nobody sleeps on it (`real.Clock`). A policy segment reads this
+    and awaits a runner's inference in its own turn, costing no sim time, then holds the answer
+    back by the runner's declared latency before it judges it (`policy/loop.py`)."""
+
     def __init__(self, world: ArmWorld, *, realtime: bool = False) -> None:
         from quackd.sim2d.clock import FlockClock
 

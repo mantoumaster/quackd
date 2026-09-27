@@ -1,9 +1,10 @@
 """An arm that does exactly what the test tells it to.
 
 `LeRobotMock` is a six-joint arm in memory: joint goals land instantly, the gripper closes
-on an object when the arm is near it, a scripted "policy" answers `pick`, and the camera
-is a synthetic frame with an orange disc that slides as the shoulder pans. Enough to run
-every arm verb, the executor's gates and the detector offline.
+on an object when the arm is near it, a scripted "policy" answers `pick` and moves the arm
+part of the way to the object for `manipulate`, whose segment then runs on the mock's clock as
+the arm's does, and the camera is a synthetic frame with an orange disc that slides as the
+shoulder pans. Enough to run every arm verb, the executor's gates and the detector offline.
 
 Two things here exist to mirror the real backend rather than to be realistic. A goal
 outside a joint's range is refused in the same words, because on an arm LeRobot writes an
@@ -32,6 +33,7 @@ from quackd_lerobot.verbs import (
     LET_GO_WHERE_IT_STOOD,
     LIMP_AT_REST,
     LIMP_IN_HAND,
+    NO_INSTRUCTION,
     TOL_DEG,
     TORQUE_KEPT_AFTER_REFUSAL,
     UNCONFIRMED_IN_HAND,
@@ -62,6 +64,9 @@ REST = {
 }
 OBJECT_AT = {"shoulder_pan": 30.0, "shoulder_lift": -20.0, "elbow_flex": 40.0}
 """Where the object is, in joint space: the arm is "there" when these three are close."""
+SEGMENT_SHARE = 0.5
+"""How much of the way to the object one scripted `manipulate` segment moves the arm: some of it,
+so a rehearsal sees the arm move and still has to look at where it ended."""
 NEAR_DEG = 10.0
 MOCK_CAM_HEIGHT_M = 0.3
 MOCK_OBJECT_R = 0.03
@@ -180,6 +185,14 @@ class LeRobotMock(MockTransport):
         self.temperature_c = {joint: MOCK_TEMPERATURE_C for joint in JOINTS}
         for joint in hot_joints:
             self.temperature_c[joint] = 65.0
+        self.policy_stopped_by: str | None = None
+        """What ended the last `manipulate` segment something else stopped, in the real
+        backend's words (`LeRobotReal.policy_stopped_by`), for the verb to say after `stopped:`."""
+        self.segments = 0
+        """How many `manipulate` segments have started. The state carries the running one's
+        number, so the verb waiting on a segment can tell it from the next one, even one told
+        the same thing."""
+        self._segment_until: float | None = None
 
     # ── state and camera ────────────────────────────────────────────────────────────
 
@@ -190,8 +203,27 @@ class LeRobotMock(MockTransport):
     def hot_joints(self) -> list[str]:
         return sorted(k for k, v in self.temperature_c.items() if v >= 60.0)
 
+    @property
+    def policy_running(self) -> bool:
+        """Whether a `manipulate` segment is running, as the real backend's `policy_running`
+        says: from its `do` until its time is up on this clock, or something ends it first."""
+        if self._segment_until is not None and self.now() >= self._segment_until:
+            # its time ran out, which is what the arm's own loop ends it on
+            self._segment_until = None
+            self.policy = "idle"
+        return self.policy.startswith("policy:manipulate:")
+
+    def _end_segment(self, why: str) -> None:
+        """End a running segment from outside, where the real backend cancels its policy task,
+        and keep `why` in the words it keeps it in."""
+        if self.policy_running:
+            self.policy_stopped_by = why
+        self._segment_until = None
+        self.policy = "idle"
+
     async def get_state(self) -> DuckState:
         state = await super().get_state()
+        running = self.policy_running
         return state.model_copy(
             update={
                 "policy": self.policy,
@@ -203,6 +235,7 @@ class LeRobotMock(MockTransport):
                     "hot": self.hot_joints,
                     "out_of_range": [],
                     "near_object": self._near_object(),
+                    "segment": self.segments if running else None,
                 },
             }
         )
@@ -269,6 +302,9 @@ class LeRobotMock(MockTransport):
         if not ack.accepted:
             return ack
         p = intent.params
+        if intent.kind in ("joint", "gripper") and self.policy_running:
+            # the real backend's refusal: a verb's goal would fight the policy's
+            return Ack(accepted=False, reason="manipulate is running: stop first")
         match intent.kind:
             case "joint":
                 if not self.torque:
@@ -284,8 +320,37 @@ class LeRobotMock(MockTransport):
                 if kind != "policy":
                     return Ack(accepted=False, reason=f"unknown skill {p.get('skill')!r}")
                 name, _, task = rest.partition(":")
-                if name != "pick":
+                if name not in ("pick", "manipulate"):
                     return Ack(accepted=False, reason=f"no policy named {name!r}")
+                if name == "manipulate" and not task.strip():
+                    # in the real backend's words, so a rehearsal fails where the arm would
+                    return Ack(accepted=False, reason=NO_INSTRUCTION)
+                max_s = p.get("max_s")
+                try:
+                    limit = None if max_s is None else float(max_s)
+                except (TypeError, ValueError):
+                    limit = math.nan
+                if limit is not None and not (math.isfinite(limit) and limit > 0):
+                    return Ack(
+                        accepted=False,
+                        reason=f"max_s={max_s!r} must be a number of seconds above 0",
+                    )
+                # the arm cancels a running segment for the next one, and so does this
+                self._end_segment(f"another {name} started")
+                if name == "manipulate":
+                    # the scripted policy for one segment: a share of the way to the object at
+                    # once, and the segment runs on this clock until its time is up
+                    self.segments += 1
+                    self.policy = f"policy:manipulate:{task}"
+                    self._segment_until = None if limit is None else self.now() + limit
+                    self.policy_runs.append(task)
+                    self._goto(
+                        {
+                            joint: self.joints[joint] + (goal - self.joints[joint]) * SEGMENT_SHARE
+                            for joint, goal in OBJECT_AT.items()
+                        }
+                    )
+                    return ack
                 # the scripted policy: go to the object and close on it
                 self.policy = f"policy:pick:{task}"
                 self.policy_runs.append(task)
@@ -293,7 +358,7 @@ class LeRobotMock(MockTransport):
                 self._set_gripper(False)
                 self.policy = "idle"
             case "stop":
-                self.policy = "idle"
+                self._end_segment("a stop was sent to the arm")
             case "move":
                 return Ack(accepted=False, reason="an arm cannot drive")
             case "enable":
@@ -304,6 +369,7 @@ class LeRobotMock(MockTransport):
         return ack
 
     async def stop(self) -> None:
+        self._end_segment("a stop was sent to the arm")
         if self.in_hand and self.hold_refusal is None:
             # the real `_hold()`'s order: an arm somebody is holding is picked up before it is
             # told to stay where it is, because a goal to a limp servo stops nothing. Only
@@ -312,7 +378,6 @@ class LeRobotMock(MockTransport):
             await self.take_hold()
         await super().stop()
         self.sequence.append("stop")
-        self.policy = "idle"
 
     async def go_to_rest(self) -> RestResult:
         """The real arm's rest move, in memory: goals land at once, so it either is there
@@ -336,6 +401,7 @@ class LeRobotMock(MockTransport):
             # the real arm's answer, for the same reason: a pose that drives nothing is a
             # reason to keep holding, not a reason to behave as though none was recorded
             return RestResult("refused", "the recorded pose names no joint this arm drives")
+        self._end_segment("the arm was sent to its rest pose")
         if self.in_hand:
             result = (
                 RestResult("already", "already at the rest pose")
@@ -393,6 +459,7 @@ class LeRobotMock(MockTransport):
         goal = self.rest_reachable
         if not anywhere and not goal:
             return refused("the recorded pose names no joint this arm drives")
+        self._end_segment("the arm was let go of")
         resting = bool(goal) and at_rest(goal, self.joints, recorded)
         if not anywhere and not resting:
             return refused(
@@ -449,6 +516,7 @@ class LeRobotMock(MockTransport):
         Every result says whether it may have left torque on (`HandResult.energised`), as the
         real one does, and a refusal that leaves the arm in a hand is kept (`hold_refusal`)."""
         self.sequence.append("take_hold")
+        self._end_segment("the arm was taken hold of")
         held = self._take_hold()
         self.hold_refusal = held if not held.ok and self.in_hand else None
         return held
@@ -532,6 +600,7 @@ class LeRobotMock(MockTransport):
         an arm whose release was just refused is neither sent back to that release nor let go
         of without a word."""
         self.sequence.append("close")
+        self._end_segment("the arm's transport was closed")
         self.close_note = None
         recorded = rest_goal(self.rest_pose or {})
         goal = self.rest_reachable

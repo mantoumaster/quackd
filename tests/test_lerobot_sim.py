@@ -2107,6 +2107,110 @@ async def test_a_pick_on_the_simulator_ends_on_its_time_or_on_a_stop_from_anothe
         await adapter.close()
 
 
+async def test_a_policy_thinks_in_no_sim_time_and_its_chunk_lands_its_latency_later(
+    mjcf: str,
+) -> None:
+    """The simulator's clock is lockstep: while a runner thinks, in its own thread and for as
+    long as the wall likes, no sim time passes, and the chunk it computed at a tick is played the
+    runner's declared latency later, where it would have landed on the arm."""
+    import time as wall
+
+    from quackd.transport.base import Intent
+    from quackd_lerobot.policy.runner import Observation
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 2 / TICK_S  # a whole number of the clock's steps a tick
+    k = 3
+    swing: dict[str, float] = {}
+    thought: list[tuple[float, float]] = []
+    clock: list[Any] = []
+
+    def thinks(observation: Observation, _sent: Any) -> list[dict[str, float]]:
+        before = clock[0].now()
+        wall.sleep(0.02)
+        thought.append((before, clock[0].now()))
+        return [{PAN: swing[PAN] * ((observation.tick + i) % 2)} for i in range(2 * k)]
+
+    runner = ScriptedRunner(thinks, rate_hz=rate, latency_ticks=k)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+    clock.append(transport.clock)
+    assert isinstance(transport.clock, SimClock) and transport.clock.lockstep
+    robot = transport._robot
+    sent_at: list[float] = []
+    send = robot.send_action
+
+    def stamped(action: dict[str, float]) -> Any:
+        sent_at.append(transport.now())
+        return send(action)
+
+    robot.send_action = stamped
+    try:
+        start = transport.now()
+        ack = await transport.send_intent(
+            Intent(kind="do", params={"skill": "policy:manipulate:wave", "max_s": 20 / rate})
+        )
+        assert ack.accepted, ack.reason
+        segment = transport.policy_segment
+        assert segment is not None
+        await asyncio.wait_for(asyncio.wait({segment}), WALL_S)
+        ended = segment.result()
+        assert ended.how == "time", ended.reason
+        assert thought and all(before == after for before, after in thought), thought
+        half = (transport.sim_dt or TICK_S) / 2
+        assert sent_at[0] - start == pytest.approx(k / rate, abs=half), sent_at[0] - start
+    finally:
+        await adapter.close()
+
+
+async def test_a_policy_whose_period_is_no_whole_number_of_steps_still_sends_once_a_period(
+    mjcf: str,
+) -> None:
+    """The simulator's clock wakes on its own steps, the nearest number of them to what a sleep
+    asks for, and a policy's period need not be a whole number of them. Every tick is still sent
+    inside its own period, never before its deadline and never two to a period."""
+    from quackd.transport.base import Intent
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 3 / TICK_S
+    swing: dict[str, float] = {}
+    runner = ScriptedRunner(
+        lambda o, _s: [{PAN: swing[PAN] if o.tick % 2 else -swing[PAN]}], rate_hz=rate
+    )
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+    period, dt = 1 / rate, transport.sim_dt
+    assert dt is not None and dt < period
+    steps = period / dt
+    assert abs(steps - round(steps)) > 1e-6, "a period of whole steps tests nothing here"
+    robot = transport._robot
+    sent_at: list[float] = []
+    send = robot.send_action
+
+    def stamped(action: dict[str, float]) -> Any:
+        sent_at.append(transport.now())
+        return send(action)
+
+    robot.send_action = stamped
+    ticks = 20
+    try:
+        ack = await transport.send_intent(
+            Intent(kind="do", params={"skill": "policy:pick:wave", "max_s": ticks * period})
+        )
+        assert ack.accepted, ack.reason
+        segment = transport.policy_segment
+        assert segment is not None
+        await asyncio.wait_for(asyncio.wait({segment}), WALL_S)
+        ended = segment.result()
+        assert ended.how == "time" and ended.stats.skipped == 0, ended
+        first = sent_at[0]
+        periods = [math.floor((at - first) / period + 1e-9) for at in sent_at]
+        assert periods == list(range(len(sent_at))), periods
+        assert len(sent_at) == ticks
+    finally:
+        await adapter.close()
+
+
 async def test_a_released_arm_falls_before_it_is_taken_hold_of(mjcf: str) -> None:
     """Nobody places a simulated arm, so the take-hold lets gravity do it first: an arm let go
     tipped forward reads lower after the settle than at the release, and is taken hold of

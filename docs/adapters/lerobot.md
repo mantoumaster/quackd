@@ -224,8 +224,8 @@ port ([registry.md](../registry.md)). It is also the only place a
   "manifest": 1, "id": "arm-01", "vendor": "huggingface", "model": "lerobot-so101",
   "embodiment": "arm", "mobility": "none",
   "intents": ["joint", "gripper", "skill"], "sensors": ["joint_state", "camera"],
-  "verbs": ["observe", "report_state", "stop", "move_joints", "gripper", "place", "pick"],
-  "preconditions": {"move_joints": ["torque_on", "not_hot"], "place": ["holding"], "pick": ["torque_on", "not_hot"]},
+  "verbs": ["observe", "report_state", "stop", "move_joints", "gripper", "place", "pick", "manipulate"],
+  "preconditions": {"move_joints": ["torque_on", "not_hot"], "place": ["holding"], "pick": ["torque_on", "not_hot"], "manipulate": ["torque_on", "not_hot"]},
   "safety_authority": {"native": "torque_limit", "deadman": false, "heartbeat_hz": 2.0},
   "frame": {"reference": "base", "note": "joint space in degrees (gripper 0..100); no camera-to-base calibration"},
   "limits": {"joint_deg": 180.0, "gripper": 100.0},
@@ -235,7 +235,8 @@ port ([registry.md](../registry.md)). It is also the only place a
 
 That is the mock's static manifest. The static manifest of `lerobot:real` claims neither a
 camera nor a policy; `connect()` adds `observe` when `--camera-url` named a camera and it
-opened, and `pick` when a policy object was injected. It also adds what cannot be known until
+opened, and `pick` and `manipulate` when a policy was injected. It also adds what cannot be
+known until
 the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
 the calibration file, to a tenth of a degree rounded inward so that every angle it names is one
 the arm accepts (`wrist_roll` included, where that travel is the whole turn upstream
@@ -258,6 +259,7 @@ naming it in sentences nobody needs.
 | `gripper(open)` | extension | open or close the gripper, and report where it stopped |
 | `place` | extension | open the gripper where the arm is; needs `holding` |
 | `pick(target, max_s)` | extension, **confirm** | one skill intent; the arm's learned policy runs its own observe/act loop at its own rate until something is held or the time is up |
+| `manipulate(instruction)` | extension, **confirm** | one skill intent. The arm's learned policy is told one short subtask and runs for one segment, which ends on its time, its chunks or the arm no longer moving. It never says the task is done: the pilot looks at the arm to judge |
 
 Joints are named, not numbered, and a `move_joints` call may name any subset of them:
 
@@ -655,17 +657,18 @@ task file on seed after seed.
 
 ### What `pick` needs, and what it does not have
 
-`pick` hands the whole arm to a learned policy, and it is confirm-gated for that reason. On
-`lerobot:real` it is **absent from the manifest unless a policy object was injected in
-Python**, and there is no CLI flag that loads one today. `real.py` has `load_policy(path)`,
+`pick` and `manipulate` hand the whole arm to a learned policy, and both are confirm-gated for
+that reason. On `lerobot:real` they are **absent from the manifest unless a policy was injected
+in Python**, and there is no CLI flag that loads one today. `real.py` has `load_policy(path)`,
 built entirely from verified upstream names, but nothing has run it end to end: it is the
 `POLICY_PIPELINE` row in the UNVERIFIED table below. So a trained ACT checkpoint reaches this
 arm only through code you write around the adapter, and `quackd run --robot lerobot:real`
-will not offer `pick` at all. Every other verb is fully reachable from the CLI.
+will offer neither verb. Every other verb is fully reachable from the CLI.
 
 If you get a policy running this way, `pick` runs it as a segment, a loop of its own on the
-arm's clock at 10 Hz that reads the arm, judges the reading, asks the policy for a goal and
-sends it, and the verb waits for that loop to end:
+arm's clock that reads the arm, judges the reading, takes the policy's goal and sends it, and
+the verb waits for that loop to end. A policy object with one `act` a call runs at 10 Hz, one
+`act` a tick, as `pick` always ran it:
 
 - **It ends as soon as something is held.** `holding` is judged on the loop's own reads, each
   tick, so the policy stops the moment a grasp settles and the next verb is not refused as
@@ -695,6 +698,63 @@ The arm's state carries `extras.timing`: how long each bus call took, the wait f
 included, and each of a policy's ticks, as a count, a median, a 99th percentile and the
 longest, measured on the wall's clock. A pick's result carries the same. Nothing acts on it,
 and it is there for a bench session to say how fast this arm's bus and a policy's loop are.
+
+### `manipulate`, and the loop a policy runs in
+
+`manipulate(instruction)` has one parameter, the subtask in a few words, and hands the arm to
+the policy for one segment. Its preconditions are `pick`'s, torque on and nothing hot, and it
+is confirm-gated like `pick`. An instruction of nothing but blanks is refused on every
+backend, the mock included, in the same words. On the mock the segment runs its 10 s on the
+mock's clock, and a stop, a release, a rest move or the next segment ends it sooner, while a
+verb that sends a goal meanwhile is refused, as on the arm.
+
+- **It runs for 10 s unless it ends sooner.** Its chunks played, or a policy that says it is
+  done, end it, and so does the arm no longer moving under it: every joint within 0.5 degrees
+  of where it was for 1 s of goals. That stall holds the arm where it stopped, because what
+  stopped it may be in its way, and the policy's last goal would leave the servo pushing on.
+  The verb then holds it again, as it does after every ending that held, since a bus can lose
+  a hold's packet, and a stall whose last hold did not reach the arm is a failure that says
+  so. Otherwise those three are a segment that ran, and the verb is ok on them and on nothing
+  else. Its summary says why it ended, how long it ran, the chunks, the goals clipped to the
+  travel and the ticks a second it achieved, and never that the task is done: nothing on this
+  arm can tell, and the pilot judges it from a fresh look at the arm.
+- **Anything else is a failure, with the arm held.** A policy that gives nothing to send, a
+  guard from the list above, a policy that raises and a stop from anywhere end it that way, so
+  the executor's rule for verbs that keep failing still stops a run that does.
+- **The rate is the policy's own.** A policy declares its rate and where the number came from,
+  and a rate that is not a finite number between 1 and 60 Hz refuses the segment before
+  anything is sent. quackd never measures one.
+- **The pace is the arm's clock.** Tick `k` is due at the segment's start plus `k` periods,
+  counted from the tick's number rather than summed, so a tick that runs long costs only its
+  own time. A tick that runs past the next one's deadline skips to the next whole period,
+  counts what it skipped, and never sends twice in one period. Nor does a tick start before
+  its deadline, on the simulator's clock either, which wakes only on whole steps of its own.
+- **The speed cap is the verbs'.** A verb moves a joint at most `limits.step_deg` a tick of
+  0.1 s, and a policy moves it no faster: per send that speed over the policy's rate, and never
+  more than one verb step, so `QUACKD_LEROBOT_MAX_STEP_DEG` governs both. At the default 5
+  degrees a policy at 30 Hz is capped at 1.7 degrees a send. The cap is written on the
+  follower for the segment and put back to the verbs' step when the segment ends, however it
+  ends, and written again before every stop, rest move and verb's goal.
+- **A chunk replaces what was queued.** A policy that answers with a chunk of goals, one a tick
+  from the tick its observation was read at, has the goals for ticks already played dropped
+  when it arrives, and the rest replaces what was queued rather than being added after it. It
+  is asked again once half its last chunk is left, and never while it has not answered. A tick
+  with nothing queued sends nothing, the arm holding its last goal, and 1 s of that ends the
+  segment, with 5 s of grace for the first chunk.
+- **The policy has a thread of its own.** Every call on it runs on a worker of its own, never
+  on the threads the bus's calls use, so a policy that stops answering cannot hold up a read,
+  a stop or the heartbeat. A segment starts only once the policy has finished whatever the last
+  segment left it doing, waiting up to 5 s and refusing after, and an answer from an earlier
+  segment is thrown away.
+- **On the simulator** time stands still while the policy thinks, and its answer is taken in
+  the policy's declared latency after it was asked for, which is where it would have landed on
+  the arm, and only then judged, so an answer thrown away and an error land there too. A
+  rehearsal plays the trajectory the arm would, and proves nothing about a rate.
+- **A policy asked every tick** is one that carries state from tick to tick. A tick it never
+  saw, skipped by the pacer or not answered before the next, ends the segment with the arm held
+  and resets the policy. It is asked again only once it has answered, so it has to answer
+  within a tick, and one that declares a longer latency is refused before anything is sent,
+  on the simulator as on the arm.
 
 ## The simulator: `lerobot:mujoco`
 
@@ -2140,7 +2200,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `'<motor>.pos'` | the observation and action keys |
 | `get_observation() reads Present_Position and nothing else` | no torque, current, temperature or fault: why quackd reads registers |
 | `camera name -> array` | `cam.read_latest()` under each configured camera's name |
-| `max_relative_target caps each step` | clips a goal to present +/- the cap per send_action |
+| `max_relative_target caps each step` | clips a goal to present +/- the cap per send_action, reading the cap off the config on every call, which is where a policy segment writes its own |
 | `max_relative_target must be a float or a dict per motor` | an int raises; a dict must name exactly the action's joints |
 | `ensure_safe_goal_position(goal_present_pos, max_relative_target)` | the whole step cap: a float caps every motor, a dict with other keys than the goal's raises ValueError and anything else raises TypeError, and each goal is clipped to the cap either side of the present reading, which `send_action()` reads just before. A NaN cap caps nothing. The arm simulator reimplements it rather than importing LeRobot, which needs Python 3.12 and torch |
 | `send_action() returns the goal actually sent` | the clipped goal, not the measured position |

@@ -2,11 +2,11 @@
 
 An arm has no legs, no head and no voice, so its manifest lists none of that: `move`,
 `go_to`, `search_scan`, `say` and `gaze` do not exist here. What it has is joints, a
-gripper, `place`, and, when a policy is available, `pick` as one skill intent that the
-arm's own learned controller executes (the thesis, unchanged). Three backends: `mock`
-(offline, scripted), `real` (LeRobot behind `quackd[lerobot]`, Python 3.12 or newer,
-first driven on an arm on 2026-09-15) and `mujoco` (the real backend's own code over a
-physics model of the SO-101, behind `quackd[lerobot-sim]`, for rehearsing a task at home).
+gripper, `place`, and, when a policy is available, `pick` and `manipulate`, each one skill
+intent that the arm's own learned controller executes (the thesis, unchanged). Three
+backends: `mock` (offline, scripted), `real` (LeRobot behind `quackd[lerobot]`, Python 3.12
+or newer, first driven on an arm on 2026-09-15) and `mujoco` (the real backend's own code over
+a physics model of the SO-101, behind `quackd[lerobot-sim]`, for rehearsing a task at home).
 """
 
 from __future__ import annotations
@@ -181,7 +181,9 @@ def lerobot_manifest(
     preconditions = {"move_joints": ["torque_on", "not_hot"], "place": ["holding"]}
     if policy:
         verbs.append(verb_spec(own["pick"], core=False, safety_class="confirm"))
+        verbs.append(verb_spec(own["manipulate"], core=False, safety_class="confirm"))
         preconditions["pick"] = ["torque_on", "not_hot"]
+        preconditions["manipulate"] = ["torque_on", "not_hot"]
     intents: list[Any] = ["joint", "gripper"] + (["skill"] if policy else [])
     sensors: list[Any] = ["joint_state"] + (["camera"] if camera else [])
     limits = {"joint_deg": 180.0, "gripper": 100.0}
@@ -441,15 +443,15 @@ class LeRobotAdapter:
 
     @property
     def policy_segment(self) -> Any:
-        """The policy segment the backend's last `do` started, for `pick` to wait on, or None
-        on a backend that runs none, the mock. Proxied for `stop_error`'s reason: a verb's
-        `ctx.transport` is this adapter."""
+        """The policy segment the backend's last `do` started, for `pick` or `manipulate` to
+        wait on, or None on a backend that runs none, the mock. Proxied for `stop_error`'s
+        reason: a verb's `ctx.transport` is this adapter."""
         return getattr(self.transport, "policy_segment", None)
 
     @property
     def policy_stopped_by(self) -> str | None:
-        """What stopped the backend's last segment from outside, which `pick` says after
-        `stopped:`. Proxied for `stop_error`'s reason."""
+        """What stopped the backend's last segment from outside, which `pick` and
+        `manipulate` say after `stopped:`. Proxied for `stop_error`'s reason."""
         by = getattr(self.transport, "policy_stopped_by", None)
         return str(by) if by else None
 

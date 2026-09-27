@@ -77,6 +77,7 @@ TABLE: dict[str, dict[str, tuple[int | None, str]]] = {
     },
     "lerobot": {
         "gripper": (2, "motion"),
+        "manipulate": (None, "confirm"),
         "move_joints": (None, "motion"),
         "pick": (None, "confirm"),
         "place": (1, "motion"),

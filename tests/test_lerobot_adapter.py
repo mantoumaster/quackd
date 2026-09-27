@@ -38,7 +38,7 @@ from quackd.safety import (
 from quackd.transport.base import HeartbeatError, Intent, TransportError, primary_of
 from quackd.verbs.registry import registry_from_manifest
 from quackd_lerobot import JOINTS, LeRobotAdapter, lerobot_manifest, make, published_travel
-from quackd_lerobot.mock import GRIP_ON_OBJECT, MOCK_RANGES, REST, LeRobotMock
+from quackd_lerobot.mock import GRIP_ON_OBJECT, MOCK_RANGES, OBJECT_AT, REST, LeRobotMock
 from quackd_lerobot.real import (
     CLIP_SUSTAIN_S,
     CONNECT_ATTEMPTS,
@@ -73,11 +73,13 @@ from quackd_lerobot.verbs import (
     LET_GO_WHERE_IT_STOOD,
     LIMP_AT_REST,
     LIMP_IN_HAND,
+    MANIPULATE_S,
     MOVE_HEADROOM_S,
     MOVE_JOINTS_TIMEOUT_S,
     MOVE_MAX_S,
     MOVE_MIN_S,
     MOVE_SETTLE_S,
+    NO_INSTRUCTION,
     PICK_SETTLE_S,
     RAMP_DECIMALS,
     RAMP_RESOLUTION,
@@ -107,7 +109,16 @@ from quackd_lerobot.verbs import (
     worth_saying,
 )
 
-ARM_VERBS = {"observe", "report_state", "stop", "move_joints", "gripper", "place", "pick"}
+ARM_VERBS = {
+    "observe",
+    "report_state",
+    "stop",
+    "move_joints",
+    "gripper",
+    "place",
+    "pick",
+    "manipulate",
+}
 DUCK_ONLY = {"move", "walk", "go_to", "walk_to", "search_scan", "say", "gaze", "kick", "sit"}
 ARM_DUCK = parse_duck_text(
     "---\nduck: 1\nname: arm\ndescription: d\nrequires: [move_joints, gripper]\nverbs:\n"
@@ -125,12 +136,14 @@ def test_manifest_is_an_arm_with_no_duck_verbs() -> None:
     assert set(m.verb_names()) == ARM_VERBS
     assert not any(m.provides(v) for v in DUCK_ONLY)
     assert m.verb("pick") is not None and m.verb("pick").safety_class == "confirm"
+    assert m.verb("manipulate") is not None and m.verb("manipulate").safety_class == "confirm"
     # not_hot guards the five joints LeRobot writes no torque cap for; the gripper has its
     # own caps, and refusing to open a hot one would strand whatever it is holding
     assert m.preconditions == {
         "move_joints": ["torque_on", "not_hot"],
         "place": ["holding"],
         "pick": ["torque_on", "not_hot"],
+        "manipulate": ["torque_on", "not_hot"],
     }
     assert m.safety_authority.native == "torque_limit" and not m.safety_authority.deadman
     assert m.extras["joints"] == list(JOINTS)
@@ -1653,6 +1666,54 @@ async def test_pick_looks_once_more_before_calling_a_finished_policy_a_failed_gr
     picked = await ex.run_verb("pick", {"target": "cup", "max_s": 10})
     assert picked.ok, picked.summary
     assert transport.looks >= 3, "pick decided without giving the grasp a settle"
+
+
+async def test_the_mock_scripts_manipulate_toward_its_object_and_ends_on_time() -> None:
+    """A rehearsal on the mock runs `manipulate` as the arm's own verb: confirm-class beside
+    `pick`, its scripted policy moves the arm part of the way to the object, and the segment ends
+    on its time, ok, and saying nothing about whether the task is done."""
+    mock = LeRobotMock()
+    adapter = LeRobotAdapter(mock)
+    manifest = await adapter.connect()
+    verb = manifest.verb("manipulate")
+    assert verb is not None and verb.safety_class == "confirm"
+    assert manifest.preconditions["manipulate"] == ["torque_on", "not_hot"]
+    ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
+    before = {joint: abs(mock.joints[joint] - goal) for joint, goal in OBJECT_AT.items()}
+    t0 = mock.now()
+    ran = await ex.run_verb("manipulate", {"instruction": "put the block in the cup"})
+    assert ran.ok and ran.data["ended"] == "time", ran.summary
+    assert ran.data["seconds"] == MANIPULATE_S and mock.now() - t0 >= MANIPULATE_S
+    assert "Nothing on the arm says whether it did the task" in ran.summary
+    assert mock.policy_runs == ["put the block in the cup"]
+    after = {joint: abs(mock.joints[joint] - goal) for joint, goal in OBJECT_AT.items()}
+    assert all(0 < after[joint] < before[joint] for joint in OBJECT_AT), (before, after)
+    assert not mock.holding and (await adapter.get_state()).policy == "idle"
+    denied = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=deny_all)
+    with pytest.raises(ConfirmDenied):
+        await denied.run_verb("manipulate", {"instruction": "wave"})
+    await adapter.close()
+
+
+async def test_the_mock_refuses_a_blank_instruction_in_the_arm_s_own_words() -> None:
+    """Blanks tell a policy nothing, and the arm refuses them before a segment starts, so a
+    rehearsal on the mock has to fail there too: through the verb, and through a raw `do` that
+    never met the verb's parameters."""
+    mock = LeRobotMock()
+    adapter = LeRobotAdapter(mock)
+    manifest = await adapter.connect()
+    ex = Executor(registry_from_manifest(manifest, adapter), adapter, confirm=allow_all)
+    at = dict(mock.joints)
+    blank = await ex.run_verb("manipulate", {"instruction": "   "})
+    assert not blank.ok and NO_INSTRUCTION in blank.summary, blank.summary
+    raw = await mock.send_intent(Intent.do("policy:manipulate:  "))
+    assert not raw.accepted and raw.reason == NO_INSTRUCTION
+    assert mock.policy_runs == [] and mock.joints == at
+    await adapter.close()
+    arm, real, on_the_arm, _ = await _segment(FakePolicy())
+    same = await real.send_intent(Intent.do("policy:manipulate:  "))
+    assert not same.accepted and same.reason == raw.reason and arm.actions == []
+    await on_the_arm.close()
 
 
 async def test_a_policy_that_raises_is_a_failed_pick_and_says_so() -> None:

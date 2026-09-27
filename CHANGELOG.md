@@ -9,12 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The SO-101's `pick` runs its policy as a segment the backend owns, and the verb waits for it.
 This is the ground a learned policy will stand on as the arm's executor, and it is made safe on
-the one policy path there is today, an injected object with one action per call. Nothing here
-has run on the arm: it was exercised against the test suite's fake arm and on the simulator's
-stand-in model.
+the one policy path there is today, an injected object with one action per call. On that ground
+stands the loop a chunked policy needs, paced on the arm's clock at the policy's own rate, and
+`manipulate`, the verb that hands the arm to a policy for one short subtask. Nothing here has run
+on the arm: it was exercised against the test suite's fake arm and on the simulator's stand-in
+model.
 
 ### Added
 
+- **`manipulate(instruction)`, one segment of the arm's learned policy.** Present beside `pick`
+  whenever the arm has a policy, confirm-gated, with `pick`'s preconditions. The segment runs
+  for 10 s (`MANIPULATE_S`) unless it ends sooner, on its chunks played or on the arm no longer
+  moving under it (`STALL_S`), which holds the arm where it stopped in case something is in
+  its way, and the verb holds it again after, failing if that hold did not reach the arm. The
+  verb is ok on those three endings and on nothing else, and its summary says why it ended,
+  how long it ran, the chunks, the clips and the ticks a second it achieved, and never that
+  the task is done: the pilot judges that from a fresh look. A starved policy, a guard, an
+  error or a stop end it with the arm held and the verb failed. The mock scripts it, moving
+  part of the way to its object and ending on its time unless a stop, a release, a rest move
+  or the next segment ends it first, and refuses, in the arm's own words, a verb's goal sent
+  while it runs and an instruction of blanks.
+- **The policy loop (`policy/loop.py`), with a rate, a pace and a queue.** A policy is asked
+  through a runner (`policy/runner.py`), and a policy object with one `act` a call is wrapped in
+  a `ScriptedRunner`, so it runs as it always did, one `act` a tick at 10 Hz. The rate is the
+  runner's own, from a source it names, and one that is not a finite number between 1 and 60 Hz
+  refuses the segment. Tick `k` is due at the start plus `k` periods, counted from the tick's
+  number, and a tick that overruns skips to the next whole period, counts what it skipped, and
+  never sends twice in one period, nor before its deadline on the simulator's stepped clock. A
+  chunk's goals for ticks already played are dropped as it arrives and the rest replaces the
+  queue's tail. A tick with nothing to send sends nothing, and a second of that (`STARVE_S`)
+  ends the segment, with five (`FIRST_CHUNK_S`) for a first chunk that can be played. Each
+  segment has an epoch, and an answer from an earlier one is thrown away. On the simulator a
+  runner's inference costs no sim time, and its answer is taken in and judged its declared
+  latency later, where the arm would first see it, one thrown away or raising included. A
+  runner asked every tick has to answer within one, and one that declares longer is refused.
+- **A policy's calls have a thread of their own.** They used to share the default pool with the
+  bus's calls. A policy that stops answering now holds up no read, stop or heartbeat, and a
+  segment after it is refused rather than started beside it (`RESET_S`).
 - **A policy segment ends on what it reads, before it sends.** Each tick of `pick`'s loop reads
   the arm and judges that reading first. A hot joint, torque off, a camera that gave no frame,
   an action that is not a finite number or names no motor of this arm, a goal held past the
@@ -32,6 +63,13 @@ stand-in model.
 
 ### Changed
 
+- **A policy's step cap is the verbs' speed at the policy's rate.** Per send it is
+  `max_step_deg / TICK_S` over the rate, and never more than one verb step, so
+  `QUACKD_LEROBOT_MAX_STEP_DEG` governs both, and a policy faster than the verbs' tick takes a
+  smaller step rather than moving faster. It is written on the follower as the segment starts
+  and the verbs' step put back as it ends, however it ends, once any send still on the wire is
+  back, cancelled or run out of its time, and a stop, a rest move or a verb's goal writes it
+  again where a segment's cap may still be on the follower.
 - **`pick` stops its policy the moment something is held.** It used to return and leave the
   policy driving the arm through the pilot's thinking, so the next arm verb was refused once
   as `pick is running`. `holding` is now judged on the policy loop's own reads, each tick,
