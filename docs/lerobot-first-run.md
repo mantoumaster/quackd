@@ -1617,6 +1617,12 @@ off your calibration, the rest move, the refusals and the close, running over a 
 of the SO-101 in MuJoCo instead of over LeRobot. A task file rehearsed on it goes through the
 lines that will drive your arm.
 
+![Two views of a simulated SO-101 arm in MuJoCo, side by side, under a strip naming the verb being run. Left, the arm on a grey table seen from in front and to one side, with a red cube and a dark pen lying in front of it: it starts with the upper arm upright and the forearm level, raises the whole arm on a diagonal, brings the forearm back down level with the upper arm nearly upright, then swings the arm from side to side at the shoulder three times and stops. Right, the scene's front camera, the view the model was sent: the raised arm runs off the top of the frame, then the arm held out level swings across it from one side to the other, pointing straight at the camera as it passes the middle.](assets/lerobot-sim.gif)
+
+*The README hero's goal, `Wave to the camera with an extended arm`, on the simulator's generic
+arm, piloted by OpenAI's `gpt-6-sol`, with the front camera the model was sent on the right
+([how it was made](assets/README.md)).*
+
 **Install it** into the same environment, or into a 3.11 one, since it needs neither LeRobot nor
 torch:
 

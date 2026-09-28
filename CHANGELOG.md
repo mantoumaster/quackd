@@ -210,6 +210,19 @@ what only the bench can settle.
   the watchdog on the pin, since a file that stops arriving at its hash fails there by name. CI's
   `physics` job runs the simulator's other tests on every push, on a primitives-only stand-in arm
   that needs nothing fetched.
+- **The arm's simulator has a recording, wherever the docs introduce it.**
+  `docs/assets/lerobot-sim.gif` is the README hero's sentence, *wave to the camera with an
+  extended arm*, on a bare `--robot lerobot:mujoco`, piloted by OpenAI's `gpt-6-sol` on
+  2026-09-28: it raised the arm, held it out level and swung it side to side at the shoulder
+  three times, in seven steps, nine LLM calls, 69 seconds and $0.0537. It is the first film in
+  this repository of a cloud model in a simulator: the four transcripts are local models on
+  `sim2d`, with no frame. A fixed view of the table sits beside the scene's front camera, the one
+  the model was sent, both drawn by a tick hook on the simulator's clock, so the model's thinking
+  is not in it. `docs/assets/lerobot_sim.py` records it, and flies a scripted pilot of its own
+  when it is given no `--llm`. It is in the README's paragraph on rehearsing at home, the
+  simulator's section of `docs/adapters/lerobot.md` and section 16 of `docs/lerobot-first-run.md`.
+  It renders TheRobotStudio's model at the commit the simulator pins, Apache-2.0, and commits no
+  mesh. `quackd run` still writes no GIF on this backend.
 
 ### Changed
 

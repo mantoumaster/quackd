@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 import tomllib
 
+import pytest
+
 from hatch_build import BLOB, ReadmeHook, absolutise, pypi_readme, relative_links
 from tests.conftest import REPO
 
@@ -142,27 +144,26 @@ def test_the_card_and_the_readme_open_with_the_same_mark() -> None:
     )
 
 
-def test_the_hero_script_uses_the_cap_the_pre_commit_hook_is_configured_with() -> None:
-    """`check-added-large-files` only inspects files being *added*, so regenerating the
-    simulator figure in place past the cap is invisible to it. The script's own check is the
-    one that fires, and it was set 97 KB tighter than the hook it claimed to mirror.
+#: The recorders that render a simulator into `docs/assets` and check their own output against
+#: the general cap: the duck's physics figure and the arm simulator's recording.
+RENDER_RECORDERS = ("hero3d.py", "lerobot_sim.py")
 
-    `hero3d.py` keeps the general cap. The one file over it is the README hero, which is a
-    photograph rather than a render and is held to its own number by the test below."""
-    import ast
 
-    hook = (REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-    maxkb = int(re.search(r"--maxkb=(\d+)", hook).group(1))  # type: ignore[union-attr]
-    source = (REPO / "docs" / "assets" / "hero3d.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    found = [
-        ast.literal_eval(node.value)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(getattr(t, "id", None) == "MAX_BYTES" for t in node.targets)
-    ]
+@pytest.mark.parametrize("script", RENDER_RECORDERS)
+def test_each_simulator_recorder_uses_the_cap_the_pre_commit_hook_is_configured_with(
+    script: str,
+) -> None:
+    """`check-added-large-files` only inspects files being *added*, so regenerating a
+    simulator recording in place past the cap is invisible to it. The script's own check is the
+    one that fires, and `hero3d.py`'s was once set 97 KB tighter than the hook it claimed to
+    mirror.
+
+    Both keep the general cap. The one file over it is the README hero, which is a photograph
+    rather than a render and is held to its own number by the test below."""
+    maxkb, _ = _hook_cap()
+    found = _script_constant(script, "MAX_BYTES")
     assert found == [maxkb * 1024], (
-        f"docs/assets/hero3d.py caps its output at {found}, and the pre-commit hook refuses "
+        f"docs/assets/{script} caps its output at {found}, and the pre-commit hook refuses "
         f"anything over {maxkb} KB ({maxkb * 1024} bytes). Move one of the two."
     )
 

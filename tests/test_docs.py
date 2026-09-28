@@ -799,6 +799,47 @@ def test_every_file_in_docs_assets_has_a_row_in_its_catalogue() -> None:
         )
 
 
+#: Sentences that were true until 2026-09-28, when OpenAI's `gpt-6-sol` flew the arm's
+#: simulator on film (`docs/assets/lerobot-sim.gif`). The README carried three of them, in its
+#: status table, its limitations and its help wanted, and the change that embedded the film in
+#: that same README fixed the assets catalogue's copy and none of these. The last has been
+#: false since `lerobot.gif`, a model on the real arm, and was missed then too.
+_RETIRED_RECORDING_CLAIMS = (
+    "no real model recording has yet been made in any simulator",
+    "the only recording in this repository with a model in the loop",
+    "every simulator recording here is the scripted pilot",
+    "the one recording here with a model in it",
+    "none has yet been recorded in any simulator",
+    "every *simulator* recording here is driven by the scripted pilot",
+    "not an llm, like every other asset here",
+)
+
+
+def test_no_living_document_still_says_no_model_has_been_filmed_in_a_simulator() -> None:
+    """A claim about the pictures, spelled once per page, and a page that keeps it says the
+    opposite of a figure it may be showing a few screens up.
+
+    The other half holds the catalogue to the same fact, so the two move together: a film
+    re-recorded with the scripted pilot takes the model out of its row, and this test then
+    says which claims have come true again."""
+    catalogue = (REPO / "docs" / "assets" / "README.md").read_text(encoding="utf-8")
+    row = re.search(r"^\| `lerobot-sim\.gif` \| (.*?) \|", catalogue, flags=re.MULTILINE)
+    assert row is not None, "docs/assets/README.md has no row for lerobot-sim.gif"
+    assert "gpt-6-sol" in row.group(1), (
+        "the lerobot-sim.gif row no longer names the model that flew it. If the film is the "
+        "scripted pilot now, the claims in _RETIRED_RECORDING_CLAIMS are true again: take "
+        "them out of this test and put the sentences back where the pages need them."
+    )
+    for path in _living_docs():
+        text = _one_line(path.read_text(encoding="utf-8"))
+        for retired in _RETIRED_RECORDING_CLAIMS:
+            assert retired not in text, (
+                f"{path.relative_to(REPO).as_posix()} still says {retired!r}, and OpenAI's "
+                "gpt-6-sol was filmed on the arm's simulator on 2026-09-28 "
+                "(docs/assets/lerobot-sim.gif)"
+            )
+
+
 def test_no_living_document_or_user_facing_string_still_says_fleet() -> None:
     """One word for a group of robots, because two words for one idea is two ideas to a reader.
 
@@ -1535,6 +1576,23 @@ _ARM_SIMULATOR_CLAIMS_THE_CODE_NEVER_MADE = (
     (
         "colour ranges are the *simulator's*",
         "the detector's ranges are the duck simulators', and the arm's simulator has no ball",
+    ),
+    # the arm simulator's film is the first of a cloud model in a simulator, not of a model:
+    # the four transcripts under docs/assets/transcripts are local models on microduck:sim2d
+    (
+        "the first recording in this repository of a model in a simulator",
+        "the transcripts in docs/assets are local models on sim2d, so the film is the first "
+        "cloud model filmed in a simulator, not the first model in one",
+    ),
+    (
+        "the first recording here of a model in a simulator",
+        "the transcripts in docs/assets are local models on sim2d, so the film is the first "
+        "cloud model filmed in a simulator, not the first model in one",
+    ),
+    (
+        "the first model recorded in a simulator here",
+        "the transcripts in docs/assets are local models on sim2d, so the film is the first "
+        "cloud model filmed in a simulator, not the first model in one",
     ),
 )
 

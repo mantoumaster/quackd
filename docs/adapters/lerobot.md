@@ -677,6 +677,13 @@ what it meets on the way, a travel it cannot reach, a bus that drops a packet, a
 reaches for a verb nobody allowed, it meets at home.
 [ADR-0047](../adr/0047-the-arms-simulator-runs-the-real-backend.md) is the reasoning.
 
+![Two views of a simulated SO-101 arm in MuJoCo, side by side, under a strip naming the verb being run. Left, the arm on a grey table seen from in front and to one side, with a red cube and a dark pen lying in front of it: it starts with the upper arm upright and the forearm level, raises the whole arm on a diagonal, brings the forearm back down level with the upper arm nearly upright, then swings the arm from side to side at the shoulder three times and stops. Right, the scene's front camera, the view the model was sent: the raised arm runs off the top of the frame, then the arm held out level swings across it from one side to the other, pointing straight at the camera as it passes the middle.](../assets/lerobot-sim.gif)
+
+*The sentence the real arm at the top of the README was given, `Wave to the camera with an
+extended arm`, on a bare `--robot lerobot:mujoco` with the `front` camera, piloted by OpenAI's
+`gpt-6-sol` and recorded by [`lerobot_sim.py`](../assets/lerobot_sim.py)
+([how it was made](../assets/README.md)).*
+
 ### Running it
 
 ```bash
@@ -808,8 +815,9 @@ camera by that name; its cameras are front, top, wrist. Name one with ?name=.
 
 The pilot is told it is on a simulator, that every camera is a rendered view and that the
 physics is the model's rather than anything measured on an SO-101, and a run given no camera is
-told that whatever is on the table goes unseen. A run writes no GIF here. `--live` opens MuJoCo's
-own viewer.
+told that whatever is on the table goes unseen. A run writes no GIF here, and the recording
+above is a script's, which drives a run and films it from a tick hook on the simulator's clock.
+`--live` opens MuJoCo's own viewer.
 
 ### Time, and what a seed repeats
 
