@@ -643,15 +643,18 @@ def validate(
 ) -> None:
     """Validate .duck files against the spec and a robot's verbs. Exits 1 on any failure."""
     from quackd.adapters.base import AdapterError, policy_hint
-    from quackd.adapters.factory import describe
+    from quackd.adapters.factory import describe, installed_vocabulary
     from quackd.duckfile.parser import DuckParseError, load_duck
     from quackd.duckfile.validate import validate_duck
     from quackd.registry import Registry, RegistryError, resolve_robot_ref
-    from quackd.verbs.registry import default_registry
+    from quackd.verbs.registry import VerbRegistry
 
     registry_ref = Registry(registry_dir)
 
-    registry = default_registry()
+    # What a file that names no robot is checked against: every body installed here, with what
+    # each offers a policy server, built once for all of them. It was the Microduck's list,
+    # which refused an arm's task for verbs the arm has.
+    vocabulary: VerbRegistry | None = None
     rows: list[dict[str, Any]] = []
     for path in _expand(duckfiles):
         row: dict[str, Any] = {"file": path, "name": None, "verbs": None, "robots": [], "ok": True}
@@ -682,7 +685,9 @@ def validate(
             row.update(ok=False, problems=[str(e)], summary=[str(e)])
             continue
         row["robots"] = [m.id for m in manifests]
-        problems = validate_duck(duck, manifests, registry=registry)
+        if not manifests and vocabulary is None:
+            vocabulary = installed_vocabulary()
+        problems = validate_duck(duck, manifests, registry=vocabulary)
         if problems:
             # `str(p)` names the field it came from and is what the plain lines under the
             # table carry; `p.message` is the sentence, which is what fits in a cell
@@ -1167,6 +1172,14 @@ def _acknowledge_prompt(why: str) -> bool:
         return _ask("Are you watching the robot right now?")
 
 
+def _judge_prompt(why: str) -> bool:
+    """Asked once, after the last segment of a `--controller vla` run: its pilot cannot tell
+    whether the task was done, so the person who watched the arm says."""
+    with ui.pause_status():
+        ui.err_console.print(Text(why, style=ui.STYLES["warn"]))
+        return _ask("Did the arm do it?")
+
+
 def _a_person_is_there() -> bool:
     """`_can_prompt` looked up now rather than bound now, because it is the seam the tests
     replace and a reference taken at import would not see the replacement."""
@@ -1176,13 +1189,70 @@ def _a_person_is_there() -> bool:
 _confirm_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
 _decide_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
 _acknowledge_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
-"""These three are the ones that reach a terminal, and `allow_all`, `deny_all`, `_yes_to_go`
+_judge_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
+"""These four are the ones that reach a terminal, and `allow_all`, `deny_all`, `_yes_to_go`
 and the flock's standing answers are not. The mark is `_can_prompt` rather than `True` because
 reaching a terminal is a thing to check at the moment of asking and not a property of the
-function: these same three run under `yes | quackd run` and under `quackd run < answers.txt`,
+function: these same four run under `yes | quackd run` and under `quackd run < answers.txt`,
 where `input()` reads the pipe and returns a yes nobody said. The gate still opens, because
 that is what the pipe asked for and it is what quackd has always done; what must not happen is
-the record then testifying that a person cleared it."""
+the record then testifying that a person cleared it. A judgement from a pipe is not even
+believed: a `--controller vla` run succeeds only on a person's yes."""
+
+
+def _vla_refusal(
+    *, yes: bool, dry_run: bool, has_policy: bool, goal: str | None, ignored: Sequence[str]
+) -> tuple[str, str] | None:
+    """Why `--controller vla` cannot fly this run, as a sentence and a hint, or None.
+
+    Its pilot has no judgement of its own, so a person is its whole verdict: asked before the
+    first segment whether the body should try, and after the last whether it did. Every flag
+    that would take that person away, or leave them nothing real to judge, is refused here,
+    before anything is built, connected or written down. `ignored` are the flags given for a
+    model that this pilot would drop without a word."""
+    from quackd.duckfile.schema import instruction_line
+
+    if yes:
+        return (
+            "--controller vla leaves the verdict on the task to a person who watched the arm, "
+            "and --yes answers every question without asking anybody",
+            "drop --yes: a vla run asks you before its first segment and after its last",
+        )
+    if not _can_prompt():
+        return (
+            "--controller vla asks a person whether the arm did the task, and there is no "
+            "terminal to ask on",
+            "run it from a terminal, not through a pipe or a script",
+        )
+    if dry_run:
+        return (
+            "--controller vla asks whether the arm did the task, and --dry-run moves nothing "
+            "for anybody to judge",
+            "rehearse it on the arm's simulator instead: --robot lerobot:mujoco",
+        )
+    if ignored:
+        return (
+            "--controller vla is a scripted pilot that asks no model and sees no picture, so "
+            f"{_and(list(ignored))} would do nothing",
+            "drop it, or fly the run with --controller llm",
+        )
+    if not has_policy:
+        return (
+            "--controller vla hands each instruction to the arm's learned policy, and this run "
+            "names no policy server",
+            "start one with quackd policy serve, and give quackd run its address with --policy-url",
+        )
+    if goal is not None:
+        try:
+            instruction_line(goal)
+        except ValueError as e:
+            return (
+                "--controller vla tells the arm's policy the goal word for word, as its one "
+                f"instruction, and {e}",
+                "give one short subtask as --goal, or list the subtasks under "
+                "policy.instructions in a duck: 3 task file",
+            )
+    return None
 
 
 def _parse_flock_flag(flock: str | None, registry_dir: str | None) -> tuple[int | None, Any]:
@@ -1248,6 +1318,7 @@ def _run_impl(
     detector_choice: str | None = None,
     policy_url: str | None = None,
     policy_token: str | None = None,
+    controller: str | None = None,
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
     from quackd.adapters.base import policy_choice, policy_hint
@@ -1255,6 +1326,7 @@ def _run_impl(
     from quackd.adapters.host_camera import EXTRAS_KEY as HOST_CAMERA_EXTRAS
     from quackd.adapters.host_camera import with_host_camera
     from quackd.agent.decision.base import DecisionError
+    from quackd.agent.decision.factory import ENV_LLM as DECISION_LLM_ENV
     from quackd.agent.decision.factory import PRICE_ENV as DECISION_PRICE_ENV
     from quackd.agent.decision.factory import (
         decision_llm_is_available,
@@ -1265,7 +1337,7 @@ def _run_impl(
     )
     from quackd.agent.images import TaskImageError, load_task_images
     from quackd.agent.loop import RunConfig, run_duck
-    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.base import LLMProvider, ProviderError
     from quackd.agent.providers.factory import make_provider, resolve_llm
     from quackd.agent.providers.pricing import parse_price as _parse_price
     from quackd.agent.transcript import run_label
@@ -1336,6 +1408,34 @@ def _run_impl(
     # passed to `describe` and `make_adapter` only when there is one, so every other body is
     # asked exactly as it always was
     policy_kw: dict[str, Any] = {} if policy is None else {"policy": policy}
+    # any spelling of nothing is the default, as a blank --detector is
+    flown_by = (controller or "").strip().lower() or CONTROLLERS[0]
+    if flown_by not in CONTROLLERS:
+        _fail(f"--controller is {' or '.join(CONTROLLERS)}, not {controller!r}")
+        return
+    vla = flown_by == "vla"
+    if vla:
+        refused = _vla_refusal(
+            yes=yes,
+            dry_run=dry_run,
+            has_policy=policy is not None,
+            goal=goal,
+            ignored=[
+                flag
+                for flag, given in (
+                    ("--llm", llm is not None),
+                    ("--base-url", base_url is not None),
+                    ("--api-key", api_key is not None),
+                    ("--extra-body", extra_body is not None),
+                    ("--vision", vision is not None),
+                    ("--image", bool(images)),
+                )
+                if given
+            ],
+        )
+        if refused is not None:
+            _fail(refused[0], hint=refused[1])
+            return
     flock_n, roster = _parse_flock_flag(flock, registry_dir)
     flock_name = flock if roster is not None else None
     if roster is not None and (robot or robots):
@@ -1360,6 +1460,15 @@ def _run_impl(
         spec = here.spec
     except (DuckParseError, TransportError, RegistryError) as e:
         _fail(str(e))
+        return
+    if vla and duck is not None and not duck.frontmatter.effective_policy.instructions:
+        # a goal is its own one instruction, and was held to the rule for one above
+        _fail(
+            "--controller vla tells the arm's policy the instructions a task file lists, and "
+            f"{duck.name} lists none",
+            hint="list them under policy.instructions in a duck: 3 task file "
+            "(docs/duck-spec.md), or give --goal",
+        )
         return
     # Before the dispatch below, because a flock takes neither of the two flags and dropping
     # one silently is the failure both of them exist to prevent: a task about a picture that
@@ -1572,6 +1681,15 @@ def _run_impl(
     except DecisionError as e:
         _fail(str(e))
         return
+    if vla and named_decision is not None and decision != "off":
+        # a stepper answers the turns a model would have been asked, and this pilot is no model:
+        # it would take the scripted pilot's turns with nobody having asked it to
+        _fail(
+            "--controller vla runs no model for a decision LLM to step in front of, and "
+            f"{'--decision-llm' if decision_llm is not None else DECISION_LLM_ENV} names one",
+            hint="drop it, or pass --decision-llm off for this run",
+        )
+        return
     if flock_n is not None or roster is not None or duck.frontmatter.flock is not None:
         if decision != "off" and named_decision is not None:
             # One loop per member, each with its own executor and budget, and the stepper is
@@ -1718,27 +1836,42 @@ def _run_impl(
         _fail(str(e))
         return
     try:
-        # a registered robot may name the pilot that drives it; a flag on the line still wins,
-        # and `QUACKD_LLM` sits behind both. One spec carries the vendor and the model
-        # together, so there is no longer any way for half an answer to come from each place:
-        # `--llm gemini` on a robot registered against OpenAI is Gemini's default, full stop.
-        vendor, model_id, llm_source = resolve_llm(
-            llm, here.llm, robot=here.entry.name if here.entry is not None else None
-        )
-        pilot = make_provider(
-            vendor,
-            model=model_id,
-            source=llm_source,
-            duck_name=duck.name,
-            goal=goal,
-            base_url=base_url,
-            api_key=api_key,
-            vision=vision,
-            extra_body=extra_body,
-            # only a host a person named for this run or this robot: QUACKD_HOST sits below
-            # QUACKD_BASE_URL, and the local provider reads it there for itself
-            host=host_choice.explicit,
-        )
+        pilot: LLMProvider
+        if vla:
+            from quackd.agent.providers.vla import VlaProvider
+
+            # the task file's instructions, or the goal as the one, and a task file's own words
+            # for done, which the person is shown when asked whether the arm did it. A goal's
+            # are written for a model, and the goal itself is the question. The robot's
+            # registered pilot and `QUACKD_LLM` name a model this run never asks.
+            pilot = VlaProvider(
+                [goal] if goal is not None else duck.frontmatter.effective_policy.instructions,
+                success=duck.frontmatter.success if goal is None else (),
+                label=duck.name,
+            )
+        else:
+            # a registered robot may name the pilot that drives it; a flag on the line still
+            # wins, and `QUACKD_LLM` sits behind both. One spec carries the vendor and the
+            # model together, so there is no longer any way for half an answer to come from
+            # each place: `--llm gemini` on a robot registered against OpenAI is Gemini's
+            # default, full stop.
+            vendor, model_id, llm_source = resolve_llm(
+                llm, here.llm, robot=here.entry.name if here.entry is not None else None
+            )
+            pilot = make_provider(
+                vendor,
+                model=model_id,
+                source=llm_source,
+                duck_name=duck.name,
+                goal=goal,
+                base_url=base_url,
+                api_key=api_key,
+                vision=vision,
+                extra_body=extra_body,
+                # only a host a person named for this run or this robot: QUACKD_HOST sits
+                # below QUACKD_BASE_URL, and the local provider reads it there for itself
+                host=host_choice.explicit,
+            )
         duck_transport = make_adapter(
             spec,
             seed=seed,
@@ -1922,6 +2055,8 @@ def _run_impl(
         fov_deg=fov_deg,
         acknowledge=None if yes else _acknowledge_prompt,
         decide=_yes_to_go if yes else _decide_prompt,
+        # only the vla pilot asks, and it never runs with --yes, so there is no standing answer
+        judge=_judge_prompt if vla else None,
         view=fan_out(console_log, status.sink),
         task_images=task_images,
         hand_off=hand_off,
@@ -2707,6 +2842,21 @@ _DECISION_MODE = typer.Option(
     "as it has always been. QUACKD_DECISION_MODE does the same.",
     rich_help_panel="Model",
 )
+CONTROLLERS = ("llm", "vla")
+"""What `--controller` takes: the model `--llm` names, or the scripted pilot of
+`quackd.agent.providers.vla`."""
+_CONTROLLER = typer.Option(
+    None,
+    "--controller",
+    metavar="llm|vla",
+    help="Who flies the run. llm, the default, is the model --llm names, and with --policy-url "
+    "it hands the arm's learned policy one short subtask at a time. vla is a scripted pilot for "
+    "a LeRobot arm with --policy-url: it tells the policy each instruction the task file lists, "
+    "or the --goal as the only one, one segment each, then asks you whether the arm did it, and "
+    "only your yes makes the run a success. It needs a terminal to ask on, and takes no --yes, "
+    "--dry-run, --decision-llm or model flag.",
+    rich_help_panel="Model",
+)
 _ROBOT = typer.Option(
     None,
     "--robot",
@@ -2907,6 +3057,7 @@ def run(
     decision_llm: str | None = _DECISION_LLM,
     decision_url: str | None = _DECISION_URL,
     decision_mode: str | None = _DECISION_MODE,
+    controller: str | None = _CONTROLLER,
     flock: str | None = _FLOCK,
     run_name: str | None = _RUN_NAME,
     price: str | None = _PRICE,
@@ -2959,6 +3110,7 @@ def run(
             detector_choice=detector,
             policy_url=policy_url,
             policy_token=policy_token,
+            controller=controller,
         )
 
 
@@ -3702,6 +3854,12 @@ def serve_mcp(
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
     log: bool | None = _LOG_MCP,
+    controller: str | None = typer.Option(
+        None,
+        "--controller",
+        hidden=True,
+        help="Refused: over MCP the client is the pilot. quackd run takes it.",
+    ),
 ) -> None:
     """Expose a robot, or a flock of them, as MCP tools over stdio (Claude Code /
     Claude Desktop)."""
@@ -3709,6 +3867,14 @@ def serve_mcp(
     from quackd.mcp_server import serve
     from quackd.registry import RegistryError
 
+    if controller is not None:
+        # parsed only to be refused in words, since a flag Typer does not know is refused in
+        # its own, which say nothing about why or where it belongs
+        _fail(
+            "--controller picks who flies a quackd run, and over MCP the client flies, with no "
+            "terminal for a vla run to ask whether the arm did the task",
+            hint="quackd run --controller vla, from a terminal",
+        )
     try:
         serve(
             robot=robot,

@@ -585,10 +585,15 @@ def test_the_catalogue_costs_nothing_to_import() -> None:
 
 
 def test_every_vendor_file_is_reachable_from_the_factory() -> None:
-    """A provider module nobody dispatches to is a vendor that silently does not exist."""
+    """A provider module nobody dispatches to is a vendor that silently does not exist.
+
+    `vla` is plumbing rather than a vendor: `--controller vla` builds it, never `--llm`."""
     directory = REPO / "quackd" / "agent" / "providers"
     modules = {p.stem for p in directory.glob("*.py")}
-    plumbing = {"__init__", "base", "catalogue", "factory", "fake", "local", "openai", "pricing"}
+    plumbing = {
+        *("__init__", "base", "catalogue", "factory", "fake", "local", "openai", "pricing"),
+        "vla",
+    }
     assert modules - plumbing - {"anthropic", "gemini"} == set(OPENAI_COMPATIBLE)
 
 

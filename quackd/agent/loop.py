@@ -47,8 +47,10 @@ from quackd.agent.prompts import (
     observation_features,
 )
 from quackd.agent.providers.base import (
+    JUDGE_FEATURE,
     Decision,
     Exchange,
+    JudgedPilot,
     LLMProvider,
     NamedPng,
     Observation,
@@ -203,6 +205,13 @@ class RunConfig:
     """Asked when the pilot says it is not sure this body can do the task, so a person makes
     the call. None means nobody is there (MCP, tests), and the pilot is told to decide itself
     rather than being cleared by default."""
+    judge: Callable[[str], bool] | None = None
+    """Asked once, when a pilot that cannot tell whether its task was done says it is time
+    (`JudgedPilot`, `--controller vla`), whether the arm did it: after its last segment, or
+    about the segments that ran when a budget ends the run first. The answer goes to the pilot
+    on its next observation, and only a yes from a person really asked lets it succeed. None
+    means nobody is there, and such a pilot's run can then only fail. Every other pilot is
+    never asked about, whether or not this is set."""
     view: Sink | None = None
     """Where to show the run as it happens (the CLI passes a `ConsoleLog`). The transcript
     gets every event whether this is set or not; this is a second reader of the same stream."""
@@ -401,6 +410,10 @@ class AgentLoop:
         now, empty while the detector answers, so a board that stops answering is one note
         when it stops and one when it answers again, rather than one on every frame in
         between (`_detector_said`)."""
+        self.judged: dict[str, Any] | None = None
+        """The question a `JudgedPilot`'s run put to a person about what the arm did, and the
+        answer, as the pilot reads it under `JUDGE_FEATURE`, or None until it is put. Put once
+        a run, and read again by the declare that ends it and by a budget that ends it first."""
 
     # ── narration ───────────────────────────────────────────────────────────────────
 
@@ -429,7 +442,8 @@ class AgentLoop:
 
         The consequence of the answer is already written down elsewhere (`gate.answer` for a
         confirm, `assess.human` for a verdict, the `hand_off` stages for an arm, the `release`
-        stages for the end-of-run offer). This is the exchange itself, which nothing held."""
+        stages for the end-of-run offer, the `declare` a judged pilot makes of a `judge`). This
+        is the exchange itself, which nothing held."""
         if not a_person_was_asked(asker):
             return
         self._emit("prompt", what=what, question=question, answer=answer)
@@ -1352,6 +1366,81 @@ class AgentLoop:
             None,
         )
 
+    # ── a person's word on the task, for a pilot that cannot tell ─────────────────────────
+
+    def _judgement(self, question: str) -> dict[str, Any]:
+        """Put `question` to whoever `RunConfig.judge` reaches, record the exchange, and keep
+        what the pilot is handed back.
+
+        `asked` is the test that decides whether a `prompt` row is written: a pipe and a
+        standing answer can both say yes, and neither is a person who watched the arm. An
+        asker that raised, on EOF or with click's `Abort`, said neither yes nor no. Its answer
+        stays None, `raised` names what it raised, and no `prompt` row says somebody answered,
+        the way the confirm gate records a prompt that raised.
+
+        The seconds the question takes are the person's and not the run's. They come off
+        `max_minutes` the way a `--by-hand` handover's do, so a yes given after a long look at
+        the arm is still the answer the run ends on, and not a spent budget."""
+        judge = self.cfg.judge
+        judged: dict[str, Any] = {"question": question, "answer": None, "asked": False}
+        if judge is not None:
+            put_at = self.budget.now()
+            try:
+                judged["answer"] = bool(judge(question))
+            except Exception as e:
+                judged["raised"] = type(e).__name__
+            finally:
+                if self.budget.started_at is not None:
+                    self.budget.started_at += max(0.0, self.budget.now() - put_at)
+            judged["asked"] = a_person_was_asked(judge)
+            if "raised" not in judged:
+                self._ask_recorded("judge", question, judged["answer"], judge)
+        self.judged = judged
+        return judged
+
+    def _judged_observation(self, obs: Observation) -> Observation:
+        """`obs` with a person's answer on it, where the pilot is one that cannot tell whether
+        its task was done and says it is time to ask. Every other turn, and every other pilot,
+        gets `obs` as it was."""
+        pilot = self.cfg.provider
+        if self.judged is not None or not isinstance(pilot, JudgedPilot):
+            return obs
+        question = pilot.judge_question([*self.history, Exchange(observation=obs)])
+        if question is None:
+            return obs
+        features = {**obs.features, JUDGE_FEATURE: self._judgement(question)}
+        return obs.model_copy(update={"features": features})
+
+    def _a_person_said_yes(self) -> bool:
+        """Whether a person really asked said the arm did it: the only thing that lets a
+        `JudgedPilot`'s run end in success."""
+        judged = self.judged
+        return judged is not None and judged["asked"] is True and judged["answer"] is True
+
+    def _cut_short(self, reason: str) -> str:
+        """Why a budget ended a `JudgedPilot`'s run, with what a person said about the segments
+        that ran before it did. They are asked now if they were not yet, so a run that spent its
+        seconds on two subtasks of three still has somebody's word on those two. The outcome
+        stays the budget's: a yes about part of a task is not the task done."""
+        pilot = self.cfg.provider
+        if not isinstance(pilot, JudgedPilot):
+            return reason
+        judged = self.judged
+        if judged is None:
+            question = pilot.judge_question(self.history, cut_short=reason)
+            if question is None:
+                return reason
+            judged = self._judgement(question)
+        if not judged["asked"]:
+            return f"{reason}; no person was asked whether the arm did what ran"
+        if "raised" in judged:
+            return (
+                f"{reason}; a person was asked whether the arm did what ran, and the prompt "
+                f"raised {judged['raised']} before they answered"
+            )
+        said = "the arm did it" if judged["answer"] else "it did not"
+        return f"{reason}; a person watched what ran and said {said}"
+
     def _remember(self, arguments: dict[str, Any]) -> VerbResult:
         memory = self.cfg.memory
         if memory is None:
@@ -1756,13 +1845,18 @@ class AgentLoop:
                 obs, _ = await self._observe(
                     last_verb, last_result, self.stepped, mine=(mine_verb, mine_result)
                 )
+                observed_s = round(time.perf_counter() - observe_started, 3)
+                # before the observation is recorded, so the record of the turn carries the
+                # person's answer the pilot is about to read, and after its clock stops, so
+                # the seconds they took to answer are not counted as the observation's
+                obs = self._judged_observation(obs)
                 self._emit(
                     "observation",
                     step=self.budget.steps,
                     text=obs.text,
                     has_image=bool(obs.images),
                     features=obs.features,
-                    elapsed_s=round(time.perf_counter() - observe_started, 3),
+                    elapsed_s=observed_s,
                     **detect_times(self.cfg.detector),
                 )
 
@@ -1988,6 +2082,19 @@ class AgentLoop:
                 if call.name in DECLARE_NAMES:
                     outcome = "success" if call.name == "declare_success" else "failure"
                     reason = str(call.arguments.get("reason", ""))
+                    if (
+                        outcome == "success"
+                        and isinstance(cfg.provider, JudgedPilot)
+                        and not self._a_person_said_yes()
+                    ):
+                        # A pilot that cannot tell whether its task was done does not get to
+                        # say it was. `providers.vla` never tries; this holds any pilot that
+                        # says it cannot judge to the same rule, whatever it declares.
+                        outcome = "failure"
+                        reason = (
+                            f"{reason or 'the pilot declared success'}, and no person asked "
+                            "said the arm did it, which only a person can say for this pilot"
+                        )
                     self._emit("declare", step=self.budget.steps, outcome=outcome, reason=reason)
                     break
 
@@ -2033,6 +2140,19 @@ class AgentLoop:
                     mine_verb, mine_result = call.name, last_result
         except BudgetExceeded as e:
             outcome, reason = "budget", str(e)
+            # a question to a person, and a pilot's code, inside a handler: neither may lose
+            # the budget's own reason or keep the teardown below from stopping the robot
+            try:
+                with contextlib.suppress(Exception):
+                    reason = self._cut_short(reason)
+            except BaseException as interrupted:
+                # the CLI's second Ctrl-C, or a cancel, while that question waits. The handler
+                # for an interrupt below never sees one raised in here, so this one says it:
+                # the budget still ended the run, and the record names the question it cut off
+                what = type(interrupted).__name__
+                reason = f"{reason}; the question about what ran was interrupted ({what})"
+                self._emit("note", text=f"run interrupted: {what}")
+                raise
         except Aborted as e:
             outcome, reason = "aborted", str(e)
         except SafetyStop as e:

@@ -212,9 +212,14 @@ def test_the_bounds_are_held_together_with_the_stepper_and_the_arms_own_timeout(
     assert DEFAULT_SEGMENT_S <= DEFAULT_POLICY_TOTAL_S <= POLICY_TOTAL_MAX_S
 
 
-def test_the_example_in_the_spec_validates_against_the_mock_arm(tmp_path: Path) -> None:
+def test_the_example_in_the_spec_validates_plainly_and_against_the_mock_arm(
+    tmp_path: Path,
+) -> None:
     """docs/duck-spec.md shows a whole v3 file and the `quackd validate` it passes, so the file
-    it shows has to pass it."""
+    it shows has to pass it. The page quotes the plain command, with no robot named, which checks
+    the file against every body installed here with what each offers a policy server: that is
+    where an arm's `manipulate` is, and the Microduck's list, which the command used to check
+    against, refused it. Named, the mock arm keeps it as it is registered."""
     from typer.testing import CliRunner
 
     from quackd.cli import app
@@ -237,8 +242,36 @@ def test_the_example_in_the_spec_validates_against_the_mock_arm(tmp_path: Path) 
     duck.write_text(found.group(1), encoding="utf-8")
     fm = parse_duck_text(found.group(1)).frontmatter
     assert fm.duck == 3 and fm.policy is not None and fm.policy.instructions
+    assert "```console\n$ quackd validate stack-blocks.duck\n" in section, "the plain form"
+    plain = CliRunner().invoke(app, ["validate", str(duck)])
+    assert plain.exit_code == 0, plain.output
+    assert "1 file valid" in plain.output and "1 file valid" in section
     result = CliRunner().invoke(app, ["validate", str(duck), "--robot", "lerobot:mock"])
     assert result.exit_code == 0, result.output
+
+
+def test_a_plain_validate_knows_what_a_body_offers_a_policy_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The vocabulary a file that names no robot is checked against holds `pick` and
+    `manipulate` because the arm offers them to a policy server, asked through the factory's
+    own `policy` parameter, and not because the mock happens to be the backend described
+    first: with the mock taken out of the arm's list they are still there. A description
+    with a policy is static, so it reaches no server and imports no torch."""
+    from quackd.adapters import factory
+
+    arm = factory.info("lerobot")
+    real = factory.parse_robot_spec("lerobot:real")
+    assert not factory.describe(real).provides(POLICY_VERB), "the arm alone offers neither"
+    listed = factory.info
+    unmocked = dataclasses.replace(arm, backends=tuple(b for b in arm.backends if b != "mock"))
+    monkeypatch.setattr(
+        factory, "info", lambda name: unmocked if name == "lerobot" else listed(name)
+    )
+    before = set(sys.modules)
+    vocabulary = factory.installed_vocabulary()
+    assert {"pick", POLICY_VERB} <= set(vocabulary.names())
+    assert "torch" not in set(sys.modules) - before
 
 
 # ── the narrowing ───────────────────────────────────────────────────────────────────────

@@ -203,6 +203,26 @@ checkpoint loaded is a tiny random ACT in CI.
   the model takes the turn, and in `--decision-mode on` as in shadow a `decision_shadow` record
   sets the two answers side by side on every turn that offered one, which is the agreement rate
   promoting it would need.
+- **`--controller vla`, a scripted pilot whose success a person judges.** `quackd run
+  --controller vla` flies a LeRobot arm with `--policy-url` and no model at all. It answers
+  `assess_task` with `uncertain`, so a person decides whether the arm should try, hands the
+  policy each of the task file's `policy.instructions` in order, or the `--goal` as the only
+  one, with one `manipulate` apiece through the same narrowed verb, confirm gate and budget as
+  any pilot's, and then the run asks `Did the arm do it?`. The pilot declares from that answer,
+  which the loop asks through `RunConfig.judge`, records as a `judge` prompt and hands back on
+  the next observation, and only a yes from a person really asked is a success: a no, a pipe
+  on stdin or nobody there is a failure, and the loop holds any pilot that says it cannot judge
+  to the same rule. A prompt that ends without an answer is a failure too, and not a no: no
+  `judge` row is written, and the reason says what the prompt raised. The time a person takes
+  to answer is not charged to `max_minutes`. A segment that does not end ok ends the list with
+  a failure in the verb's own words, and a budget that ends it early still asks about the
+  segments that ran and ends on the budget. It reads the verb's result and the answer and
+  nothing else, never the simulator's truth, and it costs nothing (`tokens 0+0`, `cost $0`).
+  It is refused before anything connects without a policy server, with `--yes`, with no
+  terminal to ask on, with `--dry-run`, beside a decision LLM, with a flag for a model or a
+  picture it would ignore, for a task file that lists no instruction and for a `--goal` that
+  is not one short line. `serve-mcp` refuses `--controller` in words, since over MCP the
+  client is the pilot.
 - **The policy loop (`policy/loop.py`), with a rate, a pace and a queue.** A policy is asked
   through a runner (`policy/runner.py`), and a policy object with one `act` a call is wrapped in
   a `ScriptedRunner`, so it runs as it always did, one `act` a tick at 10 Hz. The rate is the
@@ -271,6 +291,13 @@ checkpoint loaded is a tiny random ACT in CI.
 
 ### Fixed
 
+- **A plain `quackd validate` checked a task file against the Microduck's verbs.** With no
+  robot named, a file is meant to be checked against every body installed here, and
+  `installed_vocabulary()` has built that union since 0.10, but the command still passed the
+  Microduck's list, so an arm's task that allows `move_joints` or `manipulate` failed with
+  `unknown verbs`. It now checks the union, which also holds what each body offers a policy
+  server, so the `duck: 3` example in duck-spec.md validates as the page quotes it.
+  `validate --robot NAME` checks that body as it is registered, as before.
 - **A stop during `pick` could refuse its own hold.** A stop cancels the policy loop first, and
   a loop cancelled in the middle of a bus call leaves that call's thread on the wire, which
   quackd files as a wedge and refuses every call behind until it comes back. The hold the stop

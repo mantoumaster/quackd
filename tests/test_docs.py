@@ -481,6 +481,63 @@ def test_the_policy_server_flags_are_documented_where_they_are_configured() -> N
     assert "QUACKD_POLICY_URL" not in env_example, "the policy server's address has no variable"
 
 
+def test_the_controller_is_documented_where_it_is_configured() -> None:
+    """`--controller vla` takes the model out of a run and leaves its success to a person, so
+    somebody choosing it has to find what it asks of them: the front page's `run` row and its
+    Policy row, the arm's page where the policy server is, the safety page that says who the
+    record says was asked (a `judge` prompt), the page that draws the record, and the MCP page,
+    which says why `serve-mcp` refuses it."""
+    from quackd.cli import app
+
+    callbacks = {
+        (c.name or c.callback.__name__).replace("_", "-"): c.callback
+        for c in app.registered_commands
+        if c.callback is not None
+    }
+    assert "controller" in callbacks["run"].__code__.co_varnames
+    rows = [line for line in README.splitlines() if line.startswith("| `quackd ")]
+    for name in ("run", "serve-mcp"):
+        row = next(line for line in rows if line.startswith(f"| `quackd {name}"))
+        assert "--controller" in row, f"the README's {name} row does not name --controller"
+    policy_row = next(line for line in README.splitlines() if line.startswith("| Policy |"))
+    assert "--controller vla" in policy_row
+    for path, needles in (
+        ("docs/adapters/lerobot.md", ("--controller vla", "Did the arm do it?", "`judge`")),
+        ("docs/safety.md", ("--controller vla", "`judge`")),
+        ("docs/architecture.md", ("`judge`", "providers/vla.py")),
+        ("docs/mcp.md", ("--controller",)),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+
+
+def test_every_question_the_record_keeps_is_named_where_the_record_is_explained() -> None:
+    """A `prompt` event's `what` is one of the questions the loop puts through
+    `_ask_recorded`, or the confirm gate's, which the executor writes itself. The safety page
+    lists them and counts them, and the architecture page's `prompt` row lists them. A kind the
+    code gained and the pages did not tells a reader the record holds fewer questions than it
+    does: `release` went missing from the safety page's list this way, and its count with it."""
+    code = (REPO / "quackd" / "agent" / "loop.py").read_text(encoding="utf-8")
+    gate = (REPO / "quackd" / "safety.py").read_text(encoding="utf-8")
+    kinds = set(re.findall(r'_ask_recorded\(\s*"(\w+)"', code)) | set(
+        re.findall(r'"prompt",\s*what="(\w+)"', gate)
+    )
+    assert {"confirm", "decide", "release", "judge"} <= kinds, kinds
+    safety = (REPO / "docs" / "safety.md").read_text(encoding="utf-8")
+    listed = safety.split("## Who the record says was asked\n\n", 1)[1].split("\n\n", 1)[0]
+    counted = {4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}[len(kinds)]
+    assert f"Those {counted} are" in " ".join(listed.split()), "safety.md counts them wrong"
+    row = next(
+        line
+        for line in (REPO / "docs" / "architecture.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `prompt` |")
+    )
+    for kind in sorted(kinds):
+        assert f"`{kind}`" in listed, f"docs/safety.md's list of prompts leaves out {kind!r}"
+        assert f"`{kind}`" in row, f"docs/architecture.md's prompt row leaves out {kind!r}"
+
+
 def test_the_hand_placed_start_is_documented_where_it_is_configured() -> None:
     """The one place quackd takes torque off a robot. Somebody about to hold an arm while it is
     released should be able to find what happens next in the page they are already reading, and

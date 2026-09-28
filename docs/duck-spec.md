@@ -188,7 +188,9 @@ bounds, `manipulate` allowed beside it, no `pick` beside a list of instructions,
 an auction flock. With `--robot <adapter>:<backend>` (one or
 more) or `--robots name=spec,...`, the file is also checked against those robots' manifests:
 `requires` (or, for v0, `allow`) per robot, and every flock role fillable by at least one
-robot. Without a flag, the duck's own `robots:` default is used, then the Microduck.
+robot. Without a flag, the duck's own `robots:` default is used, and a file that names no
+robot is checked against every body installed here, with what each offers a policy server:
+a task is coherent when something here can keep it.
 
 ## Resolution
 
@@ -288,16 +290,22 @@ Stack the red block on the blue one.
 4. Judge the stack from a fresh frame before you declare anything.
 ```
 
-The mock arm scripts `manipulate`, so it is where a v3 file is checked without a policy server.
-`quackd run` with `--policy-url` checks it against the arm itself before anything connects.
+A plain `quackd validate` checks a v3 file with no policy server running: the arm offers
+`manipulate` to one, so the file is coherent wherever the arm is installed. `--robot NAME`
+checks it against that body as it is registered, and `quackd run` with `--policy-url` checks
+it against the arm itself before anything connects.
 
 ```console
-$ quackd validate stack-blocks.duck --robot lerobot:mock
+$ quackd validate stack-blocks.duck
 quackd validate
-+---------------------------------------------------------------+
-| file              | name         | verbs | result             |
-|-------------------+--------------+-------+--------------------|
-| stack-blocks.duck | stack-blocks |     4 | + valid for arm-01 |
-+---------------------------------------------------------------+
++----------------------------------------------------+
+| file              | name         | verbs | result  |
+|-------------------+--------------+-------+---------|
+| stack-blocks.duck | stack-blocks |     4 | + valid |
++----------------------------------------------------+
 + 1 file valid
 ```
+
+`quackd run stack-blocks.duck --controller vla --policy-url ...` hands the policy these three
+instructions in order and then asks you whether the arm stacked the block
+([adapters/lerobot.md](adapters/lerobot.md#a-scripted-pilot-that-a-person-judges---controller-vla)).

@@ -378,17 +378,37 @@ def installed_vocabulary() -> VerbRegistry:
 
     The union rather than the Microduck's list, which is what it used to be. On a machine with
     only an arm installed, a duck that allows `kick` should be told nothing here kicks, rather
-    than being checked against a duck that is not present."""
+    than being checked against a duck that is not present.
+
+    A body's verbs include what it offers with a policy server, `pick` and `manipulate` on the
+    arm, which its description holds only when it is given one (`describe(policy=...)`), so a
+    `duck: 3` task file is coherent here whichever of the arm's backends is described first.
+    Each backend is asked through the factory's own `policy` parameter, which refuses a body
+    that runs no policy, with an address nothing is ever sent to: a description is static, so
+    this reaches no server and imports no torch."""
     registry = core_registry()
+    offered = PolicyChoice("http://127.0.0.1")
     for name in adapter_names():
         if not is_installed(name):
             continue
+        try:
+            backends = info(name).backends
+        except (AdapterError, ImportError):
+            continue
         with contextlib.suppress(AdapterError, ImportError):
-            body = registry_for(RobotSpec(name, info(name).backends[0]))
-            for verb_name in body.names():
-                if verb_name not in registry:
-                    registry.register(body.get(verb_name))
+            _union(registry, registry_for(RobotSpec(name, backends[0])))
+        for backend in backends:
+            spec = RobotSpec(name, backend)
+            with contextlib.suppress(AdapterError, ImportError):
+                _union(registry, registry_for(spec, describe(spec, policy=offered)))
     return registry
+
+
+def _union(registry: VerbRegistry, body: VerbRegistry) -> None:
+    """Add to `registry` every verb of `body` it does not have yet, the first body's kept."""
+    for verb_name in body.names():
+        if verb_name not in registry:
+            registry.register(body.get(verb_name))
 
 
 def installed_manifests() -> list[tuple[str, RobotManifest]]:

@@ -274,7 +274,10 @@ instructions, its segment and its total, and a second file loaded after it is he
 The seconds of segments the session has run still count under each file it loads, those run
 before the first file was loaded among them. One segment runs at a time: a `pick` or a
 `manipulate` sent while one runs is refused, so wait for it or send `stop` first, and a call
-the client cancels mid-segment is charged the seconds its segment ran.
+the client cancels mid-segment is charged the seconds its segment ran. `--controller` is
+refused: over MCP the client is the pilot, and `quackd run --controller vla` needs a person at
+a terminal to say whether the arm did the task
+([the arm's page](adapters/lerobot.md#a-scripted-pilot-that-a-person-judges---controller-vla)).
 
 > [!NOTE]
 > `--decision-llm` is not among these, on purpose. Over MCP the model *is* the client, so

@@ -1061,6 +1061,42 @@ quackd run --goal "put the block in the bowl" --robot lerobot:mujoco --policy-ur
 - **Over MCP** both verbs are confirm gated, so a client reaches them only on a server started
   with `--yes`.
 
+### A scripted pilot that a person judges: `--controller vla`
+
+`--controller llm`, the default, is the model `--llm` names deciding each subtask. With
+`--controller vla` there is no model at all. A scripted pilot hands the policy each instruction
+the task file lists under `policy.instructions` (a `duck: 3` file,
+[duck-spec.md](../duck-spec.md#policy-v3)), in order, one `manipulate` segment each, or the
+`--goal` text as the only one:
+
+```bash
+quackd run stack-blocks.duck --robot lerobot:mujoco --policy-url http://127.0.0.1:9875 --controller vla
+```
+
+- **You are its verdict, twice.** Its `assess_task` is always `uncertain`, so you are asked
+  before the first segment whether the arm should try, and after the last one
+  `Did the arm do it?`, with the instructions it ran and the task file's `success` lines in
+  front of you. Only your yes makes the run a success. The question and your answer are a
+  `judge` prompt in the record
+  ([safety.md](../safety.md#a-pilot-that-cannot-judge---controller-vla)). The time you take to
+  look is not charged to `max_minutes`, and a prompt that ends without an answer is not a no:
+  the run fails saying what the prompt raised, and no `judge` row is written.
+- **A segment that does not end ok ends the list.** A confirm you decline, a guard, a starved
+  policy: the pilot starts no other segment and fails the run in the verb's own words, without
+  asking whether the task was done.
+- **The task file's budget holds.** Each segment is a `manipulate` like any pilot's, through the
+  same narrowed verb, confirm gate and `policy.total_s`. A budget that runs out before the last
+  instruction ends the run on its budget, and you are still asked about the segments that ran.
+- **It reads nothing but the verb's result and your answer.** The simulator's own truth about
+  the table never reaches it: `quackd preflight` judges a rehearsal on its own.
+- **It costs nothing.** No model is asked, so the counter line reads `tokens 0+0` and `cost $0`.
+- **It is refused before anything connects** without `--policy-url`, with `--yes`, with no
+  terminal to ask on, with `--dry-run`, beside `--decision-llm` or a decision LLM
+  `QUACKD_DECISION_LLM` names, with a flag for a model or a picture it would ignore (`--llm`,
+  `--base-url`, `--api-key`, `--extra-body`, `--vision`, `--image`), and for a task file whose
+  `policy.instructions` is empty. A `--goal` has to be one short subtask, as a listed
+  instruction is. `serve-mcp` refuses `--controller`, because over MCP the client is the pilot.
+
 ## The simulator: `lerobot:mujoco`
 
 `lerobot:mujoco` is this arm's simulator, and it is the `real` backend's own code: the connect

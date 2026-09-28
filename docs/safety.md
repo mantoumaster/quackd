@@ -55,12 +55,14 @@ the legs moving with nothing to halt them, which is the failure this page exists
 ## Who the record says was asked
 
 The `confirm` row above records what the gate decided. The run also records the exchange
-itself: a `prompt` event carrying `what` (`confirm`, `decide`, `acknowledge` or `hand_off`),
-the question in the words it was put in, and the answer. Those four are the confirm gate, the
-pilot's own question when it is unsure (below), the acknowledgement that somebody is watching
-a fall-blind robot, and each half of a `--by-hand` handover. What an answer *caused* was always
-written down by whoever acted on it, in `gate.answer` here, `assess.human` for a verdict and
-the `hand_off` stages for an arm. What was asked, and what somebody said back, was not.
+itself: a `prompt` event carrying `what` (`confirm`, `decide`, `acknowledge`, `hand_off`,
+`release` or `judge`), the question in the words it was put in, and the answer. Those six are
+the confirm gate, the pilot's own question when it is unsure (below), the acknowledgement that
+somebody is watching a fall-blind robot, each half of a `--by-hand` handover, the offer to
+release an arm whose rest move missed (below), and the question a `--controller vla` run ends
+on, whether the arm did the task (below). What an answer *caused* was always written down by
+whoever acted on it, in `gate.answer` here, `assess.human` for a verdict and the `hand_off`
+and `release` stages for an arm. What was asked, and what somebody said back, was not.
 
 **It is written only where a person was really asked.** `--yes`, a flock's standing answer and
 the MCP server all answer without asking anybody, and none of them leaves a `prompt` event: the
@@ -185,6 +187,28 @@ anybody, and, as after a person's go, that the verbs that move the body now run 
 not assess the same doubt again.
 Over MCP there is no terminal and nothing clears it, so the verdict stays pending and the
 model is told to ask the person it is chatting with ([mcp.md](mcp.md)).
+
+## A pilot that cannot judge: `--controller vla`
+
+`quackd run --controller vla` flies a LeRobot arm with a scripted pilot that hands its learned
+policy one instruction at a time ([adapters/lerobot.md](adapters/lerobot.md#a-scripted-pilot-that-a-person-judges---controller-vla)).
+Neither the script nor the policy can tell whether the task was done, so a person is its whole
+verdict, twice. Its answer to `assess_task` is always `uncertain`, so the question above is put
+before anything moves. After the last segment it asks whether the arm did it, and the run is a
+success only on a yes from a person really asked: a `judge` prompt in the record. A no, a pipe
+on stdin, or nobody there is a failure. The loop holds any pilot that says it cannot judge to
+that rule, whatever the pilot declares. A budget that ends the list early still asks about the
+segments that ran, and the run ends on its budget either way.
+
+The seconds you take to answer are yours and not the run's: they come off `max_minutes`, the
+way a `--by-hand` handover's do, so a long look at the arm never turns your yes into a spent
+budget. A prompt that ends without an answer, at the end of its input or with click's `Abort`,
+is nobody answering and not a no. The run fails, no `judge` row is written, and the reason says
+what the prompt raised.
+
+So a vla run is refused, before anything connects, wherever nobody could answer: with `--yes`,
+with no terminal under it, and over MCP, where `serve-mcp` refuses `--controller` in words. It
+is refused with `--dry-run` too, which moves nothing for anybody to judge.
 
 ## When a feasible verdict contradicts itself
 

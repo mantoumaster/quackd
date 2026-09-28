@@ -38,6 +38,11 @@ FAKE = Price(0.0, 0.0, 0.0, 0.0, source="fake")
 """The scripted pilot calls nothing, so it costs nothing. Not `None`: a run that genuinely cost
 nothing should say `$0` rather than refuse to answer."""
 
+SCRIPTED = ("fake", "vla")
+"""The pilots that are rules rather than models, priced at `FAKE`: `--llm fake`, and the pilot
+`--controller vla` flies (`providers.vla.NAME`, spelled here because that module imports pydantic
+and this one may not; a test holds the two together)."""
+
 SELF_HOSTED = Price(0.0, 0.0, 0.0, 0.0, source="self-hosted")
 """A model on your own machine bills you in electricity, not in tokens. A paid OpenAI-compatible
 endpoint reached through `--llm local --base-url` is the exception, and `--price` or
@@ -104,10 +109,11 @@ def parse_price(text: str, *, source: str) -> Price:
 def price_for(provider: str, model: str) -> Price | None:
     """The catalogue's rate for one model, or None where quackd has never had one.
 
-    `fake` and the local presets are free by what they are rather than by any table, so they
-    answer before the catalogue is consulted and answer for whatever `--model` they were given.
+    The scripted pilots and the local presets are free by what they are rather than by any
+    table, so they answer before the catalogue is consulted and answer for whatever `--model`
+    they were given.
     """
-    if provider == "fake":
+    if provider in SCRIPTED:
         return FAKE
     if provider in LOCAL_NAMES:
         return SELF_HOSTED
