@@ -1692,6 +1692,39 @@ async def test_two_moves_at_once_on_one_arm_both_finish_in_their_own_time(mjcf: 
         await adapter.close()
 
 
+async def test_an_mcp_sessions_minutes_start_at_its_connect_on_the_simulators_clock(
+    mjcf: str,
+) -> None:
+    """An MCP session's budget is built with the server, before the connect, on the transport's
+    clock, and the simulator's clock is the wall's until it connects and the world's after. The
+    minutes were one taken from the other, ran negative and never reached `max_minutes`. They
+    start at 0 at the connect and count the world's seconds, so `max_minutes` trips on them."""
+    from quackd.duckfile.schema import Budgets
+    from quackd.mcp_server import build_fleet_server
+
+    transport = LeRobotSim(model=mjcf)
+    transport.connect_pause_s = 0.0
+    adapter = LeRobotAdapter(transport)
+    _, fleet = build_fleet_server({"arm": adapter}, memory=False, log=False)
+    session = fleet.sessions["arm"]
+    with _needs_gl():
+        await session.connect()
+    try:
+        budget = session.executor.budget
+        assert budget is not None
+        first = await session.run("report_state", {})
+        assert first["ok"], first
+        assert 0.0 <= budget.elapsed_s < TICK_S, budget.status()
+        assert budget.status().endswith(f"0.0/{budget.limits.max_minutes:g} min"), budget.status()
+        # a limit a few ticks of the world's time long, then more than that slept on its clock
+        budget.limits = Budgets(max_minutes=3 * TICK_S / 60)
+        await adapter.sleep(4 * TICK_S)
+        tripped = await session.run("report_state", {})
+        assert not tripped["ok"] and "max_minutes" in tripped["summary"], tripped
+    finally:
+        await session.close()
+
+
 async def test_a_rest_move_a_hand_off_and_a_verb_all_run_in_one_task(mjcf: str) -> None:
     """One task sleeps through all of it, one sleep at a time, and time runs for each: the rest
     move, the settle before the take-hold, and the verb after it."""
