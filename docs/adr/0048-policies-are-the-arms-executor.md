@@ -149,7 +149,11 @@ not as long as the bus has motors, whose action names are not the bus's motors i
 that looks at an image no camera gives (SmolVLA and pi05 run with it padded, and the record says
 so), that learned at another frame size, or whose learned state's 1st and 99th percentiles lie
 outside this arm's calibrated travel. A server started again with another policy since the
-connect starts no segment.
+connect starts no segment. The last of those refusals is the one a person can override, with
+`--accept-other-frame` beside `--policy-url`, for a policy they know learned in a frame that
+matches this arm's. The override lets the policy connect and nothing more: every goal it answers
+is clipped to this arm's calibrated travel as any policy's is, so it changes what drives the arm
+and never where the arm may go, and the run's record says it was given.
 
 **Only the flag names a server.** `--policy-url` and `--policy-token` are on `run`, `preflight`
 and `serve-mcp`. The token has a variable, `QUACKD_POLICY_TOKEN`, and the address has none and
@@ -234,9 +238,15 @@ Its refs would get a table of their own, pinned at the LeRobot commit that added
   its own every beat instead, because a read that went out before the beat asked could pass an
   arm that died as it came back. A beat during a segment costs the loop one read.
 - The plan had a documented override for a frame of another size and for a policy learned in
-  another frame of reference. Both are keywords of `RemoteRunner` (`accept_frame_size`,
-  `accept_other_frame`), from Python, and `quackd run` has no flag for either. The record says
-  when either was taken.
+  another frame of reference. The second is `--accept-other-frame` on `run`, `preflight` and
+  `serve-mcp`, refused without `--policy-url`. It began as a keyword of `RemoteRunner` alone,
+  which a refusal named and nobody on the command line could reach, and on the lab arm's
+  calibration 55 of the 68 servable SO-100 and SO-101 ACT checkpoints on the Hub were refused on
+  `shoulder_lift`, whose recorded travel there does not reach the arm's fold
+  ([ADR-0045](0045-a-rest-pose-the-calibration-cannot-reach.md)). The first stays a keyword,
+  `accept_frame_size`, and its refusal says to give the camera the checkpoint's size with
+  `--camera-url`'s `width=` and `height=`, which every camera quackd opens takes. The record
+  says when either was taken.
 - The plan had frames go as JPEG on every remote link. The server says how it wants them: raw,
   or JPEG at `--jpeg-quality`, and 90 when it is behind TLS and told nothing. A tunnel looks
   like loopback to both ends, so a server reached through `ssh -L` gets raw frames unless it
@@ -285,10 +295,14 @@ always was.
 ## Consequences
 
 - **Nothing here has driven the arm.** Every segment has run against the test suite's fake arm
-  and on the simulator, and the only checkpoint quackd has loaded is the tiny random ACT CI
-  builds.
-  SmolVLA and pi05 need transformers, which neither the lab's environment nor CI has, and an
-  ACT asked every tick needs a GPU the CPU job lacks (`VLA_PIPELINE`, `TICK_MODE`).
+  and on the simulator. CI loads a tiny random ACT, and on 2026-09-28 a trained ACT from the Hub,
+  `natsuki0000/act-so101-bluecap` at commit `82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, was
+  served on a laptop's CPU and drove a twin of the lab's arm on the simulator over
+  `serve-mcp`. SmolVLA loaded on that laptop and took minutes a chunk on its CPU, so it never
+  answered a step through the client, pi05 has not run, and an ACT asked every tick needs a GPU
+  the CPU job lacks (`VLA_PIPELINE`, `TICK_MODE`). `--controller vla`, its judge prompt, a model
+  flying with a policy and `--decision-mode shadow` beside one have run in the test suite and
+  never with a trained checkpoint.
 - **Only the bench can say how fast the loop runs on the real bus with a server inferring on the
   same laptop.** Torch's threads and the bus's worker share one CPU there, and nothing timed on
   the simulator's lockstep clock is a rate. `quackd policy check --bench` measures the server

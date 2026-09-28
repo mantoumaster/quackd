@@ -13,11 +13,13 @@ shaped this way is [ADR-0048](adr/0048-policies-are-the-arms-executor.md).
 
 > [!WARNING]
 > **Nothing on this page has driven the arm.** Every segment so far has run against the test
-> suite's fake arm and on the arm's simulator. The only checkpoint quackd has loaded is the tiny
-> random ACT CI builds. SmolVLA and pi05 go through the same server and have not run in it,
-> because neither the lab's environment nor CI has transformers, and FLUX 3 Action is not
-> served at all. Rehearse on the simulator first, keep a hand on the arm's power switch the first
-> time a policy drives it, and send back what happened
+> suite's fake arm and on the arm's simulator. On 2026-09-28 a trained ACT from the Hub,
+> `natsuki0000/act-so101-bluecap` at commit `82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, drove a
+> twin of the lab's arm on the simulator through `quackd policy serve` and `quackd serve-mcp`.
+> SmolVLA loaded on the same laptop and never answered a step in time on its CPU
+> ([below](#smolvla-and-act)), pi05 has not run, and FLUX 3 Action is not served at all.
+> Rehearse on the simulator first, keep a hand on the arm's power switch the first time a policy
+> drives it, and send back what happened
 > ([lerobot-first-run.md](lerobot-first-run.md#14-what-to-report)).
 
 ## Two processes, two terminals
@@ -35,8 +37,10 @@ A policy never runs in the process that owns the arm's serial bus, because a che
 
 The arm's process asks the server what it serves before anything connects, checks that the
 policy fits this arm before any motor is energised, and asks for a chunk of goals as each
-segment runs. It never sends a goal it has not checked, and a server that stops answering
-starves the segment, which ends with the arm held.
+segment runs. It never sends a goal it has not checked. On the arm a server that stops
+answering starves the segment, which ends with the arm held. On the simulator, whose clock
+stands still while the loop waits for a chunk, the client's own deadline ends it instead, and
+the segment says the policy raised `PolicyServerError`.
 
 ## On the laptop alone
 
@@ -51,9 +55,19 @@ hold it too:
 uv pip install "quackd[lerobot-vla]"
 ```
 
-**2. Check the checkpoint before you serve it.** `quackd policy check --policy` serves it for the
-length of the check, and `--bench` times one warm step and then streams synthetic observations
-through the real client at the policy's rate:
+**Where the download goes.** A checkpoint, and any model it names inside itself, is fetched into
+the Hugging Face Hub's cache, `~/.cache/huggingface/hub` unless you say otherwise. To keep it on
+another disk, set `HF_HUB_CACHE`, which moves that cache and nothing else. Not `HF_HOME`: LeRobot
+looks for an arm's calibration under `$HF_HOME/lerobot/calibration` unless
+`HF_LEROBOT_CALIBRATION` or `HF_LEROBOT_HOME` says otherwise, so an `HF_HOME` set where the arm's
+process runs moves where its calibration is looked for as well, and `quackd robot twin` could not
+find the lab arm's file under one
+([the calibration id](adapters/lerobot.md#the-name-you-give-the-arm-is-its-calibration-id)).
+
+**2. Check the checkpoint before you serve it, and bench it twice.** `quackd policy check
+--policy` serves it for the length of the check, and `--bench` times one warm step, then streams
+synthetic observations through the real client at the policy's rate, paced and queued as a
+segment is:
 
 ```bash
 quackd policy check --policy OWNER/NAME@REVISION --bench
@@ -61,11 +75,62 @@ quackd policy check --policy OWNER/NAME@REVISION --bench
 
 It prints the features the policy wants, its rate and where that came from, its chunks, the
 percentiles of the state it learned from, every repository it loaded at the revision it loaded
-it at, the rate it achieved, the ticks it had nothing to send and the round trip, and ends with
-the `--latency-s` to serve it with. [The arm's page](adapters/lerobot.md#serving-a-checkpoint)
-has the whole output for the tiny ACT CI builds. A CPU that cannot keep up shows here, as ticks
-with nothing to send, before an arm is involved. Torch gets one thread fewer than it would take,
-which leaves a core for the arm's process, and `--threads` says otherwise.
+it at, the rate it achieved, the ticks it had nothing to send and the ones it skipped, the round
+trip, and the `--latency-s` to serve it with, read at the 95th percentile of every step it timed
+from the request going out to its chunk back. Here is the first bench of an ACT trained on an
+SO-101 and published on the Hub, on this project's laptop, an Intel Core i5-10210U with no GPU,
+on 2026-09-28. Its training config names its dataset at no revision, so it takes `--fps`, and the
+rows about the policy itself are cut:
+
+```
+$ quackd policy check --policy natsuki0000/act-so101-bluecap@82f75fe40a311026b4f7cacdea7bf14cadc44ccd --fps 30 --bench
+achieved    18.7 Hz of 30: 187 of the 300 ticks in 10.0 s sent an action
+starved     0 ticks with nothing to send
+skipped     113 ticks: the policy declares no --latency-s, so each chunk was waited for in the tick
+            that asked for it, as a segment waits for one, and the ticks that passed meanwhile sent
+            nothing: the arm would have held still through them
+round trip  median 620.0 ms, p99 653.3 ms, max 653.3 ms over 6 requests
+inference   median 599.4 ms on the server
+latency     653.3 ms or less for 95% of the 7 steps timed, from the request to its chunk back:
+            serve with --latency-s 0.66, so the simulator holds each chunk back as long, and bench
+            again with it
+```
+
+A first bench is served with no `--latency-s`, and a segment waits for each chunk of such a
+policy in the tick that asked for it. Every tick that passes while it waits is skipped, which on
+the arm is a tick that sends nothing while the arm holds still. Skipped ticks are not counted as
+starved: a starved tick is one with a chunk on its way and nothing left to play. **Bench it
+again**, served with the latency it suggests:
+
+```bash
+quackd policy check --policy OWNER/NAME@REVISION --bench --latency-s 0.66
+```
+
+A good second bench skips no tick, starves only while its first chunk is on its way, which a
+segment gives five seconds for, achieves close to the policy's rate, and says the `--latency-s`
+it was served with covers what it timed. A step's time moves from bench to bench on a laptop's
+CPU, and a bench over a few seconds times only a few steps, so the one here suggested more: its
+second bench timed a step at 886.5 ms and said to serve with 0.89. Served with that, and given
+`--seconds 30` for more steps to read the percentile from, it looked like this:
+
+```
+$ quackd policy check --policy natsuki0000/act-so101-bluecap@82f75fe40a311026b4f7cacdea7bf14cadc44ccd --fps 30 --latency-s 0.89 --bench --seconds 30
+achieved    29.1 Hz of 30: 873 of the 900 ticks in 30.0 s sent an action
+starved     27 ticks with nothing to send, waiting for a chunk to come back, every one before the
+            first came back, which a segment gives time for
+round trip  median 634.2 ms, p99 879.8 ms, max 879.8 ms over 18 requests
+inference   median 616.8 ms on the server
+latency     879.8 ms or less for 95% of the 19 steps timed, from the request to its chunk back: the
+            --latency-s 0.89 it is served with covers that
+```
+
+A CPU that cannot keep up shows here, before an arm is involved: skipped ticks on the first
+bench, and starved ticks after the first chunk on the second. Torch gets one thread fewer than
+it would take, which leaves a core for the arm's process, and `--threads` says otherwise. A
+policy whose steps take longer than a segment waits for its first chunk, or longer than its
+chunk takes to play, is given no `--latency-s` at all, since `serve` would refuse any that
+covered them: the bench says it answers too slowly to drive an arm from that machine, and to
+serve it on a GPU.
 
 Before it loads anything, the server reads the checkpoint's own files and refuses what it has
 not been told. Here is `lerobot/smolvla_base` at a commit, checked in LeRobot 0.6.1's
@@ -94,10 +159,10 @@ names is a whole commit or a tag. Anything else, a branch or no revision at all,
 refusal, and `--fps` is the rate you recorded the dataset at. `smolvla_base` is a base to
 fine-tune from, not a policy for your task: [SmolVLA and ACT](#smolvla-and-act) below.
 
-**3. Serve it in a second terminal**, with the latency `check` measured:
+**3. Serve it in a second terminal**, with the `--latency-s` the last bench said covers it:
 
 ```bash
-quackd policy serve --policy OWNER/NAME@REVISION --latency-s 0.05
+quackd policy serve --policy OWNER/NAME@REVISION --latency-s 0.89
 ```
 
 It prints where it serves, `http://127.0.0.1:9875`, the token file it wrote or read, and the
@@ -131,6 +196,20 @@ there, and the tunnel up?
   quackd policy check --policy-url http://127.0.0.1:9875 asks it what it serves
 ```
 
+**A segment starts only with every joint inside its travel.** A joint that reads further outside
+its calibrated travel than the slack a reading is forgiven refuses the segment before the policy
+is asked for anything, and the refusal ends `Move shoulder_lift inside its travel first`, naming
+the joint: a joint out there is left out of every goal a policy sends, so the policy could never
+move it. A twin of the lab's arm starts that way. Its rest pose was recorded folded, past what
+its calibration lets `shoulder_lift` be driven to
+([ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md)), so the twin rests at the
+model's stop, where that joint read -100 on 2026-09-28, and its first `manipulate` is refused. A
+pilot that can call `move_joints`, a model under `--controller llm` or an MCP client, moves the
+joint inside first, as that run did. `--controller vla` only ever calls `manipulate`, so it
+cannot, and its run ends in failure, in the verb's own words. The lasting fix is to calibrate the
+arm again folded, so the fold lies inside its travel, which is the bench item in
+[PLAN.md](../PLAN.md) that reads the calibrated value at each of the arm's stops.
+
 A task file that means to use the policy allows `manipulate`, and a `duck: 3` file can list the
 subtasks it may be told, how long each segment runs and how long they run in all
 ([duck-spec.md](duck-spec.md#policy-v3)). A `--goal` run given `--policy-url` allows
@@ -146,7 +225,7 @@ ones with nothing to send, the ticks a second and the round trip.
 
 ## On a rented GPU
 
-Pi0.5, and SmolVLA at a rate a CPU cannot keep, want a GPU. The server runs there, bound to that
+Pi0.5 and SmolVLA want a GPU. The server runs there, bound to that
 machine's own loopback, and the laptop reaches it through an ssh tunnel. The arm's process stays
 on the laptop, with the arm.
 
@@ -197,16 +276,28 @@ is fetched.
 
 ### SmolVLA and ACT
 
-These are the two that run on a laptop's CPU. **ACT** learns from your own demonstrations and
-nothing else, so it knows your arm, your cameras and your task and no other. It is the one
-policy quackd has loaded, as a tiny random network in CI, and it answers in chunks. An ACT
+**ACT is the laptop's policy.** It learns from your own demonstrations and nothing else, so it
+knows your arm, your cameras and your task and no other, and it answers in chunks. An ACT
 trained with temporal ensembling is asked every tick instead, and the server refuses one without
-a GPU, because it has to answer inside a tick. **SmolVLA** is a small vision-language-action
-model, about 450M parameters by its authors' count, and `lerobot/smolvla_base` is the base you
-fine-tune on your own episodes. It is told the subtask in words, which is what `manipulate`
-passes it. Its backbone is a model it names inside itself, so it needs `--pin`, as above, and it
-runs with any of the images it learned from that no camera gives padded, which the run's record
-says. Neither has been measured on this project's laptop.
+a GPU, because it has to answer inside a tick. On 2026-09-28 an ACT trained on an SO-101 and
+published on the Hub, `natsuki0000/act-so101-bluecap` at commit
+`82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, answered a step in about two thirds of a second on
+this project's laptop, an Intel Core i5-10210U with no GPU (the benches above), and drove a twin
+of the lab's arm through two 10 s segments over `quackd serve-mcp`. That proves the plumbing, and
+nothing about whether it would do its task on an arm.
+
+**SmolVLA wants a GPU.** It is a small vision-language-action model, about 450M parameters by its
+authors' count, and `lerobot/smolvla_base` is the base you fine-tune on your own episodes. It is
+told the subtask in words, which is what `manipulate` passes it. Its backbone is a model it names
+inside itself, so it needs `--pin`, as above, and it runs with any of the images it learned from
+that no camera gives padded, which the run's record says. On the same laptop the same day,
+`lerobot/smolvla_base` at commit `d9f33c94a60fb382c90dea2164c96845bd955e28`, its backbone pinned,
+took 169 to 188 s for each chunk, timed in a script outside the server. 474 of its 500 parameter
+tensors are bfloat16, which that CPU has no native arithmetic for, and cast to float32 in the
+same script it still took about 18 s a chunk, past the 10 s the client waits for a step, so it
+never returned a chunk through the client. Serve it on a rented GPU
+([above](#on-a-rented-gpu)). Those are one run's numbers on one machine, kept as a record, and
+nothing in quackd is set from them.
 
 ### Pi0.5
 
@@ -275,11 +366,17 @@ the range to plan for. Four things make a recording one quackd can serve on this
   learned state lies outside this arm's calibrated travel, because a policy learned on an arm
   calibrated another way asks for goals that pin this one at its limits. Record with the same
   calibration id you give quackd, `arm-01` in the first-run guide. Calibrate the arm again and a
-  policy learned on the old calibration may no longer fit it.
+  policy learned on the old calibration may no longer fit it. `--accept-other-frame`, beside
+  `--policy-url`, lets such a policy connect when you know the two arms' frames match. Every goal
+  it answers is still clipped to this arm's travel, so the flag changes what drives the arm and
+  never where the arm may go, and the run's record says it was given. A checkpoint from somebody
+  else's arm is the case for it: on the lab arm's calibration, 55 of the 68 servable SO-100 and
+  SO-101 ACT checkpoints on the Hub were refused, every one on `shoulder_lift`, whose recorded
+  travel on the lab arm does not reach its own fold, while theirs did.
 - **Name the cameras as the run will.** Each camera the arm has is the image of its own name,
   `observation.images.front` from the camera called `front`, unless `--cameras front=KEY` maps
   it. Record at the size the camera gives the run, or the connect refuses a frame of another
-  size.
+  size and says to give the camera that size with `--camera-url`'s `width=` and `height=`.
 - **Serve it from the Hub.** `--policy` takes a Hub repository at a revision, so push the
   checkpoint LeRobot's training wrote to a repository of your own and serve it at the commit
   that push made.

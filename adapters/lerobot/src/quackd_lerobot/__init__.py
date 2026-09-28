@@ -618,7 +618,8 @@ def _policy_runner(policy: PolicyChoice | None) -> Any:
     that was not typed is `QUACKD_POLICY_TOKEN`, then the file the server writes, by the
     client's own rule (`policy.client.client_token`). An address the client would refuse, and a
     token found nowhere, are refused here, before anything connects. Its motors are the arm's
-    joints until the connect's fit hands it the bus's own (`LeRobotReal._fit_policy`)."""
+    joints until the connect's fit hands it the bus's own (`LeRobotReal._fit_policy`), and
+    `--accept-other-frame` is the fit's override of the same name (`policy.fit.fit`)."""
     if policy is None:
         return None
     from quackd_lerobot.policy.client import RemoteRunner, client_token, policy_address
@@ -626,7 +627,12 @@ def _policy_runner(policy: PolicyChoice | None) -> Any:
     url, token = policy.reach()
     try:
         policy_address(url)  # an address that will be refused is said before a missing token
-        return RemoteRunner(url, token=client_token(token), motors=JOINTS)
+        return RemoteRunner(
+            url,
+            token=client_token(token),
+            motors=JOINTS,
+            accept_other_frame=policy.accept_other_frame,
+        )
     except ValueError as e:
         raise AdapterError(str(e)) from None
 

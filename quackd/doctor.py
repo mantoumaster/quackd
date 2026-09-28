@@ -2015,7 +2015,11 @@ def render(console: Console, report: DoctorReport) -> None:
         Text.assemble(
             (f"quackd {report.version}", ui.STYLES["key"]),
             (f"  Python {report.python}  {report.platform}", ui.STYLES["muted"]),
-            (f"  duck-ipc-proto API v{report.api_version}", ui.STYLES["muted"]),
+            # the Microduck's protocol, which a machine without that adapter has no number for
+            (
+                f"  duck-ipc-proto API v{report.api_version}" if report.api_version else "",
+                ui.STYLES["muted"],
+            ),
         )
     )
 

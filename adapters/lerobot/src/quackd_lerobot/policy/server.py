@@ -30,14 +30,21 @@ a daemon:
   guards the policy, so a reset and a step never run it at once, and a step sent twice (the
   client's retry on a stale socket) is answered from the first answer rather than inferred
   again.
+- **a slow step holds up nothing but the next step.** A reset is answered at once, even while
+  a step its client gave up on is still inferring: the policy's own reset waits for that step
+  and runs before the new session's first one, and the old step's chunk is dropped as it ends.
+  Another client's reset waits only until the step has outlived its client's patience
+  (`ABANDONED_S`). Stopping the server refuses every request after it, and waits
+  `CLOSE_WAIT_S` for such a step and no longer, since a step on a CPU can take minutes.
 - **no SO_REUSEADDR on Windows**, where it would let a second server bind a port another is
   listening on and answer none of its requests.
 
 `quackd policy check` asks a server what it serves and, with `--bench`, times one step on its
-own, which is the latency to declare with `--latency-s`, then streams synthetic observations at
-the policy's rate through the real client, and says the rate it achieved, how often the arm
-would have had nothing to send, and the round trip. A rate is only ever measured on the wall's
-clock, and this is one of the two places it is (the other is the bench).
+own, then streams synthetic observations at the policy's rate through the real client, and says
+the rate it achieved, how often the arm would have had nothing to send, the round trip, and the
+latency to declare with `--latency-s`, read at a high quantile of every step it timed
+(`LATENCY_QUANTILE`). A rate is only ever measured on the wall's clock, and this is one of the
+two places it is (the other is the bench).
 """
 
 from __future__ import annotations
@@ -71,6 +78,7 @@ from pydantic import BaseModel
 from quackd_lerobot import __version__
 from quackd_lerobot.policy import pipeline
 from quackd_lerobot.policy import protocol as wire
+from quackd_lerobot.policy.client import STEP_TIMEOUT_S
 from quackd_lerobot.policy.loop import FIRST_CHUNK_S, REFILL_SHARE, latency_ticks, rate_refusal
 from quackd_lerobot.policy.runner import Chunk, Features, Observation, PolicyRunner
 from quackd_lerobot.policy.scripted import SCRIPTS, named
@@ -99,9 +107,20 @@ DRAIN_CHUNK_BYTES = 64 << 10
 """A body read only to be dropped is read this much at a time, never all at once."""
 
 RUNNER_WAIT_S = REQUEST_DEADLINE_S
-"""How long a request waits for the policy's lock, held by a step still inferring, before it is
+"""How long a step waits for the policy's lock, held by a step still inferring, before it is
 refused as busy. The client asks one step at a time, so a wait at all is a retry of a step, or
-a reset while a slow one finishes."""
+the first step after a reset that came while a slow one was still inferring."""
+CLOSE_WAIT_S = 1.0
+"""How long stopping the server waits for a step still inferring to end before it closes the
+policy anyway. A step on a CPU can take minutes, and a server being stopped answers nobody, so
+the policy is closed under it: the step finishes with nobody to hear it, and every request
+after the stop is refused, a step waiting its turn behind that one too."""
+ABANDONED_S = STEP_TIMEOUT_S
+"""How long a step may infer before nobody is waiting for it: its client gives up on a step
+after this long (`client.STEP_TIMEOUT_S`), and the segment it was for ends there. Until then
+another client's reset is refused, and after it the step no longer keeps its session in use,
+so a new client is not locked out for as long as torch takes. The step's chunk is dropped as
+it ends, since its session is over by then."""
 BENCH_S = 10.0
 """How long `policy check --bench` streams observations for, unless it is told."""
 BENCH_FRAME = (640, 480)
@@ -112,6 +131,12 @@ BENCH_INSTRUCTION = "quackd policy check --bench"
 LATENCY_STEP_S = 0.01
 """What a measured latency is rounded up to a whole number of, so the `--latency-s` it
 suggests is never shorter than what was measured, and reads as a figure somebody would type."""
+LATENCY_QUANTILE = 0.95
+"""The share of the steps a bench timed that the `--latency-s` it suggests covers. It is read
+at this quantile of every step timed from its request to its chunk back, the warm one timed on
+its own and each of the stream's, so most chunks land within the latency the simulator holds
+each back by. One step timed alone is one draw, and two benches of one checkpoint on one laptop
+suggested latencies too far apart to serve with either."""
 
 
 class Refused(Exception):
@@ -173,6 +198,14 @@ def parse_cameras(text: str | None) -> dict[str, str]:
     if len(mapped) > wire.MAX_CAMERAS:
         raise ServeRefused(f"--cameras maps {len(mapped)} cameras, and at most {wire.MAX_CAMERAS}")
     return mapped
+
+
+def chunk_outrun(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> bool:
+    """Whether a chunk of `chunk` actions that takes `latency_s` to come back lands after its
+    last action's tick. The loop plays a chunk's actions from the tick it lands at, and the
+    simulator holds each chunk back its declared latency, so it would play none of them, and
+    neither would an arm. A policy that answers one action a tick is never outrun this way."""
+    return not per_tick and latency_ticks(latency_s, rate_hz) >= chunk
 
 
 def bind_refusal(bind: str, behind_tls: bool) -> str | None:
@@ -280,10 +313,7 @@ def served_policy(options: ServeOptions) -> tuple[PolicyRunner, wire.PolicyInfo]
         runner.close()
         raise ServeRefused(refusal.replace("the policy was not started", "not serving"))
     late = latency_ticks(latency, float(features.rate_hz))
-    if not features.per_tick and late >= chunk:
-        # the loop plays a chunk's actions from the tick it lands at, and a chunk that takes
-        # this long lands after its last one: the simulator, which holds each chunk back its
-        # declared latency, would play none of them, and neither would an arm
+    if chunk_outrun(latency, float(features.rate_hz), chunk, features.per_tick):
         runner.close()
         raise ServeRefused(
             f"--latency-s {latency:g} is {late} ticks at {features.rate_hz:g} Hz, and each "
@@ -386,9 +416,15 @@ class _Session:
     is lost, its client still holds that id, and it is the only one that could: ids are the
     server's secret random hex and never printed. So a reset or an end naming it is this
     session's own client's, and is served however recently the session was used."""
+    instruction: str = ""
+    """What the reset that made it told the policy, for the policy's own reset (`_shape`)."""
     last_seq: int = 0
     last_reply: wire.StepReply | None = None
     done: bool = False
+    asked: float | None = None
+    """When the step of this session's that is inferring was asked, on `time.monotonic`'s
+    clock, or None with none inferring. Such a step keeps the session in use until it has
+    outlived its client's patience (`ABANDONED_S`)."""
 
     def owned_by(self, session_id: str) -> bool:
         """Whether a client holding `session_id` is this session's own: it holds this one, or
@@ -400,7 +436,9 @@ class PolicyServer:
     """What the HTTP handler serves: one policy, its description, and the current session.
 
     `runner` is only ever called under `_runner_lock`, and `_lock` guards which session is the
-    current one. Both are held briefly except the first, which a step holds for its inference."""
+    current one. Both are held briefly except the first, which a step holds for its inference.
+    A reset takes the second alone, so it is answered however long a step is taking, and the
+    runner is reset for its session when the first is next free (`_shape`)."""
 
     def __init__(self, runner: PolicyRunner, info: wire.PolicyInfo, token: str) -> None:
         self.token = wire.clean_token(token, "the server's caller")
@@ -410,6 +448,10 @@ class PolicyServer:
         self._lock = threading.Lock()
         self._runner_lock = threading.Lock()
         self._session: _Session | None = None
+        self._shaped: str | None = None
+        """The session the runner was last reset for, read and written under `_runner_lock`."""
+        self._closed = False
+        """Set under `_lock` by `close`, after which every reset and step is refused."""
         self.steps = 0
         self.resets = 0
 
@@ -419,8 +461,21 @@ class PolicyServer:
         return hmac.compare_digest(given.encode("utf-8"), self.token.encode("utf-8"))
 
     def close(self) -> None:
-        with contextlib.suppress(Exception):
-            self.runner.close()
+        """Refuse every request from now on, and close the policy once a step still inferring
+        has ended or `CLOSE_WAIT_S` has passed, whichever is first: never a wait on the
+        inference itself, which on a CPU can outlast anybody's patience with a server they
+        asked to stop. A step waiting its turn behind that one, or sent on a connection kept
+        alive past the stop, is refused rather than run on a policy that is closed."""
+        with self._lock:
+            self._closed = True
+            self._session = None
+        held = self._runner_lock.acquire(timeout=CLOSE_WAIT_S)
+        try:
+            with contextlib.suppress(Exception):
+                self.runner.close()
+        finally:
+            if held:
+                self._runner_lock.release()
 
     # ── the calls ───────────────────────────────────────────────────────────────────────
 
@@ -428,28 +483,30 @@ class PolicyServer:
         return self.info
 
     def reset(self, request: wire.ResetRequest) -> wire.ResetReply:
+        """Start a session in place of the last, and answer at once. The policy is reset for it
+        now when no step is inferring, and otherwise by the first step of the new session,
+        once the step inferring has ended (`_shape`): that step is most often one its client
+        gave up waiting for, and a reset that waited for it would outlast the client's patience
+        too, and every reset after it, until the step ended."""
         self._refuse_another_arm(request)
-        with self._runner():
+        session = _Session(
+            id=secrets.token_hex(16),
+            motors=tuple(request.motors),
+            cameras={camera.name: camera for camera in request.cameras},
+            seen=time.monotonic(),
+            replaced=request.replaces,
+            instruction=request.instruction,
+        )
+        with self._lock:
+            self._refuse_if_closed()
             self._refuse_a_second_client(request.replaces)
-            try:
-                # a checkpoint's runner shapes its steps for the arm the reset declares: its
-                # motors in its bus's order, and its cameras (`pipeline.LeRobotRunner.begin`)
-                begin = getattr(self.runner, "begin", None)
-                if callable(begin):
-                    begin(tuple(request.motors), {c.name: c for c in request.cameras})
-                self.runner.reset(request.instruction)
-            except Exception as e:
-                raise Refused(500, f"the policy's reset raised {type(e).__name__}: {e}") from None
-            session = _Session(
-                id=secrets.token_hex(16),
-                motors=tuple(request.motors),
-                cameras={camera.name: camera for camera in request.cameras},
-                seen=time.monotonic(),
-                replaced=request.replaces,
-            )
-            with self._lock:
-                self._session = session
+            self._session = session
             self.resets += 1
+        if self._runner_lock.acquire(blocking=False):
+            try:
+                self._shape(session)
+            finally:
+                self._runner_lock.release()
         return wire.ResetReply(session=session.id)
 
     def end(self, request: wire.EndRequest) -> wire.EndReply:
@@ -460,30 +517,49 @@ class PolicyServer:
         return wire.EndReply(ended=live)
 
     def step(self, request: wire.StepRequest) -> wire.StepReply:
+        asked = time.monotonic()
         session = self._current(request.session)
         with self._runner():
-            if self._session is not session:
-                raise Refused(409, "that session ended while this step waited: reset again")
-            if request.seq == session.last_seq and session.last_reply is not None:
-                session.seen = time.monotonic()
-                return session.last_reply  # a step sent again: the answer it already had
-            if request.seq <= session.last_seq:
+            with self._lock:
+                self._refuse_if_closed()
+                if self._session is not session:
+                    raise Refused(409, "that session ended while this step waited: reset again")
+                if request.seq == session.last_seq and session.last_reply is not None:
+                    session.seen = time.monotonic()
+                    return session.last_reply  # a step sent again: the answer it already had
+                if request.seq <= session.last_seq:
+                    raise Refused(
+                        409,
+                        f"step {request.seq} is older than step {session.last_seq}, which this "
+                        "session has already answered",
+                    )
+                session.asked = asked
+            try:
+                observation = self._observation(session, request)
+                if not self._shape(session):
+                    raise Refused(409, "that session ended while this step waited: reset again")
+                started = time.perf_counter()
+                chunk = None if session.done else self._ask(session, observation, request.sent)
+                inferred = time.perf_counter() - started
+            finally:
+                with self._lock:
+                    session.asked = None
+                    session.seen = time.monotonic()
+                    stale = self._session is not session
+            if stale:
+                with self._lock:
+                    self._refuse_if_closed()  # stopped while the policy inferred
+                # reset or ended while the policy inferred, most often by a client that gave up
+                # waiting for this step: its chunk is for a segment that is over, and is dropped
                 raise Refused(
                     409,
-                    f"step {request.seq} is older than step {session.last_seq}, which this "
-                    "session has already answered",
+                    "that session was reset or ended while this step was inferring, so its "
+                    "chunk was dropped: reset again",
                 )
-            observation = self._observation(session, request)
-            started = time.perf_counter()
-            chunk = None if session.done else self._ask(session, observation, request.sent)
             reply = wire.StepReply(
-                session=session.id,
-                seq=request.seq,
-                chunk=chunk,
-                inference_s=time.perf_counter() - started,
+                session=session.id, seq=request.seq, chunk=chunk, inference_s=inferred
             )
             session.last_seq, session.last_reply = request.seq, reply
-            session.seen = time.monotonic()
             self.steps += 1
             return reply
 
@@ -500,8 +576,42 @@ class PolicyServer:
         finally:
             self._runner_lock.release()
 
+    def _shape(self, session: _Session) -> bool:
+        """Reset the policy for `session`, under `_runner_lock`, unless it already is: its
+        queue and its processors cleared, told the instruction, and a checkpoint's runner
+        shaped for the arm the reset declared, its motors in its bus's order and its cameras
+        (`pipeline.LeRobotRunner.begin`). False, with nothing reset, for a session that is no
+        longer the current one, since the reset that replaced it shapes the runner in its turn.
+        Refused once the server is stopping, since a runner's `begin` would undo its close."""
+        with self._lock:
+            self._refuse_if_closed()
+            if self._session is not session:
+                return False
+        if self._shaped == session.id:
+            return True
+        try:
+            begin = getattr(self.runner, "begin", None)
+            if callable(begin):
+                begin(session.motors, session.cameras)
+            self.runner.reset(session.instruction)
+        except Exception as e:
+            self._shaped = None
+            raise Refused(500, f"the policy's reset raised {type(e).__name__}: {e}") from None
+        self._shaped = session.id
+        return True
+
+    def _refuse_if_closed(self) -> None:
+        """Refuse a request that came after `close`. Called under `_lock`."""
+        if self._closed:
+            raise Refused(
+                503,
+                "the policy server is stopping and serves nothing more: start quackd policy "
+                "serve again, and reset",
+            )
+
     def _current(self, session_id: str) -> _Session:
         with self._lock:
+            self._refuse_if_closed()
             session = self._session
         if session is None or session.id != session_id:
             raise Refused(
@@ -545,21 +655,39 @@ class PolicyServer:
 
     def _refuse_a_second_client(self, replaces: str | None) -> None:
         """Refuse a reset that would end a session another client is still using. Called under
-        the policy's lock, so a step in flight has finished and said when it was seen. The
-        session's own client replaces it freely, even one whose last reset's reply was lost
-        (`_Session.replaced`), and one quiet for `lease_s` is anyone's."""
-        with self._lock:
-            live = self._session
+        `_lock`, so no step can start or end between the look and the reset. The session's own
+        client replaces it freely, even one whose last reset's reply was lost
+        (`_Session.replaced`). Anyone else waits out the lease after its last answered request,
+        and a step of its still inferring until that step has outlived its client's patience
+        (`ABANDONED_S`): past that nobody is waiting for the step, and a server whose policy
+        takes minutes a step would otherwise turn every new client away for as long."""
+        live = self._session
         if live is None or (replaces is not None and live.owned_by(replaces)):
             return
-        quiet = time.monotonic() - live.seen
-        if quiet < self.lease_s:
-            raise Refused(
-                409,
-                f"another client's session is live, its last request {quiet:.1f} s ago: a reset "
-                "would end a segment an arm may be driving through it. Try again once it has "
-                f"been quiet {math.ceil(self.lease_s)} s, or serve on another --port",
+        now = time.monotonic()
+        quiet = now - live.seen
+        inferring = None if live.asked is None else now - live.asked
+        waited = inferring is not None and inferring < ABANDONED_S
+        if not waited and quiet >= self.lease_s:
+            return
+        if inferring is not None and waited:
+            # in so long, its client has given up on the step: said short, since a client
+            # shows the first 200 characters of a refusal
+            left = max(ABANDONED_S - inferring, self.lease_s - quiet)
+            last, again = (
+                f"a step of its inferring for {inferring:.1f} s",
+                f"in {math.ceil(left)} s",
             )
+        else:
+            last, again = (
+                f"its last request {quiet:.1f} s ago",
+                f"once it has been quiet {math.ceil(self.lease_s)} s",
+            )
+        raise Refused(
+            409,
+            f"another client's session is live, {last}: a reset would end a segment an arm may "
+            f"be driving through it. Try again {again}, or serve on another --port",
+        )
 
     def _observation(self, session: _Session, request: wire.StepRequest) -> Observation:
         """The step as the runner sees it: `<motor>.pos` for every motor and each camera's frame
@@ -895,6 +1023,8 @@ def _refuse_busy(sock: socket.socket) -> None:
 class _Server(ThreadingHTTPServer):
     """ThreadingHTTPServer with at most `MAX_CONNECTIONS` connections, and so threads, at once."""
 
+    # a connection's thread is never joined, by server_close() or at exit: one inferring a step
+    # holds its thread for as long as torch takes, minutes on a CPU (`Served.close`)
     daemon_threads = True
     # SO_REUSEADDR lets a restart bind past the last run's TIME_WAIT on Linux. On Windows it
     # lets a second server bind a port another one is listening on, so a server started on a
@@ -988,6 +1118,9 @@ class Served:
             time.sleep(0.5)
 
     def close(self) -> None:
+        """Stop listening and close the policy, within one turn of the listening loop and
+        `CLOSE_WAIT_S`: a request still being served, a step inferring above all, is left to
+        end on its own daemon thread rather than waited for (`_Server`)."""
         self.http.shutdown()
         self.http.server_close()
         self.app.close()
@@ -1079,9 +1212,14 @@ class BenchResult:
     """What `policy check --bench` measured, on the wall's clock: the ticks paced at the
     policy's rate, the ones that had an action to play, the ones with nothing (starved), the
     ones the pacer skipped for running late, and each request's round trip and the inference
-    time the server reported for it. `latency_s` is one step timed on its own before the
-    stream, a warm one, from the request going out to its chunk back, which is what a policy's
-    `--latency-s` declares."""
+    time the server reported for it. `before_first` is how many of the starved ticks came
+    before the stream's first chunk was back. `latency_s` is one warm step timed on its own
+    before the stream, from the request going out to its chunk back. `declared_s` is the
+    `--latency-s` the server was started with, and `waited` whether the bench waited for each
+    chunk in the tick that asked for it, as a segment waits for a policy that declares none.
+    `chunk` is how many actions a chunk the server answers plays, and `per_tick` whether it
+    answers one action a tick, which bound the `--latency-s` it can be served with
+    (`chunk_outrun`)."""
 
     seconds: float
     rate_hz: float
@@ -1093,17 +1231,34 @@ class BenchResult:
     inference_s: tuple[float, ...] = ()
     dropped: int = 0
     latency_s: float | None = None
+    declared_s: float = 0.0
+    waited: bool = False
+    before_first: int = 0
+    chunk: int | None = None
+    per_tick: bool = False
 
     @property
     def achieved_hz(self) -> float:
         return self.played / self.seconds if self.seconds > 0 else 0.0
 
     @property
+    def timed_s(self) -> tuple[float, ...]:
+        """Every step the bench timed from its request going out to its chunk back, which is
+        what a `--latency-s` declares: the warm one timed on its own and each of the stream's."""
+        return (*(() if self.latency_s is None else (self.latency_s,)), *self.rtt_s)
+
+    @property
+    def measured_s(self) -> float | None:
+        """`LATENCY_QUANTILE` of `timed_s`, or None when nothing was timed."""
+        timed = self.timed_s
+        return _percentile(timed, LATENCY_QUANTILE) if timed else None
+
+    @property
     def declare_s(self) -> float | None:
-        """The measured latency rounded up to `LATENCY_STEP_S`, for `--latency-s`."""
-        if self.latency_s is None:
+        """`measured_s` rounded up to `LATENCY_STEP_S`, the `--latency-s` to serve with."""
+        if self.measured_s is None:
             return None
-        return math.ceil(self.latency_s / LATENCY_STEP_S - 1e-9) * LATENCY_STEP_S
+        return math.ceil(self.measured_s / LATENCY_STEP_S - 1e-9) * LATENCY_STEP_S
 
 
 def _ticks(n: int) -> str:
@@ -1115,19 +1270,40 @@ def _percentile(values: Sequence[float], share: float) -> float:
     return ordered[min(len(ordered) - 1, max(0, math.ceil(share * len(ordered)) - 1))]
 
 
+def _starved(result: BenchResult) -> str:
+    said = f"{_ticks(result.starved)} with nothing to send"
+    if not result.starved:
+        return said
+    said += ", waiting for a chunk to come back"
+    if result.before_first == result.starved:
+        return said + ", every one before the first came back, which a segment gives time for"
+    if result.before_first:
+        return said + f", {result.before_first} of them before the first came back"
+    return said
+
+
 def describe_bench(result: BenchResult) -> list[tuple[str, str]]:
+    """What `policy check --bench` prints about a bench, as (label, text) rows. A tick the
+    pacer skipped sent nothing, as a starved one did, and each is said as what it would have
+    been on the arm."""
     rows = [
         (
             "achieved",
-            f"{result.achieved_hz:.1f} Hz of {result.rate_hz:g}: {result.played} of "
-            f"{result.ticks} ticks had an action in {result.seconds:.1f} s",
+            f"{result.achieved_hz:.1f} Hz of {result.rate_hz:g}: {result.played} of the "
+            f"{result.ticks + result.skipped} ticks in {result.seconds:.1f} s sent an action",
         ),
-        (
-            "starved",
-            f"{_ticks(result.starved)} with nothing to send"
-            + (f", {_ticks(result.skipped)} skipped for running late" if result.skipped else ""),
-        ),
+        ("starved", _starved(result)),
     ]
+    if result.skipped:
+        why = (
+            "the policy declares no --latency-s, so each chunk was waited for in the tick that "
+            "asked for it, as a segment waits for one, and the ticks that passed meanwhile sent "
+            "nothing: the arm would have held still through them"
+            if result.waited
+            else "the pacer woke too late for them, and they sent nothing, as a machine too "
+            "busy to keep the policy's rate would leave the arm"
+        )
+        rows.append(("skipped", f"{_ticks(result.skipped)}: {why}"))
     if result.rtt_s:
         ms = [1000 * t for t in result.rtt_s]
         rows.append(
@@ -1142,16 +1318,47 @@ def describe_bench(result: BenchResult) -> list[tuple[str, str]]:
         rows.append(("inference", f"median {statistics.median(ms):.1f} ms on the server"))
     if result.dropped:
         rows.append(("dropped", f"{result.dropped} replies for another session or sequence"))
-    if result.latency_s is not None and result.declare_s is not None:
-        rows.append(
-            (
-                "latency",
-                f"{1000 * result.latency_s:.1f} ms measured for one warm step and its chunk "
-                f"back: serve with --latency-s {result.declare_s:.2f} so the simulator holds "
-                "each chunk back as long",
-            )
+    measured, declare = result.measured_s, result.declare_s
+    if measured is not None and declare is not None:
+        said = (
+            f"{1000 * measured:.1f} ms or less for {100 * LATENCY_QUANTILE:g}% of the "
+            f"{len(result.timed_s)} steps timed, from the request to its chunk back"
         )
+        if result.declared_s > 0 and result.declared_s >= declare - 1e-9:
+            said += f": the --latency-s {result.declared_s:g} it is served with covers that"
+        elif (too_slow := _too_slow(declare, result)) is not None:
+            said += f": {too_slow}"
+        else:
+            said += (
+                f": serve with --latency-s {declare:.2f}, so the simulator holds each chunk "
+                "back as long, and bench again with it"
+            )
+        rows.append(("latency", said))
     return rows
+
+
+def _too_slow(declare_s: float, result: BenchResult) -> str | None:
+    """Why `quackd policy serve` would refuse `declare_s` as a `--latency-s`, said with what to
+    do instead, or None when it would take it. The bench suggests no latency the server
+    refuses: a step slower than either bound completes a bench, since the client waits longer
+    for a step than a segment waits for a chunk."""
+    if declare_s >= wire.MAX_LATENCY_S:
+        return (
+            f"a --latency-s of {declare_s:.2f} is past the {wire.MAX_LATENCY_S:g} s a segment "
+            "waits for its first chunk, and quackd policy serve refuses it. This policy answers "
+            "too slowly to drive an arm from this machine: serve it on a GPU"
+        )
+    if result.chunk is not None and chunk_outrun(
+        declare_s, result.rate_hz, result.chunk, result.per_tick
+    ):
+        return (
+            f"a --latency-s of {declare_s:.2f} is {latency_ticks(declare_s, result.rate_hz)} "
+            f"ticks at {result.rate_hz:g} Hz, and each chunk plays {result.chunk} actions, one a "
+            "tick, so every chunk would land after its last action's tick, and quackd policy "
+            "serve refuses it. This policy answers too slowly to drive an arm from this "
+            "machine: serve it on a GPU"
+        )
+    return None
 
 
 def _synthetic_cameras(info: wire.PolicyInfo) -> list[wire.CameraInfo]:
@@ -1183,7 +1390,8 @@ def bench(
     left to land while the ticks go on. The observation is every motor at 0 and a frame of
     seeded noise per camera the server maps, which JPEG compresses worst, so a round trip
     measured here is not flattered by an easy picture. Before the stream one warm step is timed
-    on its own (`BenchResult.latency_s`)."""
+    on its own (`BenchResult.latency_s`), and the latency the bench suggests is read over it and
+    every step of the stream (`BenchResult.declare_s`)."""
     info = runner.policy()
     runner.cameras = tuple(_synthetic_cameras(info))
     if info.features.state is not None and len(runner.motors) != info.features.state:
@@ -1197,7 +1405,8 @@ def bench(
         raise ServeRefused(refusal)
     rate = float(features.rate_hz)
     period = 1.0 / rate
-    waits = latency_ticks(float(runner.latency_s()), rate) == 0
+    declared = float(runner.latency_s())
+    waits = latency_ticks(declared, rate) == 0
     noise = np.random.default_rng(0)
     frames = {
         camera.name: noise.integers(0, 256, (camera.height, camera.width, 3), dtype=np.uint8)
@@ -1228,7 +1437,7 @@ def bench(
     inflight: tuple[int, concurrent.futures.Future[Chunk]] | None = None
     sent: dict[str, float] = {}
     done = False
-    last_len = ticks = played = starved = skipped = 0
+    last_len = ticks = played = starved = skipped = before_first = 0
     worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="quackd-bench")
 
     def take_in(tick: int) -> None:
@@ -1267,6 +1476,8 @@ def bench(
                 played += 1
             else:
                 starved += 1
+                if not played:
+                    before_first += 1  # the first chunk still on its way
             ticks += 1
             tick += 1
             now = clock()
@@ -1289,11 +1500,18 @@ def bench(
         inference_s=tuple(inferences),
         dropped=int(getattr(runner, "dropped", 0)),
         latency_s=measured,
+        declared_s=declared,
+        waited=waits,
+        before_first=before_first,
+        chunk=info.n_action_steps,
+        per_tick=info.per_tick,
     )
 
 
 __all__ = [
+    "ABANDONED_S",
     "BENCH_S",
+    "CLOSE_WAIT_S",
     "MAX_CONNECTIONS",
     "MAX_HEAD_BYTES",
     "REQUEST_DEADLINE_S",
@@ -1306,6 +1524,7 @@ __all__ = [
     "Served",
     "bench",
     "bind_refusal",
+    "chunk_outrun",
     "describe",
     "describe_bench",
     "open_server",

@@ -12,12 +12,16 @@ arm's calibration file, and the slack past it is the backend's own (`real.OUT_OF
   policy's state and action are taken to be in the order of the bus that recorded its data.
 - **The cameras.** Every image a policy looks at needs a camera of this arm's mapped to it,
   unless the policy pads a missing one (`upstream_api.MISSING_IMAGES_PADDED`), which is said
-  instead. A frame whose height and width are not the image's is refused, unless the caller
-  accepts it (`accept_frame_size`): an ACT runs on another size and sees what it never saw.
+  instead. A frame whose height and width are not the image's is refused, and the refusal says
+  to give the camera that size, which every camera URL takes. A caller from Python may accept
+  it instead (`accept_frame_size`), knowing an ACT runs on another size and sees what it never
+  saw.
 - **The frame.** The 1st and 99th percentiles of the state the policy learned from lie inside
   this arm's calibrated travel. A policy trained on an arm calibrated another way asks for
-  goals that pin this one at its limits, so it is refused, unless the caller knows better
-  (`accept_other_frame`).
+  goals that pin this one at its limits, so it is refused, unless the person running it knows
+  better (`accept_other_frame`, which `--accept-other-frame` sets). Its goals are clipped to
+  this arm's travel either way, so the override lets the policy connect and never moves the
+  arm anywhere it could not go without it.
 
 This module needs nothing but the protocol's messages, so it runs in the arm's process, which
 never imports torch.
@@ -123,8 +127,7 @@ def fit(
             if not accept_frame_size:
                 return refused(
                     f"cannot use them as they come: {said}. Give the camera that size with "
-                    f"--camera-url's width= and height=, or accept frames of another size "
-                    "(accept_frame_size), knowing the policy sees what it never saw"
+                    f"--camera-url's width={image.width} and height={image.height}"
                 )
             notes.append(f"{said}, which was accepted (accept_frame_size)")
 
@@ -160,9 +163,10 @@ def fit(
                 return refused(
                     f"{said}. It was trained on an arm calibrated another way, and its goals "
                     "would pin this one at its limits: serve a checkpoint trained on this arm, "
-                    "or accept the other frame (accept_other_frame) if you know the two match"
+                    "or give --accept-other-frame if you know the two frames match, which lets "
+                    "it connect with every goal still clipped to this arm's travel"
                 )
-            notes.append(f"the policy {said}, which was accepted (accept_other_frame)")
+            notes.append(f"the policy {said}, which was accepted (--accept-other-frame)")
         missing = [m for m in motors if m not in travel]
         if missing:
             notes.append(

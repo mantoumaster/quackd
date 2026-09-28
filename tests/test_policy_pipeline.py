@@ -22,6 +22,7 @@ import importlib.util
 import json
 import math
 import os
+import threading
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -409,6 +410,37 @@ def test_a_reset_resets_the_policy_and_both_processors(tmp_path: Path) -> None:
     runner.reset("reach")
     runner.reset("place")
     assert (policy.resets, pre.resets, post.resets) == (2, 2, 2)
+
+
+def test_closing_a_checkpoint_waits_on_no_step_still_inferring(tmp_path: Path) -> None:
+    """A step holds the runner's lock for as long as torch takes, minutes on a CPU. Closing
+    the runner, which is what stopping the server does, never waits for it, and no session
+    begins after it, since a begin would give a closed policy back the features it steps on."""
+
+    class Inert:
+        steps: list[Any] = []
+
+        def reset(self) -> None:
+            pass
+
+    runner = P.LeRobotRunner(
+        _fetch(_hub(tmp_path), fps=float(FPS)),
+        policy=Inert(),
+        preprocessor=Inert(),
+        postprocessor=Inert(),
+        cameras={},
+        threads=1,
+        latency_s=0.0,
+    )
+    runner.begin(JOINTS, {})
+    closed = threading.Event()
+    with runner._lock:  # a step inferring
+        worker = threading.Thread(target=lambda: (runner.close(), closed.set()), daemon=True)
+        worker.start()
+        assert closed.wait(S.CLOSE_WAIT_S), "the close waited on the step"
+    with pytest.raises(RuntimeError, match="closed"):
+        runner.begin(JOINTS, {})
+    assert runner._features is None, "a begin after the close undid it"
 
 
 def test_the_rate_is_fps_or_the_training_datasets_at_the_revision_it_names(tmp_path: Path) -> None:
@@ -897,7 +929,7 @@ def test_check_benches_the_tiny_act_and_says_the_latency_to_declare(offline: Tin
     out = " ".join(result.output.split())
     for needle in (
         f"checkpoint {offline.spec}",
-        "ms measured for one warm step",
+        "steps timed, from the request to its chunk back",
         "--latency-s",
         "achieved",
     ):

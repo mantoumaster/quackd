@@ -16,6 +16,7 @@ would say about itself, since the check reads only what the server says.
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import importlib.util
 import json
@@ -415,6 +416,187 @@ def test_a_reset_whose_reply_was_lost_leaves_its_client_the_session_it_made() ->
         assert serving.app._session is None, "its close ends the session its lost reset made"
         other.reset("bench")
     finally:
+        serving.http.shutdown()
+        serving.http.server_close()
+
+
+def test_a_step_its_client_gave_up_on_holds_up_no_reset_and_no_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step that outlives its client's patience, as a checkpoint on a CPU can. The client's
+    reset after it is answered within the client's own timeout, with the policy left alone
+    under the step. The slow step's chunk is answered to nobody as a chunk, the next step
+    starts from a policy reset after it, and stopping the server returns while a step is still
+    inferring, rather than when torch is done. A step waiting its turn behind that one, and a
+    reset after the stop, are refused, and the policy closed under them is never run again."""
+    hold, inferring, gate = threading.Event(), threading.Event(), threading.Event()
+    built, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    script, reset = built.script, built.reset
+    calls: list[str] = []
+    after_close: list[str] = []
+
+    def steps(observation: Observation, sent: Mapping[str, float]) -> Any:
+        calls.append(f"step {observation.tick}")
+        if built.closed:
+            after_close.append(calls[-1])
+        if hold.is_set():
+            inferring.set()
+            gate.wait(30)
+        return script(observation, sent)
+
+    def resets(instruction: str) -> None:
+        calls.append(f"reset {instruction}")
+        if built.closed:
+            after_close.append(calls[-1])
+        reset(instruction)
+
+    built.script = steps
+    built.reset = resets
+    app_ = S.PolicyServer(built, info, TOKEN)
+    serving = Serving(app_, S.serve(app_, "127.0.0.1", 0))
+    answered: list[tuple[int, dict[str, Any], bool]] = []
+
+    def slow_step(session: str, seq: int, tick: int) -> threading.Thread:
+        body = wire.dumps(
+            wire.StepRequest(session=session, seq=seq, tick=tick, state=[0.0] * len(JOINTS))
+        )
+        worker = threading.Thread(
+            target=lambda: answered.append(serving.raw("POST", wire.STEP_PATH, body)),
+            daemon=True,
+        )
+        hold.set()
+        worker.start()
+        assert inferring.wait(5), "the step never reached the policy"
+        return worker
+
+    try:
+        client = serving.client()
+        client.reset("first")
+        assert client.session is not None
+        first = slow_step(client.session, 1, 0)
+        started = time.monotonic()
+        client.reset("second")  # the client has given up on the step, and resets
+        assert time.monotonic() - started < client.call_timeout_s
+        assert calls == ["reset first", "step 0"], "the policy is never reset under a step"
+        hold.clear()
+        gate.set()
+        first.join(5)
+        ((status, said, _),) = answered
+        assert status == 409 and "its chunk was dropped" in said["reason"], said
+        assert client.next_chunk(Observation(1, _reading()), {}).actions
+        assert calls[-2:] == ["reset second", "step 1"], "the next step starts from a reset"
+        # and stopping the server waits on no inference
+        gate.clear()
+        inferring.clear()
+        answered.clear()
+        slow = slow_step(client.session, client.seq + 1, 2)
+        client.reset("third")  # its first step waits its turn behind the slow one
+        waiting = threading.Event()
+        turn = app_._runner
+
+        @contextlib.contextmanager
+        def queued_turn() -> Iterator[None]:
+            waiting.set()
+            with turn():
+                yield
+
+        monkeypatch.setattr(app_, "_runner", queued_turn)
+        assert client.session is not None
+        body = wire.dumps(
+            wire.StepRequest(session=client.session, seq=1, tick=3, state=[0.0] * len(JOINTS))
+        )
+        queued = threading.Thread(
+            target=lambda: answered.append(serving.raw("POST", wire.STEP_PATH, body)),
+            daemon=True,
+        )
+        queued.start()
+        assert waiting.wait(5), "the next step never reached the policy's lock"
+        served = S.Served(app_, serving.http, "127.0.0.1", None, False)
+        started = time.monotonic()
+        served.close()
+        assert time.monotonic() - started < S.CLOSE_WAIT_S + 2.0
+        assert built.closed and not gate.is_set(), "closed with the step still inferring"
+        with pytest.raises(S.Refused) as stopped:  # as a connection kept alive past it asks
+            app_.reset(wire.ResetRequest(instruction="fourth", motors=list(JOINTS)))
+        assert stopped.value.status == 503 and "stopping" in str(stopped.value)
+        gate.set()
+        slow.join(5)
+        queued.join(S.RUNNER_WAIT_S)
+        assert sorted(status for status, _, _ in answered) == [503, 503], answered
+        assert all("stopping" in said["reason"] for _, said, _ in answered), answered
+        assert not after_close, f"the policy ran after it was closed: {after_close}"
+    finally:
+        gate.set()
+        with contextlib.suppress(Exception):
+            serving.http.shutdown()
+            serving.http.server_close()
+
+
+def test_a_step_nobody_waits_for_any_more_keeps_no_new_client_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step still inferring keeps its session in use while its client may be waiting for it,
+    and no longer: the client gives up on a step after `STEP_TIMEOUT_S`, and a server whose
+    policy takes minutes a step would otherwise turn every new client away for as long. The
+    refusal says how long the step has been inferring and when to try again, and the new
+    client's reset is answered once the step has outlived its client's patience, with the step
+    still inferring and its chunk dropped as it ends."""
+    assert S.ABANDONED_S >= STEP_TIMEOUT_S, "a session is anyone's only once its client gave up"
+    patience = 1.0  # synthetic: a client that gives up on a step after a second
+    monkeypatch.setattr(S, "ABANDONED_S", patience)
+    hold, inferring, gate = threading.Event(), threading.Event(), threading.Event()
+    built, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    script = built.script
+
+    def steps(observation: Observation, sent: Mapping[str, float]) -> Any:
+        if hold.is_set():
+            hold.clear()
+            inferring.set()
+            gate.wait(30)
+        return script(observation, sent)
+
+    built.script = steps
+    app_ = S.PolicyServer(built, info, TOKEN)
+    app_.lease_s = 0.0  # the lease alone would let anyone in at once
+    serving = Serving(app_, S.serve(app_, "127.0.0.1", 0))
+    answered: list[tuple[int, dict[str, Any], bool]] = []
+
+    def let_in(client: RemoteRunner) -> bool:
+        try:
+            client.reset("run 2")
+        except PolicyServerError as e:
+            assert e.status == 409, e
+            return False
+        return True
+
+    try:
+        first, second = serving.client(), serving.client()
+        first.reset("run 1")
+        assert first.session is not None
+        body = wire.dumps(
+            wire.StepRequest(session=first.session, seq=1, tick=0, state=[0.0] * len(JOINTS))
+        )
+        hold.set()
+        orphan = threading.Thread(
+            target=lambda: answered.append(serving.raw("POST", wire.STEP_PATH, body)),
+            daemon=True,
+        )
+        orphan.start()
+        assert inferring.wait(5), "the step never reached the policy"
+        with pytest.raises(PolicyServerError) as busy:
+            second.reset("run 2")
+        said = str(busy.value)
+        assert busy.value.status == 409 and "a step of its inferring for" in said, said
+        assert f"Try again in {math.ceil(patience)} s" in said and said.endswith("--port"), said
+        _until(lambda: let_in(second), within=patience + 5.0)
+        assert not gate.is_set(), "let in while the step it outlived was still inferring"
+        gate.set()
+        orphan.join(5)
+        ((status, reply, _),) = answered
+        assert status == 409 and "its chunk was dropped" in reply["reason"], reply
+        assert second.next_chunk(Observation(0, _reading()), {}).actions
+    finally:
+        gate.set()
         serving.http.shutdown()
         serving.http.server_close()
 
@@ -1115,10 +1297,117 @@ def test_the_bench_streams_through_the_real_client(served: Serving) -> None:
     assert result.rate_hz == SCRIPTED_HZ and result.achieved_hz > 0
     rows = dict(S.describe_bench(result))
     assert "Hz of" in rows["achieved"] and "round trip" in rows
-    # one warm step timed on its own, and the --latency-s it would declare, never shorter
-    assert result.latency_s is not None and result.declare_s is not None
-    assert result.latency_s <= result.declare_s < result.latency_s + S.LATENCY_STEP_S
-    assert f"--latency-s {result.declare_s:.2f}" in rows["latency"]
+    # one warm step timed on its own and every step of the stream, and the --latency-s the
+    # bench would declare, read over all of them and never shorter than that reading
+    assert result.latency_s is not None and result.timed_s == (result.latency_s, *result.rtt_s)
+    measured, declared = result.measured_s, result.declare_s
+    assert measured is not None and declared is not None
+    assert measured <= declared < measured + S.LATENCY_STEP_S
+    assert f"--latency-s {declared:.2f}" in rows["latency"]
+
+
+def test_the_suggested_latency_covers_most_steps_timed_and_rests_on_no_one_of_them() -> None:
+    """One step timed on its own is one draw, and two benches of one checkpoint on one laptop
+    suggested latencies too far apart to serve with either. The suggestion is read at
+    `LATENCY_QUANTILE` of every step the bench timed, the warm one and each of the stream's,
+    so a quick warm step does not talk it down and the one slowest step does not talk it up."""
+    step = S.LATENCY_STEP_S
+    stream = tuple(step * k for k in range(1, 101))  # synthetic: one to a hundred steps each
+    result = S.BenchResult(1.0, 10.0, 10, 10, 0, 0, rtt_s=stream, latency_s=step / 2)
+    timed = sorted(result.timed_s)
+    expected = timed[math.ceil(S.LATENCY_QUANTILE * len(timed)) - 1]
+    assert result.measured_s == expected
+    assert result.latency_s is not None and result.latency_s < expected < max(stream)
+    declared = result.declare_s
+    assert declared is not None and expected <= declared < expected + step
+
+
+def test_a_bench_says_what_its_skipped_ticks_were_and_whether_its_latency_covers_it() -> None:
+    """A tick the pacer skipped sent nothing, as a starved one did, and is not counted as
+    starved, so the bench says what it was: with no --latency-s declared, the wait for a chunk
+    in the tick that asked for it, as a segment waits, and otherwise a pacer that woke late.
+    Its latency row says to bench again served with the latency it suggests, and on that
+    second bench, that the latency it was served with covers what it timed."""
+    rate, seconds, trip = 10.0, 2.0, 0.5  # synthetic: a step takes five ticks
+    periods = round(rate * seconds)
+    played = round(seconds / trip)  # one tick sent per step waited for, the rest skipped
+    first = S.BenchResult(
+        seconds,
+        rate,
+        played,
+        played,
+        0,
+        periods - played,
+        rtt_s=(trip,) * played,
+        latency_s=trip,
+        waited=True,
+    )
+    rows = dict(S.describe_bench(first))
+    assert f"{played} of the {periods} ticks" in rows["achieved"], rows
+    assert rows["skipped"].startswith(f"{periods - played} ticks:"), rows
+    assert "no --latency-s" in rows["skipped"] and "sent nothing" in rows["skipped"], rows
+    assert first.declare_s is not None
+    assert f"serve with --latency-s {first.declare_s:.2f}" in rows["latency"], rows
+    assert "bench again" in rows["latency"], rows
+    waiting = round(trip * rate)  # the first chunk on its way, which a segment waits for
+    second = S.BenchResult(
+        seconds,
+        rate,
+        periods,
+        periods - waiting,
+        waiting,
+        0,
+        rtt_s=(trip,) * played,
+        latency_s=trip,
+        declared_s=first.declare_s,
+        before_first=waiting,
+    )
+    rows = dict(S.describe_bench(second))
+    assert "skipped" not in rows, rows
+    assert rows["starved"].startswith(f"{waiting} ticks with nothing to send"), rows
+    assert "every one before the first came back" in rows["starved"], rows
+    assert f"--latency-s {first.declare_s:g} it is served with covers that" in rows["latency"]
+    late = S.BenchResult(seconds, rate, periods - 1, periods - 1, 0, 1, declared_s=trip)
+    assert "woke too late" in dict(S.describe_bench(late))["skipped"]
+
+
+def test_a_bench_suggests_no_latency_the_server_would_refuse() -> None:
+    """A step slower than a segment waits for its first chunk, or slower than a chunk takes to
+    play, still completes a bench, since the client waits longer for a step than either. The
+    bench then says the policy answers too slowly to serve from this machine, and never
+    suggests a --latency-s that `quackd policy serve` refuses. One under both bounds it
+    suggests, and the server takes."""
+    _, info = S.served_policy(S.ServeOptions(policy="scripted:hold"))
+    rate, chunk = float(info.rate_hz), info.n_action_steps
+    past_chunk = (chunk + 1) / rate
+    past_wait = (wire.MAX_LATENCY_S + STEP_TIMEOUT_S) / 2
+    fits = (chunk - 1) / rate
+    assert fits < past_chunk < wire.MAX_LATENCY_S < past_wait < STEP_TIMEOUT_S
+    for trip, too_slow in ((past_chunk, True), (past_wait, True), (fits, False)):
+        result = S.BenchResult(
+            1.0,
+            rate,
+            1,
+            1,
+            0,
+            0,
+            rtt_s=(trip,),
+            latency_s=trip,
+            chunk=chunk,
+            per_tick=info.per_tick,
+        )
+        declare = result.declare_s
+        assert declare is not None
+        said = dict(S.describe_bench(result))["latency"]
+        serve = S.ServeOptions(policy="scripted:hold", latency_s=declare)
+        if too_slow:
+            assert "serve with --latency-s" not in said, said
+            assert "too slowly" in said and "serve it on a GPU" in said, said
+            with pytest.raises(S.ServeRefused):
+                S.served_policy(serve)
+        else:
+            assert f"serve with --latency-s {declare:.2f}" in said, said
+            S.served_policy(serve)
 
 
 def test_a_measured_latency_rounds_up_to_what_a_person_would_declare() -> None:
@@ -1286,14 +1575,17 @@ async def test_a_policy_learned_on_an_arm_calibrated_another_way_is_refused_befo
         assert "shoulder_pan" in outside and "wrist_roll" in outside, said
         for motor in ("shoulder_lift", "elbow_flex", "wrist_flex", "gripper"):
             assert motor not in outside.split(". It was trained", 1)[0], said
-        assert "accept_other_frame" in said and "The arm was not touched" in said, said
+        assert "--accept-other-frame" in said and "The arm was not touched" in said, said
+        assert "still clipped to this arm's travel" in said, said
         assert not arm.connected and not arm.torque_retries and not camera.connected
         # the one who knows the frames match says so, and the record keeps that they did
-        arm, _, transport = _camera_arm(serving.client(accept_other_frame=True))
+        runner = serving.client(accept_other_frame=True)
+        arm, _, transport = _camera_arm(runner)
         await transport.connect()
         try:
             notes = " ".join(transport.connect_notes)
-            assert "accepted (accept_other_frame)" in notes and "shoulder_pan" in notes
+            assert "accepted (--accept-other-frame)" in notes and "shoulder_pan" in notes
+            assert runner.record()["accept_other_frame"] is True
             assert arm.connected
         finally:
             await transport.close()
@@ -1347,7 +1639,7 @@ async def test_a_policy_the_server_swaps_in_after_the_connect_starts_no_segment(
             )
             said = await loop.start("reach", STEP)
             assert isinstance(said, str) and "PolicyMisfit" in said, said
-            assert "gripper" in said and "accept_other_frame" in said, said
+            assert "gripper" in said and "--accept-other-frame" in said, said
             # another checkpoint that would fit is still not the one the connect checked
             serving.app.info = fitted.model_copy(update={"policy": "owner/other_act@4567def"})
             with pytest.raises(PolicyMisfit, match="Connect the arm again") as refused:
@@ -1372,7 +1664,9 @@ async def test_a_frame_of_another_size_is_refused_unless_it_is_accepted() -> Non
         said, arm, _ = await _refused(serving)
         assert f"{CAMERA_WIDTH}x{CAMERA_HEIGHT}" in said, said
         assert f"{CAMERA_WIDTH // 2}x{CAMERA_HEIGHT // 2}" in said, said
-        assert "width= and height=" in said and "accept_frame_size" in said, said
+        # the fix a person can reach, the camera's own size, and no keyword they cannot
+        said_size = f"width={CAMERA_WIDTH // 2} and height={CAMERA_HEIGHT // 2}"
+        assert said_size in said and "accept_frame_size" not in said, said
         assert not arm.connected
         _, _, transport = _camera_arm(serving.client(accept_frame_size=True))
         await transport.connect()

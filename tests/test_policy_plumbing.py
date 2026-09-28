@@ -46,7 +46,7 @@ from quackd_lerobot.policy import server as S
 from quackd_lerobot.policy.client import RemoteRunner, policy_address
 from quackd_lerobot.verbs import MANIPULATE_S
 from tests.gl import REQUIRE_ENV
-from tests.test_policy_contract import TOKEN, Serving, _arm_on, _serving
+from tests.test_policy_contract import TOKEN, Serving, _arm_on, _as_checkpoint, _serving
 
 runner = CliRunner()
 
@@ -593,6 +593,106 @@ def test_serve_mcp_takes_a_policy_for_one_arm_and_refuses_it_for_a_fleet(
     assert refused.exit_code != 0 and "--controller" in _flat(refused.output)
 
 
+def test_serve_mcp_says_a_policy_the_arm_refuses_in_its_sentence_and_exits_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connect's refusal of a policy that does not fit the arm is raised as the server
+    starts, inside the task group the MCP SDK serves in, and used to print as a traceback with
+    the sentence buried in it while the client saw only a closed connection. It is said as
+    `quackd run` says it, one sentence and exit 1. The policy here learned from an arm whose
+    shoulder_lift went past this one's ceiling, by twice the slack a reading is forgiven."""
+    pytest.importorskip("mujoco")
+    from quackd_lerobot.real import OUT_OF_RANGE_DEG, joint_ranges
+    from quackd_lerobot.sim import standin
+    from quackd_lerobot.sim.model import generic_calibration, load
+    from quackd_lerobot.verbs import JOINTS
+
+    monkeypatch.setattr("quackd_lerobot.sim.transport.default_model", standin.mjcf)
+    travel = joint_ranges(generic_calibration(load(standin.mjcf(), seed=0)))
+    q01, q99 = [], []
+    for motor in JOINTS:
+        low, high = travel[motor]
+        middle, quarter = (low + high) / 2, (high - low) / 4
+        q01.append(middle - quarter)
+        q99.append(high + 2 * OUT_OF_RANGE_DEG if motor == "shoulder_lift" else middle + quarter)
+    serving = _as_checkpoint(
+        features={"state": len(JOINTS), "action": len(JOINTS), "images": []},
+        state_quantiles={"q01": q01, "q99": q99},
+    )
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "serve-mcp",
+                "--robot",
+                "lerobot:mujoco",
+                "--policy-url",
+                serving.url,
+                "--policy-token",
+                TOKEN,
+                "--yes",
+                "--no-memory",
+            ],
+        )
+    finally:
+        serving.http.shutdown()
+        serving.http.server_close()
+    if "no OpenGL context" in result.output and os.environ.get(REQUIRE_ENV) != "1":
+        pytest.skip("no OpenGL context for offscreen rendering")
+    out = _flat(result.output)
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output and "ExceptionGroup" not in result.output, out
+    assert "calibrated travel: shoulder_lift" in out and "--accept-other-frame" in out, out
+    assert "The arm was not touched" in out, out
+
+
+def test_accept_other_frame_goes_with_a_policy_server_and_is_on_the_record(
+    tmp_path: Path, held: Serving
+) -> None:
+    """`--accept-other-frame` lets a policy learned on an arm calibrated another way connect,
+    and means nothing without a server to accept it of: refused alone on all three commands
+    that take `--policy-url`, and with one it reaches the arm's client and the record."""
+    with pytest.raises(ValueError, match="--accept-other-frame goes with --policy-url"):
+        policy_choice(None, accept_other_frame=True)
+    assert policy_choice(held.url, TOKEN) is not None
+    refusals = [
+        _run(tmp_path, "--robot", "lerobot:mujoco", "--accept-other-frame"),
+        runner.invoke(
+            app,
+            [
+                "preflight",
+                "hello-world",
+                "--robot",
+                "lerobot:mujoco",
+                "--llm",
+                "fake",
+                "--accept-other-frame",
+                "--runs-dir",
+                str(tmp_path / "runs"),
+            ],
+        ),
+        runner.invoke(app, ["serve-mcp", "--robot", "lerobot:mujoco", "--accept-other-frame"]),
+    ]
+    for refused in refusals:
+        assert refused.exit_code != 0, refused.output
+        assert "--accept-other-frame goes with --policy-url" in _flat(refused.output)
+    choice = PolicyChoice(held.url, TOKEN, accept_other_frame=True)
+    adapter = make_adapter("lerobot:mujoco", policy=choice, seed=0)
+    client = adapter.transport.policy_loop.runner  # type: ignore[attr-defined]
+    assert isinstance(client, RemoteRunner) and client.accept_other_frame
+    said = adapter.ask_policy()  # type: ignore[attr-defined]
+    assert said is not None and said["accept_other_frame"] is True
+    from quackd.mcp_server import fleet_from_flags
+
+    plan = fleet_from_flags(
+        robot="lerobot:mujoco", policy_url=held.url, policy_token=TOKEN, accept_other_frame=True
+    )
+    (served,) = [a.policy_served for a in plan.adapters.values()]
+    assert served is not None and served["accept_other_frame"] is True
+    plain = make_adapter("lerobot:mujoco", policy=PolicyChoice(held.url, TOKEN), seed=0)
+    assert plain.ask_policy()["accept_other_frame"] is False  # type: ignore[attr-defined]
+
+
 def test_preflight_refuses_a_policy_server_that_is_not_there(tmp_path: Path) -> None:
     duck = tmp_path / "hold.duck"
     duck.write_text(
@@ -629,7 +729,8 @@ def test_a_goal_run_hands_the_arm_to_the_server_and_records_what_the_policy_did(
     """`quackd run --goal` on the simulator's stand-in, with `--policy-url`: the header names
     the server and its checkpoint, the goal allows `manipulate` behind a person's yes (`--yes`
     here), the prompt tells the pilot its executor, the pilot calls `manipulate` once, and the
-    summary's policy block counts the segment the server drove."""
+    summary's policy block counts the segment the server drove and says the run took a policy
+    learned on another arm's frame (`--accept-other-frame`), which this one never needed."""
     pytest.importorskip("mujoco")
     from quackd.agent.providers import fake
     from quackd.agent.providers.base import ToolCall
@@ -651,6 +752,7 @@ def test_a_goal_run_hands_the_arm_to_the_server_and_records_what_the_policy_did(
         held.url,
         "--policy-token",
         TOKEN,
+        "--accept-other-frame",
         "--yes",
     )
     if "no OpenGL context" in result.output and os.environ.get(REQUIRE_ENV) != "1":
@@ -662,6 +764,7 @@ def test_a_goal_run_hands_the_arm_to_the_server_and_records_what_the_policy_did(
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     block = summary["policy"]
     assert block["server"] == held.url and block["policy"] == "scripted:hold"
+    assert block["accept_other_frame"] is True
     assert block["segments"] == 1 and block["chunks"] >= 1 and block["ticks"] >= 1
     assert block["loaded"] == [] and block["round_trip_ms"]["count"] >= 1
     # the simulator's seconds are its own and say so, and its wall seconds fit inside the run's
@@ -674,6 +777,7 @@ def test_a_goal_run_hands_the_arm_to_the_server_and_records_what_the_policy_did(
     ]
     (start,) = [r for r in records if r["kind"] == "run_start"]
     assert start["policy"]["server"] == held.url and start["policy"]["policy"] == "scripted:hold"
+    assert start["policy"]["accept_other_frame"] is True
     assert start["contract"]["verbs"]["confirm"] == ["manipulate"]
     assert "## Your executor" in start["system_prompt"]
     # no camera here, so the look after a segment is a reading of the arm

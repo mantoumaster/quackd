@@ -593,6 +593,24 @@ def _fail(msg: str, code: int = 1, *, hint: str | None = None) -> None:
     raise typer.Exit(code=code)
 
 
+def _refusals(
+    group: BaseExceptionGroup[Any], kinds: tuple[type[BaseException], ...]
+) -> list[BaseException] | None:
+    """Every exception in `group`, the groups inside it opened, when each is one of `kinds`,
+    and None when any is not: a group holding a fault quackd never words is a traceback worth
+    keeping, and one holding only refusals is the sentences they already are."""
+    found: list[BaseException] = []
+    for e in group.exceptions:
+        inner = _refusals(e, kinds) if isinstance(e, BaseExceptionGroup) else None
+        if inner is not None:
+            found.extend(inner)
+        elif isinstance(e, kinds):
+            found.append(e)
+        else:
+            return None
+    return found
+
+
 def _robot_specs(
     robot: str | None, robots: str | None, duck: Any, *, registry_dir: str | None = None
 ) -> list[Any]:
@@ -1318,6 +1336,7 @@ def _run_impl(
     detector_choice: str | None = None,
     policy_url: str | None = None,
     policy_token: str | None = None,
+    accept_other_frame: bool = False,
     controller: str | None = None,
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
@@ -1401,7 +1420,7 @@ def _run_impl(
     try:
         # the policy server the arm hands its segments to, from the flags alone: no variable
         # names one, so a policy drives the arm only on a run that says so
-        policy = policy_choice(policy_url, policy_token)
+        policy = policy_choice(policy_url, policy_token, accept_other_frame=accept_other_frame)
     except ValueError as e:
         _fail(str(e))
         return
@@ -2974,6 +2993,16 @@ _POLICY_TOKEN = typer.Option(
     "one quackd policy serve wrote to ~/.quackd/policy.token.",
     rich_help_panel="Robot",
 )
+_ACCEPT_OTHER_FRAME = typer.Option(
+    False,
+    "--accept-other-frame",
+    help="Let the --policy-url policy drive this arm although it learned from an arm calibrated "
+    "another way, whose readings lie outside this arm's calibrated travel. It only lets the "
+    "policy connect: every goal it answers is still clipped to this arm's travel, so it "
+    "changes what drives the arm and never where the arm may go. Give it only if you know the "
+    "two arms' frames match, and the run's record says it was given.",
+    rich_help_panel="Robot",
+)
 _FOV = typer.Option(
     None,
     "--fov-deg",
@@ -3041,6 +3070,7 @@ def run(
     detector: str | None = _DETECTOR,
     policy_url: str | None = _POLICY_URL,
     policy_token: str | None = _POLICY_TOKEN,
+    accept_other_frame: bool = _ACCEPT_OTHER_FRAME,
     gif: bool = typer.Option(
         True,
         "--gif/--no-gif",
@@ -3110,6 +3140,7 @@ def run(
             detector_choice=detector,
             policy_url=policy_url,
             policy_token=policy_token,
+            accept_other_frame=accept_other_frame,
             controller=controller,
         )
 
@@ -3248,6 +3279,7 @@ def preflight(
     ),
     policy_url: str | None = _POLICY_URL,
     policy_token: str | None = _POLICY_TOKEN,
+    accept_other_frame: bool = _ACCEPT_OTHER_FRAME,
     runs_dir: str = _RUNS,
     registry_dir: str | None = _REGISTRY_DIR,
     as_json: bool = _JSON,
@@ -3268,6 +3300,7 @@ def preflight(
         as_json=as_json,
         policy_url=policy_url,
         policy_token=policy_token,
+        accept_other_frame=accept_other_frame,
     )
 
 
@@ -3287,6 +3320,7 @@ def _preflight_impl(
     as_json: bool,
     policy_url: str | None = None,
     policy_token: str | None = None,
+    accept_other_frame: bool = False,
 ) -> None:
     from quackd.adapters.base import AdapterError, policy_choice
     from quackd.adapters.factory import describe, make_adapter
@@ -3298,7 +3332,7 @@ def _preflight_impl(
     from quackd.transport.base import TransportError
 
     try:
-        policy = policy_choice(policy_url, policy_token)
+        policy = policy_choice(policy_url, policy_token, accept_other_frame=accept_other_frame)
     except ValueError as e:
         _fail(str(e))
         return
@@ -3847,6 +3881,7 @@ def serve_mcp(
     detector: str | None = _DETECTOR,
     policy_url: str | None = _POLICY_URL,
     policy_token: str | None = _POLICY_TOKEN,
+    accept_other_frame: bool = _ACCEPT_OTHER_FRAME,
     dry_run: bool = _DRY,
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Allow confirm-gated verbs (there is no terminal to ask)."
@@ -3863,9 +3898,9 @@ def serve_mcp(
 ) -> None:
     """Expose a robot, or a flock of them, as MCP tools over stdio (Claude Code /
     Claude Desktop)."""
-    from quackd.adapters.base import AdapterError
     from quackd.mcp_server import serve
     from quackd.registry import RegistryError
+    from quackd.transport.base import TransportError
 
     if controller is not None:
         # parsed only to be refused in words, since a flag Typer does not know is refused in
@@ -3896,9 +3931,19 @@ def serve_mcp(
             log=log,
             policy_url=policy_url,
             policy_token=policy_token,
+            accept_other_frame=accept_other_frame,
         )
-    except (AdapterError, RegistryError) as e:
+    except (TransportError, RegistryError) as e:
         _fail(str(e))
+    except BaseExceptionGroup as group:
+        # A refusal raised as the server starts, by a connect in its lifespan, reaches here
+        # inside the task group the MCP SDK serves in. Left there it printed as a traceback
+        # with the sentence buried in it, and the client saw only a closed connection: it is
+        # said as `quackd run` says the same refusal, and anything else stays a traceback.
+        refused = _refusals(group, (TransportError, RegistryError))
+        if not refused:
+            raise
+        _fail("; ".join(dict.fromkeys(str(e) for e in refused)))
 
 
 # ── policy (a policy server the user starts) ────────────────────────────────────────────
@@ -4074,9 +4119,10 @@ def policy_check(
     bench: bool = typer.Option(
         False,
         "--bench",
-        help="Time one warm step, the latency to serve it with as --latency-s, then stream "
-        "synthetic observations at the policy's rate through the client, and say the rate it "
-        "achieved, the ticks with nothing to send, and the round trip.",
+        help="Time one warm step, then stream synthetic observations at the policy's rate "
+        "through the client, and say the rate it achieved, the ticks with nothing to send, the "
+        "round trip, and the --latency-s to serve it with, read over every step it timed. "
+        "Bench again served with that --latency-s.",
     ),
     seconds: float | None = typer.Option(
         None, "--seconds", help="How long --bench streams for (default 10)."

@@ -30,15 +30,20 @@ no dependency from a policy: no torch, no LeRobot, no HTTP library.
   is dropped, and the loop asks again.
 - **the time.** A connect has a timeout, and a whole reply a deadline that every read of it is
   held to (`_BoundedReader`), so a server that trickles its reply is cut off as surely as one
-  that stops. A step's is longer than any patience the loop has, so a server that stops
-  answering starves the segment, which ends it with the arm held, before the call gives up.
+  that stops. On the arm a step's is longer than any patience the loop has, so a server that
+  stops answering starves the segment, which ends it with the arm held, before the call gives
+  up. On the simulator the loop's patience is on the world's clock, which stands still while
+  the loop waits for a chunk, so there this deadline is what ends the segment, and the
+  segment says the policy raised the `PolicyServerError` it ended on.
 
 **Whether the policy fits the arm** is asked at connect, before the arm is energised
 (`fit_arm`, and `fit.py` for what is checked): the arm hands the client its bus's motors, a
 frame's size from each camera and its calibrated travel, and a policy that could not drive it
-refuses the connect. Two of the refusals can be overridden by a caller who knows better, a
-frame of another size (`accept_frame_size`) and a policy trained on an arm calibrated another
-way (`accept_other_frame`), and the record says so when they are. It is asked again at every
+refuses the connect. Two of the refusals can be overridden by a caller who knows better: a
+policy trained on an arm calibrated another way (`accept_other_frame`, which a run's
+`--accept-other-frame` sets), and from Python alone a frame of another size
+(`accept_frame_size`), whose refusal says to give the camera that size instead. The record
+says when either was taken. It is asked again at every
 reset, of what the server says then, so a server started again with another policy since the
 connect starts no segment (`_refit`).
 
@@ -84,8 +89,10 @@ CALL_TIMEOUT_S = 3.0
 what the server holds, and a reset only clears a policy's queue."""
 STEP_TIMEOUT_S = 2 * FIRST_CHUNK_S
 """How long a step may take to answer. Longer than the loop's own patience (`FIRST_CHUNK_S`
-for a first chunk and less after it), so a server that stops answering starves the segment and
-the loop says so, holding the arm, before this call gives up and frees the loop's worker."""
+for a first chunk and less after it), so on the arm a server that stops answering starves the
+segment and the loop says so, holding the arm, before this call gives up and frees the loop's
+worker. On the simulator, whose clock stands still while the loop waits, this is what ends the
+wait, as a `PolicyServerError` the segment ends on."""
 READ_CHUNK_BYTES = 64 << 10
 RETRIED = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
 """What a kept-alive socket the server has since closed fails with. `RemoteDisconnected` is one
@@ -256,7 +263,7 @@ class RemoteRunner:
     the server reported for it, for `quackd policy check --bench` to read. Every step's round
     trip is added up as well, for a run's record (`round_trips`), which also names the server
     and what it serves (`record`). `accept_frame_size` and `accept_other_frame` are the two
-    overrides `fit_arm` takes."""
+    overrides `fit_arm` takes, and the second is `--accept-other-frame`."""
 
     def __init__(
         self,
@@ -467,11 +474,15 @@ class RemoteRunner:
 
     def record(self) -> dict[str, Any]:
         """The server and what it serves, as a run's record names them, from what it said when
-        it was last asked and with nothing asked now: its address, redacted, the policy, the rate
-        it runs at and where that rate came from, every repository it loaded at the revision it
-        loaded it at, and the JPEG quality frames go to it at, or None for raw frames. The
-        address alone before the server has answered."""
-        said: dict[str, Any] = {"server": self.url}
+        it was last asked and with nothing asked now: its address, redacted, whether the arm
+        took a policy learned on another arm's frame (`--accept-other-frame`), the policy, the
+        rate it runs at and where that rate came from, every repository it loaded at the
+        revision it loaded it at, and the JPEG quality frames go to it at, or None for raw
+        frames. The address and the override alone before the server has answered."""
+        said: dict[str, Any] = {
+            "server": self.url,
+            "accept_other_frame": self.accept_other_frame,
+        }
         info = self.info
         if info is not None:
             said.update(

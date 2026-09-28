@@ -828,21 +828,32 @@ cameras          none mapped
 state q01..q99   not reported
 action q01..q99  not reported
 loaded           nothing, a scripted policy loads no repository
-achieved    10.0 Hz of 10: 30 of 30 ticks had an action in 3.0 s
+achieved    10.0 Hz of 10: 30 of the 30 ticks in 3.0 s sent an action
 starved     0 ticks with nothing to send
-round trip  median 1.5 ms, p99 2.1 ms, max 2.1 ms over 6 requests
+round trip  median 1.2 ms, p99 1.4 ms, max 1.4 ms over 6 requests
 inference   median 0.1 ms on the server
-latency     2.0 ms measured for one warm step and its chunk back: serve with
-            --latency-s 0.01 so the simulator holds each chunk back as long
+latency     1.4 ms or less for 95% of the 7 steps timed, from the request to
+            its chunk back: serve with --latency-s 0.01, so the simulator holds
+            each chunk back as long, and bench again with it
 ```
 
 `--bench` first times one warm step on its own, the whole wait for a chunk, both ways of the
-wire and the inference, and rounds it up to the hundredth of a second to give as
-`--latency-s`. Then it streams synthetic observations through the real client at the policy's
-rate, paced and queued as a segment is, for 10 s unless `--seconds` says otherwise. It is one of
-the two places a rate is measured, the other being the bench with the arm. `quackd policy check
---policy NAME` serves the policy in its own process for the length of the check, with a token
-that lives only that long.
+wire and the inference. Then it streams synthetic observations through the real client at the
+policy's rate, paced and queued as a segment is, for 10 s unless `--seconds` says otherwise, and
+says the `--latency-s` to give: the 95th percentile of every step it timed, the warm one and the
+stream's (`LATENCY_QUANTILE`), rounded up to the hundredth of a second. One step timed on its
+own is one draw, and two benches of one checkpoint on one laptop suggested latencies too far
+apart to serve with either. A tick the pacer skipped sent nothing, as a starved one did, and is
+not counted as starved: with no `--latency-s` declared, a segment waits for each chunk in the
+tick that asked for it, and the ticks that pass meanwhile are skipped, so bench again served
+with the latency the first bench suggests
+([policies.md](../policies.md#on-the-laptop-alone) has both benches of a trained ACT, and what a
+good second one looks like). A policy whose steps take longer than a segment waits for its first
+chunk, or longer than a chunk takes to play (`chunk_outrun`), is given no latency, since `serve`
+would refuse any that covered them: the bench says it answers too slowly to drive an arm from
+that machine, and to serve it on a GPU. `--bench` is one of the two places a rate is measured,
+the other being the bench with the arm. `quackd policy check --policy NAME` serves the policy in its own process for
+the length of the check, with a token that lives only that long.
 
 `--latency-s` declares how long the policy takes to answer a step, which the simulator holds
 each chunk back by, and `--bench` is where the number comes from. `serve` and `check` refuse one
@@ -880,10 +891,21 @@ none would play.
   never reached its client still leaves the session to that client, whose next reset or close
   is served at once. A step the client sends again, when a kept-alive connection turns out
   closed, is answered from the first answer rather than inferred twice.
-- **A server that stops answering starves the segment.** The client waits longer for a step
-  than the loop's patience, so the loop ends the segment with the arm held and says so, and
-  `manipulate` fails. A reply that trickles in is cut off at the same deadline, however
-  slowly each byte comes.
+- **A server that stops answering ends the segment with the arm held.** On the arm the client
+  waits longer for a step than the loop's patience, so the loop ends the segment starved and
+  says so, and `manipulate` fails. On the simulator the loop's patience is on the simulator's
+  clock, which stands still while it waits for a chunk, so the client's own deadline, 10 s of
+  the wall's, ends it instead, and the segment says the policy raised `PolicyServerError`. A
+  reply that trickles in is cut off at the same deadline, however slowly each byte comes.
+- **A slow step holds up nothing but the next step.** A reset is answered at once, even while a
+  step its client gave up waiting for is still inferring: the policy's own reset waits for that
+  step and runs before the new session's first one, and the old step's chunk is dropped as it
+  ends. Another client's reset is refused only until that step has outlived its client's
+  patience (`ABANDONED_S`, the client's 10 s), since nobody waits for it after that, and the
+  refusal says how long it has been inferring and when to try again. Stopping the server
+  refuses every request after it, a step waiting its turn behind the slow one too, and waits a
+  second at most for a step still inferring (`CLOSE_WAIT_S`), since a step on a CPU can take
+  minutes.
 
 ### Serving a checkpoint
 
@@ -897,12 +919,15 @@ quackd policy serve --policy OWNER/NAME@REVISION --fps 30
 ```
 
 It serves ACT, SmolVLA and pi05 checkpoints, the three whose processors quackd has read at
-LeRobot 0.6.1, and only ACT has run: CI's `policy` job builds a tiny random ACT, puts it in a
-Hub cache of its own and serves it offline through the real server to the real client and an
-arm behind it (`POLICY_PIPELINE` in [the policies' table](#the-policies-upstream-lerobot-061)).
-No trained checkpoint has been served, and SmolVLA and pi05 need transformers, which neither the
-lab's environment nor CI has (`VLA_PIPELINE`). Pi0.5 also wants LeRobot's `[pi]` extra and a
-Hub token that has been granted its gated tokenizer.
+LeRobot 0.6.1. CI's `policy` job builds a tiny random ACT, puts it in a Hub cache of its own and
+serves it offline through the real server to the real client and an arm behind it
+(`POLICY_PIPELINE` in [the policies' table](#the-policies-upstream-lerobot-061)). On 2026-09-28 a
+trained ACT from the Hub, `natsuki0000/act-so101-bluecap` at commit
+`82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, was served on a laptop's CPU and drove a twin of the
+lab's arm on the simulator, and `lerobot/smolvla_base` loaded there and took minutes a chunk, so
+it never answered a step through the client ([policies.md](../policies.md#smolvla-and-act)).
+pi05 has not run (`VLA_PIPELINE`). Pi0.5 also wants LeRobot's `[pi]` extra and a Hub token that
+has been granted its gated tokenizer.
 
 Loading one reads before it builds, and refuses rather than guesses:
 
@@ -958,9 +983,12 @@ quackd policy check --policy quackd-test/tiny-act@v1 --bench --seconds 3
 ```
 
 ```text
+  served here for the check, at http://127.0.0.1:53804
 policy           quackd-test/tiny-act@v1 (quackd-policy 1, quackd 0.15.0)
 features         state 6, action 6, images observation.images.front 64x48
-rate             10 Hz, from quackd-test/tiny-data@v1 meta/info.json
+rate             10 Hz, from
+                 quackd-test/tiny-data@ed2440c0bf574309f37e0a639e02d7b34cb2939c
+                 meta/info.json
 chunks           8 actions, 4 played from each
 latency          0 s declared
 gpu              no
@@ -972,13 +1000,16 @@ state q01..q99   -32.4835..32.4835, -47.5165..47.5165, 25..75,
 action q01..q99  -32.4835..32.4835, -47.5165..47.5165, 25..75,
                  -42.5055..42.5055, -62.5055..62.5055, -37.4945..37.4945
 loaded           checkpoint quackd-test/tiny-act@v1, commit 0b812cabb86d;
-                 dataset quackd-test/tiny-data@v1, commit ed2440c0bf57, its fps
-achieved    10.0 Hz of 10: 30 of 30 ticks had an action in 3.0 s
+                 dataset
+                 quackd-test/tiny-data@ed2440c0bf574309f37e0a639e02d7b34cb2939c
+                 , its fps
+achieved    10.0 Hz of 10: 30 of the 30 ticks in 3.0 s sent an action
 starved     0 ticks with nothing to send
-round trip  median 35.9 ms, p99 70.1 ms, max 70.1 ms over 15 requests
-inference   median 33.8 ms on the server
-latency     44.8 ms measured for one warm step and its chunk back: serve with
-            --latency-s 0.05 so the simulator holds each chunk back as long
+round trip  median 21.6 ms, p99 70.6 ms, max 70.6 ms over 15 requests
+inference   median 19.7 ms on the server
+latency     70.6 ms or less for 95% of the 16 steps timed, from the request to
+            its chunk back: serve with --latency-s 0.08, so the simulator holds
+            each chunk back as long, and bench again with it
 ```
 
 Every repository the server loaded, with the revision it loaded it at and, for a tag or a
@@ -999,9 +1030,9 @@ each camera's size is a frame it just gave, and the travel is the calibration fi
   bus that lists its motors as this one does, which is how LeRobot records one.
 - **The cameras.** An ACT needs a camera for every image it looks at. A SmolVLA or a pi05 runs
   with some of its images missing, and the ones that are go into the record as padded.
-- **A frame of another size** than the checkpoint's image is refused. Give the camera that size
-  with `--camera-url`'s `width=` and `height=`, or accept it knowing the policy sees what it
-  never saw.
+- **A frame of another size** than the checkpoint's image is refused, with the size to give the
+  camera with `--camera-url`'s `width=` and `height=`, which the real arm's cameras and the
+  simulator's both take.
 - **The frame of reference.** The 1st and 99th percentiles of the state the policy learned from
   have to lie inside this arm's calibrated travel, 2 degrees of slack included, the same slack
   a reading gets everywhere else. A policy trained on an arm calibrated another way asks for
@@ -1009,10 +1040,18 @@ each camera's size is a frame it just gave, and the travel is the calibration fi
   percentiles and its travel. A checkpoint that reports no percentiles is let through, and the
   record says it was not checked.
 
-The two refusals that can be overridden are the frame's size and the frame of reference, and
-for now they are the `accept_frame_size=True` and `accept_other_frame=True` keywords of
-`RemoteRunner`, from Python alone: `quackd run` takes a server's address and has no flag for
-either yet. The record says when either was taken.
+**`--accept-other-frame`** overrides the frame of reference, on `quackd run`, `quackd preflight`
+and `quackd serve-mcp`, beside `--policy-url`, and is refused without it. It lets a policy
+learned on an arm calibrated another way connect, and nothing else: every goal it answers is
+still clipped to this arm's calibrated travel before it is sent, so it changes what drives the
+arm and never where the arm may go. Give it when you know the two arms' frames match. The
+connect's note says the percentiles were accepted, and the `policy` block of the run's
+`summary.json` and `run_start` carry `accept_other_frame`. On the lab arm's calibration, 55 of
+the 68 servable SO-100 and SO-101 ACT checkpoints on the Hub were refused on `shoulder_lift`,
+whose recorded travel there does not reach the arm's own fold
+([ADR-0045](../adr/0045-a-rest-pose-the-calibration-cannot-reach.md)) while theirs did. A frame of
+another size can be accepted from Python alone, with `RemoteRunner`'s `accept_frame_size=True`,
+and the record says when it was.
 
 The check is made again as every segment starts, on what the server says then. The arm's
 process lives as long as a pilot's session, and a server can be started again on the same

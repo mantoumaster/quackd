@@ -502,9 +502,18 @@ write says nothing about what that write did.
   move the arm, so it wants a token on every request and binds loopback unless a TLS proxy
   stands in front of it, and the arm checks at connect, before any torque, that the policy fits
   this arm's motors, cameras and calibrated travel ([policies.md](policies.md),
-  [SECURITY.md](../SECURITY.md)). A server that stops answering starves the segment, which ends
-  with the arm held. What no bench has measured yet is how fast its loop runs on the real bus
-  while the same laptop infers.
+  [SECURITY.md](../SECURITY.md)). A server that stops answering ends the segment with the arm
+  held, starved on the arm and on the client's own deadline on the simulator. What no bench has
+  measured yet is how fast its loop runs on the real bus while the same laptop infers.
+- **`--accept-other-frame` changes what drives the arm, never where it may go.** Given beside
+  `--policy-url`, it lets a policy connect whose learned readings lie outside this arm's
+  calibrated travel, one trained on an arm calibrated another way, which the connect otherwise
+  refuses. Every goal that policy answers is still clipped to this arm's travel and counted, a
+  goal held there for a second still ends the segment, and the step cap is the same, so the
+  arm goes nowhere it could not go without the flag. What changes is that a policy whose frame
+  may not be this arm's is the one choosing the goals inside it, so it may pin a joint at the
+  edge of its travel. Give it only when you know the two frames match, and the run's record
+  says it was given.
 - `stop` holds position and never releases, and it leaves the gripper's goal alone so a failed
   verb never drops what is held. It also writes no goal for a joint that reads past its
   calibrated travel, because the servo would clamp "stay here" to its limit and drive the joint

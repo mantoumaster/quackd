@@ -267,7 +267,12 @@ quackd serve-mcp --robot lerobot:mujoco --policy-url http://127.0.0.1:9875 --yes
 segments to (`quackd policy serve`, [policies.md](policies.md),
 [the arm's page](adapters/lerobot.md#a-policy-in-a-process-of-its-own-quackd-policy-serve)),
 with `--policy-token`, or else `QUACKD_POLICY_TOKEN`, or else the token file the server wrote.
-It is asked what it serves as the server starts, and one that does not answer refuses it. Both
+It is asked what it serves as the server starts, and one that does not answer refuses it. So
+does a policy the arm's connect finds does not fit it, before any torque, and `serve-mcp` then
+says the connect's sentence and exits 1, as `quackd run` does, rather than printing a traceback
+that leaves the client only a closed connection. `--accept-other-frame` lets a policy learned on
+an arm calibrated another way connect, with every goal it answers still clipped to this arm's
+travel, as on `quackd run` ([the arm's page](adapters/lerobot.md#whether-the-policy-fits-the-arm)). Both
 verbs are confirm gated, so a client can call them only on a server started with `--yes`, and
 both are refused with `--robots` or `--flock`, since one policy server drives one arm. A task
 file loaded with `robot_load_duckfile` holds `manipulate` to its own `policy` section: its listed
@@ -279,6 +284,10 @@ the client cancels mid-segment is charged the seconds its segment ran. `--contro
 refused: over MCP the client is the pilot, and `quackd run --controller vla` needs a person at
 a terminal to say whether the arm did the task
 ([the arm's page](adapters/lerobot.md#a-scripted-pilot-that-a-person-judges---controller-vla)).
+
+A session's budget counts its minutes from the robot's connect, on the clock the robot keeps,
+which on `lerobot:mujoco` is the simulator's own: the `done` lines and every result's budget
+read them against `max_minutes`, and the session's verbs are refused once they pass it.
 
 > [!NOTE]
 > `--decision-llm` is not among these, on purpose. Over MCP the model *is* the client, so

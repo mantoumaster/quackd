@@ -787,6 +787,8 @@ class LeRobotRunner:
         self._task = ""
         self._features: dict[str, dict[str, Any]] | None = None
         self._frames: dict[str, str] = {}
+        self._closed = False
+        """Set by `close`, after which no session begins and no step is answered."""
 
     def policy_features(self) -> wire.PolicyFeatures:
         return wire.PolicyFeatures(
@@ -816,6 +818,9 @@ class LeRobotRunner:
             }
             frames[camera] = key.removeprefix(up.IMAGES_PREFIX)
         with self._lock:
+            if self._closed:
+                # the features `close` took away would come back, and a step with them
+                raise RuntimeError("the policy was closed, and begins no session")
             self._features, self._frames = features, frames
 
     def reset(self, instruction: str) -> None:
@@ -840,6 +845,8 @@ class LeRobotRunner:
 
         with self._lock:
             features = self._features
+            if self._closed:
+                raise RuntimeError("the policy was closed, and answers no step")
             if features is None:
                 raise RuntimeError("the policy was asked for a step before a session began")
             reading = observation.reading
@@ -866,8 +873,11 @@ class LeRobotRunner:
         return Chunk(observation.tick, actions)
 
     def close(self) -> None:
-        with self._lock:
-            self._features = None
+        # not under the lock, which a step holds for as long as torch takes: a server being
+        # stopped waits on no inference (`server.CLOSE_WAIT_S`). A step already inferring has
+        # the features it runs on, and every begin and step after this is refused.
+        self._closed = True
+        self._features = None
 
 
 @functools.cache

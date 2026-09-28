@@ -1791,6 +1791,17 @@ segment, give the run a model, `--llm openai` and so on, whose prompt then has a
 executor: one short subtask a call, and a fresh look after each. A `--goal` run allows
 `manipulate` only behind a confirm, so you are asked before every segment.
 
+**On the twin, the first segment is refused until `shoulder_lift` is moved in.** A segment starts
+only with every joint inside its calibrated travel, and the twin starts where the arm's rest pose
+puts it. The lab arm's was recorded folded, past what its calibration lets `shoulder_lift` be
+driven to ([section 07](#07-record-the-rest-pose)), so the twin rests at its model's stop,
+outside that joint's travel, and `manipulate` refuses with `Move shoulder_lift inside its travel
+first`. A model moves the joint in with `move_joints` when it reads that, and an MCP client can do
+the same before its first segment. `--controller vla`, below, only ever calls `manipulate`, so a
+vla run on this twin ends in failure, in the verb's own words, before any segment runs. The lasting
+fix is to calibrate the arm again folded, the bench item in [PLAN.md](../PLAN.md) that reads the
+calibrated value at each of the arm's stops, and record the rest pose again after it.
+
 **Or take the model out altogether.** `--controller vla` is a scripted pilot that hands the
 policy each instruction a `duck: 3` task file lists, or the goal as the only one, and then asks
 you `Did the arm do it?`. Only your yes is a success, so it needs you at the terminal and refuses
@@ -1804,7 +1815,10 @@ answers every question without asking anybody
 ```
 
 **Then a real policy.** `quackd policy check --policy OWNER/NAME@REVISION --bench` says what a
-checkpoint wants and how fast it answers on this laptop before you serve it, and
+checkpoint wants and how fast it answers on this laptop before you serve it. Bench it twice, the
+second time with the `--latency-s` the first suggests, and serve it with the one a bench says
+covers what it timed ([policies.md](policies.md#on-the-laptop-alone)). On this project's laptop
+an ACT kept up and SmolVLA did not ([policies.md](policies.md#smolvla-and-act)).
 [policies.md](policies.md) is the rest: serving one on the laptop or on a rented GPU through an
 ssh tunnel, which policies there are and under what licences, and recording the 50 to 200
 episodes a policy for your own task learns from with LeRobot's own tools.

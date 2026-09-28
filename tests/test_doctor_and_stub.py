@@ -219,6 +219,22 @@ def test_the_transports_section_is_every_adapters_and_names_each_backend(
     assert "lerobot:mujoco" in out and rows["lerobot:mujoco"].status in out
 
 
+def test_the_header_names_the_microducks_protocol_only_when_it_has_a_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The version comes from the Microduck's adapter, and a machine without it has none: the
+    header used to end on `duck-ipc-proto API v` with nothing after it."""
+
+    def header(version: str) -> str:
+        monkeypatch.setattr(doctor, "_microduck_api_version", lambda: version)
+        buf = io.StringIO()
+        doctor.render(Console(file=buf, width=200), doctor.collect())
+        return buf.getvalue().splitlines()[0]
+
+    assert "duck-ipc-proto" not in header(""), header("")
+    assert header("7").rstrip().endswith("duck-ipc-proto API v7"), header("7")
+
+
 @pytest.mark.parametrize("platform", ["win32", "linux"])
 def test_render_loses_nothing_on_a_codepage_that_cannot_carry_it(
     monkeypatch: pytest.MonkeyPatch, platform: str

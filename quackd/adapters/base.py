@@ -302,9 +302,16 @@ class PolicyChoice:
     (`quackd.command.redacted_url`), so every header, record and refusal that names the server
     says what argv redaction would have said. An address redaction cannot read is refused
     without being quoted, since it would otherwise be held as typed. The address as typed and
-    the token go only to the adapter that builds the client (`reach`)."""
+    the token go only to the adapter that builds the client (`reach`).
 
-    def __init__(self, url: str, token: str | None = None) -> None:
+    `accept_other_frame` is `--accept-other-frame`: the arm connects over a policy that learned
+    from an arm calibrated another way, whose state percentiles lie outside this arm's travel,
+    which the connect otherwise refuses. Its goals are clipped to this arm's travel either way,
+    so it changes what drives the arm and never where the arm may go, and the record says so."""
+
+    def __init__(
+        self, url: str, token: str | None = None, *, accept_other_frame: bool = False
+    ) -> None:
         given = url.strip()
         if not given:
             raise ValueError(
@@ -319,6 +326,7 @@ class PolicyChoice:
         self._given = given
         self._token = token.strip() if token is not None and token.strip() else None
         self.url = redacted_url(given)
+        self.accept_other_frame = accept_other_frame
 
     def reach(self) -> tuple[str, str | None]:
         """The address as it was typed and the token, or None where none was typed, for the one
@@ -329,17 +337,26 @@ class PolicyChoice:
         return f"PolicyChoice({self.url!r})"
 
 
-def policy_choice(url: str | None, token: str | None = None) -> PolicyChoice | None:
-    """`--policy-url` and `--policy-token` as a command takes them, or None when neither was
-    given. A token with no address is refused rather than dropped: it has no server to go to."""
+def policy_choice(
+    url: str | None, token: str | None = None, *, accept_other_frame: bool = False
+) -> PolicyChoice | None:
+    """`--policy-url`, `--policy-token` and `--accept-other-frame` as a command takes them, or
+    None when none was given. A token or an override with no address is refused rather than
+    dropped: neither has a server to go to."""
     if url is None:
         if token is not None and token.strip():
             raise ValueError(
                 "--policy-token goes with --policy-url: give the server's address as well, or "
                 "drop the token"
             )
+        if accept_other_frame:
+            raise ValueError(
+                "--accept-other-frame goes with --policy-url: it lets the policy that server "
+                "serves drive an arm calibrated another way, so give the server's address as "
+                "well, or drop the flag"
+            )
         return None
-    return PolicyChoice(url, token)
+    return PolicyChoice(url, token, accept_other_frame=accept_other_frame)
 
 
 def policy_hint(verbs: Sequence[str], specs: Sequence[str], command: str) -> str | None:
