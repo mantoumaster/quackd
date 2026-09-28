@@ -1,6 +1,17 @@
 # ADR-0017: Robots are adapters that declare a manifest
 
-**Status:** accepted · **Date:** 2026-09-02 · Implemented in Phase 1 of 0.4 ([design](../design/multi-robot.md))
+**Status:** accepted, amended · **Date:** 2026-09-02 · Implemented in Phase 1 of 0.4 ([design](../design/multi-robot.md))
+
+**Amended 2026-09-28 by [ADR-0048](0048-policies-are-the-arms-executor.md):** two things the decision below takes as given have
+changed. A verb's parameter schema no longer comes from its adapter alone. A `duck: 3` task
+file's `policy` section narrows `manipulate`'s `instruction` to the instructions it lists, as an
+inline enum, and its timeout to the task's own segment (`quackd/duckfile/narrow.py`), rebuilt
+each time from the verb the adapter registered. So a task file, which is untrusted input,
+narrows one verb and never widens one or adds one. And the core now treats two verb names as
+its own: the executor charges `pick` and `manipulate` against the task's seconds of policy and
+lets one segment run at a time, by name, on any body that registers either. The consequence
+that adding a robot needs nothing in the executor, the loop or the prompts still holds for every
+robot without those two verbs.
 
 ## Context
 

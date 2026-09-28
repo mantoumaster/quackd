@@ -7,10 +7,11 @@ gap the wall clock had, and it is closed the same way, by writing the thing down
 top.
 
 Secrets reach that line by more routes than one, and those are the reason this is a module
-rather than a line. `--api-key`, `--token` and `--host-token` carry one outright, a URL flag
-carries one in its userinfo or its query string, and `--extra-body` carries one in whatever
-field a vendor asked for. A run directory is pasted into issues, attached to bug reports and
-copied off a bench machine, and a key that reaches one is a key that has to be rotated.
+rather than a line. `--api-key`, `--token`, `--host-token` and `--policy-token` carry one
+outright, a URL flag carries one in its userinfo or its query string, and `--extra-body` carries
+one in whatever field a vendor asked for. A run directory is pasted into issues, attached to bug
+reports and copied off a bench machine, and a key that reaches one is a key that has to be
+rotated.
 """
 
 from __future__ import annotations

@@ -264,7 +264,8 @@ quackd serve-mcp --robot lerobot:mujoco --policy-url http://127.0.0.1:9875 --yes
 ```
 
 `--policy-url` names the policy server one LeRobot arm hands its `pick` and `manipulate`
-segments to (`quackd policy serve`, [the arm's page](adapters/lerobot.md#a-policy-in-a-process-of-its-own-quackd-policy-serve)),
+segments to (`quackd policy serve`, [policies.md](policies.md),
+[the arm's page](adapters/lerobot.md#a-policy-in-a-process-of-its-own-quackd-policy-serve)),
 with `--policy-token`, or else `QUACKD_POLICY_TOKEN`, or else the token file the server wrote.
 It is asked what it serves as the server starts, and one that does not answer refuses it. Both
 verbs are confirm gated, so a client can call them only on a server started with `--yes`, and

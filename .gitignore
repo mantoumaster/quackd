@@ -30,6 +30,8 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+# the crash dump Git Bash leaves on Windows
+*.stackdump
 
 # upstream assets, never vendored (docs/licenses.md). A real microduck:mujoco run leaves
 # upstream's CC BY-SA-NC model in ~/.quackd/cache, and a debugging copy next to the checkout
@@ -40,4 +42,6 @@ Thumbs.db
 *.stl
 robot_walk.xml
 so101_*.xml
-*.stackdump
+# A learned policy's weights are the user's download under their own licence (docs/policies.md),
+# and `quackd policy serve` fetches them into the Hugging Face cache, never into the checkout.
+*.safetensors

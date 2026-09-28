@@ -1,6 +1,15 @@
 # ADR-0004: Everything the LLM can do is a verb in one registry
 
-**Status:** accepted · **Date:** 2026-08-28 · Extended by [ADR-0018](0018-core-verbs-extensions-aliases.md) (0.4: the one registry is built from a robot's manifest; `verbs/builtin.py` and `verbs/composite.py` became `verbs/core.py` plus per-adapter verb modules)
+**Status:** accepted, amended · **Date:** 2026-08-28 · Extended by [ADR-0018](0018-core-verbs-extensions-aliases.md) (0.4: the one registry is built from a robot's manifest; `verbs/builtin.py` and `verbs/composite.py` became `verbs/core.py` plus per-adapter verb modules)
+
+**Amended 2026-09-28 by [ADR-0048](0048-policies-are-the-arms-executor.md):** a learned policy on the arm is not a learned verb.
+`pick` and `manipulate` hand the SO-101 to a LeRobot policy, and both are the arm's own verbs
+(`quackd_lerobot.verbs`), declared in its manifest like every other extension and with
+parameters of their own, a target and an instruction. `register_learned_verb` stays the
+reserved extension point it is below: a verb with no parameters, shaped for an ONNX policy the
+Microduck runs, and registered into a registry the connect rebuilds from the manifest, so it
+could never have told a policy a subtask. The fourth list the Context names, learned ONNX
+policies, is still that point and nothing more ([learned-verbs.md](../learned-verbs.md)).
 
 ## Context
 

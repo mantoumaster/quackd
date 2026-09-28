@@ -48,8 +48,9 @@ before.
   `gpt-6-astra`. What that afternoon left open, each a bring-up of its own: the rest pose,
   written after that day, which first met the arm on 2026-09-23 and could not reach a fold that
   lay past the calibrated travel
-  ([ADR-0045](docs/adr/0045-a-rest-pose-the-calibration-cannot-reach.md)); `pick` and
-  `load_policy()`, because no policy was loaded; the registry path, because the arm was
+  ([ADR-0045](docs/adr/0045-a-rest-pose-the-calibration-cannot-reach.md)); `pick`, because
+  no policy was loaded, which the learned-policy item below carries now; the registry path,
+  because the arm was
   reached by `--address` and never by a registered name, which it was on 2026-09-23 when its
   rest pose was recorded; and that checklist's *What to report*, six things still chosen against
   Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
@@ -86,11 +87,26 @@ before.
     simulator's pen cannot say;
   - the front and wrist cameras' placement and field of view, measured, to replace the
     simulator's default mounts (`WRIST_CAMERA_POSE`);
-  - the policy loop's achieved rate on the real bus, with a policy server inferring on the same
-    laptop once there is one, which the simulator's lockstep clock can never measure.
+  - the policy loop's achieved rate on the real bus, which the next item measures and the
+    simulator's lockstep clock never can.
 
   Until then the simulator's ✅ says it does what it says, not that it moves like an arm, and it
   never raises `lerobot:real`'s row.
+- ⬜ **A learned policy on the real SO-101.** `manipulate`, `pick` through a policy server and
+  `--controller vla` have run against a fake arm and on the simulator, and nowhere else
+  ([ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md)). Nobody has handed the arm to a
+  policy through quackd, and the only checkpoint quackd has loaded is the tiny random ACT CI
+  builds: SmolVLA and pi05 need transformers, which neither the lab's environment nor CI has,
+  so the first of them to load will be on somebody's own machine. Step 18 of
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order: a run
+  with `scripted:hold`, then `scripted:sweep`, then a checkpoint checked with
+  `quackd policy check --bench`, each rehearsed on the arm's twin first, with a hand on the
+  switch. Then the number nothing else can give: how fast the policy loop runs on the real bus
+  with a server inferring on the same laptop, where torch's threads and the bus's worker share
+  one CPU. It is the `hz`, `late_ticks`, `starved_ticks` and `round_trip_ms` of the `policy`
+  block in that run's `summary.json`, with `extras.timing` beside it, and until somebody sends
+  it back the rate a policy is served at is a claim about its training data and not about this
+  arm.
 - ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
   with neither a lookout task nor a checklist. A coordinator flock across two machines needs a
   distributed clock first; a pilot flock needs none and has simply never been tried across two.
@@ -126,6 +142,25 @@ before.
   answered. What to send back from a board is listed at the end of
   [docs/jetson.md](docs/jetson.md#status).
 
+- ⏸ **FLUX 3 Action has not run anywhere, and quackd does not serve it.** It needs a rented
+  Linux machine with an NVIDIA GPU, about 32 GB of it in BF16 by Black Forest Labs' own report,
+  LeRobot from its main branch at the commit that added it or later, which is not on PyPI, and a
+  NATTEN built for that machine's torch and CUDA. The spike is to serve the official
+  `flux-3-action-so101` there behind `ssh -L`, and it has to show three things before quackd
+  claims the policy: that `quackd policy check --bench` holds the checkpoint's rate through the
+  tunnel, that its delta actions stay anchored when quackd clips a goal, and that the checkpoint
+  at a pinned revision drives the simulator end to end, on the generic arm or with the frame
+  check accepted. Whatever it shows, passed or not, gets written down, and only a pass gives it
+  refs of its own and a place in the server's list of policy types. Until then its page says
+  what running it takes and that nobody has ([docs/policies.md](docs/policies.md#flux-3-action)).
+- ⬜ **The stepper only shadows `manipulate`.** A `duck: 3` task file's instructions make it a
+  choice, and the stepper is offered it and never takes it, in `--decision-mode on` as in
+  shadow, because under `--yes` nobody is asked at its confirm gate
+  ([ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md)). Every turn that offered one
+  writes a `decision_shadow` record beside the model's choice, and there are none yet outside
+  the test suite: no real run has had a decision LLM and a policy server at once. Promoting it
+  needs an agreement rate measured from those records on real runs, and a decision of its own,
+  not a floor.
 - ⬜ **No `cost_usd` quackd reports has been checked against an invoice.** Every rate in
   `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand, most
   recently on 2026-09-23, and a rate read by hand is wrong from the day the vendor edits the

@@ -1,6 +1,16 @@
 # ADR-0003: Three loops, three rates, three owners
 
-**Status:** accepted · **Date:** 2026-08-28 · Amended by [ADR-0024](0024-open-duck-mini.md) (0.5: on an Open Duck Mini v2, whose runtime has no network control API, quackd's own daemon hosts the reflex loop. It still writes none of the control code, and feeds that loop the same command vector a gamepad would, so "quackd never touches this" below should be read as "quackd never writes this")
+**Status:** accepted, amended · **Date:** 2026-08-28 · Amended by [ADR-0024](0024-open-duck-mini.md) (0.5: on an Open Duck Mini v2, whose runtime has no network control API, quackd's own daemon hosts the reflex loop. It still writes none of the control code, and feeds that loop the same command vector a gamepad would, so "quackd never touches this" below should be read as "quackd never writes this")
+
+**Amended 2026-09-28 by [ADR-0048](0048-policies-are-the-arms-executor.md):** the steering tier has a second kind of loop on the
+SO-101 arm. A segment of the arm's learned policy, `pick` or `manipulate`, is a loop in quackd's
+process, paced on the arm's clock at the policy's own rate, anywhere from 1 to 60 Hz rather
+than the composites' 10 Hz. Like a composite it calls no model: the policy's inference runs in a
+server process of its own, and the loop takes its goals and holds each to the arm's rules
+before it is sent. The reflexes on the arm are still each servo's own position controller, and
+the consequence below still holds: the model calls `manipulate` with one short subtask and
+judges what the arm did from a fresh look, so a policy is something the LLM calls, not
+something it is.
 
 ## Context
 

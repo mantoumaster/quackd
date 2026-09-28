@@ -564,18 +564,43 @@ recorded
 17. **Close the gripper on something soft and forgiving.** A foam block, not a cup. It should
     stop short of shut, `report_state` should say it is holding, and `stop` should not drop
     it: a hold deliberately leaves the gripper's goal alone. Then `place` to let go.
-18. **`pick` cannot be reached from the CLI or from MCP today, and this step is here to say
-    so rather than to be done.** The verb exists on `lerobot:real` only when a policy object
-    was handed to the transport in Python, and nothing in quackd hands it one: there is no
-    flag, `make()` has no policy parameter, and `load_policy()` has no caller outside a test.
-    So a trained checkpoint reaches this arm only through code you write around the adapter.
-    If you do write it, `pick` is confirm-gated because it hands the whole arm to a controller
-    quackd did not write for up to a minute. The policy's own actions are step-capped like a
-    verb's, and a goal past the travel is clipped and counted rather than refused, which are
-    quackd's rules rather than LeRobot's. It stops the policy the moment something is held,
-    and stops it and holds the arm on a hot joint, torque off, a dead camera, a goal that is
-    not a number or a goal held past the travel. Keep a hand on the switch, and please report
-    what happened.
+18. **Hand the arm to a learned policy, and only after every step above.** `pick` and
+    `manipulate` reach this arm through a policy server, a process of its own that no
+    checkpoint ever leaves: `quackd policy serve` in a second terminal, with
+    `quackd[lerobot-vla]` in a Python 3.12 environment, and `--policy-url
+    http://127.0.0.1:9875` on the run ([policies.md](policies.md)). Rehearse each command on
+    the arm's twin first ([section 17 of the first run](lerobot-first-run.md#17-optional-hand-the-arm-to-a-learned-policy)),
+    then run it on the arm. Start with a scripted policy that needs no torch and moves nothing,
+    `quackd policy serve --policy scripted:hold`, which holds the arm where it reads, and a
+    pilot that asks no model:
+
+    ```bash
+    quackd run --goal "hold the arm where it is" --robot arm-01 --policy-url http://127.0.0.1:9875 --controller vla
+    ```
+
+    It asks you three times: whether the arm should try at all, since its verdict is always
+    `uncertain`, whether to start the segment, since a goal asks about each one, and at the end
+    `Did the arm do it?`. The segment should end on a stall within a second or two, with the arm
+    where it was. Then `scripted:sweep`, which swings `wrist_flex` 5 degrees either side of where
+    it started, one swing every 2 s, and only then a checkpoint you have checked with
+    `quackd policy check --bench`.
+
+    What holds the arm while a policy drives it is quackd's, not LeRobot's. It moves no joint
+    faster than a verb may, the verbs' 50 degrees a second at the default step, whatever the
+    policy's rate. A goal past the travel is clipped and counted rather than refused, and a
+    joint reading outside its travel is left out of every goal. It stops a `pick`'s policy the
+    moment something is held, and holds the arm on a hot joint, torque off, a dead camera, a
+    goal that is not a number, a goal held past the travel, a policy that stops answering or a
+    stop from anywhere. **A joint that reads past its travel is the exception** to the speed
+    cap: the servo would take any goal for it as the end of the travel and drive there at its
+    own speed, which is why a policy's goals leave it out, and a rise a move had already started
+    goes on whatever quackd sends. Keep a hand on the switch.
+
+    **Then measure the one number only this bench can give**: how fast the policy's loop runs
+    on the real bus while the same laptop infers. `summary.json` of the run has a `policy` block
+    with it, `hz` beside `late_ticks`, `starved_ticks` and `round_trip_ms`, and the arm's state
+    carries `extras.timing` for every bus call and every tick. Send those back with what
+    `quackd policy check --bench` said on the same laptop, and say which policy it was.
 
 ## What to report
 
@@ -590,9 +615,10 @@ nothing run shaped, and [M14 of the first run](lerobot-first-run.md#m14-what-to-
 the four things that stand in for it there. A report that says it did not work is worth as much
 as one that says it did.
 
-The command line at the top of that file has the values of `--api-key` and `--token` replaced,
-and a password or a credential-named query parameter taken out of `--base-url`, `--address`
-and `--camera-url`. Nothing else on the screen is, so read it before you paste it
+The command line at the top of that file has the values of `--api-key`, `--token`,
+`--host-token` and `--policy-token` replaced, and a password or a credential-named query
+parameter taken out of `--base-url`, `--address`, `--camera-url`, `--decision-url` and
+`--policy-url`. Nothing else on the screen is, so read it before you paste it
 ([SECURITY.md](../SECURITY.md)).
 
 **Four things one afternoon on one bench did not answer**, and which still need a real arm:
@@ -664,6 +690,20 @@ only against `lerobot:mock` and the test suite:
   time across the `duration_s` it is given, and nothing has watched a servo follow a goal that
   creeps. Say whether a move of several seconds looked like one motion or a staircase, and
   whether it arrived when the time was up.
+
+**And four the simulator and the policy server brought with them**, which only an arm can
+answer. Each is an open item in PLAN.md:
+
+- **Whether each joint turns the way the simulator's does.** Nudge each joint a few degrees in
+  the positive direction on the arm and on its twin, and say whether they agree. Then read the
+  calibrated value at each mechanical stop, which is what says whether a fold recorded past the
+  travel can be put on the simulator at all.
+- **What the gripper reads on a real pen**, against the band that infers holding. The
+  simulator's pen is a shape in a model and says nothing about that band.
+- **Where your front and wrist cameras really are**, their placement and field of view, which
+  would replace the simulator's default views.
+- **How fast a policy's loop runs on the real bus** with the server inferring on the same
+  laptop, step 18's number.
 
 **And two with one answer each, from one arm on one laptop.** A second answer is what turns
 either of them from an anecdote into a fact:

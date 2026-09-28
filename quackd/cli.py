@@ -3913,7 +3913,9 @@ app.add_typer(policy_app, name="policy", rich_help_panel="Serve")
 
 _POLICY_HELP = (
     "What to serve: REPO@REVISION for a LeRobot checkpoint (ACT, SmolVLA or pi05, which need "
-    "quackd[lerobot-vla]), or scripted:NAME for a scripted policy that needs no torch "
+    # the backslash is Rich's escape, as in the app's epilog: Typer renders help as markup, and
+    # an unescaped [lerobot-vla] is a style tag it drops, leaving "which need quackd)"
+    r"quackd\[lerobot-vla]), or scripted:NAME for a scripted policy that needs no torch "
     "(scripted:hold holds the arm where it is, scripted:sweep swings its wrist)."
 )
 _POLICY_FPS = typer.Option(
@@ -4189,8 +4191,26 @@ def _registry_fail(e: Exception) -> None:
 
 
 def _can_prompt() -> bool:
-    """Whether there is a person at a terminal to ask. The seam tests replace."""
-    return bool(sys.stdin is not None and sys.stdin.isatty())
+    """Whether there is a person at a terminal to ask. The seam tests replace.
+
+    `isatty` alone is not that on Windows, where it says yes to NUL, because NUL is a character
+    device: a script or a scheduled task started with its input from NUL was asked every
+    question, answered each with end-of-input, and had its record name a person who answered.
+    Only a console has a console mode, so on Windows that is asked as well."""
+    stdin = sys.stdin
+    if stdin is None or not stdin.isatty():
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        import msvcrt
+
+        try:
+            handle = msvcrt.get_osfhandle(stdin.fileno())
+        except (OSError, ValueError):
+            return False
+        mode = ctypes.c_ulong()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    return True
 
 
 def _rest_pose_text(pose: dict[str, float]) -> Any:

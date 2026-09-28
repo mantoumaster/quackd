@@ -5,6 +5,17 @@ dummy. quackd does run ONNX policies now, but only the two the Microduck ships a
 through `microduck:mujoco`; nothing routes a learned verb to one. Training still wants a GPU.
 Running one no longer wants a duck.
 
+> [!NOTE]
+> **The arm's learned policies are not learned verbs.** `pick` and `manipulate` hand the SO-101
+> to a LeRobot policy, an ACT, a SmolVLA or a pi05, served by `quackd policy serve` in a process
+> of its own. Both are the arm's own verbs, declared in its manifest with parameters of their
+> own, a target and an instruction, and neither goes through `register_learned_verb`, which
+> registers a verb with no parameters into a registry the connect rebuilds from the manifest.
+> [policies.md](policies.md) is how to run one, and
+> [ADR-0048](adr/0048-policies-are-the-arms-executor.md) is why they are shaped this way. This
+> page is about something else: skills trained from rewards an LLM wrote, registered as one
+> more verb.
+
 ## The idea
 
 Today every verb is either a shipped robot behaviour or Python over shipped behaviours.
@@ -40,9 +51,10 @@ verb into a registry is only half the story. For it to be offered to the model, 
 `.duck`, or listed by MCP on a given body, that body's manifest has to declare it. When
 learned verbs ship for real, the spec becomes a `VerbSpec` in the owning adapter's manifest
 ([adapters.md](adapters.md), [manifest-spec.md](manifest-spec.md)); until then treat the call
-above as a registry-level sketch, not a supported path on an arbitrary robot. A shipped
-example of the shape already exists in a different guise: `pick` on the LeRobot arm is one
-skill intent that the arm's own learned policy executes ([adapters/lerobot.md](adapters/lerobot.md)).
+above as a registry-level sketch, not a supported path on an arbitrary robot. The nearest
+thing that ships is a different shape on purpose: `pick` and `manipulate` on the LeRobot arm
+are each one skill intent the arm's own learned policy executes, declared by the arm's adapter
+rather than registered here ([adapters/lerobot.md](adapters/lerobot.md#manipulate-and-the-loop-a-policy-runs-in)).
 
 - `safety_class` is always `confirm`: an unproven policy asks a human first.
 - `runner` is `async (spec, ctx) -> VerbResult`. Without one the verb explains that it is a

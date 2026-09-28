@@ -18,6 +18,16 @@ amendment and not a replacement: what turns are a choice, what an answer must cl
 moves a servo, and what a stepper is never allowed to do are quackd's half and do not move with
 the vendor.
 
+**Amended 2026-09-28 by [ADR-0048](0048-policies-are-the-arms-executor.md):** the classification below stays computed, with one
+exception written by hand. `manipulate` narrowed to a task file's instructions is a choice by
+the rule, one label per instruction, and the stepper is offered it and never takes it, in `on`
+as in shadow (`SHADOW_ONLY` in `stepper.py`). It is confirm-gated, and under `--yes` nobody is
+asked at that gate, so a stepper that cleared the confirm floor would start a learned policy
+driving the arm with no person and no model involved. An answer that clears every other gate
+ends on `gate: shadow_only`, the model takes the turn, and a turn that offered it writes a
+`decision_shadow` record in `on` mode as in shadow, which is the agreement rate a decision to
+promote it would need.
+
 ## Context
 
 quackd's loop asks one question a turn — which single tool call now — and pays a frontier

@@ -1734,6 +1734,97 @@ something else on the arm is exactly what [section 14](#14-what-to-report) asks 
 
 <br>
 
+### 17. Optional: hand the arm to a learned policy
+
+Everything above has a model choosing every verb, about once every six seconds on this arm.
+That is the right rate for deciding what to do next and the wrong one for closing a gripper on
+a pen, where what the jaws touch changes in tenths of a second. A learned policy, an ACT you
+trained on your own demonstrations or a vision-language-action model such as SmolVLA, reads the
+arm and its cameras many times a second and answers with goals for every motor. quackd puts it
+under the model rather than in its place: the model hands it one short subtask at a time with
+`manipulate`, and judges from a fresh look at the arm whether it did it.
+
+> [!WARNING]
+> **Nobody has driven this arm with a policy through quackd yet.** Every segment so far has run
+> in the test suite and on the simulator. Rehearse everything below on the twin from section 16
+> first, and on the arm keep a hand on the power switch.
+
+The policy runs in a server of its own, never in the process that holds the serial bus, because
+a checkpoint is code ([policies.md](policies.md#a-checkpoint-is-code)). So this takes two
+terminals. **Install the server's extra** into a Python 3.12 environment, the arm's own or
+another:
+
+```bash
+uv pip install "quackd[lerobot-vla]"
+```
+
+**In a second terminal, start a server.** A scripted policy needs no torch and no checkpoint,
+which makes it the one to prove the plumbing with. `scripted:sweep` swings `wrist_flex` 5 degrees
+either side of where it started, one swing every 2 s, and `scripted:hold` holds the arm where it
+reads:
+
+```bash
+quackd policy serve --policy scripted:sweep
+```
+
+It prints where it serves, `http://127.0.0.1:9875`, the token file it wrote or read, which is
+`~/.quackd/policy.token` and is written the first time, and its rate, and serves until Ctrl+C.
+It never prints the token itself: a run on the same machine reads it from that file. **In the
+first terminal, point a run at it.** Here with the scripted pilot, on the twin, and with memory
+off so a rehearsal leaves nothing in the twin's:
+
+```
+$ quackd run --goal "swing the wrist" --robot arm-01-sim --policy-url http://127.0.0.1:9875 --llm fake --no-memory
+┌─ 🦆 goal ───────────────────────────────────────────────────────────────────────────────────────┐
+│ provider  fake (scripted:goal)                                                                  │
+│ robot     arm-01-sim (lerobot:mujoco)                                                           │
+│ detector  color_blob on this machine  (once the body reports a camera)                          │
+│ policy    http://127.0.0.1:9875  scripted:sweep                                                 │
+└─ Ctrl-C or q stops the duck. Press it twice to quit at once. ───────────────────────────────────┘
+·  note    the policy at http://127.0.0.1:9875 is scripted:sweep, at 10 Hz from scripted:sweep's own, the verbs' tick
+·  note    the front and top cameras are quackd's default views of the table, not where any real camera stands
+```
+
+The server was asked what it serves before anything connected, and the header and the record
+name it. The scripted pilot never calls `manipulate`, so that is all this run proves. To see a
+segment, give the run a model, `--llm openai` and so on, whose prompt then has a section on its
+executor: one short subtask a call, and a fresh look after each. A `--goal` run allows
+`manipulate` only behind a confirm, so you are asked before every segment.
+
+**Or take the model out altogether.** `--controller vla` is a scripted pilot that hands the
+policy each instruction a `duck: 3` task file lists, or the goal as the only one, and then asks
+you `Did the arm do it?`. Only your yes is a success, so it needs you at the terminal and refuses
+anything that would answer for you:
+
+```
+$ quackd run --goal "swing the wrist" --robot arm-01-sim --policy-url http://127.0.0.1:9875 --controller vla --yes --no-memory
+✗ error: --controller vla leaves the verdict on the task to a person who watched the arm, and --yes
+answers every question without asking anybody
+  drop --yes: a vla run asks you before its first segment and after its last
+```
+
+**Then a real policy.** `quackd policy check --policy OWNER/NAME@REVISION --bench` says what a
+checkpoint wants and how fast it answers on this laptop before you serve it, and
+[policies.md](policies.md) is the rest: serving one on the laptop or on a rented GPU through an
+ssh tunnel, which policies there are and under what licences, and recording the 50 to 200
+episodes a policy for your own task learns from with LeRobot's own tools.
+
+**On the arm**, the same commands with `--robot arm-01`, and step 18 of
+[the hardware checklist](lerobot-hardware-checklist.md) in that order: a policy that holds the
+arm still, then the sweep, then a checkpoint. A policy moves no joint faster than a verb may,
+and a goal past the travel is clipped rather than sent, but a joint that reads past its travel,
+once a move has begun lifting it, rises to the end of it at the servo's own speed whatever anybody
+sends, which is what the hand on the switch is for.
+
+**What the twin cannot tell you** is how fast the policy's loop runs on the arm's bus while this
+laptop infers, since nothing timed on the simulator is a rate, or what a policy trained on real
+camera frames does with rendered ones. A policy that grasps on the twin, or fails to, says
+nothing about the arm. The `policy` block of a run's `summary.json` says what the loop achieved,
+and from the arm it is a number nobody has yet: send it back with the rest of
+[section 14](#14-what-to-report).
+
+<br>
+
 ## Part 2: from Claude, over MCP
 
 Everything above is the command line. This is the same arm, the same executor and the same
@@ -1753,6 +1844,13 @@ quackd chooses no model here and reads no key of yours.
 > `quackd serve-mcp --robot arm-01-sim` hands Claude the twin instead of the arm. An MCP session
 > runs tool calls at once, though, so unlike a run it does not do the same again under one
 > seed. `quackd preflight` is the rehearsal that does, and it runs from the terminal.
+>
+> [Section 17](#17-optional-hand-the-arm-to-a-learned-policy) has no mirror either. Its server is
+> the same from here, and `quackd serve-mcp --robot arm-01-sim --policy-url
+> http://127.0.0.1:9875 --yes` hands Claude a `manipulate` the policy runs. `--yes` is not
+> optional, since both verbs a policy runs are confirm gated. `--controller vla` is refused over
+> MCP, because Claude is the pilot here and a vla run needs a person at a terminal to say
+> whether the arm did the task ([mcp.md](mcp.md)).
 
 The steps below are numbered `M00` to `M14` and they mirror Part 1's `00` to `14`, so if you
 have just walked the terminal path you will recognise every one of them. Where a step is the
@@ -1801,8 +1899,9 @@ same feasibility verdict, the same calibrated range clamp and the same heartbeat
 gate is the one that is genuinely different. There is nobody to ask over stdio, so a
 confirm-gated verb is refused outright unless the server was started as
 `quackd serve-mcp --yes`, and that one flag typed at spawn allows every confirm-gated verb for
-the rest of the session. On this arm that means `pick`, which hands the whole arm to a learned
-policy for up to a minute. A refusal over MCP is the same gate refusing for the same reason,
+the rest of the session. On this arm that means `pick` and `manipulate`, present when the
+server names a policy server, each of which hands the whole arm to a learned policy for a
+segment. A refusal over MCP is the same gate refusing for the same reason,
 with a sentence appended about what to do about it here: a verdict refusal ends
 `call robot_assess_task(robot='arm-01', verdict=...) first`, a confirm refusal ends by telling
 you to start the server with `--yes`, and a budget refusal arrives prefixed `budget exhausted`.
@@ -2497,7 +2596,7 @@ loaded at startup. The same row carries `vendor`, `embodiment`, `mobility`, a `d
 one-paragraph versions of what this body is. Those two are what the model weighs a task against
 at `robot_assess_task` in [M10](#m10-rehearse-with---dry-run).
 
-**`robot_list_verbs` is the body's list with the contract's answer on each row.** Seven verbs
+**`robot_list_verbs` is the body's list with the contract's answer on each row.** Eight verbs
 come back with their parameters, all of them, though this contract allows two. Two fields carry
 the meaning: `allowed` is the contract's answer right now, and `before_verdict` marks the verbs
 that run before a feasibility verdict exists.
@@ -2511,11 +2610,13 @@ that run before a feasibility verdict exists.
 | `gripper` | safe | no | no |
 | `place` | safe | no | no |
 | `pick` | confirm | no | no |
+| `manipulate` | confirm | no | no |
 
-Two of those rows are the mock's. A real arm lists `observe` only when `--camera-url` named a
-camera that opened, and never lists `pick`, because nothing you can start from the command line
-hands the real backend a policy. `pick` is also the only confirm-class verb, which is why
-`--yes` changes nothing on a bare real arm.
+Three of those rows are the mock's. A real arm lists `observe` only when `--camera-url` named a
+camera that opened, and lists `pick` and `manipulate` only when the server was started with
+`--policy-url` naming a policy server ([section 17](#17-optional-hand-the-arm-to-a-learned-policy)).
+Those two are also the only confirm-class verbs, which is why `--yes` changes nothing on a real
+arm without one.
 
 **`robot_run_verb` with `report_state` is the first verb you send through the executor**, though
 it is not the first thing to touch the bus. `robot_list`'s health row is a round trip of its own,
@@ -3052,12 +3153,13 @@ terminal running `quackd run`, and an MCP session has no terminal of its own:
 > `quackd doctor --robot arm-01` and let quackd put it down, or cut its supply. There is no
 > second Ctrl-C to think about here, because there was no first one.
 
-**`--yes` changes nothing on a bare real arm.** `pick` is the only confirm-class verb on the
-LeRobot arm, and a real SO-101 with no policy loaded does not list it, so there is no gate for the
-flag to open until a loaded `.duck` puts a verb under `confirm:`. Load a policy and `pick` is
-listed and gated like any other confirm verb, and other adapters gate more verbs than this one
-does. With nobody at a terminal to ask, a gated verb answers this, on the mock arm, which lists
-`pick` because it carries a scripted policy:
+**`--yes` changes nothing on a bare real arm.** `pick` and `manipulate` are the only
+confirm-class verbs on the LeRobot arm, and a real SO-101 with no policy server named does not
+list them, so there is no gate for the flag to open until a loaded `.duck` puts a verb under
+`confirm:`. Name one with `--policy-url` and both are listed and gated like any other confirm
+verb, and other adapters gate more verbs than this one does. With nobody at a terminal to ask, a
+gated verb answers this, on the mock arm, which lists `pick` because it carries a scripted
+policy:
 
 ```
 human declined pick: this verb needs human confirmation; start `quackd serve-mcp --yes` to allow it
@@ -3197,7 +3299,7 @@ the server and the session.
 | the same verb refused with `the verdict is uncertain and nobody has cleared it` | uncertain does not clear anything that moves the body, and there is no terminal here to ask on | answer the model in the chat, and let it record again on its own responsibility ([M10](#m10-rehearse-with---dry-run)) |
 | a `feasible` verdict refused with `this body does not meet what you said the task needs` | the model's own `needs` asked for more than this arm's sheet has, most often `mobility` any for a task that goes nowhere, and the gate stays shut | ask it to correct the need, `none` for a task that goes nowhere, and answer again, or to answer `uncertain` ([M10](#m10-rehearse-with---dry-run)) |
 | `verb 'move_joints' is not in this duck's allowlist` | the loaded contract does not allow it, which is the contract doing its job | widen the `.duck` and load it again, or ask for a verb it does allow ([M08](#m08-the-first-session)) |
-| a verb refused with `this verb needs human confirmation` | a confirm-class verb, and there is no terminal here to ask on. On this arm `pick` is confirm-class whenever a policy is loaded | restart the server with `--yes` in its command, which is the only way to answer that gate from a chat client |
+| a verb refused with `this verb needs human confirmation` | a confirm-class verb, and there is no terminal here to ask on. On this arm `pick` and `manipulate` are, whenever `--policy-url` names a policy server | restart the server with `--yes` in its command, which is the only way to answer that gate from a chat client |
 | `budget exhausted` | the session has spent its steps or its minutes | the paragraphs under this table are about this row |
 | every verb except `stop` refused with `session aborted` | the heartbeat gave up, or a contract's `abort_when` fired | send `stop`, which is refused by nothing except an exhausted budget, then restart the server. Nothing in an aborted session recovers on its own ([M11](#m11-prove-the-safety-net)) |
 | a flock `.duck` refused as not available over MCP | an MCP session is one pilot, and a flock needs a coordinator this process does not run | run that file with `quackd run` from a terminal, which is what the refusal tells you |

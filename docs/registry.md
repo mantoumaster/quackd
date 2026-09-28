@@ -71,8 +71,8 @@ A column nobody has filled is left out, so the table stays readable on a narrow 
 $ quackd robot show arm
 name        arm
 robot       lerobot:mock
-body        lerobot-so101 (arm, mobility none) 7 verbs: observe, report_state, stop,
-            move_joints, gripper, place, pick
+body        lerobot-so101 (arm, mobility none) 8 verbs: observe, report_state, stop,
+            move_joints, gripper, place, pick, manipulate
 address     -
 camera      -
 rest pose   shoulder_pan 0.0

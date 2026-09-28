@@ -3,8 +3,9 @@
 A six-joint desktop arm with a parallel gripper, driven through
 [LeRobot](https://github.com/huggingface/lerobot). No legs, no head, no voice, so its
 manifest lists none of that: `move`, `go_to`, `search_scan`, `say` and `gaze` do not exist
-on this robot. What it has is joints, a gripper, `place`, and, when a policy is available,
-`pick` as one skill intent that the arm's own learned policy executes. The thesis holds:
+on this robot. What it has is joints, a gripper, `place`, and, when a run names a policy
+server, or on the mock, which scripts its own, `pick` and `manipulate`, each one skill intent
+that the arm's own learned policy executes ([policies.md](../policies.md)). The thesis holds:
 the LLM picks the verb, LeRobot moves the arm, quackd enforces the contract. (With the optional `--decision-llm`, some of the verbs that are a choice rather than a number can be picked by a decision LLM instead; every angle is still the model's, and it is off unless you name one: [decision-llms.md](../decision-llms.md).)
 
 Upstream pinned at
@@ -52,8 +53,9 @@ model cannot exceed.
 
 | What you want | What does it |
 |---|---|
-| drive the follower from a leader arm, record a dataset, train or run a policy | LeRobot's own tools. quackd never calls them and never writes to your datasets |
+| drive the follower from a leader arm, record a dataset, train a policy | LeRobot's own tools. quackd never calls them and never writes to your datasets |
 | have a model choose the next verb, inside limits you wrote down, with every refusal recorded | quackd |
+| hand the arm to a policy you trained, one short subtask at a time, under the model and inside those limits | quackd's policy server, `quackd policy serve`, which loads a LeRobot checkpoint in a process of its own ([policies.md](../policies.md)) |
 | run one verb by hand, right now | quackd over MCP (`robot_run_verb`), or LeRobot's own Python API |
 
 The contract is a `.duck` file: the verbs the model may use, the budget in steps and minutes,
@@ -112,7 +114,7 @@ drive the arm.
 
 | `--robot` | Status | What it is |
 |---|---|---|
-| `lerobot:mock` | ✅ | an arm in memory: goals land instantly, the gripper stops on the object, a scripted policy answers `pick`, and it refuses an out-of-range goal in the same words the real one does |
+| `lerobot:mock` | ✅ | an arm in memory: goals land instantly, the gripper stops on the object, a scripted policy answers `pick` and `manipulate`, and it refuses an out-of-range goal in the same words the real one does |
 | `lerobot:real` | ✅ | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch), and as many USB webcams as `--camera-url` names; every name VERIFIED at the pin, exercised against a fake arm and a fake camera, and run on one real arm on two afternoons, 2026-09-15 on quackd 0.9.0 and 2026-09-23 on quackd 0.12.0, with lerobot 0.6.1 and no policy. What changed after 2026-09-23 has not run on an arm yet |
 | `lerobot:mujoco` | ✅ | [the arm's simulator](#the-simulator-lerobotmujoco): `lerobot:real`'s own code over a physics model of the SO-101 in MuJoCo, the maker's model fetched at a pinned commit, with the cameras rendered from the scene (extra `quackd[lerobot-sim]`, Python 3.11 or newer, no LeRobot and no torch). A seeded grasp sweep and `quackd preflight` sweeps pass on the maker's model, and nothing has compared it against an arm, so it never raises `lerobot:real`'s status ([adapter-status.md](../adapter-status.md)) |
 
@@ -670,20 +672,19 @@ task file on seed after seed.
 ### What `pick` needs, and what it does not have
 
 `pick` and `manipulate` hand the whole arm to a learned policy, and both are confirm-gated for
-that reason. On `lerobot:real` they are **absent from the manifest unless a policy was injected
-in Python**, and there is no CLI flag that loads one today. A checkpoint loads in
+that reason. On `lerobot:real` and `lerobot:mujoco` they are **in the manifest only when the run
+names a policy server** with `--policy-url` ([below](#a-run-with-a-policy-server)), or when a
+policy object is handed to the backend in Python. A checkpoint loads in
 [a policy server of its own](#a-policy-in-a-process-of-its-own-quackd-policy-serve), and the arm
-reaches it through `RemoteRunner`, handed to the backend as its `policy=` in Python until
-`quackd run` takes the server's address. `real.py` still has `load_policy(path)`, which would
-load one in the arm's own process and which nothing calls or has run: it is the `LOAD_POLICY`
-row in [the policies' table](#the-policies-upstream-lerobot-061) below. So
-`quackd run --robot lerobot:real` offers neither verb yet. Every other verb is fully reachable
-from the CLI.
+reaches it through `RemoteRunner`, the server's client. `real.py` still has `load_policy(path)`,
+which would load one in the arm's own process and which nothing calls or has run: it is the
+`LOAD_POLICY` row in [the policies' table](#the-policies-upstream-lerobot-061) below. Setting a
+server up, on the laptop or on a rented GPU, is [policies.md](../policies.md).
 
-If you get a policy running this way, `pick` runs it as a segment, a loop of its own on the
-arm's clock that reads the arm, judges the reading, takes the policy's goal and sends it, and
-the verb waits for that loop to end. A policy object with one `act` a call runs at 10 Hz, one
-`act` a tick, as `pick` always ran it:
+`pick` runs its policy as a segment, a loop of its own on the arm's clock that reads the arm,
+judges the reading, takes the policy's goal and sends it, and the verb waits for that loop to
+end. A policy object with one `act` a call runs at 10 Hz, one `act` a tick, as `pick` always ran
+it:
 
 - **It ends as soon as something is held.** `holding` is judged on the loop's own reads, each
   tick, so the policy stops the moment a grasp settles and the next verb is not refused as
@@ -692,8 +693,8 @@ the verb waits for that loop to end. A policy object with one `act` a call runs 
 - **A goal past the travel is clipped and counted, not refused.** A verb's goal there is
   refused, and a policy's is clipped to the edge and counted in `extras.range_clips`, because
   one a tick over should not abort a grasp ([ADR-0036](../adr/0036-what-the-arm-does-not-say.md)).
-  Its actions pass the same step cap as a verb's. A joint reading outside its travel is left
-  out of every action, as a stop leaves it out.
+  Its actions are capped at the verbs' own speed ([below](#manipulate-and-the-loop-a-policy-runs-in)).
+  A joint reading outside its travel is left out of every action, as a stop leaves it out.
 - **It stops the policy and holds the arm** on a hot joint, torque off, a camera that gave no
   frame, a goal that is not a finite number or names no motor of this arm, a goal held past the
   travel for 1 s, 3 sends in a row that did not reach the arm, or a read the arm did not
@@ -789,7 +790,9 @@ it sooner, while a verb that sends a goal meanwhile is refused, as on the arm.
 
 A checkpoint's processors are code: loading one imports whatever class its JSON names
 (`PROCESSOR_CLASS_IMPORT` in [the policies' table](#the-policies-upstream-lerobot-061)). So a
-policy never runs in the process that owns the arm's serial bus. It runs in a server you start,
+policy never runs in the process that owns the arm's serial bus
+([ADR-0048](../adr/0048-policies-are-the-arms-executor.md)), and [policies.md](../policies.md)
+is how to set one up, with the licences of the ones there are. It runs in a server you start,
 in a terminal of its own, on the laptop or on a rented GPU you reach through `ssh -L`, and the
 arm's side reaches it over HTTP on port 9875, with a client that needs no torch and no LeRobot.
 It serves a LeRobot checkpoint named as `REPO@REVISION`
@@ -1424,6 +1427,7 @@ split falls like this:
 | **A choice** | `report_state`, `stop`, `place`, `gripper`, `observe` (when a camera is configured) | `report_state`, `stop`, `place`, `gripper(open=true)`, `gripper(open=false)`, `observe` |
 | **A number** | `move_joints`, `pick` | none, ever |
 | **A sentence** | `assess_task`, `declare_success`, `declare_failure`, `remember` | none, ever |
+| **A segment** | `manipulate`, when a task file lists its instructions | one per instruction, offered and compared and never taken |
 
 `gripper` is a choice because its only parameter is a boolean. `move_joints` is not, for two
 reasons that hold independently. Its `positions` is a required object, which is enough on its
@@ -1431,9 +1435,15 @@ own. And the joint names are nowhere in the schema: they are enforced by a `fiel
 against `JOINTS`, so there is nothing for a decision LLM to enumerate even in principle, and no
 version of this could be talked into offering one.
 
-`pick` is out on both counts, being a free string and confirm gated. The step cap, the range
-refusal and the hot-servo precondition apply to a stepper-authored call exactly as they apply
-to a model's, because both go through the same executor.
+`pick` is out on both counts, being a free string and confirm gated. `manipulate` is a free
+string too, unless a `duck: 3` task file lists its instructions, which makes it one choice per
+instruction. The stepper is then shown each of them and never takes one, in either mode: under
+`--yes` nobody is asked at a confirm gate, so a stepper that cleared its floor would start the
+arm's policy with no person and no model involved. Its answer is recorded beside the model's
+(`gate: shadow_only`), which is the agreement rate promoting it would need
+([ADR-0048](../adr/0048-policies-are-the-arms-executor.md)). The step cap, the range refusal and
+the hot-servo precondition apply to a stepper-authored call exactly as they apply to a model's,
+because both go through the same executor.
 
 [`ducks/arm-grip-check.duck`](../../ducks/arm-grip-check.duck) is the task built out of the
 first row alone, and it is the worked example on that page.
@@ -1574,9 +1584,15 @@ quackd, side by side, is [safety.md](../safety.md).
   quackd lowers the flag when it closes the port between attempts, in the same call and once
   the port has shut, so never under another call's packet. Upstream's own disconnect lowers it
   too, and lowering it writes nothing to a motor (`up.BUS_DISCONNECT`).
-- **`pick` is confirm-gated**: a learned policy moves the whole arm. Its actions go through
-  the same step cap as a verb's, and a goal past the travel is clipped and counted rather than
-  refused ([What `pick` needs](#what-pick-needs-and-what-it-does-not-have)).
+- **`pick` and `manipulate` are confirm-gated**: a learned policy moves the whole arm. Its
+  actions are capped at the verbs' own speed, per second rather than per send, so a policy
+  faster than the verbs' tick takes smaller steps rather than moving faster, and a goal past the
+  travel is clipped and counted rather than refused
+  ([What `pick` needs](#what-pick-needs-and-what-it-does-not-have)). A joint that reads past
+  its travel is left out of every goal a policy sends, because the servo would take any goal
+  for it as the end of the travel and drive there at its own speed, which no cap slows, and
+  quackd cannot halt that rise once a move has started it. The policy itself runs in a server of
+  its own, never in the process that holds the bus ([policies.md](../policies.md)).
 
 ## The rest pose
 
@@ -2816,7 +2832,8 @@ What nobody measured, and what this page therefore still cannot tell you:
 - whether 5 degrees an action felt right in the room, which is the one number on this page that
   only a person standing next to the arm can judge
 
-`pick` and `load_policy()` are still untried on hardware: no policy was loaded that afternoon.
+No policy was loaded that afternoon, or on 2026-09-23. `pick`, `manipulate` and the policy
+server postdate both, and none of them has driven an arm.
 
 ## How to help
 

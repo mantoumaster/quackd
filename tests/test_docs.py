@@ -1936,3 +1936,47 @@ def test_the_arms_page_gives_a_policy_segment_s_limits_as_the_code_keeps_them() 
     ]
     for words in said:
         assert words in section, f"docs/adapters/lerobot.md's pick section no longer says {words!r}"
+
+
+def test_the_policy_page_quotes_both_sentences_a_missing_server_gets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed port refuses at once on Linux and macOS, and Windows retries it for longer than
+    the client waits, so the same missing server is one of two sentences depending on the OS.
+    The page once quoted only the Windows one, which the rented GPU's Linux never prints. Both
+    are taken from the client here, so a sentence reworded there fails here too."""
+    from quackd_lerobot.policy import client
+    from quackd_lerobot.verbs import JOINTS
+
+    page = _one_line((REPO / "docs" / "policies.md").read_text(encoding="utf-8"))
+    for error in (TimeoutError, ConnectionRefusedError):
+        runner = client.RemoteRunner("http://127.0.0.1:9875", token="t" * 32, motors=JOINTS)
+
+        def connect(timeout_s: float, error: type[OSError] = error) -> object:
+            raise error
+
+        monkeypatch.setattr(runner, "_connection", connect)
+        with pytest.raises(client.PolicyServerError) as said:
+            runner.policy()
+        sentence = _one_line(str(said.value))
+        assert sentence in page, f"docs/policies.md does not quote what {error.__name__} says"
+
+
+def test_every_licence_quackd_credits_says_where_it_was_read() -> None:
+    """A licence is a claim about somebody else's page, and the page is how a reader checks it.
+
+    Every entry in NOTICE ends on the address of the thing it credits, and every row of the
+    policy page's licence table that names a checkpoint links the page its licence was read on,
+    because that table says it is what each page said on the day. The learned policies' entry
+    once had neither, beside a licence summary that turned out to need its source's own words."""
+    notice = (REPO / "NOTICE").read_text(encoding="utf-8")
+    entries = re.split(r"\n  \* ", notice.split("\n  * ", 1)[1])
+    bare = [entry.split("\n", 1)[0] for entry in entries if "https://" not in entry]
+    assert not bare, f"NOTICE credits these with no address: {bare}"
+    page = (REPO / "docs" / "policies.md").read_text(encoding="utf-8")
+    table = page.split("\n## Licences\n", 1)[1].split("\n## ", 1)[0]
+    rows = [line for line in table.splitlines() if line.startswith("| ") and "/" in line]
+    named = [row for row in rows if re.search(r"`[\w.-]+/[\w.-]+`", row)]
+    assert named, "docs/policies.md's licence table names no checkpoint"
+    unlinked = [row[:60] for row in named if "](https://" not in row]
+    assert not unlinked, f"docs/policies.md's licence rows cite no page: {unlinked}"
