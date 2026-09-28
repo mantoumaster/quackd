@@ -69,12 +69,15 @@ connected twice does not carry a release into its second session. `close()` alre
 flag just before its own disconnect every time, True at the rest pose or with none recorded and
 False away from it, so every close lets go where it did before. The three connects quackd
 refuses once the arm is energised (not calibrated, no calibration file, no motors bus) now
-write True before their disconnect, so they let go as they did. A connect that fails any other
-way once the arm is energised, a first read the arm does not answer among them, was left to
-that same collection with nothing said. It now closes the port with torque kept, as a close
-over an arm that did not answer does, and says so. Only the endings nobody decided changed,
-and they keep torque. Where the flag will not take, the close reads it back and says what the
-disconnect will do rather than assuming it.
+write True before their disconnect, so they let go as a refusal of a freshly built follower
+always did. One refusal changed with that: on a transport connected again after a close that
+kept torque, a refusal carried that close's flag into its disconnect and kept the arm energised
+without saying so, and now lets go like any other. A connect that fails any other way once the
+arm is energised, a first read the arm does not answer among them, was left to that same
+collection with nothing said. It now closes the port with torque kept, as a close over an arm
+that did not answer does, and says so. Besides that one refusal, the endings that changed are
+the ones nobody decided, and they keep torque. Where the flag will not take, the close reads it
+back and says what the disconnect will do rather than assuming it.
 
 **Amended 2026-09-27 by [ADR-0047](0047-the-arms-simulator-runs-the-real-backend.md):** the arm
 now has a simulator, and it runs this ADR's code rather than a copy of it. `lerobot:mujoco` is

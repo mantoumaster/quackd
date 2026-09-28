@@ -53,13 +53,16 @@ before.
   reached by `--address` and never by a registered name, which it was on 2026-09-23 when its
   rest pose was recorded; and that checklist's *What to report*, six things still chosen against
   Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
-- ⬜ **The SO-101 again, for everything in 0.14.0.** The arm last ran a build of the code that
-  became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the travel,
+- ⬜ **The SO-101 again, for everything in 0.14.0 and 0.15.0.** The arm last ran a build of the
+  code that became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the travel,
   `quackd robot release`, the Enter offer at the end of a run whose rest move missed, the
   `--by-hand` refusal over a joint past its travel, the paced `move_joints` and the connect
-  retries have run only against a fake arm, `lerobot:mock` and the test suite. The seven bench
-  steps that would settle them, in order, are under *Known limitations* in
-  [CHANGELOG.md](CHANGELOG.md) for 0.14.0, and
+  retries have run only against a fake arm, `lerobot:mock` and the test suite, and what 0.15.0
+  changes in `lerobot:real`, the follower that keeps torque on a disconnect quackd did not ask
+  for among it, only against a fake arm or the simulator. The seven bench steps that would
+  settle 0.14.0's, in order, are under *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for
+  0.14.0, and the one for 0.15.0's follower, a second Ctrl-C during the fold back to the rest
+  pose, is under 0.15.0's, which names the six changes nobody has written a bench step for.
   [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to take
   the arm through, with a hand on the switch.
 - ⬜ **The SO-101 against its simulator.** `lerobot:mujoco` runs the arm's real backend over the

@@ -1559,7 +1559,7 @@ _ARM_SIMULATOR_CLAIMS_THE_CODE_NEVER_MADE = (
     ),
     (
         "seven bench steps 0.14.0 owes, above",
-        "[Unreleased] heads the CHANGELOG, so 0.14.0's list of bench steps is below it",
+        "a later release heads the CHANGELOG, so 0.14.0's list of bench steps is below it",
     ),
     (
         "both simulators draw the ball",
@@ -1594,6 +1594,11 @@ _ARM_SIMULATOR_CLAIMS_THE_CODE_NEVER_MADE = (
         "the transcripts in docs/assets are local models on sim2d, so the film is the first "
         "cloud model filmed in a simulator, not the first model in one",
     ),
+    (
+        "that an so-101 is rehearsed",
+        "a task is rehearsed, through the arm's backend on the maker's model, and nothing has "
+        "compared that model against an arm (ADR-0047), so no SO-101 is",
+    ),
 )
 
 
@@ -1622,6 +1627,150 @@ def test_no_page_repeats_a_claim_about_the_arms_simulator_the_code_never_made() 
             # pytest.fail rather than assert, for the reason the host claims above give
             if wrong in text:
                 pytest.fail(f"{path.relative_to(REPO).as_posix()} says {wrong!r}: {true}")
+
+
+#: What the release note and ADR-0036 said about the arm's torque on a disconnect when 0.15.0
+#: built the follower to keep it, each beside what the code does. The first three said no
+#: decided ending changed, and one refusal did: on a transport connected again after a close
+#: that kept torque, it used to keep the arm energised, and it lets go now. The last listed
+#: three of that release's changes to `lerobot:real` as though they were all of them.
+_ARM_TORQUE_CLAIMS_THE_CODE_NEVER_MADE = (
+    (
+        "so every clean ending lets go where it did",
+        "a refusal after a close that kept torque used to keep the arm energised, and lets go "
+        "now (`_give_up` writes the flag True)",
+    ),
+    (
+        "so they let go as they did",
+        "a refusal after a close that kept torque used to keep the arm energised, and lets go "
+        "now (`_give_up` writes the flag True)",
+    ),
+    (
+        "only the endings nobody decided changed",
+        "a refusal after a close that kept torque changed too, and it lets go",
+    ),
+    (
+        "what this release changes in `lerobot:real`, the follower built",
+        "the release note names more changes to lerobot:real than three, and a list of three "
+        "beside the phrase read as all of them",
+    ),
+)
+
+
+def test_no_page_repeats_a_claim_about_the_arms_torque_the_code_never_made() -> None:
+    """Sentences about when the arm lets go that read well and were wrong. The CHANGELOG,
+    ADR-0036, the arm's own README and its source are read along with the living documents,
+    because the first two carried them and the source says the same things in docstrings."""
+    sources = [
+        REPO / "CHANGELOG.md",
+        REPO / "adapters" / "lerobot" / "README.md",
+        *sorted((REPO / "docs" / "adr").glob("0036-*.md")),
+        *sorted((REPO / "adapters" / "lerobot" / "src").rglob("*.py")),
+    ]
+    for path in _living_docs() + sources:
+        text = _one_line(path.read_text(encoding="utf-8"), seams=path.suffix == ".py")
+        for wrong, true in _ARM_TORQUE_CLAIMS_THE_CODE_NEVER_MADE:
+            # pytest.fail rather than assert, for the reason the host claims above give
+            if wrong in text:
+                pytest.fail(f"{path.relative_to(REPO).as_posix()} says {wrong!r}: {true}")
+
+
+def test_the_arm_left_holding_by_an_exit_that_skips_the_close_has_a_bench_step() -> None:
+    """0.15.0 built the follower to keep torque on a disconnect quackd did not ask for, so a
+    second Ctrl-C during the fold back to the rest pose leaves the arm holding where 0.14.0
+    could drop it. Its release note first said that change had never met an arm without saying
+    how the bench would settle it, and PLAN's item for the arm pointed only at 0.14.0's seven
+    steps. Both name the step now, and a later edit that drops it from either is caught here.
+
+    Both also send the reader to step 14 of the hardware checklist for it, which is the order a
+    lab visit takes the arm through, and step 14 said nothing about a second press. A visit
+    that followed the checklist would have skipped the one bench step this release wrote, so
+    step 14 is read too."""
+    step = "a second ctrl-c during the fold back to the rest pose"
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    release = changelog.split("\n## [0.15.0]", 1)[1].split("\n## [", 1)[0]
+    assert step in _one_line(release), "CHANGELOG.md's 0.15.0 section no longer names the step"
+    plan = _one_line((REPO / "PLAN.md").read_text(encoding="utf-8"))
+    assert step in plan, "PLAN.md's item for the SO-101 no longer names 0.15.0's bench step"
+    checklist = (REPO / "docs" / "lerobot-hardware-checklist.md").read_text(encoding="utf-8")
+    step_14 = checklist.split("\n14. ", 1)[1].split("\n## ", 1)[0]
+    assert step in _one_line(step_14), (
+        "step 14 of docs/lerobot-hardware-checklist.md no longer asks for 0.15.0's bench step, "
+        "and the release note and PLAN.md both send the reader there for it"
+    )
+
+
+def test_the_simulators_bench_steps_are_one_list_in_plan_and_the_release_note() -> None:
+    """PLAN.md's item for the SO-101 against its simulator lists each bench step it owes, and
+    0.15.0's Known limitations numbers the same steps and then 0.14.0's seven. When the rest
+    move pressing the gripper into the table became a step of its own in PLAN.md, the release
+    note folded it into the joint signs, so the intro named five steps and the list under it
+    four. The first three words of each item are compared in order, so a step added to one
+    list and not the other, or merged into its neighbour, fails here."""
+    plan = (REPO / "PLAN.md").read_text(encoding="utf-8")
+    item = plan.split("**The SO-101 against its simulator.**", 1)[1].split("\n\n  Until", 1)[0]
+    planned = [" ".join(line.split()[1:4]).lower() for line in re.findall(r"^  - .*", item, re.M)]
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    release = changelog.split("\n## [0.15.0]", 1)[1].split("\n## [", 1)[0]
+    bullet = release.split("**The arm's simulator is not the arm", 1)[1].split("\n- **", 1)[0]
+    numbered = re.findall(r"^  \d+\. (.*)", bullet, re.M)
+    assert numbered and "0.14.0" in numbered[-1], (
+        "CHANGELOG.md's 0.15.0 list of the simulator's bench steps no longer ends with 0.14.0's"
+    )
+    listed = [" ".join(line.split()[:3]).lower() for line in numbered[:-1]]
+    assert planned, "PLAN.md's item for the SO-101 against its simulator lists no bench step"
+    assert listed == planned, (
+        f"PLAN.md owes the simulator {planned} and CHANGELOG.md's 0.15.0 lists {listed}: a step "
+        "in one and not the other, or merged into its neighbour"
+    )
+
+
+def test_the_release_note_names_the_frames_that_are_still_encoded_on_the_loop() -> None:
+    """0.15.0 moved the PNGs of a turn's own observation into a worker thread, because a
+    heartbeat waiting on the loop's thread was held up by them. The `observe` verb's frames
+    still go through `AgentLoop._on_frames`, which writes them on that thread, and
+    `robot_observe` encodes what it returns to an MCP client there too. The note first said
+    the frames a turn saves were encoded off the loop and named only the colour detector and
+    the SDKs as still on it, which read as though every frame had moved."""
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    release = _one_line(changelog.split("\n## [0.15.0]", 1)[1].split("\n## [", 1)[0])
+    assert "still run on the loop's thread" in release, (
+        "CHANGELOG.md's 0.15.0 heartbeat entry no longer says what still runs on the loop"
+    )
+    still = release.split("still run on the loop's thread", 1)[0].rsplit(". ", 1)[-1]
+    for named in ("the `observe` verb", "`robot_observe`", "every detector but a board's"):
+        assert named in still, (
+            f"CHANGELOG.md's 0.15.0 list of what still runs on the loop leaves out {named}"
+        )
+
+
+#: How the pages said an MCP session's minutes were counted before 0.15.0 started them at the
+#: connect (`RobotSession.connect` calls `budget.start()` once the transport has connected).
+#: A session still begins at the spawn, and pages that say so are right. Its clock does not.
+_MCP_CLOCK_STARTS_AT_THE_SPAWN = (
+    re.compile(
+        r"(clock|minutes)[^.]{0,40}(start|begin)s? (when|at) "
+        r"(the client spawn|the spawn|the server start)"
+    ),
+    re.compile(r"minutes from the spawn"),
+    re.compile(r"counted from when the server started"),
+)
+
+
+def test_no_page_says_an_mcp_sessions_minutes_start_at_the_spawn() -> None:
+    """0.15.0 starts an MCP session's clock once its robot has connected, as a `quackd run`'s
+    is, so an arm's connect retries no longer come out of the minutes. docs/mcp.md was
+    corrected with the code, and the arm's first-run guide still said, in five paragraphs, that
+    the five minutes begin when the client spawns the server."""
+    for path in _living_docs():
+        text = _one_line(path.read_text(encoding="utf-8"))
+        for wrong in _MCP_CLOCK_STARTS_AT_THE_SPAWN:
+            found = wrong.search(text)
+            if found:
+                pytest.fail(
+                    f"{path.relative_to(REPO).as_posix()} says {found.group(0)!r}: an MCP "
+                    "session's minutes count from when its robot connected"
+                )
 
 
 def test_every_step_of_the_arms_first_run_has_a_mirror_or_a_reason() -> None:

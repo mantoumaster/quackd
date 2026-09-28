@@ -446,7 +446,7 @@ And the same shape with two robots instead of one, from the `flock.jsonl` of a `
 
 ## Status
 
-Version 0.14, one real arm, three simulators and mocks for the rest. What has been built, and how far each piece has actually been exercised:
+Version 0.15, one real arm, three simulators and mocks for the rest. What has been built, and how far each piece has actually been exercised:
 
 | Piece | Status |
 |---|---|

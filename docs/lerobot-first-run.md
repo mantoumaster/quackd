@@ -1852,10 +1852,10 @@ same page, `observe` comes back `"allowed": false` and the call returns words.
 one, and it does not exist in a chat window. Three things you can reach for: the model calling
 `robot_run_verb(verb="stop")`, you closing the session, and the power switch. The first costs a
 budget step like every other verb and is refused once the budget is spent, which five minutes
-from the spawn leaves you the other two. The second parks the arm on the way out only where a
-rest pose is recorded for this robot ([section 07](#07-record-the-rest-pose)), and not at all
-under `--dry-run`: with no pose recorded the close releases torque and the arm sags where it
-stands. The third releases torque as well, so the arm falls from wherever it was holding.
+from the arm's connect leaves you the other two. The second parks the arm on the way out only
+where a rest pose is recorded for this robot ([section 07](#07-record-the-rest-pose)), and not
+at all under `--dry-run`: with no pose recorded the close releases torque and the arm sags where
+it stands. The third releases torque as well, so the arm falls from wherever it was holding.
 Support it by hand before you cut, and keep your fingers out of the jaws. The heartbeat is the
 one thing here that acts without being asked: one missed ping sends a stop and shuts the session.
 A contract's `abort_when` is not the same mechanism. It is checked only when the model runs a
@@ -1877,10 +1877,11 @@ definition not its rest pose, so take its weight first and keep your fingers out
 whatever the model chose to keep with `robot_remember`, which appends one line per note to
 `~/.quackd/memory/<name>.jsonl` ([memory.md](memory.md)).
 
-**The budget clock starts when the client spawns the server.** Without a loaded `.duck` a
+**The budget clock starts when the server has connected the arm.** Without a loaded `.duck` a
 session allows every verb that is not `dangerous`, on a default of 40 verb steps and five
-minutes, and those five minutes begin at the spawn rather than at the first verb. Time spent
-reading, thinking or talking to you is spent out of them. Running out ends nothing and parks
+minutes, and those five minutes begin as the server starts, once the arm has connected and
+before it is driven to its rest pose, rather than at the first verb. Time spent reading,
+thinking or talking to you is spent out of them. Running out ends nothing and parks
 nothing: every verb after that comes back `ok: false` with `budget exhausted`, `stop` among
 them, the session stays open, and the arm holds its last goal under torque. A spent budget ends
 a `quackd run` instead, through the same parking teardown as any other exit, so Part 1's
@@ -2895,11 +2896,11 @@ refuses to start the server at all, saying the arm did not reach its rest pose. 
 was captured against the mock arm, so the numbers are the mock's and yours will be your own arm's.
 
 **The clock is already running.** The session gets five wall-clock minutes, and they start when the
-server starts rather than when you start check 1. The `done` lines below count them out. Five
-checks on a real arm, with a cable to pull and a server to restart, goes past five minutes easily,
-and when it does verbs start coming back `budget exhausted` naming `max_minutes`. That is the clock
-running out rather than any of the checks below catching something, so do not read it as one of
-them. Restart the server and the five minutes start again.
+server has connected the arm rather than when you start check 1. The `done` lines below count
+them out. Five checks on a real arm, with a cable to pull and a server to restart, goes past five
+minutes easily, and when it does verbs start coming back `budget exhausted` naming `max_minutes`.
+That is the clock running out rather than any of the checks below catching something, so do not
+read it as one of them. Restart the server and the five minutes start again.
 
 **Nothing below moves until a verdict is on the record.** Ask for `robot_assess_task` with
 `feasible` and a reason, and read the `note` field of what comes back:
@@ -3108,8 +3109,8 @@ that [M08](#m08-the-first-session) locates.
 **What it costs is a budget you did not choose.** A bare session runs on 40 verb steps and five
 minutes, and the `done` line of every call carries both, as
 `budget: step 1/40, llm calls 0/40, 0.0/5 min`. The middle column stays at zero because quackd
-calls no model here. The five minutes starts when the client spawned the server, not at your first
-verb.
+calls no model here. The five minutes starts when the server the client spawned has connected
+the arm, not at your first verb.
 
 > [!WARNING]
 > A session you set up slowly can reach the arm with most of its clock gone. Reading back through
@@ -3208,9 +3209,9 @@ the server and the session.
 allowlist holds every verb that is not `dangerous`, and the session runs on a default budget
 of 40 verb steps and five minutes. The allowlist is the only gate open that wide: a
 confirm-class verb still needs `--yes` on the server's command, which is the confirm row
-above. That clock starts when the client spawned the server, not when you asked for the first
-verb. A session you opened, then spent ten minutes talking through, is out of minutes before
-the arm has moved at all.
+above. That clock starts when the server the client spawned has connected the arm, not when
+you asked for the first verb. A session you opened, then spent ten minutes talking through, is
+out of minutes before the arm has moved at all.
 
 This is what it looks like, captured against the mock arm on a contract whose budgets were
 one step, four model calls and three minutes, so the numbers are small enough to watch. The

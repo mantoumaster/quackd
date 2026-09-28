@@ -11,11 +11,13 @@ it ran and what it cost, the trace is the log, and the log is the whole screen. 
 that a decision LLM is a row of data rather than a vendor, the pilot is one flag, and the
 trace spellings are gone. 0.13's was that quackd has a path onto an NVIDIA Jetson, where a
 Jetson is a host rather than a body, and that a bare `--llm anthropic` and `--llm openai`
-now run Claude Opus 5.5 and GPT-6 Sol. **0.14's is that a real SO-101 ran ten of the task files
+now run Claude Opus 5.5 and GPT-6 Sol. 0.14's was that a real SO-101 ran ten of the task files
 written for it, the second afternoon quackd has spent on an arm, and that each of the five
 faults that afternoon found has an answer: the arm parks where its servos can reach, lets go
 when a person asks, connects again after a bad packet, moves at the pace it is given and can
-say that its task goes nowhere.**
+say that its task goes nowhere. **0.15's is that quackd reaches an NVIDIA Jetson from the
+laptop and never runs on one, and that a task for an SO-101 is rehearsed at home, through the
+arm's own backend on the maker's model of it, before a trip to the lab.**
 
 **The one sentence:** One CLI for all your robots. Connect them, command them, and let them
 work together, each with an LLM for a brain.
