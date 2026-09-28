@@ -1793,14 +1793,19 @@ executor: one short subtask a call, and a fresh look after each. A `--goal` run 
 
 **On the twin, the first segment is refused until `shoulder_lift` is moved in.** A segment starts
 only with every joint inside its calibrated travel, and the twin starts where the arm's rest pose
-puts it. The lab arm's was recorded folded, past what its calibration lets `shoulder_lift` be
-driven to ([section 07](#07-record-the-rest-pose)), so the twin rests at its model's stop,
-outside that joint's travel, and `manipulate` refuses with `Move shoulder_lift inside its travel
-first`. A model moves the joint in with `move_joints` when it reads that, and an MCP client can do
-the same before its first segment. `--controller vla`, below, only ever calls `manipulate`, so a
-vla run on this twin ends in failure, in the verb's own words, before any segment runs. The lasting
-fix is to calibrate the arm again folded, the bench item in [PLAN.md](../PLAN.md) that reads the
-calibrated value at each of the arm's stops, and record the rest pose again after it.
+puts it, settled clear of its table ([the arm's page](adapters/lerobot.md#running-it)). The lab
+arm's was recorded folded, past what its calibration lets `shoulder_lift` be driven to
+([section 07](#07-record-the-rest-pose)) and past its model's stop too, so the twin starts with
+that joint settled just off the stop, outside its travel, and `manipulate` refuses with
+`Move shoulder_lift inside its travel first`. A model moves the joint in with `move_joints` when
+it reads that, and an MCP client can do the same before its first segment. After a small move in
+and two segments, the close parked the joint at the edge of its travel, in the pose the twin
+settled to there, and let it go. After a larger move the rest move can set the gripper down on
+the table short of that pose, and the close keeps torque on. `--controller vla`, below, only ever
+calls `manipulate`, so a vla run on this twin ends in failure, in the verb's own words, before
+any segment runs. The lasting fix is to calibrate the arm again folded, the bench item in
+[PLAN.md](../PLAN.md) that reads the calibrated value at each of the arm's stops, and record the
+rest pose again after it.
 
 **Or take the model out altogether.** `--controller vla` is a scripted pilot that hands the
 policy each instruction a `duck: 3` task file lists, or the goal as the only one, and then asks

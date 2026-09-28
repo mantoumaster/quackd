@@ -202,13 +202,26 @@ is asked for anything, and the refusal ends `Move shoulder_lift inside its trave
 the joint: a joint out there is left out of every goal a policy sends, so the policy could never
 move it. A twin of the lab's arm starts that way. Its rest pose was recorded folded, past what
 its calibration lets `shoulder_lift` be driven to
-([ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md)), so the twin rests at the
-model's stop, where that joint read -100 on 2026-09-28, and its first `manipulate` is refused. A
-pilot that can call `move_joints`, a model under `--controller llm` or an MCP client, moves the
-joint inside first, as that run did. `--controller vla` only ever calls `manipulate`, so it
-cannot, and its run ends in failure, in the verb's own words. The lasting fix is to calibrate the
-arm again folded, so the fold lies inside its travel, which is the bench item in
-[PLAN.md](../PLAN.md) that reads the calibrated value at each of the arm's stops.
+([ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md)) and past the model's stop as
+well, so the twin starts with that joint settled just off the stop, clear of its table
+([the arm's page](adapters/lerobot.md#running-it)), and its first `manipulate` is refused. Over
+MCP on 2026-09-28, with `scripted:sweep` served:
+
+```
+do refused: shoulder_lift reads -99.4, outside its calibrated travel of -84.2..84.2, so the policy was not started. A joint outside its travel is left out of every goal a policy sends, because the one goal its servo takes there is the end of its travel, and the policy could never move it. Move shoulder_lift inside its travel first
+```
+
+A pilot that can call `move_joints`, a model under `--controller llm` or an MCP client, moves the
+joint inside first, as that run did, to `shoulder_lift` -40, `elbow_flex` 40 and `wrist_flex` 0,
+and its two segments then ran. The same run made in-process ended with the rest move parking the
+joint at the edge of its travel, in the pose the twin settled to there, and the close letting it
+go. A move that takes the arm further from its fold can still end with the rest move setting the
+gripper down on the table short of that pose, and the close then keeps torque on
+([the arm's page](adapters/lerobot.md#running-it)). `--controller vla` only ever calls
+`manipulate`, so it cannot move the joint in, and its run ends in failure, in the verb's own
+words. The lasting fix is to calibrate the arm again folded, so the fold lies inside
+its travel, which is the bench item in [PLAN.md](../PLAN.md) that reads the calibrated value at
+each of the arm's stops.
 
 A task file that means to use the policy allows `manipulate`, and a `duck: 3` file can list the
 subtasks it may be told, how long each segment runs and how long they run in all

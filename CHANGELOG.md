@@ -423,11 +423,13 @@ served. Known limitations, below, says what only the bench can settle.
 - **A frame of another size can be accepted only from Python**, with `RemoteRunner`'s
   `accept_frame_size`. From the command line it refuses the connect with the size to give the
   camera.
-- **A twin of an arm whose rest pose lies past its travel cannot start a segment where it
-  rests.** A segment starts only with every joint inside its travel, and such a twin starts at
-  its model's stop, so its first `manipulate` is refused until `shoulder_lift` is moved in.
-  `--controller vla` only calls `manipulate`, so it cannot recover. The lasting fix is to
-  calibrate the arm again folded ([docs/policies.md](docs/policies.md#on-the-laptop-alone)).
+- **The lab arm's twin cannot start a segment where it starts.** A segment starts only with
+  every joint inside its travel, and a twin starts where its rest pose puts it, settled clear of
+  its table. The lab arm's fold lies past `shoulder_lift`'s travel and past the model's stop, so
+  its twin starts with that joint settled just off the stop, and its first `manipulate` is
+  refused until the joint is moved in. `--controller vla` only calls `manipulate`, so it cannot
+  recover. The lasting fix is to calibrate the arm again folded
+  ([docs/policies.md](docs/policies.md#on-the-laptop-alone)).
 - **A policy takes a second terminal.** The server is a process you start, on the laptop or on a
   rented GPU, and `quackd run` never spawns one. It gives torch one thread fewer than it would
   take and does not lower its own priority, and the run's record does not keep the thread count
