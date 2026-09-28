@@ -200,6 +200,25 @@ def test_render_says_everything_the_report_holds() -> None:
         assert needle in out, needle
 
 
+def test_the_transports_section_is_every_adapters_and_names_each_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each installed adapter adds its own rows to the transports table, so the table is not
+    one robot's. Its heading used to call them the Microduck's backends and say to pass
+    `--robot microduck:<name>`, which a row for the arm's simulator made untrue, so each row
+    names its own `adapter:backend` and the heading claims no body."""
+    monkeypatch.setattr(doctor, "_probe_models", lambda url, timeout_s=1.5: ("down", "not running"))
+    report = doctor.collect()
+    rows = {row.name: row for row in report.transports}
+    assert "lerobot:mujoco" in rows, sorted(rows)
+    buf = io.StringIO()
+    doctor.render(Console(file=buf, width=200), report)
+    out = buf.getvalue()
+    assert "transports (backends an adapter checks on this machine)" in out
+    assert "Microduck backends" not in out and "microduck:<name>" not in out
+    assert "lerobot:mujoco" in out and rows["lerobot:mujoco"].status in out
+
+
 @pytest.mark.parametrize("platform", ["win32", "linux"])
 def test_render_loses_nothing_on_a_codepage_that_cannot_carry_it(
     monkeypatch: pytest.MonkeyPatch, platform: str

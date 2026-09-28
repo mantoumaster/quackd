@@ -447,7 +447,7 @@ registry instead of from your hand.
 ### 07. Record the rest pose
 
 An SO-101 has no brake. It holds its own weight up because torque is on, and LeRobot's
-`disconnect()` disables torque by its own default, which quackd keeps. So until quackd had a
+`disconnect()` disables torque by its own default, which quackd asked for. So until quackd had a
 rest pose, the arm went limp and fell at the end of every clean run, and at the end of every
 `doctor` probe: that is what happened on the bench on 2026-09-15, on every run of the day.
 Runs also began from wherever the last one left the arm, so no two started from the same
@@ -995,8 +995,9 @@ that look sane. That the joint goals are small rather than enormous. And that th
 answered every heartbeat for the length of the run, because an arm that drops out here would
 have dropped out mid move in the next section.
 
-This costs a handful of API calls and is the cheapest rehearsal you will get. Run it more
-than once if the plan looks odd.
+This costs a handful of API calls and is the cheapest rehearsal you will get on the arm
+itself. Run it more than once if the plan looks odd. The other kind of rehearsal needs no arm at
+all, and moves everything in a model of it: [section 16](#16-between-visits-rehearse-on-the-simulator).
 
 Two of the bench's dry runs on 2026-09-15 ended early, and both endings were the rehearsal
 doing its job. One aborted with `the arm did not answer: TimeoutError` when a single heartbeat
@@ -1110,9 +1111,11 @@ same thing. Then watch what follows, because Ctrl-C is an exit path like any oth
 to its rest pose before quackd lets go of it, and if it cannot get there it stays energised and
 says so rather than dropping. Press Ctrl-C a second time and quackd quits at once, which is what
 the hint under the header offers; if that lands while the arm is on its way to the pose, the
-process exits without disconnecting at all and the arm holds where it stopped. That is the safe
-direction and it is still a surprise, so expect it rather than pressing twice out of habit
-([safety.md](safety.md)).
+close is skipped and the arm holds where it stopped. LeRobot may still disconnect the arm as the
+process lets go of it, and that disconnect keeps torque, because quackd builds the arm asking it
+to. In 0.14 and before it was built asking for the release, so the arm could fall there instead.
+That is the safe direction and it is still a surprise, so expect it rather than pressing twice
+out of habit ([safety.md](safety.md)).
 
 A [hand-placed run](#or-start-from-a-pose-you-set-by-hand) opens two more Ctrl-C windows, and
 neither behaves like the one above. **During the placement wait**, with the arm limp in your
@@ -1355,7 +1358,7 @@ connect.
 | `connect failed 3 times, the last on <joint> (id <N>): ... Missing motor IDs: - <N> ...` | that servo never answered its ping: a cable out, no power to it, or an error such as an overload. Nothing had been written yet, so nothing is said about torque | check that joint's cable and connectors and the servo supply, then run again |
 | `connect failed 3 times: ... Missing motor IDs:` with every motor listed | no servo answered at all, which is what a servo supply switched off looks like, as after a power cut, or a cable out between the board and the first servo. So no joint is named | check that the servo supply is on, then the arm's cables, then run again |
 | `connect stopped after attempt <k> of 3, because a stop was asked for` | you pressed Ctrl-C while the connect was failing, so it was not tried again. The attempt's own failure follows | nothing for the stop. Read the failure as the rows above, and keep a hand under the arm if the message says some motors may be left with torque on |
-| `connect failed: a LeRobot call (connect) has not come back; ...` and `keep a hand under the arm` | the connect ran past its deadline, and it may have stopped anywhere in the torque writes. It is not tried again | keep a hand under the arm, check the USB cable and that nothing else has the port, then run again |
+| `connect failed: a LeRobot call (connect) has not come back within 30 s; ...` and `keep a hand under the arm` | the connect ran past its deadline, and it may have stopped anywhere in the torque writes. It is not tried again | keep a hand under the arm, check the USB cable and that nothing else has the port, then run again |
 | `the arm is not calibrated` | the motors do not match a calibration | run `lerobot-calibrate` under the id quackd will use |
 | `the arm reports no calibration file` | there is no file for this id | the same fix, and check the path `doctor` prints |
 | `--camera-url ... did not open` | wrong index, or it will not open under this backend | try another index, add `?backend=msmf`, or drop a pinned size. The arm was not touched |
@@ -1370,7 +1373,7 @@ And once it is running:
 | `and it has stopped moving` | a stall: five ticks in which no watched joint moved, counted once the move's `duration_s` is up | something is in the way, or a servo tripped. The arm is held first. A joint blocked early in a slow move is only called stalled at the end of it |
 | `the camera gave no frame` | the webcam stalled or was unplugged | the arm carries on, and `report_state` starts saying `CAMERA DOWN:` |
 | `the arm's torque is off` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so this points at a tripped servo or the supply |
-| the run ends saying the arm did not answer, and closes on `quackd cannot tell whether the arm is holding itself up (...)` when the close could not read it either | the heartbeat's round trip failed. The close's line means quackd cannot say whether the arm is held up or limp. Seen once on 2026-09-15, in a dry run, and not since | hold the arm and cut its power, then check the cable, the power or a tripped servo. Do not reconnect without holding it, because connecting takes torque off every motor for a moment |
+| the run ends saying the arm did not answer, and closes on `quackd cannot tell whether the arm is holding itself up (...)` when the close could not read it either | the heartbeat's round trip failed. The close's line means quackd cannot say whether the arm is held up or limp. Seen once on 2026-09-15, in a dry run, and not since. One other cause was found later, in the simulator and not on an arm: the event loop's thread busy past the deadline while the arm answered in time, which 0.15.0 fixed. It is not known to be what happened that day | hold the arm and cut its power, then check the cable, the power or a tripped servo. Do not reconnect without holding it, because connecting takes torque off every motor for a moment |
 | the arm sags when the run ends | no rest pose is recorded, so torque drops where the arm stands | `quackd robot rest-pose arm-01`, with the arm folded by hand first |
 | `the arm is not at its rest pose (...), so torque was left on` | it could not get home: something is in the way, or a servo tripped. The run itself says `the arm did not reach its rest pose`, and at a terminal it offered to release the arm first | hold the arm first, whichever way out you take, because both commands connect and connecting takes torque off every motor for a moment. Then run `quackd robot release arm-01`, which lets it go into your hands, then clear whatever stopped it and run again. `quackd doctor --robot arm-01` tries the fold again instead, and the power switch is for when neither can reach the arm. It stays energised until you do one of them. If you calibrated again since you recorded the pose, record it again: the old angles name a different shape now |
 | `torque still reads on for <joints>: cut the power` | `quackd robot release` sent the release and those motors kept their torque | hold the arm and cut its power. The motors not named are limp, and the line after it says what the close did: kept torque, or took it off at the rest pose |
@@ -1473,11 +1476,12 @@ most of that page is a description rather than a record.
 
 ### 15. Optional: put a decision LLM in front of the model
 
-Last on purpose, and optional on purpose. Everything above is about proving one arm, one port,
-one camera and one rest pose, and a first run wants fewer moving parts between you and the
-servos rather than more. Once section 12 has waved, this is the one thing on the page worth
-adding, and it changes nothing you have already established: the executor, the contract, the
-allowlist, the confirm gates and the rest pose all behave exactly as they did.
+The last thing to add at the bench, on purpose, and optional on purpose. Everything above is
+about proving one arm, one port, one camera and one rest pose, and a first run wants fewer
+moving parts between you and the servos rather than more. Once section 12 has waved, this is the
+one thing worth adding at the bench, and it changes nothing you have already established: the
+executor, the contract, the allowlist, the confirm gates and the rest pose all behave exactly as
+they did.
 
 A **decision LLM** is not a second pilot. It generates no text at all: you hand it a state and a
 typed question, and it hands back which option and how confident it is. So it can answer *which
@@ -1599,6 +1603,137 @@ either way.
 
 <br>
 
+### 16. Between visits: rehearse on the simulator
+
+Everything above happens at the bench, and the bench is where a mistake costs most: an
+afternoon, and somebody else's arm. Most of what went wrong on 2026-09-23 was in the code
+between the pilot and the bus rather than in the pilots, and much of it could have been found
+without the arm. So between one visit and the next, rehearse on the arm's simulator.
+
+This is not [section 10](#10-rehearse-with---dry-run). A dry run needs the arm, connects to it
+for real and moves none of it. The simulator needs no arm and moves all of it, in a model:
+`lerobot:mujoco` is the real backend's own code, the connect and its retries, the travel read
+off your calibration, the rest move, the refusals and the close, running over a physics model
+of the SO-101 in MuJoCo instead of over LeRobot. A task file rehearsed on it goes through the
+lines that will drive your arm.
+
+![Two views of a simulated SO-101 arm in MuJoCo, side by side, under a strip naming the verb being run. Left, the arm on a grey table seen from in front and to one side, with a red cube and a dark pen lying in front of it: it starts with the upper arm upright and the forearm level, raises the whole arm on a diagonal, brings the forearm back down level with the upper arm nearly upright, then swings the arm from side to side at the shoulder three times and stops. Right, the scene's front camera, the view the model was sent: the raised arm runs off the top of the frame, then the arm held out level swings across it from one side to the other, pointing straight at the camera as it passes the middle.](assets/lerobot-sim.gif)
+
+*The README hero's goal, `Wave to the camera with an extended arm`, on the simulator's generic
+arm, piloted by OpenAI's `gpt-6-sol`, with the front camera the model was sent on the right
+([how it was made](assets/README.md)).*
+
+**Install it** into the same environment, or into a 3.11 one, since it needs neither LeRobot nor
+torch:
+
+```bash
+uv pip install "quackd[lerobot-sim]"
+```
+
+**Make a twin of your arm.** Once `arm-01` is calibrated and registered, sections 05 and 06,
+this registers a simulator of it on the calibration file its runs read, with the rest pose from
+section 07, the pilot and the cameras:
+
+```
+$ quackd robot twin arm-01
+✓ added arm-01-sim: lerobot:mujoco, a simulator of arm-01 on
+/home/you/.cache/huggingface/lerobot/calibration/robots/so_follower/arm-01.json
+  copied from arm-01: rest pose, pilot openai:gpt-6-sol, 2 camera urls
+⚠ robots.json now holds a lerobot:mujoco robot, and quackd 0.14 and earlier cannot read the file at all: quackd robot remove arm-01-sim before going back to one
+  quackd preflight <duck> --robot arm-01-sim
+```
+
+Take the warning seriously if an older quackd shares `~/.quackd` with this one: it cannot read
+the registry at all while the twin is in it, every robot included, and
+[registry.md](registry.md#a-simulator-of-an-arm) says how to keep the two apart.
+
+**Run anything you would run on the arm, on the twin.** The same task files, the same flags and
+the same camera urls, which the simulator renders from its scene instead of opening a webcam:
+
+```bash
+quackd run lerobot-lookout --robot arm-01-sim --llm fake
+```
+
+The first connect fetches the SO-101's model from its makers at a pinned commit, about 16 MB,
+checking every file against a recorded hash, and says so once. After that a run reads like one
+on the arm, with two things the arm never gives: a paragraph in the pilot's prompt saying it is
+on a model of the arm, whose physics nobody measured on an SO-101, and a note naming whichever
+of the `front` and `top` cameras is open, since those views are quackd's rather than where your
+cameras stand. With both open:
+
+```
+·  note    the front and top cameras are quackd's default views of the table, not where any real camera stands
+```
+
+**Then rehearse the task file properly.** `quackd preflight` connects and closes the twin a few
+times, runs the task once per seed with memory off, and says whether every run ended at the rest
+pose:
+
+```
+$ quackd preflight lerobot-lookout --robot arm-01-sim --llm fake
+quackd preflight lerobot-lookout
++--------------------------------------------------------------------+
+| seed | outcome | steps | close            | checks | cost | result |
+|------+---------+-------+------------------+--------+------+--------|
+|    0 | success |     1 | at the rest pose |      - |   $0 | pass   |
+|    1 | success |     1 | at the rest pose |      - |   $0 | pass   |
+|    2 | success |     1 | at the rest pose |      - |   $0 | pass   |
++--------------------------------------------------------------------+
+  no lerobot-lookout.sim.yaml beside it, so only the close was judged
+model cost $0 over 3 runs
+sim dt 0.01 s
+✓ 1 file passed preflight
+```
+
+The scripted pilot is enough for the lookout. For a task you mean to hand a real model, rehearse
+with that model, `--llm openai` and so on, because what the model reaches for is half of what a
+rehearsal is for, and each seed then costs what a run costs. A `<task>.sim.yaml` beside the file
+lays out the table and says what has to be so when a run ends, such as a block lifted or a joint
+moved, judged by where things really went rather than by what the pilot said:
+[adapters/lerobot.md](adapters/lerobot.md#the-sidecar) has the format. `--faults` puts a bus
+that drops packets under the connects, so the failed connects the lab met on 2026-09-23, and the
+retries quackd now answers them with, happen at home first.
+
+Preflight never rehearses on the arm itself, and says so before it connects to anything:
+
+```
+✗ error: arm-01 (lerobot:real) is not a simulator, and preflight runs only on one, since it drives
+the robot through every task file seed after seed: quackd robot twin NAME registers a
+lerobot:mujoco simulator of a registered arm to rehearse on
+  then quackd preflight FILES --robot NAME-sim
+```
+
+**`--by-hand` on the twin** releases the arm at its rest pose and waits for Enter, as on the
+desk. Nobody can place a simulated arm, so when you press Enter it is left to fall for a second
+of sim time, and quackd takes hold of it wherever it landed, or refuses in the words it would
+use on the desk. On a twin whose rest pose held the elbow near the end of its travel, the fall
+took it past that end:
+
+```
+·  hand    hold refused: elbow_flex reads 90.8, outside its calibrated travel of -89.9..89.9, so quackd left torque off: a goal written where that joint is lies past its travel and the servo would pull it to the end of its travel, and with none written the servo may drive it to the last goal it was given, with a hand on the arm either way. quackd takes hold of the arm only with elbow_flex inside its travel
+```
+
+That is worth seeing before the bench. It is the refusal a
+[hand-placed start](#or-start-from-a-pose-you-set-by-hand) makes over any joint outside its
+travel, met here because a limp joint near the end of its travel settled past it. On the desk
+you lift the joint back inside before you press Enter. On the twin nobody does, so you meet the
+refusal instead, and the run ends there, as it would on the desk.
+
+What the fall rehearses is what quackd says and does with the pose it leaves, and not whether
+your arm's rest pose holds itself up. How a limp joint settles is the model's physics, and
+which way gravity pulls each joint rests on signs and zeros nobody has checked against an arm,
+so the arm itself may fall differently, or not at all. Only the bench says which.
+
+**What the twin cannot tell you** is how your arm moves. The physics is the model's, not a
+measurement of an SO-101. Which way each joint turns and where its zero sits are assumed to
+match the model, the front and top cameras are quackd's views and not yours, the servos never
+warm, and nothing timed on the simulator is a rate. A task that passes preflight has survived
+the code and the contract. Whether it survives the arm is still [section 11](#11-prove-the-safety-net)
+onwards, with a hand near the switch, and a task that passes on the twin and then does
+something else on the arm is exactly what [section 14](#14-what-to-report) asks for.
+
+<br>
+
 ## Part 2: from Claude, over MCP
 
 Everything above is the command line. This is the same arm, the same executor and the same
@@ -1612,6 +1747,12 @@ quackd chooses no model here and reads no key of yours.
 > of the model inside quackd's own loop, and over MCP there is no such loop: the model is the
 > client, so the deciding happens in Claude and quackd hands out tools and enforces the
 > contract. The flag and its two companions belong to `quackd run` ([mcp.md](mcp.md)).
+>
+> [Section 16](#16-between-visits-rehearse-on-the-simulator) has no mirror either, because it
+> works the same from here. `quackd robot twin arm-01` registers the twin, and
+> `quackd serve-mcp --robot arm-01-sim` hands Claude the twin instead of the arm. An MCP session
+> runs tool calls at once, though, so unlike a run it does not do the same again under one
+> seed. `quackd preflight` is the rehearsal that does, and it runs from the terminal.
 
 The steps below are numbered `M00` to `M14` and they mirror Part 1's `00` to `14`, so if you
 have just walked the terminal path you will recognise every one of them. Where a step is the
@@ -1711,10 +1852,10 @@ same page, `observe` comes back `"allowed": false` and the call returns words.
 one, and it does not exist in a chat window. Three things you can reach for: the model calling
 `robot_run_verb(verb="stop")`, you closing the session, and the power switch. The first costs a
 budget step like every other verb and is refused once the budget is spent, which five minutes
-from the spawn leaves you the other two. The second parks the arm on the way out only where a
-rest pose is recorded for this robot ([section 07](#07-record-the-rest-pose)), and not at all
-under `--dry-run`: with no pose recorded the close releases torque and the arm sags where it
-stands. The third releases torque as well, so the arm falls from wherever it was holding.
+from the arm's connect leaves you the other two. The second parks the arm on the way out only
+where a rest pose is recorded for this robot ([section 07](#07-record-the-rest-pose)), and not
+at all under `--dry-run`: with no pose recorded the close releases torque and the arm sags where
+it stands. The third releases torque as well, so the arm falls from wherever it was holding.
 Support it by hand before you cut, and keep your fingers out of the jaws. The heartbeat is the
 one thing here that acts without being asked: one missed ping sends a stop and shuts the session.
 A contract's `abort_when` is not the same mechanism. It is checked only when the model runs a
@@ -1736,10 +1877,11 @@ definition not its rest pose, so take its weight first and keep your fingers out
 whatever the model chose to keep with `robot_remember`, which appends one line per note to
 `~/.quackd/memory/<name>.jsonl` ([memory.md](memory.md)).
 
-**The budget clock starts when the client spawns the server.** Without a loaded `.duck` a
+**The budget clock starts when the server has connected the arm.** Without a loaded `.duck` a
 session allows every verb that is not `dangerous`, on a default of 40 verb steps and five
-minutes, and those five minutes begin at the spawn rather than at the first verb. Time spent
-reading, thinking or talking to you is spent out of them. Running out ends nothing and parks
+minutes, and those five minutes begin as the server starts, once the arm has connected and
+before it is driven to its rest pose, rather than at the first verb. Time spent reading,
+thinking or talking to you is spent out of them. Running out ends nothing and parks
 nothing: every verb after that comes back `ok: false` with `budget exhausted`, `stop` among
 them, the session stays open, and the arm holds its last goal under torque. A spent budget ends
 a `quackd run` instead, through the same parking teardown as any other exit, so Part 1's
@@ -2754,11 +2896,11 @@ refuses to start the server at all, saying the arm did not reach its rest pose. 
 was captured against the mock arm, so the numbers are the mock's and yours will be your own arm's.
 
 **The clock is already running.** The session gets five wall-clock minutes, and they start when the
-server starts rather than when you start check 1. The `done` lines below count them out. Five
-checks on a real arm, with a cable to pull and a server to restart, goes past five minutes easily,
-and when it does verbs start coming back `budget exhausted` naming `max_minutes`. That is the clock
-running out rather than any of the checks below catching something, so do not read it as one of
-them. Restart the server and the five minutes start again.
+server has connected the arm rather than when you start check 1. The `done` lines below count
+them out. Five checks on a real arm, with a cable to pull and a server to restart, goes past five
+minutes easily, and when it does verbs start coming back `budget exhausted` naming `max_minutes`.
+That is the clock running out rather than any of the checks below catching something, so do not
+read it as one of them. Restart the server and the five minutes start again.
 
 **Nothing below moves until a verdict is on the record.** Ask for `robot_assess_task` with
 `feasible` and a reason, and read the `note` field of what comes back:
@@ -2890,12 +3032,12 @@ terminal running `quackd run`, and an MCP session has no terminal of its own:
   one.
 - **End the session.** A client disconnect, stdin closing, or quitting the client unwinds the
   server, which stops, parks and disconnects every robot it holds. The disconnect releases torque,
-  which is LeRobot's default and quackd keeps it, so the ordinary end leaves the arm limp at the
-  rest pose. A rest pose your arm does not hold by itself is a falling arm, which is what the bench
-  saw at the end of every run on 2026-09-15 before the rest pose existed. quackd keeps torque on
-  when the park did not get there, and that fallback has fired on hardware: on 2026-09-23, on
-  every run that got to its end, because the fold lay past the arm's calibrated travel, and the
-  arm held itself up until its power was cut.
+  which is LeRobot's default and what quackd asks for over an arm at its rest pose, so the
+  ordinary end leaves the arm limp at the rest pose. A rest pose your arm does not hold by
+  itself is a falling arm, which is what the bench saw at the end of every run on 2026-09-15
+  before the rest pose existed. quackd keeps torque on when the park did not get there, and
+  that fallback has fired on hardware: on 2026-09-23, on every run that got to its end, because
+  the fold lay past the arm's calibrated travel, and the arm held itself up until its power was cut.
 - **Cut power.** Still the only thing that works in every case, including the one where the process
   holding the goal has died.
 
@@ -2967,8 +3109,8 @@ that [M08](#m08-the-first-session) locates.
 **What it costs is a budget you did not choose.** A bare session runs on 40 verb steps and five
 minutes, and the `done` line of every call carries both, as
 `budget: step 1/40, llm calls 0/40, 0.0/5 min`. The middle column stays at zero because quackd
-calls no model here. The five minutes starts when the client spawned the server, not at your first
-verb.
+calls no model here. The five minutes starts when the server the client spawned has connected
+the arm, not at your first verb.
 
 > [!WARNING]
 > A session you set up slowly can reach the arm with most of its clock gone. Reading back through
@@ -3067,9 +3209,9 @@ the server and the session.
 allowlist holds every verb that is not `dangerous`, and the session runs on a default budget
 of 40 verb steps and five minutes. The allowlist is the only gate open that wide: a
 confirm-class verb still needs `--yes` on the server's command, which is the confirm row
-above. That clock starts when the client spawned the server, not when you asked for the first
-verb. A session you opened, then spent ten minutes talking through, is out of minutes before
-the arm has moved at all.
+above. That clock starts when the server the client spawned has connected the arm, not when
+you asked for the first verb. A session you opened, then spent ten minutes talking through, is
+out of minutes before the arm has moved at all.
 
 This is what it looks like, captured against the mock arm on a contract whose budgets were
 one step, four model calls and three minutes, so the numbers are small enough to watch. The

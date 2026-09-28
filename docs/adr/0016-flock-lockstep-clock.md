@@ -9,6 +9,30 @@ costs real seconds there and a seed does not make the run reproducible. The "it 
 a realtime mode" line below is what happened, for that kind only. Everything here still holds
 for an auction, which is still the only flock with one shared world to advance.
 
+**Amended 2026-09-26:** a `sleep` now clears only its own waiter on the way out. It used to
+clear whatever waiter sat under its id. A task runs that cleanup only when the event loop
+resumes it, which can be after the clock has let go of the id: the advancer marks a due
+participant awake before it resolves the future, a closed live window marks every sleeper
+awake, and `unregister` drops the id. A second task sleeping under the same id could park in
+between, because nothing was parked there any more. The first task's cleanup then cleared the
+second one's waiter, so that future never resolved and the second task's call hung with no
+error to say why. The world paused only as it does while any participant is awake, until
+something slept under that id again. `sleep` still refuses a second task while the first is
+parked. The cartoon's transport and microduck's MuJoCo one sleep every task under the body's
+one id, so two MCP calls in flight could reach this gap. `tests/test_flock.py` builds the
+interleaving step by step on each of those paths, and checks that a cancelled sleep still
+frees its id. Nothing else in this ADR changes.
+
+**Amended 2026-09-27 by [ADR-0047](0047-the-arms-simulator-runs-the-real-backend.md):** the
+arm's simulator runs this clock for one body and many tasks, where an auction runs it for many
+bodies. Its `SimClock` gives every sleep a participant of its own, a fresh id numbered in the
+order the sleeps arrive, registered for that sleep and unregistered as it wakes. So time runs
+while every sleeper is parked, stands still while nobody sleeps, and two tool calls over MCP
+sleeping at once both wake, where one id for the whole arm would have had the second refused
+and one gate held by a single task would have frozen the rest. A sleep of zero never reaches
+`sleep` here, which registers the id and returns without letting it go. The amendment above
+was found while that clock was planned. Nothing here changes for the auction.
+
 ## Context
 
 In a solo sim run, whoever calls `transport.sleep()` steps the world. With N concurrent

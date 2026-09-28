@@ -267,6 +267,22 @@ def test_validate_expands_globs_itself() -> None:
     assert result.exit_code == 0, result.output
 
 
+def test_a_pattern_written_with_forward_slashes_expands_to_paths_written_that_way(
+    tmp_path: Path,
+) -> None:
+    """On Windows `glob` joined what a wildcard matched with backslashes and kept the part
+    typed before it as typed, so `quackd preflight "docs/examples/e00[1-5]/*.duck"` labelled
+    its files in two slash styles at once. Anywhere else this holds as it always did."""
+    from quackd.cli import _expand
+
+    for folder, name in (("e001", "a.duck"), ("e002", "b.duck"), ("f003", "c.duck")):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / name).write_text("", encoding="utf-8")
+    base = tmp_path.as_posix()
+    assert _expand([f"{base}/e00[1-5]/*.duck"]) == [f"{base}/e001/a.duck", f"{base}/e002/b.duck"]
+    assert _expand([f"{base}/none/*.duck"]) == [f"{base}/none/*.duck"], "no match is kept whole"
+
+
 def test_validate_fails_fast(tmp_path: Path) -> None:
     bad = tmp_path / "bad.duck"
     bad.write_text("---\nduck: 0\nname: bad\n---\nbody\n", encoding="utf-8")
@@ -463,7 +479,7 @@ def test_a_second_camera_url_is_refused_by_a_one_camera_body_before_anything_run
     assert result.exit_code == 1, result.output
     out = " ".join(result.output.split())  # the console wraps the line at the terminal width
     assert "microduck:mock takes one --camera-url and 2 were given" in out
-    assert "only lerobot:real takes several" in out
+    assert "only lerobot:real and lerobot:mujoco take several" in out
     assert list(tmp_path.iterdir()) == [], "the refusal came before the run directory"
 
 
@@ -497,7 +513,7 @@ def test_doctor_json_reports_a_second_camera_url_inside_its_document(
     probe = report["robot"]["probe"]
     assert probe["ok"] is False and probe["rows"] == []
     assert "takes one --camera-url and 2 were given" in probe["error"]
-    assert "only lerobot:real takes several" in probe["error"]
+    assert "only lerobot:real and lerobot:mujoco take several" in probe["error"]
     assert report["ok"] is False  # and the exit code follows the report, as it always did
 
 
@@ -1926,9 +1942,9 @@ def test_doctor_builds_a_registered_arm_under_its_name_and_warns_before_it_conne
     seen: list[str] = []
     warning = cli._doctor_warning
 
-    def warned() -> str:
+    def warned(**kwargs: Any) -> str:
         seen.append("warned")
-        return warning()
+        return warning(**kwargs)
 
     monkeypatch.setattr(cli, "_doctor_warning", warned)
     connected = LeRobotMock.connect
@@ -1960,6 +1976,40 @@ def test_doctor_builds_a_registered_arm_under_its_name_and_warns_before_it_conne
 
     duck = runner.invoke(app, ["doctor", "--robot", "microduck:mock", "--address", "mock://x"])
     assert "connecting takes torque off" not in " ".join(duck.output.split()), duck.output
+
+
+def test_the_hardware_warnings_say_when_the_arm_is_the_simulator() -> None:
+    """`doctor --robot` and `robot release` warn a person before they connect a body that is
+    handed to people, and tell them to support it or hold it. The arm's simulator is handed
+    over as the arm is, and nobody can hold it, so each line says it is the simulator instead.
+    A real arm's lines are the ones they always were, word for word."""
+    from quackd import cli
+    from quackd.adapters.base import CONNECTING_TAKES_TORQUE_OFF
+    from quackd.adapters.factory import make_adapter
+
+    real = f"{CONNECTING_TAKES_TORQUE_OFF}, because LeRobot configures them with it off"
+    assert cli._connect_warning() == real
+    assert cli._doctor_warning() == f"{real}: support the arm until doctor has finished with it"
+    assert cli._release_warning() == (
+        f"{real}, and the release then lets the arm fall from wherever it is: "
+        "hold it now, and keep hold of it until it is down"
+    )
+    simulated = (
+        cli._connect_warning(simulator=True),
+        cli._doctor_warning(simulator=True),
+        cli._release_warning(simulator=True),
+    )
+    for line in simulated:
+        assert line.startswith("this is the arm's simulator: "), line
+        assert "support the arm until" not in line and "hold it now" not in line, line
+    assert simulated[1].endswith("and there is no arm to support")
+    assert simulated[2].endswith("with no arm to hold")
+
+    # asked of the built adapter, and a body that does not say is not a simulator
+    assert not cli._is_simulator(make_adapter("lerobot:mock"))
+    assert not cli._is_simulator(make_adapter("microduck:mock"))
+    assert cli._is_simulator(make_adapter("lerobot:mujoco"))
+    assert not cli._is_simulator(SimpleNamespace(is_simulator="yes"))
 
 
 # ── --run-name and --price: what the run is called, and what it cost ────────────────────

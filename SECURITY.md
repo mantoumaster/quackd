@@ -158,6 +158,26 @@ Also in scope:
   path around the hashes is deliberate: `QUACKD_MICRODUCK_ASSETS` warns rather than refuses,
   because a newer export from your own checkout is the point of it. Point it at a checkout you
   built, never at one you were sent.
+- **The model the arm's simulator fetches** (`adapters/lerobot/src/quackd_lerobot/sim/assets.py`).
+  `--robot lerobot:mujoco`, and any robot `quackd robot twin` registered, downloads the SO-101's
+  model from TheRobotStudio/SO-ARM100 the first time it connects: `so101_new_calib_camera.xml`
+  and the 15 STL meshes it names, about 16 MB, one file at a time from raw.githubusercontent.com
+  at a pinned commit. There is no archive to unpack. Every URL is built from a fixed list of names
+  quackd holds, every file is written under a name on that list, so nothing upstream sends can
+  choose a path, and each is checked against a recorded sha256 as it arrives, so the first file
+  that does not match stops the fetch and nothing is installed. A reply larger than 16 MiB, or
+  shorter than the length it declared, is refused as well. The set is checked again, installed
+  into `~/.quackd/cache/so-arm100/<pin>` in one rename under a lock, and checked against the same
+  hashes every time it is used, so a file changed on disk is fetched again rather than loaded.
+  `QUACKD_CACHE_DIR` moves the cache. The model includes no other file, and MJCF and STL are data
+  that MuJoCo parses rather than code quackd runs, so the exposure is MuJoCo's parser.
+  `tests/test_lerobot_sim_assets.py` drives all of it with the network stubbed, a file that does
+  not match its pin and an oversized reply among the cases. The one path around the hashes is
+  deliberate, as it is for the duck: `QUACKD_LEROBOT_SIM_ASSETS` points at the `Simulation/SO101`
+  directory of a checkout of your own, and warns rather than refuses when it differs from the
+  pin. Point it at a checkout you made, never at one you were sent. The simulator itself opens no
+  port and imports no LeRobot, and an address shaped like a serial port is refused before
+  anything looks at it, so nothing it is given reaches a real arm.
 - The LAN surfaces behind `quackd[lan]`: zeroconf TXT records advertise a robot's identity
   to anything on the network, and the MQTT flock bus carries messages that command robots
   with no authentication of its own. Both are off by default and neither has a threat model

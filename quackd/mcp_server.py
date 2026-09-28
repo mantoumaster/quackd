@@ -318,6 +318,13 @@ class RobotSession:
 
     async def connect(self) -> None:
         await self._adopt(await self.transport.connect())
+        # The budget's clock is the transport's, and a simulator's is the wall's until it
+        # connects and its world's from then on. Started when the server was built, the minutes
+        # were the world's seconds less the wall's, which ran negative and never reached
+        # `max_minutes`. Started again here, on the clock the session is timed by, with the
+        # counts a `--duckfile` carried kept: nothing has run to count yet.
+        if self.executor.budget is not None:
+            self.executor.budget.start()
         # before the heartbeat starts, so the arm this session is handed is the arm the last
         # one put down rather than wherever it was left. A session that cannot get there is
         # refused: the client is about to drive a body nobody has established the pose of.
@@ -819,6 +826,7 @@ def build_fleet_server(
         # docstring advertises, handed an MCP client unlimited, uncounted control of a
         # physical biped. The default budget is generous; what matters is that it is finite
         # and that the step count is visible. Loading a duck replaces it with the contract's.
+        # Its clock starts again at the connect, on the clock the robot keeps once connected.
         budget = Budget(Budgets(), now=transport.now)
         budget.start()
         executor = Executor(

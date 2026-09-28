@@ -35,6 +35,9 @@ uvx --from "quackd[lerobot]" quackd list-verbs --robot lerobot:mock
 uvx --from "quackd[lerobot]" quackd validate ducks/find-and-kick.duck --robot lerobot:mock     # exit 1: requires ... does not provide it
 uvx --from "quackd[lerobot,microduck]" quackd serve-mcp --robots arm=lerobot:mock,duck=microduck:sim2d   # an arm and a duck behind one MCP server
 
+# the arm's simulator: the real backend's own code over a physics model of the arm, no arm needed
+uvx --from "quackd[lerobot-sim]" quackd run lerobot-lookout --robot lerobot:mujoco --llm fake
+
 # a real arm, after LeRobot's own calibration (see the checklist)
 uv pip install "quackd[lerobot]" && quackd doctor --robot lerobot:real --address /dev/ttyACM0   # Python 3.12+
 ```
@@ -58,8 +61,8 @@ and what counts as success ([duck-spec.md](../duck-spec.md)). The model never em
 command. It picks a verb, and quackd checks the allowlist, the preconditions, this arm's
 calibrated range and the step cap before anything reaches the bus.
 
-Three things are true of this body that are not true of a simulator, and they shape
-everything below:
+Three things are true of this body, and on a desk rather than in a simulator they are what can
+hurt somebody. They shape everything below:
 
 - **The five body joints have no torque cap.** LeRobot writes a torque and current cap on the
   gripper and on nothing else, so a stalled elbow has nothing to save it or your finger. quackd
@@ -92,6 +95,10 @@ drive the arm.
    +  declare success: elbow_flex 90, gripper 100, shoulder_lift -90, shoulder_pan 0, wrist_flex 0, wrist_roll 0; torque on; nothing hot
    ```
 
+   The mock is quackd's own stand-in and runs none of the real backend's code.
+   [The simulator](#the-simulator-lerobotmujoco), `lerobot:mujoco`, runs all of it over a
+   physics model of the arm, which is where a task file is rehearsed before it meets one.
+
 2. **Bring the real arm up in the order that can only fail safely.**
    [lerobot-hardware-checklist.md](../lerobot-hardware-checklist.md) is eighteen steps, and
    nothing moves until step 10 as long as the arm stays where step 6 records its rest pose:
@@ -107,6 +114,7 @@ drive the arm.
 |---|---|---|
 | `lerobot:mock` | ✅ | an arm in memory: goals land instantly, the gripper stops on the object, a scripted policy answers `pick`, and it refuses an out-of-range goal in the same words the real one does |
 | `lerobot:real` | ✅ | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch), and as many USB webcams as `--camera-url` names; every name VERIFIED at the pin, exercised against a fake arm and a fake camera, and run on one real arm on two afternoons, 2026-09-15 on quackd 0.9.0 and 2026-09-23 on quackd 0.12.0, with lerobot 0.6.1 and no policy. What changed after 2026-09-23 has not run on an arm yet |
+| `lerobot:mujoco` | ✅ | [the arm's simulator](#the-simulator-lerobotmujoco): `lerobot:real`'s own code over a physics model of the SO-101 in MuJoCo, the maker's model fetched at a pinned commit, with the cameras rendered from the scene (extra `quackd[lerobot-sim]`, Python 3.11 or newer, no LeRobot and no torch). A seeded grasp sweep and `quackd preflight` sweeps pass on the maker's model, and nothing has compared it against an arm, so it never raises `lerobot:real`'s status ([adapter-status.md](../adapter-status.md)) |
 
 `--address` is the arm's serial port (`/dev/ttyACM0`, `COM5`), and quackd checks that it
 looks like one before LeRobot opens anything. The `real` backend calls
@@ -131,8 +139,8 @@ uv pip install "quackd[lerobot]"
 uv run quackd doctor
 ```
 
-That is two packages: quackd's own adapter, which is where `lerobot:mock` and `lerobot:real`
-both live, and `lerobot[feetech]`, the SDK `real` drives the arm with. The adapter announces
+That is two packages: quackd's own adapter, which is where all three backends live, and
+`lerobot[feetech]`, the SDK `real` drives the arm with. The adapter announces
 itself through the `quackd.adapters` entry point group, so there is nothing to register by
 hand. `uv pip install quackd-lerobot` is that adapter without the SDK, which is enough for
 `lerobot:mock` and for reading the manifest, and enough for nothing else.
@@ -161,6 +169,22 @@ Without the extra, every real-arm command ends the same way, and this is what it
 | lerobot:real at COM5: adapter 'lerobot' needs an extra: uv pip install       |
 | 'quackd[lerobot]'                                                            |
 +------------------------------------------------------------------------------+
+```
+
+The simulator is a third extra, and it needs neither LeRobot nor torch:
+
+```bash
+uv pip install "quackd[lerobot-sim]"   # the adapter and MuJoCo, on Python 3.11 or newer
+```
+
+It is `quackd-lerobot[sim]`, the same adapter with MuJoCo beside it, so it installs on 3.11 as
+well, where `quackd[lerobot]` leaves you only the mock. `doctor` gives it a row of its own,
+`lerobot-sim (mujoco)`, and a line in its transports table saying whether the SO-101's model is
+in the cache yet:
+
+```
+| lerobot:mujoco | mujoco 3.13.0 | SO-ARM100 at 5f6d2b8: not in the cache yet, and the first connect        |
+|                |               | fetches it                                                               |
 ```
 
 ## The name you give the arm is its calibration id
@@ -376,13 +400,13 @@ What that means at the bench:
   and both places name it: `CAMERA DOWN: side: ...` rather than a clause that does not say
   which eye closed, and one `camera <name>` row per camera in `doctor`.
 - `observe` gives you bearings in the camera's own frame, and the detector behind it is an
-  HSV threshold whose colour ranges are the *simulator's*. On a real desk it labels whatever
-  happens to fall in one of those bands, `ball` for an orange thing and `person` for a blue
-  one, and reports nothing when nothing does, so the label is a colour range's name rather
-  than recognition. Distances assume the simulated ball's size, and without `?fov=` the
-  bearing is uncalibrated and says so. Tuning the ranges to your own ball is in
-  [the FAQ](../faq.md). What is honest whatever the detector makes of it is the frame
-  itself, which a cloud model is shown every step unless you pass `--no-vision`.
+  HSV threshold whose colour ranges are the *duck simulators'*. On a real desk it labels
+  whatever happens to fall in one of those bands, `ball` for an orange thing and `person` for a
+  blue one, and reports nothing when nothing does, so the label is a colour range's name rather
+  than recognition. Distances assume the size of the duck simulators' ball, and without
+  `?fov=` the bearing is uncalibrated and says so. Tuning the ranges to your own ball is in
+  [the FAQ](../faq.md). What is honest whatever the detector makes of it is the frame itself,
+  which a cloud model is shown every step unless you pass `--no-vision`.
 
 ### Several cameras
 
@@ -625,6 +649,10 @@ a dry run on an arm that is not at its recorded rest pose ends with torque left 
 nothing drove it there. That is [the rest pose](#the-rest-pose)'s rule and not an exception to
 it.
 
+A dry run needs the arm and moves none of it. The other rehearsal needs no arm and moves all of
+it, in a model: [the simulator](#the-simulator-lerobotmujoco), which `quackd preflight` runs a
+task file on seed after seed.
+
 ### What `pick` needs, and what it does not have
 
 `pick` hands the whole arm to a learned policy, and it is confirm-gated for that reason. On
@@ -636,6 +664,321 @@ arm only through code you write around the adapter, and `quackd run --robot lero
 will not offer `pick` at all. Every other verb is fully reachable from the CLI. If you get a
 policy running this way, the policy's own actions still pass the step cap and the range
 refusal, which is quackd's rule and not LeRobot's.
+
+## The simulator: `lerobot:mujoco`
+
+`lerobot:mujoco` is this arm's simulator, and it is the `real` backend's own code: the connect
+and its retries, the travel read off a calibration and every refusal past it, the rest move,
+the hold, the release and the take-hold, the close and what it says. What runs underneath is a
+physics model of the SO-101 in [MuJoCo](https://github.com/google-deepmind/mujoco) instead of
+LeRobot, the scene's cameras instead of webcams, and the world's clock instead of the wall's.
+So a task file rehearsed here goes through the lines that will drive the arm in the lab, and
+what it meets on the way, a travel it cannot reach, a bus that drops a packet, a pilot that
+reaches for a verb nobody allowed, it meets at home.
+[ADR-0047](../adr/0047-the-arms-simulator-runs-the-real-backend.md) is the reasoning.
+
+![Two views of a simulated SO-101 arm in MuJoCo, side by side, under a strip naming the verb being run. Left, the arm on a grey table seen from in front and to one side, with a red cube and a dark pen lying in front of it: it starts with the upper arm upright and the forearm level, raises the whole arm on a diagonal, brings the forearm back down level with the upper arm nearly upright, then swings the arm from side to side at the shoulder three times and stops. Right, the scene's front camera, the view the model was sent: the raised arm runs off the top of the frame, then the arm held out level swings across it from one side to the other, pointing straight at the camera as it passes the middle.](../assets/lerobot-sim.gif)
+
+*The sentence the real arm at the top of the README was given, `Wave to the camera with an
+extended arm`, on a bare `--robot lerobot:mujoco` with the `front` camera, piloted by OpenAI's
+`gpt-6-sol` and recorded by [`lerobot_sim.py`](../assets/lerobot_sim.py)
+([how it was made](../assets/README.md)).*
+
+### Running it
+
+```bash
+uv pip install "quackd[lerobot-sim]"
+quackd run lerobot-lookout --robot lerobot:mujoco --llm fake
+```
+
+The first connect fetches the model, the maker's own, one file at a time at a pinned commit,
+each checked against its sha256 ([its upstream](#the-simulators-upstream-so-arm100)), and says
+so once:
+
+```
+fetching the SO-101 model (16 files, about 16 MB) from https://github.com/TheRobotStudio/SO-ARM100 into /home/you/.quackd/cache/so-arm100/5f6d2b876a53a4872e405b991dd925556c9e38a4. Apache-2.0, never shipped with quackd
+```
+
+A bare `--robot lerobot:mujoco` names no arm, so there is no calibration of yours to read, and
+the connect says what it used instead:
+
+```
+-  note    no arm was named, so this rehearsal runs on the generic arm, whose travel is the model's own range on every joint and not any arm's calibration; give --address the file lerobot-calibrate wrote for an arm to rehearse that arm's travel
+```
+
+It never reads the file LeRobot keeps under `arm-01`, the id quackd gives an arm nobody named,
+which on a machine that has calibrated an arm is somebody's real travel under a name this run
+never gave. To rehearse your own arm, name its calibration: `--address` takes the file
+`lerobot-calibrate` wrote, and a registered `lerobot:mujoco` robot with no address reads the one
+LeRobot keeps under its name. An address shaped like a serial port is refused on its shape,
+before anything opens it:
+
+```
+x error: lerobot mujoco: --address 'COM5' is a serial port, and the address of a lerobot:mujoco
+robot is the calibration file the arm's runs read, never the arm's port, so nothing was opened
+there. Give --address the file lerobot-calibrate wrote for the arm, which quackd robot twin finds
+for a registered one, or leave it out to rehearse on the generic arm.
+```
+
+**The easy way is a twin of the arm you registered.** `quackd robot twin arm-01` registers
+`arm-01-sim` on the calibration file `arm-01`'s runs read, with its rest pose, its pilot and
+each camera the simulator can render:
+
+```
+$ quackd robot twin arm-01
++ added arm-01-sim: lerobot:mujoco, a simulator of arm-01 on
+/home/you/.cache/huggingface/lerobot/calibration/robots/so_follower/arm-01.json
+  copied from arm-01: rest pose, pilot openai:gpt-6-sol, 2 camera urls
+! robots.json now holds a lerobot:mujoco robot, and quackd 0.14 and earlier cannot read the file at all: quackd robot remove arm-01-sim before going back to one
+  quackd preflight <duck> --robot arm-01-sim
+```
+
+`--robot arm-01-sim` is then the same travel starting from the same fold, and its memory is its
+own. The warning is the one cost, and [registry.md](../registry.md#a-simulator-of-an-arm) has
+what `twin` copies and what it refuses. The simulated arm starts at the rest pose as recorded,
+limited by the model's own stops and settled clear of its table and of itself where the pose
+puts it into either (below), so the first rest move finds it already there. A joint recorded
+past one of those stops starts at the stop, with a note, because nobody has read a real arm's
+stops against the model's yet.
+
+A fold can also put the model into its own table, or one of its links into the next, by more
+than a millimetre. Started there, the first step of physics would throw the arm out of the
+table, and it could never get back to a pose inside it, so every run that let time pass would
+end with the rest move stalled short of it and torque left on. So the simulator settles it
+first: the physics runs for a second before the clock starts, with every joint held, the
+contacts push the arm clear, and each joint that moved takes where it came to rest, within the
+model's stops, as its start, the goal it holds and the rest pose the close drives it back to.
+
+The pose the close parks the arm in is settled the same way. A joint recorded past its travel
+is parked at the edge of it ([A pose past the travel](#a-pose-past-the-travel)), and a fold that
+starts clear can put the model into its table with that one joint at the edge, so every run
+that moved the joint would end with the rest move stalled. So that pose is settled too, with
+the joint driven from the fold to the edge at the rest move's pace, and each other joint takes
+where it came to rest there as its start as well, within its travel: the arm starts where it can
+be both folded and parked. A joint settled past its travel is parked at the edge of it and
+judged there by the half-line rule, as a recorded pose past its travel is, so one the table
+stops short of the edge, on the side of its fold, is at rest where it stops. The connect names the contacts and the joints, as it did for
+the lab arm's twin, arm-01-sim:
+
+```
+·  note    the rest pose puts gripper 21 mm into the table, moving_jaw_so101_v1 13 mm into the table, lower_arm 10 mm into shoulder and wrist 3 mm into shoulder on the model, and with shoulder_lift at the edge of its travel, where the close's rest move parks the arm, gripper 10 mm into the table, moving_jaw_so101_v1 8 mm into the table, wrist 6 mm into shoulder, gripper 5 mm into shoulder and wrist_camera_mount 1 mm into shoulder, so the simulated arm starts and rests where it settles against them instead, with elbow_flex at 82.9 degrees in place of 96.4 and wrist_flex at 81.9 degrees in place of 72.2. The model's joint zeros and signs are an assumption (JOINT_ZERO, JOINT_SIGN) until the bench checks them, so the pose may be right on the arm and the model's frame wrong
+```
+
+The lab arm rests in that fold on its own bench, so the model differs from the arm somewhere: in
+where its joints are zero or which way they turn, or in where the table meets its base. Only the
+bench can say which, and [PLAN.md](../../PLAN.md) has it beside the joint zeros and signs.
+
+A fold the settle cannot clear is refused at connect instead, naming what the pose put where
+and what a second of settling left: a part held in against a stop, or pinned by a joint that
+cannot move, stays in however long it settles, and an arm started there would stall on its
+first move and every move after it. So is a fold whose parked pose no close could call at
+rest: the settle there pushes the joint at the edge back into its travel, further than a reached
+pose may miss by, or the angles it leaves put the start back in. Give the robot a rest pose the
+model can start at
+([below](#when-the-simulator-will-not-start)).
+
+The settle judges those two poses and not every way back between them. After a move that takes
+the arm off its fold, whether it lifts the arm upright, moves `shoulder_lift` within its travel
+or drags the gripper across the table, the rest move can set the gripper down on the table
+short of its settled angles. The table then holds the wrist or the elbow further from its goal
+than a reached pose may miss by, and the close says the rest move stalled and keeps torque on.
+Every such stall measured had the arm touching the table and nothing else.
+
+A close that finds the simulated arm away from its rest pose keeps torque on, as the arm's own
+does, and says there is nothing to hold, release or park, since the simulated arm ends with the
+run. A run at a terminal is not offered the release a real arm's is, for the same reason.
+
+`quackd doctor --robot arm-01-sim` connects it, which renders one small frame as every connect
+does, so it tells you before any run whether this machine can draw the scene, and it says first
+what it is:
+
+```
+! this is the arm's simulator: connecting takes torque off every simulated motor for a moment, as
+LeRobot's connect does on a real arm, and there is no arm to support
+```
+
+### What it renders
+
+The arm's own camera flags work here unchanged, because the simulator reads the same
+`opencv://` urls with the same parser. The index is ignored, `?name=` picks one of the scene's
+three mounts, `front`, `top` or `wrist`, and `width`, `height`, `rotation` and `fov` apply,
+`fov` being the horizontal view in degrees, 90 unless you give one. `wrist` is rendered from the
+wrist camera mount on upstream's model, which may not be where yours sits. `front` and `top` are
+quackd's own views of the table and not where any real camera stands, and a connect note and
+the state's assumptions both say so. A name the scene has no mount for is refused before
+anything connects:
+
+```
+x error: lerobot mujoco: --camera-url 'opencv://1?name=side' names 'side', and the scene has no
+camera by that name; its cameras are front, top, wrist. Name one with ?name=.
+```
+
+The pilot is told it is on a simulator, that every camera is a rendered view and that the
+physics is the model's rather than anything measured on an SO-101, and a run given no camera is
+told that whatever is on the table goes unseen. A run writes no GIF here, and the recording
+above is a script's, which drives a run and films it from a tick hook on the simulator's clock.
+`--live` opens MuJoCo's own viewer.
+
+### Time, and what a seed repeats
+
+The simulator's time moves only while something waits on it. Every sleep the real backend makes,
+a verb's tick, the rest move's, the settle before a hold is read back, waits on the world's
+clock, and the physics steps while every such wait is parked and stops the moment one of them
+wakes. So a pilot's thinking costs no sim time, and a run's `max_minutes` counts the arm's time,
+not yours. One step of that clock is 0.01 s, five of the model's physics steps. `--seed` lays
+out the table, and under one seed the simulator does the same again on a run through
+`quackd run` or `quackd preflight`, which make one call at a time, though a model may not choose
+the same verbs twice. An MCP session runs tool calls at once, so it is not seeded. `--live` holds
+each step until the wall has caught up, for a person watching, and it is the same lockstep clock,
+so nothing timed on it is a rate.
+
+### `--by-hand` on the simulator
+
+`--by-hand` runs here as it does on the desk, up to the moment somebody would place the arm.
+quackd releases it at its rest pose and asks you to place it, and nobody can. So when you press
+Enter the take-hold first lets the limp arm fall for a second of sim time, and then takes hold
+of whatever pose the table, the model's stops and its own weight have left it in, or refuses in
+the arm's own words where a joint has fallen past its travel or moved under the hold
+([Placing it by hand](#placing-it-by-hand)). Which of those happens is the model's physics, so
+this rehearses what the take-hold says and does with whatever pose a fall leaves: the hold it
+takes, or the refusal and the torque it leaves off. It does not say whether your arm's rest pose
+holds it up, because how a released joint settles is the model's answer (`SERVO_DYNAMICS`),
+and which way gravity pulls each joint rests on signs and zeros nobody has checked against an
+arm (`JOINT_SIGN`, `JOINT_ZERO`). Only the bench gives the arm's.
+
+### Rehearsing a task file: `quackd preflight`
+
+`quackd preflight` is what the simulator is for. It rehearses task files on a simulator, never on
+an arm, and refuses anything else before it builds it:
+
+```
+x error: arm-01 (lerobot:real) is not a simulator, and preflight runs only on
+one, since it drives the robot through every task file seed after seed: quackd
+robot twin NAME registers a lerobot:mujoco simulator of a registered arm to
+rehearse on
+  then quackd preflight FILES --robot NAME-sim
+```
+
+It also refuses to rehearse with a pilot nobody named, because the scripted one rehearses nothing
+a model would do. The pilot is `--llm`, else the robot's registered one, else `QUACKD_LLM`, and
+the scripted pilot runs only when typed as `--llm fake`. Each file is checked against the robot
+as `validate` checks it, the simulator is connected and closed `--connect-cycles` times, and the
+task is run `--seeds` times, three of each unless you say, with memory off:
+
+```
+$ quackd preflight lerobot-lookout --robot arm-01-sim --llm fake
+quackd preflight lerobot-lookout
++--------------------------------------------------------------------+
+| seed | outcome | steps | close            | checks | cost | result |
+|------+---------+-------+------------------+--------+------+--------|
+|    0 | success |     1 | at the rest pose |      - |   $0 | pass   |
+|    1 | success |     1 | at the rest pose |      - |   $0 | pass   |
+|    2 | success |     1 | at the rest pose |      - |   $0 | pass   |
++--------------------------------------------------------------------+
+  no lerobot-lookout.sim.yaml beside it, so only the close was judged
+model cost $0 over 3 runs
+sim dt 0.01 s
++ 1 file passed preflight
+```
+
+A run passes when nothing escaped it, no call to the simulated bus was left hanging, its close
+ended at the rest pose (or, on a robot with no rest pose, such as a bare `lerobot:mujoco`, found
+none to return to, unless the sidecar asks `at_rest: true`), and every check in the task's
+sidecar held. A close that missed the rest pose says how in the `close` column: the rest move
+was refused, stalled, or ran out of time. The pilot's own verdict is in the `outcome` column and
+is not one of those: a pilot that says it succeeded is what is being rehearsed, not the judge of
+it. `--json` prints one object per file, and the command exits 1 unless every run passed.
+
+`--faults SPEC` gives the connect cycles a seeded bus to meet: rates for `handshake`,
+`configure`, `write`, `torque`, `torque_read` and `temperature_read`, and `read_loss_from=N` for
+an arm that stops answering at its Nth read of the joints, as `handshake=0.2,configure=0.3`.
+Each fault is raised in LeRobot's own words, so the connect retries it as it would on the arm,
+and says so as it would:
+
+```
+WARNING  connect attempt 1 of 3 failed on wrist_flex (id 4): Failed to write 'Lock' on id_=4 with
+         '1' after 1 tries. [TxRxResult] There is no status packet! The port was closed without a
+         write to any motor, and connect runs again
+```
+
+A connect that gives up in words under a plan, as the arm's does once its retries are spent, is
+noted rather than failed. The runs after the cycles meet no faults, so a robot that cannot
+connect at all still fails every one of them.
+
+### The sidecar
+
+What a run of a task has to leave behind is written beside the task, in `<task>.sim.yaml`, and
+never in its frontmatter, which an MCP pilot is handed whole: a pilot that can read what it will
+be marked on is rehearsing the marking. A sidecar lays out the table and says what has to be so
+when the run ends. This one is for a grasp task rehearsed on a twin, whose close has a rest pose
+to reach:
+
+```yaml
+scene:
+  objects:
+    - {name: block, kind: box, size: [0.0125, 0.0125, 0.0125]}
+checks:
+  - at_rest: true
+  - joint_moved: {joint: shoulder_lift, min_deg: 10}
+  - lifted: {object: block, min_m: 0.02, when: peak}
+  - moved: {object: block, min_m: 0.05, when: latched}
+```
+
+`scene` replaces the simulator's own cube and pen. An object is a `box`, three half sizes in
+metres, or a `capsule`, its radius and half length, laid on the table where the seed puts it.
+`place: jaws` lays it on the table between the gripper's fingers as the arm starts instead,
+which needs a rest pose with the jaws open down at the table. On a robot whose arm starts
+anywhere else, the generic arm included, the connect is refused
+([below](#when-the-simulator-will-not-start)). `mass_kg` and `rgba` are optional. `checks` are
+`at_rest` (true: the close has to end at the rest pose, so a robot with none fails it, false:
+the task leaves the arm where its rest move is refused, so a rest move that is made has to be
+refused, since one that stalls or runs out of time fails the run whatever the sidecar says,
+and a robot with no rest pose makes none and passes it),
+`joint_moved`, `lifted` (off the table, touching the gripper and up by `min_m`) and `moved` (its
+centre `min_m` from where it was laid). Every threshold is measured from the run's own start. A
+joint check reads the transcript, the readings the pilot was shown. An object check reads the
+simulator's truth, latched on the way into the stop that opens the teardown, before the rest
+move carries the arm back through the scene (`latched`), or the most the object reached before
+then (`peak`). That truth is kept on the transport and never in the state's extras, so neither
+the pilot nor an MCP client can read it. A check that does not hold is named under the table:
+
+```
+  seed 0: moved block (latched): 0.000 m from where it was laid as the run ended, of 0.05 m asked
+```
+
+That one is `lerobot-lookout`, which moves nothing, given a sidecar that asked for a block to be
+moved. A file with no sidecar is judged on its close alone, as above.
+
+### What it proves, and what it does not
+
+It proves that a task file survives the code that will run it: the connect and its retries on a
+bus that drops packets, the travel of the arm you calibrated and every refusal at its edge, the
+rest move at both ends, a pilot's choices against the allowlist and the budgets, the close, and
+a grasp judged by where the object really went rather than by what the pilot said. The follower
+under the backend plays what LeRobot and the servo do with a goal: LeRobot caps each send at the
+step, the servo clamps the goal to the calibrated travel and leaves the reading alone, and a
+limp joint drives to its last goal when torque returns, which is the worst case of an
+assumption nobody has checked on an arm.
+
+It does not prove that the arm can do the task. The dynamics are the model's, a calculation and
+another robot's servo properties, not anything measured on an SO-101, so a grasp that holds here
+is evidence about the model (`SERVO_DYNAMICS`, below). Which way each joint turns and where its
+zero sits are assumed to match the model until a bench checks them (`JOINT_SIGN`, `JOINT_ZERO`).
+The cameras' placement is quackd's, the servos never warm, and no rate measured here is the real
+bus's. So `lerobot:mujoco`'s status never raises `lerobot:real`'s, and what only the bench can
+settle is listed in [PLAN.md](../../PLAN.md).
+
+### When the simulator will not start
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot-sim]'` | MuJoCo is not installed here. The connect says so before anything is fetched | install the extra |
+| `lerobot mujoco: --address 'COM5' is a serial port, ...` | the address of a simulated arm is a calibration file, never a port, and nothing was opened | give `--address` the calibration file, or use `quackd robot twin`, or leave it out for the generic arm |
+| `lerobot mujoco: --camera-url '...' names '...', and the scene has no camera by that name; its cameras are front, top, wrist.` | a `?name=` the scene has no mount for | name `front`, `top` or `wrist` |
+| `lerobot mujoco: the rest pose puts ... on the model, and 1 s of settling still leaves ..., so the simulated arm cannot start there` | the rest pose puts the model into its table or into itself, and a second of settling leaves a part more than a millimetre in, held there by a stop or by a joint that cannot move. An arm started there would stall on its first move | give the robot a rest pose the model can start at: `quackd robot rest-pose NAME` records the model's zero, where the simulated arm starts without one. A twin's rest pose is its own, so the arm it copies keeps its pose |
+| `lerobot mujoco: with shoulder_lift at the edge of the travel its calibration recorded, where the close's rest move parks the arm, the rest pose puts ... on the model, and 1 s of settling leaves ..., so the simulated arm could not come back to rest` | with a joint recorded past its travel parked at the edge of it, as every close after a move of that joint parks it, the model is in its table or in itself, and a second of settling leaves that joint pushed back into its travel further than a reached pose may miss by, or the arm's start in the table or in itself | the same: give the robot a rest pose the model can start at, or calibrate again with the arm folded so the fold is inside the travel ([A pose past the travel](#a-pose-past-the-travel)) |
+| `lerobot mujoco: the scene lays block between the jaws, and as the arm starts its fixed finger ends ... above the table, over the top of block, ...` | a sidecar placed an object between the jaws, and the rest pose holds the jaws above it | give the robot a rest pose with its jaws down at the table, or lay the object on the table instead |
+| `QUACKD_LEROBOT_SIM_ASSETS=... has no so101_new_calib_camera.xml.` | the variable points somewhere without the model | point it at the `Simulation/SO101` directory of an SO-ARM100 checkout, or unset it to let quackd fetch the pinned model |
 
 ## Which of this arm's verbs are a choice
 
@@ -706,11 +1049,12 @@ quackd, side by side, is [safety.md](../safety.md).
   a half-duplex bus, so the transport refuses every later call until that thread comes back
   rather than starting a second one. The arm holds its goal meanwhile.
 - **Torque is released only where the arm is known to be at its recorded rest pose, unless a
-  person holding it asks.** `disconnect()` disables it by LeRobot's default, which quackd
-  keeps, because an arm at rest should be limp: that is what "at rest" means. So before the
-  disconnect quackd reads the joints one last time, and where they are not the pose you
-  recorded, or as near it as the calibrated travel lets the servo go, it turns that default off
-  and leaves the arm holding itself up, with one line saying so and naming the ways out:
+  person holding it asks.** `disconnect()` disables it where LeRobot's config asks, which is
+  LeRobot's default, and quackd asks for it over an arm at rest, because an arm at rest should
+  be limp: that is what "at rest" means. So before the disconnect quackd reads the joints one
+  last time, and where they are not the pose you recorded, or as near it as the calibrated
+  travel lets the servo go, it asks for torque to be kept instead and leaves the arm holding
+  itself up, with one line saying so and naming the ways out:
 
   ```
   the arm is not at its rest pose (...), so torque was left on and it will not fall as it
@@ -726,6 +1070,16 @@ quackd, side by side, is [safety.md](../safety.md).
   against, nothing changes, and the arm goes limp at the end of every clean session exactly as
   it did in 0.9. See [The rest pose](#the-rest-pose), and for the person holding an arm left up
   this way, [Releasing it where it stands](#releasing-it-where-it-stands).
+
+  An exit that never reaches that read, a second Ctrl-C during the rest move or a crash, leaves
+  the arm holding too. LeRobot can still disconnect an arm nobody closed as the process lets go
+  of it, and quackd builds the arm asking that disconnect to keep torque, so the release is
+  asked for only by quackd's own close, or by a connect it refused because the arm is not
+  calibrated, has no calibration file or has no motors bus. In 0.14 and before the arm was built
+  asking that disconnect for the release, so it could fall wherever it stood. Hold the arm and
+  run `quackd robot release NAME`, or cut its power. A connect that fails any other way once the
+  arm is energised keeps its torque as well, and says so
+  ([When it will not work](#when-it-will-not-work)).
 - **Connecting still drops torque briefly, and that has not changed.** `configure()` runs
   inside `torque_disabled()`, so the arm is limp for the moment between the port opening and
   the configuration landing, whatever any rest pose says. Support the arm when a session
@@ -790,9 +1144,9 @@ quackd, side by side, is [safety.md](../safety.md).
 
 ## The rest pose
 
-A LeRobot arm goes limp when it is disconnected, because `disconnect()` disables torque by its
-own default and quackd keeps that default. On the bench on 2026-09-15 that meant the arm fell
-at the end of every single run. Runs also started from wherever the previous one had left the
+A LeRobot arm goes limp when a session ends, because `disconnect()` disables torque by its own
+default, and a clean close with no rest pose recorded asks for exactly that. On the bench on
+2026-09-15 that meant the arm fell at the end of every single run. Runs also started from wherever the previous one had left the
 arm, so the pose a model was improvising from was different every time.
 
 A rest pose fixes both. You fold the arm by hand, tell quackd where that is, and quackd drives
@@ -1294,9 +1648,8 @@ it as its calibration lets the servos go. A joint is at its recorded angle when 
 the pose has to be reported and within it. A joint recorded past its travel is at rest within
 the same 5 degrees of the edge of that travel, or anywhere beyond the edge on the side its fold
 lies, for the reasons in [A pose past the travel](#a-pose-past-the-travel). Where that does not
-hold, quackd turns LeRobot's `disable_torque_on_disconnect` off on the
-config instance before the call, closes the port with every motor still holding its goal, and
-prints one line:
+hold, quackd writes LeRobot's `disable_torque_on_disconnect` as False on the config instance
+before the call, closes the port with every motor still holding its goal, and prints one line:
 
 ```
 the arm is not at its rest pose (...), so torque was left on and it will not fall as it
@@ -1651,16 +2004,17 @@ touched by anything in the first block: these all happen before or during connec
 | `lerobot real: connect failed 3 times: FeetechMotorsBus motor check failed on port ...: Missing motor IDs: - <N> ...` with every motor listed and `Full found motor list (id: model_number): {}` | no servo answered its ping on any attempt. That is what a servo supply that is switched off looks like, which is how the arm is after a power cut, and a cable out between the board and the first servo looks the same, so no joint is named | check that the servo supply is on, then the arm's cables and their connectors, and that nothing else has the port open, then connect again. Nothing was written, so the message says nothing about torque unless an earlier attempt got as far as writing |
 | `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to read 'Min_Position_Limit' on id_=<N> ...` (or `Max_Position_Limit`, `Homing_Offset`) | every attempt lost a reply in the calibration check LeRobot's connect makes after the handshake and before `configure()`. It reads and writes nothing, so the message says nothing about torque unless an earlier attempt got as far as writing | check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again |
 | `lerobot real: connect stopped after attempt <k> of 3, because a stop was asked for. ...` | a Ctrl-C, or `q`, while the connect was failing. The attempt's own failure follows, LeRobot's words and the joint they name, then that the port was closed without a write and connect was not tried again | nothing to fix for the stop. Read the failure as the rows above, and where the message says some motors may be left with torque on and others off, keep a hand under the arm |
-| `lerobot real: connect failed: a LeRobot call (connect) has not come back; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
+| `lerobot real: connect failed: a LeRobot call (connect) has not come back within 30 s; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm, and cut its power to let go of it: whatever torque the connect switched on stays on once quackd has exited. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
 | `lerobot real: the arm is not calibrated; run LeRobot's calibration first` | LeRobot read the motors back and they do not match a calibration | run `lerobot-calibrate` under the id quackd will use, and see [the id section](#the-name-you-give-the-arm-is-its-calibration-id) |
 | `lerobot real: the arm reports no calibration file, so nothing knows how far each joint travels` | there is no file for this id | the same fix, and check the path `doctor` prints |
+| `lerobot real: connect failed once the arm was energised: ... Nothing has read where the arm is, so quackd kept whatever torque connecting switched on rather than let it go where it stands: hold the arm, and cut its power.` | LeRobot's connect went through and switched torque on, and then something that is not one of the refusals above failed: the first read of the joints, the calibration check, or the travel read out of the calibration. LeRobot's own words follow `energised:`. No read has said where the arm stands, so the port is closed with every motor still holding. In 0.14 and before this was left to the disconnect LeRobot makes as the process lets go of the arm, which could drop it | hold the arm, and cut its power. `quackd robot release` connects the same way, so it fails in the same place. Then check the cables and the servo supply for a read that failed, or run LeRobot's calibration again for a calibration quackd could not read the travel out of |
 | `lerobot real: only so101_follower is wired` / `this robot has no motors bus` | the config is not an SO-101 follower | quackd drives this one body; an SO-100 shares the calibration directory but is not wired here |
 | `lerobot real: --camera-url 'opencv://7' did not open: ...` | the index is wrong, or the camera will not open under this backend | try the index `lerobot-find-cameras opencv` printed, add `?backend=msmf` on Windows, or drop a `width`/`height`/`fps` you pinned. The arm was not touched |
 | `lerobot real: --camera-url '...': fps='abc' is not a whole number` | a query key or value quackd does not accept | the message lists every key; this is refused before LeRobot is imported |
 | `lerobot real: --camera-url 'opencv://2': it has no ?name= and 2 cameras were given` | several cameras, and one of them is unnamed | add `?name=` to every url. The message shows the shape, `opencv://1?name=top --camera-url opencv://2?name=side`, and says what the name is for |
 | `lerobot real: --camera-url 'opencv://2?name=top': name='top' is already the name of 'opencv://1?name=top'` | two cameras with one name | rename one. Two views the model cannot tell apart are worse than one view |
 | `lerobot real: --camera-url 'opencv://1?name=side': 1 is already 'opencv://1?name=top'` | the same index given twice | drop the duplicate, or find the other camera's index with `lerobot-find-cameras opencv`. Two handles on one webcam is not two views |
-| `microduck:mock takes one --camera-url and 2 were given; only lerobot:real takes several` | a body that reads one camera was handed more | pass one url to that body. Only this arm reads more than one, and the message names it rather than opening the first and dropping the rest |
+| `microduck:mock takes one --camera-url and 2 were given; only lerobot:real and lerobot:mujoco take several` | a body that reads one camera was handed more | pass one url to that body. Only this arm reads more than one, on the desk or in its simulator, and the message names both rather than opening the first and dropping the rest |
 
 And once it is running:
 
@@ -1672,8 +2026,8 @@ And once it is running:
 | `the camera gave no frame: TimeoutError: ... too old` | the webcam stalled or was unplugged | only `observe` is affected, and a `pick` in flight. The arm carries on, and `report_state` starts saying `CAMERA DOWN:` with the reason, so a run that cannot call `observe` still records it |
 | `cannot move_joints: the arm's torque is off, so a goal would reach a limp servo` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so torque still off after one points at a tripped servo or the supply. On a `--by-hand` run this is also what the arm reads like between the release and the moment quackd takes hold again, which is before the first turn |
 | `cannot place: nothing is held: pick something first` | the `holding` precondition | holding is inferred from the gripper stopping short of shut, so an empty hand reads as nothing held. After a `--by-hand` start it is also what a pilot gets for the pencil you put between the jaws yourself: closing the gripper by hand sets a position and not a grip, and the pilot has to close on the object itself first |
-| the run ends saying the arm did not answer | the heartbeat's round trip to the motors failed | the cable, the power, or a servo that has tripped. The arm holds its last goal under torque |
-| the arm sags when the run ends | no rest pose is recorded, so LeRobot's `disconnect()` disables torque by its own default, at the end of every clean session | record one: `quackd robot rest-pose <name>`. Until you do, support it or fold it somewhere it can rest before you exit |
+| the run ends saying the arm did not answer | the heartbeat's round trip to the motors failed, and the words after `TimeoutError:` name the call and its budget. Before 0.15.0 there was one more cause: the event loop's thread busy past the deadline, parsing a pilot's first response or encoding a frame, while the arm answered in time, and the answer was thrown away. That was found in the simulator and never measured on an arm. An answer that came back in time is now kept, and a probe queued behind a call which came back in time keeps its place and goes out rather than failing | the cable, the power, or a servo that has tripped. The arm holds its last goal under torque |
+| the arm sags when the run ends | no rest pose is recorded, so quackd asks LeRobot's `disconnect()` for the release that is its own default, at the end of every clean session | record one: `quackd robot rest-pose <name>`. Until you do, support it or fold it somewhere it can rest before you exit |
 | `the arm is not at its rest pose (...), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release NAME, or quackd doctor --robot NAME to park it, or cut its power` | the arm did not reach the pose you recorded, or the edge of its travel where the pose lies past it, so quackd kept torque rather than dropping it. A run at a terminal offered to release it first, and nobody pressed Enter | hold the arm before anything else, since both commands connect and connecting drops torque for a moment. Then run `quackd robot release NAME` to have it let go into your hands ([Releasing it where it stands](#releasing-it-where-it-stands)), or run `quackd doctor --robot NAME` to let the rest move try again from where it now is, or cut the servo supply. The parenthesis names the joints that fell short |
 | `quackd cannot tell whether the arm is holding itself up (the arm did not answer: ...), so it kept whatever torque the arm has: hold it, and cut its power` | the arm did not answer the close's last read, so nothing says where it is or whether its servos are powered. Cutting the supply looks exactly like this, and so does a cable that came out in front of live servos | hold it, and cut the servo supply. No offer is made at the end of a run over an arm that went quiet |
 | `torque still reads on for <joints>: cut the power` from `quackd robot release` | those motors kept their torque through the release | cut the servo supply while you hold the arm. The motors not named are limp, and the line after it says what the close then did ([Releasing it where it stands](#releasing-it-where-it-stands)) |
@@ -1734,28 +2088,32 @@ If you hit one of these, or fail to, that is exactly what the
 | `Robot.calibrate() is interactive` | it calls `input()`; quackd never triggers it |
 | `Robot.configure()` | |
 | `Robot.__enter__/__exit__` | connect on enter, disconnect on exit |
+| `Robot.__del__ disconnects a robot still connected` | a follower collected while still connected is disconnected, and anything that raises is swallowed. So an exit that skipped quackd's close can still end in the follower's `disconnect()`, and what that does to torque is whatever the config holds by then, which is why quackd builds the follower asking to keep it |
 | `RobotAction = dict[str, Any]; RobotObservation = dict[str, Any]` | |
 | `Robot.calibration` | motor name -> MotorCalibration, loaded from the file; where joint ranges come from |
 | `Robot.calibration_fpath` | `calibration_dir / '<id>.json'`; reported so a wrong id is visible |
 | `calibrate() records wrist_roll as a full turn` | upstream sweeps every joint except that one and writes 0..4095 for it, so quackd's range refusal is real on four body joints and inert on the fifth |
-| `HF_LEROBOT_CALIBRATION/robots/so_follower/` | the default calibration directory; two arms sharing an id share a file |
+| `HF_LEROBOT_CALIBRATION/robots/so_follower/` | the default calibration directory: `$HF_LEROBOT_CALIBRATION`, else `$HF_LEROBOT_HOME/calibration`, else `lerobot/calibration` under `$HF_HOME`, which is huggingface_hub's own `$XDG_CACHE_HOME/huggingface` or `~/.cache/huggingface` when unset, and a variable set to nothing still counts as set. The arm simulator walks the same search without importing LeRobot. Two arms sharing an id share a file |
+| `a calibration file is draccus JSON of motor name -> MotorCalibration` | one object with a key per motor, each holding exactly the five integer fields. The arm simulator reads it with the json module and refuses a file that names other motors or leaves a field out |
+| `draccus>=0.11.6,<0.12.0` | how LeRobot decodes each field of a calibration file: a float is refused and anything else goes through `int()`, so `true` reads as 1 and `"3"` as 3, and a null passes through. The arm simulator decodes the fields the same way, so a twin loads the file its arm loads, and refuses a null, because it builds the travel from every field |
 | `lerobot.robots.make_robot_from_config(config)` | |
 | `so101_follower` | the registered config type |
 | `lerobot.robots.so_follower.SO101Follower` | an alias of SOFollower |
 | `SOFollower.name is so_follower` | the calibration subdirectory, shared by SO-100 and SO-101 |
-| `SO101FollowerConfig(port, disable_torque_on_disconnect=True, max_relative_target=None, cameras={}, use_degrees=True, position_p_coefficient=16, position_i_coefficient=0, position_d_coefficient=32, num_read_retries=2)` | every safety-shaped field is passed explicitly rather than inherited |
-| `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | six Feetech sts3215 motors, ids 1..6 |
+| `SO101FollowerConfig(port, disable_torque_on_disconnect=True, max_relative_target=None, cameras={}, use_degrees=True, position_p_coefficient=16, position_i_coefficient=0, position_d_coefficient=32, num_read_retries=2)` | every safety-shaped field is passed explicitly rather than inherited, and `disable_torque_on_disconnect` is passed as False, the opposite of upstream's default, so a disconnect quackd did not ask for keeps torque |
+| `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | six Feetech sts3215 motors, ids 1..6 in the bus table, which are the ids the arm simulator gives the generic arm it builds when no calibration file is named |
 | `'<motor>.pos'` | the observation and action keys |
 | `get_observation() reads Present_Position and nothing else` | no torque, current, temperature or fault: why quackd reads registers |
 | `camera name -> array` | `cam.read_latest()` under each configured camera's name |
 | `max_relative_target caps each step` | clips a goal to present +/- the cap per send_action |
 | `max_relative_target must be a float or a dict per motor` | an int raises; a dict must name exactly the action's joints |
+| `ensure_safe_goal_position(goal_present_pos, max_relative_target)` | the whole step cap: a float caps every motor, a dict with other keys than the goal's raises ValueError and anything else raises TypeError, and each goal is clipped to the cap either side of the present reading, which `send_action()` reads just before. A NaN cap caps nothing. The arm simulator reimplements it rather than importing LeRobot, which needs Python 3.12 and torch |
 | `send_action() returns the goal actually sent` | the clipped goal, not the measured position |
 | `use_degrees=True -> body joints in degrees` | |
 | `gripper is 0..100` | whatever use_degrees says |
-| `disconnect() disables torque by default` | `disable_torque_on_disconnect` defaults to True, so the arm goes limp at every clean exit, a `doctor` probe included, and not at all when the process is killed. quackd keeps that default, and turns it off for the one case where letting go would drop the arm: one that did not reach the pose it was recorded resting in |
-| `disconnect() reads config.disable_torque_on_disconnect when it runs` | the flag is read off the config instance inside `disconnect()` rather than copied at construction, and the config is a plain dataclass, so setting it False on the instance immediately before the call is what leaves an arm holding. quackd uses that seam for an arm away from its rest pose and nothing else; the config is still built asking for True. Read against lerobot 0.6.1, the version the first real arm ran |
-| `Max_Torque_Limit 500 on the gripper` | with Protection_Current 250 and Overload_Torque 25: the native authority |
+| `disconnect() disables torque by default` | `disable_torque_on_disconnect` defaults to True, so LeRobot lets the arm go limp at every disconnect, the one it makes of a follower nobody closed included. Under that default an exit that skipped quackd's close, a second Ctrl-C during the rest move or a crash, could drop the arm, so quackd builds the follower with it False and its close writes it every time: True over an arm at its recorded rest pose or with none recorded, which is the limp end of every clean session, a `doctor` probe included, and False over one that did not reach the pose it was recorded resting in. A connect quackd refuses once the arm is energised (not calibrated, no calibration file, no motors bus) writes True before its own disconnect, and one that fails any other way closes the port and keeps torque. Nothing runs when the process is killed |
+| `disconnect() reads config.disable_torque_on_disconnect when it runs` | the flag is read off the config instance inside `disconnect()` rather than copied at construction, and the config is a plain dataclass, so the value on the instance when `disconnect()` runs is what it does, whoever calls it. The config is built asking for False and every connect asks again, so a disconnect quackd did not make keeps torque, and quackd writes True immediately before its own only over an arm that may be let go. Read against lerobot 0.6.1, the version the first real arm ran |
+| `Max_Torque_Limit 500 on the gripper` | with Protection_Current 250 and Overload_Torque 25: the native authority. The line's own comment calls 500 half the maximum, so the arm simulator gives its model gripper half of that model's force range |
 | `the five body joints get no torque or current cap` | the caps sit inside a check for the gripper's name |
 | `configure_motors() writes Return_Delay_Time 0 and Acceleration 254` | called inside torque_disabled(), so connecting drops torque briefly |
 | `SOFollower.is_connected is the serial port plus the cameras` | |
@@ -1763,6 +2121,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `configure() switches torque off and on again with no retry` | `torque_disabled()` calls `disable_torque()` and `enable_torque()` with `num_retry` 0, each a `Torque_Enable` then a `Lock` write per motor, so one status packet lost or garbled fails the whole connect with the motors in two torque states. The bench arm did this on three connects on 2026-09-23; quackd connects again, up to three attempts |
 | `SOFollower.bus is a FeetechMotorsBus` | the attribute registers are read through |
 | `no deadman: nothing stops the arm when the client goes quiet` | the class has no thread, timer or timeout; a goal stands until the next write |
+| `RobotKinematics sets a URDF joint to np.deg2rad(degrees)` | LeRobot's own kinematics helper puts a reading on a model of the arm in radians with no offset and no sign, in forward and inverse kinematics alike. The arm simulator follows it for the five arm joints, which is what [`JOINT_ZERO` and `JOINT_SIGN`](#unverified-our-assumptions-about-the-model-and-what-quackd-does-about-each) assume |
 | `MotorsBus.disable_torque()` | never called on quackd's own initiative. The one call is `let_go()`, and it has two doors, each opened by a person at a terminal. `let_go()` is `quackd run --by-hand`'s, and refuses anywhere but the arm's recorded rest pose, the same condition `close()` uses to decide that letting go will not drop it. `let_go(anywhere=True)` is `quackd robot release`'s and the end-of-run offer's, after each has told the person to hold the arm, and releases wherever the arm stands, with or without a rest pose recorded. No verb reaches either and no model can ask for it. On a Feetech bus it writes `Torque_Enable` 0 then `Lock` 0 per motor, and quackd asks for `num_retry=5`, the count upstream's own `disconnect()` uses |
 | `MotorsBus.enable_torque()` | called by `take_hold()`, to pick up an arm a person has just placed, with `num_retry=5` as for the release. It writes `Torque_Enable` 1 **and then `Lock` 1** per motor, two writes a motor rather than one |
 | `MotorsBus.disconnect(disable_torque=True)` | the `disable_torque()` call is inside `if disable_torque`, so False closes the port and leaves every motor holding the goal it was last written: what an arm that missed its rest pose gets instead of falling, and how the port is closed between two connect attempts without a write to any motor. The same branch clears the port handler's busy flag (`port_handler.is_using = False`, motors_bus.py lines 557 and 558), which a serial error in the middle of a packet leaves set and which reopening the port does not clear, so quackd clears it after its own close: without that, every packet of the next attempt is answered "port in use" and the connect is refused as every motor missing |
@@ -1770,12 +2129,16 @@ If you hit one of these, or fail to, that is exactly what the
 | `Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>` | what a single write or read that failed raises. quackd reads the id out of it to name the joint; a sync read or write names several and quackd names none |
 | `_handshake` | what `MotorsBus.connect()` runs once the port is open: a ping per motor and the firmware reads, and no write. `configure()`, where every write of a connect is, comes after it, so a connect refused in the handshake left every motor's torque as it was, and its refusal does not tell you to keep a hand under the arm. quackd tells the two apart by this frame in the error's traceback |
 | `Missing motor IDs: / Motors with incorrect model numbers: - <N> (...)` | what the handshake raises for a servo that did not answer its ping, or answered as another model: one line per motor. A servo answering with its error bit set, an overload say, is listed as missing too. quackd names the joint of the first id listed, through the bus's motor table |
+| `Failed to sync read '<register>' on ids=[<N>, ...] after <k> tries. <result>` | what a read of several motors at once raises when no good reply came back, and a sync write says `Failed to sync write` when its packet could not go out: it waits for no reply, so a lost one cannot fail it. The result is the servo SDK's own words, `[TxRxResult] There is no status packet!` for a reply that never came. Neither names one motor, so quackd names no joint. The arm simulator fails its reads and goal writes in these words |
+| `sts3215 model number 777` | what an SO-101 servo answers a ping with, and what the handshake prints beside each id it lists. The arm simulator's handshake fault prints it where the arm's would |
+| `check_if_not_connected refuses a call on a port that is not open` | ``<class> is not connected. Run `.connect()` first.``, a ConnectionError, on the follower's observation, send and disconnect and on every bus read and write, and its twin says `<class> is already connected.` for a connect. The arm simulator refuses in the same words under upstream's class names |
 | `MotorsBus.is_connected is port_handler.is_open` | a port flag, not a reply: why the heartbeat reads the arm |
 | `FeetechMotorsBus.is_calibrated reads the motors back` | a missing, stale or foreign file all read as not calibrated |
 | `write_calibration() is reached only through calibrate()` | quackd cannot move an arm's zero by accident |
 | `MotorsBus.sync_read(data_name, motors=None, normalize=True, num_retry=0)` | one transaction for every motor named |
 | `NORMALIZED_DATA is Goal_Position and Present_Position` | every other register comes back raw |
 | `MotorCalibration(id, drive_mode, homing_offset, range_min, range_max)` | raw encoder ticks, not degrees |
+| `Invalid calibration for motor '<motor>': min and max are equal.` | LeRobot loads a file whose range_min equals its range_max and refuses the first reading or goal through that motor. The arm simulator refuses the file as it reads it |
 | `degrees = (raw - mid) * 360 / 4095` | how a calibration file becomes a range in degrees, centred on zero |
 | `a degrees goal is not clamped to the calibrated range` | the two 0..100 modes are clamped and DEGREES is not, so the servo's own clamp is what stops a goal past the travel, silently: why quackd refuses |
 | `write_calibration() writes Min_Position_Limit and Max_Position_Limit, and the servo clamps Goal_Position to them` | the servo clamps every goal to the calibrated travel and never a reading, seen on an SO-101 on 2026-09-23: why a rest pose is clipped into the travel and a joint past it gets no goal |
@@ -1822,6 +2185,70 @@ If you hit one of these, or fail to, that is exactly what the
 | `CAMERA_INDEX_MOVES` | an index is a scan position, not an identity: it can move on a replug or a reboot, and a laptop's own webcam usually holds 0. quackd records the index it opened and cannot tell you it is the camera you meant |
 | `WINDOWS_CAMERA_BACKEND` | which backend a Windows machine needs for a given webcam is not knowable in advance, so quackd keeps upstream's ANY and gives the owner `?backend=msmf` |
 
+## The simulator's upstream: SO-ARM100
+
+[The simulator](#the-simulator-lerobotmujoco), `lerobot:mujoco`, is the `real` backend's own
+code over a physics model of the SO-101, and this is where that model comes from. The model is
+set in a scene of quackd's own, a table, lights, the cameras and the objects on it, and CI runs
+the same code over a primitives-only stand-in arm (`sim/standin.py`), because nothing a pull
+request waits on fetches the model. The nightly `lerobot-sim-assets` job fetches it the way a
+first run does and runs the sweeps on it.
+
+The follower carries exactly what the `real` backend reads and writes on a LeRobot follower,
+and does under it what LeRobot and the servo do with a goal. It reads in whole encoder ticks
+through the calibration, caps each send at the step as LeRobot does, clamps a goal to the
+calibrated travel as the servo does, without a word, and lets a limp joint keep its goal until
+torque drives it there. Its faults are
+seeded, and each is raised in LeRobot's own words from a function named as LeRobot's, so the
+`real` backend says of it what it would say of the arm. `tests/test_lerobot_sim_parity.py`
+runs the `real` backend over it and over the fake arm its own tests use, side by side.
+
+The model is the maker's own, [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100),
+pinned at
+[`5f6d2b8`](https://github.com/TheRobotStudio/SO-ARM100/tree/5f6d2b876a53a4872e405b991dd925556c9e38a4)
+(`main`, 2026-09-23) and read on 2026-09-26. Every name quackd spells from it lives in
+[`adapters/lerobot/src/quackd_lerobot/sim/upstream_api.py`](../../adapters/lerobot/src/quackd_lerobot/sim/upstream_api.py).
+
+**The model and its meshes are fetched at run time and never shipped.** Neither the wheel, the
+repository nor a test fixture carries a byte of them, although their Apache-2.0 licence would
+allow it, because no upstream asset is ever committed here.
+[`sim/assets.py`](../../adapters/lerobot/src/quackd_lerobot/sim/assets.py) fetches
+`so101_new_calib_camera.xml` and the meshes it names one file at a time from
+raw.githubusercontent.com at the pin, rather than the whole repository, and checks each one
+against the sha256 recorded for it. Only once every file matches does it install the set in
+`~/.quackd/cache/so-arm100/<pin>/`, with a licence notice beside it. `QUACKD_CACHE_DIR` moves
+the cache. `QUACKD_LEROBOT_SIM_ASSETS` points at the `Simulation/SO101` directory of a checkout
+of your own instead. A file there that differs from the pin is a warning rather than an error,
+because a newer model is what a checkout is for, and the model is then reported as not pinned.
+Line endings in the model do not count, because Git for Windows checks it out with CRLF.
+
+### VERIFIED (read from the model and its README at the pin)
+
+| Name | Why quackd relies on it |
+|---|---|
+| `the repository's LICENSE is the Apache License 2.0` | no other licence file sits beside the simulation files and neither README names one, so the model and its meshes are under it. quackd fetches them rather than shipping them all the same |
+| `so101_new_calib_camera.xml` | the model quackd loads: new_calib, the default calibration, plus upstream's wrist camera mount. It includes no other file, so it needs nothing of upstream's but its meshes |
+| `no <option>, <camera>, <light> or table in the model` | the arm and nothing around it, so the physics settings, the table, the lights and every camera the simulator renders from are quackd's and not upstream's. Upstream's `scene.xml` wraps the variant without the camera mount, and quackd does not use it |
+| `<compiler angle="radian" meshdir="assets" autolimits="true"/>` | every range in the file is in radians, and quackd reads each one from the loaded model rather than copying a number out of the file |
+| `15 STL meshes under Simulation/SO101/assets` | every mesh the model names and nothing else from that directory, each fetched on its own and checked against its hash |
+| `wrist_camera_mount and wrist_camera` | two bodies under the gripper, meshes only, with no camera element in either: where a wrist view is rendered from is quackd's |
+| `the fingers are part of the meshes wrist_roll_follower_so101_v1 and moving_jaw_so101_v1` | the fixed finger is one printed part with the wrist housing, and each part collides as the whole of its mesh. MuJoCo collides a mesh as its convex hull, so the fixed part's hull fills the opening the other finger closes into and throws a pen out of the grasp. quackd turns both off and collides the two fingers and the palm as boxes cut from the meshes' own vertices when the model loads |
+| `joints and actuators named shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | exactly LeRobot's motor names in LeRobot's order, so a `'<motor>.pos'` key reaches its joint and its actuator by name |
+| `new_calib: each joint's zero is the middle of its range` | the README's words, which the file bears out for the five arm joints: four ranges are symmetric about zero, and `wrist_roll`'s middle is a few degrees from it. LeRobot's degrees for those joints are centred on the middle of the calibrated travel too, which is why the two zeros are expected to meet. Not for the gripper: its hinge has its zero near one end of its range and LeRobot's gripper is 0..100, so it is `GRIPPER_MAP`'s |
+| `<position kp="998.22" kv="2.731" forcerange="-2.94 2.94"/>` | the gains every joint uses, which the file says were calculated following [RBE501-RL-arm-project](https://github.com/Gregory119/RBE501-RL-arm-project/blob/main/gymnasium_env/README.md) with the servo's proportional gain assumed to be 16, LeRobot's default, and which it says are not a one to one mapping of LeRobot's servo gains. Each of the six actuators overrides the force range with -3.35 3.35. quackd uses them as written |
+| `STS3215 motor properties adapted from the Open Duck Mini project` | the README's account of where the servo properties in the model came from: another robot |
+| `LeRobot's gripper 0..100 is not yet reflected in the URDF and MuJoCo files` | the model's gripper is a hinge in radians, so the map from LeRobot's 0..100 is quackd's (`GRIPPER_MAP`) |
+
+### UNVERIFIED (our assumptions about the model, and what quackd does about each)
+
+| Name | What quackd does |
+|---|---|
+| `SERVO_DYNAMICS` | the gains, damping and friction are a calculation and another robot's properties, not a measurement of an SO-101. quackd treats the simulated dynamics as the model's and never as the arm's: a settle time, a push or a grasp that holds in the simulator is evidence about the model, and only the bench can say it about an arm |
+| `JOINT_ZERO` | whether a real arm's calibrated middle of travel is the model's zero, on the five arm joints. A calibration records the travel one person swept on one arm, and nothing says that matches the CAD. quackd assumes an offset of zero on each of them until the bench measures one, as LeRobot's own kinematics helper does (`RobotKinematics sets a URDF joint to np.deg2rad(degrees)`, in the LeRobot table above). The gripper is `GRIPPER_MAP`'s |
+| `JOINT_SIGN` | whether a positive degree turns the model's joint the positive way. That depends on how each servo was mounted and calibrated, which the model cannot know. quackd assumes it does on the five arm joints, as LeRobot's kinematics helper does. Which end of the gripper is closed is `GRIPPER_MAP`'s, found from the model |
+| `GRIPPER_MAP` | LeRobot's 0..100 is mapped linearly over the model's gripper hinge, with the closed end found from the loaded model rather than assumed, and a reading is clipped to 0..100 |
+| `WRIST_CAMERA_POSE` | whether upstream's printed mount sits where your wrist camera sits. quackd renders the wrist view from the mount as the model places it and never claims it is your camera's view |
+
 ## Status
 
 `lerobot:mock` runs every arm verb through the executor in the test suite, including the
@@ -1834,6 +2261,16 @@ on an arm yet: parking a rest pose at the edge of its travel, `stop` leaving out
 reads past its travel, `quackd robot release` and the offer at the end of a run, the connect's
 retries, a `move_joints` paced over its `duration_s`, and the take-hold refusing a joint past
 its travel. The [checklist](../lerobot-hardware-checklist.md) is the order to find out in.
+
+`lerobot:mujoco` runs that same code over [the simulator](#the-simulator-lerobotmujoco): in CI
+on a primitives-only stand-in arm, and on the maker's model in sweeps run by hand on 2026-09-27,
+which the nightly `lerobot-sim-assets` job is there to repeat. On that model a grasp driven
+through the real backend's own verbs lifts a cube clear of the table between both finger pads on
+ten seeds of ten, judged by the world's truth, and `quackd preflight` passes the bundled
+`lerobot-lookout` on the generic arm, which has no rest pose to return to, and a grasp task
+with a sidecar from a rest pose its close has to reach, each on ten seeds of ten. That is the
+simulator doing what it says, and nothing about the arm: no run on the simulator has been
+compared against one, and the ✅ it carries never raises `lerobot:real`'s.
 
 ### What one afternoon proved, and what it did not
 
@@ -1861,7 +2298,10 @@ What went wrong, which belongs in the same breath as the above:
   could not reach a fold that lay past the calibrated travel, which is the box at the top of
   that section.
 - One dry run aborted with `the arm did not answer: TimeoutError` when a single heartbeat round
-  trip failed. It never recurred, and nothing since has explained it.
+  trip failed. It never recurred. One way that line could appear was found later, in the
+  simulator: the event loop's thread busy past the heartbeat's deadline while the arm's answer
+  was already in, which 0.15.0 fixed. Nobody measured it on the arm, so it is one cause that
+  exists and not the explanation of that day.
 - One dry run aborted because the pilot answered `uncertain` at `assess_task` and the human
   said no. That is the gate working, not a fault.
 - The camera framed the gripper and cropped the raised arm, so the model verified its own waves
@@ -1891,3 +2331,8 @@ cannot know whether you brought a webcam. What most needs a real arm is that che
 *What to report*, and the four unmeasured things above are the top of it. One afternoon on one
 arm is a sample of one: what differs on yours is the part worth writing down. Open an issue
 with the transcript.
+
+A task file that passes `quackd preflight` on your arm's twin and then does something else on the
+arm is worth an issue of its own, with both transcripts. Nobody has compared the simulator
+against an arm yet, and that comparison is the only thing that can move its assumptions from
+UNVERIFIED.

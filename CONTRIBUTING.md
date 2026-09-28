@@ -38,7 +38,7 @@ extra once reached a release. Change a dependency anywhere, run `uv lock`, and c
 
 Versions move together. The core and each adapter carry their own `__version__`, because an
 adapter's sdist holds only its own source and cannot read the core's, and each one pins a
-window on the core (`quackd>=0.14,<0.15`). `uv run python scripts/set_version.py X.Y.Z`
+window on the core (`quackd>=0.15,<0.16`). `uv run python scripts/set_version.py X.Y.Z`
 rewrites all eight and the windows that tie them together in `pyproject.toml`. It cannot reach
 prose, so the copies of that window quoted in this file and in the docs are the part a release
 still edits by hand. A
@@ -80,6 +80,17 @@ touches no network. The tests marked `real_duck` need upstream's model in `~/.qu
 they skip until you have run `--robot microduck:mujoco` once, and a nightly job runs them there.
 The gait arithmetic itself lives in that package's `sim3d/gait.py`, which imports no `mujoco`, so
 `tests/test_sim3d_gait.py` runs whether you installed the extra or not.
+
+Touching the arm's simulator under `adapters/lerobot/src/quackd_lerobot/sim/`? The same extra
+gives you `mujoco`, and `tests/test_lerobot_sim.py` vanishes without it the same way. It runs on
+`sim/standin.py`, a primitives-only arm that needs nothing fetched, and CI's `physics` job runs
+it too. The tests marked `so101_model`, the model check in that file and the whole of
+`tests/test_lerobot_sim_model.py` (the seeded grasp sweep, the rehearsal sweeps, the real
+meshes rendered and the physics timed), need the maker's model already in `~/.quackd/cache`,
+or `QUACKD_LEROBOT_SIM_ASSETS` pointing at the `Simulation/SO101` directory of a checkout, and
+skip without either. The nightly `lerobot-sim-assets` job fetches the model and runs them, and
+no job a pull request waits on does. So a contact setting changed in `sim/model.py` meets the
+grasp sweep only that night: run `uv run pytest tests/test_lerobot_sim_model.py` yourself first.
 
 Touching anything under `bridge/`? That is the code that runs on a robot, or on the board
 `--host` names, and there are four lots of it now (`open_duck/`, `alohamini/`,
@@ -327,7 +338,8 @@ and arrive 🧪 in the status tables until someone runs it against the real thin
   sharper in 0.8: a real `--robot microduck:mujoco` run puts upstream's `robot_walk.xml` and
   38 CC BY-NC-SA meshes in `~/.quackd/cache`. quackd's whole licence position is that it
   redistributes none of them, and a public history does not forget. `.gitignore` now catches
-  `.stl` and `robot_walk.xml` as well as `.onnx`, but do not rely on it.
+  `.stl`, `robot_walk.xml` and the SO-101's `so101_*.xml` as well as `.onnx`, but do not rely
+  on it.
 - Tone: confident, playful, honest about status.
 
 ## How your PR gets handled

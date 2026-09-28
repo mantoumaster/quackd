@@ -88,11 +88,17 @@ class FrameRecorder:
         draw.text((self.size + 10, 5), label, fill=(180, 180, 180))
         self.frames.append(frame)
 
-    def save_gif(self, path: Path) -> Path:
+    def save_gif(self, path: Path) -> Path | None:
+        """Write the run as a GIF at `path`, or write nothing and return None when there is
+        no frame to write: a world that was never built, because the run ended before its
+        connect did, has nothing to draw. A GIF of no frames cannot be encoded, and the run it
+        belongs to has already finished, so this is not a reason to fail it."""
         frames = self.frames
         if not frames and self.world is not None:
             self._append()
             frames = self.frames
+        if not frames:
+            return None
         if len(frames) > MAX_FRAMES:
             stride = len(frames) / MAX_FRAMES
             frames = [frames[int(i * stride)] for i in range(MAX_FRAMES)]

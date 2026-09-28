@@ -42,6 +42,22 @@ def test_adapter_status_lists_every_microduck_upstream_ref() -> None:
             assert f"`{adapter}:{backend}`" in doc, f"adapter-status.md lacks {adapter}:{backend}"
 
 
+def test_adapter_status_names_every_assumption_the_arm_simulator_makes() -> None:
+    """The arm's simulator has an upstream table on this page, in the shape of the Microduck's
+    physics table above it, and every assumption it makes about its model is named in it, as
+    well as on the arm's own page, whose guard is below. Without this the shorter table could
+    lose a row the day a new assumption is written and nobody would see it."""
+    from quackd_lerobot.sim import upstream_api as so_arm100
+
+    doc = (REPO / "docs" / "adapter-status.md").read_text(encoding="utf-8")
+    section = doc.split("\n### The arm simulator's upstream\n", 1)[1].split("\n## ", 1)[0]
+    missing = [
+        ref.name for ref in so_arm100.refs_by_status("UNVERIFIED") if f"`{ref.name}`" not in section
+    ]
+    assert not missing, f"adapter-status.md's SO-ARM100 table is missing: {missing}"
+    assert so_arm100.PIN[:7] in section and so_arm100.READ_ON in section
+
+
 def test_adapter_guide_and_manifest_spec_match_the_code() -> None:
     from quackd.adapters.factory import ADAPTER_NAMES
     from quackd.verbs.core import REQUIREMENTS
@@ -67,6 +83,31 @@ def test_adapter_doc_lists_every_upstream_ref(adapter: str) -> None:
     missing = [ref.name for ref in api.all_refs() if ref.name not in doc]
     assert not missing, f"docs/adapters/{adapter}.md is missing: {missing}"
     assert api.PIN[:7] in doc and "never" in doc.lower()  # the honesty label
+
+
+def test_adapter_doc_lists_every_simulator_upstream_ref() -> None:
+    """The arm's simulator reads a second upstream, TheRobotStudio's SO-ARM100, whose refs live
+    in `quackd_lerobot.sim.upstream_api`. The guard above reads `quackd_lerobot.upstream_api`
+    only, so without this one the model's table could go stale in silence.
+
+    Each ref needs a row of its own in the table for its status. A name found anywhere on the
+    page is not enough: the model's file name is in the prose, and `GRIPPER_MAP` is named in a
+    VERIFIED row, so either row could go and a looser check would stay green."""
+    from quackd_lerobot.sim import upstream_api as so_arm100
+
+    doc = (REPO / "docs" / "adapters" / "lerobot.md").read_text(encoding="utf-8")
+    section = doc.split("\n## The simulator's upstream: SO-ARM100\n", 1)[1].split("\n## ", 1)[0]
+    verified, unverified = section.split("\n### UNVERIFIED (", 1)
+    tables = {"VERIFIED": verified.split("\n### VERIFIED (", 1)[1], "UNVERIFIED": unverified}
+    missing = [
+        f"{ref.status} {ref.name}"
+        for ref in so_arm100.all_refs()
+        if f"\n| `{ref.name}` |" not in tables[ref.status]
+    ]
+    assert not missing, f"docs/adapters/lerobot.md has no row for these SO-ARM100 refs: {missing}"
+    assert so_arm100.PIN[:7] in section and so_arm100.READ_ON in section
+    assert "fetched at run time and never shipped" in section  # the honesty label
+    assert "QUACKD_LEROBOT_SIM_ASSETS" in section
 
 
 def test_readme_promises() -> None:
@@ -758,6 +799,47 @@ def test_every_file_in_docs_assets_has_a_row_in_its_catalogue() -> None:
         )
 
 
+#: Sentences that were true until 2026-09-28, when OpenAI's `gpt-6-sol` flew the arm's
+#: simulator on film (`docs/assets/lerobot-sim.gif`). The README carried three of them, in its
+#: status table, its limitations and its help wanted, and the change that embedded the film in
+#: that same README fixed the assets catalogue's copy and none of these. The last has been
+#: false since `lerobot.gif`, a model on the real arm, and was missed then too.
+_RETIRED_RECORDING_CLAIMS = (
+    "no real model recording has yet been made in any simulator",
+    "the only recording in this repository with a model in the loop",
+    "every simulator recording here is the scripted pilot",
+    "the one recording here with a model in it",
+    "none has yet been recorded in any simulator",
+    "every *simulator* recording here is driven by the scripted pilot",
+    "not an llm, like every other asset here",
+)
+
+
+def test_no_living_document_still_says_no_model_has_been_filmed_in_a_simulator() -> None:
+    """A claim about the pictures, spelled once per page, and a page that keeps it says the
+    opposite of a figure it may be showing a few screens up.
+
+    The other half holds the catalogue to the same fact, so the two move together: a film
+    re-recorded with the scripted pilot takes the model out of its row, and this test then
+    says which claims have come true again."""
+    catalogue = (REPO / "docs" / "assets" / "README.md").read_text(encoding="utf-8")
+    row = re.search(r"^\| `lerobot-sim\.gif` \| (.*?) \|", catalogue, flags=re.MULTILINE)
+    assert row is not None, "docs/assets/README.md has no row for lerobot-sim.gif"
+    assert "gpt-6-sol" in row.group(1), (
+        "the lerobot-sim.gif row no longer names the model that flew it. If the film is the "
+        "scripted pilot now, the claims in _RETIRED_RECORDING_CLAIMS are true again: take "
+        "them out of this test and put the sentences back where the pages need them."
+    )
+    for path in _living_docs():
+        text = _one_line(path.read_text(encoding="utf-8"))
+        for retired in _RETIRED_RECORDING_CLAIMS:
+            assert retired not in text, (
+                f"{path.relative_to(REPO).as_posix()} still says {retired!r}, and OpenAI's "
+                "gpt-6-sol was filmed on the arm's simulator on 2026-09-28 "
+                "(docs/assets/lerobot-sim.gif)"
+            )
+
+
 def test_no_living_document_or_user_facing_string_still_says_fleet() -> None:
     """One word for a group of robots, because two words for one idea is two ideas to a reader.
 
@@ -1408,4 +1490,301 @@ def test_no_living_document_credits_all_four_confidence_floors_to_typesafe() -> 
             assert wrong not in text, (
                 f"{path.relative_to(REPO)} says {wrong!r}, but TypeSafe publish only 0.5 and "
                 "0.9; the 0.60 read floor and the 0.85 motion floor are quackd's own"
+            )
+
+
+#: What the pages written for the arm's simulator said, each beside what the code does. Each
+#: read well, and most were copied into a second page before anybody checked it against the
+#: code: an id quackd chose credited to LeRobot, a pass rule missing the case the lookout sweep
+#: passes by, LeRobot's own step cap credited to the servo's firmware, and a model's physics
+#: offered as a rehearsal of the arm's.
+_ARM_SIMULATOR_CLAIMS_THE_CODE_NEVER_MADE = (
+    (
+        "lerobot's default id",
+        "`arm-01` is quackd's own DEFAULT_ID, the id it hands LeRobot for an arm nobody named, "
+        "and no upstream ref gives LeRobot one",
+    ),
+    (
+        "keeps under its default id",
+        "`arm-01` is quackd's own DEFAULT_ID, the id it hands LeRobot for an arm nobody named",
+    ),
+    (
+        "the only check that this machine can draw",
+        "every connect renders one frame (LeRobotSim._render_once), a run's and each preflight "
+        "cycle's included",
+    ),
+    (
+        "its close ended at the rest pose and every check",
+        "judge_close passes a robot with no rest pose, unless the sidecar asks at_rest: true",
+    ),
+    (
+        "its close ended at the rest pose, and every check",
+        "judge_close passes a robot with no rest pose, unless the sidecar asks at_rest: true",
+    ),
+    (
+        "the close ended at the rest pose or was refused where the task expects that",
+        "judge_close passes a robot with no rest pose, unless the sidecar asks at_rest: true",
+    ),
+    (
+        "ended at the rest pose, or refused where the sidecar says to expect that",
+        "judge_close passes a robot with no rest pose, unless the sidecar asks at_rest: true",
+    ),
+    (
+        "servo behaviour is the arm's",
+        "SERVO_DYNAMICS: the simulated dynamics are the model's and never the arm's",
+    ),
+    (
+        "lerobot leaves to it",
+        "the step cap is LeRobot's own ensure_safe_goal_position, called in send_action; the "
+        "clamp and a limp joint's goal are the servo's",
+    ),
+    (
+        "leaves it to the firmware",
+        "the step cap is LeRobot's own ensure_safe_goal_position, called in send_action",
+    ),
+    (
+        "does under it what the arm does",
+        "the step cap is LeRobot's code, and only the clamp and a limp joint's goal are the "
+        "servo's; the dynamics are the model's (SERVO_DYNAMICS)",
+    ),
+    (
+        "rehearses here before it is let go of at the bench",
+        "how a released joint settles is the model's physics (SERVO_DYNAMICS), over signs and "
+        "zeros nobody has checked (JOINT_SIGN, JOINT_ZERO)",
+    ),
+    (
+        "two of the views are quackd's",
+        "the connect note is one sentence naming whichever of front and top is open "
+        "(sim.transport.default_views)",
+    ),
+    (
+        "seven bench steps 0.14.0 owes, above",
+        "a later release heads the CHANGELOG, so 0.14.0's list of bench steps is below it",
+    ),
+    (
+        "both simulators draw the ball",
+        "there are three simulators, and the arm's draws nothing in a detector's colour",
+    ),
+    (
+        "so the cartoon and the mujoco world (`quackd_microduck.sim3d`) share it",
+        "the arm's simulator steps on the flock clock too (quackd_lerobot.sim.clock)",
+    ),
+    (
+        "the physics backend's upstreams",
+        "microduck:mujoco and lerobot:mujoco are both physics backends, each with its own table",
+    ),
+    (
+        "colour ranges are the *simulator's*",
+        "the detector's ranges are the duck simulators', and the arm's simulator has no ball",
+    ),
+    # the arm simulator's film is the first of a cloud model in a simulator, not of a model:
+    # the four transcripts under docs/assets/transcripts are local models on microduck:sim2d
+    (
+        "the first recording in this repository of a model in a simulator",
+        "the transcripts in docs/assets are local models on sim2d, so the film is the first "
+        "cloud model filmed in a simulator, not the first model in one",
+    ),
+    (
+        "the first recording here of a model in a simulator",
+        "the transcripts in docs/assets are local models on sim2d, so the film is the first "
+        "cloud model filmed in a simulator, not the first model in one",
+    ),
+    (
+        "the first model recorded in a simulator here",
+        "the transcripts in docs/assets are local models on sim2d, so the film is the first "
+        "cloud model filmed in a simulator, not the first model in one",
+    ),
+    (
+        "that an so-101 is rehearsed",
+        "a task is rehearsed, through the arm's backend on the maker's model, and nothing has "
+        "compared that model against an arm (ADR-0047), so no SO-101 is",
+    ),
+)
+
+
+def test_no_page_repeats_a_claim_about_the_arms_simulator_the_code_never_made() -> None:
+    """Sentences about `lerobot:mujoco` that read well and were wrong.
+
+    The CHANGELOG, the ADRs that carry a note about the simulator, the arm's own README and the
+    source are read along with the living documents, because each of these was in at least one
+    of them, and four were docstrings. None of them was ever true, so no record has a reason to
+    keep one."""
+    adr = REPO / "docs" / "adr"
+    sources = [
+        REPO / "CHANGELOG.md",
+        REPO / "adapters" / "lerobot" / "README.md",
+        *(
+            path
+            for number in ("0016", "0030", "0036", "0045", "0047")
+            for path in sorted(adr.glob(f"{number}-*.md"))
+        ),
+        *sorted((REPO / "quackd").rglob("*.py")),
+        *sorted((REPO / "adapters" / "lerobot" / "src").rglob("*.py")),
+    ]
+    for path in _living_docs() + sources:
+        text = _one_line(path.read_text(encoding="utf-8"), seams=path.suffix == ".py")
+        for wrong, true in _ARM_SIMULATOR_CLAIMS_THE_CODE_NEVER_MADE:
+            # pytest.fail rather than assert, for the reason the host claims above give
+            if wrong in text:
+                pytest.fail(f"{path.relative_to(REPO).as_posix()} says {wrong!r}: {true}")
+
+
+#: What the release note and ADR-0036 said about the arm's torque on a disconnect when 0.15.0
+#: built the follower to keep it, each beside what the code does. The first three said no
+#: decided ending changed, and one refusal did: on a transport connected again after a close
+#: that kept torque, it used to keep the arm energised, and it lets go now. The last listed
+#: three of that release's changes to `lerobot:real` as though they were all of them.
+_ARM_TORQUE_CLAIMS_THE_CODE_NEVER_MADE = (
+    (
+        "so every clean ending lets go where it did",
+        "a refusal after a close that kept torque used to keep the arm energised, and lets go "
+        "now (`_give_up` writes the flag True)",
+    ),
+    (
+        "so they let go as they did",
+        "a refusal after a close that kept torque used to keep the arm energised, and lets go "
+        "now (`_give_up` writes the flag True)",
+    ),
+    (
+        "only the endings nobody decided changed",
+        "a refusal after a close that kept torque changed too, and it lets go",
+    ),
+    (
+        "what this release changes in `lerobot:real`, the follower built",
+        "the release note names more changes to lerobot:real than three, and a list of three "
+        "beside the phrase read as all of them",
+    ),
+)
+
+
+def test_no_page_repeats_a_claim_about_the_arms_torque_the_code_never_made() -> None:
+    """Sentences about when the arm lets go that read well and were wrong. The CHANGELOG,
+    ADR-0036, the arm's own README and its source are read along with the living documents,
+    because the first two carried them and the source says the same things in docstrings."""
+    sources = [
+        REPO / "CHANGELOG.md",
+        REPO / "adapters" / "lerobot" / "README.md",
+        *sorted((REPO / "docs" / "adr").glob("0036-*.md")),
+        *sorted((REPO / "adapters" / "lerobot" / "src").rglob("*.py")),
+    ]
+    for path in _living_docs() + sources:
+        text = _one_line(path.read_text(encoding="utf-8"), seams=path.suffix == ".py")
+        for wrong, true in _ARM_TORQUE_CLAIMS_THE_CODE_NEVER_MADE:
+            # pytest.fail rather than assert, for the reason the host claims above give
+            if wrong in text:
+                pytest.fail(f"{path.relative_to(REPO).as_posix()} says {wrong!r}: {true}")
+
+
+def test_the_arm_left_holding_by_an_exit_that_skips_the_close_has_a_bench_step() -> None:
+    """0.15.0 built the follower to keep torque on a disconnect quackd did not ask for, so a
+    second Ctrl-C during the fold back to the rest pose leaves the arm holding where 0.14.0
+    could drop it. Its release note first said that change had never met an arm without saying
+    how the bench would settle it, and PLAN's item for the arm pointed only at 0.14.0's seven
+    steps. Both name the step now, and a later edit that drops it from either is caught here.
+
+    Both also send the reader to step 14 of the hardware checklist for it, which is the order a
+    lab visit takes the arm through, and step 14 said nothing about a second press. A visit
+    that followed the checklist would have skipped the one bench step this release wrote, so
+    step 14 is read too."""
+    step = "a second ctrl-c during the fold back to the rest pose"
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    release = changelog.split("\n## [0.15.0]", 1)[1].split("\n## [", 1)[0]
+    assert step in _one_line(release), "CHANGELOG.md's 0.15.0 section no longer names the step"
+    plan = _one_line((REPO / "PLAN.md").read_text(encoding="utf-8"))
+    assert step in plan, "PLAN.md's item for the SO-101 no longer names 0.15.0's bench step"
+    checklist = (REPO / "docs" / "lerobot-hardware-checklist.md").read_text(encoding="utf-8")
+    step_14 = checklist.split("\n14. ", 1)[1].split("\n## ", 1)[0]
+    assert step in _one_line(step_14), (
+        "step 14 of docs/lerobot-hardware-checklist.md no longer asks for 0.15.0's bench step, "
+        "and the release note and PLAN.md both send the reader there for it"
+    )
+
+
+def test_the_simulators_bench_steps_are_one_list_in_plan_and_the_release_note() -> None:
+    """PLAN.md's item for the SO-101 against its simulator lists each bench step it owes, and
+    0.15.0's Known limitations numbers the same steps and then 0.14.0's seven. When the rest
+    move pressing the gripper into the table became a step of its own in PLAN.md, the release
+    note folded it into the joint signs, so the intro named five steps and the list under it
+    four. The first three words of each item are compared in order, so a step added to one
+    list and not the other, or merged into its neighbour, fails here."""
+    plan = (REPO / "PLAN.md").read_text(encoding="utf-8")
+    item = plan.split("**The SO-101 against its simulator.**", 1)[1].split("\n\n  Until", 1)[0]
+    planned = [" ".join(line.split()[1:4]).lower() for line in re.findall(r"^  - .*", item, re.M)]
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    release = changelog.split("\n## [0.15.0]", 1)[1].split("\n## [", 1)[0]
+    bullet = release.split("**The arm's simulator is not the arm", 1)[1].split("\n- **", 1)[0]
+    numbered = re.findall(r"^  \d+\. (.*)", bullet, re.M)
+    assert numbered and "0.14.0" in numbered[-1], (
+        "CHANGELOG.md's 0.15.0 list of the simulator's bench steps no longer ends with 0.14.0's"
+    )
+    listed = [" ".join(line.split()[:3]).lower() for line in numbered[:-1]]
+    assert planned, "PLAN.md's item for the SO-101 against its simulator lists no bench step"
+    assert listed == planned, (
+        f"PLAN.md owes the simulator {planned} and CHANGELOG.md's 0.15.0 lists {listed}: a step "
+        "in one and not the other, or merged into its neighbour"
+    )
+
+
+def test_the_release_note_names_the_frames_that_are_still_encoded_on_the_loop() -> None:
+    """0.15.0 moved the PNGs of a turn's own observation into a worker thread, because a
+    heartbeat waiting on the loop's thread was held up by them. The `observe` verb's frames
+    still go through `AgentLoop._on_frames`, which writes them on that thread, and
+    `robot_observe` encodes what it returns to an MCP client there too. The note first said
+    the frames a turn saves were encoded off the loop and named only the colour detector and
+    the SDKs as still on it, which read as though every frame had moved."""
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    release = _one_line(changelog.split("\n## [0.15.0]", 1)[1].split("\n## [", 1)[0])
+    assert "still run on the loop's thread" in release, (
+        "CHANGELOG.md's 0.15.0 heartbeat entry no longer says what still runs on the loop"
+    )
+    still = release.split("still run on the loop's thread", 1)[0].rsplit(". ", 1)[-1]
+    for named in ("the `observe` verb", "`robot_observe`", "every detector but a board's"):
+        assert named in still, (
+            f"CHANGELOG.md's 0.15.0 list of what still runs on the loop leaves out {named}"
+        )
+
+
+#: How the pages said an MCP session's minutes were counted before 0.15.0 started them at the
+#: connect (`RobotSession.connect` calls `budget.start()` once the transport has connected).
+#: A session still begins at the spawn, and pages that say so are right. Its clock does not.
+_MCP_CLOCK_STARTS_AT_THE_SPAWN = (
+    re.compile(
+        r"(clock|minutes)[^.]{0,40}(start|begin)s? (when|at) "
+        r"(the client spawn|the spawn|the server start)"
+    ),
+    re.compile(r"minutes from the spawn"),
+    re.compile(r"counted from when the server started"),
+)
+
+
+def test_no_page_says_an_mcp_sessions_minutes_start_at_the_spawn() -> None:
+    """0.15.0 starts an MCP session's clock once its robot has connected, as a `quackd run`'s
+    is, so an arm's connect retries no longer come out of the minutes. docs/mcp.md was
+    corrected with the code, and the arm's first-run guide still said, in five paragraphs, that
+    the five minutes begin when the client spawns the server."""
+    for path in _living_docs():
+        text = _one_line(path.read_text(encoding="utf-8"))
+        for wrong in _MCP_CLOCK_STARTS_AT_THE_SPAWN:
+            found = wrong.search(text)
+            if found:
+                pytest.fail(
+                    f"{path.relative_to(REPO).as_posix()} says {found.group(0)!r}: an MCP "
+                    "session's minutes count from when its robot connected"
+                )
+
+
+def test_every_step_of_the_arms_first_run_has_a_mirror_or_a_reason() -> None:
+    """Part 2 of the arm's first-run guide mirrors Part 1 step for step, `M07` for `07`, and a
+    Part 1 section with no mirror is linked from the note that opens Part 2, with the reason.
+    Section 16, the rehearsal on the simulator, was added with neither, which left a reader on
+    the Claude path told nothing about a twin, or that an MCP session on one is not seeded."""
+    page = (REPO / "docs" / "lerobot-first-run.md").read_text(encoding="utf-8")
+    part_1, part_2 = page.split("\n## Part 2", 1)
+    opening = part_2.split("\n### ", 1)[0]
+    mirrored = set(re.findall(r"^### M(\d\d)\. ", part_2, flags=re.MULTILINE))
+    for number in re.findall(r"^### (\d\d)\. ", part_1, flags=re.MULTILINE):
+        if number not in mirrored:
+            assert f"](#{number}-" in opening, (
+                f"docs/lerobot-first-run.md: Part 1's section {number} has no M{number} in "
+                "Part 2, and the note that opens Part 2 does not say why"
             )

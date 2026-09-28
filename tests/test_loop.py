@@ -268,6 +268,27 @@ async def test_a_max_steps_override_reaches_the_prompt_as_well_as_the_observatio
     assert header.startswith("[step 0/7 "), header
 
 
+async def test_every_observation_says_its_step_once(hello_duck: DuckFile, tmp_path: Path) -> None:
+    """The header puts the step in front of the budget's own line, which starts with the same
+    step, so every observation a pilot was handed read `[step 3/40 · step 3/40, llm calls ...]`.
+    It says it once, and the rest of the budget line is still there."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider.for_duck("hello-world"),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    headers = [e["text"].split("\n", 1)[0] for e in events if e["kind"] == "observation"]
+    assert len(headers) > 1, "the run made too few observations to show anything"
+    for header in headers:
+        assert header.startswith("[step ") and header.count("step ") == 1, header
+        assert " · llm calls " in header, header
+
+
 async def test_disallowed_verb_is_feedback(hello_duck: DuckFile, tmp_path: Path) -> None:
     naughty = FakeProvider(
         script=[
@@ -2058,6 +2079,47 @@ async def test_every_camera_frame_reaches_the_provider_and_the_transcript(
     requests = [e for e in events if e["kind"] == "llm_request"]
     assert requests[0]["with_image"] == 1 and requests[0]["images"] == 2
     assert all(r["images"] == 2 * r["with_image"] for r in requests), requests
+
+
+async def test_a_turns_pictures_are_encoded_off_the_event_loops_thread(
+    hello_duck: DuckFile, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Encoding a frame to PNG holds whichever thread does it, and a body's heartbeat waits on
+    the event loop's for an answer: a second of encoding there was a heartbeat reported as not
+    answering. Every turn's frames are written, and the model's copies encoded, in a worker
+    thread, and the record reads as it did: each turn's frames, numbered in turn, before the
+    observation they were taken for."""
+    import threading
+
+    loop_thread = threading.get_ident()
+    encoded_on: list[int] = []
+    save = Image.Image.save
+
+    def saving(image: Image.Image, *args: Any, **kwargs: Any) -> None:
+        encoded_on.append(threading.get_ident())
+        save(image, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "save", saving)
+    provider = SeeingProvider(
+        ToolCall(name="quack", arguments={"text": "hi"}),
+        ToolCall(name="declare_success", arguments={"reason": "seen"}),
+    )
+    result = await run_duck(
+        RunConfig(duck=hello_duck, provider=provider, transport=TwoCameraDuck(), runs_dir=tmp_path)
+    )
+    assert result.outcome == "success", result.reason
+    assert encoded_on and loop_thread not in encoded_on, "a picture was encoded on the loop"
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    turns: list[list[str]] = [[]]
+    for event in events:
+        if event["kind"] == "frame":
+            turns[-1].append(Path(event["path"]).name)
+        elif event["kind"] == "observation":
+            turns.append([])
+    seen = turns[:-1]
+    assert seen and all(
+        names == [f"{n:04d}-top.png", f"{n:04d}-side.png"] for n, names in enumerate(seen)
+    ), turns
 
 
 async def test_only_the_last_n_exchanges_keep_their_images(

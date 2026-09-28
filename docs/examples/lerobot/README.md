@@ -38,6 +38,18 @@ arm's manifest before a session:
 quackd validate "docs/examples/lerobot/*/*.duck" --robot lerobot:real
 ```
 
+And rehearse them at home first, on the arm's simulator, which runs a file through the code that
+drives the arm without the arm: `quackd robot twin arm-01` registers `arm-01-sim` on the arm's
+own calibration, and `quackd preflight` runs each file on it once per seed
+([lerobot-first-run.md](../../lerobot-first-run.md#16-between-visits-rehearse-on-the-simulator)).
+With a real pilot every seed costs what a run costs. None of these files has a `<task>.sim.yaml`
+beside it yet, so each run is judged on whether nothing escaped it and its close reached the
+rest pose.
+
+```bash
+quackd preflight "docs/examples/lerobot/e00[1-5]/*.duck" --robot arm-01-sim --llm openai:gpt-6-sol --camera-url "opencv://1?name=front" --seeds 2
+```
+
 `e145` and `e152` are the two exceptions: an MCP session loads them from the chat with
 `robot_load_duckfile`, which is how their longer budgets reach a session that would otherwise
 stop after five minutes.

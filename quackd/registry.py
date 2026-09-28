@@ -42,7 +42,7 @@ from pydantic import (
     model_validator,
 )
 
-from quackd.adapters.base import MULTI_CAMERA_SPECS, AdapterError, camera_urls
+from quackd.adapters.base import MULTI_CAMERA_SPECS, AdapterError, camera_urls, who_takes_several
 from quackd.adapters.factory import (
     ADAPTER_NAMES,
     BACKENDS,
@@ -296,10 +296,7 @@ class RobotEntry(BaseModel):
         """A second camera on a body that reads one is a file saying something untrue, and
         the rule here is that such a file names itself rather than being quietly trimmed."""
         if len(self.camera_urls) > 1 and self.spec not in MULTI_CAMERA_SPECS:
-            raise ValueError(
-                f"{self.spec} takes one camera url; "
-                f"only {', '.join(MULTI_CAMERA_SPECS)} takes several"
-            )
+            raise ValueError(f"{self.spec} takes one camera url; {who_takes_several()}")
         return self
 
     @property

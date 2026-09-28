@@ -48,6 +48,8 @@ _OPENCV = "src/lerobot/cameras/opencv/camera_opencv.py"
 _OPENCV_CFG = "src/lerobot/cameras/opencv/configuration_opencv.py"
 _CAM_CFG = "src/lerobot/cameras/configs.py"
 _CAMERAS_INIT = "src/lerobot/cameras/__init__.py"
+_KINEMATICS = "src/lerobot/model/kinematics.py"
+_DECORATORS = "src/lerobot/utils/decorators.py"
 
 # ── package ─────────────────────────────────────────────────────────────────────────────
 
@@ -114,6 +116,17 @@ ROBOT_CONFIGURE = UpstreamRef("Robot.configure()", "VERIFIED", src(_ROBOT, 174))
 ROBOT_CONTEXT = UpstreamRef(
     "Robot.__enter__/__exit__", "VERIFIED", src(_ROBOT, 61), "connect on enter, disconnect on exit"
 )
+ROBOT_DEL = UpstreamRef(
+    "Robot.__del__ disconnects a robot still connected",
+    "VERIFIED",
+    src(_ROBOT, 76),
+    "a destructor safety net: a robot collected while is_connected is still true is "
+    "disconnected, and whatever that raises is swallowed. So an exit that never reaches "
+    "quackd's close() can still end in the follower's own disconnect(), and what that does to "
+    "torque is whatever the config holds by then (SO_DISCONNECT_READS_ITS_CONFIG_LATE), "
+    "which is why quackd builds the follower asking to keep it (SO_DISCONNECT_TORQUE). "
+    "Read again on 2026-09-26, at the same commit",
+)
 TYPES = UpstreamRef(
     "RobotAction = dict[str, Any]; RobotObservation = dict[str, Any]",
     "VERIFIED",
@@ -150,8 +163,50 @@ CALIBRATION_DIR = UpstreamRef(
     "VERIFIED",
     src(_CONSTANTS, 86),
     "the default calibration directory: $HF_LEROBOT_CALIBRATION, else $HF_LEROBOT_HOME/"
-    "calibration, else $HF_HOME/lerobot/calibration, then 'robots' and the robot class's own "
-    "name. Two arms sharing an id share a file, and nothing in it names a serial number",
+    "calibration (line 85), else $HF_HOME/lerobot/calibration (line 77), each expanded for ~, "
+    "then 'robots' (line 52) and the robot class's own name (robot.py line 50), and the file in "
+    "it is '<id>.json' (robot.py line 53). HF_HOME is huggingface_hub's, which this module "
+    "imports (line 18): $HF_HOME, else $XDG_CACHE_HOME/huggingface, else ~/.cache/huggingface, "
+    "expanded for ~ and then for environment variables (huggingface_hub 1.31.0, installed beside "
+    "lerobot 0.6.1). Every step is os.getenv with a default, so a variable set to nothing still "
+    "counts as set. The arm simulator walks the same chain without importing lerobot, to find "
+    "the file a registered arm's twin reads. Two arms sharing an id share a file, and nothing in "
+    "it names a serial number. The chain read again on 2026-09-26, at the same commit",
+)
+CALIBRATION_ENV = "HF_LEROBOT_CALIBRATION"
+LEROBOT_HOME_ENV = "HF_LEROBOT_HOME"
+HF_HOME_ENV = "HF_HOME"
+XDG_CACHE_ENV = "XDG_CACHE_HOME"
+"""The four variables CALIBRATION_DIR's chain reads, in the order it reads them."""
+CALIBRATION_SUBDIR = "calibration"
+LEROBOT_SUBDIR = "lerobot"
+HF_SUBDIR = "huggingface"
+ROBOTS_SUBDIR = "robots"
+"""The directory names CALIBRATION_DIR's chain joins, each where its row says."""
+CALIBRATION_FILE = UpstreamRef(
+    "a calibration file is draccus JSON of motor name -> MotorCalibration",
+    "VERIFIED",
+    src(_ROBOT, 159),
+    "_load_calibration() opens the file under draccus.config_type('json') and loads it as "
+    "dict[str, MotorCalibration] (line 160), and _save_calibration() writes it back the same "
+    "way (line 171). So the file is one JSON object with a key per motor, each holding exactly "
+    "MotorCalibration's five integer fields, each decoded as CALIBRATION_INTS says. The arm "
+    "simulator reads it with the json module and refuses an entry that leaves a field out or "
+    "adds one, as draccus does. Read on 2026-09-26, at the same commit, and the same in lerobot "
+    "0.6.1",
+)
+CALIBRATION_INTS = UpstreamRef(
+    "draccus>=0.11.6,<0.12.0",
+    "VERIFIED",
+    src("pyproject.toml", 70),
+    "the draccus LeRobot reads a calibration file with (CALIBRATION_FILE). draccus 0.11.6, the "
+    "version installed beside lerobot 0.6.1, decodes an int field in decode_int "
+    "(draccus/parsers/decoding.py line 111 at its v0.11.6 tag, github.com/dlwh/draccus): a "
+    "float is refused, 100.0 included, and anything else goes through int(), so true reads as "
+    "1 and a string of digits as its number. A null passes through as None before decode_int "
+    "is reached (line 256). The arm simulator decodes each field the same way, so an arm's "
+    "twin loads the file its arm loads, except that it refuses a null, because it builds the "
+    "arm's travel from every field. Read on 2026-09-26, at the same commit",
 )
 
 # ── the SO-101 follower (the arm the adapter targets by default) ────────────────────────
@@ -178,6 +233,8 @@ SO_NAME = UpstreamRef(
     "the class name, and therefore the calibration subdirectory: an SO-100 and an SO-101 "
     "share one, because at this commit they are the same class",
 )
+SO_FOLLOWER_NAME = "so_follower"
+"""SO_NAME's name: the directory under 'robots' that holds an SO-101's calibration files."""
 SO_CONFIG = UpstreamRef(
     "SO101FollowerConfig(port, disable_torque_on_disconnect=True, max_relative_target=None, "
     "cameras={}, use_degrees=True, position_p_coefficient=16, position_i_coefficient=0, "
@@ -186,14 +243,27 @@ SO_CONFIG = UpstreamRef(
     src(_SO_CFG, 25),
     "an alias of SOFollowerRobotConfig; id and calibration_dir come from RobotConfig. quackd "
     "passes every safety-shaped field explicitly rather than inheriting a default it has not "
-    "read, and sets max_relative_target, which upstream leaves at None",
+    "read, sets max_relative_target, which upstream leaves at None, and passes "
+    "disable_torque_on_disconnect as False, the opposite of upstream's default "
+    "(SO_DISCONNECT_TORQUE)",
 )
 SO_MOTORS = UpstreamRef(
     "shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper",
     "VERIFIED",
     src(_SO, 54),
-    "six Feetech sts3215 motors, ids 1..6",
+    "six Feetech sts3215 motors, ids 1..6 (lines 54 to 59, SO_MOTOR_IDS). A calibration file "
+    "carries each motor's id too, so quackd reads a real arm's ids off its bus table "
+    "(BUS_MOTORS), and the arm simulator gives the generic arm it builds these",
 )
+SO_MOTOR_IDS: dict[str, int] = {
+    "shoulder_pan": 1,
+    "shoulder_lift": 2,
+    "elbow_flex": 3,
+    "wrist_flex": 4,
+    "wrist_roll": 5,
+    "gripper": 6,
+}
+"""Each motor's bus id in the SO follower's table, as SO_MOTORS reads it at the pin."""
 SO_OBSERVATION_KEYS = UpstreamRef(
     "'<motor>.pos'", "VERIFIED", src(_SO, 184), "joint positions; the same keys are the action"
 )
@@ -226,6 +296,22 @@ SO_ACTION_CLAMP_IS_FLOAT = UpstreamRef(
     "ensure_safe_goal_position tests isinstance(float), then isinstance(dict), and raises "
     "TypeError on anything else, so an int cap raises rather than capping. quackd casts",
 )
+ENSURE_SAFE_GOAL_POSITION = UpstreamRef(
+    "ensure_safe_goal_position(goal_present_pos, max_relative_target)",
+    "VERIFIED",
+    src(_UTILS, 93),
+    "the whole step cap, twenty lines. A float cap applies to every motor in the goal; a dict "
+    "cap must have exactly the goal's keys or it raises ValueError (line 102); anything else, "
+    "an int included, raises TypeError (line 105). Each goal then becomes present + (goal - "
+    "present) clipped to the cap either way (lines 110 to 114), so the cap is measured from the "
+    "present reading, which send_action() reads fresh off Present_Position just before "
+    "(so_follower.py line 224), and a goal moved by more than 1e-4 is logged as a warning "
+    "(line 116). A NaN cap caps nothing, because min and max hand back the goal when the other "
+    "side is NaN. The arm simulator's follower reimplements it rather than importing it, "
+    "because lerobot needs Python 3.12 and torch and the simulator runs on 3.11 without either. "
+    "Read on 2026-09-26, at the same commit; lerobot 0.6.1 has the same function two lines "
+    "higher, logging through the root logger",
+)
 SO_SEND_ACTION_RETURN = UpstreamRef(
     "send_action() returns the goal actually sent",
     "VERIFIED",
@@ -247,30 +333,45 @@ SO_DISCONNECT_TORQUE = UpstreamRef(
     "VERIFIED",
     src(_SO, 234),
     "disable_torque_on_disconnect defaults to True (config line 31): LeRobot lets the arm go "
-    "limp when the session ends, and quackd keeps that default and says so. It fires on "
-    "every clean exit, a doctor probe included, and not at all when the process is killed. "
-    "Since the rest pose, quackd turns it off for the one case where letting go would drop "
-    "the arm: one that did not reach the pose it was recorded resting in "
-    "(SO_DISCONNECT_READS_ITS_CONFIG_LATE)",
+    "limp whenever the follower is disconnected, and that includes the disconnect it makes of "
+    "a follower nobody closed (ROBOT_DEL), so under that default an exit that skipped quackd's "
+    "close(), a second Ctrl-C during the rest move or a crash, could drop the arm. quackd builds "
+    "the follower with it False, and close() writes it on the instance every time: True over "
+    "an arm at its recorded rest pose or with none recorded, which is the limp end of every "
+    "clean session, a doctor probe included, and False over one that did not reach its pose, "
+    "where letting go would drop it (SO_DISCONNECT_READS_ITS_CONFIG_LATE). A connect quackd "
+    "refuses once the arm is energised (not calibrated, no calibration file, no motors bus) "
+    "writes True before its own disconnect, and one that fails any other way closes the port "
+    "and keeps torque. Nothing runs when the process is killed",
 )
 SO_DISCONNECT_READS_ITS_CONFIG_LATE = UpstreamRef(
     "disconnect() reads config.disable_torque_on_disconnect when it runs",
     "VERIFIED",
     src(_SO, 234),
     "the flag is read off the config instance inside disconnect() rather than copied at "
-    "construction, and SOFollowerConfig is a plain dataclass, so setting it False on the "
-    "instance just before the call is what leaves an arm holding. quackd uses that for one "
-    "case only, an arm that is not at its rest pose; _config_kwargs() still asks for True, "
-    "and MotorsBus.disconnect(False) closes the port with every motor still holding its goal "
-    "(BUS_DISCONNECT). Read against lerobot 0.6.1, the version the first real arm ran",
+    "construction, and SOFollowerConfig is a plain dataclass, so the value on the instance when "
+    "disconnect() runs is what it does, whoever calls it. _config_kwargs() asks for False and "
+    "every connect asks again, so a disconnect quackd did not make, ROBOT_DEL's included, "
+    "keeps torque, and MotorsBus.disconnect(False) closes the port with every motor still "
+    "holding its goal (BUS_DISCONNECT). quackd writes True just before its own disconnect "
+    "only over an arm that may be let go. Read against lerobot 0.6.1, the version the first "
+    "real arm ran",
 )
 SO_GRIPPER_TORQUE_LIMIT = UpstreamRef(
     "Max_Torque_Limit 500 on the gripper",
     "VERIFIED",
     src(_SO, 169),
     "configure() caps the gripper at 50 % torque, 50 % current (Protection_Current 250) and "
-    "25 % torque once overloaded (Overload_Torque 25): the native safety authority",
+    "25 % torque once overloaded (Overload_Torque 25): the native safety authority. The line's "
+    "own comment calls 500 '50% of max torque', so the register's full scale is 1000, and the "
+    "arm simulator scales its model gripper's force range by that ratio "
+    "(GRIPPER_MAX_TORQUE_LIMIT over MAX_TORQUE_LIMIT_FULL). Read again on 2026-09-26, at the "
+    "same commit",
 )
+GRIPPER_MAX_TORQUE_LIMIT = 500
+"""What configure() writes to the gripper's Max_Torque_Limit (SO_GRIPPER_TORQUE_LIMIT)."""
+MAX_TORQUE_LIMIT_FULL = 1000
+"""The register's full scale, from the comment beside that write, which calls 500 half of it."""
 SO_BODY_HAS_NO_TORQUE_CAP = UpstreamRef(
     "the five body joints get no torque or current cap",
     "VERIFIED",
@@ -307,6 +408,16 @@ NO_CLIENT_DEADMAN = UpstreamRef(
     "send_action writes Goal_Position and returns. A position-controlled arm holds its last "
     "goal under torque until the next write or disconnect(). quackd's stop re-sends the "
     "present position as the goal (hold) and never disables torque",
+)
+KINEMATICS_DEG2RAD = UpstreamRef(
+    "RobotKinematics sets a URDF joint to np.deg2rad(degrees)",
+    "VERIFIED",
+    src(_KINEMATICS, 86),
+    "forward_kinematics hands each joint in its joint_names the reading in radians with no "
+    "offset and no sign, and inverse_kinematics seeds its solve the same way (line 119). It is "
+    "LeRobot's own precedent for putting a calibrated reading on a model of the arm, and the "
+    "one the arm simulator follows for the five arm joints, whose zero and sign are its "
+    "assumptions in quackd_lerobot.sim.upstream_api. Read on 2026-09-26, at the same commit",
 )
 
 # ── the Feetech bus, below the Robot interface, where the registers are ─────────────────
@@ -363,7 +474,13 @@ BUS_MOTORS = UpstreamRef(
     "the table the bus addresses every servo through (kept at line 73), which the SO follower "
     "fills at so_follower.py lines 53 to 60. quackd reads a Motor's id to name the joint a bus "
     "error is about, and looks it up there rather than assume the order SO_MOTORS lists, "
-    "because the table is what gave each servo its address",
+    "because the table is what gave each servo its address. A bus call that takes motors "
+    "resolves them through it (_get_motors_list, line 431): None is every motor in the table's "
+    "order, a name is itself, an id is the motor the table gives it, a sequence is each of those "
+    "in its own order, and anything else is a TypeError. The Feetech torque calls write to "
+    "those motors and no others, in that order (feetech.py lines 291 to 305). The arm "
+    "simulator's bus resolves them the same way. Read on 2026-09-26, at the same commit, and "
+    "the same in lerobot 0.6.1",
 )
 BUS_WRITE_ERROR_NAMES_THE_ID = UpstreamRef(
     "Failed to write '<register>' on id_=<N> with '<value>' after <k> tries. <result>",
@@ -406,6 +523,49 @@ HANDSHAKE_NAMES_THE_ID = UpstreamRef(
     "so an overloaded servo is listed as missing too. The id is the bus address, and quackd names "
     "the joint through BUS_MOTORS as for a write. Read in lerobot 0.6.1, the same lines at the "
     "pin",
+)
+BUS_SYNC_READ_ERROR = UpstreamRef(
+    "Failed to sync read '<register>' on ids=[<N>, ...] after <k> tries. <result>",
+    "VERIFIED",
+    src(_BUS, 1160),
+    "the ConnectionError MotorsBus.sync_read() raises when no good reply came back (line 1194), "
+    "listing every motor it read by bus id, in the table's order. sync_write() says \"Failed to "
+    "sync write '<register>' with ids_values={<N>: <tick>, ...} after <k> tries. <result>\" "
+    "(line 1257) and raises it (line 1282) only when the packet could not be sent, because it "
+    "waits for no reply (line 1231). <result> is the servo SDK's getTxRxResult text: "
+    "'[TxRxResult] There is no status packet!' for a reply that never came and '[TxRxResult] "
+    "Failed transmit instruction packet!' for a packet that never went (scservo_sdk "
+    "protocol_packet_handler.py lines 43 and 35, in the feetech-servo-sdk 1.0.0 installed beside "
+    "lerobot 0.6.1). Neither names one motor, so quackd names no joint for either "
+    "(BUS_WRITE_ERROR_NAMES_THE_ID). The arm simulator raises these words for the read and goal "
+    "write faults it injects. Read on 2026-09-26, at the same commit, and at the same lines in "
+    "lerobot 0.6.1",
+)
+STS3215_MODEL_NUMBER = UpstreamRef(
+    "sts3215 model number 777",
+    "VERIFIED",
+    src(_TABLES, 243),
+    "what a servo of the SO-101's model answers a ping with, which the handshake expects of every "
+    "motor in the bus table and prints beside each id it lists (HANDSHAKE_NAMES_THE_ID). The arm "
+    "simulator's handshake fault prints it where the arm's would. Read on 2026-09-26, at the same "
+    "commit, and the same in lerobot 0.6.1",
+)
+STS3215_MODEL = 777
+"""STS3215_MODEL_NUMBER's number."""
+NOT_CONNECTED = UpstreamRef(
+    "check_if_not_connected refuses a call on a port that is not open",
+    "VERIFIED",
+    src(_DECORATORS, 22),
+    "a DeviceNotConnectedError, which is a ConnectionError (utils/errors.py line 16), saying "
+    "'<class> is not connected. Run `.connect()` first.' (line 27). SOFollower's "
+    "get_observation(), send_action() and disconnect() carry it (so_follower.py lines 179, 204 "
+    "and 232), and so do MotorsBus's disconnect(), read(), write(), sync_read() and sync_write() "
+    "(motors_bus.py lines 546, 994, 1066, 1127 and 1220), so nothing reaches a motor through a "
+    "port that is shut. Its twin check_if_already_connected (line 34) says '<class> is already "
+    "connected.' (SO_CONNECT_REFUSES_WHILE_OPEN). The arm simulator's follower and bus refuse in "
+    "the same words under upstream's class names, SOFollower and FeetechMotorsBus, so a "
+    "rehearsal fails where the arm would and says what the arm would. Read on 2026-09-26, at the "
+    "same commit, and the same in lerobot 0.6.1",
 )
 SO_CONNECT_REFUSES_WHILE_OPEN = UpstreamRef(
     "SOFollower.connect() refuses while the port is open",
@@ -502,6 +662,16 @@ MOTOR_CALIBRATION = UpstreamRef(
     "VERIFIED",
     src(_BUS, 176),
     "range_min and range_max are raw encoder ticks recorded by calibration, not degrees",
+)
+CALIBRATION_EQUAL_RANGE = UpstreamRef(
+    "Invalid calibration for motor '<motor>': min and max are equal.",
+    "VERIFIED",
+    src(_BUS, 865),
+    "_normalize() raises this ValueError for a motor whose range_min equals its range_max, "
+    "and _unnormalize() raises it too (line 894), so LeRobot loads such a file and then "
+    "refuses the first reading or goal that goes through the motor. The arm simulator refuses "
+    "the file as it reads it, which is the same arm refused sooner. Read on 2026-09-26, at the "
+    "same commit, and at the same lines in lerobot 0.6.1",
 )
 DEGREES_FORMULA = UpstreamRef(
     "degrees = (raw - mid) * 360 / 4095",

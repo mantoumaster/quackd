@@ -671,7 +671,9 @@ def test_a_second_camera_is_refused_on_a_body_that_reads_one(tmp_path: Path) -> 
     dropped: the duck would open the first one and nobody would learn why."""
     with pytest.raises(
         ValidationError,
-        match="microduck:mock takes one camera url; only lerobot:real takes several",
+        match=(
+            "microduck:mock takes one camera url; only lerobot:real and lerobot:mujoco take several"
+        ),
     ):
         _entry("duck-a", "microduck:mock", camera_url=["http://duck:1", "http://duck:2"])
     (tmp_path / "robots.json").write_text(

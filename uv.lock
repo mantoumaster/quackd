@@ -3623,6 +3623,9 @@ laya = [
 lerobot = [
     { name = "quackd-lerobot", extra = ["sdk"] },
 ]
+lerobot-sim = [
+    { name = "quackd-lerobot", extra = ["sim"] },
+]
 live = [
     { name = "pygame" },
 ]
@@ -3711,6 +3714,7 @@ requires-dist = [
     { name = "quackd-lerobot", marker = "extra == 'dev'", editable = "adapters/lerobot" },
     { name = "quackd-lerobot", extras = ["sdk"], marker = "extra == 'lerobot'", editable = "adapters/lerobot" },
     { name = "quackd-lerobot", extras = ["sdk"], marker = "extra == 'robots'", editable = "adapters/lerobot" },
+    { name = "quackd-lerobot", extras = ["sim"], marker = "extra == 'lerobot-sim'", editable = "adapters/lerobot" },
     { name = "quackd-microduck", marker = "extra == 'dev'", editable = "adapters/microduck" },
     { name = "quackd-microduck", marker = "extra == 'microduck'", editable = "adapters/microduck" },
     { name = "quackd-microduck", marker = "extra == 'robots'", editable = "adapters/microduck" },
@@ -3736,7 +3740,7 @@ requires-dist = [
     { name = "ultralytics", marker = "extra == 'yolo'", specifier = ">=8.2" },
     { name = "zeroconf", marker = "extra == 'lan'", specifier = ">=0.132" },
 ]
-provides-extras = ["all", "alohamini", "anthropic", "cohere", "decision", "deepseek", "dev", "gemini", "glm", "grok", "kimi", "lan", "laya", "lerobot", "live", "meta", "microduck", "microduck-camera", "mistral", "mujoco", "open-duck", "openai", "qwen", "robots", "rosbridge", "toddlerbot", "xlerobot", "yolo"]
+provides-extras = ["all", "alohamini", "anthropic", "cohere", "decision", "deepseek", "dev", "gemini", "glm", "grok", "kimi", "lan", "laya", "lerobot", "lerobot-sim", "live", "meta", "microduck", "microduck-camera", "mistral", "mujoco", "open-duck", "openai", "qwen", "robots", "rosbridge", "toddlerbot", "xlerobot", "yolo"]
 
 [[package]]
 name = "quackd-alohamini"
@@ -3763,13 +3767,17 @@ dependencies = [
 sdk = [
     { name = "lerobot", extra = ["feetech"], marker = "python_full_version >= '3.12'" },
 ]
+sim = [
+    { name = "mujoco" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "lerobot", extras = ["feetech"], marker = "python_full_version >= '3.12' and extra == 'sdk'", specifier = ">=0.6" },
+    { name = "mujoco", marker = "extra == 'sim'", specifier = ">=3.12,<4" },
     { name = "quackd", editable = "." },
 ]
-provides-extras = ["sdk"]
+provides-extras = ["sdk", "sim"]
 
 [[package]]
 name = "quackd-microduck"

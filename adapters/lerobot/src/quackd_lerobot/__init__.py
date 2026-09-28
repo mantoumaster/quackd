@@ -3,14 +3,15 @@
 An arm has no legs, no head and no voice, so its manifest lists none of that: `move`,
 `go_to`, `search_scan`, `say` and `gaze` do not exist here. What it has is joints, a
 gripper, `place`, and, when a policy is available, `pick` as one skill intent that the
-arm's own learned controller executes (the thesis, unchanged). Two backends: `mock`
-(offline, scripted) and `real` (LeRobot behind `quackd[lerobot]`, Python 3.12 or newer,
-first driven on an arm on 2026-09-15).
+arm's own learned controller executes (the thesis, unchanged). Three backends: `mock`
+(offline, scripted), `real` (LeRobot behind `quackd[lerobot]`, Python 3.12 or newer,
+first driven on an arm on 2026-09-15) and `mujoco` (the real backend's own code over a
+physics model of the SO-101, behind `quackd[lerobot-sim]`, for rehearsing a task at home).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
 
 from PIL import Image
@@ -55,11 +56,15 @@ from quackd_lerobot.verbs import (
     worth_saying,
 )
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 """Kept in step with quackd's own version by scripts/set_version.py. It lives here rather
 than being read from the core, because this file is all an adapter's sdist contains."""
 
-BACKENDS = ("mock", "real")
+BACKENDS = ("mock", "real", "mujoco")
+SIMULATOR_BACKENDS = ("mujoco",)
+"""The backends that drive a simulated arm rather than one on a desk. Read before anything is
+built (`quackd.adapters.factory.is_simulator`), so a command that must only ever run on a
+simulator refuses a real arm before connecting to it."""
 DEFAULT_ID = "arm-01"
 ROBOT_TYPE = "so101_follower"
 BLURB = (
@@ -460,6 +465,14 @@ class LeRobotAdapter:
         return "none"
 
     @property
+    def is_simulator(self) -> bool:
+        """Whether this arm is the simulator's (`lerobot:mujoco`) rather than one on a desk. Not
+        `perception.is_simulated`, which counts the mock too."""
+        from quackd_lerobot.sim.transport import LeRobotSim
+
+        return isinstance(self.transport, LeRobotSim)
+
+    @property
     def post_sleep(self) -> Callable[[], None] | None:
         return getattr(self.transport, "post_sleep", None)
 
@@ -474,7 +487,8 @@ class LeRobotAdapter:
 def describe(backend: str, robot_id: str | None = None) -> RobotManifest:
     """Static: the mock always has its camera and its scripted policy; the real backend
     claims neither until connect() finds them, and claims no joint ranges either, because
-    they are read off the arm's calibration file."""
+    they are read off the arm's calibration file. The simulator is the real backend's code and
+    describes itself as the real backend does."""
     offline = backend == "mock"
     return lerobot_manifest(backend, robot_id, camera=offline, policy=offline)
 
@@ -514,8 +528,25 @@ def make(
     camera_url: str | Sequence[str] | None = None,
     token: str | None = None,
     rest_pose: dict[str, float] | None = None,
+    faults: str | None = None,
+    scene: Sequence[Mapping[str, Any]] | None = None,
 ) -> LeRobotAdapter:
+    """`faults` is a spec of bus faults for the simulator to meet (`sim.faults.FaultPlan`),
+    seeded by `seed`, and refused on any other backend: an arm on a desk has the faults it
+    has. `scene` is the objects the simulator lays on its table in place of its default ones
+    (`sim.model.parse_scene`), refused on any other backend for the same reason: the table in
+    front of a real arm has on it what somebody put there."""
     _check_rest_pose(rest_pose)
+    if faults is not None and backend != "mujoco":
+        raise AdapterError(
+            f"lerobot:{backend} has no faults to be told of: only the simulator, "
+            "lerobot:mujoco, takes a fault spec."
+        )
+    if scene is not None and backend != "mujoco":
+        raise AdapterError(
+            f"lerobot:{backend} has no scene to lay out: only the simulator, lerobot:mujoco, "
+            "takes one."
+        )
     # The name the arm was asked for by, before the default fills it in: the registered name
     # for every robot built from the registry, which is the only place a rest pose comes from.
     # The close note names it in the commands it gives a person, and says NAME where there
@@ -530,6 +561,28 @@ def make(
         one_camera_url(camera_url, spec="lerobot:mock")
         return LeRobotAdapter(
             LeRobotMock(rest_pose=rest_pose, registered_name=registered_name), robot_id=robot_id
+        )
+    if backend == "mujoco":
+        from quackd_lerobot.real import parse_camera_urls, step_from_env
+        from quackd_lerobot.sim.camera import CAMERA_HINT
+        from quackd_lerobot.sim.faults import FaultPlan
+        from quackd_lerobot.sim.transport import LeRobotSim
+
+        start = seed if seed is not None else 0
+        return LeRobotAdapter(
+            LeRobotSim(
+                address=address,
+                robot_id=robot_id or DEFAULT_ID,
+                seed=start,
+                live=live,
+                faults=None if faults is None else FaultPlan.parse(faults, seed=start),
+                max_step_deg=step_from_env(),
+                cameras=parse_camera_urls(camera_urls(camera_url), label=backend, hint=CAMERA_HINT),
+                rest_pose=rest_pose,
+                registered_name=registered_name,
+                scene=scene,
+            ),
+            robot_id=robot_id,
         )
     if backend == "real":
         from quackd_lerobot.real import LeRobotReal, parse_camera_urls, step_from_env
@@ -552,9 +605,11 @@ __all__ = [
     "BACKENDS",
     "DEFAULT_ID",
     "JOINTS",
+    "SIMULATOR_BACKENDS",
     "LeRobotAdapter",
     "conditions",
     "describe",
+    "doctor_rows",
     "implementations",
     "lerobot_manifest",
     "make",
@@ -567,9 +622,12 @@ __all__ = [
 # import is deferred so that naming the upstream costs nothing until doctor asks.
 def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
     from quackd_lerobot import upstream_api
+    from quackd_lerobot.sim import upstream_api as so_arm100
 
-    # The one row in this table that is not a list of what nobody has tried. An SO-101 ran the
-    # real backend on 2026-09-15, so the column says what that run did and did not cover.
+    # The first row is the one in this table that is not a list of what nobody has tried. An
+    # SO-101 ran the real backend on 2026-09-15, so the column says what that run did and did
+    # not cover. The second is the arm's simulator model, which lerobot:mujoco loads and no arm
+    # has been compared against.
     return (
         (
             "lerobot",
@@ -577,7 +635,64 @@ def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
             "docs/adapters/lerobot.md",
             "run on an SO-101 on 2026-09-15; the pick policy was not exercised",
         ),
+        (
+            "SO-ARM100",
+            so_arm100,
+            "docs/adapters/lerobot.md",
+            "anything against an arm: lerobot:mujoco loads it, and nobody has compared the two",
+        ),
     )
 
 
 UPSTREAMS = _upstream_rows()
+
+
+def doctor_rows() -> list[Any]:
+    """What `quackd doctor` says about the arm's simulator on this machine: whether the extra
+    that installs MuJoCo is here and at which version, which commit of the SO-101's model the
+    simulator runs, and whether that model is in the cache yet or the first connect fetches it.
+
+    Doctor asks every installed adapter this with no arguments, so it cannot know which robot,
+    if any, a person asked about, and it answers only what is true of the machine. Nothing here
+    imports `mujoco`, makes a GL context or fetches anything: the version is read from the
+    installer's metadata and the cache is only looked at. Whether this machine can draw the
+    scene is the simulator's own connect, which renders once, and `doctor --robot NAME`
+    reaches it for a registered `lerobot:mujoco` robot, with the address it was registered
+    with or, when it has none, on the calibration LeRobot keeps under its name."""
+    import importlib.metadata
+    import os
+    from pathlib import Path
+
+    from quackd.doctor import TransportRow
+    from quackd_lerobot.sim import SIM_EXTRA
+    from quackd_lerobot.sim import upstream_api as so
+    from quackd_lerobot.sim.assets import ASSETS_ENV, cached_so101
+
+    try:
+        version: str | None = importlib.metadata.version("mujoco")
+    except importlib.metadata.PackageNotFoundError:
+        version = None
+    pin = so.PIN[:7]
+    model = cached_so101()
+    # A checkout named by the variable is not the cache, and a connect never fetches in its
+    # place: one without the model is refused, so that is what the row has to say, with what
+    # to do about it, rather than promising a fetch that will not happen.
+    override = os.environ.get(ASSETS_ENV)
+    if override and model is None:
+        note = (
+            f"{ASSETS_ENV} points at {Path(override).expanduser()}, which has no "
+            f"{so.MODEL_FILE}, so a connect refuses: point it at the {so.SIM_DIR} directory "
+            f"of an SO-ARM100 checkout, or unset it to let quackd fetch {pin}"
+        )
+    elif override and model is not None and model.pinned:
+        note = f"SO-ARM100 at {pin} from {ASSETS_ENV} at {model.directory}"
+    elif model is None:
+        note = f"SO-ARM100 at {pin}: not in the cache yet, and the first connect fetches it"
+    elif model.pinned:
+        note = f"SO-ARM100 at {pin}: in the cache at {model.directory}"
+    else:
+        note = f"SO-ARM100 from {ASSETS_ENV} at {model.directory}, which differs from {pin}"
+    status = f"mujoco {version}" if version is not None else f"missing ({SIM_EXTRA})"
+    # found only when a connect has both things it needs here, the physics and the model
+    ready = version is not None and model is not None
+    return [TransportRow("lerobot:mujoco", status, note, found=ready)]

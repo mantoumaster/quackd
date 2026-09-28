@@ -1,9 +1,10 @@
 """The default detector: an HSV threshold. No model, no download, ~1 ms per frame.
 
-Both simulators draw the ball in a known orange, and the cartoon draws its person in a known
-blue, so this works out of the box. The person target stays for the cartoon's sake: nobody
-stands in the physics arena, which is why that one renders its head camera over a colourless
-floor rather than let upstream's blue checker forge the target nothing there can match. On a
+The duck's two simulators draw the ball in a known orange, and the cartoon draws its person in
+a known blue, so this works out of the box. The person target stays for the cartoon's sake:
+nobody stands in the duck's physics arena, which is why that one renders its head camera over a
+colourless floor rather than let upstream's blue checker forge the target nothing there can
+match. The arm's simulator draws nothing in a detector's colour unless a sidecar names one. On a
 real camera you tune the HSV ranges to *your* ball (see
 `docs/faq.md`); the geometry — bearing from horizontal position, distance from apparent
 size — is the same either way, which is the whole point of sharing one perception path.

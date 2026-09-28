@@ -456,6 +456,19 @@ class AgentLoop:
             primary = primary_of(frames)
             self.cfg.on_frame(primary if primary is not None else frames[0].image, caption)
 
+    async def _on_frames_off_loop(self, frames: Sequence[CameraFrame], caption: str) -> None:
+        """`_on_frames` for the turn's own observation, with the PNGs written in a worker thread
+        (`Transcript.save_frames_off_loop`). A verb's frames still go through `_on_frames`,
+        which the executor calls from inside the verb."""
+        if not frames:
+            return
+        await self.transcript.save_frames_off_loop(
+            list(frames), caption, several=len(camera_names_of(self.cfg.transport)) > 1
+        )
+        if self.cfg.on_frame is not None:
+            primary = primary_of(frames)
+            self.cfg.on_frame(primary if primary is not None else frames[0].image, caption)
+
     async def _park_before_the_run_began(self) -> None:
         """Put the body down and let go, for a failure between the connect and the first step.
 
@@ -975,13 +988,19 @@ class AgentLoop:
         `--by-hand` run whose take-hold was refused ends: a joint placed past its travel, a
         servo that never took torque back, or a torque write nothing read back. Nothing read
         says that arm is holding itself up, the one thing the offer begins by saying, and it
-        is in a person's hands already. The close's own line says which arm they are holding."""
+        is in a person's hands already. The close's own line says which arm they are holding.
+
+        Nor on a simulator (`is_simulator`), which has no arm to hold: the offer told a person
+        to hold one and press Enter, and the close then said there was nothing to hold. The
+        close's own line is what they hear, and it says what applies to a simulated arm."""
         person = self.cfg.person
         if person is None or self.cfg.dry_run or parked is None:
             return
         if not parked.recorded or parked.reached or not parked.answered:
             return
         if getattr(self.cfg.transport, "in_hand", None) is True:
+            return
+        if getattr(self.cfg.transport, "is_simulator", False) is True:
             return
         offer = self.RELEASE_OFFER.format(why=parked.reason, seconds=self.RELEASE_OFFER_S)
         try:
@@ -1096,8 +1115,13 @@ class AgentLoop:
             self._detector_said(error if isinstance(error, str) and error else None)
         if frames:
             # saved even when the primary gave nothing, because the other views are still what
-            # the model is about to be shown
-            self._on_frames(frames, f"step {self.budget.steps}: {last_verb or 'start'}")
+            # the model is about to be shown. Off the loop's thread, like the encoding for the
+            # model below: a body's heartbeat waits on that thread. The detector above and the
+            # provider's own SDK stay where they are, the first because only a board's detector
+            # waits on anything, the second because it is somebody else's code.
+            await self._on_frames_off_loop(
+                frames, f"step {self.budget.steps}: {last_verb or 'start'}"
+            )
         # drained here and nowhere else, so each message is shown exactly once: a re-prompt
         # reuses these features rather than observing again
         link = self.cfg.link
@@ -1125,8 +1149,10 @@ class AgentLoop:
             flock=link.describe() if link is not None else None,
         )
         images = (
-            [NamedPng(name=f.name, png=png_bytes(f.image)) for f in frames]
-            if self.cfg.provider.supports_vision
+            await asyncio.to_thread(
+                lambda: [NamedPng(name=f.name, png=png_bytes(f.image)) for f in frames]
+            )
+            if self.cfg.provider.supports_vision and frames
             else []
         )
         return (
@@ -1584,6 +1610,7 @@ class AgentLoop:
                 flock_text=cfg.link.prompt_section() if cfg.link is not None else None,
                 task_images=[p.name for p in cfg.task_images] or None,
                 by_hand=cfg.hand_off is not None and not cfg.dry_run,
+                adapter=adapter_name(cfg.transport),
             )
             system += getattr(cfg.provider, "prompt_hint", "") or ""  # e.g. the local JSON fallback
             # before `run_start`, so a reader of the record meets the pictures the task is

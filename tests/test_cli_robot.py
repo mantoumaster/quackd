@@ -365,7 +365,7 @@ def test_a_body_that_reads_one_camera_refuses_a_second(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1, result.output
     flat = " ".join(result.output.split())
-    assert "only lerobot:real takes several" in flat, flat
+    assert "only lerobot:real and lerobot:mujoco take several" in flat, flat
     assert Registry(tmp_path).get_robot("duck-a") is None
 
 
@@ -876,7 +876,7 @@ def test_an_unknown_bare_name_names_both_things_it_could_have_been(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    "command", ["add", "list", "show", "edit", "remove", "rest-pose", "release"]
+    "command", ["add", "list", "show", "edit", "remove", "rest-pose", "release", "twin"]
 )
 def test_every_robot_command_answers_help(command: str) -> None:
     result = runner.invoke(app, ["robot", command, "--help"])

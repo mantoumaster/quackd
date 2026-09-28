@@ -33,6 +33,8 @@ So `uv pip install "quackd[open_duck]"` buys the Open Duck Mini and nothing else
 `quackd[robots]` buys all seven, each with the SDK its real backend needs. Two extras buy the
 duck and one heavy thing it can do: `quackd[mujoco]` is `quackd-microduck[mujoco]`, the duck
 with its physics simulator, and `quackd[microduck-camera]` is the duck with its WebRTC camera.
+One buys the arm's simulator: `quackd[lerobot-sim]` is `quackd-lerobot[sim]`, the arm with
+MuJoCo and without LeRobot, so it installs on Python 3.11 as well.
 
 An adapter that is not installed keeps its row in `quackd list-adapters` and in
 `quackd doctor`, marked not installed. Naming one anyway refuses with the extra to type:
@@ -48,6 +50,7 @@ at all, every command that needs a body refuses and names all seven.
 | | `microduck:websocket` | ⏳ stub: raises with a link until upstream ships it | | |
 | LeRobot | `lerobot:mock` | ✅ | | [adapters/lerobot.md](adapters/lerobot.md) |
 | | `lerobot:real` | ✅ **run on a real arm on 2026-09-15 and again on 2026-09-23**, the only row here that has been. On 2026-09-15 it was an SO-101 follower calibrated as `arm-01` and reached as `--robot lerobot:real --address COM3` with no registered name, on Windows 11, Python 3.12.12, lerobot 0.6.1, quackd 0.9.0, piloted by OpenAI `gpt-6-astra`. `lerobot-lookout` ran, once with `--llm fake` as well. Free-form `--goal` runs waved the wrist roll about plus or minus 27 degrees, reached wider with `shoulder_lift` -39 and `elbow_flex` 24 to 30, opened and closed the gripper (commanded 100, reported 98 open and 3 closed with the jaws nearly touching), and one of them mimed a duck quacking with the gripper. A USB webcam answered at `opencv://1`, and at `opencv://2` after a replug, 640x480, with no `?backend=` key needed. **The arm fell at the end of every run that day**, which is the fault the rest pose was written to fix. The rest pose first met that arm on 2026-09-23 and could not reach a fold that lay past the travel its calibration recorded, which is [ADR-0045](adr/0045-a-rest-pose-the-calibration-cannot-reach.md). That second afternoon was 26 runs on quackd 0.12.0 with the arm registered as `arm-01`: 19 never moved the arm at a pilot's request, three failed at connect, each on one bad status packet, one lost and two garbled, and all 21 that reached their close kept torque on and ended at the power switch, which `quackd robot release` now answers. None of what changed after it has run on the arm. Every LeRobot name is still VERIFIED at a pinned commit, and still exercised with a fake arm (Python 3.12+, [checklist](lerobot-hardware-checklist.md)) | [`adapters/lerobot/src/quackd_lerobot/upstream_api.py`](../adapters/lerobot/src/quackd_lerobot/upstream_api.py) | |
+| | `lerobot:mujoco` | ✅ the arm's simulator (MuJoCo, `quackd[lerobot-sim]`): `lerobot:real`'s own code over a physics model of the SO-101, the maker's model fetched at a pinned commit. On that model a grasp driven through the real backend's own verbs lifts a cube clear of the table between both finger pads on 10 of 10 seeds, judged by the world's truth and not by quackd, and the bundled `lerobot-lookout` and a grasp task with a sidecar each pass the rehearsal `quackd preflight` runs, on 10 seeds of 10: the lookout on the generic arm, which has no rest pose to return to, and the grasp task from a rest pose its close has to reach, though the grasp task's seeds move only a pen on the table, never the block it lifts (`tests/test_lerobot_sim_model.py`, by hand on 2026-09-27). The nightly `lerobot-sim-assets` job fetches the model and runs that sweep, asking ten of ten, and CI's gating job runs the simulator's other tests on a primitives-only stand-in, because it fetches nothing. Done means the simulator does what it says, not that it moves like an arm: nothing has compared it against one, and it never raises `lerobot:real`'s status | [`adapters/lerobot/src/quackd_lerobot/sim/upstream_api.py`](../adapters/lerobot/src/quackd_lerobot/sim/upstream_api.py) | |
 | rosbridge | `rosbridge:mock` | ✅ | | [adapters/rosbridge.md](adapters/rosbridge.md) |
 | | `rosbridge:ws` | 🧪 every roslibpy, rosbridge and message name VERIFIED at pinned commits, exercised with fake topics and fake services, including reading the robot's own description off the bridge, never run against a bridge | [`adapters/rosbridge/src/quackd_rosbridge/upstream_api.py`](../adapters/rosbridge/src/quackd_rosbridge/upstream_api.py) | |
 | Open Duck Mini v2 | `open_duck:sim2d` | ✅ `open-duck-scout` 10 of 10 seeds | | [adapters/open_duck.md](adapters/open_duck.md) |
@@ -205,7 +208,7 @@ is one of three bodies here you can build from scratch, and one of three whose r
 ships and already exercises. [open-duck-hardware-checklist.md](open-duck-hardware-checklist.md)
 is the order to try it in, and there is an issue template waiting for the result.
 
-### The physics backend's upstreams
+### The duck's physics upstreams
 
 `microduck:mujoco` runs the robot Pollen trains, on the policy Pollen trained. Two upstreams,
 both pinned, both fetched at run time into `~/.quackd/cache` and checked against a recorded
@@ -240,6 +243,40 @@ The head camera is the one place quackd deliberately does not do what the file s
 `<camera>` quaternion is not MuJoCo's viewing convention, so rendering through it looks
 backwards into the duck's own shell. quackd renders from the camera's position along the head
 body's forward axis instead.
+
+### The arm simulator's upstream
+
+`lerobot:mujoco` runs `lerobot:real`'s own code over the SO-101's model from the arm's makers,
+[TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100). One upstream, pinned,
+fetched at run time one file at a time into `~/.quackd/cache` and checked against a recorded
+sha256, and never shipped, although its Apache-2.0 licence would allow it
+([licenses.md](licenses.md)). Every name quackd relies on lives in
+[`adapters/lerobot/src/quackd_lerobot/sim/upstream_api.py`](../adapters/lerobot/src/quackd_lerobot/sim/upstream_api.py),
+the whole table is on [the arm's page](adapters/lerobot.md#the-simulators-upstream-so-arm100),
+and [ADR-0047](adr/0047-the-arms-simulator-runs-the-real-backend.md) is the reasoning.
+
+**What that ✅ rests on.** Sweeps on the maker's model, run by hand on 2026-09-27 and put in the
+nightly `lerobot-sim-assets` job, which fetches the model the way a first run does: a grasp
+driven through the real backend's own verbs, judged by the world's truth, and `quackd preflight`
+over the bundled lookout on the generic arm, which has no rest pose to return to, and a grasp
+task with a sidecar from a rest pose its close has to reach, ten seeds each. CI's `physics` job
+runs the rest of the simulator's tests on every push, on a primitives-only stand-in arm that
+needs nothing fetched. None of it has been compared against an arm, and it never raises
+`lerobot:real`'s row.
+
+Read: 2026-09-26, pinned at
+[`5f6d2b8`](https://github.com/TheRobotStudio/SO-ARM100/tree/5f6d2b876a53a4872e405b991dd925556c9e38a4)
+(`main`, 2026-09-23).
+
+| What | Status | Why it matters |
+|---|---|---|
+| `so101_new_calib_camera.xml` and the 15 STL meshes it names | **VERIFIED** | the arm: new_calib, which LeRobot recommends, with upstream's wrist camera mount, and joint and actuator names that are exactly LeRobot's motor names |
+| no table, light, camera or physics option in the model | **VERIFIED** | the scene around the arm, every camera it renders from and the contact settings are quackd's, and a seeded grasp sweep is what proves the settings |
+| the gains, from a calculation that assumes LeRobot's servo gain, and servo properties adapted from the Open Duck Mini | **VERIFIED** | what the file says of itself, which is why the simulated dynamics are the model's and never the arm's |
+| `SERVO_DYNAMICS` | **UNVERIFIED** | a settle time, a push or a grasp that holds in the simulator is evidence about the model, and only the bench can say it about an arm |
+| `JOINT_ZERO`, `JOINT_SIGN` | **UNVERIFIED** | a zero offset and a positive sign on the five arm joints, as LeRobot's own kinematics helper assumes, until a bench nudges each joint and reads each stop against the model's |
+| `GRIPPER_MAP` | **UNVERIFIED** | LeRobot's 0 to 100 over the model's gripper hinge, linearly, with the closed end found from the model |
+| `WRIST_CAMERA_POSE` | **UNVERIFIED** | the wrist view is rendered from upstream's printed mount, which may not be where a real wrist camera sits. The front and top views are quackd's own, and a connect note says so |
 
 **Got your hands on a Microduck?** [microduck-hardware-checklist.md](microduck-hardware-checklist.md)
 is the order to try it in, and there is an issue template waiting for the result. Nothing in it

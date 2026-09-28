@@ -11,9 +11,12 @@ is awake, so LLM latency costs zero sim time — same semantics a solo run has t
 Rule for participants: every await in your loop must bottom out in `sleep()` here, and you
 must `unregister()` when you finish (or you wedge time for everyone else).
 
-The clock asks nothing of the world beyond a time and a way to advance it, so the cartoon and
-the MuJoCo world (`quackd_microduck.sim3d`) share it, each at its own `dt`: 50 ms for the cartoon's
-kinematics, 20 ms for a walking policy that runs at 50 Hz.
+The clock asks nothing of the world beyond a time and a way to advance it, so the cartoon, the
+Microduck's MuJoCo world (`quackd_microduck.sim3d`) and the arm's (`quackd_lerobot.sim.clock`)
+share it, each at its own `dt`: 50 ms for the cartoon's kinematics, 20 ms for a walking policy
+that runs at 50 Hz, and for the arm the model's timestep times its `SUBSTEPS`. The arm's makes
+each sleep a participant of its own, because two tool calls over MCP are two tasks sleeping at
+once (ADR-0047).
 """
 
 from __future__ import annotations
@@ -134,8 +137,13 @@ class FlockClock:
         try:
             await future
         finally:
-            # normal wake: the advancer already marked us awake; cancellation: do it here
-            if self._waiters.get(pid) is not None:
+            # Normal wake: the advancer already marked us awake. Cancellation: do it here. Only
+            # ever our own waiter, though. Between the clock letting go of this pid (a wake, an
+            # interrupt or an unregister) and this task resuming, another task sleeping as the
+            # same pid can park, because the slot reads awake and the guard above lets it in.
+            # Clearing that waiter would leave its future unresolved and that task hung for good.
+            waiter = self._waiters.get(pid)
+            if waiter is not None and waiter.future is future:
                 self._waiters[pid] = None
                 self._nudge()
 

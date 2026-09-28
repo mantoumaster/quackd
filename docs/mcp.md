@@ -49,7 +49,7 @@ first member, else the first Microduck, else the first declared.
 | `robot_remember(robot?, text, tags?)` | Keep one short fact for future sessions on that robot. Moves nothing, costs no step; the same sentence twice updates the old note. Off with `--no-memory`. |
 
 Without a loaded `.duck`, every verb that is not `dangerous` is allowed and the session runs
-on a default budget of 40 verb steps and five minutes, counted from when the server started.
+on a default budget of 40 verb steps and five minutes, counted from when its robot connected.
 Load one to get the guard rails and the task's own budget. Contracts, budgets and abort
 flags are per robot: loading a contract on `duck` changes nothing for `arm`.
 

@@ -67,15 +67,32 @@ def _asset_cache_in_tmp(
     """The physics backend's downloaded model lives in `~/.quackd/cache`, and a developer who
     has one was running a different suite from CI: `ensure_microduck(offline=True)` found it
     and the tests that skip everywhere else ran here. Everything gets a throwaway cache and no
-    checkout override, so a skip is a skip on both machines.
+    checkout override, the Microduck's or the arm simulator's, so a skip is a skip on both
+    machines.
 
-    Except the `real_duck` tests, whose whole purpose is the developer's real cache. They
-    still never fetch — an empty one skips them — so this decides which machine they run on,
-    not whether they download."""
-    if request.node.get_closest_marker("real_duck") is not None:
+    Except the `real_duck` tests and the arm simulator's `so101_model` tests, whose whole
+    purpose is the developer's real cache or checkout. They still never fetch — an empty one
+    skips them — so this decides which machine they run on, not whether they download."""
+    if any(request.node.get_closest_marker(m) for m in ("real_duck", "so101_model")):
         return
     monkeypatch.setenv("QUACKD_CACHE_DIR", str(tmp_path_factory.mktemp("quackd-cache")))
     monkeypatch.delenv("QUACKD_MICRODUCK_ASSETS", raising=False)
+    monkeypatch.delenv("QUACKD_LEROBOT_SIM_ASSETS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _lerobot_calibration_in_tmp(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LeRobot keeps an arm's calibration under the Hugging Face cache, and the arm simulator
+    walks the same search for it. A developer who has calibrated an arm on this machine has
+    that arm's file there, so a test that went looking would read the lab arm's travel and
+    pass or fail on what one arm happened to record. Every step of the search points into a
+    throwaway directory instead, and a test that means to walk it sets its own."""
+    home = tmp_path_factory.mktemp("hf-home")
+    monkeypatch.setenv("HF_LEROBOT_CALIBRATION", str(home / "lerobot" / "calibration"))
+    monkeypatch.setenv("HF_LEROBOT_HOME", str(home / "lerobot"))
+    monkeypatch.setenv("HF_HOME", str(home))
 
 
 @pytest.fixture(autouse=True)

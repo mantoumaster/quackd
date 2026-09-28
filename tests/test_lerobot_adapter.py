@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import importlib.util
 import itertools
@@ -12,6 +13,7 @@ import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pprint import pformat
 from types import SimpleNamespace
 from typing import Any
@@ -32,6 +34,7 @@ from quackd_lerobot.mock import GRIP_ON_OBJECT, MOCK_RANGES, REST, LeRobotMock
 from quackd_lerobot.real import (
     CONNECT_ATTEMPTS,
     ENCODER_TICKS,
+    KEPT_OVER_A_FAILED_CONNECT,
     MAX_STEP_DEG,
     SPLIT_TORQUE,
     STEP_ENV,
@@ -451,16 +454,24 @@ class FakeArm:
         self.positions = dict.fromkeys(JOINTS, 0.0)
         self.positions["gripper"] = 100.0
         self.torque_disabled = 0
-        """How many times `disconnect()` dropped torque by LeRobot's own default. A release
+        """How many times `disconnect()` dropped torque because its config asked it to. A release
         asked for by `let_go` goes through the bus and is not counted here, which is how a
         test tells an arm that was let go of from one that was merely disconnected."""
         self.calibration = {joint: FakeCalibration(DEFAULT_TRAVEL_DEG) for joint in JOINTS}
         self.calibration_fpath = "/tmp/lerobot/calibration/robots/so_follower/arm-01.json"
         self.bus = FakeBus(self)
-        self.config = SimpleNamespace(disable_torque_on_disconnect=True)
+        self.config = SimpleNamespace(disable_torque_on_disconnect=True, max_relative_target=step)
         """`disconnect()` reads this flag off the config instance when it runs rather than
         copying it at construction (`up.SO_DISCONNECT_READS_ITS_CONFIG_LATE`), which is the
-        seam `close()` uses to leave an arm holding a pose it could not reach."""
+        seam `close()` uses to leave an arm holding a pose it could not reach. It starts at
+        upstream's default, True, as a follower handed in by whoever built it would; `built_arm`
+        gives it the flag quackd builds its own follower with.
+
+        `send_action()` reads the step cap off it the same way, on every send, as upstream's
+        does (`up.SO_ACTION_CLAMP`), so a test, or a later change to the cap between two sends,
+        reaches this fake and the simulated follower through the same seam. It starts at
+        `step`. A config a test swaps in to model the flag alone carries no cap, and the fake
+        then keeps capping at `step`, as it did before the cap was on the config."""
 
     @property
     def observation_features(self) -> dict[str, Any]:
@@ -526,11 +537,16 @@ class FakeArm:
             raise ConnectionError("Failed to sync write 'Goal_Position'")
         self.actions.append(dict(action))
         self.timeline.append("send")
+        step = getattr(self.config, "max_relative_target", self.step)
         sent = {}
         for key, value in action.items():
             joint = key.removesuffix(".pos")
             present = self.positions[joint]
-            capped = present + max(-self.step, min(self.step, float(value) - present))
+            capped = (
+                float(value)
+                if step is None  # upstream's None: no cap at all
+                else present + max(-step, min(step, float(value) - present))
+            )
             # what LeRobot reports sending is the step-capped goal; the clamp to the limits is
             # the servo's own, below that, and nothing reports it
             sent[key] = capped
@@ -616,13 +632,15 @@ async def test_real_backend_maps_intents_to_verified_names_and_never_limps() -> 
 
 def test_the_config_spells_out_every_field_that_is_a_safety_choice() -> None:
     """Inheriting an upstream default is fine until upstream changes one. The step cap is
-    the field upstream leaves at None, and it has to be a float, not an int."""
+    the field upstream leaves at None, and it has to be a float, not an int. The flag that
+    decides whether a disconnect lets go is the opposite of upstream's, so a disconnect quackd
+    did not ask for, the one LeRobot makes of a follower nobody closed, keeps torque."""
     kwargs = LeRobotReal("COM5", robot_id="arm-09")._config_kwargs()
     assert kwargs == {
         "port": "COM5",
         "id": "arm-09",
         "use_degrees": True,
-        "disable_torque_on_disconnect": True,
+        "disable_torque_on_disconnect": False,
         "cameras": {},
         "max_relative_target": 5.0,
     }
@@ -1282,6 +1300,209 @@ async def test_a_wedged_call_refuses_every_later_call_instead_of_sharing_the_bus
         assert not (await adapter.send_intent(Intent.gripper(True))).accepted
     finally:
         release.set()
+
+
+ANSWERED_S = 0.5
+"""The budget of a call a timing test needs answered. A budget runs from when a call is handed
+to the worker pool, and a queued call's covers the calls ahead of it too, so a worker thread
+that starts late spends it as the bus would, and a loaded runner has been seen to start one a
+tenth of a second late. The loop's stalls in these tests are twice this, so a deadline still
+falls inside them."""
+
+
+@pytest.mark.parametrize("answer", ["returns", "raises"])
+async def test_a_call_that_came_back_in_time_stands_when_the_loop_looks_late(answer: str) -> None:
+    """The event loop's thread can be busy past a call's deadline while the call is out, and
+    the worker answer in a millisecond: the deadline then fired first when the loop resumed,
+    and the answer was thrown away as a timeout. A call that finished by its deadline gives
+    what it gave, a value or its own error, and wedges nothing."""
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+
+    def read() -> str:
+        # the loop's thread is put to sleep through the deadline as soon as it gets back
+        loop.call_soon_threadsafe(time.sleep, 2 * transport.timeout_s)
+        if answer == "raises":
+            raise ConnectionError("Failed to sync read 'Present_Position'")
+        return "read"
+
+    if answer == "raises":
+        with pytest.raises(ConnectionError, match="Failed to sync read"):
+            await transport._call(read)
+    else:
+        assert await transport._call(read) == "read"
+    assert transport._wedged is None and transport.stop_error is None
+
+
+@pytest.mark.parametrize("how", ["the deadline", "a cancel"])
+async def test_a_call_still_out_wedges_and_says_which_call_and_its_budget(how: str) -> None:
+    """The other side of the same deadline: a call still out when it fires, or when the verb
+    that made it is cancelled, wedges the transport exactly as before, and a timeout names the
+    call and its budget, where it used to be a TimeoutError with nothing in it."""
+    release = threading.Event()
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=0.1)
+
+    def sync_read() -> None:
+        release.wait(5.0)
+
+    try:
+        if how == "the deadline":
+            with pytest.raises(TimeoutError) as raised:
+                await transport._call(sync_read)
+            said = str(raised.value)
+            assert said.startswith("a LeRobot call (sync_read) has not come back within 0.1 s")
+        else:
+            task = asyncio.create_task(transport._call(sync_read, deadline_s=5.0))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert transport._wedged is not None and not transport._wedged.done()
+        assert transport.stop_error is not None and "(sync_read)" in transport.stop_error
+        with pytest.raises(TransportError, match="one owner"):
+            await transport._call(lambda: None)
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize(
+    "ahead", ["came back in time", "came back and its step stalled", "held the bus past it"]
+)
+async def test_a_queued_call_spends_its_budget_on_the_bus_not_on_the_loop(ahead: str) -> None:
+    """A call queued behind another waits on the lock, and the lock's release only wakes it.
+    Where the call ahead came back well inside the queued one's budget and the loop's thread
+    then stalled past that budget, the deadline fired first when the loop resumed. With the
+    waiter still parked on the lock, the call timed out saying it never got the bus. With the
+    waiter woken by the release, which the rest of the holder's step then stalled behind, it
+    was handed the bus late and cancelled as it went out, wedging the transport and blaming the
+    arm. On a heartbeat either ends the run. The bus was free through the stall, so none of the
+    budget was spent, and the call answers. Where the call ahead really held the bus past the
+    budget, the queued call still times out saying so, and is not sent at all."""
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    queued = threading.Event()
+    sent: list[str] = []
+
+    def sync_read() -> str:
+        queued.wait(5.0)  # the call ahead is out until the queued call waits on the lock
+        if ahead == "came back in time":
+            # the loop's thread sleeps through the queued call's deadline once this is back
+            loop.call_soon_threadsafe(time.sleep, 2 * budget)
+        elif ahead == "held the bus past it":
+            time.sleep(2 * budget)
+        return "read"
+
+    async def step() -> str:
+        read = await transport._call(sync_read, deadline_s=10 * budget)
+        if ahead == "came back and its step stalled":
+            # the release has woken the queued call, which waits on this very step: the block
+            # has to be here, not a callback, which would run after the queued call went out
+            time.sleep(2 * budget)  # noqa: ASYNC251
+        return read
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    first = asyncio.create_task(step())
+    await asyncio.sleep(0)  # the call ahead holds the lock and is out on the bus
+    second = asyncio.create_task(transport._call(beat))
+    await asyncio.sleep(0)
+    queued.set()
+    if ahead == "held the bus past it":
+        with pytest.raises(TimeoutError) as raised:
+            await second
+        said = str(raised.value)
+        assert said == f"a LeRobot call (beat) waited {budget:g} s for the bus and never went out"
+        assert sent == []
+    else:
+        assert await second == "beat"
+        assert sent == ["beat"]
+    assert await first == "read"
+    assert transport._wedged is None and transport.stop_error is None
+
+
+async def test_a_queued_call_the_loop_was_late_with_keeps_its_place_on_the_wire() -> None:
+    """Calls go out in the order they were asked, however late the loop is to hand each the bus.
+    An earlier fix sent a call whose deadline fired during a stall again from the back of the
+    queue: a move asked before a hold went out after it, and a call queued behind that hold's
+    own stall timed out saying it never went out."""
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    queued = threading.Event()
+    sent: list[str] = []
+
+    def sync_read() -> str:
+        sent.append("sync_read")
+        queued.wait(5.0)
+        loop.call_soon_threadsafe(time.sleep, 2 * budget)
+        return "sync_read"
+
+    def send_action() -> str:
+        sent.append("send_action")
+        return "send_action"
+
+    def hold() -> str:
+        sent.append("hold")
+        loop.call_soon_threadsafe(time.sleep, 2 * budget)  # a second stall
+        return "hold"
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    calls = [
+        asyncio.create_task(transport._call(sync_read, deadline_s=10 * budget)),
+        asyncio.create_task(transport._call(send_action)),
+        asyncio.create_task(transport._call(hold, deadline_s=10 * budget)),
+        asyncio.create_task(transport._call(beat)),
+    ]
+    await asyncio.sleep(0)  # the first is out, and the rest wait on the lock in that order
+    queued.set()
+    asked = ["sync_read", "send_action", "hold", "beat"]
+    assert await asyncio.gather(*calls) == asked
+    assert sent == asked
+    assert transport._wedged is None and transport.stop_error is None
+
+
+async def test_a_queued_call_spends_its_budget_while_the_call_ahead_waits_for_a_thread() -> None:
+    """The bus is the call ahead's from when it is handed to the worker pool: with every pool
+    thread busy, a camera read or a frame being saved, it waits for one holding the bus, and
+    goes out as soon as one frees. A queued call's budget stood still meanwhile, so it sat out
+    the whole of the call ahead's budget and was then refused behind that call's wedge. It
+    times out on its own budget, saying it never went out, and the call ahead goes out once a
+    thread is free."""
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=0.1)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    loop.set_default_executor(ThreadPoolExecutor(1))
+    free = threading.Event()
+    elsewhere = loop.run_in_executor(None, free.wait, 5.0)  # the pool's one thread is busy
+    sent: list[str] = []
+
+    def sync_read() -> str:
+        sent.append("sync_read")
+        return "sync_read"
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    first = asyncio.create_task(transport._call(sync_read, deadline_s=20 * budget))
+    await asyncio.sleep(0)  # the call ahead is handed the bus, and waits for a thread
+    try:
+        with pytest.raises(TimeoutError) as raised:
+            await transport._call(beat)
+    finally:
+        free.set()
+    said = str(raised.value)
+    assert said == f"a LeRobot call (beat) waited {budget:g} s for the bus and never went out"
+    assert await first == "sync_read"
+    assert sent == ["sync_read"]
+    assert transport._wedged is None and transport.stop_error is None
+    await elsewhere
 
 
 async def test_torque_and_temperature_are_measured_rather_than_assumed() -> None:
@@ -2113,6 +2334,24 @@ async def test_a_transport_that_missed_its_pose_once_does_not_keep_torque_on_for
     assert transport.close_note is None, "nothing to warn about the second time"
 
 
+async def test_the_close_after_a_stalled_rest_move_says_the_shortfall_once() -> None:
+    """The close joined its own shortfall to the rest move's reason, and a stalled move's reason
+    begins with that same shortfall, so the line read `shoulder_lift is at 0 with a goal of -90;
+    shoulder_lift is at 0 with a goal of -90, and it has stopped moving`. It says it once, with
+    how the move ended."""
+    arm = FakeArm(step=40.0, stuck=("shoulder_lift",))
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    missed = await adapter.go_to_rest()
+    assert missed.how == "stalled", missed.reason
+    await adapter.close()
+    note = transport.close_note or ""
+    shortfall = missed.reason.removesuffix(", and it has stopped moving")
+    assert shortfall != missed.reason and note.count(shortfall) == 1, note
+    assert f"({missed.reason})" in note, note
+
+
 def test_a_pose_the_arm_did_not_report_is_not_a_pose_it_is_resting_in() -> None:
     """`at_rest` is read inside `close()`, where its answer decides whether torque drops. An
     arm that answered but said nothing about a joint the pose names is an arm nobody can
@@ -2444,11 +2683,11 @@ def test_the_reachable_goal_clips_each_joint_to_its_own_travel_and_nothing_else(
 
 
 async def test_an_arm_that_cannot_reach_its_rest_pose_keeps_its_torque_and_says_so() -> None:
-    """LeRobot's disconnect drops torque by its own default, which is right for an arm that
-    is folded down and wrong for one stopped halfway there: on the bench on 2026-09-15 the
-    arm fell at the end of every run. The flag is read off the config instance inside
-    disconnect() rather than copied at construction, so close() turns it off for this case
-    and this case only, and the arm is still let go of either way."""
+    """LeRobot's disconnect drops torque where its config asks, which is right for an arm
+    that is folded down and wrong for one stopped halfway there: on the bench on 2026-09-15
+    the arm fell at the end of every run. The flag is read off the config instance inside
+    disconnect() rather than copied at construction, so close() writes it every time, True at
+    the rest pose and False here, and the arm is still let go of either way."""
     arm = FakeArm(step=40.0, stuck=("shoulder_lift",))
     transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
     adapter = LeRobotAdapter(transport)
@@ -2497,8 +2736,10 @@ async def test_a_pose_that_names_no_joint_this_arm_drives_is_refused_rather_than
 
 async def test_an_arm_quackd_cannot_keep_powered_is_told_so_instead_of_the_opposite() -> None:
     """The one seam that holds torque is a flag written on LeRobot's config just before the
-    disconnect that reads it. If that write does not take, the disconnect releases torque
-    anyway, and the usual note would tell somebody the arm is being held while it goes limp.
+    disconnect that reads it. If that write does not take on a follower handed in still
+    carrying upstream's True, the disconnect releases torque anyway, and the usual note would
+    tell somebody the arm is being held while it goes limp. A follower quackd built is the
+    other side, and has its own tests below.
 
     A config object that refuses writes is not a case anybody has seen; it is a case where
     being wrong sends a person away from a falling arm, which is the whole subject."""
@@ -2524,9 +2765,236 @@ async def test_an_arm_quackd_cannot_keep_powered_is_told_so_instead_of_the_oppos
     assert "it will not fall" not in note, "the note promised the arm was being held"
 
 
+def collected(arm: FakeArm) -> None:
+    """What LeRobot does to a follower nobody closed once it is collected (`up.ROBOT_DEL`):
+    disconnect it if it still reads connected, by whatever flag its config holds by then, and
+    swallow anything that raises. A second Ctrl-C during the rest move, or a crash, ends here
+    and never in `close()`."""
+    with contextlib.suppress(Exception):
+        if arm.is_connected:
+            arm.disconnect()
+
+
+def built_arm(monkeypatch: Any, arm: FakeArm) -> FakeArm:
+    """`arm`, handed to `connect()` by `_build_robot` the way a follower is when none was
+    injected, its config carrying the flag `_config_kwargs()` builds with rather than the
+    upstream default a `FakeArm` starts at."""
+
+    def build(self: LeRobotReal) -> FakeArm:
+        flag = self._config_kwargs()["disable_torque_on_disconnect"]
+        arm.config = SimpleNamespace(disable_torque_on_disconnect=flag)
+        return arm
+
+    monkeypatch.setattr(LeRobotReal, "_build_robot", build)
+    return arm
+
+
+async def test_an_exit_that_skips_the_close_leaves_the_arm_holding(monkeypatch: Any) -> None:
+    """A second Ctrl-C during the end-of-run rest move raises through the teardown, and a
+    crash never reaches it, so `close()` never runs and nothing of quackd's decides what the
+    arm does. LeRobot still disconnects the follower as it is collected, by the flag its
+    config holds, and the follower used to be built with upstream's True: the arm could fall
+    wherever the move had got to, while `docs/safety.md` said it was left holding."""
+    arm = built_arm(monkeypatch, FakeArm(step=40.0, stuck=("shoulder_lift",)))
+    adapter = LeRobotAdapter(LeRobotReal("COM5", rest_pose=dict(FOLDED)))
+    await adapter.connect()
+    result = await adapter.go_to_rest()
+    assert not result.reached, "the arm has to be somewhere a release would drop it"
+    collected(arm)
+    assert ("disconnect",) in arm.calls, "LeRobot's own disconnect never ran"
+    assert arm.torque_disabled == 0 and arm.torque is True, "the arm was dropped"
+
+
+async def test_a_built_arm_still_goes_limp_at_rest_and_holds_away_from_it(monkeypatch: Any) -> None:
+    """Building the follower to keep torque changes the disconnects nobody asked for and no
+    other: the close writes the flag every time, so a clean ending lets go exactly where it
+    always did, at the rest pose and with none recorded, and nowhere else."""
+    parked = built_arm(monkeypatch, FakeArm())
+    where_it_sits = {j: parked.positions[j] for j in JOINTS if j != "gripper"}
+    rested = LeRobotAdapter(LeRobotReal("COM5", rest_pose=where_it_sits))
+    await rested.connect()
+    await rested.close()
+    assert parked.torque_disabled == 1 and parked.torque is False
+    assert rested.close_note is None
+
+    loose = built_arm(monkeypatch, FakeArm())
+    unposed = LeRobotAdapter(LeRobotReal("COM5"))
+    await unposed.connect()
+    await unposed.close()
+    assert loose.torque_disabled == 1 and loose.torque is False, "no pose, so it goes limp"
+    assert unposed.close_note is None
+
+    away = built_arm(monkeypatch, FakeArm(step=40.0, stuck=("shoulder_lift",)))
+    strayed = LeRobotAdapter(LeRobotReal("COM5", rest_pose=dict(FOLDED)))
+    await strayed.connect()
+    await strayed.go_to_rest()
+    await strayed.close()
+    assert ("disconnect",) in away.calls, "the arm was never let go of"
+    assert away.torque_disabled == 0 and away.torque is True
+    assert "torque was left on" in (strayed.close_note or ""), strayed.close_note
+
+
+async def test_a_refused_connect_still_lets_a_built_arm_go(monkeypatch: Any) -> None:
+    """A connect refused once the arm is energised disconnects it with torque off, as it
+    always has. The follower is built asking to keep torque now, so the refusal asks for the
+    release itself, and without that ask it would leave the arm energised with nothing said."""
+    arm = built_arm(monkeypatch, FakeArm(calibrated=False))
+    with pytest.raises(TransportError, match="not calibrated"):
+        await LeRobotAdapter(LeRobotReal("COM5")).connect()
+    assert ("disconnect",) in arm.calls
+    assert arm.torque_disabled == 1 and arm.torque is False
+
+    # and on a transport connected again after a close that kept torque, whose refusal used
+    # to carry that close's hold into its disconnect and keep the arm energised unsaid
+    again = built_arm(monkeypatch, FakeArm(step=40.0, stuck=("shoulder_lift",)))
+    adapter = LeRobotAdapter(LeRobotReal("COM5", rest_pose=dict(FOLDED)))
+    await adapter.connect()
+    await adapter.go_to_rest()
+    await adapter.close()
+    assert again.torque is True, "a close away from rest kept no torque"
+    again.calibrated = False
+    with pytest.raises(TransportError, match="not calibrated"):
+        await adapter.connect()
+    assert again.torque_disabled == 1 and again.torque is False
+
+
+@pytest.mark.parametrize("where", ["the first read", "the calibration check", "the travel"])
+async def test_a_connect_that_fails_once_the_arm_is_energised_keeps_it_and_says_so(
+    monkeypatch: Any, where: str
+) -> None:
+    """LeRobot's connect went through, so `configure()` has switched torque on, and then
+    something that is not one of quackd's refusals raised: the first read, the calibration
+    check, or the travel read off a calibration that does not have it. Nobody closes a
+    transport whose connect raised, so the arm used to be left to LeRobot's disconnect of a
+    follower nobody closed, which let it go under the old flag and holds it under the new
+    one, with nothing said either way. No read has said where the arm stands, so the connect
+    keeps the torque the way a close over an arm that did not answer does, closes the port
+    with nothing written to a motor, and says so."""
+
+    class Unchecked(FakeArm):
+        """An arm whose calibration check raises, as a read of the motors can."""
+
+        @property
+        def is_calibrated(self) -> bool:
+            raise ConnectionError("the calibration check lost its reply")
+
+    arm = built_arm(monkeypatch, Unchecked() if where == "the calibration check" else FakeArm())
+    if where == "the first read":
+        arm.dead = True
+    elif where == "the travel":
+        arm.calibration["elbow_flex"] = SimpleNamespace()  # type: ignore[assignment]
+    with pytest.raises(TransportError) as refused:
+        await LeRobotAdapter(LeRobotReal("COM5", rest_pose=dict(FOLDED))).connect()
+    said = str(refused.value)
+    assert said.startswith("lerobot real: connect failed once the arm was energised: "), said
+    assert said.endswith(KEPT_OVER_A_FAILED_CONNECT) and ".." not in said, said
+    assert arm.calls[-1] == ("bus.disconnect", False), "the port was left open, or let go"
+    assert not arm.connected and arm.torque_disabled == 0 and arm.torque is True
+    collected(arm)
+    assert arm.torque_disabled == 0 and arm.torque is True, "the arm was dropped"
+
+
+async def test_a_second_connect_asks_for_the_hold_again(monkeypatch: Any) -> None:
+    """The flag lives on the follower, and a close at rest leaves it asking for the release.
+    A transport connected again reuses that follower, so a session whose exit then skipped
+    the close would have dropped the arm on the strength of the one before it."""
+    arm = built_arm(monkeypatch, FakeArm())
+    adapter = LeRobotAdapter(LeRobotReal("COM5"))
+    await adapter.connect()
+    await adapter.close()
+    assert arm.torque_disabled == 1 and arm.config.disable_torque_on_disconnect is True
+    arm.torque = True  # the next connect's configure() switches it back on
+    await adapter.connect()
+    collected(arm)
+    assert arm.torque_disabled == 1 and arm.torque is True, "the second session dropped it"
+
+
+async def test_a_flag_that_will_not_take_is_read_back_rather_than_assumed(
+    monkeypatch: Any,
+) -> None:
+    """The other side of an arm quackd cannot keep powered. On a follower quackd built, a
+    write that does not take leaves the hold it was built with, so the arm keeps torque, and
+    the line saying it was released where it stood would be wrong the other way: the close
+    reads the flag back and says what the disconnect did."""
+
+    class NoWrites:
+        """A config that will not take the flag, holding the one quackd builds with."""
+
+        disable_torque_on_disconnect = False
+
+        def __setattr__(self, name: str, value: object) -> None:
+            raise AttributeError(name)
+
+    arm = built_arm(monkeypatch, FakeArm(step=40.0, stuck=("shoulder_lift",)))
+    adapter = LeRobotAdapter(LeRobotReal("COM5", rest_pose=dict(FOLDED)))
+    await adapter.connect()
+    arm.config = NoWrites()  # type: ignore[assignment]
+    await adapter.go_to_rest()
+    await adapter.close()
+    assert arm.torque_disabled == 0 and arm.torque is True
+    note = adapter.close_note or ""
+    assert "torque was left on" in note and "could not keep torque on" not in note, note
+
+
+async def test_a_flag_that_cannot_be_read_back_is_taken_for_the_release(
+    monkeypatch: Any,
+) -> None:
+    """A config that answers neither the write nor the read leaves nothing to say what the
+    disconnect will do, and of the two wrong lines, telling somebody an arm is held while it
+    falls is the one that sends them away from it. So an unreadable flag is said as the
+    release, away from the rest pose where the close wanted the hold."""
+
+    class Unreadable:
+        """A config whose flag raises however it is touched."""
+
+        @property
+        def disable_torque_on_disconnect(self) -> bool:
+            raise RuntimeError("the config cannot be read")
+
+        def __setattr__(self, name: str, value: object) -> None:
+            raise AttributeError(name)
+
+    arm = built_arm(monkeypatch, FakeArm(step=40.0, stuck=("shoulder_lift",)))
+    adapter = LeRobotAdapter(LeRobotReal("COM5", rest_pose=dict(FOLDED)))
+    await adapter.connect()
+    arm.config = Unreadable()  # type: ignore[assignment]
+    await adapter.go_to_rest()
+    await adapter.close()
+    note = adapter.close_note or ""
+    assert "could not keep torque on" in note and "it will not fall" not in note, note
+
+
+async def test_a_refused_release_the_close_could_not_repeat_is_not_said_to_have_gone_out() -> None:
+    """After a release that did not take, a close at the rest pose asks the disconnect to
+    send it again and says it did (`released_by_the_close`). Where the config will not take
+    that ask, a follower quackd built still holds the hold it was built with, so the
+    disconnect sends nothing, and the line saying the close took torque off would be one
+    more thing the person was told that did not happen."""
+
+    class NoWrites:
+        """A config that will not take the flag, holding the one quackd builds with."""
+
+        disable_torque_on_disconnect = False
+
+        def __setattr__(self, name: str, value: object) -> None:
+            raise AttributeError(name)
+
+    arm = _spanned()
+    arm.torque_holdouts = set(JOINTS)
+    transport = LeRobotReal("COM5", robot=arm, rest_pose={j: arm.positions[j] for j in SPANS})
+    await transport.connect()
+    assert (await transport.let_go(anywhere=True)).how == "refused"
+    arm.config = NoWrites()  # type: ignore[assignment]
+    await transport.close()
+    assert ("disconnect",) in arm.calls, "the arm was never let go of"
+    assert arm.torque_disabled == 0, "the disconnect sent the release after all"
+    note = transport.close_note or ""
+    assert "the close then took torque off" not in note, note
+
+
 async def test_an_arm_with_no_rest_pose_recorded_moves_nothing_and_goes_limp() -> None:
     """The whole thing is opt-in. Without a recorded pose there is nothing to check the
-    joints against, so the rest move is a no-op and LeRobot's own default stands."""
+    joints against, so the rest move is a no-op and the close lets go as it always has."""
     arm = FakeArm()
     transport = LeRobotReal("COM5", robot=arm)
     adapter = LeRobotAdapter(transport)

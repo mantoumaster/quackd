@@ -77,6 +77,56 @@ for adapter, backends in BACKENDS.items():
 make_adapter("microduck:mujoco")
 make_adapter("lerobot:real", address="COM5")
 make_adapter("rosbridge:ws", address="ws://robot.local:9090")
+# the arm simulator is built, cameras, faults and all, with or without a calibration file to
+# read at connect, and nothing here connects it
+make_adapter("lerobot:mujoco")
+make_adapter(
+    "lerobot:mujoco",
+    address="arm-01.json",
+    camera_url=["opencv://0?name=front", "opencv://1?name=wrist"],
+    faults="handshake=0.2",
+    seed=3,
+)
+# and with a scene of its own, as `quackd preflight` hands it one from a task's sidecar, which
+# reads no physics either: the scene is laid out at connect
+make_adapter(
+    "lerobot:mujoco",
+    scene=[{{"name": "block", "kind": "box", "size": [0.01, 0.01, 0.01], "place": "jaws"}}],
+)
+import quackd.preflight
+from quackd.adapters.factory import is_simulator
+assert is_simulator("lerobot:mujoco") and not is_simulator("lerobot:real")
+# the arm simulator's upstream and its fetcher find files and never load them, and its model,
+# stand-in, world, follower, clock, cameras and transport import the physics only when a model
+# is loaded or drawn, so none of them may pull it in just by being imported. Its follower
+# reimplements the one LeRobot function it needs rather than import LeRobot, and a fault plan
+# is parsed before anything is built.
+import quackd_lerobot.sim.assets
+import quackd_lerobot.sim.camera
+import quackd_lerobot.sim.clock
+import quackd_lerobot.sim.faults
+import quackd_lerobot.sim.follower
+import quackd_lerobot.sim.model
+import quackd_lerobot.sim.standin
+import quackd_lerobot.sim.transport
+import quackd_lerobot.sim.upstream_api
+import quackd_lerobot.sim.world
+quackd_lerobot.sim.standin.mjcf()
+# and connecting it says which extra installs the physics, before it fetches a model to load
+import asyncio
+from quackd.adapters.base import AdapterNotInstalled
+def _fetched():
+    raise AssertionError("the arm's model was fetched with no physics to load it in")
+quackd_lerobot.sim.transport.default_model = _fetched
+try:
+    asyncio.run(make_adapter("lerobot:mujoco").connect())
+except AdapterNotInstalled as e:
+    assert "quackd[lerobot-sim]" in str(e), e
+else:
+    raise AssertionError("lerobot:mujoco connected with no physics installed")
+quackd_lerobot.sim.faults.FaultPlan.parse(quackd_lerobot.sim.faults.EXAMPLE, seed=0)
+capped = quackd_lerobot.sim.follower.ensure_safe_goal_position({{"a": (9.0, 0.0)}}, 1.0)
+assert capped == {{"a": 1.0}}, capped
 for name in {HEAVY!r}:
     assert sys.modules.get(name) is None, name
 print("OK")

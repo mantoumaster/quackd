@@ -57,7 +57,7 @@ description = "The LeRobot SO-101 arm adapter for quackd. Install it as quackd[l
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
-dependencies = ["quackd>=0.14,<0.15"]
+dependencies = ["quackd>=0.15,<0.16"]
 
 [project.optional-dependencies]
 sdk = ["lerobot[feetech]>=0.6; python_version >= '3.12'"]
@@ -77,7 +77,7 @@ quackd = { workspace = true }
 
 | Line | Why it is that way |
 |---|---|
-| `dependencies = ["quackd>=0.14,<0.15"]` | the core is the dependency, never the other way round. The window is narrow because the manifest model and the intent vocabulary are the interface, and they move with the core |
+| `dependencies = ["quackd>=0.15,<0.16"]` | the core is the dependency, never the other way round. The window is narrow because the manifest model and the intent vocabulary are the interface, and they move with the core |
 | `[project.optional-dependencies] sdk` | the library the real backend imports, and only that backend. A machine without it still gets `lerobot:mock`, still validates a `.duck` against the arm and still prints it in `list-adapters`. `quackd[lerobot]` in the core pins `quackd-lerobot[sdk]`, so the extra a reader types buys both halves. An adapter whose robot side you ship yourself declares no `sdk` at all: `quackd-open-duck` and `quackd-toddlerbot` have none |
 | the environment marker | LeRobot needs Python 3.12 and pulls torch. The marker is what keeps the lock solvable on 3.11, where this package still installs and the mock still runs |
 | `[project.entry-points."quackd.adapters"]` | `lerobot = "quackd_lerobot"` is the robot's name mapped to the module carrying `describe`, `make`, `implementations` and `conditions`. This is how quackd finds it, and the only way it finds a third party's |
@@ -142,7 +142,7 @@ helper in `quackd/adapters/base.py` that answers for you:
 
 | Keyword | What arrives | What you do |
 |---|---|---|
-| `camera_url` | whatever `--camera-url` was given, as a tuple, because the flag repeats | `one_camera_url(camera_url, spec=...)` for a body with one camera: it returns the url or refuses the second with a message naming who takes several. A body that genuinely reads more (today that is `lerobot:real`, and `MULTI_CAMERA_SPECS` is the list) keeps the tuple and implements `get_frames()` |
+| `camera_url` | whatever `--camera-url` was given, as a tuple, because the flag repeats | `one_camera_url(camera_url, spec=...)` for a body with one camera: it returns the url or refuses the second with a message naming who takes several. A body that genuinely reads more (today that is `lerobot:real` and its simulator `lerobot:mujoco`, and `MULTI_CAMERA_SPECS` is the list) keeps the tuple and implements `get_frames()` |
 | `rest_pose` | degrees per joint, from the registry, for a body that parks | drive to it, or `refuse_rest_pose(name, rest_pose)`, which raises when one is present. Never accept it and ignore it |
 
 ### Two more the module may declare, both for `doctor`
@@ -353,12 +353,23 @@ body honestly and the robot has a task worth running end to end; it is not worth
 body the world would have to lie about. It earns a ✅ only with a seeded acceptance sweep that
 checks the world's ground truth, not merely a run that does not crash.
 
-There is a second simulator, it is not a general one, and it is not in the core: the
-`sim3d/` package inside `quackd-microduck` holds one arena and a
-`Body` protocol with two implementations, a kinematic puppet and the Microduck on its own
-trained policy, so a physics body for a new robot means its MJCF, its own controller and a
-reason the cartoon cannot serve, usually that you need to know whether a gait works. Nobody has
-written a second one, and `sim2d` is what the shared world and the flock are built on.
+There are two physics simulators, neither is a general one, and neither is in the core. The
+`sim3d/` package inside `quackd-microduck` holds one arena and a `Body` protocol with two
+implementations, a kinematic puppet and the Microduck on its own trained policy. The `sim/`
+package inside `quackd-lerobot` is the arm's, `lerobot:mujoco`, and it is built the other way
+round: not a world a body is dropped into, but the arm's real backend with a simulated follower
+under it, so a task rehearsed there runs through the code that drives the arm
+([ADR-0047](adr/0047-the-arms-simulator-runs-the-real-backend.md)). Both fetch their model from
+upstream at a pinned commit and hash every file, and CI runs each on a stand-in that needs
+nothing fetched. A physics body for a new robot means its MJCF, its own controller and a reason
+the cartoon cannot serve, usually that you need to know whether a gait works, or that its real
+backend has enough logic of its own to be worth rehearsing. `sim2d` is still what the shared
+world and the flock are built on.
+
+A simulator of a real body declares itself: the module lists it in `SIMULATOR_BACKENDS`, and
+`quackd.adapters.factory.is_simulator(spec)` reads that before anything is built. That is what
+`quackd preflight` refuses anything else by, so a command meant for a model never opens a real
+body's port. A module that declares none has none.
 
 ## `upstream_api.py`: never guess a name
 

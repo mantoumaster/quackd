@@ -1007,7 +1007,8 @@ _SEP = " · "
 
 def _one_step(budget: str) -> str:
     """`step 3/40 · step 3/40, llm calls 3/40, 0.1/5 min` said the step twice, because the
-    observation header and the budget line it embeds both begin with it."""
+    observation header and the budget line it embeds both began with it. The loop says it once
+    now (`prompts.build_observation_text`), and this still reads a transcript from before."""
     head, sep, rest = budget.partition(_SEP)
     return rest if sep and rest.startswith(head) else budget
 

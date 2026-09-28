@@ -38,6 +38,7 @@ quackd robot edit NAME [--field X] [--clear F] # change it
 quackd robot rest-pose NAME [--clear]         # read where this arm rests, off the arm
 quackd robot release NAME [--yes]             # hold the arm: torque off, wherever it stands
 quackd robot remove NAME [--force]            # forget it
+quackd robot twin SOURCE [NAME] [--force]     # a simulator of an arm, to rehearse on
 ```
 
 `add` takes `--address`, `--camera-url`, `--token`, `--host` and `--host-token` (the same five
@@ -130,12 +131,13 @@ detections line reports, and the only one the verbs that steer by sight read. Ev
 reaches a provider that takes images, each labelled with its camera's name, which is also what
 `frames/NNNN-<name>.png` in the run directory is named by.
 
-Only the LeRobot arm reads several. Every other body refuses a second one where it is
-registered, rather than opening the first and dropping the rest:
+Only the LeRobot arm reads several, on the desk (`lerobot:real`) or in its simulator
+(`lerobot:mujoco`). Every other body refuses a second one where it is registered, rather than
+opening the first and dropping the rest:
 
 ```
 $ quackd robot add duck-a microduck:mock --camera-url a --camera-url b
-x error: microduck:mock takes one camera url; only lerobot:real takes several
+x error: microduck:mock takes one camera url; only lerobot:real and lerobot:mujoco take several
 ```
 
 The rules the urls themselves keep, a `?name=` on each, unique names and no index used twice,
@@ -195,10 +197,11 @@ they read it with no room for a field they do not know, and two installs on one 
 ## The rest pose
 
 A LeRobot arm goes limp the moment it is disconnected, because LeRobot's own `disconnect()`
-disables torque by its default and quackd keeps that default. On the bench that meant the arm
-fell at the end of every run, and every run started from wherever the last one had left it. A
-rest pose answers both: one pose, kept under the robot's name, that a run drives the arm to
-before the pilot gets control and returns it to before torque is released.
+disables torque by its default, and a clean close with no rest pose recorded asks for exactly
+that. On the bench that meant the arm fell at the end of every run, and every run started from
+wherever the last one had left it. A rest pose answers both: one pose, kept under the robot's
+name, that a run drives the arm to before the pilot gets control and returns it to before torque
+is released.
 
 It is **read off the arm, never typed.** Nothing is connected while you set it up, so the arm
 is limp. Fold it by hand into a pose it holds with the power off, then record where it ended
@@ -326,6 +329,45 @@ off afterwards. Those joints are the mock arm's, and its connect takes nothing o
 mock the warning is only printed. What each other ending means, and the same offer a run makes
 at its own terminal when its rest move missed, is
 [adapters/lerobot.md](adapters/lerobot.md#releasing-it-where-it-stands).
+
+## A simulator of an arm
+
+`quackd robot twin SOURCE [NAME]` registers NAME, `SOURCE-sim` unless you give one, as
+`lerobot:mujoco`: the real backend's own code over a physics model of the arm. Its address is
+the calibration file SOURCE's runs read, found where LeRobot keeps it under SOURCE's name, so
+the simulated arm has the travel the real one has. SOURCE's rest pose and pilot are copied
+with it, and so is each camera the simulator renders, which is one named front, top or wrist.
+Any other camera is left out and named in the output, because the simulator would refuse it on
+every run. Its memory is its own, kept under NAME.
+
+```
+$ quackd robot twin arm-01
++ added arm-01-sim: lerobot:mujoco, a simulator of arm-01 on
+/home/you/.cache/huggingface/lerobot/calibration/robots/so_follower/arm-01.json
+  copied from arm-01: rest pose, pilot openai:gpt-6-sol, 2 camera urls
+! robots.json now holds a lerobot:mujoco robot, and quackd 0.14 and earlier cannot read the file at all: quackd robot remove arm-01-sim before going back to one
+  quackd preflight <duck> --robot arm-01-sim
+```
+
+That warning is the one cost of a twin. quackd 0.14 and earlier check every robot in the file
+against the backends they know, and `lerobot:mujoco` is not one of them, so one of those
+installs sharing `~/.quackd` refuses every command that reads the registry until every
+`lerobot:mujoco` robot in it is removed, not only the twin just made. Where the file holds more
+than one, the warning names them all. To try a twin while an older quackd still reads
+`~/.quackd`, give this one a registry of its own with `QUACKD_REGISTRY_DIR` or `--registry-dir`,
+and register the arm there as well.
+
+`--address PATH` names the calibration file instead, for an arm calibrated under another id or
+on another machine. A source that is not registered, is not a LeRobot arm or has no
+calibration file is refused, and so is a NAME that is the source's own. For every other LeRobot
+robot the address is the serial port, so a port given here, such as `COM5` or `/dev/ttyACM0`, is
+refused on its shape before anything opens it or looks for it. The simulator does the same with
+a `lerobot:mujoco` robot registered on a port by `robot add`, as `run`, `preflight` or any other
+command builds it. A NAME that is already
+registered is refused as `add` refuses it. `--force` replaces it, and only where it is already a
+`lerobot:mujoco` robot, so no real arm is ever overwritten by its own simulator.
+`quackd preflight` is what the twin is for: it rehearses task files on it, and refuses any robot
+that is not a simulator.
 
 ## Probing
 

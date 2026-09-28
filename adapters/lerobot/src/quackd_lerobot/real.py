@@ -12,7 +12,10 @@ deadline wedges the transport rather than letting a second thread onto a half-du
 `stop` re-sends the present position as the goal (hold). quackd disables torque in exactly
 one place, `let_go()`, which a person asks for with `--by-hand` and which refuses anywhere but
 the recorded rest pose; `take_hold()` is how the arm is picked back up. LeRobot's own
-`disconnect()` disables it too, by its default, which quackd keeps and documents.
+`disconnect()` disables it too, where its config asks, which is upstream's default. quackd
+builds the follower asking it not to, and `close()` asks for the release only over an arm at
+its recorded rest pose or with none recorded, so an exit that never reaches `close()`, where
+LeRobot disconnects the follower as it is collected (`up.ROBOT_DEL`), leaves the arm holding.
 
 What this backend refuses to take on faith, because upstream cannot tell it:
 
@@ -53,7 +56,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
@@ -108,6 +111,8 @@ from quackd_lerobot.verbs import (
 
 STATUS = "LeRobot names verified at a pinned commit; one SO-101 driven on 2026-09-15"
 POLICY_HZ = 10.0
+POLICY_TASK = "quackd-lerobot-policy"
+"""The name `pick`'s policy loop runs under as an asyncio task."""
 
 logger = logging.getLogger("quackd.lerobot")
 """Under `quackd`, not under this module's own name (`quackd_lerobot.real`): `quackd`'s logger is
@@ -154,6 +159,17 @@ one that failed on a write, inside `configure()` or somewhere nothing can place
 `configure()` writes torque off on every motor and back on one motor after another
 (`up.CONFIGURE_TORQUE_WRITES_ONCE`), so where it stopped, the motors before that write can be
 holding and the ones after it limp."""
+KEPT_OVER_A_FAILED_CONNECT = (
+    "Nothing has read where the arm is, so quackd kept whatever torque connecting switched on "
+    "rather than let it go where it stands: hold the arm, and cut its power."
+)
+"""What a connect says when it fails after LeRobot's own connect went through, on something
+other than one of quackd's refusals: a first read the arm did not answer, a calibration check
+that raised, a calibration quackd could not read the travel out of. `configure()` has switched
+torque on by then, and no read has said where the arm stands, so whether letting go would drop
+it is not something quackd knows. It keeps the torque, as a close does over an arm that did not
+answer (`TORQUE_UNKNOWN_AT_CLOSE`), and cutting the power is the way out, because
+`quackd robot release` connects the same way and would fail in the same place."""
 TORQUE_RETRIES = 5
 """Extra tries LeRobot gives each `Torque_Enable` and `Lock` write when quackd lets go of the
 arm or takes hold of it again: the count upstream's own `disconnect()` gives its torque-off
@@ -211,6 +227,14 @@ CAMERA_NAME = "front"
 CAMERA_BACKENDS = ("any", "v4l2", "dshow", "avfoundation", "msmf")
 CAMERA_ROTATIONS = (0, 90, 180, 270)
 CAMERA_KEYS = ("name", "width", "height", "fps", "fourcc", "backend", "rotation", "fov")
+CAMERA_HINT = (
+    "A camera is one USB webcam named by its OpenCV index, opencv://0, or by a device path, "
+    f"opencv:///dev/video2, with any of {', '.join(CAMERA_KEYS)} after a ?. Run "
+    "`lerobot-find-cameras opencv` to see which index is which: it saves a frame per camera"
+)
+"""What a refused `--camera-url` is told a camera is, after why it was refused. The simulator
+parses the same urls and passes a hint of its own (`sim/camera.py`), because a camera there is
+a mount in a scene and not a webcam on a USB port."""
 CAMERA_CONNECT_S = 15.0
 """Long enough for the open plus upstream's warmup, which reads frames before returning."""
 CAMERA_CLOSE_S = 10.0
@@ -242,26 +266,25 @@ class CameraSpec:
     thing telling two views apart; with one it may, and `front` is the default."""
 
 
-def _camera_int(key: str, raw: str, url: str) -> int:
+def _camera_int(key: str, raw: str, url: str, label: str, hint: str) -> int:
     try:
         value = int(raw)
     except ValueError:
-        raise _camera_refusal(f"{key}={raw!r} is not a whole number", url) from None
+        raise _camera_refusal(f"{key}={raw!r} is not a whole number", url, label, hint) from None
     if value <= 0:
-        raise _camera_refusal(f"{key}={raw!r} must be above 0", url)
+        raise _camera_refusal(f"{key}={raw!r} must be above 0", url, label, hint)
     return value
 
 
-def _camera_refusal(why: str, url: str) -> AdapterError:
-    return AdapterError(
-        f"lerobot real: --camera-url {url!r}: {why}. A camera is one USB webcam named by "
-        "its OpenCV index, opencv://0, or by a device path, opencv:///dev/video2, with any "
-        f"of {', '.join(CAMERA_KEYS)} after a ?. Run `lerobot-find-cameras opencv` to see "
-        "which index is which: it saves a frame per camera"
-    )
+def _camera_refusal(
+    why: str, url: str, label: str = "real", hint: str = CAMERA_HINT
+) -> AdapterError:
+    """A refused `--camera-url`, from the backend `label` names (`LeRobotReal.label`), with
+    `hint` saying what a camera is there."""
+    return AdapterError(f"lerobot {label}: --camera-url {url!r}: {why}. {hint}")
 
 
-def parse_camera_url(url: str) -> CameraSpec:
+def parse_camera_url(url: str, *, label: str = "real", hint: str = CAMERA_HINT) -> CameraSpec:
     """`opencv://0?width=640&height=480&fps=30&backend=msmf` into a `CameraSpec`.
 
     Strict, in the shape of the rosbridge adapter's address parser: an unknown scheme, key
@@ -271,18 +294,29 @@ def parse_camera_url(url: str) -> CameraSpec:
 
     Size and rate are left unset by default, which keeps whatever mode the camera already
     has (`up.OPENCV_MODE_DEFAULTS_TO_THE_CAMERA`). Asking for one it cannot do is a refusal
-    at connect (`up.OPENCV_MODE_IS_A_DEMAND`), and the webcam in a lab drawer is unknown."""
+    at connect (`up.OPENCV_MODE_IS_A_DEMAND`), and the webcam in a lab drawer is unknown.
+
+    `label` and `hint` are whose refusal it is and what it says a camera is: the simulator
+    parses the same urls, so that a task's camera flags rehearse unchanged, and refuses them
+    in its own name."""
+
+    def refused(why: str) -> AdapterError:
+        return _camera_refusal(why, url, label, hint)
+
+    def whole(key: str, raw: str) -> int:
+        return _camera_int(key, raw, url, label, hint)
+
     parts = urlsplit(url)
     if parts.scheme != CAMERA_SCHEME:
         seen = f"{parts.scheme!r} is not a scheme quackd knows" if parts.scheme else "no scheme"
-        raise _camera_refusal(seen, url)
+        raise refused(seen)
     target = (parts.netloc + parts.path).rstrip("/")
     if not target:
-        raise _camera_refusal("no camera index or device path", url)
+        raise refused("no camera index or device path")
     index_or_path: int | str = int(target) if target.isdigit() else target
     query = parse_qs(parts.query, keep_blank_values=True)
     if unknown := sorted(set(query) - set(CAMERA_KEYS)):
-        raise _camera_refusal(f"unknown {'keys' if len(unknown) > 1 else 'key'} {unknown}", url)
+        raise refused(f"unknown {'keys' if len(unknown) > 1 else 'key'} {unknown}")
 
     def one(key: str) -> str | None:
         values = query.get(key)
@@ -291,43 +325,43 @@ def parse_camera_url(url: str) -> CameraSpec:
     given = one("name")
     name = given or CAMERA_NAME
     if not name.replace("_", "").replace("-", "").isalnum():
-        raise _camera_refusal(f"name={name!r} is not a plain name", url)
+        raise refused(f"name={name!r} is not a plain name")
     fourcc = one("fourcc")
     if fourcc is not None and len(fourcc) != 4:
-        raise _camera_refusal(f"fourcc={fourcc!r} must be four characters", url)
+        raise refused(f"fourcc={fourcc!r} must be four characters")
     backend = (one("backend") or "any").lower()
     if backend not in CAMERA_BACKENDS:
-        raise _camera_refusal(f"backend={backend!r} is not one of {CAMERA_BACKENDS}", url)
+        raise refused(f"backend={backend!r} is not one of {CAMERA_BACKENDS}")
     raw_rotation = one("rotation")
     rotation = 0
     if raw_rotation:
         try:
             rotation = int(raw_rotation)
         except ValueError:
-            raise _camera_refusal(f"rotation={raw_rotation!r} is not a whole number", url) from None
+            raise refused(f"rotation={raw_rotation!r} is not a whole number") from None
     if rotation not in CAMERA_ROTATIONS:
-        raise _camera_refusal(f"rotation={rotation} is not one of {CAMERA_ROTATIONS}", url)
+        raise refused(f"rotation={rotation} is not one of {CAMERA_ROTATIONS}")
     fov_deg: float | None = None
     if raw_fov := one("fov"):
         try:
             fov_deg = float(raw_fov)
         except ValueError:
-            raise _camera_refusal(f"fov={raw_fov!r} is not a number of degrees", url) from None
+            raise refused(f"fov={raw_fov!r} is not a number of degrees") from None
         if not 0.0 < fov_deg < 180.0:
-            raise _camera_refusal(f"fov={raw_fov!r} must be between 0 and 180", url)
-    width = _camera_int("width", w, url) if (w := one("width")) else None
-    height = _camera_int("height", h, url) if (h := one("height")) else None
+            raise refused(f"fov={raw_fov!r} must be between 0 and 180")
+    width = whole("width", w) if (w := one("width")) else None
+    height = whole("height", h) if (h := one("height")) else None
     if (width is None) != (height is None):
         # upstream keeps the camera's own mode unless BOTH are set, so one alone would be
         # accepted here and quietly dropped there
-        raise _camera_refusal("width and height come together or not at all", url)
+        raise refused("width and height come together or not at all")
     return CameraSpec(
         url=url,
         name=name,
         index_or_path=index_or_path,
         width=width,
         height=height,
-        fps=_camera_int("fps", f, url) if (f := one("fps")) else None,
+        fps=whole("fps", f) if (f := one("fps")) else None,
         fourcc=fourcc,
         backend=backend,
         rotation=rotation,
@@ -336,15 +370,18 @@ def parse_camera_url(url: str) -> CameraSpec:
     )
 
 
-def parse_camera_urls(urls: Sequence[str]) -> tuple[CameraSpec, ...]:
+def parse_camera_urls(
+    urls: Sequence[str], *, label: str = "real", hint: str = CAMERA_HINT
+) -> tuple[CameraSpec, ...]:
     """Every `--camera-url` this arm was given, in order. The first is the primary.
 
     With one camera this is `parse_camera_url` and nothing more. With several, each url has
     to name its own camera and the names have to differ, because the name is what the model
     reading two pictures, a policy's observation dict and `frames/NNNN-<name>.png` all tell
     them apart by. An index may only appear once: two handles on one webcam is not two
-    views, it is a camera that will not open twice."""
-    specs = tuple(parse_camera_url(url) for url in urls)
+    views, it is a camera that will not open twice. `label` and `hint` are
+    `parse_camera_url`'s."""
+    specs = tuple(parse_camera_url(url, label=label, hint=hint) for url in urls)
     if len(specs) < 2:
         return specs
     by_name: dict[str, CameraSpec] = {}
@@ -357,17 +394,23 @@ def parse_camera_urls(urls: Sequence[str]) -> tuple[CameraSpec, ...]:
                 "opencv://2?name=side, because the name is what the model, a pick policy "
                 "and frames/NNNN-<name>.png tell them apart by",
                 spec.url,
+                label,
+                hint,
             )
         if (clash := by_name.get(spec.name)) is not None:
             raise _camera_refusal(
                 f"name={spec.name!r} is already the name of {clash.url!r}. With several "
                 "cameras every name is its own",
                 spec.url,
+                label,
+                hint,
             )
         if (same := by_index.get(spec.index_or_path)) is not None:
             raise _camera_refusal(
                 f"{spec.index_or_path} is already {same.url!r}. One url per camera",
                 spec.url,
+                label,
+                hint,
             )
         by_name[spec.name] = spec
         by_index[spec.index_or_path] = spec
@@ -389,15 +432,15 @@ def step_from_env(default: float = MAX_STEP_DEG) -> float:
     return value
 
 
-def check_port(port: str) -> None:
+def check_port(port: str, *, label: str = "real") -> None:
     """A serial port, or a clear refusal. The shape is all quackd checks: which port is the
     arm is the owner's business (`up.SERIAL_PORT`), but an empty --address, or a robot name
     that never resolved, is worth catching before LeRobot opens something."""
     if not port:
-        raise TransportError("lerobot real: --address must be the arm's serial port")
+        raise TransportError(f"lerobot {label}: --address must be the arm's serial port")
     if not PORT_SHAPE.match(port):
         raise TransportError(
-            f"lerobot real: --address {port!r} is not a serial port; it looks like COM5 on "
+            f"lerobot {label}: --address {port!r} is not a serial port; it looks like COM5 on "
             "Windows or /dev/ttyACM0 elsewhere"
         )
 
@@ -570,6 +613,24 @@ def _name_of(fn: Callable[..., Any]) -> str:
     return str(getattr(inner, "__name__", inner))
 
 
+def _late(fn: Callable[..., Any], budget_s: float, pending: asyncio.Future[Any] | None) -> str:
+    """What a LeRobot call that ran out of time did, naming the call and its budget.
+
+    Three things look alike from the caller's side: a call that never got the bus because the
+    call ahead of it held it, one still out on the wire, which wedges the transport, and one
+    that came back after its budget was spent. A call the worker pool dropped unrun, which a
+    pool shut down under it does, never went out either."""
+    name = _name_of(fn)
+    if pending is None or pending.cancelled():
+        return f"a LeRobot call ({name}) waited {budget_s:g} s for the bus and never went out"
+    if not pending.done():
+        return (
+            f"a LeRobot call ({name}) has not come back within {budget_s:g} s; the serial bus "
+            "has one owner, so quackd refuses every call until it does"
+        )
+    return f"a LeRobot call ({name}) came back after its {budget_s:g} s were spent"
+
+
 @dataclass
 class _Errors:
     """Why each of the two status registers did not answer, if it did not.
@@ -622,6 +683,10 @@ class WallClock:
 
 class LeRobotReal:
     name = "real"
+    label = "real"
+    """What every refusal this backend makes says it is, after `lerobot`. The simulator runs
+    this same code under its own (`sim/transport.py`), and a refusal from a rehearsal must not
+    read as one from the arm on the desk."""
     mobility = "none"
 
     def __init__(
@@ -687,6 +752,12 @@ class LeRobotReal:
         self._lock = asyncio.Lock()
         self._closed = False
         self._wedged: asyncio.Future[Any] | None = None
+        self._bus: tuple[float, float | None] = (0.0, None)
+        """The bus's own clock (`_busy`): how long LeRobot calls have held it, in all, and
+        when the one holding it now was handed to the worker pool, on the event loop's clock,
+        or None while none is. `_call` stamps a call under the lock before its worker can
+        start and the worker closes the stamp, one call at a time, and a tuple is swapped
+        whole, so neither thread reads it half written."""
         self._policy_task: asyncio.Task[None] | None = None
         self._policy_name = "idle"
         self._policy_error: str | None = None
@@ -871,6 +942,15 @@ class LeRobotReal:
         learns the pose it will park in is not the pose it was recorded in."""
         return reachable_rest_goal(self.rest_pose or {}, self.joint_range_deg)[1]
 
+    def _rest_target(self) -> tuple[dict[str, float], dict[str, float]]:
+        """`(goal, recorded)`: what every judgement of the rest pose drives to and judges by,
+        the reachable goal (`rest_reachable`) and the pose as recorded (`verbs.rest_goal`),
+        which the half-line rule reads the side of a clipped joint from. One place, so the
+        rest move, the release, the take-hold and the close all judge the same pose, and the
+        simulator can put a joint its start settled out of the table where the arm really
+        rests (`sim.world.ArmWorld.settled`)."""
+        return self.rest_reachable, rest_goal(self.rest_pose or {})
+
     def _outside_travel(self, joint: str, reading: float) -> bool:
         """The joint reads strictly outside the travel its calibration recorded.
 
@@ -904,31 +984,101 @@ class LeRobotReal:
         bus answered before it can speak for the arm afterwards. Counted there and not before
         the call, because the lock is fair: a read queued behind the call ahead of this one is
         on the wire before this write is, and a count taken in coroutine code would put it
-        after."""
+        after.
+
+        A budget is spent by the bus's time, not the event loop's. The loop's thread can be
+        busy past a deadline: a pilot's SDK parsing its first response, or a frame being
+        encoded. A call out on the bus then answers in a millisecond, or the call ahead of a
+        queued one comes back in time and the loop does not hand the queued one the bus, and
+        the deadline fired first when the loop resumed: a heartbeat the arm answered in time
+        was reported as an arm that did not answer, which ends the run. So what spends a
+        budget is time the bus was busy after the call was asked, with the calls ahead of it
+        while it waited and then with its own, each from when it was handed to the worker pool
+        until its worker came back, stamped on the loop's clock (`_bus`). From the hand-off
+        and not from when a thread picks it up, because with every pool thread busy (a camera
+        read, a frame being saved) the call waits for one holding the bus, and goes out when
+        one frees: it spends its own budget meanwhile, and the calls queued behind it spend
+        theirs. When the deadline fires it reads those stamps, and a call with budget left
+        keeps its place in the queue while its deadline moves on by what is left. A call still
+        out when its budget is spent is wedged and refused exactly as before, one that spent it
+        waiting behind calls on the bus never goes out, and every timeout says which call it
+        was and its budget."""
         self._refuse_if_wedged()
         loop = asyncio.get_running_loop()
+        budget = deadline_s or self.timeout_s
+        asked = loop.time()
+        bus_asked = self._busy(asked)
         pending: asyncio.Future[Any] | None = None
+        spent = False
+        timer: asyncio.TimerHandle | None = None
         call = functools.partial(fn, *args)
         if writes_torque:
             call = functools.partial(self._counted, call)
+
+        def stamped(handed: float) -> Any:
+            try:
+                return call()
+            finally:
+                # `loop.time()` reads the monotonic clock, which is safe from any thread
+                self._bus = (self._bus[0] + loop.time() - handed, None)
+
+        def judge(deadline: asyncio.Timeout) -> None:
+            nonlocal timer, spent
+            now = loop.time()
+            left = budget - (self._busy(now) - bus_asked)
+            if left > 0:
+                timer = loop.call_at(now + left, judge, deadline)
+                return
+            spent = True
+            deadline.reschedule(now)  # which cancels this task on the loop's next turn
+
         try:
-            async with asyncio.timeout(deadline_s or self.timeout_s):
+            async with asyncio.timeout(None) as deadline:
+                timer = loop.call_at(asked + budget, judge, deadline)
                 async with self._lock:
                     # a caller parked on the lock passed the check above before the call
                     # ahead of it wedged; the lock's release is what woke it, so ask again
                     self._refuse_if_wedged()
-                    pending = loop.run_in_executor(None, call)
-                    return await asyncio.shield(pending)
-        except (TimeoutError, asyncio.CancelledError):
-            # a cancelled verb (Ctrl-C mid-move) leaves its thread on the wire exactly as
-            # a timed-out one does, and the stop that follows must not join it there
+                    if spent:
+                        # its budget ran out while it waited, and the lock reached it before
+                        # the cancel did: it does not go out
+                        raise TimeoutError
+                    # the bus is this call's from here; stamped before the pool can start the
+                    # worker, which closes the stamp, and any stamp a call the pool dropped
+                    # unrun left open is closed into the total first
+                    now = loop.time()
+                    self._bus = (self._busy(now), now)
+                    pending = loop.run_in_executor(None, stamped, now)
+                    answer = await asyncio.shield(pending)
+                    if spent:
+                        # it came back after its budget, and reached this task before the
+                        # cancel did
+                        raise TimeoutError
+                    return answer
+        except (TimeoutError, asyncio.CancelledError) as e:
+            # a cancelled verb (Ctrl-C mid-move) leaves its thread on the wire exactly as a
+            # timed-out one does, and the stop that follows must not join it there
             if pending is not None and not pending.done():
                 self._wedged = pending
                 self.stop_error = (
                     f"a LeRobot call ({_name_of(fn)}) has not come back; the "
                     "serial bus has one owner, so quackd refuses every call until it does"
                 )
+            if spent and isinstance(e, TimeoutError):
+                raise TimeoutError(_late(fn, budget, pending)) from None
+            # a call that raised in time, a TimeoutError of its own among them, raises what
+            # it raised
             raise
+        finally:
+            if timer is not None:
+                timer.cancel()
+
+    def _busy(self, now: float) -> float:
+        """How long LeRobot calls have held the bus up to `now`, the one holding it now
+        included, on the event loop's clock (`_bus`): the time that spends a call's budget
+        (`_call`)."""
+        total, since = self._bus
+        return total if since is None else total + max(0.0, now - since)
 
     def _counted(self, write: Callable[[], Any]) -> Any:
         """A torque write, in `_call`'s worker thread: counted before it goes out, so a write
@@ -950,12 +1100,21 @@ class LeRobotReal:
 
         Inheriting a default is fine until upstream changes one. `max_relative_target` is the
         field upstream leaves at None, and it has to be a float, not an int
-        (`up.SO_ACTION_CLAMP_IS_FLOAT`)."""
+        (`up.SO_ACTION_CLAMP_IS_FLOAT`).
+
+        `disable_torque_on_disconnect` is False, the opposite of upstream's default, because
+        quackd's own disconnects are not the only ones. LeRobot disconnects a follower that is
+        still connected when it is collected (`up.ROBOT_DEL`), so under True any exit that
+        skipped `close()`, a second Ctrl-C during the rest move or a crash, could let the arm
+        fall wherever it stood. `close()` and `_give_up` write the flag just before their own
+        disconnect (`up.SO_DISCONNECT_READS_ITS_CONFIG_LATE`), and no other disconnect lets
+        go: a connect that fails any other way once the arm is energised closes the port and
+        keeps the torque (`_keep_over_a_failure`)."""
         return {
             "port": self.port,
             "id": self.robot_id,
             "use_degrees": True,
-            "disable_torque_on_disconnect": True,
+            "disable_torque_on_disconnect": False,
             # quackd owns its camera instead: up.SO_CAMERAS_ARE_THE_FOLLOWERS
             "cameras": {},
             "max_relative_target": float(self.max_step_deg),
@@ -969,9 +1128,9 @@ class LeRobotReal:
         except ImportError as e:
             raise AdapterNotInstalled("lerobot", "quackd[lerobot]") from e
         self.lerobot_version = getattr(lerobot, "__version__", None)
-        check_port(self.port)
+        check_port(self.port, label=self.label)
         if self.robot_type != up.ROBOT_TYPE_SO101.name:
-            raise TransportError(f"lerobot real: only {up.ROBOT_TYPE_SO101.name} is wired")
+            raise TransportError(f"lerobot {self.label}: only {up.ROBOT_TYPE_SO101.name} is wired")
         config = SO101FollowerConfig(**self._config_kwargs())
         return make_robot_from_config(config)
 
@@ -1002,32 +1161,75 @@ class LeRobotReal:
         self.connect_notes = []
         if self._robot is None:
             self._robot = await asyncio.to_thread(self._build_robot)
+        with contextlib.suppress(Exception):
+            # Asked for again on every connect, and not only at the build: a close at rest and
+            # a refused connect both leave the flag asking for the release, and a transport
+            # connected a second time would carry that into a session whose exit may skip the
+            # close. A robot handed in, which is built by whoever handed it, is asked too.
+            self._robot.config.disable_torque_on_disconnect = False
         # the camera first, before the arm is touched: a bad index then refuses with the
         # arm never energised, never de-torqued on the way back out, and nothing to undo
         await self._connect_cameras()
         await self._connect_arm()
+        # From here the arm is energised. quackd's own refusals let it go (`_give_up`), and
+        # anything else that raises before the connect is done keeps it (`_keep_over_a_failure`)
+        # rather than leaving the choice to whatever disconnects the follower later.
+        try:
+            refusal = self._refusal()
+            if refusal is None:
+                calibration = dict(getattr(self._robot, "calibration", None) or {})
+                self.joint_range_deg = joint_ranges(calibration)
+                path = getattr(self._robot, "calibration_fpath", None)
+                self.calibration_file = str(path) if path else None
+                # the follower is built with cameras={}, so its observation_features never
+                # name one; the only camera here is the one quackd opened
+                # (up.SO_CAMERAS_ARE_THE_FOLLOWERS)
+                await self._probe()
+        except Exception as e:
+            await self._keep_over_a_failure(e)
+        if refusal is not None:
+            await self._give_up(refusal)
+
+    def _refusal(self) -> str | None:
+        """Why quackd will not drive the arm LeRobot has just connected, or None. A refusal
+        here is quackd's own decision about an arm that answered, and lets go of it
+        (`_give_up`). A check that raises instead is a failure, and keeps the arm's torque
+        (`_keep_over_a_failure`)."""
         if not bool(self._robot.is_calibrated):
-            await self._give_up(
-                "lerobot real: the arm is not calibrated; run LeRobot's calibration first "
-                "(it is interactive, quackd never triggers it)"
+            return (
+                f"lerobot {self.label}: the arm is not calibrated; run LeRobot's calibration "
+                "first (it is interactive, quackd never triggers it)"
             )
-        calibration = dict(getattr(self._robot, "calibration", None) or {})
-        if not calibration:
-            await self._give_up(
-                "lerobot real: the arm reports no calibration file, so nothing knows how far "
-                "each joint travels; run LeRobot's calibration first"
+        if not dict(getattr(self._robot, "calibration", None) or {}):
+            return (
+                f"lerobot {self.label}: the arm reports no calibration file, so nothing knows "
+                "how far each joint travels; run LeRobot's calibration first"
             )
         if getattr(self._robot, "bus", None) is None:
-            await self._give_up(
-                "lerobot real: this robot has no motors bus, so torque and temperature "
-                "cannot be read; quackd drives an SO-101 follower and nothing else"
+            return (
+                f"lerobot {self.label}: this robot has no motors bus, so torque and "
+                "temperature cannot be read; quackd drives an SO-101 follower and nothing else"
             )
-        self.joint_range_deg = joint_ranges(calibration)
-        path = getattr(self._robot, "calibration_fpath", None)
-        self.calibration_file = str(path) if path else None
-        # the follower is built with cameras={}, so its observation_features never name
-        # one; the only camera here is the one quackd opened (up.SO_CAMERAS_ARE_THE_FOLLOWERS)
-        await self._probe()
+        return None
+
+    async def _keep_over_a_failure(self, error: Exception) -> NoReturn:
+        """Refuse a connect that failed once the arm was energised, keeping its torque.
+
+        The follower is built asking its disconnect to keep torque (`_config_kwargs`), so an
+        arm left connected here would be held by whatever disconnected it later, LeRobot's
+        own as the follower is collected included (`up.ROBOT_DEL`), and nothing would have
+        said so. So the port is closed now with every motor still holding its goal
+        (`_close_port`, which writes nothing to a motor), the cameras are let go of, and the
+        refusal says the arm is still energised and what to do about it
+        (`KEPT_OVER_A_FAILED_CONNECT`). A read that blew its deadline has wedged the
+        transport, and then the port is not closed, but the torque is kept all the same."""
+        said = _one_line(error) if str(error).strip() else self.stop_error or type(error).__name__
+        await self._close_port()
+        await self._close_cameras()
+        raise TransportError(
+            f"lerobot {self.label}: connect failed once the arm was energised: "
+            f"{_sentence(said)} {KEPT_OVER_A_FAILED_CONNECT}"
+        ) from error
 
     async def _connect_arm(self) -> None:
         """LeRobot's connect, tried again when the bus loses a packet. Raises TransportError.
@@ -1088,7 +1290,7 @@ class LeRobotReal:
                 why = str(e) or self.stop_error or type(e).__name__
                 await self._close_port()
                 await self._close_cameras()
-                said = f"lerobot real: connect failed: {why}"
+                said = f"lerobot {self.label}: connect failed: {why}"
                 if split or isinstance(e, TimeoutError):
                     said = f"{_sentence(said)} {SPLIT_TORQUE}"
                 raise TransportError(said) from e
@@ -1144,7 +1346,7 @@ class LeRobotReal:
         since a servo with no power fails the same way as a cable that came out, and whatever
         else might be holding the port, because the bus has one owner at a time. Where LeRobot
         named no joint, every motor it had missing included, the arm's cables and power."""
-        head = f"lerobot real: connect failed {CONNECT_ATTEMPTS} times"
+        head = f"lerobot {self.label}: connect failed {CONNECT_ATTEMPTS} times"
         said = [f"{head}, the last on {where[0]}" if where else head]
         said[0] += f": {_one_line(error)}"
         if split:
@@ -1184,8 +1386,8 @@ class LeRobotReal:
             else "The port never opened, so nothing reached a motor"
         )
         said = [
-            f"lerobot real: connect stopped after attempt {attempt} of {CONNECT_ATTEMPTS}, "
-            "because a stop was asked for.",
+            f"lerobot {self.label}: connect stopped after attempt {attempt} of "
+            f"{CONNECT_ATTEMPTS}, because a stop was asked for.",
             f"Attempt {attempt} failed" + (f" on {where[0]}" if where else "") + ":",
             _one_line(error),
         ]
@@ -1330,8 +1532,8 @@ class LeRobotReal:
             except Exception as e:
                 await self._close_cameras()
                 raise TransportError(
-                    f"lerobot real: --camera-url {spec.url!r} did not open: {e}. The arm was "
-                    "not touched, and it connects without --camera-url"
+                    f"lerobot {self.label}: --camera-url {spec.url!r} did not open: {e}. The "
+                    "arm was not touched, and it connects without --camera-url"
                 ) from e
             opened.append(spec.name)
         self.camera_keys = tuple(opened)
@@ -1345,8 +1547,16 @@ class LeRobotReal:
 
     async def _give_up(self, why: str) -> None:
         """Let go of everything opened so far, then say why. The arm's disconnect is the one
-        LeRobot ships, and it drops torque (`up.SO_DISCONNECT_TORQUE`)."""
+        LeRobot ships, asked to drop torque (`up.SO_DISCONNECT_TORQUE`), which is what a
+        refusal of a freshly built follower has always done. The follower is built asking it
+        to keep torque (`_config_kwargs`), so the flag is written here, just before the call
+        that reads it (`up.SO_DISCONNECT_READS_ITS_CONFIG_LATE`). One refusal changed with
+        that: a transport connected again after a close that kept torque used to carry that
+        close's flag into this disconnect, and keep the arm energised with nothing said, and
+        now lets go like any other."""
         await self._close_cameras()
+        with contextlib.suppress(Exception):
+            self._robot.config.disable_torque_on_disconnect = True
         with contextlib.suppress(Exception):
             await self._call(self._robot.disconnect, deadline_s=5.0)
         raise TransportError(why)
@@ -1354,11 +1564,14 @@ class LeRobotReal:
     async def close(self) -> None:
         """Let go of the arm, and let go of its torque only where it can be let go of.
 
-        LeRobot's `disconnect()` disables torque by its own default, which quackd keeps: an
-        arm at rest should be limp, because that is what "at rest" means. An arm that is not
-        at rest is an arm that would fall, so this reads the joints one last time and, where
-        they are not the recorded pose, turns that default off and says so. Without a rest
-        pose recorded there is nothing to check against and nothing changes.
+        LeRobot's `disconnect()` disables torque where its config asks, which is upstream's
+        default, and this close asks for it over an arm at rest: an arm at rest should be limp,
+        because that is what "at rest" means. An arm that is not at rest is an arm that would
+        fall, so this reads the joints one last time and, where they are not the recorded pose,
+        asks for torque to be kept instead and says so. Without a rest pose recorded there is
+        nothing to check against, and the close asks for the release as a session always has.
+        The follower is built asking to keep torque (`_config_kwargs`), so an exit that never
+        gets here leaves the arm holding rather than dropping it.
 
         "The recorded pose" is judged the way the rest move judges it (`verbs.at_rest`): a
         joint recorded past its travel is at rest parked at the edge of it or anywhere beyond,
@@ -1446,20 +1659,27 @@ class LeRobotReal:
         elif why is not None and self._release_refused:
             self.close_note = TORQUE_KEPT_AFTER_REFUSAL.format(why=why)
         elif why is not None:
-            self.close_note = torque_left_on(why, self.registered_name)
-        wrote = False
+            self.close_note = self._torque_left_on(why)
         with contextlib.suppress(Exception):
             # up.SO_DISCONNECT_READS_ITS_CONFIG_LATE: the flag is read off the config instance
             # inside disconnect() rather than copied at construction, so this is the seam.
-            # _config_kwargs() still asks for True.
+            # _config_kwargs() asks for False, so this write is the one thing that lets an arm
+            # go at a close.
             #
-            # Written every time rather than only when torque has to stay on. The flag lives
-            # on the robot, not on this call, so a transport that missed its pose once and
-            # reached it the next time would have kept the arm energised on the strength of
-            # the earlier session, with nothing said about it.
+            # Written every time, both ways. The flag lives on the robot, not on this call, so
+            # writing it one way only would let an earlier session of this transport decide
+            # this one: a close that reached its pose once and missed it the next time would
+            # drop the arm, and the other way round would keep an arm energised with nothing
+            # said about it.
             self._robot.config.disable_torque_on_disconnect = why is None
-            wrote = True
-        if why is not None and not wrote:
+        # What the disconnect below will do, read back rather than assumed: a write that did
+        # not take leaves whatever the config already held, which for a follower quackd built
+        # is the hold and for one handed in may be upstream's release. None is a config that
+        # cannot be read either, and is treated as the release.
+        releases: bool | None = None
+        with contextlib.suppress(Exception):
+            releases = bool(self._robot.config.disable_torque_on_disconnect)
+        if why is not None and releases is not False:
             # the seam did not take, so the disconnect below releases torque after all. Saying
             # the arm is being held when it is about to be let go is worse than saying nothing.
             self.close_note = TORQUE_COULD_NOT_BE_KEPT.format(why=why)
@@ -1467,11 +1687,16 @@ class LeRobotReal:
         with contextlib.suppress(Exception):
             await self._call(self._robot.disconnect, deadline_s=5.0)  # up.SO_DISCONNECT_TORQUE
             disconnected = True
-        if why is None and self._release_refused and disconnected:
+        if why is None and self._release_refused and disconnected and releases is not False:
             # only once the disconnect came back, because its `Torque_Enable` 0 writes raise on
             # a bus that lost them, and "the close took torque off" is a thing to say only of a
             # close that sent it
             self.close_note = released_by_the_close(at_rest=self.rest_pose is not None)
+
+    def _torque_left_on(self, why: str) -> str:
+        """The close's line for an arm it kept torque on away from its rest pose
+        (`verbs.torque_left_on`), which the simulator words for a simulated arm."""
+        return torque_left_on(why, self.registered_name)
 
     async def _not_resting(self) -> tuple[str | None, bool]:
         """Why this arm must keep its torque, or None if it may let go, and whether the arm
@@ -1479,8 +1704,7 @@ class LeRobotReal:
 
         The second value is False only where the read itself failed, which is the one reason
         to keep torque that says nothing about whether the arm is holding itself up."""
-        recorded = rest_goal(self.rest_pose or {})
-        goal = self.rest_reachable
+        goal, recorded = self._rest_target()
         if not goal:
             # a pose was recorded and none of it can be driven: the arm is somewhere nobody
             # chose, so it keeps holding rather than being let go there
@@ -1493,8 +1717,15 @@ class LeRobotReal:
         if at_rest(goal, joints, recorded):
             return None, True
         why = shortfall(goal, joints, recorded)
-        if self._rest_result is not None and not self._rest_result.reached:
-            return f"{why}; {self._rest_result.reason}", True
+        missed = self._rest_result
+        if missed is not None and not missed.reached:
+            # A move that stalled or ran out of time gives as its reason its own shortfall and
+            # how it ended (`_drive_to_rest`), and it held the arm where it stopped, so that
+            # reason usually begins with this read's shortfall word for word. Joined to it, the
+            # close said the shortfall twice, as the in-hand line above once did.
+            if missed.reason.startswith(why):
+                return missed.reason, True
+            return f"{why}; {missed.reason}", True
         return f"{why}; nothing moved it there", True
 
     # ── reading ─────────────────────────────────────────────────────────────────────
@@ -1532,13 +1763,30 @@ class LeRobotReal:
             errors.temperature = f"{type(e).__name__}: {e}"
         return obs, torque, temperature, errors, written
 
-    async def _probe(self) -> dict[str, Any]:
+    def _heartbeat_reads(self) -> Callable[[], Any]:
+        """What the heartbeat's probe runs in the worker thread: the same three transactions
+        as every other probe (`_read_all`). The simulator marks them as the heartbeat's, in
+        that thread, so that no seeded fault lands on a read whose timing is the wall's
+        (`sim/faults.py`). An arm on a desk is told nothing: whose read it answers makes no
+        difference to it."""
+        return self._read_all
+
+    async def _probe(self, trace: bool = True) -> dict[str, Any]:
+        """Read the arm: its joints and both status registers, in one worker thread.
+
+        `trace` is whether the gripper's reading joins `_gripper_trace`, which `_holding` judges
+        a grasp by. Every probe feeds it but the heartbeat's (`heartbeat` passes False), which
+        reads on the wall's clock: where its samples land among a verb's polls is chance, and a
+        grasp judged on them is judged differently every time the same run is played. On an
+        arm that can cost `pick` one poll before it sees a grasp settle; the verb's own polls
+        still feed it."""
         self._answered = False
-        obs, torque, temperature, errors, written = await self._call(self._read_all)
+        reads = self._read_all if trace else self._heartbeat_reads()
+        obs, torque, temperature, errors, written = await self._call(reads)
         self._answered = True
         self._joints = self._joints_of(obs)
         gripper = self._joints.get("gripper")
-        if gripper is not None:
+        if gripper is not None and trace:
             self._gripper_trace.append((self.now(), gripper))
         self._register_error = errors.summary()
         self._torque_error = errors.torque
@@ -1794,7 +2042,8 @@ class LeRobotReal:
             await self._cancel_policy()
             self._policy_error = None
             self._policy_name = f"policy:pick:{task}"
-            self._policy_task = asyncio.create_task(self._run_policy(task))
+            # named, so a task left running at a close says whose it is wherever it is listed
+            self._policy_task = asyncio.create_task(self._run_policy(task), name=POLICY_TASK)
         return Ack()
 
     async def _run_policy(self, task: str) -> None:
@@ -1914,13 +2163,13 @@ class LeRobotReal:
         """A round trip to the arm, not a flag. `is_connected` is the serial port's own open
         flag (`up.BUS_IS_CONNECTED`): pull the cable and it stays True until a read fails."""
         if self._closed:
-            raise HeartbeatError("lerobot real transport is closed")
+            raise HeartbeatError(f"lerobot {self.label} transport is closed")
         if self._robot is None or not bool(self._robot.is_connected):
             raise HeartbeatError("the arm is not connected")
         if self._wedged is not None and not self._wedged.done():
             raise HeartbeatError(self.stop_error or "a LeRobot call has not come back")
         try:
-            await self._probe()
+            await self._probe(trace=False)
         except HeartbeatError:
             raise
         except Exception as e:
@@ -1988,8 +2237,7 @@ class LeRobotReal:
         # the reachable pose and the half-line rule, as `close()` judges it: an arm folded past
         # its travel is at its rest pose, and refusing it here would refuse `--by-hand` the one
         # arm whose fold is the most certainly safe place to let go of it
-        recorded = rest_goal(self.rest_pose or {})
-        goal = self.rest_reachable
+        goal, recorded = self._rest_target()
         if not anywhere and not goal:
             return refused("the recorded pose names no joint this arm drives")
         try:
@@ -2193,8 +2441,7 @@ class LeRobotReal:
                 # it once torque comes on (the docstring says how), so torque stays off. Where
                 # this read finds the whole arm at its rest pose and every motor off, nobody
                 # lifted it out of a fold recorded past its travel, and it is said that way.
-                recorded = rest_goal(self.rest_pose or {})
-                goal = self.rest_reachable
+                goal, recorded = self._rest_target()
                 resting = (
                     bool(goal)
                     and at_rest(goal, placed, recorded)
@@ -2308,8 +2555,7 @@ class LeRobotReal:
             return RestResult.none("no rest pose is recorded for this arm")
         if self._closed:
             return RestResult("refused", "the arm's transport is closed", answered=False)
-        recorded = rest_goal(self.rest_pose)
-        goal = self.rest_reachable
+        goal, recorded = self._rest_target()
         if not goal:
             # "refused", never "none": `none` means there is nothing to go to, and the run
             # would start anyway and the arm be released at the end. There is a pose here,

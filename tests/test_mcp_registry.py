@@ -113,7 +113,7 @@ def test_two_cameras_on_a_one_camera_body_are_refused_before_the_server_starts(
 ) -> None:
     """An MCP client hands its flags to the same factory the CLI does, so a body that reads
     one camera refuses a second here too, by name, before a session ever connects."""
-    with pytest.raises(AdapterError, match="only lerobot:real takes several"):
+    with pytest.raises(AdapterError, match="only lerobot:real and lerobot:mujoco take several"):
         fleet_from_flags(
             robot="microduck:sim2d",
             registry_dir=str(tmp_path),

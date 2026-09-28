@@ -53,15 +53,44 @@ before.
   reached by `--address` and never by a registered name, which it was on 2026-09-23 when its
   rest pose was recorded; and that checklist's *What to report*, six things still chosen against
   Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
-- ⬜ **The SO-101 again, for everything in 0.14.0.** The arm last ran a build of the code that
-  became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the travel,
+- ⬜ **The SO-101 again, for everything in 0.14.0 and 0.15.0.** The arm last ran a build of the
+  code that became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the travel,
   `quackd robot release`, the Enter offer at the end of a run whose rest move missed, the
   `--by-hand` refusal over a joint past its travel, the paced `move_joints` and the connect
-  retries have run only against a fake arm, `lerobot:mock` and the test suite. The seven bench
-  steps that would settle them, in order, are under *Known limitations* in
-  [CHANGELOG.md](CHANGELOG.md) for 0.14.0, and
+  retries have run only against a fake arm, `lerobot:mock` and the test suite, and what 0.15.0
+  changes in `lerobot:real`, the follower that keeps torque on a disconnect quackd did not ask
+  for among it, only against a fake arm or the simulator. The seven bench steps that would
+  settle 0.14.0's, in order, are under *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for
+  0.14.0, and the one for 0.15.0's follower, a second Ctrl-C during the fold back to the rest
+  pose, is under 0.15.0's, which names the six changes nobody has written a bench step for.
   [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to take
   the arm through, with a hand on the switch.
+- ⬜ **The SO-101 against its simulator.** `lerobot:mujoco` runs the arm's real backend over the
+  maker's model, and what it assumes about the arm only the arm can settle
+  ([ADR-0047](docs/adr/0047-the-arms-simulator-runs-the-real-backend.md)). Each of these is a
+  bench step of its own, and none of them replaces the seven above:
+  - joint signs and zero offsets: nudge each real joint by a small positive angle and check that
+    it turns the same way in the simulator, and read the calibrated value at each mechanical stop
+    against the model's stop, which also says whether a recorded fold can be represented at all
+    (`JOINT_SIGN`, `JOINT_ZERO`). `arm-01`'s recorded fold puts the model's fingers into the
+    table and its lower arm into its shoulder, and the simulator starts it settled clear of both,
+    and parks it where it settles at the edge of `shoulder_lift`'s travel, with a note, so this
+    step also says whether the model's frame or the table's height is what is wrong;
+  - the rest move pressing the gripper into the table: in the model, the rest goal the
+    calibration clips (`shoulder_lift` clipped to its travel, the elbow and the wrist held where
+    they were recorded) puts the gripper below the table top. Before trusting a rest move on the
+    arm, watch one from a raised pose with a hand on the switch and check that the gripper stops
+    above the bench rather than pressing into it, beside the step above that settles whether the
+    model's frame is right at all;
+  - the gripper on a real pen: what it reads against the band that infers holding, which the
+    simulator's pen cannot say;
+  - the front and wrist cameras' placement and field of view, measured, to replace the
+    simulator's default mounts (`WRIST_CAMERA_POSE`);
+  - the policy loop's achieved rate on the real bus, with a policy server inferring on the same
+    laptop once there is one, which the simulator's lockstep clock can never measure.
+
+  Until then the simulator's ✅ says it does what it says, not that it moves like an arm, and it
+  never raises `lerobot:real`'s row.
 - ⏸ **Any rosbridge base.** `rosbridge:ws` against a bridge. It is the one hardware backend
   with neither a lookout task nor a checklist. A coordinator flock across two machines needs a
   distributed clock first; a pilot flock needs none and has simply never been tried across two.

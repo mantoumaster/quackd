@@ -56,6 +56,43 @@ tenth unless a tenth would round it onto that travel, in which case as it was gi
 degrees a goal in that sliver was named inside the range the same sentence gave, and so would a
 tenth name a goal a few hundredths past an edge.
 
+**Amended 2026-09-26:** the decision below that opens "Nothing here changes what quackd never
+does" kept LeRobot's default of dropping torque on `disconnect()`, documented rather than
+overridden, and the first amendment above said it still did. It is overridden now, because that
+default reached a disconnect quackd never makes. LeRobot disconnects a robot that is still
+connected when it is garbage collected (`up.ROBOT_DEL`), so an exit that skipped `close()`, a
+second Ctrl-C during the end-of-run rest move or a crash, could drop the arm wherever it stood,
+while `docs/safety.md` said it was left holding. Nobody saw it happen: it was found by reading
+upstream while planning the arm's simulator. The follower is now built with
+`disable_torque_on_disconnect` False, and every connect asks for False again, so a transport
+connected twice does not carry a release into its second session. `close()` already wrote the
+flag just before its own disconnect every time, True at the rest pose or with none recorded and
+False away from it, so every close lets go where it did before. The three connects quackd
+refuses once the arm is energised (not calibrated, no calibration file, no motors bus) now
+write True before their disconnect, so they let go as a refusal of a freshly built follower
+always did. One refusal changed with that: on a transport connected again after a close that
+kept torque, a refusal carried that close's flag into its disconnect and kept the arm energised
+without saying so, and now lets go like any other. A connect that fails any other way once the
+arm is energised, a first read the arm does not answer among them, was left to that same
+collection with nothing said. It now closes the port with torque kept, as a close over an arm
+that did not answer does, and says so. Besides that one refusal, the endings that changed are
+the ones nobody decided, and they keep torque. Where the flag will not take, the close reads it
+back and says what the disconnect will do rather than assuming it.
+
+**Amended 2026-09-27 by [ADR-0047](0047-the-arms-simulator-runs-the-real-backend.md):** the arm
+now has a simulator, and it runs this ADR's code rather than a copy of it. `lerobot:mujoco` is
+`LeRobotReal` over a follower that plays what LeRobot and the servo do with a goal: LeRobot's
+step cap, as a copy of `ensure_safe_goal_position`, then the servo's clamp to the calibrated
+travel with the reading left alone, and a limp joint driving to the last goal it was written
+once torque returns. That last is `TORQUE_ENABLE_HOLDS_PRESENT` played at its worst, not
+answered. The simulated bus answers only the registers the real backend reads on an arm, the
+positions, the torque flag and the temperatures, so it says nothing the arm cannot: no grip
+force, temperatures that read as a room's, and dynamics that are the model's (`SERVO_DYNAMICS`).
+The world's truth about a grasp is kept where neither the pilot nor MCP can read it. One change
+reaches the arm itself. The heartbeat's reads no longer feed the gripper trace `pick` watches,
+so a grasp is noticed on the loop's own reads, up to one poll later. Nothing else below
+changes, and nothing in it is settled by the simulator.
+
 ## Context
 
 The LeRobot adapter drives an SO-101 follower through the `Robot` interface of

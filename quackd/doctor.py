@@ -35,6 +35,7 @@ from quackd.adapters.factory import (
     adapter_names,
     describe,
     is_installed,
+    is_simulator,
     list_adapters,
     parse_robot_spec,
 )
@@ -82,6 +83,7 @@ EXTRAS = {
     "lan (mqtt)": ("paho.mqtt.client", "quackd[lan]"),
     "lerobot": ("lerobot", "quackd[lerobot]"),
     "lerobot (feetech bus)": ("scservo_sdk", "quackd[lerobot]"),
+    "lerobot-sim (mujoco)": ("mujoco", "quackd[lerobot-sim]"),
     "rosbridge": ("roslibpy", "quackd[rosbridge]"),
     "microduck camera (webrtc)": ("aiortc", "quackd[microduck-camera]"),
     "xlerobot": ("zmq", "quackd[xlerobot]"),
@@ -733,7 +735,8 @@ def probe(
     calibration file under that id, and every line it writes names it. Without it, a probe of a
     registered arm read the calibration of the default id, whatever the arm was registered as.
     `before_connect` is handed the built body just before it connects, which is the caller's
-    one chance to say something to a person holding it (`cli._doctor_warning`).
+    one chance to say something to a person holding it (`cli._doctor_warning`). `address` is
+    empty only for a registered simulator, which is built without one as a run builds it.
 
     `host` is the board `--host` names, when its daemon answered. Its camera joins the body
     as a run's would (`quackd.adapters.host_camera`), and the camera rows say whether it is
@@ -751,7 +754,7 @@ def probe(
         parsed = parse_robot_spec(spec)
         adapter = make_adapter(
             RobotSpec(parsed.adapter, parsed.backend, name) if name else parsed,
-            address=address,
+            address=address or None,
             camera_url=camera_url,
             token=token,
             rest_pose=rest_pose,
@@ -832,7 +835,8 @@ def probe(
     try:
         live, health, camera, told, parked, note, retried = asyncio.run(go())
     except (TransportError, OSError, HostError) as e:
-        return ProbeReport(address=address, ok=False, error=f"{spec} at {address}: {e}")
+        where = f" at {address}" if address else ""
+        return ProbeReport(address=address, ok=False, error=f"{spec}{where}: {e}")
 
     report = ProbeReport(address=address, ok=True)
     add = report.rows.append
@@ -1416,9 +1420,15 @@ def collect(
                     for v in manifest.verbs
                 ],
             )
-            if address:
+            # A registered simulator is connected with or without an address. Its connect reads
+            # the calibration a run under that name would read, and renders once, which is the
+            # only check that this machine can draw its scene, and nothing real moves. Skipping
+            # it reported a machine healthy on which the run would be refused at connect. A
+            # real body with no address is still never guessed at.
+            simulated = robot_name is not None and is_simulator(parsed)
+            if address or simulated:
                 shown = f"{robot_name} ({robot})" if robot_name else robot
-                say(f"connecting to {shown} at {address}")
+                say(f"connecting to {shown}" + (f" at {address}" if address else ""))
                 # the board's camera joins the body as it would a run's, but only a board that
                 # answered: one that did not has already failed this report with a row of its
                 # own, and asking it again from inside the probe would only say so twice
@@ -1430,7 +1440,7 @@ def collect(
                 report.robot.probe = probe(
                     robot,
                     manifest,
-                    address,
+                    address or "",
                     camera_url,
                     token,
                     rest_pose,
@@ -1439,10 +1449,11 @@ def collect(
                     host=host_camera_from,
                 )
 
-    # An adapter that has backends worth probing on this machine says so itself. The
-    # Microduck's are the only ones today: whether robotd's socket is where it should be, and
-    # what upstream has and has not shipped. That knowledge belongs to the duck rather than
-    # to a table here that would have to be edited whenever somebody publishes an adapter.
+    # An adapter that has backends worth probing on this machine says so itself. The LeRobot
+    # arm's simulator is the one today: whether MuJoCo is installed, and whether the SO-101's
+    # model is in the cache at its pin. That knowledge belongs to the adapter rather than to a
+    # table here that would have to be edited whenever somebody publishes an adapter, and each
+    # row names its own `adapter:backend`, since the table is no longer one robot's.
     for name in adapter_names():
         if not is_installed(name):
             continue
@@ -1855,7 +1866,9 @@ def _verbs_table(robot: RobotReport) -> Any:
 
 
 def _probe_table(probe_report: ProbeReport) -> Any:
-    table = ui.table(f"at {probe_report.address}: what the robot itself reported")
+    # a registered simulator is probed with no address, and its table has no place to name
+    where = f"at {probe_report.address}: " if probe_report.address else ""
+    table = ui.table(f"{where}what the robot itself reported")
     table.add_column("what", style=ui.STYLES["key"], no_wrap=True)
     table.add_column("value")
     for row in probe_report.rows:
@@ -2065,7 +2078,7 @@ def render(console: Console, report: DoctorReport) -> None:
                 for advisory in report.robot.probe.advisories:
                     console.print(Text(advisory, style=ui.STYLES["warn"]), soft_wrap=True)
 
-    _section(console, "transports (Microduck backends; --robot microduck:<name>)")
+    _section(console, "transports (backends an adapter checks on this machine)")
     console.print(_transports_table(report))
     console.print(ui.plain(FLOCK_NOTE, style=ui.STYLES["muted"]))
 

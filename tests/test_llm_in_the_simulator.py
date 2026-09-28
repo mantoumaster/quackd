@@ -94,12 +94,47 @@ def test_the_physics_prompt_tells_the_model_the_arena_is_empty() -> None:
     the only place that can say otherwise, and this pins that it does.
     """
     duck = load_duck("find-and-kick")
-    prompt = build_system_prompt(duck, [], "mujoco")
+    prompt = build_system_prompt(duck, [], "mujoco", adapter="microduck")
     assert "Nobody is in the arena with you" in prompt
     assert "no person here to find" in prompt
+    # a bare transport is the Microduck's, as the blurb it falls back to is
+    assert build_system_prompt(duck, [], "mujoco") == prompt
     # and the cartoon's note must not have picked it up: the cartoon still has a person
     cartoon = build_system_prompt(duck, [], "sim2d")
     assert "Nobody is in the arena" not in cartoon
+
+
+def test_the_arm_simulator_is_not_told_about_the_ducks_arena() -> None:
+    """Two bodies have a backend called `mujoco`, and only the Microduck's has an arena, a
+    ball and a person band to be warned off. The arm's simulator gets its own note instead:
+    a table, cameras that are rendered views, and physics nobody measured on an SO-101, so a
+    grasp that works there is not read as proof that the arm can make it."""
+    from quackd_lerobot import lerobot_manifest
+
+    duck = load_duck("find-and-kick")
+    seeing = lerobot_manifest("mujoco", camera=True)
+    arm = build_system_prompt(duck, [], "mujoco", seeing, adapter="lerobot")
+    assert "arena" not in arm
+    assert "orange ball" not in arm
+    assert "the arm's physics simulator (MuJoCo)" in arm
+    assert "on a table" in arm
+    assert "rendered view of the model" in arm
+    assert "not anything measured on a real SO-101" in arm
+    # A run with no camera is not told that the cameras show the table. It has none, and the
+    # scene still has things on it, which that sentence would have the pilot think absent.
+    blind_manifest = lerobot_manifest("mujoco", camera=False)
+    blind = build_system_prompt(duck, [], "mujoco", blind_manifest, adapter="lerobot")
+    assert "- Senses: joint_state." in blind
+    note = blind.split("physics simulator (MuJoCo)")[1].split("\n")[0]
+    assert "what the cameras show" not in note and "rendered view" not in note
+    assert "This run has no camera" in note
+    assert "not anything measured on a real SO-101" in note
+    # and the arm's real backend, which is on a desk, is told neither
+    real = build_system_prompt(duck, [], "real", adapter="lerobot")
+    assert "physics simulator" not in real
+    # nor is a third party's body that happens to call a backend `mujoco`
+    other = build_system_prompt(duck, [], "mujoco", adapter="somebody-else")
+    assert "physics simulator" not in other
 
 
 # ── the wire, which does ────────────────────────────────────────────────────────────────

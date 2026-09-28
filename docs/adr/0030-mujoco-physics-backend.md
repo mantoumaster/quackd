@@ -1,7 +1,16 @@
 # ADR-0030: a MuJoCo backend that runs the Microduck's own walking policy
 
-**Status:** accepted · **Date:** 2026-09-07 · Amends [ADR-0007](0007-sim2d-cartoon.md) ·
+**Status:** accepted, amended · **Date:** 2026-09-07 · Amends [ADR-0007](0007-sim2d-cartoon.md) ·
 Implemented in 0.8 (`--robot microduck:mujoco`, and `web/` in a browser)
+
+**Amended 2026-09-27 by [ADR-0047](0047-the-arms-simulator-runs-the-real-backend.md):** this is
+no longer the only MuJoCo backend. `lerobot:mujoco` is the SO-101 arm's simulator, in the arm's
+own package and behind its own extra, `quackd[lerobot-sim]`: the arm's real backend over a
+physics model of the arm, fetched at a pinned commit and hash checked the way the duck's is. It
+shares nothing of `sim3d/` and steps its world on the `FlockClock` this ADR generalised, with a
+participant per sleep. So `mujoco` is a backend of two bodies now. The prompt's arena note is
+keyed on the adapter as well as the backend, and a run records a GIF only of a body with a world
+to draw, which the arm's simulator does not offer. Everything below is still the duck's.
 
 ## Context
 

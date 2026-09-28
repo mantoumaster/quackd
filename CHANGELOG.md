@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.15.0] — 2026-09-29
+
+This release is two pieces of work. quackd reaches an NVIDIA Jetson from the laptop, and the
+SO-101 has a simulator that runs the arm's own backend, so the task files for a trip to the arm
+can be rehearsed at home first.
 
 quackd no longer runs on an NVIDIA Jetson. It runs on the laptop, and `--host` names the board.
 quackd gets four things there. The model on its GPU comes from your own model server, which a
@@ -19,10 +23,39 @@ board, was also the risky one, because a model server can starve a fifty hertz c
 the container, its workflow and doctor's reading of the machine it runs on are removed, which
 breaks anything that built the image or read doctor's top-level `jetson` key
 ([ADR-0046](docs/adr/0046-the-jetson-is-reached-not-run-on.md), which supersedes
-[ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)). Nothing here has been run on a
-Jetson by this project. The daemon, the client, doctor, the camera and the detector were
-exercised in-process against fakes, and Known limitations, below, says what that leaves
-unmeasured.
+[ADR-0044](docs/adr/0044-a-jetson-is-a-host-not-a-body.md)).
+
+`lerobot:mujoco`, the SO-101's simulator, is the arm's real backend, its own code from the
+connect and its retries to the close, running over a physics model of the arm in MuJoCo: the
+maker's own model from TheRobotStudio's SO-ARM100, fetched at a pinned commit and hash checked,
+and never shipped. `quackd robot twin` makes one of a registered arm, on that arm's own
+calibration, and `quackd preflight` rehearses task files on it seed after seed and refuses
+anything that is not a simulator before building it. A twin whose rest pose puts the model into
+its table or into itself, as it starts or where the close parks it, is settled clear of them
+before its clock starts and says so, or is refused at connect where a settle cannot clear it,
+and preflight says whether a close that missed the rest pose was refused, stalled or ran out of
+time. Most of what went wrong at the bench on 2026-09-23 was in the code between the pilot and
+the bus, and this is where that code now meets a task file before the arm does
+([ADR-0047](docs/adr/0047-the-arms-simulator-runs-the-real-backend.md)). It rehearses the code
+and the contract, not the arm. A recording of OpenAI's `gpt-6-sol` piloting it through the
+README's own sentence, a wave with the arm held out, is in the README, the arm's page and its
+first-run guide.
+
+This release also fixes three faults, and a few smaller ones. An exit that skips the close, a
+second Ctrl-C during the end-of-run rest move or a crash, could let LeRobot's disconnect drop
+the arm, and now leaves it holding. A second task sleeping as one simulated body can no longer
+be left asleep for good by the first one's cleanup. And the arm's heartbeat no longer stops a
+run over an answer that came in time, which it did when the event loop's thread was busy past
+the call's deadline. That is one way a heartbeat can fail, found and measured on the simulator
+and never on the arm. Nothing in this release has met the hardware it was written for. This
+project has run nothing on a Jetson: the daemon, the client, doctor, the board's camera and its
+detector were exercised in-process against fakes. Nothing has compared the simulator against the
+arm, which takes a bench step each for its joint signs and zero offsets, for whether the arm's
+rest move presses the gripper into the table as its goal would in the model, for the gripper on
+a real pen, for the cameras' placement and for the policy loop's rate on the real bus. And the
+arm has not run quackd since 2026-09-23, so the seven bench steps 0.14.0 owes are still owed,
+and nothing this release changes in `lerobot:real` has run on it either. Known limitations,
+below, lists what only the hardware can settle.
 
 ### Added
 
@@ -123,6 +156,94 @@ unmeasured.
   frame gains `detect`: how many it sent, how many failed, the laptop's wait for each from
   encoding it to reading the answer, and the board's own `ms` in the model, each as a mean and a
   maximum, so a `go_to`'s record says what its steering loop waited for, however it ended.
+- **`lerobot:mujoco`, the SO-101's simulator, runs the arm's real backend over a physics
+  model.** `LeRobotSim` is `LeRobotReal` with a simulated follower and the scene's cameras
+  where LeRobot's follower and the webcams would be, and the world's clock where the wall's
+  would be, so the connect and its retries, the travel read off a calibration and every
+  refusal past it, the rest move, the hold, `--by-hand` and the close are the arm's own code.
+  The follower plays what LeRobot and the servo do with a goal: LeRobot caps each send at the
+  step, the servo clamps the goal to the calibrated travel and leaves the reading alone, and a
+  limp joint drives to its last goal when torque returns. The model is
+  `so101_new_calib_camera.xml` and its 15 meshes from SO-ARM100 at `5f6d2b8`, fetched on the
+  first connect one file at a time, about 16 MB, each checked against a recorded sha256, into
+  `~/.quackd/cache`, with `QUACKD_LEROBOT_SIM_ASSETS` pointing at a checkout of your own
+  instead. The scene is quackd's: a table, lights, a cube and a pen laid out by `--seed`, and
+  front, top and wrist cameras that the arm's own `opencv://` urls name with `?name=`.
+  `--address` names the calibration file, a registered name reads the one LeRobot keeps under
+  it, and a bare `--robot lerobot:mujoco` runs a generic arm with the model's own ranges and
+  says so, rather than reading the calibration under `arm-01`, the id quackd gives an arm nobody
+  named. An address shaped like a serial port is refused before anything opens it. The arm
+  starts at its rest pose, limited by the model's stops, and a pose that puts the model into its
+  table or into itself by more than a millimetre, as it starts or where the close parks it at the
+  edge of its travel, is settled out of them before the clock starts, with a note naming each
+  contact, and its close drives back to where it settled. A pose the settle cannot clear is
+  refused at connect, naming what is still in. Time is lockstep and
+  moves only while something sleeps on the clock, so a pilot's thinking costs none and under
+  one seed the simulator does the same again. A `--by-hand` take-hold first lets the
+  released arm fall for a second of sim time, since nobody places it, and then holds or refuses
+  as on the desk. The pilot is told it is on a model, the run writes no GIF, and `--live` opens
+  MuJoCo's viewer.
+  `quackd doctor --robot` connects a registered one with or without an address and renders once,
+  and it and `quackd robot release` say it is the simulator rather than asking anybody to hold an
+  arm. Its ✅ rests on a seeded grasp sweep on the maker's model, judged by the world's truth,
+  and it never raises `lerobot:real`'s
+  ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#the-simulator-lerobotmujoco)).
+- **`quackd robot twin SOURCE [NAME]` registers a simulator of a registered arm.** NAME is
+  `SOURCE-sim` unless given, its address is the calibration file SOURCE's runs read, and it
+  copies SOURCE's rest pose, pilot and each camera the simulator renders, naming any it leaves
+  out. Its memory is its own. It refuses a NAME that is SOURCE, a source that is not a
+  registered LeRobot arm, a missing calibration file, a serial port where the file goes, and
+  `--force` over anything but a `lerobot:mujoco` robot, so no arm is ever overwritten by its own
+  simulator. `--robot arm-01:mujoco` does not parse, and this is the command instead
+  ([docs/registry.md](docs/registry.md#a-simulator-of-an-arm)).
+- **`quackd preflight FILES --robot NAME --llm VENDOR[:MODEL]` rehearses task files on a
+  simulator.** A robot that is not a simulator is refused before it is built, with a pointer to
+  `robot twin`, and so is a pilot nobody named: the scripted one runs only when typed as
+  `--llm fake`. Each file is checked as `validate` checks it, the simulator is connected and
+  closed `--connect-cycles` times, and the task is run `--seeds` times, three of each unless
+  you say, with memory off. A run passes when nothing escaped it, no call to the simulated bus
+  was left hanging, its close ended at the rest pose (or, on a robot with none, such as a bare
+  `lerobot:mujoco`, found none to return to, unless the sidecar asks `at_rest: true`), and every
+  check in the task's sidecar held. A close that missed says whether its rest move was refused,
+  stalled or ran out of time, and of a rest move that was made, only a refusal is what
+  `at_rest: false` expects. `--faults` gives the connects a seeded bus that drops
+  packets in LeRobot's own words, from rates for `handshake`, `configure`, `write`, `torque`,
+  `torque_read` and `temperature_read` and a `read_loss_from=N`. It prints a row per file and
+  seed, the model's cost and the simulator's time step, `--json` prints the same, and it exits
+  1 unless every run passed. `FILES` may be globs, quoted, since PowerShell does not expand
+  them.
+- **A task's sidecar, `<task>.sim.yaml`, says what a rehearsal of it has to leave behind.** It
+  lays out the table, with an object on it or between the jaws, and checks `at_rest`,
+  `joint_moved`, `lifted` and `moved`, each threshold measured from the run's own start. Joint
+  checks read the transcript. Object checks read the simulator's truth, latched on the way into
+  the teardown's stop or at its peak before then, which is kept off the state's extras, so the
+  pilot and an MCP client never see it. It is never the frontmatter, which an MCP pilot is
+  handed whole ([docs/adapters/lerobot.md](docs/adapters/lerobot.md#the-sidecar)).
+- **`quackd[lerobot-sim]` installs the simulator.** It is `quackd-lerobot[sim]`, the arm's
+  package with MuJoCo and without LeRobot, so it needs no torch and installs on Python 3.11.
+  `quackd doctor` gains a `lerobot-sim (mujoco)` row, and a row in its transports table saying
+  whether the SO-101's model is in the cache at its pin, which it only looks at and never
+  fetches.
+- **A nightly job, `lerobot-sim-assets`, fetches the SO-101's model and grasps with it.** It
+  fetches the pinned files the way a first connect does, into a runner that is then destroyed,
+  and runs the tests marked `so101_model` asking ten seeds of ten: the seeded grasp, the
+  rehearsal sweeps, the real meshes rendered and the physics timed against the wall. It is also
+  the watchdog on the pin, since a file that stops arriving at its hash fails there by name. CI's
+  `physics` job runs the simulator's other tests on every push, on a primitives-only stand-in arm
+  that needs nothing fetched.
+- **The arm's simulator has a recording, wherever the docs introduce it.**
+  `docs/assets/lerobot-sim.gif` is the README hero's sentence, *wave to the camera with an
+  extended arm*, on a bare `--robot lerobot:mujoco`, piloted by OpenAI's `gpt-6-sol` on
+  2026-09-28: it raised the arm, held it out level and swung it side to side at the shoulder
+  three times, in seven steps, nine LLM calls, 69 seconds and $0.0537. It is the first film in
+  this repository of a cloud model in a simulator: the four transcripts are local models on
+  `sim2d`, with no frame. A fixed view of the table sits beside the scene's front camera, the one
+  the model was sent, both drawn by a tick hook on the simulator's clock, so the model's thinking
+  is not in it. `docs/assets/lerobot_sim.py` records it, and flies a scripted pilot of its own
+  when it is given no `--llm`. It is in the README's paragraph on rehearsing at home, the
+  simulator's section of `docs/adapters/lerobot.md` and section 16 of `docs/lerobot-first-run.md`.
+  It renders TheRobotStudio's model at the commit the simulator pins, Apache-2.0, and commits no
+  mesh. `quackd run` still writes no GIF on this backend.
 
 ### Changed
 
@@ -143,6 +264,90 @@ unmeasured.
   `host.jetson`. The top-level `jetson` key 0.13.0 added is gone, and so is its
   `docker_default_runtime`, which means nothing from a laptop. A malformed `QUACKD_HOST` is a
   row in the report rather than a line of prose, so `--json` still prints one document.
+- **A body that reads one camera names both that read several.** Handed a second
+  `--camera-url`, it now says `only lerobot:real and lerobot:mujoco take several`, and a
+  registry entry with a second camera on such a body says the same, where both said
+  `only lerobot:real takes several`.
+- **The system prompt's simulator note is keyed on the adapter as well as the backend.** Only
+  the Microduck's `mujoco` hears about the 2 m arena and the orange ball, because the arm's
+  simulator now has a backend of the same name and neither. The arm's gets a note of its own:
+  a model of the arm on a table, physics nobody measured on an SO-101, and cameras that are
+  rendered views, or, on a run with no camera, that whatever is on the table goes unseen.
+- **`quackd doctor`'s transports section is no longer headed as the Microduck's.** It is what
+  an installed adapter checks on this machine, a row per `adapter:backend`, and the arm's
+  simulator is the row there today.
+- **The arm's heartbeat no longer feeds the gripper trace `pick` watches.** Its reads go
+  through a seam of their own, which the simulator's fault plan leaves alone, and a grasp is
+  noticed on the verb's own reads. On an arm, `pick` can notice a grasp one poll later than it
+  did, and nothing in quackd loads a policy for `pick` yet.
+- **A refusal from the arm's backend names the backend.** The real arm's still begin
+  `lerobot real:`, and the simulator's begin `lerobot mujoco:`. The `--camera-url` parser takes
+  the same label and says, on the simulator, that a camera there is one of the scene's mounts
+  named with `?name=`.
+- **An MCP session's minutes count from its connect.** `serve-mcp` started the clock
+  `max_minutes` reads when it built the server, before the body connected, so the connect's own
+  seconds, an arm's retries among them, came out of the minutes the client was given. It starts
+  again once the body has connected, as a `quackd run`'s does. On `lerobot:mujoco`, whose clock
+  is the wall's until it connects and its world's from then on, that is what lets the minutes
+  reach `max_minutes` at all ([docs/mcp.md](docs/mcp.md)).
+
+### Fixed
+
+- **An exit that skipped the close could drop a LeRobot arm.** quackd built the SO-101 follower
+  with LeRobot's `disable_torque_on_disconnect` at upstream's True, and only `close()` wrote it.
+  LeRobot disconnects a robot that is still connected when it is garbage collected, so a second
+  Ctrl-C during the end-of-run rest move, or a crash, could end in that disconnect with torque
+  off, and the arm fall wherever it stood, while `docs/safety.md` said it was left holding.
+  Nobody saw it on an arm: it was found by reading upstream. The follower is now built with the
+  flag False, and every connect asks for False again, so a disconnect quackd did not ask for
+  keeps torque. `close()` still writes the flag just before its own disconnect, True at the rest
+  pose or with none recorded and False away from it, and a connect quackd refuses because the
+  arm is not calibrated, has no calibration file or has no motors bus writes True before it
+  lets go. Every clean ending lets go where it did, but for one refusal that lets go where it
+  used to hold: on a transport connected again after a close that kept torque, a refusal carried
+  that close's flag into its disconnect and kept the arm energised without saying so. A connect
+  that fails any other way once the arm is energised, such as a first read the arm does not
+  answer, used to be left to that same disconnect with nothing said. It now closes the port with
+  torque kept and says so: hold the arm, and cut its power. Where the flag will not take, the
+  close reads it back and says what the disconnect will do, where it used to assume a release
+  ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
+- **Two tasks sleeping as one simulated body could leave one of them asleep for good, with no
+  error.** The lockstep clock lets go of a participant's id before the task that slept there
+  resumes and cleans up: it marks a due sleeper awake before it resolves that sleep, a closed
+  live window does the same for every sleeper, and `unregister` drops the id. A second task
+  sleeping under the same id could park in that gap, because the slot read awake, and the first
+  task's cleanup then cleared the second one's wait rather than its own, so its call never
+  returned. The cartoon's transport and microduck's MuJoCo one sleep every task under the
+  body's one id, so two MCP calls in flight could reach it. A sleep now clears only its own
+  wait on the way out ([ADR-0016](docs/adr/0016-flock-lockstep-clock.md)).
+- **A LeRobot arm's heartbeat could stop a run over an answer that had come in time.** Every call
+  to the arm has a deadline, and it fired on whatever the event loop's thread found when it got
+  round to looking. That thread can be busy for a second or more while a call is out: a pilot's
+  SDK parsing its first response, or quackd encoding a frame. The worker had the arm's answer
+  in well under a millisecond, the deadline fired first when the loop resumed, and the answer
+  was dropped: `heartbeat failed: the arm did not answer: TimeoutError:`, with nothing after it,
+  and the run stopped. Each call is now stamped as it is handed to a worker thread and as it
+  comes back, and only time the bus was busy spends a call's budget. A call that came back
+  within its budget returns what it returned, and a call queued behind one that came back in
+  time keeps its place in the queue until the loop hands it the bus. A call still out when its
+  budget is spent is refused and wedges the bus exactly as before, and every timeout now names
+  the call and its budget. The frames saved for a turn's own observation, and the pictures the
+  pilot is sent with it, are encoded in a worker thread too. The frames the `observe` verb
+  saves, the pictures `robot_observe` returns to an MCP client, every detector but a board's and
+  the providers' SDKs still run on the loop's thread. This was found and measured on
+  `lerobot:mujoco`, which runs the same code, and never on an arm. It is one way the heartbeat
+  failure seen once on 2026-09-15 could have happened, and nothing says it is the one that did.
+- **The close's warning said the arm's shortfall twice.** An arm whose rest move stalled was left
+  holding with `the arm is not at its rest pose (elbow_flex is at 40 with a goal of 90; elbow_flex
+  is at 40 with a goal of 90, and it has stopped moving)`, because the close joined its own read
+  to the rest move's reason, which begins with the same words. It says it once.
+- **Every observation a pilot was handed said its step twice**, as `[step 3/40 · step 3/40, llm
+  calls 3/40, 0.1/5 min]`, on every body. It reads `[step 3/40 · llm calls 3/40, 0.1/5 min]`,
+  and `quackd log` reads both.
+- **`quackd validate` on Windows listed files in two slash styles.** A pattern written with
+  forward slashes, as Git Bash writes one, came back with a backslash wherever the wildcard
+  matched: `docs/examples/lerobot/e00[1-5]/*.duck` listed `docs/examples/lerobot\e001\circle.duck`.
+  Its matches now come back written the way the pattern was, and so do `quackd preflight`'s.
 
 ### Removed
 
@@ -190,6 +395,61 @@ unmeasured.
   resolving can take longer than that to fail, and is paid again on every call. A reply trickled
   in a byte at a time can take longer too, which only a hostile board would send. An address
   given to `--host` is never looked up.
+- **The arm's simulator is not the arm, nothing has compared the two, and only the bench can
+  settle these.** PLAN.md carries each as an open item.
+  1. Joint signs and zero offsets: nudge each real joint by a small positive angle and check it
+     turns the same way in the simulator, and read the calibrated value at each mechanical stop
+     against the model's stop. That also says whether a recorded fold can be represented at all.
+     Until then a rest pose past one of the model's stops starts at the stop, and one that puts
+     the model into its table or into itself, as it starts or where the close parks it at the
+     edge of its travel, starts and rests where it settles against them, each with a note, or is
+     refused where a second of settling cannot clear it. `arm-01`'s fold settles clear.
+  2. The rest move pressing the gripper into the table: in the model, `arm-01`'s rest goal,
+     clipped into the travel, puts the gripper below the table top. Before a rest move on the
+     arm is trusted, watch one from a raised pose with a hand on the switch and check that the
+     gripper stops above the bench rather than pressing into it.
+  3. The gripper on a real pen: what it reads against the band that infers holding. The
+     simulator's pen is a capsule in the model's physics and says nothing about that band.
+  4. The front and wrist cameras' placement and field of view, which would replace the default
+     mounts. Front and top are quackd's views of the table, and the wrist view is rendered from
+     upstream's printed mount, which may not be where the lab's camera sits.
+  5. The policy loop's rate on the real bus. The simulator's clock is lockstep, `--live`
+     included, so nothing timed on it is a rate.
+  6. The seven bench steps 0.14.0 owes, under its Known limitations below, which the simulator
+     does not replace.
+- **Its dynamics are the model's.** The gains are a calculation and the servo properties another
+  robot's, so a settle time, a push or a grasp that holds is evidence about the model
+  (`SERVO_DYNAMICS`). Its servos never warm, so the heat refusal is never rehearsed.
+- **What a rehearsal costs is its connects and its cameras, not its physics.** On this
+  project's laptop, with integrated graphics, the physics steps several times faster than the
+  wall with nothing rendering. Each connect loads the model and renders once, and each camera a
+  run names renders again whenever it is read after the world has moved. `quackd preflight` of
+  `lerobot-lookout`, three connect cycles and three runs, took about 15 seconds there on a twin
+  with no camera and under half a minute with two.
+- **A `lerobot:mujoco` robot makes `robots.json` unreadable to quackd 0.14 and earlier**, which
+  check every robot against the backends they know, every robot in the file included, until
+  each `lerobot:mujoco` robot is removed. `robot twin` says so and names them all.
+  `QUACKD_REGISTRY_DIR` keeps a registry for this release apart from an older install's.
+- **An MCP session on the simulator is not seeded.** A run through the agent loop or
+  `quackd preflight` makes one call at a time, and under one seed the simulator does the same
+  again. An MCP session runs tool calls at once.
+- **The nightly job has not run yet.** GitHub runs a scheduled workflow only from the default
+  branch, so until it has, the simulator's ten of ten on the maker's model is the sweep run by
+  hand on 2026-09-27.
+- **The arm has not run quackd since 2026-09-23, and six of the seven bodies never have.** What
+  this release changes in `lerobot:real` has run only in the test suite, against a fake arm or
+  the simulator, and never on an SO-101: the follower built to keep torque on a disconnect
+  quackd did not ask for, the refusal that asks for the release itself, the close that reads the
+  flag back rather than assuming it, the port closed with torque kept after a connect that
+  failed once the arm was energised, the heartbeat's reads kept out of the trace `pick` watches,
+  the deadline each call to the arm spends only while the bus is busy, and the close's warning
+  that says a stalled shortfall once. One bench step would settle the first, taken with
+  0.14.0's: in step 14 of
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md), a second Ctrl-C
+  during the fold back to the rest pose, with a hand under the arm. The arm should still hold
+  where it stood once quackd has exited, until you hold it and run
+  `quackd robot release arm-01` or cut its power. Nobody has written a bench step for the
+  other six.
 
 ## [0.14.0] — 2026-09-25
 
@@ -4845,7 +5105,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/rokbenko/quackd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/rokbenko/quackd/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rokbenko/quackd/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rokbenko/quackd/compare/v0.11.0...v0.12.0

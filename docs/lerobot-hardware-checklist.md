@@ -426,6 +426,13 @@ means, and which moments move the arm without anybody asking for it.
     joint keeps rising to the edge whatever the stop does, and the switch is the only thing that
     stops it there.
 
+    Then do it once more, and this time press a second Ctrl-C during the fold back to the rest
+    pose, with a hand under the arm and the other on the switch. The second press skips
+    quackd's close, so nothing lets go on purpose. The arm should still hold where it stood once
+    quackd has exited, rather than fall when the process lets go of it. Before 0.15.0 that exit
+    could take torque off and drop it, which is why the hand goes under it first. Hold it and run
+    `quackd robot release arm-01`, or cut its power, before the next step.
+
 ## Handing the arm over, and taking it back
 
 `--by-hand` is one of the two ways a person can have quackd take torque off a robot, and it
