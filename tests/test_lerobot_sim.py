@@ -29,8 +29,10 @@ import math
 import os
 import re
 import sys
+import threading
+import time
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -39,9 +41,10 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from quackd.adapters.base import AdapterError, AdapterNotInstalled
+from quackd.adapters.base import AdapterError, AdapterNotInstalled, RestResult
 from quackd.perception.color_blob import DEFAULT_FOV_DEG, DEFAULT_TARGETS, ColorBlobDetector
 from quackd.preflight import load_sidecar
+from quackd.safety import Heartbeat
 from quackd.transport.base import HeartbeatError, TransportError
 from quackd_lerobot import REACH, LeRobotAdapter, lerobot_manifest, make
 from quackd_lerobot import upstream_api as lr
@@ -97,7 +100,13 @@ from quackd_lerobot.sim.model import (
     read_calibration,
 )
 from quackd_lerobot.sim.transport import GENERIC_ARM, SIM_EXTRA, LeRobotSim
-from quackd_lerobot.sim.world import LIFT_MIN_M, ROOM_TEMPERATURE_C, ArmWorld, WorldError
+from quackd_lerobot.sim.world import (
+    LIFT_MIN_M,
+    ROOM_TEMPERATURE_C,
+    START_CLEAR_M,
+    ArmWorld,
+    WorldError,
+)
 from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
@@ -105,6 +114,7 @@ from quackd_lerobot.verbs import (
     PICK_POLL_S,
     TICK_S,
     TOL_DEG,
+    shortfall,
 )
 from tests.gl import REQUIRE_ENV
 from tests.test_lerobot_adapter import _executor
@@ -464,27 +474,139 @@ def test_the_calibration_search_is_lerobots(
 
 
 def test_a_rest_pose_past_a_stop_starts_at_the_stop_and_says_so(mjcf: str) -> None:
+    """Two joints that turn about their own links, so the stops are all that moves the pose.
+    The elbow folded back to its floor would fold the stand-in into itself, which no settle
+    clears (`test_a_rest_pose_the_settle_cannot_clear_is_refused`)."""
     arm = _arm(mjcf)
     _, pan_hi = arm.joints["shoulder_pan"].stops
-    elbow_lo, _ = arm.joints["elbow_flex"].stops
+    roll_lo, _ = arm.joints["wrist_roll"].stops
     _, wrist_hi = arm.joints["wrist_flex"].stops
     rest = {
         "shoulder_pan": pan_hi + 10.0,  # past the ceiling
-        "elbow_flex": elbow_lo - 10.0,  # past the floor
+        "wrist_roll": roll_lo - 10.0,  # past the floor
         "wrist_flex": wrist_hi / 2,
         "gripper": GRIPPER_OPEN + 5.0,
     }
     world = ArmWorld(arm, rest_pose=rest)
     assert _deg(world, "shoulder_pan") == pytest.approx(pan_hi)
-    assert _deg(world, "elbow_flex") == pytest.approx(elbow_lo)
+    assert _deg(world, "wrist_roll") == pytest.approx(roll_lo)
     assert _deg(world, "wrist_flex") == pytest.approx(wrist_hi / 2)
     assert _deg(world, "gripper") == pytest.approx(GRIPPER_OPEN)
     assert _deg(world, "shoulder_lift") == 0.0  # not in the pose: the model's zero
     notes = " ".join(world.notes)
-    assert len(world.notes) == 3
-    assert "shoulder_pan" in notes and "elbow_flex" in notes and "gripper" in notes
+    assert len(world.notes) == 3 and world.settled == {}, world.notes
+    assert "shoulder_pan" in notes and "wrist_roll" in notes and "gripper" in notes
     assert "wrist_flex" not in notes
     assert all(world.goal(j) == pytest.approx(world.position(j)) for j in JOINTS)
+
+
+def _into_the_table(arm: ArmModel) -> dict[str, float]:
+    """A stand-in rest pose with its hand pointing down and half its fingers' length into the
+    table, half way out across the ring objects are laid in: a fold the model cannot hold,
+    from the stand-in's own proportions. Every body joint is in it, so a close judges them
+    all."""
+    finger = standin.FINGER * standin.HAND * float(REACH.value)
+    down = _pointing_down(arm, (PLACE_NEAR + PLACE_FAR) / 2, -finger / 2)
+    return {"shoulder_pan": 0.0, "wrist_roll": 0.0, **down}
+
+
+def _in_the_table(world: ArmWorld) -> float:
+    """How deep the deepest part of the arm is in the table, in metres, or 0."""
+    with world.locked() as (_, data):
+        objects = {g for geoms in world.arm.object_geoms for g in geoms}
+        depths = [
+            -float(dist)
+            for (a, b), dist in zip(
+                data.contact.geom[: data.ncon].tolist(),
+                data.contact.dist[: data.ncon].tolist(),
+                strict=True,
+            )
+            if world.arm.table in (a, b) and not {a, b} & objects
+        ]
+    return max([0.0, *depths])
+
+
+def test_a_rest_pose_into_the_table_starts_clear_of_it(mjcf: str) -> None:
+    """A fold read off a real arm can put the model into its table, because the model's frame
+    is an assumption (`JOINT_ZERO`, `JOINT_SIGN`). Started there, the first physics step threw
+    the arm out and it never came back to the pose it started at. The world settles it out
+    before the clock starts, and takes where it came to rest as its start, its goals and its
+    rest, and says so."""
+    arm = _arm(mjcf)
+    rest = _into_the_table(arm)
+    world = ArmWorld(arm, rest_pose=rest)
+    try:
+        assert world.t == 0.0, "the settle is not the run's time"
+        assert _in_the_table(world) <= START_CLEAR_M
+        assert world.settled, "nothing moved out of the table"
+        for name, angle in world.settled.items():
+            assert _deg(world, name) == pytest.approx(angle)
+            assert world.goal(name) == pytest.approx(world.position(name)), name
+        (note,) = world.notes
+        assert "mm into the table" in note and "clear of them" in note, note
+        assert up.JOINT_ZERO.name in note and up.JOINT_SIGN.name in note, note
+        moved = [j for j in world.settled if abs(world.settled[j] - rest.get(j, 0.0)) > TOL_DEG]
+        assert moved and all(f"{j} at " in note for j in moved), note
+        start = {j: _deg(world, j) for j in BODY}
+        world.step(2.0)
+        for name in BODY:
+            assert _deg(world, name) == pytest.approx(start[name], abs=TOL_DEG), name
+        assert _in_the_table(world) <= START_CLEAR_M
+    finally:
+        world.close()
+
+
+def test_a_rest_pose_the_settle_cannot_clear_is_refused(mjcf: str) -> None:
+    """The elbow folded back to its floor folds the stand-in's forearm and hand into its own
+    base, and the stop that holds the elbow there is the one way out a contact could push it.
+    Started anyway, the arm was jammed: a note said what was still in, and every move from it
+    stalled. It is refused, naming what the pose put where and what the settle left, and says
+    what to do, with the robot's own name in the command."""
+    arm = _arm(mjcf)
+    elbow_lo, _ = arm.joints["elbow_flex"].stops
+    with pytest.raises(WorldError) as refused:
+        ArmWorld(arm, rest_pose={"elbow_flex": elbow_lo}, name="bench-twin")
+    said = str(refused.value)
+    assert said.startswith("lerobot mujoco: the rest pose puts "), said
+    assert re.search(r"of settling still leaves \w+ \d+ mm into ", said), said
+    assert "so the simulated arm cannot start there" in said, said
+    assert up.JOINT_ZERO.name in said and up.JOINT_SIGN.name in said, said
+    assert "quackd robot rest-pose bench-twin records the model's zero" in said, said
+
+
+def test_a_joint_the_settle_pushes_past_its_stop_starts_at_the_stop(mjcf: str) -> None:
+    """A stop in MuJoCo is soft, so the contacts that push a start out of the table can push a
+    joint past one. Taken as it lay, that joint's goal, its rest and what the follower reads of
+    it were past the stop, which no arm reaches, and the note said the arm starts at an angle
+    beyond it. Here the stand-in's wrist stops where the pose puts it, on the side the settle
+    turns it, and the arm starts with the wrist at that stop, clear of the table."""
+    base = _arm(mjcf)
+    rest = _into_the_table(base)
+    free = ArmWorld(base, rest_pose=rest)
+    wrist = base.joints["wrist_flex"]
+    at, settles_to = wrist.to_model(rest["wrist_flex"]), wrist.to_model(free.settled["wrist_flex"])
+    free.close()
+    span = (wrist.lo, at) if settles_to > at else (at, wrist.hi)
+    stopped, n = re.subn(
+        r'(name="wrist_flex" range=)"[^"]*"', rf'\1"{span[0]!r} {span[1]!r}"', mjcf
+    )
+    assert n == 1
+    arm = _arm(stopped)
+    world = ArmWorld(arm, rest_pose=rest)
+    try:
+        assert _in_the_table(world) <= START_CLEAR_M
+        for name, joint in arm.joints.items():
+            lo, hi = joint.stops
+            goal = joint.to_lerobot(world.goal(name))
+            for angle in (_deg(world, name), goal, world.settled.get(name, lo)):
+                assert lo - 1e-9 <= angle <= hi + 1e-9, (name, angle, joint.stops)
+        assert world.settled, "nothing moved out of the table"
+        assert all(world.goal(j) == world.position(j) for j in world.settled), world.settled
+        assert _deg(world, "wrist_flex") == pytest.approx(rest["wrist_flex"])
+        assert "wrist_flex" not in world.settled, world.settled
+        assert "wrist_flex at" not in " ".join(world.notes), world.notes
+    finally:
+        world.close()
 
 
 def test_every_joint_follows_its_goal(mjcf: str) -> None:
@@ -1754,6 +1876,151 @@ async def test_a_rest_move_a_hand_off_and_a_verb_all_run_in_one_task(mjcf: str) 
         await adapter.close()
 
 
+async def test_a_twin_whose_fold_is_in_the_table_ends_at_rest_after_time_has_passed(
+    mjcf: str,
+) -> None:
+    """The first real pilot on a twin found every run that let sim time pass closing stalled,
+    with torque left on: the fold put the model into its table, the first physics step threw
+    the arm out, and the rest move drove it back at a pose inside the table until it stopped.
+    A run that never let time pass, the scripted pilot's, found it already there. The twin now
+    starts settled clear of the table, holds that, and its close finds it there after a verb
+    and a wait as well."""
+    adapter, transport = await _sim_arm(mjcf, rest_pose=_into_the_table(_arm(mjcf)))
+    try:
+        world = transport.sim_world
+        assert world is not None and world.settled
+        assert any("mm into the table" in n for n in transport.connect_notes)
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest)
+        away = transport.joint_range_deg[PAN][1] / 8
+
+        async def session() -> None:
+            moved = await executor.run_verb("move_joints", {"positions": {PAN: away}})
+            assert moved.ok, moved.summary
+            await transport.sleep(transport.place_settle_s)
+            # the run's teardown: a stop, the rest move, then the close
+            await adapter.stop()
+            parked = await adapter.go_to_rest()
+            assert parked.how == "arrived", parked.reason
+
+        await asyncio.wait_for(session(), WALL_S)
+        assert transport.now() > transport.place_settle_s
+    finally:
+        await asyncio.wait_for(adapter.close(), WALL_S)
+    assert transport.close_note is None, transport.close_note
+
+
+def _folded_past_its_travel(arm: ArmModel) -> tuple[dict[str, float], dict[str, dict[str, int]]]:
+    """A stand-in fold that starts clear of the table and is in it where the close parks it,
+    and a calibration file's contents for it, from the stand-in's own proportions.
+
+    The parked pose is the hand pointing down a quarter of its fingers' length into the table,
+    near enough the base that the shoulder is tilted back, which is how the lab arm folds. The
+    calibration's shoulder_lift travel ends at that shoulder, and the fold is the parked pose
+    with the shoulder turned back from it, away from zero, until it is clear: past the floor of
+    the travel, as a fold recorded with the arm tucked in is. shoulder_pan lies past the
+    ceiling of its travel and inside its stops, which turns the arm and moves nothing up or
+    down."""
+    finger = standin.FINGER * standin.HAND * float(REACH.value)
+    down = _pointing_down(arm, PLACE_NEAR / 2, -finger / 4)
+    parked = {name: down[name] for name in BODY if name in down}
+    assert parked["shoulder_lift"] < 0, "near the base the stand-in's shoulder tilts back"
+    probe = ArmWorld(arm)
+    try:
+        assert probe._intrusions(probe._posed(parked)), "the parked pose is not in the table"
+        fold = dict(parked)
+        while probe._intrusions(probe._posed(fold)):
+            fold["shoulder_lift"] -= TOL_DEG
+    finally:
+        probe.close()
+    raw = _synthetic(arm, share=1.0)
+    per_deg = (ENCODER_TICKS - 1) / 360.0
+    lift = raw["shoulder_lift"]
+    middle = (lift["range_min"] + lift["range_max"]) // 2
+    half = math.floor(-parked["shoulder_lift"] * per_deg)
+    lift["range_min"], lift["range_max"] = middle - half, middle + half
+    raw["shoulder_pan"] = _synthetic(arm)["shoulder_pan"]
+    ceiling = (raw["shoulder_pan"]["range_max"] - raw["shoulder_pan"]["range_min"]) / 2 / per_deg
+    fold["shoulder_pan"] = (ceiling + arm.joints["shoulder_pan"].stops[1]) / 2
+    return fold, raw
+
+
+@pytest.mark.parametrize("move", ["the shoulder alone", "the arm upright"])
+async def test_a_twin_folded_past_its_travel_ends_at_rest_after_that_joint_moved(
+    mjcf: str, tmp_path: Path, move: str
+) -> None:
+    """A fold recorded past a joint's travel is parked at the edge of that travel by every close
+    after the joint moved, and a fold that starts clear can be in the table there: the lab arm's
+    twin's was, and every such close stalled short of its rest pose with torque on, though its
+    start had been settled clear. The world settles the parked pose as well, and the joints
+    beside the edge take where it came to rest, so the close arrives."""
+    arm = _arm(mjcf)
+    fold, raw = _folded_past_its_travel(arm)
+    path = tmp_path / "arm.json"
+    path.write_text(json.dumps(raw, indent=4), encoding="utf-8")
+    adapter, transport = await _sim_arm(mjcf, address=str(path), rest_pose=fold)
+    try:
+        lo, hi = transport.joint_range_deg["shoulder_lift"]
+        assert fold["shoulder_lift"] < lo, "the fold is not past the floor of its travel"
+        assert fold["shoulder_pan"] > transport.joint_range_deg["shoulder_pan"][1]
+        world = transport.sim_world
+        assert world is not None and world.settled
+        (note,) = [n for n in transport.connect_notes if "where the close's rest move parks" in n]
+        assert "shoulder_lift" in note and "into the table" in note, note
+        assert (await adapter.go_to_rest()).how == "already", "the start is not the rest pose"
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest)
+        goal = {"shoulder_lift": lo + (hi - lo) / 4}
+        if move == "the arm upright":
+            goal = {"shoulder_lift": (lo + hi) / 2, "elbow_flex": 0.0}
+
+        async def session() -> None:
+            await executor.run_verb("move_joints", {"positions": goal})
+            await transport.sleep(transport.place_settle_s)
+            await adapter.stop()
+            parked = await adapter.go_to_rest()
+            assert parked.how == "arrived", parked.reason
+
+        await asyncio.wait_for(session(), WALL_S)
+    finally:
+        await asyncio.wait_for(adapter.close(), WALL_S)
+    assert transport.close_note is None, transport.close_note
+
+
+def test_a_parked_pose_no_close_could_call_at_rest_is_refused(
+    mjcf: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where the settle of the parked pose leaves a joint at the edge where no close could call
+    it at rest, every run that moved it would end stalled, so the world is not built, and the
+    refusal names the joint, the contacts and the command that gives the robot a pose."""
+    arm = _arm(mjcf)
+    fold, raw = _folded_past_its_travel(arm)
+    travel = joint_ranges({name: MotorCalibration(**fields) for name, fields in raw.items()})
+    monkeypatch.setattr("quackd_lerobot.sim.world.joint_at_rest", lambda *_: False)
+    with pytest.raises(WorldError) as refused:
+        ArmWorld(arm, rest_pose=fold, name="bench-twin", travel=travel)
+    said = str(refused.value)
+    assert "with shoulder_pan and shoulder_lift at the edges of the travel" in said, said
+    assert "shoulder_lift pushed back into its travel" in said and "into the table" in said, said
+    assert "would end with its rest move stalled" in said, said
+    assert "quackd robot rest-pose bench-twin" in said, said
+
+
+async def test_a_twin_the_settle_cannot_clear_is_refused_at_connect(mjcf: str) -> None:
+    """A twin whose fold the settle cannot clear connected with a note and then stalled on its
+    first move, with the close reporting it at rest only because it never moved. The connect is
+    refused instead, before anything is opened, in the simulator's words."""
+    elbow_lo, _ = _arm(mjcf).joints["elbow_flex"].stops
+    transport = LeRobotSim(model=mjcf, rest_pose={"elbow_flex": elbow_lo})
+    transport.connect_pause_s = 0.0
+    with pytest.raises(TransportError) as refused:
+        await LeRobotAdapter(transport).connect()
+    said = str(refused.value)
+    assert "so the simulated arm cannot start there" in said, said
+    assert "quackd robot rest-pose NAME" in said, said
+    assert transport.sim_world is None
+
+
 async def test_a_released_arm_falls_before_it_is_taken_hold_of(mjcf: str) -> None:
     """Nobody places a simulated arm, so the take-hold lets gravity do it first: an arm let go
     tipped forward reads lower after the settle than at the release, and is taken hold of
@@ -1910,12 +2177,214 @@ async def test_the_heartbeat_draws_no_fault_and_feeds_no_grasp_but_meets_a_lost_
         await adapter.close()
 
 
+BUSY_BEAT = 3
+"""The heartbeat whose probe the event loop's thread is blocked behind: a few in, so the beats
+before it show the heartbeat was running."""
+
+
+@pytest.mark.parametrize("how", ["the loop is busy", "a step stalls", "the read hangs"])
+async def test_a_heartbeat_the_arm_answered_in_time_is_kept_while_the_loop_was_busy(
+    mjcf: str, how: str
+) -> None:
+    """A run's pilot can hold the event loop's thread for a second or more, parsing its first
+    response or encoding a frame. A heartbeat probe out at that moment came back in well under a
+    millisecond, and the deadline fired first when the loop resumed, so an arm that answered in
+    time was reported as one that did not, and the run was stopped. A verb's step can hold the
+    thread the same way just after its own read came back, with a probe queued behind that read:
+    the probe was handed the bus late and cancelled as it went out, and the run was stopped over
+    a bus that was free. The answer is kept now, both ways. A read that really does not come back
+    in time still stops the run, and says which call it was and its budget."""
+    adapter, transport = await _sim_arm(mjcf)
+    loop = asyncio.get_running_loop()
+    deadline = transport.timeout_s / 4  # every heartbeat probe's budget, kept short for the test
+    busy = 2 * deadline
+    transport.timeout_s = deadline
+    release = threading.Event()
+    probes = 0
+    reads = transport._heartbeat_reads
+
+    def heartbeat_reads() -> Callable[[], Any]:
+        nonlocal probes
+        read = reads()
+        probes += 1
+        if probes != BUSY_BEAT or how == "a step stalls":
+            return read
+        if how == "the read hangs":
+
+            def hung() -> Any:
+                # out until the test lets it go, so it has not come back however late a loaded
+                # runner's loop is to judge it
+                release.wait(WALL_S)
+                return read()
+
+            return hung
+        # runs as soon as `_call` hands the read to its worker and waits: the loop's thread
+        # sleeps through the deadline while the worker answers
+        loop.call_soon(time.sleep, busy)
+        return read
+
+    async def step() -> None:
+        """A verb's read, out on the bus until a probe waits behind it, and then the rest of the
+        verb's step, which holds the loop's thread while the probe the release woke waits."""
+        asked = probes  # any probe asked after this read is queued behind it
+
+        def sync_read() -> None:
+            started = time.monotonic()
+            while probes == asked and time.monotonic() - started < WALL_S:
+                time.sleep(deadline / 100)
+
+        await transport._call(sync_read, deadline_s=WALL_S)
+        time.sleep(busy)  # noqa: ASYNC251  (in this step, which the woken probe waits on)
+
+    transport._heartbeat_reads = heartbeat_reads  # type: ignore[method-assign]
+    abort = asyncio.Event()
+    said: list[str] = []
+    beat = Heartbeat(transport, abort, period_s=deadline / 4, log=said.append)
+    stepped = False
+    try:
+        beat.start()
+        started = time.monotonic()
+        while probes <= BUSY_BEAT + 2 and not abort.is_set():
+            assert time.monotonic() - started < WALL_S
+            if how == "a step stalls" and probes >= BUSY_BEAT - 1 and not stepped:
+                stepped = True
+                await step()
+            await asyncio.sleep(deadline / 4)
+        await beat.stop()
+        if how == "the read hangs":
+            assert abort.is_set() and beat.failure is not None, said
+            failure = str(beat.failure)
+            assert "the arm did not answer: TimeoutError: " in failure, failure
+            assert f"(hung) has not come back within {deadline:g} s" in failure, failure
+        else:
+            assert not abort.is_set(), said
+            assert beat.failure is None and beat.beats > BUSY_BEAT, said
+            assert stepped or how != "a step stalls"
+    finally:
+        release.set()
+        await beat.stop()
+        if (hung := transport._wedged) is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(hung), WALL_S)
+        await adapter.close()
+
+
 async def test_a_refusal_from_the_simulator_says_it_is_the_simulator(mjcf: str) -> None:
     with pytest.raises(TransportError) as refused:
         await _sim_arm(mjcf, faults=FaultPlan.parse("handshake=1", seed=0))
     said = str(refused.value)
     assert said.startswith("lerobot mujoco: connect failed"), said
     assert "lerobot real" not in said
+
+
+async def test_a_close_away_from_rest_says_what_that_means_on_a_simulator(mjcf: str) -> None:
+    """The real close keeps torque on an arm away from its rest pose, and tells the person to
+    hold it, release it, park it with doctor or cut its power. On the simulator it keeps the
+    same torque, since it is the same code, and says what applies to a simulated arm: nothing
+    is left holding, and the shortfall is what to look at."""
+    adapter, transport = await _sim_arm(mjcf, rest_pose={PAN: 0.0})
+    try:
+        assert adapter.manifest is not None
+        away = transport.joint_range_deg[PAN][1] / 8
+        moved = await _executor(adapter, adapter.manifest).run_verb(
+            "move_joints", {"positions": {PAN: away}}
+        )
+        assert moved.ok, moved.summary
+    finally:
+        await adapter.close()  # no rest move first: the close finds the arm away from it
+    note = transport.close_note or ""
+    assert note.startswith(f"the simulated arm is not at its rest pose ({PAN} is at "), note
+    assert "torque was left on" in note and "ends with the run" in note, note
+    for real in ("quackd robot release", "doctor --robot", "cut its power", "hold it first"):
+        assert real not in note, note
+
+
+async def test_a_run_on_the_simulator_is_not_asked_to_hold_the_arm(
+    mjcf: str, tmp_path: Path
+) -> None:
+    """A run at a terminal whose rest move missed offers the person torque off, and tells them
+    to hold the arm first, because the release drops it. On the simulator that asked them to
+    hold an arm that is not there, and the close then said there was nothing to hold. No offer
+    is made on a simulator, and the close's own line is what is said."""
+    from quackd.agent.loop import RunConfig, run_duck
+    from quackd.agent.providers.base import ToolCall
+    from quackd.agent.providers.fake import FakeProvider
+    from tests.test_loop import ARM_REST, ScriptedPerson, _arm_duck
+
+    transport = LeRobotSim(model=mjcf, rest_pose=ARM_REST)
+    transport.connect_pause_s = 0.0
+    arrive = transport.go_to_rest
+    moves = 0
+
+    async def go_to_rest(*args: Any, **kwargs: Any) -> RestResult:
+        nonlocal moves
+        moves += 1
+        if moves == 1:  # the run's start
+            return await arrive(*args, **kwargs)
+        # the teardown's, stopped short of the pose, as a move against the table would
+        goal, recorded = transport._rest_target()
+        why = shortfall(goal, dict(transport._joints), recorded)
+        missed = RestResult("stalled", f"{why}, and it has stopped moving")
+        transport._rest_result = missed
+        return missed
+
+    transport.go_to_rest = go_to_rest  # type: ignore[method-assign]
+    duck = _arm_duck()
+    duck.frontmatter.verbs.allow = [*duck.frontmatter.verbs.allow, "move_joints"]
+    script = [
+        ToolCall(name="move_joints", arguments={"positions": {PAN: ARM_REST[PAN] / 2}}),
+        ToolCall(name="declare_success", arguments={"reason": "moved"}),
+    ]
+    person = ScriptedPerson(None, answers=[False])  # type: ignore[arg-type]
+    person.asks_a_person = True
+    config = RunConfig(
+        duck=duck,
+        provider=FakeProvider(script=script),
+        transport=LeRobotAdapter(transport),
+        runs_dir=tmp_path,
+        person=person,
+    )
+    with _needs_gl():
+        await asyncio.wait_for(run_duck(config), WALL_S)
+    assert moves == 2, "the teardown made no rest move"
+    assert person.asked == [], person.asked
+    note = transport.close_note or ""
+    assert note.startswith("the simulated arm is not at its rest pose ("), note
+
+
+@pytest.mark.parametrize(
+    ("names", "said"),
+    [
+        (("front", "wrist"), "the front camera is quackd's default view of the table"),
+        (("top",), "the top camera is quackd's default view of the table"),
+        (("front", "top"), "the front and top cameras are quackd's default views of the table"),
+        (("wrist",), None),
+    ],
+)
+async def test_the_default_views_note_names_the_views_the_run_has(
+    mjcf: str, names: tuple[str, ...], said: str | None
+) -> None:
+    """A run on front and wrist, the lab's layout, was told the front and top cameras were
+    quackd's views, naming a camera it never opened. The note and the state's assumptions name
+    the ones open, and a run with neither says nothing about them."""
+    adapter = make("mujoco", camera_url=[f"opencv://{i}?name={n}" for i, n in enumerate(names)])
+    transport = adapter.transport
+    assert isinstance(transport, LeRobotSim)
+    transport.model_source = mjcf
+    with _needs_gl():
+        await adapter.connect()
+    try:
+        views = [n for n in transport.connect_notes if "default view" in n]
+        assumptions = (await transport.get_state()).extras["assumptions"]
+        if said is None:
+            assert views == [] and not any("default view" in a for a in assumptions)
+        else:
+            assert len(views) == 1 and views[0].startswith(said), views
+            assert views[0] in assumptions
+            unopened = {"front", "top"} - set(names)
+            assert not any(f" {n} " in views[0] for n in unopened), views[0]
+    finally:
+        await adapter.close()
 
 
 async def test_physics_that_cannot_step_on_stop_the_heartbeat(mjcf: str) -> None:

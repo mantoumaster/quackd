@@ -662,8 +662,11 @@ def build_observation_text(
     cameras: Sequence[str] | None = None,
     stepped: Sequence[str] | None = None,
 ) -> str:
+    head = f"step {step}/{max_steps}"
+    # the budget's own line starts with the same step (`Budget.status`), and every observation
+    # said it twice: `[step 3/40 · step 3/40, llm calls 3/40, ...]`
     lines = [
-        f"[step {step}/{max_steps} · {budget_status}]",
+        f"[{head} · {budget_status.removeprefix(f'{head}, ')}]",
         f"state: {state.summary()}",
         f"camera: {summarize_detections(detections)}",
     ]

@@ -62,10 +62,10 @@ from quackd_lerobot.sim.model import (
     load,
 )
 from quackd_lerobot.sim.transport import GL_CHECK_SIZE
-from quackd_lerobot.sim.world import JAWS_CLEARANCE, LIFT_MIN_M, ArmWorld
+from quackd_lerobot.sim.world import JAWS_CLEARANCE, LIFT_MIN_M, ArmWorld, WorldError
 from quackd_lerobot.verbs import GRIPPER_OPEN, JOINTS, MOVE_MIN_S, published_travel
 from tests.test_lerobot_adapter import _executor
-from tests.test_lerobot_sim import _camera, _needs_gl, _sim_arm
+from tests.test_lerobot_sim import WALL_S, _camera, _needs_gl, _sim_arm
 from tests.test_preflight import GRASP_TASK, LOOKOUT, _duck
 
 mujoco = pytest.importorskip("mujoco")
@@ -549,6 +549,107 @@ checks:
     duck = _duck(tmp_path, sidecar, name="grasp", text=GRASP_TASK)
     rehearsal = _rehearsal(tmp_path, lambda _duck: FakeProvider(strategy=strategy), rest)
     _passed(await rehearsal.file(str(duck)), capsys)
+
+
+# ── a fold the model cannot hold ────────────────────────────────────────────────────────
+
+FOLD_STEPS = 20
+"""How many steps the search raises the wrist in, from straight to its stop."""
+
+
+def _table_depth(arm: ArmModel, data: Any, pose: dict[str, float]) -> float:
+    """How far the arm goes into the table at a pose, read off the model's own contacts with
+    nothing stepped, in metres."""
+    data.qpos[:] = arm.model.qpos0
+    for name, value in pose.items():
+        joint = arm.joints[name]
+        data.qpos[joint.qpos] = joint.to_model(value)
+    mujoco.mj_forward(arm.model, data)
+    objects = {g for geoms in arm.object_geoms for g in geoms}
+    n = data.ncon
+    return max(
+        [
+            0.0,
+            *(
+                -float(dist)
+                for (a, b), dist in zip(
+                    data.contact.geom[:n].tolist(), data.contact.dist[:n].tolist(), strict=True
+                )
+                if arm.table in (a, b) and not {a, b} & objects
+            ),
+        ]
+    )
+
+
+def _folded_into_the_table(arm: ArmModel) -> dict[str, float]:
+    """A fold the model cannot hold, found on the model: the shoulder down to its floor and the
+    elbow up to its ceiling, the arm folded onto itself, and the wrist raised from straight a
+    step at a time until the fingers are in the table by more than the fixed pad is thick.
+    Every joint is in it, so a close judges them all."""
+    data = mujoco.MjData(arm.model)
+    thick = float(min(arm.model.geom_size[arm.fixed_pad]))
+    wrist_hi = arm.joints["wrist_flex"].stops[1]
+    for k in range(FOLD_STEPS + 1):
+        pose = {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": arm.joints["shoulder_lift"].stops[0],
+            "elbow_flex": arm.joints["elbow_flex"].stops[1],
+            "wrist_flex": wrist_hi * k / FOLD_STEPS,
+            "wrist_roll": 0.0,
+        }
+        if _table_depth(arm, data, pose) > thick:
+            return pose
+    pytest.fail("no fold of the model puts its fingers into the table, so nothing was tested")
+
+
+async def test_a_fold_the_model_puts_into_its_table_ends_at_rest_after_time_has_passed() -> None:
+    """The stand-in's test of the same name, on the SO-101's own model: a fold read off an arm
+    can put the model into its table and into itself, because the model's frame is an
+    assumption (`JOINT_ZERO`, `JOINT_SIGN`), and the twin used to start there, be thrown out by
+    the first physics step, and close stalled with torque left on after any run that let sim
+    time pass. It now starts settled clear of both, and a verb, a wait and the teardown later
+    it is at rest and let go."""
+    model = _so101()
+    _gl_or_skip(model)
+    rest = _folded_into_the_table(load(model, seed=FIRST_SEED))
+    adapter, transport = await _sim_arm(model, rest_pose=rest)  # type: ignore[arg-type]
+    try:
+        world = transport.sim_world
+        assert world is not None and world.settled
+        assert any("mm into the table" in n for n in transport.connect_notes)
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest)
+        pan = BODY[0]
+        away = transport.joint_range_deg[pan][1] / 8
+
+        async def session() -> None:
+            moved = await executor.run_verb("move_joints", {"positions": {pan: away}})
+            assert moved.ok, moved.summary
+            await transport.sleep(transport.place_settle_s)
+            # the run's teardown: a stop, the rest move, then the close
+            await adapter.stop()
+            parked = await adapter.go_to_rest()
+            assert parked.how == "arrived", parked.reason
+
+        await asyncio.wait_for(session(), WALL_S)
+    finally:
+        await asyncio.wait_for(adapter.close(), WALL_S)
+    assert transport.close_note is None, transport.close_note
+
+
+def test_a_fold_the_model_cannot_settle_clear_is_refused() -> None:
+    """The shoulder at its ceiling with the rest of the arm straight drives the lower arm into
+    the table, and no contact pushes it out again: a second of settling leaves it there, and the
+    twin used to connect with a note and stall on its first move. It is refused, naming what is
+    still in."""
+    arm = load(_so101(), seed=FIRST_SEED)
+    rest = {joint: 0.0 for joint in BODY}
+    rest["shoulder_lift"] = arm.joints["shoulder_lift"].stops[1]
+    with pytest.raises(WorldError) as refused:
+        ArmWorld(arm, rest_pose=rest, name="bench-twin")
+    said = str(refused.value)
+    assert "of settling still leaves lower_arm " in said and " mm into the table" in said, said
+    assert "quackd robot rest-pose bench-twin" in said, said
 
 
 # ── the cameras and the clock ───────────────────────────────────────────────────────────

@@ -69,7 +69,16 @@ before.
   - joint signs and zero offsets: nudge each real joint by a small positive angle and check that
     it turns the same way in the simulator, and read the calibrated value at each mechanical stop
     against the model's stop, which also says whether a recorded fold can be represented at all
-    (`JOINT_SIGN`, `JOINT_ZERO`);
+    (`JOINT_SIGN`, `JOINT_ZERO`). `arm-01`'s recorded fold puts the model's fingers into the
+    table and its lower arm into its shoulder, and the simulator starts it settled clear of both,
+    and parks it where it settles at the edge of `shoulder_lift`'s travel, with a note, so this
+    step also says whether the model's frame or the table's height is what is wrong;
+  - the rest move pressing the gripper into the table: in the model, the rest goal the
+    calibration clips (`shoulder_lift` clipped to its travel, the elbow and the wrist held where
+    they were recorded) puts the gripper below the table top. Before trusting a rest move on the
+    arm, watch one from a raised pose with a hand on the switch and check that the gripper stops
+    above the bench rather than pressing into it, beside the step above that settles whether the
+    model's frame is right at all;
   - the gripper on a real pen: what it reads against the band that infers holding, which the
     simulator's pen cannot say;
   - the front and wrist cameras' placement and field of view, measured, to replace the

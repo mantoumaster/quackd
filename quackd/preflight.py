@@ -21,10 +21,11 @@ For each file, in this order:
    run has ended and the command does not hand its transport back.
 
 A run passes when nothing escaped it, no call to the simulated bus was left hanging, its close
-ended at the rest pose, found none to return to on a robot without one, or was refused where the
-sidecar says to expect that (`judge_close`), and every check in the sidecar holds. The pilot's
-own verdict is reported and is not one of those: a model that says it succeeded is the thing
-being rehearsed, not the judge of it.
+ended at the rest pose, found none to return to on a robot without one, or had its rest move
+refused where the sidecar says to expect a refusal (`judge_close`), and every check in the
+sidecar holds. A rest move that stalled or ran out of time fails the run whatever the sidecar
+says, and the close is named for which it was. The pilot's own verdict is reported and is not
+one of those: a model that says it succeeded is the thing being rehearsed, not the judge of it.
 
 The sidecar is `<task>.sim.yaml` beside the task file, and never the file's frontmatter, because
 `robot_load_duckfile` hands an MCP pilot the whole frontmatter, and a pilot that can read what it
@@ -181,8 +182,10 @@ class Check(BaseModel):
 
     at_rest: bool | None = None
     """True: the close has to end at the rest pose. False: the task leaves the arm where its
-    rest move is refused, and the close has to be refused. Without it, a close that reached
-    the rest pose passes, and so does one with no rest pose to reach."""
+    rest move is refused, so a rest move that is made has to be refused; one that stalled or
+    ran out of time still fails, and a robot with no rest pose makes none and passes. Without
+    it, a close that reached the rest pose passes, and so does one with no rest pose to
+    reach."""
     joint_moved: JointMoved | None = None
     lifted: ObjectCheck | None = None
     """Off the table, touching the gripper and up at least `min_m` from where it was laid."""
@@ -294,18 +297,34 @@ class Verdict:
         return {"check": self.check, "ok": self.ok, "detail": self.detail}
 
 
+MISSED = {
+    "refused": "the rest move was refused",
+    "stalled": "the rest move stalled",
+    "timeout": "the rest move ran out of time",
+}
+"""What a rest move that did not reach the pose did, by its `RestResult.how`, in the words a
+row of the table says it in."""
+
+
 def judge_close(rest: Any, expect: bool | None) -> Verdict:
     """The teardown's rest move against what the sidecar expects of it (`Check.at_rest`).
 
     `rest` is the transport's last `RestResult`, or None where no rest move was made, which is
-    an arm with no rest pose: its close keeps torque on where the run left it."""
-    if rest is None:
+    an arm with no rest pose: its close keeps torque on where the run left it.
+
+    Of a rest move that was made, only a refusal is what `at_rest: false` expects: the arm left
+    where the rest move will not move it, such as in a person's hands. A move that set off and
+    stalled, or ran out of time, is not that, and fails a run whatever the sidecar says. Each
+    is named for what it was, where every miss used to read as refused. A robot with no rest
+    pose makes no rest move, and the arm stays where the run left it, which fails only
+    `at_rest: true`."""
+    if rest is None or rest.how == "none":
         said = "no rest pose to return to"
         return Verdict("close", expect is not True, said)
     if rest.reached:
         return Verdict("close", expect is not False, "at the rest pose")
-    said = f"the rest move was refused: {rest.reason}"
-    return Verdict("close", expect is False, said)
+    what = MISSED.get(rest.how, f"the rest move ended {rest.how}")
+    return Verdict("close", rest.how == "refused" and expect is False, f"{what}: {rest.reason}")
 
 
 def joint_series(events: Sequence[Mapping[str, Any]]) -> list[dict[str, float]]:

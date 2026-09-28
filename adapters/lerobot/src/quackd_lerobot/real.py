@@ -613,6 +613,24 @@ def _name_of(fn: Callable[..., Any]) -> str:
     return str(getattr(inner, "__name__", inner))
 
 
+def _late(fn: Callable[..., Any], budget_s: float, pending: asyncio.Future[Any] | None) -> str:
+    """What a LeRobot call that ran out of time did, naming the call and its budget.
+
+    Three things look alike from the caller's side: a call that never got the bus because the
+    call ahead of it held it, one still out on the wire, which wedges the transport, and one
+    that came back after its budget was spent. A call the worker pool dropped unrun, which a
+    pool shut down under it does, never went out either."""
+    name = _name_of(fn)
+    if pending is None or pending.cancelled():
+        return f"a LeRobot call ({name}) waited {budget_s:g} s for the bus and never went out"
+    if not pending.done():
+        return (
+            f"a LeRobot call ({name}) has not come back within {budget_s:g} s; the serial bus "
+            "has one owner, so quackd refuses every call until it does"
+        )
+    return f"a LeRobot call ({name}) came back after its {budget_s:g} s were spent"
+
+
 @dataclass
 class _Errors:
     """Why each of the two status registers did not answer, if it did not.
@@ -734,6 +752,12 @@ class LeRobotReal:
         self._lock = asyncio.Lock()
         self._closed = False
         self._wedged: asyncio.Future[Any] | None = None
+        self._bus: tuple[float, float | None] = (0.0, None)
+        """The bus's own clock (`_busy`): how long LeRobot calls have held it, in all, and
+        when the one holding it now was handed to the worker pool, on the event loop's clock,
+        or None while none is. `_call` stamps a call under the lock before its worker can
+        start and the worker closes the stamp, one call at a time, and a tuple is swapped
+        whole, so neither thread reads it half written."""
         self._policy_task: asyncio.Task[None] | None = None
         self._policy_name = "idle"
         self._policy_error: str | None = None
@@ -918,6 +942,15 @@ class LeRobotReal:
         learns the pose it will park in is not the pose it was recorded in."""
         return reachable_rest_goal(self.rest_pose or {}, self.joint_range_deg)[1]
 
+    def _rest_target(self) -> tuple[dict[str, float], dict[str, float]]:
+        """`(goal, recorded)`: what every judgement of the rest pose drives to and judges by,
+        the reachable goal (`rest_reachable`) and the pose as recorded (`verbs.rest_goal`),
+        which the half-line rule reads the side of a clipped joint from. One place, so the
+        rest move, the release, the take-hold and the close all judge the same pose, and the
+        simulator can put a joint its start settled out of the table where the arm really
+        rests (`sim.world.ArmWorld.settled`)."""
+        return self.rest_reachable, rest_goal(self.rest_pose or {})
+
     def _outside_travel(self, joint: str, reading: float) -> bool:
         """The joint reads strictly outside the travel its calibration recorded.
 
@@ -951,31 +984,101 @@ class LeRobotReal:
         bus answered before it can speak for the arm afterwards. Counted there and not before
         the call, because the lock is fair: a read queued behind the call ahead of this one is
         on the wire before this write is, and a count taken in coroutine code would put it
-        after."""
+        after.
+
+        A budget is spent by the bus's time, not the event loop's. The loop's thread can be
+        busy past a deadline: a pilot's SDK parsing its first response, or a frame being
+        encoded. A call out on the bus then answers in a millisecond, or the call ahead of a
+        queued one comes back in time and the loop does not hand the queued one the bus, and
+        the deadline fired first when the loop resumed: a heartbeat the arm answered in time
+        was reported as an arm that did not answer, which ends the run. So what spends a
+        budget is time the bus was busy after the call was asked, with the calls ahead of it
+        while it waited and then with its own, each from when it was handed to the worker pool
+        until its worker came back, stamped on the loop's clock (`_bus`). From the hand-off
+        and not from when a thread picks it up, because with every pool thread busy (a camera
+        read, a frame being saved) the call waits for one holding the bus, and goes out when
+        one frees: it spends its own budget meanwhile, and the calls queued behind it spend
+        theirs. When the deadline fires it reads those stamps, and a call with budget left
+        keeps its place in the queue while its deadline moves on by what is left. A call still
+        out when its budget is spent is wedged and refused exactly as before, one that spent it
+        waiting behind calls on the bus never goes out, and every timeout says which call it
+        was and its budget."""
         self._refuse_if_wedged()
         loop = asyncio.get_running_loop()
+        budget = deadline_s or self.timeout_s
+        asked = loop.time()
+        bus_asked = self._busy(asked)
         pending: asyncio.Future[Any] | None = None
+        spent = False
+        timer: asyncio.TimerHandle | None = None
         call = functools.partial(fn, *args)
         if writes_torque:
             call = functools.partial(self._counted, call)
+
+        def stamped(handed: float) -> Any:
+            try:
+                return call()
+            finally:
+                # `loop.time()` reads the monotonic clock, which is safe from any thread
+                self._bus = (self._bus[0] + loop.time() - handed, None)
+
+        def judge(deadline: asyncio.Timeout) -> None:
+            nonlocal timer, spent
+            now = loop.time()
+            left = budget - (self._busy(now) - bus_asked)
+            if left > 0:
+                timer = loop.call_at(now + left, judge, deadline)
+                return
+            spent = True
+            deadline.reschedule(now)  # which cancels this task on the loop's next turn
+
         try:
-            async with asyncio.timeout(deadline_s or self.timeout_s):
+            async with asyncio.timeout(None) as deadline:
+                timer = loop.call_at(asked + budget, judge, deadline)
                 async with self._lock:
                     # a caller parked on the lock passed the check above before the call
                     # ahead of it wedged; the lock's release is what woke it, so ask again
                     self._refuse_if_wedged()
-                    pending = loop.run_in_executor(None, call)
-                    return await asyncio.shield(pending)
-        except (TimeoutError, asyncio.CancelledError):
-            # a cancelled verb (Ctrl-C mid-move) leaves its thread on the wire exactly as
-            # a timed-out one does, and the stop that follows must not join it there
+                    if spent:
+                        # its budget ran out while it waited, and the lock reached it before
+                        # the cancel did: it does not go out
+                        raise TimeoutError
+                    # the bus is this call's from here; stamped before the pool can start the
+                    # worker, which closes the stamp, and any stamp a call the pool dropped
+                    # unrun left open is closed into the total first
+                    now = loop.time()
+                    self._bus = (self._busy(now), now)
+                    pending = loop.run_in_executor(None, stamped, now)
+                    answer = await asyncio.shield(pending)
+                    if spent:
+                        # it came back after its budget, and reached this task before the
+                        # cancel did
+                        raise TimeoutError
+                    return answer
+        except (TimeoutError, asyncio.CancelledError) as e:
+            # a cancelled verb (Ctrl-C mid-move) leaves its thread on the wire exactly as a
+            # timed-out one does, and the stop that follows must not join it there
             if pending is not None and not pending.done():
                 self._wedged = pending
                 self.stop_error = (
                     f"a LeRobot call ({_name_of(fn)}) has not come back; the "
                     "serial bus has one owner, so quackd refuses every call until it does"
                 )
+            if spent and isinstance(e, TimeoutError):
+                raise TimeoutError(_late(fn, budget, pending)) from None
+            # a call that raised in time, a TimeoutError of its own among them, raises what
+            # it raised
             raise
+        finally:
+            if timer is not None:
+                timer.cancel()
+
+    def _busy(self, now: float) -> float:
+        """How long LeRobot calls have held the bus up to `now`, the one holding it now
+        included, on the event loop's clock (`_bus`): the time that spends a call's budget
+        (`_call`)."""
+        total, since = self._bus
+        return total if since is None else total + max(0.0, now - since)
 
     def _counted(self, write: Callable[[], Any]) -> Any:
         """A torque write, in `_call`'s worker thread: counted before it goes out, so a write
@@ -1556,7 +1659,7 @@ class LeRobotReal:
         elif why is not None and self._release_refused:
             self.close_note = TORQUE_KEPT_AFTER_REFUSAL.format(why=why)
         elif why is not None:
-            self.close_note = torque_left_on(why, self.registered_name)
+            self.close_note = self._torque_left_on(why)
         with contextlib.suppress(Exception):
             # up.SO_DISCONNECT_READS_ITS_CONFIG_LATE: the flag is read off the config instance
             # inside disconnect() rather than copied at construction, so this is the seam.
@@ -1590,14 +1693,18 @@ class LeRobotReal:
             # close that sent it
             self.close_note = released_by_the_close(at_rest=self.rest_pose is not None)
 
+    def _torque_left_on(self, why: str) -> str:
+        """The close's line for an arm it kept torque on away from its rest pose
+        (`verbs.torque_left_on`), which the simulator words for a simulated arm."""
+        return torque_left_on(why, self.registered_name)
+
     async def _not_resting(self) -> tuple[str | None, bool]:
         """Why this arm must keep its torque, or None if it may let go, and whether the arm
         answered the read that decided it. Reads, never moves.
 
         The second value is False only where the read itself failed, which is the one reason
         to keep torque that says nothing about whether the arm is holding itself up."""
-        recorded = rest_goal(self.rest_pose or {})
-        goal = self.rest_reachable
+        goal, recorded = self._rest_target()
         if not goal:
             # a pose was recorded and none of it can be driven: the arm is somewhere nobody
             # chose, so it keeps holding rather than being let go there
@@ -1610,8 +1717,15 @@ class LeRobotReal:
         if at_rest(goal, joints, recorded):
             return None, True
         why = shortfall(goal, joints, recorded)
-        if self._rest_result is not None and not self._rest_result.reached:
-            return f"{why}; {self._rest_result.reason}", True
+        missed = self._rest_result
+        if missed is not None and not missed.reached:
+            # A move that stalled or ran out of time gives as its reason its own shortfall and
+            # how it ended (`_drive_to_rest`), and it held the arm where it stopped, so that
+            # reason usually begins with this read's shortfall word for word. Joined to it, the
+            # close said the shortfall twice, as the in-hand line above once did.
+            if missed.reason.startswith(why):
+                return missed.reason, True
+            return f"{why}; {missed.reason}", True
         return f"{why}; nothing moved it there", True
 
     # ── reading ─────────────────────────────────────────────────────────────────────
@@ -2123,8 +2237,7 @@ class LeRobotReal:
         # the reachable pose and the half-line rule, as `close()` judges it: an arm folded past
         # its travel is at its rest pose, and refusing it here would refuse `--by-hand` the one
         # arm whose fold is the most certainly safe place to let go of it
-        recorded = rest_goal(self.rest_pose or {})
-        goal = self.rest_reachable
+        goal, recorded = self._rest_target()
         if not anywhere and not goal:
             return refused("the recorded pose names no joint this arm drives")
         try:
@@ -2328,8 +2441,7 @@ class LeRobotReal:
                 # it once torque comes on (the docstring says how), so torque stays off. Where
                 # this read finds the whole arm at its rest pose and every motor off, nobody
                 # lifted it out of a fold recorded past its travel, and it is said that way.
-                recorded = rest_goal(self.rest_pose or {})
-                goal = self.rest_reachable
+                goal, recorded = self._rest_target()
                 resting = (
                     bool(goal)
                     and at_rest(goal, placed, recorded)
@@ -2443,8 +2555,7 @@ class LeRobotReal:
             return RestResult.none("no rest pose is recorded for this arm")
         if self._closed:
             return RestResult("refused", "the arm's transport is closed", answered=False)
-        recorded = rest_goal(self.rest_pose)
-        goal = self.rest_reachable
+        goal, recorded = self._rest_target()
         if not goal:
             # "refused", never "none": `none` means there is nothing to go to, and the run
             # would start anyway and the arm be released at the end. There is a pose here,

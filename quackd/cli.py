@@ -237,10 +237,19 @@ _ADAPTER_HINT = "quackd list-adapters shows the seven that ship and their backen
 
 
 def _expand(patterns: list[str]) -> list[str]:
+    """Each pattern's matches, sorted, or the pattern itself where nothing matches, so that
+    PowerShell, which globs nothing, gets what a POSIX shell would have handed over.
+
+    On Windows `glob` joins what a wildcard matched with a backslash and leaves the part typed
+    before it as it was typed, so `docs/examples/lerobot/e00[1-5]/*.duck` came back as
+    `docs/examples/lerobot\\e001\\circle.duck` and a table of files read in two slash styles.
+    A pattern written with forward slashes gets its matches back written that way too."""
     out: list[str] = []
     for pat in patterns:
-        matches = sorted(glob.glob(pat))
-        out.extend(matches if matches else [pat])
+        matches = glob.glob(pat)
+        if "/" in pat and os.sep != "/":
+            matches = [m.replace(os.sep, "/") for m in matches]
+        out.extend(sorted(matches) if matches else [pat])
     return out
 
 

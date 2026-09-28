@@ -273,6 +273,38 @@ def test_the_close_passes_at_rest_and_a_refusal_only_where_one_is_expected() -> 
     assert judge_close(None, None).ok and not judge_close(None, True).ok
 
 
+def test_at_rest_false_passes_a_robot_that_made_no_rest_move() -> None:
+    """`at_rest: false` asks that a rest move that was made be refused. A robot with no rest
+    pose makes none, whether no move was tried or the transport said there was nothing to go
+    to, and its arm stays where the run left it, which is what such a task asks: it passes, as
+    the docs say, and only `at_rest: true` fails it."""
+    for rest in (None, RestResult.none()):
+        for expect in (None, False):
+            verdict = judge_close(rest, expect)
+            assert verdict.ok and verdict.detail == "no rest pose to return to", verdict
+        assert not judge_close(rest, True).ok
+
+
+@pytest.mark.parametrize(
+    ("how", "said"),
+    [
+        ("refused", "the rest move was refused: "),
+        ("stalled", "the rest move stalled: "),
+        ("timeout", "the rest move ran out of time: "),
+    ],
+)
+def test_a_close_that_missed_the_rest_pose_is_named_for_how_it_missed(how: str, said: str) -> None:
+    """Every miss used to read as refused, a stall against the table included. Only a refusal
+    is what `at_rest: false` asks for: a move that set off and stopped short fails whatever the
+    sidecar expects."""
+    reason = "shoulder_pan is at 10 with a goal of 30" if how != "refused" else "in a hand"
+    missed = RestResult(how, reason)  # type: ignore[arg-type]
+    for expect in (None, True, False):
+        verdict = judge_close(missed, expect)
+        assert verdict.detail == said + reason, verdict
+        assert verdict.ok is (how == "refused" and expect is False), (expect, verdict)
+
+
 def _observation(**joints: float) -> dict[str, Any]:
     return {"kind": "observation", "features": {"state": {"extras": {"joints": joints}}}}
 

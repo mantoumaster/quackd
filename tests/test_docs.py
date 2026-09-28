@@ -1513,7 +1513,8 @@ _ARM_SIMULATOR_CLAIMS_THE_CODE_NEVER_MADE = (
     ),
     (
         "two of the views are quackd's",
-        "the connect note is one sentence naming front and top, said when either is open",
+        "the connect note is one sentence naming whichever of front and top is open "
+        "(sim.transport.default_views)",
     ),
     (
         "seven bench steps 0.14.0 owes, above",

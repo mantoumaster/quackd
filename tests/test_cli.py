@@ -267,6 +267,22 @@ def test_validate_expands_globs_itself() -> None:
     assert result.exit_code == 0, result.output
 
 
+def test_a_pattern_written_with_forward_slashes_expands_to_paths_written_that_way(
+    tmp_path: Path,
+) -> None:
+    """On Windows `glob` joined what a wildcard matched with backslashes and kept the part
+    typed before it as typed, so `quackd preflight "docs/examples/e00[1-5]/*.duck"` labelled
+    its files in two slash styles at once. Anywhere else this holds as it always did."""
+    from quackd.cli import _expand
+
+    for folder, name in (("e001", "a.duck"), ("e002", "b.duck"), ("f003", "c.duck")):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / name).write_text("", encoding="utf-8")
+    base = tmp_path.as_posix()
+    assert _expand([f"{base}/e00[1-5]/*.duck"]) == [f"{base}/e001/a.duck", f"{base}/e002/b.duck"]
+    assert _expand([f"{base}/none/*.duck"]) == [f"{base}/none/*.duck"], "no match is kept whole"
+
+
 def test_validate_fails_fast(tmp_path: Path) -> None:
     bad = tmp_path / "bad.duck"
     bad.write_text("---\nduck: 0\nname: bad\n---\nbody\n", encoding="utf-8")

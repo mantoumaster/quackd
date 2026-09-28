@@ -39,6 +39,8 @@ from typing import Any
 import numpy as np
 
 from quackd.transport.base import TransportError
+from quackd_lerobot.real import ENCODER_TICKS, MAX_STEP_DEG
+from quackd_lerobot.sim import upstream_api as so
 from quackd_lerobot.sim.model import (
     LABEL,
     PLACE_GAP_M,
@@ -49,7 +51,14 @@ from quackd_lerobot.sim.model import (
     object_poses,
     table_spot,
 )
-from quackd_lerobot.verbs import JOINTS
+from quackd_lerobot.verbs import (
+    JOINTS,
+    TICK_S,
+    TOL_DEG,
+    UNNAMED,
+    joint_at_rest,
+    reachable_rest_goal,
+)
 
 ROOM_TEMPERATURE_C = 25
 """What every simulated motor's temperature register reads. The model has no heat in it, so
@@ -60,6 +69,20 @@ LIFT_MIN_M = 0.01
 """How far an object's centre must rise above where it was laid, off the table and touching
 the gripper, before it counts as lifted. Closing on an object can nudge it up a few
 millimetres, and that is not a lift."""
+
+START_CLEAR_M = 0.001
+"""How far a part of the arm may lie inside the table or another of its own links as the arm
+starts, before the start is settled out of it, and how far it may still lie in once settled
+before the start is refused: a millimetre. A contact in MuJoCo is soft and always sinks a
+little under load, so a part resting on the table or on its neighbour sits a fraction of a
+millimetre in, and that is touching, not inside."""
+START_SETTLE_S = 1.0
+"""How long a start that puts the arm into the table or into itself is settled for, in sim
+time, before the world's clock starts: the physics steps with every goal held where the pose
+put it, the contacts push the parts out, and the arm comes to rest against them the way it
+would against anything. The same second a take-hold lets a released arm fall for
+(`transport.PLACE_SETTLE_S`). Settling longer does not help a start still in after it: a part
+held against a stop, or pinned by a joint it cannot move, stays where the second left it."""
 
 JAWS_CLEARANCE = 0.2
 """How far off the fixed finger's inner face an object laid between the jaws starts, as a share
@@ -80,6 +103,19 @@ def _pinched(flags: int) -> bool:
 
 def _lifted(flags: int, lift: float) -> bool:
     return not flags & _TABLE and bool(flags & _GRIPPER) and lift >= LIFT_MIN_M
+
+
+def _listed(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+FRAME_ASSUMED = (
+    f"The model's joint zeros and signs are an assumption ({so.JOINT_ZERO.name}, "
+    f"{so.JOINT_SIGN.name}) until the bench checks them, so the pose may be right on the arm "
+    "and the model's frame wrong"
+)
+"""Why a start in the table or in the arm itself is said and not blamed on the pose: a fold is
+read off a real arm, and only the bench can say whether the arm or the model is wrong."""
 
 
 class WorldError(TransportError):
@@ -133,11 +169,23 @@ class ArmWorld:
     """An arm in its scene, stepping.
 
     Built from a loaded model, which it copies and never changes, and a rest pose in LeRobot's
-    units: the arm starts at that pose held under torque, limited only by the model's hard
-    stops, and at the model's zero where no pose is given. A stop that truncates the pose leaves
-    a sentence in `notes`. Objects start where the model's seed laid them."""
+    units: the arm starts at that pose held under torque, limited by the model's hard stops, and
+    at the model's zero where no pose is given. A stop that truncates the pose leaves a sentence
+    in `notes`, and so does a pose that puts the arm into the table or into itself, as it
+    starts or where the close parks it at the edge of `travel`, which is settled clear of them
+    before the clock starts, or refused where settling cannot clear it (`_settle`). Objects
+    start where the model's seed laid them. `travel` is each joint's travel from the arm's
+    calibration, in LeRobot's units, and `name` the robot's registered name, which that
+    refusal's command carries."""
 
-    def __init__(self, arm: ArmModel, *, rest_pose: Mapping[str, float] | None = None) -> None:
+    def __init__(
+        self,
+        arm: ArmModel,
+        *,
+        rest_pose: Mapping[str, float] | None = None,
+        name: str | None = None,
+        travel: Mapping[str, tuple[float, float]] | None = None,
+    ) -> None:
         import mujoco
 
         self.arm = arm
@@ -155,12 +203,18 @@ class ArmWorld:
         self._torque = dict.fromkeys(JOINTS, True)
         self._goal: dict[str, float] = {}
         self._diverged = self._warnings()
+        self.settled: dict[str, float] = {}
+        """Each joint the settle moved (`_settle`), at the angle it came to rest at, in LeRobot's
+        units: where the arm starts on it, the goal it holds there, and what the simulator's
+        close drives it back to in place of the rest pose, at the edge of its travel where that
+        angle is past it. Empty where the pose left the arm clear of the table and of itself."""
 
-        for name, q in self._start(rest_pose).items():
-            joint = arm.joints[name]
+        start = self._start(rest_pose)
+        for joint_name, q in start.items():
+            joint = arm.joints[joint_name]
             self._data.qpos[joint.qpos] = q
             self._data.ctrl[joint.actuator] = q
-            self._goal[name] = q
+            self._goal[joint_name] = q
         # The truth is folded in after every physics step, so it is kept in plain lists: for a
         # handful of objects and contacts, numpy's cost per call would be most of the work.
         n = len(arm.objects)
@@ -184,6 +238,7 @@ class ArmWorld:
         self._ever_lifted = [False] * n
         self._latched: dict[str, Truth] = {}
         mujoco.mj_forward(self._model, self._data)
+        self._settle(start, name, travel or {})
         self._lay()
 
     # ── the starting pose ───────────────────────────────────────────────────────────────
@@ -210,6 +265,316 @@ class ArmWorld:
                 )
             start[name] = min(max(joint.to_model(value), joint.lo), joint.hi)
         return start
+
+    def _settle(
+        self,
+        start: Mapping[str, float],
+        name: str | None,
+        travel: Mapping[str, tuple[float, float]],
+    ) -> None:
+        """Settle an arm that starts inside the table or inside itself out of them, and the pose
+        its close parks it in with it (`_settle_parked`), before the clock starts, or refuse it
+        where it cannot be. After a forward pass, before the objects are laid.
+
+        A pose is read off a real arm folded on a real table, and the model's frame is an
+        assumption (`JOINT_ZERO`, `JOINT_SIGN`), so a fold the arm really rests in can put the
+        model's fingers into the table and one link into the next. Started there, the first
+        physics step throws the parts apart, a joint pushing back at a goal inside the table
+        runs out of force, and the arm never gets back to the pose it started at: every close
+        after time had passed stalled short of it and left torque on. So where any part is in
+        by more than `START_CLEAR_M`, the physics steps for `START_SETTLE_S` with every goal
+        held and the objects out of the way, the contacts push the arm out, and it comes to
+        rest against them. Each joint that moved by more than an encoder tick then takes the
+        angle it came to rest at, within the model's stops, as its start, its goal and its rest
+        (`settled`), the way the real backend parks a joint recorded past its travel at the
+        edge of it (`LeRobotReal.rest_reachable`): the arm starts where it can be, and a close
+        drives it back there rather than into the table. The objects go back where they were,
+        and the clock starts at zero. A note names the contacts and the joints, because the
+        fold and the model disagree and only the bench can say which is wrong.
+
+        A start still in by more than `START_CLEAR_M` after the settle is refused, with the
+        contacts named. A part held against a stop or pinned by a joint that cannot move stays
+        in however long it settles, and an arm started there is jammed: its first move stalls,
+        and so does every move after it. A search for some other pose clear of the table would
+        start the arm where neither the arm nor the person put it, so the person is asked for
+        a pose the model can start at instead."""
+        before = self._intrusions()
+        if before:
+            data = self._data
+            self._step_clear(data, before, "as it starts")
+            for joint_name, joint in self.arm.joints.items():
+                # A contact can push a joint past its stop, which in MuJoCo is soft. The arm
+                # starts at the stop then, as a pose recorded past one does (`_start`), so its
+                # goal, its rest and the register the follower reads are never past it.
+                self._adopt(joint_name, float(data.qpos[joint.qpos]), start)
+            self._at_rest()
+            if after := self._intrusions():
+                raise WorldError(
+                    f"{LABEL} the rest pose puts {self._parts(before)} on the model, and "
+                    f"{START_SETTLE_S:g} s of settling still leaves {self._parts(after)}, so the "
+                    "simulated arm cannot start there: every move from it would stall. "
+                    f"{FRAME_ASSUMED}. {self._ask_for_a_pose(name)}"
+                )
+        parked, edge = self._settle_parked(start, name, travel)
+        if before or parked:
+            self.notes.append(self._settle_note(before, parked, edge, start))
+
+    def _settle_parked(
+        self,
+        start: Mapping[str, float],
+        name: str | None,
+        travel: Mapping[str, tuple[float, float]],
+    ) -> tuple[dict[tuple[int, int], float], list[str]]:
+        """Settle the pose the close parks the arm in as `_settle` settles the start, and give
+        what it put where and the joints it parks at the edge of their travel. Nothing where
+        no joint is parked there or the pose is clear.
+
+        A fold is often recorded past the travel the calibration recorded, and the close's rest
+        move cannot follow it there: the servo clamps every goal to the travel, so the real
+        backend parks such a joint at the edge of it and judges it by the half-line rule
+        (`verbs.reachable_rest_goal`), and the simulator runs that code. The fold the arm
+        starts in can be clear of the table while the same pose with one joint at that edge is
+        not, and then every run that moved that joint ended with its rest move stalled against
+        the table, the start's settle notwithstanding. So that pose is settled too, on a copy
+        of the state: the edge joints are driven from the fold to the edge at the rest move's
+        pace with every other goal held, so the arm meets the table as a rest move would rather
+        than starting inside it and being thrown out, and each other joint takes the angle it
+        came to rest at, within its travel and the model's stops, as its start, its goal and
+        its rest (`settled`): the arm starts where it can be both folded and parked, and the
+        close drives it back there.
+
+        The edge joints keep their start and the half-line rule, which is also why the parked
+        pose is judged where it came to rest and not with the edge joints at the edge: a
+        contact that stops an edge joint short of the edge, on the side of its fold, leaves it
+        at rest by that rule, and the close arrives there. Refused where an edge joint came to
+        rest on the other side, further than a reached pose may miss by, so that no close could
+        call it at rest, or where the start with the angles taken here is in the table or in
+        the arm."""
+        now = {n: j.to_lerobot(float(self._data.qpos[j.qpos])) for n, j in self.arm.joints.items()}
+        goal, clipped = reachable_rest_goal(now, dict(travel))
+        edge = [joint for joint, _, _ in clipped]
+        if not edge:
+            return {}, edge
+        parked = self._intrusions(self._posed(goal))
+        if not parked:
+            return parked, edge
+        data = copy.copy(self._data)
+        drive = {joint: goal[joint] for joint in edge}
+        self._step_clear(data, parked, f"{self._at_the_edge(edge)} as the close parks it", drive)
+        came = {n: j.to_lerobot(float(data.qpos[j.qpos])) for n, j in self.arm.joints.items()}
+        for joint_name, joint in self.arm.joints.items():
+            if joint_name not in goal or joint_name in edge:
+                continue
+            lo, hi = travel.get(joint_name, (came[joint_name], came[joint_name]))
+            self._adopt(joint_name, joint.to_model(min(max(came[joint_name], lo), hi)), start)
+        self._at_rest()
+        short = [
+            f"{joint} pushed back into its travel, at {came[joint]:.1f} degrees against an edge "
+            f"at {goal[joint]:.1f}"
+            for joint in edge
+            if not joint_at_rest(goal[joint], came[joint], now[joint])
+        ]
+        still = self._intrusions()
+        if short or still:
+            left = _listed(short) if short else f"{self._parts(still)} where it starts"
+            raise WorldError(
+                f"{LABEL} {self._at_the_edge(edge)}, where the close's rest move parks the arm, "
+                f"the rest pose puts {self._parts(parked)} on the model, and "
+                f"{START_SETTLE_S:g} s of settling leaves {left}, so the simulated arm could not "
+                f"come back to rest: every run that moved {_listed(edge)} would end with its "
+                f"rest move stalled. {FRAME_ASSUMED}. {self._ask_for_a_pose(name)}"
+            )
+        return parked, edge
+
+    @staticmethod
+    def _at_the_edge(edge: list[str]) -> str:
+        """`with shoulder_lift at the edge of the travel its calibration recorded`."""
+        if len(edge) == 1:
+            return f"with {edge[0]} at the edge of the travel its calibration recorded"
+        return f"with {_listed(edge)} at the edges of the travel their calibration recorded"
+
+    def _posed(self, pose: Mapping[str, float]) -> Any:
+        """A copy of the world's state with the joints of `pose`, in LeRobot's units, at those
+        angles within the model's stops and held there, after a forward pass: somewhere to try
+        a pose without moving the arm."""
+        data = copy.copy(self._data)
+        for joint_name, value in pose.items():
+            joint = self.arm.joints[joint_name]
+            q = min(max(joint.to_model(value), joint.lo), joint.hi)
+            data.qpos[joint.qpos] = q
+            data.ctrl[joint.actuator] = q
+        data.qvel[:] = 0.0
+        self._mj.mj_forward(self._model, data)
+        return data
+
+    def _step_clear(
+        self,
+        data: Any,
+        parts: Mapping[tuple[int, int], float],
+        where: str,
+        drive: Mapping[str, float] | None = None,
+    ) -> None:
+        """Step `data` for `START_SETTLE_S` with every goal held, so the contacts push the arm
+        out and it comes to rest against them. Each joint of `drive` is first driven to its
+        angle there, in LeRobot's units, at the rest move's pace, `MAX_STEP_DEG` a `TICK_S`, so
+        that it meets what is in its way as a rest move does rather than starting inside it.
+        The objects are taken out of the scene while it settles, so none of them props it up or
+        is thrown by it, and each goes back afterwards where the seed laid it."""
+        mj, model = self._mj, self._model
+        per_tick = max(1, round(TICK_S / self.timestep))
+        ramps = []
+        for joint_name, value in (drive or {}).items():
+            joint = self.arm.joints[joint_name]
+            was = joint.to_lerobot(float(data.ctrl[joint.actuator]))
+            steps = max(1, math.ceil(abs(value - was) / MAX_STEP_DEG))
+            ramps.append((joint, was, value, steps))
+        ticks = max((steps for _, _, _, steps in ramps), default=0)
+        objects = sorted({g for geoms in self.arm.object_geoms for g in geoms})
+        laid = [
+            (np.array(data.qpos[q : q + 7]), v)
+            for q, v in zip(self.arm.object_qpos, self.arm.object_dofs, strict=True)
+        ]
+        contype = np.array(model.geom_contype[objects])
+        conaffinity = np.array(model.geom_conaffinity[objects])
+        model.geom_contype[objects] = 0
+        model.geom_conaffinity[objects] = 0
+        try:
+            for tick in range(1, ticks + 1):
+                for joint, was, value, steps in ramps:
+                    at = was + (value - was) * min(1.0, tick / steps)
+                    data.ctrl[joint.actuator] = min(max(joint.to_model(at), joint.lo), joint.hi)
+                for _ in range(per_tick):
+                    mj.mj_step(model, data)
+            for _ in range(max(1, round(START_SETTLE_S / self.timestep))):
+                mj.mj_step(model, data)
+        finally:
+            model.geom_contype[objects] = contype
+            model.geom_conaffinity[objects] = conaffinity
+            for (qpos, v), at in zip(laid, self.arm.object_qpos, strict=True):
+                data.qpos[at : at + 7] = qpos
+                data.qvel[v : v + 6] = 0.0
+        if self._warnings(data) != self._diverged:
+            raise WorldError(
+                f"{LABEL} the physics diverged settling the arm out of {self._parts(parts)} "
+                f"{where}, so the simulator cannot start. Record a rest pose with the arm clear "
+                "of the table, or report it with the robot's rest pose."
+            )
+
+    def _adopt(self, joint_name: str, q: float, start: Mapping[str, float]) -> None:
+        """Start a joint at `q`, within the model's stops. Where that is more than an encoder
+        tick from where the pose started it, it is settled there, with its goal there too, and
+        otherwise its goal stays where the pose put it."""
+        joint = self.arm.joints[joint_name]
+        q = min(max(q, joint.lo), joint.hi)
+        self._data.qpos[joint.qpos] = q
+        moved = abs(q - start[joint_name]) > 2 * math.pi / (ENCODER_TICKS - 1)
+        self._goal[joint_name] = self._data.ctrl[joint.actuator] = q if moved else start[joint_name]
+        if moved:
+            self.settled[joint_name] = joint.to_lerobot(q)
+        else:
+            self.settled.pop(joint_name, None)
+
+    def _at_rest(self) -> None:
+        """The arm at rest where it settled, on a clock that has not started."""
+        data = self._data
+        data.qvel[:] = 0.0
+        data.qacc_warmstart[:] = 0.0
+        data.time = 0.0
+        self._mj.mj_forward(self._model, data)
+
+    @staticmethod
+    def _ask_for_a_pose(name: str | None) -> str:
+        return (
+            "Give this robot a rest pose the model can start at: quackd robot rest-pose "
+            f"{name or UNNAMED} records the model's zero, where the simulated arm starts "
+            "without one."
+        )
+
+    def _intrusions(self, data: Any = None) -> dict[tuple[int, int], float]:
+        """Each part of the arm that is inside the table or inside another of its links by
+        more than `START_CLEAR_M`, as `(part, what it is in)` bodies, the table being the world
+        body, to how deep the deepest contact between the two goes, in metres, deepest first.
+        Of two links, the part is the one further down the arm. The objects are not the arm.
+        In the world's state or `data`, after a forward pass."""
+        data = self._data if data is None else data
+        model = self._model
+        n = data.ncon
+        objects = {g for geoms in self.arm.object_geoms for g in geoms}
+        bodies = model.geom_bodyid
+        deepest: dict[tuple[int, int], float] = {}
+        for (a, b), dist in zip(
+            data.contact.geom[:n].tolist(), data.contact.dist[:n].tolist(), strict=True
+        ):
+            depth = -float(dist)
+            if depth <= START_CLEAR_M or a in objects or b in objects:
+                continue
+            one, other = int(bodies[a]), int(bodies[b])
+            pair = (max(one, other), min(one, other))  # a body's descendants come after it
+            deepest[pair] = max(deepest.get(pair, 0.0), depth)
+        return dict(sorted(deepest.items(), key=lambda item: -item[1]))
+
+    def _parts(self, intrusions: Mapping[tuple[int, int], float]) -> str:
+        """The contacts in words, each body by its name in the model: `hand 30 mm into the
+        table and jaw 3 mm into the table` on the stand-in."""
+        model = self._model
+
+        def called(body: int) -> str:
+            return "the table" if body == 0 else model.body(body).name or f"body {body}"
+
+        return _listed(
+            [
+                f"{called(part)} {depth * 1000:.0f} mm into {called(into)}"
+                for (part, into), depth in intrusions.items()
+            ]
+        )
+
+    def _settle_note(
+        self,
+        before: Mapping[tuple[int, int], float],
+        parked: Mapping[tuple[int, int], float],
+        edge: list[str],
+        start: Mapping[str, float],
+    ) -> str:
+        """The settle in the words of the stop's note: what the pose put where, as it starts
+        (`before`) and parked with the `edge` joints at the edge of their travel (`parked`),
+        where the arm starts and rests instead, and why nobody can yet say whether the pose or
+        the model is wrong.
+
+        Every joint that moved is adopted (`settled`), and the note names those that moved by
+        more than a reached pose may miss by (`TOL_DEG`), as the real backend names only the
+        clipped joints worth saying (`verbs.worth_saying`)."""
+        said = []
+        for name, value in self.settled.items():
+            joint = self.arm.joints[name]
+            was = joint.to_lerobot(start[name])
+            if abs(value - was) > TOL_DEG:
+                unit = "" if isinstance(joint, GripperMap) else " degrees"
+                said.append(f"{name} at {value:.1f}{unit} in place of {was:.1f}")
+        where = (
+            f"with {_listed(said)}"
+            if said
+            else f"with every joint within {TOL_DEG:g} degrees of the pose"
+        )
+        if not parked:
+            return (
+                f"the rest pose puts {self._parts(before)} on the model, so the simulated arm "
+                f"starts where it settles clear of them instead, {where}. {FRAME_ASSUMED}"
+            )
+        at_edge = (
+            f"with {edge[0]} at the edge of its travel"
+            if len(edge) == 1
+            else f"with {_listed(edge)} at the edges of their travel"
+        ) + ", where the close's rest move parks the arm"
+        puts = (
+            f"the rest pose puts {self._parts(before)} on the model, and {at_edge}, "
+            f"{self._parts(parked)}"
+            if before
+            else f"the rest pose, {at_edge}, puts {self._parts(parked)} on the model"
+        )
+        return (
+            f"{puts}, so the simulated arm starts and rests where it settles against them "
+            f"instead, {where}. {FRAME_ASSUMED}"
+        )
 
     # ── time ────────────────────────────────────────────────────────────────────────────
 
@@ -254,10 +619,11 @@ class ArmWorld:
                 )
         return n * timestep
 
-    def _warnings(self) -> tuple[int, ...]:
+    def _warnings(self, data: Any = None) -> tuple[int, ...]:
         w = self._mj.mjtWarning
         kinds = (w.mjWARN_BADQACC, w.mjWARN_BADQPOS, w.mjWARN_BADQVEL)
-        return tuple(int(self._data.warning[k].number) for k in kinds)
+        data = self._data if data is None else data
+        return tuple(int(data.warning[k].number) for k in kinds)
 
     # ── the joints ──────────────────────────────────────────────────────────────────────
 

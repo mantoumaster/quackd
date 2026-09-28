@@ -13,6 +13,7 @@ import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pprint import pformat
 from types import SimpleNamespace
 from typing import Any
@@ -1301,6 +1302,209 @@ async def test_a_wedged_call_refuses_every_later_call_instead_of_sharing_the_bus
         release.set()
 
 
+ANSWERED_S = 0.5
+"""The budget of a call a timing test needs answered. A budget runs from when a call is handed
+to the worker pool, and a queued call's covers the calls ahead of it too, so a worker thread
+that starts late spends it as the bus would, and a loaded runner has been seen to start one a
+tenth of a second late. The loop's stalls in these tests are twice this, so a deadline still
+falls inside them."""
+
+
+@pytest.mark.parametrize("answer", ["returns", "raises"])
+async def test_a_call_that_came_back_in_time_stands_when_the_loop_looks_late(answer: str) -> None:
+    """The event loop's thread can be busy past a call's deadline while the call is out, and
+    the worker answer in a millisecond: the deadline then fired first when the loop resumed,
+    and the answer was thrown away as a timeout. A call that finished by its deadline gives
+    what it gave, a value or its own error, and wedges nothing."""
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+
+    def read() -> str:
+        # the loop's thread is put to sleep through the deadline as soon as it gets back
+        loop.call_soon_threadsafe(time.sleep, 2 * transport.timeout_s)
+        if answer == "raises":
+            raise ConnectionError("Failed to sync read 'Present_Position'")
+        return "read"
+
+    if answer == "raises":
+        with pytest.raises(ConnectionError, match="Failed to sync read"):
+            await transport._call(read)
+    else:
+        assert await transport._call(read) == "read"
+    assert transport._wedged is None and transport.stop_error is None
+
+
+@pytest.mark.parametrize("how", ["the deadline", "a cancel"])
+async def test_a_call_still_out_wedges_and_says_which_call_and_its_budget(how: str) -> None:
+    """The other side of the same deadline: a call still out when it fires, or when the verb
+    that made it is cancelled, wedges the transport exactly as before, and a timeout names the
+    call and its budget, where it used to be a TimeoutError with nothing in it."""
+    release = threading.Event()
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=0.1)
+
+    def sync_read() -> None:
+        release.wait(5.0)
+
+    try:
+        if how == "the deadline":
+            with pytest.raises(TimeoutError) as raised:
+                await transport._call(sync_read)
+            said = str(raised.value)
+            assert said.startswith("a LeRobot call (sync_read) has not come back within 0.1 s")
+        else:
+            task = asyncio.create_task(transport._call(sync_read, deadline_s=5.0))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert transport._wedged is not None and not transport._wedged.done()
+        assert transport.stop_error is not None and "(sync_read)" in transport.stop_error
+        with pytest.raises(TransportError, match="one owner"):
+            await transport._call(lambda: None)
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize(
+    "ahead", ["came back in time", "came back and its step stalled", "held the bus past it"]
+)
+async def test_a_queued_call_spends_its_budget_on_the_bus_not_on_the_loop(ahead: str) -> None:
+    """A call queued behind another waits on the lock, and the lock's release only wakes it.
+    Where the call ahead came back well inside the queued one's budget and the loop's thread
+    then stalled past that budget, the deadline fired first when the loop resumed. With the
+    waiter still parked on the lock, the call timed out saying it never got the bus. With the
+    waiter woken by the release, which the rest of the holder's step then stalled behind, it
+    was handed the bus late and cancelled as it went out, wedging the transport and blaming the
+    arm. On a heartbeat either ends the run. The bus was free through the stall, so none of the
+    budget was spent, and the call answers. Where the call ahead really held the bus past the
+    budget, the queued call still times out saying so, and is not sent at all."""
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    queued = threading.Event()
+    sent: list[str] = []
+
+    def sync_read() -> str:
+        queued.wait(5.0)  # the call ahead is out until the queued call waits on the lock
+        if ahead == "came back in time":
+            # the loop's thread sleeps through the queued call's deadline once this is back
+            loop.call_soon_threadsafe(time.sleep, 2 * budget)
+        elif ahead == "held the bus past it":
+            time.sleep(2 * budget)
+        return "read"
+
+    async def step() -> str:
+        read = await transport._call(sync_read, deadline_s=10 * budget)
+        if ahead == "came back and its step stalled":
+            # the release has woken the queued call, which waits on this very step: the block
+            # has to be here, not a callback, which would run after the queued call went out
+            time.sleep(2 * budget)  # noqa: ASYNC251
+        return read
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    first = asyncio.create_task(step())
+    await asyncio.sleep(0)  # the call ahead holds the lock and is out on the bus
+    second = asyncio.create_task(transport._call(beat))
+    await asyncio.sleep(0)
+    queued.set()
+    if ahead == "held the bus past it":
+        with pytest.raises(TimeoutError) as raised:
+            await second
+        said = str(raised.value)
+        assert said == f"a LeRobot call (beat) waited {budget:g} s for the bus and never went out"
+        assert sent == []
+    else:
+        assert await second == "beat"
+        assert sent == ["beat"]
+    assert await first == "read"
+    assert transport._wedged is None and transport.stop_error is None
+
+
+async def test_a_queued_call_the_loop_was_late_with_keeps_its_place_on_the_wire() -> None:
+    """Calls go out in the order they were asked, however late the loop is to hand each the bus.
+    An earlier fix sent a call whose deadline fired during a stall again from the back of the
+    queue: a move asked before a hold went out after it, and a call queued behind that hold's
+    own stall timed out saying it never went out."""
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    queued = threading.Event()
+    sent: list[str] = []
+
+    def sync_read() -> str:
+        sent.append("sync_read")
+        queued.wait(5.0)
+        loop.call_soon_threadsafe(time.sleep, 2 * budget)
+        return "sync_read"
+
+    def send_action() -> str:
+        sent.append("send_action")
+        return "send_action"
+
+    def hold() -> str:
+        sent.append("hold")
+        loop.call_soon_threadsafe(time.sleep, 2 * budget)  # a second stall
+        return "hold"
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    calls = [
+        asyncio.create_task(transport._call(sync_read, deadline_s=10 * budget)),
+        asyncio.create_task(transport._call(send_action)),
+        asyncio.create_task(transport._call(hold, deadline_s=10 * budget)),
+        asyncio.create_task(transport._call(beat)),
+    ]
+    await asyncio.sleep(0)  # the first is out, and the rest wait on the lock in that order
+    queued.set()
+    asked = ["sync_read", "send_action", "hold", "beat"]
+    assert await asyncio.gather(*calls) == asked
+    assert sent == asked
+    assert transport._wedged is None and transport.stop_error is None
+
+
+async def test_a_queued_call_spends_its_budget_while_the_call_ahead_waits_for_a_thread() -> None:
+    """The bus is the call ahead's from when it is handed to the worker pool: with every pool
+    thread busy, a camera read or a frame being saved, it waits for one holding the bus, and
+    goes out as soon as one frees. A queued call's budget stood still meanwhile, so it sat out
+    the whole of the call ahead's budget and was then refused behind that call's wedge. It
+    times out on its own budget, saying it never went out, and the call ahead goes out once a
+    thread is free."""
+    transport = LeRobotReal("COM5", robot=FakeArm(), timeout_s=0.1)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    loop.set_default_executor(ThreadPoolExecutor(1))
+    free = threading.Event()
+    elsewhere = loop.run_in_executor(None, free.wait, 5.0)  # the pool's one thread is busy
+    sent: list[str] = []
+
+    def sync_read() -> str:
+        sent.append("sync_read")
+        return "sync_read"
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    first = asyncio.create_task(transport._call(sync_read, deadline_s=20 * budget))
+    await asyncio.sleep(0)  # the call ahead is handed the bus, and waits for a thread
+    try:
+        with pytest.raises(TimeoutError) as raised:
+            await transport._call(beat)
+    finally:
+        free.set()
+    said = str(raised.value)
+    assert said == f"a LeRobot call (beat) waited {budget:g} s for the bus and never went out"
+    assert await first == "sync_read"
+    assert sent == ["sync_read"]
+    assert transport._wedged is None and transport.stop_error is None
+    await elsewhere
+
+
 async def test_torque_and_temperature_are_measured_rather_than_assumed() -> None:
     arm = FakeArm()
     adapter = LeRobotAdapter(LeRobotReal("COM5", robot=arm))
@@ -2128,6 +2332,24 @@ async def test_a_transport_that_missed_its_pose_once_does_not_keep_torque_on_for
     await adapter.close()
     assert arm.torque is False, "the arm is at its pose, so torque may drop"
     assert transport.close_note is None, "nothing to warn about the second time"
+
+
+async def test_the_close_after_a_stalled_rest_move_says_the_shortfall_once() -> None:
+    """The close joined its own shortfall to the rest move's reason, and a stalled move's reason
+    begins with that same shortfall, so the line read `shoulder_lift is at 0 with a goal of -90;
+    shoulder_lift is at 0 with a goal of -90, and it has stopped moving`. It says it once, with
+    how the move ended."""
+    arm = FakeArm(step=40.0, stuck=("shoulder_lift",))
+    transport = LeRobotReal("COM5", robot=arm, rest_pose=dict(FOLDED))
+    adapter = LeRobotAdapter(transport)
+    await adapter.connect()
+    missed = await adapter.go_to_rest()
+    assert missed.how == "stalled", missed.reason
+    await adapter.close()
+    note = transport.close_note or ""
+    shortfall = missed.reason.removesuffix(", and it has stopped moving")
+    assert shortfall != missed.reason and note.count(shortfall) == 1, note
+    assert f"({missed.reason})" in note, note
 
 
 def test_a_pose_the_arm_did_not_report_is_not_a_pose_it_is_resting_in() -> None:

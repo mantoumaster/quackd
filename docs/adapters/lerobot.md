@@ -729,9 +729,57 @@ $ quackd robot twin arm-01
 `--robot arm-01-sim` is then the same travel starting from the same fold, and its memory is its
 own. The warning is the one cost, and [registry.md](../registry.md#a-simulator-of-an-arm) has
 what `twin` copies and what it refuses. The simulated arm starts at the rest pose as recorded,
-limited only by the model's own stops, so the first rest move finds it already there. A joint
-recorded past one of those stops starts at the stop, with a note, because nobody has read a
-real arm's stops against the model's yet.
+limited by the model's own stops and settled clear of its table and of itself where the pose
+puts it into either (below), so the first rest move finds it already there. A joint recorded
+past one of those stops starts at the stop, with a note, because nobody has read a real arm's
+stops against the model's yet.
+
+A fold can also put the model into its own table, or one of its links into the next, by more
+than a millimetre. Started there, the first step of physics would throw the arm out of the
+table, and it could never get back to a pose inside it, so every run that let time pass would
+end with the rest move stalled short of it and torque left on. So the simulator settles it
+first: the physics runs for a second before the clock starts, with every joint held, the
+contacts push the arm clear, and each joint that moved takes where it came to rest, within the
+model's stops, as its start, the goal it holds and the rest pose the close drives it back to.
+
+The pose the close parks the arm in is settled the same way. A joint recorded past its travel
+is parked at the edge of it ([A pose past the travel](#a-pose-past-the-travel)), and a fold that
+starts clear can put the model into its table with that one joint at the edge, so every run
+that moved the joint would end with the rest move stalled. So that pose is settled too, with
+the joint driven from the fold to the edge at the rest move's pace, and each other joint takes
+where it came to rest there as its start as well, within its travel: the arm starts where it can
+be both folded and parked. A joint settled past its travel is parked at the edge of it and
+judged there by the half-line rule, as a recorded pose past its travel is, so one the table
+stops short of the edge, on the side of its fold, is at rest where it stops. The connect names the contacts and the joints, as it did for
+the lab arm's twin, arm-01-sim:
+
+```
+·  note    the rest pose puts gripper 21 mm into the table, moving_jaw_so101_v1 13 mm into the table, lower_arm 10 mm into shoulder and wrist 3 mm into shoulder on the model, and with shoulder_lift at the edge of its travel, where the close's rest move parks the arm, gripper 10 mm into the table, moving_jaw_so101_v1 8 mm into the table, wrist 6 mm into shoulder, gripper 5 mm into shoulder and wrist_camera_mount 1 mm into shoulder, so the simulated arm starts and rests where it settles against them instead, with elbow_flex at 82.9 degrees in place of 96.4 and wrist_flex at 81.9 degrees in place of 72.2. The model's joint zeros and signs are an assumption (JOINT_ZERO, JOINT_SIGN) until the bench checks them, so the pose may be right on the arm and the model's frame wrong
+```
+
+The lab arm rests in that fold on its own bench, so the model differs from the arm somewhere: in
+where its joints are zero or which way they turn, or in where the table meets its base. Only the
+bench can say which, and [PLAN.md](../../PLAN.md) has it beside the joint zeros and signs.
+
+A fold the settle cannot clear is refused at connect instead, naming what the pose put where
+and what a second of settling left: a part held in against a stop, or pinned by a joint that
+cannot move, stays in however long it settles, and an arm started there would stall on its
+first move and every move after it. So is a fold whose parked pose no close could call at
+rest: the settle there pushes the joint at the edge back into its travel, further than a reached
+pose may miss by, or the angles it leaves put the start back in. Give the robot a rest pose the
+model can start at
+([below](#when-the-simulator-will-not-start)).
+
+The settle judges those two poses and not every way back between them. After a move that takes
+the arm off its fold, whether it lifts the arm upright, moves `shoulder_lift` within its travel
+or drags the gripper across the table, the rest move can set the gripper down on the table
+short of its settled angles. The table then holds the wrist or the elbow further from its goal
+than a reached pose may miss by, and the close says the rest move stalled and keeps torque on.
+Every such stall measured had the arm touching the table and nothing else.
+
+A close that finds the simulated arm away from its rest pose keeps torque on, as the arm's own
+does, and says there is nothing to hold, release or park, since the simulated arm ends with the
+run. A run at a terminal is not offered the release a real arm's is, for the same reason.
 
 `quackd doctor --robot arm-01-sim` connects it, which renders one small frame as every connect
 does, so it tells you before any run whether this machine can draw the scene, and it says first
@@ -828,9 +876,10 @@ sim dt 0.01 s
 A run passes when nothing escaped it, no call to the simulated bus was left hanging, its close
 ended at the rest pose (or, on a robot with no rest pose, such as a bare `lerobot:mujoco`, found
 none to return to, unless the sidecar asks `at_rest: true`), and every check in the task's
-sidecar held. The pilot's own verdict is in the `outcome` column and is not one of those: a
-pilot that says it succeeded is what is being rehearsed, not the judge of it. `--json` prints
-one object per file, and the command exits 1 unless every run passed.
+sidecar held. A close that missed the rest pose says how in the `close` column: the rest move
+was refused, stalled, or ran out of time. The pilot's own verdict is in the `outcome` column and
+is not one of those: a pilot that says it succeeded is what is being rehearsed, not the judge of
+it. `--json` prints one object per file, and the command exits 1 unless every run passed.
 
 `--faults SPEC` gives the connect cycles a seeded bus to meet: rates for `handshake`,
 `configure`, `write`, `torque`, `torque_read` and `temperature_read`, and `read_loss_from=N` for
@@ -874,7 +923,9 @@ which needs a rest pose with the jaws open down at the table. On a robot whose a
 anywhere else, the generic arm included, the connect is refused
 ([below](#when-the-simulator-will-not-start)). `mass_kg` and `rgba` are optional. `checks` are
 `at_rest` (true: the close has to end at the rest pose, so a robot with none fails it, false:
-the task leaves the arm where its rest move is refused, and the close has to be refused),
+the task leaves the arm where its rest move is refused, so a rest move that is made has to be
+refused, since one that stalls or runs out of time fails the run whatever the sidecar says,
+and a robot with no rest pose makes none and passes it),
 `joint_moved`, `lifted` (off the table, touching the gripper and up by `min_m`) and `moved` (its
 centre `min_m` from where it was laid). Every threshold is measured from the run's own start. A
 joint check reads the transcript, the readings the pilot was shown. An object check reads the
@@ -916,6 +967,8 @@ settle is listed in [PLAN.md](../../PLAN.md).
 | `adapter 'lerobot' needs an extra: uv pip install 'quackd[lerobot-sim]'` | MuJoCo is not installed here. The connect says so before anything is fetched | install the extra |
 | `lerobot mujoco: --address 'COM5' is a serial port, ...` | the address of a simulated arm is a calibration file, never a port, and nothing was opened | give `--address` the calibration file, or use `quackd robot twin`, or leave it out for the generic arm |
 | `lerobot mujoco: --camera-url '...' names '...', and the scene has no camera by that name; its cameras are front, top, wrist.` | a `?name=` the scene has no mount for | name `front`, `top` or `wrist` |
+| `lerobot mujoco: the rest pose puts ... on the model, and 1 s of settling still leaves ..., so the simulated arm cannot start there` | the rest pose puts the model into its table or into itself, and a second of settling leaves a part more than a millimetre in, held there by a stop or by a joint that cannot move. An arm started there would stall on its first move | give the robot a rest pose the model can start at: `quackd robot rest-pose NAME` records the model's zero, where the simulated arm starts without one. A twin's rest pose is its own, so the arm it copies keeps its pose |
+| `lerobot mujoco: with shoulder_lift at the edge of the travel its calibration recorded, where the close's rest move parks the arm, the rest pose puts ... on the model, and 1 s of settling leaves ..., so the simulated arm could not come back to rest` | with a joint recorded past its travel parked at the edge of it, as every close after a move of that joint parks it, the model is in its table or in itself, and a second of settling leaves that joint pushed back into its travel further than a reached pose may miss by, or the arm's start in the table or in itself | the same: give the robot a rest pose the model can start at, or calibrate again with the arm folded so the fold is inside the travel ([A pose past the travel](#a-pose-past-the-travel)) |
 | `lerobot mujoco: the scene lays block between the jaws, and as the arm starts its fixed finger ends ... above the table, over the top of block, ...` | a sidecar placed an object between the jaws, and the rest pose holds the jaws above it | give the robot a rest pose with its jaws down at the table, or lay the object on the table instead |
 | `QUACKD_LEROBOT_SIM_ASSETS=... has no so101_new_calib_camera.xml.` | the variable points somewhere without the model | point it at the `Simulation/SO101` directory of an SO-ARM100 checkout, or unset it to let quackd fetch the pinned model |
 
@@ -1943,7 +1996,7 @@ touched by anything in the first block: these all happen before or during connec
 | `lerobot real: connect failed 3 times: FeetechMotorsBus motor check failed on port ...: Missing motor IDs: - <N> ...` with every motor listed and `Full found motor list (id: model_number): {}` | no servo answered its ping on any attempt. That is what a servo supply that is switched off looks like, which is how the arm is after a power cut, and a cable out between the board and the first servo looks the same, so no joint is named | check that the servo supply is on, then the arm's cables and their connectors, and that nothing else has the port open, then connect again. Nothing was written, so the message says nothing about torque unless an earlier attempt got as far as writing |
 | `lerobot real: connect failed 3 times, the last on <joint> (id <N>): Failed to read 'Min_Position_Limit' on id_=<N> ...` (or `Max_Position_Limit`, `Homing_Offset`) | every attempt lost a reply in the calibration check LeRobot's connect makes after the handshake and before `configure()`. It reads and writes nothing, so the message says nothing about torque unless an earlier attempt got as far as writing | check that joint's cable and connectors, that the servo supply is on, and that nothing else has the port open, then connect again |
 | `lerobot real: connect stopped after attempt <k> of 3, because a stop was asked for. ...` | a Ctrl-C, or `q`, while the connect was failing. The attempt's own failure follows, LeRobot's words and the joint they name, then that the port was closed without a write and connect was not tried again | nothing to fix for the stop. Read the failure as the rows above, and where the message says some motors may be left with torque on and others off, keep a hand under the arm |
-| `lerobot real: connect failed: a LeRobot call (connect) has not come back; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm, and cut its power to let go of it: whatever torque the connect switched on stays on once quackd has exited. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
+| `lerobot real: connect failed: a LeRobot call (connect) has not come back within 30 s; ...` with `keep a hand under the arm` | the connect ran past its 30 second deadline, or LeRobot timed out itself and its own words follow `connect failed:`. It is never tried again, because its thread may still be on the bus, and it may have stopped anywhere in the torque writes | keep a hand under the arm, and cut its power to let go of it: whatever torque the connect switched on stays on once quackd has exited. Once the process has exited the port is free again; check the USB cable and that nothing else has the port open, then connect again |
 | `lerobot real: the arm is not calibrated; run LeRobot's calibration first` | LeRobot read the motors back and they do not match a calibration | run `lerobot-calibrate` under the id quackd will use, and see [the id section](#the-name-you-give-the-arm-is-its-calibration-id) |
 | `lerobot real: the arm reports no calibration file, so nothing knows how far each joint travels` | there is no file for this id | the same fix, and check the path `doctor` prints |
 | `lerobot real: connect failed once the arm was energised: ... Nothing has read where the arm is, so quackd kept whatever torque connecting switched on rather than let it go where it stands: hold the arm, and cut its power.` | LeRobot's connect went through and switched torque on, and then something that is not one of the refusals above failed: the first read of the joints, the calibration check, or the travel read out of the calibration. LeRobot's own words follow `energised:`. No read has said where the arm stands, so the port is closed with every motor still holding. In 0.14 and before this was left to the disconnect LeRobot makes as the process lets go of the arm, which could drop it | hold the arm, and cut its power. `quackd robot release` connects the same way, so it fails in the same place. Then check the cables and the servo supply for a read that failed, or run LeRobot's calibration again for a calibration quackd could not read the travel out of |
@@ -1965,7 +2018,7 @@ And once it is running:
 | `the camera gave no frame: TimeoutError: ... too old` | the webcam stalled or was unplugged | only `observe` is affected, and a `pick` in flight. The arm carries on, and `report_state` starts saying `CAMERA DOWN:` with the reason, so a run that cannot call `observe` still records it |
 | `cannot move_joints: the arm's torque is off, so a goal would reach a limp servo` | torque reads off | no verb can toggle torque either way. A fresh connect re-enables it, so torque still off after one points at a tripped servo or the supply. On a `--by-hand` run this is also what the arm reads like between the release and the moment quackd takes hold again, which is before the first turn |
 | `cannot place: nothing is held: pick something first` | the `holding` precondition | holding is inferred from the gripper stopping short of shut, so an empty hand reads as nothing held. After a `--by-hand` start it is also what a pilot gets for the pencil you put between the jaws yourself: closing the gripper by hand sets a position and not a grip, and the pilot has to close on the object itself first |
-| the run ends saying the arm did not answer | the heartbeat's round trip to the motors failed | the cable, the power, or a servo that has tripped. The arm holds its last goal under torque |
+| the run ends saying the arm did not answer | the heartbeat's round trip to the motors failed, and the words after `TimeoutError:` name the call and its budget. Before 0.15.0 there was one more cause: the event loop's thread busy past the deadline, parsing a pilot's first response or encoding a frame, while the arm answered in time, and the answer was thrown away. That was found in the simulator and never measured on an arm. An answer that came back in time is now kept, and a probe queued behind a call which came back in time keeps its place and goes out rather than failing | the cable, the power, or a servo that has tripped. The arm holds its last goal under torque |
 | the arm sags when the run ends | no rest pose is recorded, so quackd asks LeRobot's `disconnect()` for the release that is its own default, at the end of every clean session | record one: `quackd robot rest-pose <name>`. Until you do, support it or fold it somewhere it can rest before you exit |
 | `the arm is not at its rest pose (...), so torque was left on and it will not fall as it stands: hold it first, because connecting takes torque off every motor for a moment, then run quackd robot release NAME, or quackd doctor --robot NAME to park it, or cut its power` | the arm did not reach the pose you recorded, or the edge of its travel where the pose lies past it, so quackd kept torque rather than dropping it. A run at a terminal offered to release it first, and nobody pressed Enter | hold the arm before anything else, since both commands connect and connecting drops torque for a moment. Then run `quackd robot release NAME` to have it let go into your hands ([Releasing it where it stands](#releasing-it-where-it-stands)), or run `quackd doctor --robot NAME` to let the rest move try again from where it now is, or cut the servo supply. The parenthesis names the joints that fell short |
 | `quackd cannot tell whether the arm is holding itself up (the arm did not answer: ...), so it kept whatever torque the arm has: hold it, and cut its power` | the arm did not answer the close's last read, so nothing says where it is or whether its servos are powered. Cutting the supply looks exactly like this, and so does a cable that came out in front of live servos | hold it, and cut the servo supply. No offer is made at the end of a run over an arm that went quiet |
@@ -2237,7 +2290,10 @@ What went wrong, which belongs in the same breath as the above:
   could not reach a fold that lay past the calibrated travel, which is the box at the top of
   that section.
 - One dry run aborted with `the arm did not answer: TimeoutError` when a single heartbeat round
-  trip failed. It never recurred, and nothing since has explained it.
+  trip failed. It never recurred. One way that line could appear was found later, in the
+  simulator: the event loop's thread busy past the heartbeat's deadline while the arm's answer
+  was already in, which 0.15.0 fixed. Nobody measured it on the arm, so it is one cause that
+  exists and not the explanation of that day.
 - One dry run aborted because the pilot answered `uncertain` at `assess_task` and the human
   said no. That is the gate working, not a fault.
 - The camera framed the gripper and cropped the raised arm, so the model verified its own waves

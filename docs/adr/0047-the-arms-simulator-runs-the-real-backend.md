@@ -121,8 +121,65 @@ travel is the model's own range on every joint, and a connect note saying it is 
 calibration. It never falls back to that default id. An address shaped like a serial port is
 refused on its shape before anything looks at it, and a calibration is read only from a regular
 file, because on Windows `COM5` is the port itself in whatever directory it is looked for. The
-arm starts at its registered rest pose as read, limited only by the model's stops, with a note
-for any joint a stop truncates.
+arm starts at its registered rest pose as read, limited by the model's stops, with a note for
+any joint a stop truncates, and settled clear of the table and of itself where the pose puts it
+into either (below).
+
+**A start inside the table or inside the arm is settled out of it, and so is the pose the close
+parks it in, and the close drives back to where it settled, or it is refused where it cannot be
+settled clear.** The first runs with a real pilot, on 2026-09-28, found the lab arm's fold
+putting the model's fingers into the table and its lower arm into its shoulder, under the
+assumed joint zeros and signs. The first physics step threw the arm out, the elbow's actuator
+ran out of force pushing back at a goal inside the table, and every run that let sim time pass
+closed with the rest move stalled and torque on, while the scripted pilot, which lets no time
+pass, found the arm already at rest. So when the world is built it reads every contact the arm
+makes with the table and with its own links, and where any goes deeper than `START_CLEAR_M`, a
+millimetre, the physics steps for `START_SETTLE_S` of sim time before the clock starts, with
+every goal held and the objects out of the scene. Each joint that moved by more than an encoder
+tick takes the angle it came to rest at, within the model's stops, as its start, its goal
+register and, on the simulator only, the pose its close judges the rest move against, clipped
+into the travel as any recorded pose is (`LeRobotSim._rest_target`), the way the real backend
+parks a joint recorded past its travel at the edge of it. That parked pose is judged too. The
+lab arm's twin started clear after the settle and still closed short of rest after a move of
+shoulder_lift: the close parked shoulder_lift at the edge of its travel with the other joints
+where the start settled them, and that pose put the gripper into the table. So the world is
+given the travel the calibration recorded, and where the start with each joint past its travel
+at the edge of it (`verbs.reachable_rest_goal`) goes deeper than `START_CLEAR_M`, that pose is
+settled too, on a copy of the state, with the edge joints driven from the fold to the edge at
+the rest move's pace, so the arm meets the table as a rest move does: posed at the edge and
+settled from inside the table, a deep fold was thrown clear across its travel. Each other joint
+takes the angle it came to rest at, within its travel and the model's stops, as its start as
+well as its goal and rest, so one pose is both where the arm starts and where the close parks
+it, and the edge joints keep their start and the half-line rule, which counts one the table
+stops short of the edge, on the side of its fold, at rest where it stops. A connect note in the
+words of the stop's note names the contacts, how deep each was and the joints that moved further
+than a reached pose may miss by, and says the model's frame is an assumption until the bench
+checks it. A start still in by more than `START_CLEAR_M` after the settle is refused at connect,
+naming what the pose put where and what the settle left, and so is a parked pose no close could
+call at rest, an edge joint pushed back into its travel further than a reached pose may miss by
+or a start the adopted angles put back in, and the person is asked for a rest pose the model can
+start at. A part held in against a stop, or pinned by a joint that cannot move, stays in however
+long it settles, and settling again with every goal where the arm came to rest moves it no
+further: an arm started there is jammed, and its first move stalls. Such folds exist among the
+model's own stops, while the lab arm's fold settles clear. Settling was chosen over searching
+for the nearest pose with no contact because the physics already is that search, along the
+directions the contacts push, and it leaves the arm resting where gravity and the servos hold it
+rather than at a pose that merely touches nothing. A search along some other path for a start
+the settle cannot clear was rejected as well: it would start the arm at a pose neither the arm
+nor the person chose, and a twin is for rehearsing the pose its arm really rests in. Lowering
+the table would change every scene to hide one pose. A looser stall check or rest tolerance
+would pass a close that misses a pose on the arm as well, and the real backend's own judgement
+of its rest move is not changed at all. The settle judges the start and the parked pose and not
+the way back between them: after a move that takes the arm off its fold, whether it lifts the
+arm upright, moves `shoulder_lift` within its travel or drags the gripper across the table, the
+rest move can set the gripper down on the table short of its settled angles, where the table
+holds the wrist or the elbow further from its goal than a reached pose may miss by, and the
+close then reports the stall and keeps torque on. Every such stall measured had the arm
+touching the table and nothing else. Parking with some clearance above the table freed some of
+those in a trial and was not taken, because nothing measured says how much clearance an arm
+keeps. Where the fold and the model disagree is left to the bench, and so is whether the arm's
+own rest move presses its gripper into the table, which the model's did with the recorded fold
+at the edge of the lab arm's travel before the parked pose was settled.
 
 **Time is lockstep, with a participant per sleep.** `SimClock` sits on `FlockClock` and uses
 only its public calls. Every `sleep(s)` takes a fresh id, numbered in arrival order and
@@ -195,8 +252,11 @@ simulator's manifest, connected and closed a few times with the fault plan, then
 seed through the agent loop with memory off, in a loop of preflight's own that keeps the
 transport, because what a run is judged by is on it. A run passes when nothing escaped, no bus
 call was left hanging, the close ended at the rest pose, found none to return to on a robot
-without one, or was refused where the task expects that, and every check in the task's sidecar
-held. A sidecar that asks `at_rest: true` fails a robot with no rest pose. The sidecar is
+without one, or had its rest move refused where the task expects a refusal (`at_rest: false`),
+and every check in the task's sidecar held. A rest move that stalled or ran out of time fails a
+run whatever the sidecar says, and the close is named for which it was. A sidecar that asks
+`at_rest: true` fails a robot with no rest pose, and one that asks `at_rest: false` passes it,
+since no rest move was made. The sidecar is
 `<task>.sim.yaml` beside the file and never its frontmatter, which `robot_load_duckfile` hands
 an MCP pilot whole: a pilot that can read what it will be marked on is rehearsing the marking.
 It lays out the table and says what has to be so, `at_rest`, `joint_moved`, `lifted` and
@@ -248,7 +308,9 @@ MuJoCo on the CPU is enough for that.
   - Joint signs and zero offsets: nudge each real joint by a small positive angle and compare
     the direction it moves in the simulator, and read the calibrated value at each mechanical
     stop against the model's stop, which also says whether a recorded fold can be represented at
-    all. Until then a fold past a model stop is truncated at connect, with a note.
+    all. Until then a fold past a model stop is truncated at connect, and one that puts the model
+    into its table or into itself is settled out of them, each with a note, or refused where
+    settling cannot clear it.
   - The gripper on a real pen: its reading against the band that infers holding. The simulator's
     pen is a capsule in the model's physics and says nothing about that band.
   - The front and wrist cameras' extrinsics and field of view, which would replace the default

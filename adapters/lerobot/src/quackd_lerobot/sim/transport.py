@@ -11,8 +11,12 @@ through the code that will drive the arm in the lab, which is the point of rehea
 What it adds is what an arm has and a model does not:
 
 - **A world and its lifecycle.** `connect()` loads the model, lays out the scene from the seed,
-  starts the arm at its rest pose, builds the clock and renders once on the event loop, so a
-  machine that cannot draw the cameras says so at connect rather than at the first frame.
+  starts the arm at its rest pose, settled clear of the table and of itself where the pose, or
+  the pose the close parks it in at the edge of its travel, puts it into either
+  (`ArmWorld.settled`, which the rest move then drives back to, and to the edge of the travel
+  where a settled angle is past it) and refused where settling cannot clear it, builds the
+  clock and renders once on the event loop, so a machine that cannot draw the cameras says so
+  at connect rather than at the first frame.
   `close()` stops the clock and frees every renderer, the viewer and the world on the loop.
 - **Which calibration.** The file `--address` names, or for a named robot the one LeRobot
   would find under that name. A bare `--robot lerobot:mujoco` names no arm, and quackd's
@@ -46,7 +50,7 @@ from typing import Any
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, HandResult, RestResult
 from quackd.perception.color_blob import DEFAULT_FOV_DEG
 from quackd.transport.base import DuckState, HeartbeatError, TransportError
-from quackd_lerobot.real import MAX_STEP_DEG, CameraSpec, LeRobotReal
+from quackd_lerobot.real import MAX_STEP_DEG, CameraSpec, LeRobotReal, joint_ranges
 from quackd_lerobot.sim import SIM_EXTRA
 from quackd_lerobot.sim import upstream_api as so
 from quackd_lerobot.sim.camera import SimCamera, open_renderer, render
@@ -69,6 +73,7 @@ from quackd_lerobot.sim.model import (
     read_calibration,
 )
 from quackd_lerobot.sim.world import ArmWorld
+from quackd_lerobot.verbs import reachable_rest_goal
 
 PLACE_SETTLE_S = 1.0
 """How long a take-hold lets a released arm fall before it takes hold, in sim time. At the
@@ -83,11 +88,19 @@ GENERIC_ARM = (
     "own range on every joint and not any arm's calibration; give --address the file "
     "lerobot-calibrate wrote for an arm to rehearse that arm's travel"
 )
-DEFAULT_VIEWS = (
-    "the front and top cameras are quackd's default views of the table, not where any real "
-    "camera stands"
+DEFAULT_VIEWS = ("front", "top")
+"""The scene's cameras that are quackd's own views of the table rather than a camera on the
+arm, which a connect note and the state's assumptions name whenever one is open
+(`default_views`)."""
+SIM_TORQUE_LEFT_ON = (
+    "the simulated arm is not at its rest pose ({why}), so torque was left on, as the arm's own "
+    "close would leave it. There is nothing to hold, release or park: the simulated arm ends "
+    "with the run, and the next connect starts it at its rest pose again"
 )
-"""Said as a connect note and listed among the state's assumptions when either is open."""
+"""The simulator's close line for an arm it kept torque on away from its rest pose. The real
+one (`verbs.TORQUE_LEFT_ON`) tells a person to hold the arm, release it, park it with doctor or
+cut its power, none of which a simulated arm needs: its world closes with the close. What is
+left to act on is the reason, which is a rest move that missed on the arm's own code."""
 SIM_ASSUMPTIONS = (
     so.SERVO_DYNAMICS.name,
     so.JOINT_SIGN.name,
@@ -96,6 +109,24 @@ SIM_ASSUMPTIONS = (
 )
 """What every simulated arm stands in for, on top of what the real backend lists: dynamics
 nobody measured on an SO-101, and the maps from LeRobot's units onto the model."""
+
+
+def default_views(cameras: Sequence[str]) -> str | None:
+    """What a run is told about the views of the table it has open, naming those and no
+    others, or None where it has none of them: a run on front and wrist used to be told about
+    a top camera it never opened."""
+    views = [name for name in DEFAULT_VIEWS if name in cameras]
+    if not views:
+        return None
+    if len(views) == 1:
+        return (
+            f"the {views[0]} camera is quackd's default view of the table, not where any real "
+            "camera stands"
+        )
+    return (
+        f"the {' and '.join(views)} cameras are quackd's default views of the table, not where "
+        "any real camera stands"
+    )
 
 
 def default_model() -> str | Path:
@@ -253,20 +284,33 @@ class LeRobotSim(LeRobotReal):
         return arm, notes
 
     def _lay_out(self, arm: ArmModel) -> ArmWorld:
-        """The world the arm starts in: at its rest pose, with the scene's object between its
-        jaws where the scene puts one there, which is read off the arm as it starts, and every
-        other object clear of the arm and of that one (`ArmWorld.lay_clear`), so nothing is
-        moved before the pilot moves it."""
-        world = ArmWorld(arm, rest_pose=self.rest_pose)
-        jaws = self.scene.jaws if self.scene is not None else None
+        """The world the arm starts in, all of it on the calling thread: the arm at its rest
+        pose, settled clear of the table and itself where the pose puts it into either, and
+        the table laid out around it (`_lay_table`)."""
+        world = self._arm_world(arm)
         try:
-            if jaws is not None:
-                world.place_between_jaws(jaws)
-            world.lay_clear(self.seed, keep=jaws)
+            self._lay_table(world)
         except BaseException:
             world.close()
             raise
         return world
+
+    def _arm_world(self, arm: ArmModel) -> ArmWorld:
+        """The arm at its rest pose, settled clear of the table and itself where the pose, or
+        the pose the close parks it in at the edge of the travel this calibration recorded,
+        puts it into either (`ArmWorld._settle`)."""
+        travel = joint_ranges(dict(self._calibration[0]))
+        return ArmWorld(arm, rest_pose=self.rest_pose, name=self.registered_name, travel=travel)
+
+    def _lay_table(self, world: ArmWorld) -> None:
+        """The scene's object between the jaws where the scene puts one there, which is read
+        off the arm as it starts, and every other object clear of the arm and of that one
+        (`ArmWorld.lay_clear`), so nothing is moved before the pilot moves it. It only places
+        things and never steps, so a connect runs it in a worker thread."""
+        jaws = self.scene.jaws if self.scene is not None else None
+        if jaws is not None:
+            world.place_between_jaws(jaws)
+        world.lay_clear(self.seed, keep=jaws)
 
     def _render_once(self, world: ArmWorld) -> None:
         """Draw one small frame on this thread, the event loop's, and let the renderer go: a
@@ -289,7 +333,16 @@ class LeRobotSim(LeRobotReal):
         await self._shut()
         self._loop = asyncio.get_running_loop()
         arm, notes = await asyncio.to_thread(self._load)
-        world = await asyncio.to_thread(self._lay_out, arm)
+        # Built on this thread, the event loop's, where the physics steps: a rest pose that
+        # puts the arm into the table or into itself is settled out of them here, before the
+        # clock starts, or refused where it cannot be (`ArmWorld._settle`), and the jaws and
+        # the table are read off where it came to rest.
+        world = self._arm_world(arm)
+        try:
+            await asyncio.to_thread(self._lay_table, world)
+        except BaseException:
+            world.close()
+            raise
         self.sim_world = world
         self.clock = SimClock(world, realtime=self.live)
         try:
@@ -307,8 +360,8 @@ class LeRobotSim(LeRobotReal):
             await self._shut()
             raise
         notes.extend(world.notes)
-        if {"front", "top"} & set(self.camera_keys):
-            notes.append(DEFAULT_VIEWS)
+        if views := default_views(self.camera_keys):
+            notes.append(views)
         self.connect_notes.extend(notes)
 
     def _build_robot(self) -> SimFollower:
@@ -382,6 +435,30 @@ class LeRobotSim(LeRobotReal):
             with contextlib.suppress(TransportError):
                 world.latch(label)
 
+    def _rest_target(self) -> tuple[dict[str, float], dict[str, float]]:
+        """The real backend's rest pose, with each joint the world settled out of the table or
+        the arm itself at the angle it came to rest at (`ArmWorld.settled`), as it starts or as
+        the close parks it, and then clipped into the travel as any recorded pose is.
+
+        The recorded fold on such a joint is a pose the model cannot hold, so a rest move
+        driving back to it pushes the arm into the table, stalls, and every close after time
+        has passed leaves torque on. The settled angle is where the arm started and what it
+        holds. Inside the travel the joint is judged by the point rule there, because past it
+        lies the table and not a fold the half-line rule could let the arm settle toward. A
+        joint settled past its travel is parked at the edge of it and judged by the half-line
+        rule there, as a recorded pose past its travel is, and the world settled the parked
+        pose so that the joints beside it are clear there. The gripper is never in a rest goal,
+        settled or not."""
+        goal, recorded = super()._rest_target()
+        settled = self.sim_world.settled if self.sim_world is not None else {}
+        if not any(joint in recorded for joint in settled):
+            return goal, recorded
+        recorded = {joint: settled.get(joint, value) for joint, value in recorded.items()}
+        return reachable_rest_goal(recorded, self.joint_range_deg)[0], recorded
+
+    def _torque_left_on(self, why: str) -> str:
+        return SIM_TORQUE_LEFT_ON.format(why=why)
+
     async def stop(self) -> None:
         self._latch("stop")
         await super().stop()
@@ -418,7 +495,7 @@ class LeRobotSim(LeRobotReal):
         assumptions = [*state.extras.get("assumptions", []), *SIM_ASSUMPTIONS]
         if "wrist" in self.camera_keys:
             assumptions.append(so.WRIST_CAMERA_POSE.name)
-        if {"front", "top"} & set(self.camera_keys):
-            assumptions.append(DEFAULT_VIEWS)
+        if views := default_views(self.camera_keys):
+            assumptions.append(views)
         state.extras["assumptions"] = assumptions
         return state

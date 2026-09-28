@@ -151,9 +151,14 @@ what only the bench can settle.
   `--address` names the calibration file, a registered name reads the one LeRobot keeps under
   it, and a bare `--robot lerobot:mujoco` runs a generic arm with the model's own ranges and
   says so, rather than reading the calibration under `arm-01`, the id quackd gives an arm nobody
-  named. An address shaped like a serial port is refused before anything opens it. Time is
-  lockstep and moves only while something sleeps on the clock, so a pilot's thinking costs none
-  and under one seed the simulator does the same again. A `--by-hand` take-hold first lets the
+  named. An address shaped like a serial port is refused before anything opens it. The arm
+  starts at its rest pose, limited by the model's stops, and a pose that puts the model into its
+  table or into itself by more than a millimetre, as it starts or where the close parks it at the
+  edge of its travel, is settled out of them before the clock starts, with a note naming each
+  contact, and its close drives back to where it settled. A pose the settle cannot clear is
+  refused at connect, naming what is still in. Time is lockstep and
+  moves only while something sleeps on the clock, so a pilot's thinking costs none and under
+  one seed the simulator does the same again. A `--by-hand` take-hold first lets the
   released arm fall for a second of sim time, since nobody places it, and then holds or refuses
   as on the desk. The pilot is told it is on a model, the run writes no GIF, and `--live` opens
   MuJoCo's viewer.
@@ -178,7 +183,9 @@ what only the bench can settle.
   you say, with memory off. A run passes when nothing escaped it, no call to the simulated bus
   was left hanging, its close ended at the rest pose (or, on a robot with none, such as a bare
   `lerobot:mujoco`, found none to return to, unless the sidecar asks `at_rest: true`), and every
-  check in the task's sidecar held. `--faults` gives the connects a seeded bus that drops
+  check in the task's sidecar held. A close that missed says whether its rest move was refused,
+  stalled or ran out of time, and of a rest move that was made, only a refusal is what
+  `at_rest: false` expects. `--faults` gives the connects a seeded bus that drops
   packets in LeRobot's own words, from rates for `handshake`, `configure`, `write`, `torque`,
   `torque_read` and `temperature_read` and a `read_loss_from=N`. It prints a row per file and
   seed, the model's cost and the simulator's time step, `--json` prints the same, and it exits
@@ -271,6 +278,33 @@ what only the bench can settle.
   returned. The cartoon's transport and microduck's MuJoCo one sleep every task under the
   body's one id, so two MCP calls in flight could reach it. A sleep now clears only its own
   wait on the way out ([ADR-0016](docs/adr/0016-flock-lockstep-clock.md)).
+- **A LeRobot arm's heartbeat could stop a run over an answer that had come in time.** Every call
+  to the arm has a deadline, and it fired on whatever the event loop's thread found when it got
+  round to looking. That thread can be busy for a second or more while a call is out: a pilot's
+  SDK parsing its first response, or quackd encoding a frame. The worker had the arm's answer
+  in well under a millisecond, the deadline fired first when the loop resumed, and the answer
+  was dropped: `heartbeat failed: the arm did not answer: TimeoutError:`, with nothing after it,
+  and the run stopped. Each call is now stamped as it is handed to a worker thread and as it
+  comes back, and only time the bus was busy spends a call's budget. A call that came back
+  within its budget returns what it returned, and a call queued behind one that came back in
+  time keeps its place in the queue until the loop hands it the bus. A call still out when its
+  budget is spent is refused and wedges the bus exactly as before, and every timeout now names
+  the call and its budget. The frames a turn saves and the pictures the pilot is sent are
+  encoded in a worker thread too. The colour detector and the providers' SDKs still run on the
+  loop's thread. This was found and measured on `lerobot:mujoco`, which runs the same code, and
+  never on an arm. It is one way the heartbeat failure seen once on 2026-09-15 could have
+  happened, and nothing says it is the one that did.
+- **The close's warning said the arm's shortfall twice.** An arm whose rest move stalled was left
+  holding with `the arm is not at its rest pose (elbow_flex is at 40 with a goal of 90; elbow_flex
+  is at 40 with a goal of 90, and it has stopped moving)`, because the close joined its own read
+  to the rest move's reason, which begins with the same words. It says it once.
+- **Every observation a pilot was handed said its step twice**, as `[step 3/40 · step 3/40, llm
+  calls 3/40, 0.1/5 min]`, on every body. It reads `[step 3/40 · llm calls 3/40, 0.1/5 min]`,
+  and `quackd log` reads both.
+- **`quackd validate` on Windows listed files in two slash styles.** A pattern written with
+  forward slashes, as Git Bash writes one, came back with a backslash wherever the wildcard
+  matched: `docs/examples/lerobot/e00[1-5]/*.duck` listed `docs/examples/lerobot\e001\circle.duck`.
+  Its matches now come back written the way the pattern was, and so do `quackd preflight`'s.
 
 ### Removed
 
@@ -323,7 +357,13 @@ what only the bench can settle.
   1. Joint signs and zero offsets: nudge each real joint by a small positive angle and check it
      turns the same way in the simulator, and read the calibrated value at each mechanical stop
      against the model's stop. That also says whether a recorded fold can be represented at all.
-     Until then a rest pose past one of the model's stops starts at the stop, with a note.
+     Until then a rest pose past one of the model's stops starts at the stop, and one that puts
+     the model into its table or into itself, as it starts or where the close parks it at the
+     edge of its travel, starts and rests where it settles against them, each with a note, or is
+     refused where a second of settling cannot clear it. `arm-01`'s fold settles clear, and in
+     the model its rest goal, clipped into the travel, puts the gripper below the table top, so
+     the bench checks the arm's own rest move does not press the gripper into the bench before
+     that move is trusted.
   2. The gripper on a real pen: what it reads against the band that infers holding. The
      simulator's pen is a capsule in the model's physics and says nothing about that band.
   3. The front and wrist cameras' placement and field of view, which would replace the default

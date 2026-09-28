@@ -7,6 +7,7 @@ behaviour without an LLM in the room.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import re
@@ -203,6 +204,39 @@ class Transcript:
         # one step, one number, however many cameras were pointed at it
         self.frame_count += 1
         return paths
+
+    async def save_frames_off_loop(
+        self, frames: Sequence[CameraFrame], caption: str = "", *, several: bool = False
+    ) -> list[Path]:
+        """`save_frames`, with the PNGs encoded and written in a worker thread.
+
+        Encoding a frame holds the event loop's thread for as long as it takes, and a body's
+        heartbeat is waiting on that thread for an answer that has already come. The files
+        and their names are `save_frames`'s, the step's number is taken before the wait so no
+        other save can take it, and the records are written here, on the loop's thread, after
+        their files, in the order `save_frames` writes them. The worker writes files and never
+        a record, because the record is written from the loop's thread alone."""
+        one = len(frames) == 1 and not several
+        number = self.frame_count
+        self.frame_count += 1
+        self.frames_dir.mkdir(exist_ok=True)
+        named = [
+            (frame, self.frames_dir / f"{number:04d}{'' if one else f'-{frame.name}'}.png")
+            for frame in frames
+        ]
+
+        def save() -> None:
+            for frame, path in named:
+                frame.image.save(path, format="PNG")
+
+        await asyncio.to_thread(save)
+        for frame, path in named:
+            where = str(path.relative_to(self.run_dir))
+            if one:
+                self.write("frame", path=where, caption=caption)
+            else:
+                self.write("frame", path=where, caption=caption, camera=frame.name)
+        return [path for _, path in named]
 
     def save_task_images(self, images: Sequence[NamedPng]) -> list[Path]:
         """The pictures that came with the task, written once at the top of the run.
