@@ -7,7 +7,7 @@ headings of its own, Documentation and Known limitations, and this project adher
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). What a patch, a minor and a major
 mean while quackd is 0.x, and which headings make which, is in [RELEASING.md](RELEASING.md).
 
-## [Unreleased]
+## [0.16.1] — 2026-09-29
 
 0.16.1 is quackd's first patch: it carries fixes, not yet run on the arm, for five faults that
 reruns of 0.16.0 on the arm's twin found on 2026-09-29, among them a policy latency its chunks
@@ -38,9 +38,9 @@ what a version promises and how one ships.
   the last chunk, so any answer within half a chunk lands with something queued whatever latency
   was declared, and now sooner where twice the declared latency in ticks is more than that,
   which gives a step that runs past a longer latency what room the chunk has, up to twice that
-  latency where a chunk holds three. The bench paces by the same rule, and where the slowest
-  step it timed took longer than half a chunk it says a step that slow can leave the arm holding
-  still, even where the latency covers the rest.
+  latency where a chunk holds three. The bench paces by the same rule, and where the latency
+  the server declares covers what it timed but the slowest step took longer than half a chunk,
+  it says a step that slow can leave the arm holding still.
 - **The line for a verdict nobody was asked about said `(the human said go)`.** `--yes`, a
   flock's standing answer and a pipe on stdin answer the pilot's doubt without asking anybody,
   and the `assess` line said a human had, in a run whose own observation told the pilot nobody
@@ -67,11 +67,13 @@ what a version promises and how one ships.
   physics, with the object alone on the table, and refuses where the moving finger never touches
   it, saying how near it came:
   `closing the gripper stops its moving finger 0.4 mm clear of cube, which it never touches on the way`.
-  Every refusal of the jaws now says the start that works, a rest pose whose open jaws point
-  down at the table around the object.
-- **`quackd doctor` printed each joint's travel rounded out to whole degrees**, so an end could
-  read nearly a degree wider than the travel the pilot is told and the arm takes a goal at. It
-  prints the travel as the pilot is told it, to a tenth of a degree rounded inward.
+  Each refusal of the arm's start for an object between the jaws now says the start that works,
+  a rest pose whose open jaws point down at the table around the object.
+- **`quackd doctor`'s `joint_range_deg` row printed each joint's travel rounded to whole
+  degrees**, so an end could read up to half a degree wider than the travel the pilot is told
+  and the arm takes a goal at. It prints the travel as the pilot is told it, to a tenth of a
+  degree rounded inward. The advice after the table, for a rest pose past a joint's travel,
+  still names the end that joint parks at to the nearest whole degree.
 - **An adapter from a patch would have installed beside a core from before it.** Every window
   between the eight packages admitted its whole minor, `quackd>=0.16,<0.17`, and
   `scripts/set_version.py` kept it for a patch, so `quackd-lerobot` 0.16.1 would have installed
@@ -5768,7 +5770,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/rokbenko/quackd/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/rokbenko/quackd/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rokbenko/quackd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/rokbenko/quackd/compare/v0.13.0...v0.14.0

@@ -1910,9 +1910,9 @@ async def test_the_pilot_is_told_the_calibrated_travel_and_not_the_schema_bound(
 
 
 async def test_doctor_shows_each_joint_s_travel_as_the_pilot_is_told_it() -> None:
-    """`doctor` printed the travel rounded outward to whole degrees, a degree wider at either
-    end than the pilot is told and the arm accepts. It prints what the manifest publishes: to a
-    tenth, rounded inward, from the calibration the arm answered with."""
+    """`doctor` printed the travel rounded to whole degrees, so an end could read up to half a
+    degree wider than the pilot is told and the arm accepts. It prints what the manifest
+    publishes: to a tenth, rounded inward, from the calibration the arm answered with."""
     from quackd.agent.prompts import body_lines
 
     adapter = LeRobotAdapter(LeRobotReal("COM5", robot=_spanned()))

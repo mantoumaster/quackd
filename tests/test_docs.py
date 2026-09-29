@@ -2563,6 +2563,28 @@ def test_the_release_procedure_writes_outside_the_checkout_and_tags_only_what_ci
     )
 
 
+def test_releasing_md_checks_that_its_first_mypy_runs_under_3_11() -> None:
+    """Step 7 type-checks under 3.11 and 3.12, because CI's 3.12 jobs see stricter numpy
+    stubs, and its first mypy runs in whatever `.venv` is. That is 3.11 in the main checkout
+    and nothing makes it so anywhere else: 0.16.1 was cut in a worktree whose `.venv` is 3.12,
+    where the step as written would have checked 3.12 twice and said nothing. So the line
+    before that mypy fails unless the interpreter it runs in is 3.11, and the other mypy names
+    `.venv312`."""
+    steps = _releasing_section("Cutting a release")
+    fence = next(
+        fence for fence in re.findall(r"```bash\n(.*?)```", steps, flags=re.S) if "mypy" in fence
+    )
+    lines = [line.strip() for line in fence.split("\n")]
+    assert "UV_PROJECT_ENVIRONMENT=.venv312 uv run --no-sync mypy" in lines, (
+        "RELEASING.md's step 7 no longer type-checks in .venv312"
+    )
+    first = lines.index("uv run --no-sync mypy")
+    check = lines[first - 1]
+    assert check.startswith("uv run --no-sync python -c") and (
+        "sys.version_info[:2] == (3, 11)" in check
+    ), f"RELEASING.md's step 7 runs its first mypy without checking it is 3.11, after {check!r}"
+
+
 def test_releasing_md_runs_no_line_past_its_wrap() -> None:
     """RELEASING.md is read as source with a release in progress, and wraps at about 96
     columns. A prose line past 100 is one a sentence was spliced into and nobody reflowed,

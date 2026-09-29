@@ -218,9 +218,11 @@ v=0.16.1 last=0.16.0 out="$(mktemp -d)"
 
    It changes the eight `__version__` lines and every window in the eight `pyproject.toml`
    files: a patch raises each floor to itself, and a minor moves the whole window. Then the
-   copies of the window in CONTRIBUTING.md, docs/adapters.md and ADR-0037 are edited by hand. A
-   minor also moves the `Version X.Y` line under the README's Status, and LAUNCH.md's first
-   paragraph gains a sentence if the story changed.
+   copies of the window in CONTRIBUTING.md, docs/adapters.md and ADR-0037 are edited by hand,
+   and so is the version in the `policy` line of the two `quackd policy check` outputs quoted in
+   docs/adapters/lerobot.md, which a check run on the release has to print. A minor also moves
+   the `Version X.Y` line under the README's Status, and LAUNCH.md's first paragraph gains a
+   sentence if the story changed.
 4. **The changelog.** `## [Unreleased]` becomes `## [X.Y.Z] — YYYY-MM-DD`, dated the day it
    ships, so a release that is held is dated again. At the foot, `[Unreleased]:` compares
    `vX.Y.Z...HEAD`, and a new `[X.Y.Z]:` line compares the last tag with `vX.Y.Z` the way every
@@ -254,6 +256,7 @@ v=0.16.1 last=0.16.0 out="$(mktemp -d)"
    uv lock --check
    uv run --no-sync ruff check .
    uv run --no-sync ruff format --check .
+   uv run --no-sync python -c 'import sys; assert sys.version_info[:2] == (3, 11), sys.version'
    uv run --no-sync mypy
    UV_PROJECT_ENVIRONMENT=.venv312 uv run --no-sync mypy
    QUACKD_STRICT_SEEDS=1 uv run --no-sync pytest
@@ -261,10 +264,13 @@ v=0.16.1 last=0.16.0 out="$(mktemp -d)"
    uv run --no-sync quackd validate ducks/*.duck
    ```
 
-   mypy runs under 3.11 and 3.12 because CI's 3.12 jobs see stricter numpy stubs. The second
-   pytest is for what fails only on GitHub's runners, where Typer colours `--help` because
-   `GITHUB_ACTIONS` is set. The packaging check, a core wheel installed alone that must refuse
-   and say what to install, is CI's `packaging` job, and it runs in the next step.
+   mypy runs under 3.11 and 3.12 because CI's 3.12 jobs see stricter numpy stubs. `.venv` is the
+   3.11 environment in the main checkout, and nothing makes it so anywhere else, so the line
+   before the first mypy fails when it is not. In a worktree whose `.venv` is 3.12, run that
+   mypy with `UV_PROJECT_ENVIRONMENT` naming a 3.11 environment. The second pytest is for what
+   fails only on GitHub's runners, where Typer colours `--help` because `GITHUB_ACTIONS` is set.
+   The packaging check, a core wheel installed alone that must refuse and say what to install,
+   is CI's `packaging` job, and it runs in the next step.
 8. **Merge, push and wait.**
 
    ```bash

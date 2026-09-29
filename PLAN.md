@@ -54,19 +54,21 @@ before.
   2026-09-23 when its rest pose was recorded; and that checklist's *What to report*, six things
   still chosen against Feetech's documentation rather than measured
   ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
-- ⬜ **The SO-101 again, for everything in 0.14.0, 0.15.0 and 0.16.0.** The arm last ran a build
-  of the code that became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the
-  travel, `quackd robot release`, the Enter offer at the end of a run whose rest move missed, the
-  `--by-hand` refusal over a joint past its travel, the paced `move_joints` and the connect
-  retries have run only against a fake arm, `lerobot:mock` and the test suite, and what 0.15.0
-  changes in `lerobot:real`, the follower that keeps torque on a disconnect quackd did not ask
-  for among it, only against a fake arm or the simulator. What 0.16.0 changes there has run only
-  against those too, and most of it is the policy segment the learned-policy item below takes to
-  the arm. The seven bench steps that would settle 0.14.0's, in order, are under
-  *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for 0.14.0, and the one for 0.15.0's
-  follower, a second Ctrl-C during the fold back to the rest pose, is under 0.15.0's. The six
-  other changes that release made in `lerobot:real` have bench steps now, and none has run: a
-  connect quackd refuses letting go of the arm (step 6 of
+- ⬜ **The SO-101 again, for everything in 0.14.0, 0.15.0, 0.16.0 and 0.16.1.** The arm last ran
+  a build of the code that became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped
+  into the travel, `quackd robot release`, the Enter offer at the end of a run whose rest move
+  missed, the `--by-hand` refusal over a joint past its travel, the paced `move_joints` and the
+  connect retries have run only against a fake arm, `lerobot:mock` and the test suite, and what
+  0.15.0 changes in `lerobot:real`, the follower that keeps torque on a disconnect quackd did
+  not ask for among it, only against a fake arm or the simulator. What 0.16.0 changes there has
+  run only against those too, and most of it is the policy segment the learned-policy item below
+  takes to the arm. So has what 0.16.1 changes there: the connect refusing a policy server whose
+  declared latency no chunk can carry, the tick a segment asks for its next chunk on, the tick
+  its time runs out on, and the travel row of `quackd doctor`. The seven bench steps that would
+  settle 0.14.0's, in order, are under *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for
+  0.14.0, and the one for 0.15.0's follower, a second Ctrl-C during the fold back to the rest
+  pose, is under 0.15.0's. The six other changes that release made in `lerobot:real` have bench
+  steps now, and none has run: a connect quackd refuses letting go of the arm (step 6 of
   [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)), the deadline a call
   spends only while the bus is busy (steps 9 and 13), a connect that fails once the arm is
   energised keeping its torque (step 13), the close reading its flag back and saying a stalled

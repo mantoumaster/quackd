@@ -822,7 +822,7 @@ quackd policy check --policy-url http://127.0.0.1:9875 --bench --seconds 3
 
 ```text
   http://127.0.0.1:9875
-policy           scripted:sweep (quackd-policy 1, quackd 0.16.0)
+policy           scripted:sweep (quackd-policy 1, quackd 0.16.1)
 features         whatever the arm has (a scripted policy)
 rate             10 Hz, from scripted:sweep's own, the verbs' tick
 chunks           10 actions, 10 played from each
@@ -871,10 +871,10 @@ chunk, on the simulator as on the arm, and as long as a chunk every chunk lands 
 action's tick and none plays. Each refusal says the longest latency the policy's chunk allows.
 `check` of a server started with such a latency by an earlier quackd says so in its latency row,
 its bench says so rather than that the latency covers what it timed, and the arm refuses to
-connect to it, before any torque ([below](#whether-the-policy-fits-the-arm)). Where the slowest
-step a bench timed took longer than half a chunk, it says a step that slow can leave the arm
-holding still, even where the latency covers the rest, since no answer later than that is sure
-to land before the queue runs out.
+connect to it, before any torque ([below](#whether-the-policy-fits-the-arm)). Where the latency
+a server declares covers what a bench timed but the slowest step took longer than half a chunk,
+the bench says a step that slow can leave the arm holding still, since no answer later than that
+is sure to land before the queue runs out.
 
 - **A token, always.** With no `--token-file` the server writes one to `~/.quackd/policy.token`
   the first time, readable by you alone where the OS allows, and reads it after that. The
@@ -999,7 +999,7 @@ quackd policy check --policy quackd-test/tiny-act@v1 --bench --seconds 3
 
 ```text
   served here for the check, at http://127.0.0.1:53804
-policy           quackd-test/tiny-act@v1 (quackd-policy 1, quackd 0.16.0)
+policy           quackd-test/tiny-act@v1 (quackd-policy 1, quackd 0.16.1)
 features         state 6, action 6, images observation.images.front 64x48
 rate             10 Hz, from
                  quackd-test/tiny-data@ed2440c0bf574309f37e0a639e02d7b34cb2939c
