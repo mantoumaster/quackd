@@ -81,13 +81,20 @@ from quackd_lerobot import __version__
 from quackd_lerobot.policy import pipeline
 from quackd_lerobot.policy import protocol as wire
 from quackd_lerobot.policy.client import STEP_TIMEOUT_S
+from quackd_lerobot.policy.fit import (
+    LATENCY_STEP_S,
+    _ticks,
+    chunk_outrun,
+    chunk_starved,
+    latency_too_long,
+    longest_latency_s,
+)
 from quackd_lerobot.policy.loop import (
     FIRST_CHUNK_S,
     latency_ticks,
     longest_latency,
     rate_refusal,
     refill_due,
-    starved_each_chunk,
 )
 from quackd_lerobot.policy.runner import Chunk, Features, Observation, PolicyRunner
 from quackd_lerobot.policy.scripted import SCRIPTS, named
@@ -137,9 +144,6 @@ BENCH_FRAME = (640, 480)
 mode a webcam most often starts in."""
 BENCH_INSTRUCTION = "quackd policy check --bench"
 """What a bench's reset tells the policy, so a server's log says what the session was."""
-LATENCY_STEP_S = 0.01
-"""What a measured latency is rounded up to a whole number of, so the `--latency-s` it
-suggests is never shorter than what was measured, and reads as a figure somebody would type."""
 LATENCY_QUANTILE = 0.95
 """The share of the steps a bench timed that the `--latency-s` it suggests covers. It is read
 at this quantile of every step timed from its request to its chunk back, the warm one timed on
@@ -207,50 +211,6 @@ def parse_cameras(text: str | None) -> dict[str, str]:
     if len(mapped) > wire.MAX_CAMERAS:
         raise ServeRefused(f"--cameras maps {len(mapped)} cameras, and at most {wire.MAX_CAMERAS}")
     return mapped
-
-
-def chunk_outrun(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> bool:
-    """Whether a chunk of `chunk` actions that takes `latency_s` to come back lands after its
-    last action's tick. The loop plays a chunk's actions from the tick it lands at, and the
-    simulator holds each chunk back its declared latency, so it would play none of them, and
-    neither would an arm. A policy that answers one action a tick is never outrun this way."""
-    return not per_tick and latency_ticks(latency_s, rate_hz) >= chunk
-
-
-def chunk_starved(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> int:
-    """How many ticks of every chunk after a segment's first the arm would have nothing to play
-    for, for a policy whose chunks play `chunk` actions and that takes `latency_s` to answer:
-    the loop's own rule (`loop.starved_each_chunk`), so what is refused here is what a segment
-    would starve on. A policy that answers one action a tick is asked every tick and has to
-    answer within one, which the loop holds it to itself."""
-    if per_tick:
-        return 0
-    return starved_each_chunk(latency_ticks(latency_s, rate_hz), chunk)
-
-
-def longest_latency_s(rate_hz: float, chunk: int) -> float:
-    """The longest `--latency-s` a policy whose chunks play `chunk` actions can be served with
-    at `rate_hz`: half a chunk, in whole ticks, the most the loop plays without starving
-    (`loop.longest_latency`), rounded down to the `LATENCY_STEP_S` a bench suggests one in."""
-    return math.floor(longest_latency(chunk) / rate_hz / LATENCY_STEP_S + 1e-9) * LATENCY_STEP_S
-
-
-def latency_too_long(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> str | None:
-    """Why a policy whose chunks play `chunk` actions cannot be played with `latency_s` to
-    answer, said as what would happen to its chunks, or None where the loop plays it without
-    starving. `quackd policy serve` refuses such a latency, and `quackd policy check` says so
-    of a server started with one and of any latency its bench would suggest."""
-    late = latency_ticks(latency_s, rate_hz)
-    if chunk_outrun(latency_s, rate_hz, chunk, per_tick):
-        return "every chunk would land after its last action's tick and none would play"
-    if starved := chunk_starved(latency_s, rate_hz, chunk, per_tick):
-        return (
-            f"a segment asks for the next chunk only once the last has landed, "
-            f"{_ticks(late)} into it, so what is left of it lasts {chunk - late} of the "
-            f"{_ticks(late)} the next one takes to land, and the arm would have nothing to play "
-            f"for {_ticks(starved)} of every chunk"
-        )
-    return None
 
 
 def bind_refusal(bind: str, behind_tls: bool) -> str | None:
@@ -1319,10 +1279,6 @@ class BenchResult:
         if self.measured_s is None:
             return None
         return math.ceil(self.measured_s / LATENCY_STEP_S - 1e-9) * LATENCY_STEP_S
-
-
-def _ticks(n: int) -> str:
-    return f"{n} tick" if n == 1 else f"{n} ticks"
 
 
 def _percentile(values: Sequence[float], share: float) -> float:

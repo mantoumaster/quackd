@@ -38,7 +38,8 @@ program relies on without reading quackd's source.
 
 Not part of it: the README and the pages under `docs/`, the images, the examples under
 `docs/examples/`, the wording of a terminal line written for a person to read, the internal
-modules, the tests, `scripts/` and the web demo. Any release may change those.
+modules, the tests, `scripts/`, the web demo, `uv.lock` and the repository's CI and Dependabot
+configuration. Any release may change those.
 
 ## While quackd is 0.x
 
@@ -75,17 +76,21 @@ what the release is:
 | `Removed` | something gone from the surface | a minor |
 | `Fixed` | shipped behaviour brought back to what the docs or quackd's own output said it would do, a refusal of what never did, catalogue data that changes no default, a dependency or packaging fix nobody has to act on, and the safety fixes below | a patch |
 | `Security` | a vulnerability closed | a patch |
-| `Documentation` | the README, the pages under `docs/`, the examples, the images, the web demo, and a CI job or nightly that stands on its own | no bump of its own |
+| `Documentation` | the README, the pages under `docs/`, the examples, the images, the web demo, a CI job or nightly that stands on its own, and a refresh of `uv.lock` or of the tooling that makes one | no bump of its own |
 | `Known limitations` | what the release does not do, written as it ships | no bump of its own |
 
 So `[Unreleased]` with an entry under any of the first four is a minor, and with only `Fixed`,
 `Security` and `Documentation` it is a patch. An entry about the docs, the examples or the
 images goes under `Documentation` whatever it does to them, a new page, a corrected sentence or
 a deleted picture, so it never raises the bump. That is where the bench steps, the two grasp
-sidecars and the corrected pages written after 0.16.0 are filed. A test, a CI job or a script
-is said in the entry of the change it checks. One that stands on its own, such as a new nightly
+sidecars and the corrected pages written after 0.16.0 are filed. A test, a CI job or a script is
+said in the entry of the change it checks. One that stands on its own, such as a new nightly
 job, goes under `Documentation` too, since what it changes is the evidence the pages cite and
-not what quackd does.
+not what quackd does. So does a refresh of `uv.lock`, a Dependabot pull request among them, and
+a change to the tooling that makes one. The lock is what a checkout and CI install, and a
+wheel's requirements are its `pyproject.toml`'s, so a refresh changes no requirement a user
+installs against. A floor raised in a `pyproject.toml` does, and is filed by what it asks of a
+user.
 
 The line between `Fixed` and `Changed` is whether what changed worked. A fix may change how
 something the pages describe works inside, since the pages are not the surface, and it may
@@ -149,17 +154,20 @@ exception still holds.
 
 - **Eight distributions, one version, released together,** even when only one of them changed,
   so nobody has to work out which `quackd-lerobot` goes with which `quackd`.
-- **A patch keeps every window, and a minor or a major moves them.** Each adapter allows its
-  core's minor (`quackd>=X.Y,<X.Y+1`), and each of the core's extras allows its adapter's.
-  `scripts/set_version.py X.Y.Z` writes both from the major and the minor alone, so for a patch
-  it rewrites the eight `__version__` lines and nothing else, and for a minor it moves the
-  windows in all eight `pyproject.toml` files too. The window quoted in prose, in
-  CONTRIBUTING.md, docs/adapters.md and ADR-0037, is edited by hand at a minor.
-- **So a patch has to work beside every other package of its minor.** Both windows admit the
-  whole minor, so `quackd-lerobot` 0.16.1 installs beside `quackd` 0.16.0, and `quackd` 0.16.1
-  beside `quackd-lerobot` 0.16.0. An adapter's fix may not need anything the core gained in the
-  same patch, and the core's fix may not break an adapter from the minor's first release. A fix
-  that needs both to move together is a minor.
+- **Every window starts at the release it ships in.** Each adapter allows the core from its own
+  release up to the next minor (`quackd>=X.Y.Z,<X.Y+1`), and each of the core's extras allows
+  its adapter's the same way. `scripts/set_version.py X.Y.Z` writes both from the whole version,
+  beside the eight `__version__` lines, so a patch raises every floor in the eight
+  `pyproject.toml` files to itself, and a minor or a major moves the whole window. The window
+  quoted in prose, in CONTRIBUTING.md, docs/adapters.md and ADR-0037, is edited by hand at every
+  release.
+- **So an adapter from a patch never installs beside a core from before it.** `quackd-lerobot`
+  0.16.1 needs `quackd` 0.16.1 or a later 0.16, and `quackd[lerobot]` 0.16.1 installs
+  `quackd-lerobot` 0.16.1 or a later 0.16, so an adapter's fix may need what the core gained in
+  the same patch. An installer that upgrades the adapter upgrades the core with it, so the
+  raised floor asks nothing of anybody. The other way round still installs: `quackd` 0.16.1
+  upgraded on its own beside `quackd-lerobot` 0.16.0 is inside that adapter's window, so the
+  core's fix may not break an adapter from earlier in its minor. A fix that would is a minor.
 - **A patch is cut from `main`** when `main` holds nothing above patch level since the last
   tag, which its `[Unreleased]` headings say. Otherwise it is cut from the last tag, on its own
   `release/X.Y.Z` branch with the fixes brought over, and merged back into `main` once it has
@@ -208,9 +216,10 @@ v=0.16.1 last=0.16.0 out="$(mktemp -d)"
    uv lock
    ```
 
-   A patch changes the eight `__version__` lines and nothing else. A minor also moves the
-   windows. Then the copies of the window in CONTRIBUTING.md, docs/adapters.md and ADR-0037 are
-   edited by hand, the `Version X.Y` line under the README's Status moves, and LAUNCH.md's first
+   It changes the eight `__version__` lines and every window in the eight `pyproject.toml`
+   files: a patch raises each floor to itself, and a minor moves the whole window. Then the
+   copies of the window in CONTRIBUTING.md, docs/adapters.md and ADR-0037 are edited by hand. A
+   minor also moves the `Version X.Y` line under the README's Status, and LAUNCH.md's first
    paragraph gains a sentence if the story changed.
 4. **The changelog.** `## [Unreleased]` becomes `## [X.Y.Z] — YYYY-MM-DD`, dated the day it
    ships, so a release that is held is dated again. At the foot, `[Unreleased]:` compares

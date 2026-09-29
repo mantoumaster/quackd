@@ -1,6 +1,6 @@
 # ADR-0049: A version says what changed
 
-**Status:** accepted · **Date:** 2026-09-29 · Extends [ADR-0037](0037-adapters-are-their-own-packages.md) (eight distributions, one version between them, set by `scripts/set_version.py`: a patch now keeps the windows it writes and a minor moves them) · Documented in [RELEASING.md](../../RELEASING.md), [CONTRIBUTING.md](../../CONTRIBUTING.md#versions-and-releases) and the header of [CHANGELOG.md](../../CHANGELOG.md)
+**Status:** accepted · **Date:** 2026-09-29 · Extends [ADR-0037](0037-adapters-are-their-own-packages.md) (eight distributions, one version between them, set by `scripts/set_version.py`: every window now starts at the release it ships in, so a patch raises each floor to itself and a minor moves the whole window) · Documented in [RELEASING.md](../../RELEASING.md), [CONTRIBUTING.md](../../CONTRIBUTING.md#versions-and-releases) and the header of [CHANGELOG.md](../../CHANGELOG.md)
 
 ## Context
 
@@ -15,7 +15,7 @@ a person upgrading wants to know, which is whether the upgrade asks anything of 
 
 The changelog's header said the project adheres to Semantic Versioning, which is true and
 promises nothing: while the major is 0, anything may change at any time. The machinery for a
-patch had existed since ADR-0037, because `scripts/set_version.py` writes each window from the
+patch had existed since ADR-0037, because `scripts/set_version.py` wrote each window from the
 major and the minor alone, and no release had used it.
 
 After 0.16.0, `main` held a docs commit and a few small fixes were on their way. Cutting them
@@ -51,7 +51,9 @@ and guarded by a test, a body has taken its bench checklist to the end on real h
 deprecation path exists, and the registry and the records carry versions an older file is read
 by. After it, Semantic Versioning proper, with the safety exception kept.
 
-**The eight distributions are always released together, and a patch keeps every window.**
+**The eight distributions are always released together, and every window starts at the release
+it ships in,** `>=X.Y.Z,<X.Y+1`. A patch raises each floor to itself, so an adapter from a patch
+never installs beside a core from before it, and a minor moves the whole window.
 
 [RELEASING.md](../../RELEASING.md) holds the rules in full, the surface item by item, the table
 of headings, what each 1.0.0 condition still lacks, and the order a release is cut in, which
@@ -74,10 +76,10 @@ checks.
 
 **A minor for every release**, which is what sixteen releases did. It makes a release of fixes
 look like a release that asks something of you, so every upgrade has to be read before it is
-taken. It also moves every window each time, and the windows are what a third party's adapter
-pins: docs/adapters.md tells its author to allow one minor of the core, so a minor for a fix
-breaks their window when nothing in the interface changed, where a patch lets them take the fix
-with no release of their own.
+taken. It also moves the core out of the window a third party's adapter pins: docs/adapters.md
+tells its author to allow one minor of the core, so a minor for a fix breaks their window when
+nothing in the interface changed, where a patch lets them take the fix with no release of their
+own.
 
 ## Consequences
 
@@ -89,9 +91,12 @@ with no release of their own.
   none of them, when any section uses a heading the rule does not name or one twice, and when a
   release's compare link breaks the file's pattern. No test can tell whether an entry sits
   under the right heading. That is review, and CONTRIBUTING.md says what a pull request files.
-- Both windows admit a whole minor, so any two packages of one minor install together. A patch
-  to an adapter may not need anything the core gained in the same patch, and a fix that needs
-  both to move together is a minor.
+- Every window starts at the release it ships in. An adapter from a patch needs the core from
+  the same patch or later in its minor, so its fix may need what the core gained in that patch.
+  A core from a patch still installs beside an adapter from earlier in its minor, whose window
+  admits it, so the core's fix may not break one, and a fix that would is a minor.
+  `tests/test_workspace.py` fails on a window that does not start at the release or end before
+  the next minor, and runs `scripts/set_version.py` on a copy for a patch and for a minor.
 - A patch cut from the last tag, while `main` holds work above patch level, tags its own
   release commit rather than a merge into `main`. `ci.yml` ran only on pushes to `main`, on
   tags and on pull requests, so no run would have seen that commit before its tag was public.
@@ -99,5 +104,6 @@ with no release of their own.
   before it is tagged.
 - The release checklist left PLAN.md, which keeps a line pointing at RELEASING.md, and
   ADR-0037 carries a note that points here.
-- Nothing in quackd's code changed. `scripts/set_version.py`'s docstring now says what it
-  already did for a patch, and `ci.yml` gained the release branches.
+- Nothing in quackd's code changed. `scripts/set_version.py` writes each window's floor as the
+  whole version where it wrote the major and the minor alone, and reads a window written either
+  way, and `ci.yml` gained the release branches.

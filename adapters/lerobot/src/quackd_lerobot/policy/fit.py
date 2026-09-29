@@ -22,20 +22,32 @@ arm's calibration file, and the slack past it is the backend's own (`real.OUT_OF
   better (`accept_other_frame`, which `--accept-other-frame` sets). Its goals are clipped to
   this arm's travel either way, so the override lets the policy connect and never moves the
   arm anywhere it could not go without it.
+- **The latency** the server declares is one its chunks can carry, at most half a chunk, as
+  `quackd policy serve` holds it to (`latency_too_long`). A segment asks for the next chunk
+  only once the last has landed, so past half a chunk the arm has nothing to play for part of
+  every chunk. `serve` refuses such a latency, and a server an earlier quackd started may still
+  declare one, so the connect refuses it too, naming the ticks every chunk would leave the arm
+  nothing to play for and the longest latency that fits. Nothing overrides it.
 
-This module needs nothing but the protocol's messages, so it runs in the arm's process, which
-never imports torch.
+This module needs nothing but the protocol's messages and the loop's arithmetic
+(`loop.starved_each_chunk`), so it runs in the arm's process, which never imports torch.
+`quackd policy serve` and `quackd policy check` judge a latency with the same functions.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from quackd_lerobot.policy import protocol as wire
+from quackd_lerobot.policy.loop import latency_ticks, longest_latency, starved_each_chunk
 
 POS = ".pos"
 """What a motor's name is followed by in LeRobot's observation and action keys."""
+LATENCY_STEP_S = 0.01
+"""What a measured latency is rounded up to a whole number of, so the `--latency-s` a bench
+suggests is never shorter than what was measured, and reads as a figure somebody would type."""
 
 
 class PolicyMisfit(ValueError):
@@ -53,6 +65,76 @@ class Fit:
 
 def _joined(names: Sequence[str]) -> str:
     return ", ".join(names) if names else "none"
+
+
+def _ticks(n: int) -> str:
+    return f"{n} tick" if n == 1 else f"{n} ticks"
+
+
+# ── what a latency leaves a segment to play ─────────────────────────────────────────────
+
+
+def chunk_outrun(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> bool:
+    """Whether a chunk of `chunk` actions that takes `latency_s` to come back lands after its
+    last action's tick. The loop plays a chunk's actions from the tick it lands at, and the
+    simulator holds each chunk back its declared latency, so it would play none of them, and
+    neither would an arm. A policy that answers one action a tick is never outrun this way."""
+    return not per_tick and latency_ticks(latency_s, rate_hz) >= chunk
+
+
+def chunk_starved(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> int:
+    """How many ticks of every chunk after a segment's first the arm would have nothing to play
+    for, for a policy whose chunks play `chunk` actions and that takes `latency_s` to answer:
+    the loop's own rule (`loop.starved_each_chunk`), so what is refused here is what a segment
+    would starve on. A policy that answers one action a tick is asked every tick and has to
+    answer within one, which the loop holds it to itself."""
+    if per_tick:
+        return 0
+    return starved_each_chunk(latency_ticks(latency_s, rate_hz), chunk)
+
+
+def longest_latency_s(rate_hz: float, chunk: int) -> float:
+    """The longest `--latency-s` a policy whose chunks play `chunk` actions can be served with
+    at `rate_hz`: half a chunk, in whole ticks, the most the loop plays without starving
+    (`loop.longest_latency`), rounded down to the `LATENCY_STEP_S` a bench suggests one in."""
+    return math.floor(longest_latency(chunk) / rate_hz / LATENCY_STEP_S + 1e-9) * LATENCY_STEP_S
+
+
+def latency_too_long(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> str | None:
+    """Why a policy whose chunks play `chunk` actions cannot be played with `latency_s` to
+    answer, said as what would happen to its chunks, or None where the loop plays it without
+    starving. `quackd policy serve` refuses such a latency, `quackd policy check` says so of a
+    server started with one and of any latency its bench would suggest, and the arm's connect
+    refuses a server that declares one (`fit`)."""
+    late = latency_ticks(latency_s, rate_hz)
+    if chunk_outrun(latency_s, rate_hz, chunk, per_tick):
+        return "every chunk would land after its last action's tick and none would play"
+    if starved := chunk_starved(latency_s, rate_hz, chunk, per_tick):
+        return (
+            f"a segment asks for the next chunk only once the last has landed, "
+            f"{_ticks(late)} into it, so what is left of it lasts {chunk - late} of the "
+            f"{_ticks(late)} the next one takes to land, and the arm would have nothing to play "
+            f"for {_ticks(starved)} of every chunk"
+        )
+    return None
+
+
+def _latency_misfit(info: wire.PolicyInfo) -> str | None:
+    """Why no segment could play the latency the server declares, said after the policy's
+    name, or None. `quackd policy serve` refuses such a latency, and a server an earlier quackd
+    started may still declare one, whatever policy it serves."""
+    rate, chunk = float(info.rate_hz), info.n_action_steps
+    why = latency_too_long(info.latency_s, rate, chunk, info.per_tick)
+    if why is None:
+        return None
+    return (
+        f"declares {info.latency_s:g} s to answer, {_ticks(latency_ticks(info.latency_s, rate))} "
+        f"at {rate:g} Hz, and each chunk plays {chunk} actions, one a tick, so {why}. quackd "
+        "policy serve refuses such a latency, and a server an earlier quackd started may still "
+        "declare one: start it again with a --latency-s of at most "
+        f"{longest_latency_s(rate, chunk):g} s, half a chunk's {_ticks(longest_latency(chunk))}, "
+        "or serve the policy where it answers faster"
+    )
 
 
 def fit(
@@ -80,6 +162,10 @@ def fit(
 
     def refused(why: str) -> Fit:
         return Fit(f"the policy at {where}, {info.policy}, {why}", tuple(notes))
+
+    # the latency, which is the server's and no arm's: one no segment could play
+    if (misfit := _latency_misfit(info)) is not None:
+        return refused(misfit)
 
     # the state and the action, by count and, where the checkpoint says, by name
     for what, size in (("state", features.state), ("action", features.action)):
@@ -176,4 +262,13 @@ def fit(
     return Fit(None, tuple(notes))
 
 
-__all__ = ["Fit", "PolicyMisfit", "fit"]
+__all__ = [
+    "LATENCY_STEP_S",
+    "Fit",
+    "PolicyMisfit",
+    "chunk_outrun",
+    "chunk_starved",
+    "fit",
+    "latency_too_long",
+    "longest_latency_s",
+]

@@ -1750,6 +1750,58 @@ async def test_a_policy_the_server_swaps_in_after_the_connect_starts_no_segment(
         _stop(serving)
 
 
+async def test_a_latency_no_chunk_can_carry_refuses_the_connect_before_torque() -> None:
+    """`quackd policy serve` refuses a latency past half a chunk, and a server an earlier quackd
+    started with one still declares it. The arm's connect refuses such a server before any
+    torque, with the ticks of every chunk the arm would have nothing to play for, the loop's own
+    count, and the longest latency that fits. That latency connects, and a server started again
+    past it on the same port starts no segment. The check reads only what the server declares:
+    a chunk's whole span is refused as none playing, and a policy asked every tick is held to a
+    tick by the loop and never to half a chunk."""
+    runner, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    rate, chunk = info.rate_hz, info.n_action_steps
+    half = longest_latency(chunk)
+    over = (half + 1) / rate
+    starved = starved_each_chunk(half + 1, chunk)
+    assert latency_ticks(over, rate) == half + 1 and starved > 0
+    fits = S.longest_latency_s(rate, chunk)
+    old = wire.validate(wire.PolicyInfo, {**info.model_dump(), "latency_s": over})
+    app_ = S.PolicyServer(runner, old, TOKEN)
+    serving = Serving(app_, S.serve(app_, "127.0.0.1", 0))
+    try:
+        said, arm, camera = await _refused(serving)
+        assert f"declares {over:g} s to answer" in said, said
+        assert f"nothing to play for {starved} ticks of every chunk" in said, said
+        assert f"--latency-s of at most {fits:g} s" in said, said
+        assert "The arm was not touched" in said, said
+        assert not arm.connected and not arm.torque_retries and not camera.connected
+        serving.app.info = old.model_copy(update={"latency_s": fits})
+        arm, _, transport = _camera_arm(serving.client())
+        await transport.connect()
+        loop = transport._policy_loop
+        assert loop is not None
+        try:
+            assert isinstance(await loop.start("reach", STEP), Plan), "half a chunk connects"
+            serving.app.info = old
+            again = await loop.start("reach", STEP)
+            assert isinstance(again, str) and "PolicyMisfit" in again, again
+            assert f"nothing to play for {starved} ticks of every chunk" in again, again
+        finally:
+            await transport.close()
+    finally:
+        _stop(serving)
+        serving.app.close()
+
+    def verdict(**said: Any) -> str | None:
+        declared = wire.validate(wire.PolicyInfo, {**info.model_dump(), **said})
+        return fit(declared, motors=JOINTS, cameras=[], travel={}, slack_deg=0, where="x").refusal
+
+    outrun = verdict(latency_s=chunk / rate)
+    assert outrun is not None and "none would play" in outrun, outrun
+    assert verdict(latency_s=over, per_tick=True) is None
+    assert verdict(latency_s=fits) is None
+
+
 async def test_a_frame_of_another_size_is_refused_unless_it_is_accepted() -> None:
     image = {"key": IMAGE_KEY, "height": CAMERA_HEIGHT // 2, "width": CAMERA_WIDTH // 2}
     serving = _as_checkpoint(

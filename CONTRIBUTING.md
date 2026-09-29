@@ -37,14 +37,16 @@ extra once reached a release. Change a dependency anywhere, run `uv lock`, and c
 `uv.lock` with the change that caused it.
 
 Versions move together. The core and each adapter carry their own `__version__`, because an
-adapter's sdist holds only its own source and cannot read the core's, and each one pins a
-window on the core (`quackd>=0.16,<0.17`). `uv run python scripts/set_version.py X.Y.Z`
-rewrites all eight and the windows that tie them together in `pyproject.toml`: a patch leaves
-the windows where they are, and a minor moves them. It cannot reach prose, so at a minor the
-copies of that window quoted in this file and in the docs are the part a release still edits by
-hand. A release then builds eight wheels and eight sdists with `uv build --all-packages`, core
-first to PyPI because every adapter depends on it. [RELEASING.md](RELEASING.md) says when a
-release is a patch, a minor or a major, and the order it is cut in.
+adapter's sdist holds only its own source and cannot read the core's, and each one pins a window
+on the core (`quackd>=0.16,<0.17`). `uv run python scripts/set_version.py X.Y.Z` rewrites all
+eight and the windows that tie them together in `pyproject.toml`, each starting at the release
+itself: a patch raises every floor to itself, so an adapter from a patch never installs beside a
+core from before it, and a minor moves the whole window. It cannot reach prose, so at every
+release the copies of that window quoted in this file and in the docs are the part a release
+still edits by hand. A release then builds eight wheels and eight sdists with
+`uv build --all-packages`, core first to PyPI because every adapter depends on it.
+[RELEASING.md](RELEASING.md) says when a release is a patch, a minor or a major, and the order
+it is cut in.
 
 `uv run mypy` checks with whatever interpreter your venv has. CI runs it twice,
 under 3.11 and 3.12, and `[tool.mypy]` pins no `python_version` on purpose (pinning 3.11
@@ -370,9 +372,10 @@ what the next release is:
   demo, which never raise it.
 
 A test or a CI job goes in the entry of the change it checks, and one that stands on its own,
-such as a nightly, goes under `Documentation`. If you are not sure where yours goes, say so in
-the pull request and it will be filed for you. [RELEASING.md](RELEASING.md) has the whole rule,
-what the surface is, and the order a release is cut in.
+such as a nightly, goes under `Documentation`, and so does a refresh of `uv.lock`, which changes
+no requirement a user installs against. If you are not sure where yours goes, say so in the pull
+request and it will be filed for you. [RELEASING.md](RELEASING.md) has the whole rule, what the
+surface is, and the order a release is cut in.
 
 ## How your PR gets handled
 

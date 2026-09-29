@@ -4,11 +4,12 @@ The core and each adapter carry their own `__version__`, because an adapter's sd
 only its own source and cannot read the core's. They are released together and must not
 drift, so this writes all of them and the dependency windows that tie them together.
 
-A window is written from the major and the minor alone, `>=X.Y,<X.Y+1`. So a patch keeps
-every window where it was and changes the eight versions and nothing else, and a minor or a
-major moves them all. That is what lets any two packages of one minor install together, and
-why a patch to one of them may not need anything another gained in the same patch
-(RELEASING.md).
+A window starts at the release itself and ends before the next minor, `>=X.Y.Z,<X.Y+1`. So a
+patch raises every window's floor to itself, and a minor or a major moves the whole window. An
+adapter from a patch can never be installed beside a core from before it, so its fix may need
+what the core gained in the same patch, while a core from a patch still installs beside an
+adapter from earlier in its minor, whose window admits it (RELEASING.md). A window written
+before 0.16.1, from the major and the minor alone (`>=X.Y,<X.Y+1`), is rewritten the same way.
 
     uv run python scripts/set_version.py 0.16.1
 """
@@ -21,7 +22,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 VERSION = re.compile(r'^__version__ = "\d+\.\d+\.\d+"$', re.M)
-WINDOW = re.compile(r'"quackd(-[a-z-]+)?(\[[a-z]+\])?>=\d+\.\d+,<\d+\.\d+"')
+WINDOW = re.compile(r'"quackd(-[a-z-]+)?(\[[a-z]+\])?>=\d+\.\d+(?:\.\d+)?,<\d+\.\d+"')
 
 
 def version_files() -> list[Path]:
@@ -35,7 +36,6 @@ def main(argv: list[str]) -> int:
         return 2
     new = argv[1]
     major, minor_num, _ = new.split(".")
-    minor = f"{major}.{minor_num}"
     nxt = f"{major}.{int(minor_num) + 1}"
 
     for path in version_files():
@@ -51,11 +51,11 @@ def main(argv: list[str]) -> int:
     for path in [REPO / "pyproject.toml", *sorted(REPO.glob("adapters/*/pyproject.toml"))]:
         text = path.read_text(encoding="utf-8")
         fixed = WINDOW.sub(
-            lambda m: f'"quackd{m.group(1) or ""}{m.group(2) or ""}>={minor},<{nxt}"', text
+            lambda m: f'"quackd{m.group(1) or ""}{m.group(2) or ""}>={new},<{nxt}"', text
         )
         if fixed != text:
             path.write_text(fixed, encoding="utf-8", newline="\n")
-            print(f"{path.relative_to(REPO)}: pins now >={minor},<{nxt}")
+            print(f"{path.relative_to(REPO)}: pins now >={new},<{nxt}")
     print("\nnow run: uv lock")
     return 0
 

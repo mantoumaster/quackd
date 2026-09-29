@@ -870,10 +870,11 @@ once the last has landed, so past half a chunk the arm has nothing to play for p
 chunk, on the simulator as on the arm, and as long as a chunk every chunk lands after its last
 action's tick and none plays. Each refusal says the longest latency the policy's chunk allows.
 `check` of a server started with such a latency by an earlier quackd says so in its latency row,
-and its bench says so rather than that the latency covers what it timed. Where the slowest step
-a bench timed took longer than half a chunk, it says a step that slow can leave the arm holding
-still, even where the latency covers the rest, since no answer later than that is sure to land
-before the queue runs out.
+its bench says so rather than that the latency covers what it timed, and the arm refuses to
+connect to it, before any torque ([below](#whether-the-policy-fits-the-arm)). Where the slowest
+step a bench timed took longer than half a chunk, it says a step that slow can leave the arm
+holding still, even where the latency covers the rest, since no answer later than that is sure
+to land before the queue runs out.
 
 - **A token, always.** With no `--token-file` the server writes one to `~/.quackd/policy.token`
   the first time, readable by you alone where the OS allows, and reads it after that. The
@@ -1053,6 +1054,12 @@ each camera's size is a frame it just gave, and the travel is the calibration fi
   goals that pin this one at its limits, so it is refused, naming each joint with its
   percentiles and its travel. A checkpoint that reports no percentiles is let through, and the
   record says it was not checked.
+- **The latency** the server declares. `quackd policy serve` refuses one longer than half a
+  chunk's actions, rounded down, take to play
+  ([above](#a-policy-in-a-process-of-its-own-quackd-policy-serve)), and a server an earlier
+  quackd started may still declare one. The connect refuses it, saying how many ticks of every
+  chunk the arm would have nothing to play for and the longest `--latency-s` to start the server
+  again with. Nothing overrides it.
 
 **`--accept-other-frame`** overrides the frame of reference, on `quackd run`, `quackd preflight`
 and `quackd serve-mcp`, beside `--policy-url`, and is refused without it. It lets a policy

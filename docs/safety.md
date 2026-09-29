@@ -521,7 +521,8 @@ write says nothing about what that write did.
   [adapters/lerobot.md](adapters/lerobot.md#the-policies-upstream-lerobot-061)). The server's
   answers move the arm, so it wants a token on every request and binds loopback unless a TLS
   proxy stands in front of it, and the arm checks at connect, before any torque, that the policy
-  fits this arm's motors, cameras and calibrated travel ([policies.md](policies.md),
+  fits this arm's motors, cameras and calibrated travel, and that the latency its server
+  declares is one its chunks can carry ([policies.md](policies.md),
   [SECURITY.md](../SECURITY.md)). A server that stops answering ends the segment with the arm
   held, starved on the arm and on the client's own deadline on the simulator. What no bench has
   measured yet is how fast its loop runs on the real bus while the same laptop infers.

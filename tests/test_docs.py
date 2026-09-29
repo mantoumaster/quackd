@@ -2480,6 +2480,43 @@ def test_releasing_md_contributing_md_and_the_guard_file_every_entry_alike() -> 
         assert kind in fixed, f"CONTRIBUTING.md files {kind} under a heading that makes a minor"
 
 
+def test_a_lock_refresh_raises_no_bump_and_dependabot_writes_only_the_lock() -> None:
+    """0.16.1 took Dependabot's grouped refresh of `uv.lock` (#31), and RELEASING.md's table had
+    no row for one: `Fixed` takes a dependency fix, which a refresh is not, and nothing else in
+    the table named a dependency. A refresh changes what a checkout and CI install and no
+    requirement a user installs against, since a wheel's requirements are its `pyproject.toml`'s,
+    so the table files it under `Documentation`, which raises no bump, the rule says why,
+    CONTRIBUTING.md tells a pull request the same, and the lock is not on the surface. What
+    makes that true of Dependabot's pull requests is its `lockfile-only` strategy for uv, which
+    never writes a `pyproject.toml`, so this fails if the strategy goes."""
+    rules = _releasing_section("While quackd is 0.x")
+    rows = re.findall(r"^\| `([^`]+)` \| (.+?) \| (.+?) \|$", rules, flags=re.M)
+    filed = {heading: release for heading, what, release in rows if "`uv.lock`" in what}
+    assert filed == {"Documentation": "no bump of its own"}, (
+        f"RELEASING.md's table files a refresh of uv.lock as {filed}"
+    )
+    why = "a refresh changes no requirement a user installs against"
+    assert why in _one_line(rules), "RELEASING.md does not say why a lock refresh raises no bump"
+    surface = _releasing_section("What a version number speaks about")
+    assert "`uv.lock`" in _one_line(surface.split("Not part of it:", 1)[1]), (
+        "RELEASING.md does not leave uv.lock off the surface"
+    )
+    contributing = (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    versions = _one_line(contributing.split("\n## Versions and releases\n", 1)[1].split("\n## ")[0])
+    assert "so does a refresh of `uv.lock`, which changes no requirement a user installs" in (
+        versions
+    ), "CONTRIBUTING.md does not file a lock refresh under Documentation"
+
+    import yaml
+
+    config = yaml.safe_load((REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    (uv,) = [job for job in config["updates"] if job["package-ecosystem"] == "uv"]
+    assert uv["versioning-strategy"] == "lockfile-only", (
+        "Dependabot's uv job may now write a pyproject.toml, so its pull requests are more than a "
+        "lock refresh"
+    )
+
+
 def test_the_surface_releasing_md_lists_holds_what_quackd_prints_for_a_script() -> None:
     """`--json` is the one output quackd's own help says is for a script rather than a person,
     and eleven commands take it. The surface RELEASING.md lists first left it out, so its rules
