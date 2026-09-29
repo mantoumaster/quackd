@@ -1902,20 +1902,22 @@ def test_the_simulators_bench_steps_are_one_list_in_plan_and_the_release_note() 
     )
 
 
-def test_plan_breaks_no_line_mid_sentence_far_short_of_its_wrap() -> None:
+@pytest.mark.parametrize("name", ["PLAN.md", "RELEASING.md"])
+def test_plan_breaks_no_line_mid_sentence_far_short_of_its_wrap(name: str) -> None:
     """PLAN.md is edited by hand at every release, and a clause spliced into an item that
     nobody reflows leaves a line that stops halfway across in the middle of a sentence. The
     0.16.0 work left two: one where the rest pose item gained a clause about `pick`, and one
     where the release added what 0.16.0 changes to the SO-101 item. Markdown renders them the
     same, but PLAN is read as source at every release, and a line that stops short there reads
-    as though something was cut out of it.
+    as though something was cut out of it. RELEASING.md is read as source at every release too,
+    and its first draft left one in the smoke step, `nothing. A release` alone on its line.
 
     A line that ends a sentence, or that stops before a code span, emphasis or link too long to
     fit, is a break somebody chose. So a line counts only when the next word would have fitted
     on it inside 80 columns. The file wraps at about 96, and what a wrap leaves over at the end
     of a line never comes to 16."""
     token = re.compile(r"\(?\[[^\]]*\]\([^)]*\)\S*|`[^`]*`\S*|\*{1,2}[^*]+\*{1,2}\S*|\S+")
-    lines = (REPO / "PLAN.md").read_text(encoding="utf-8").split("\n")
+    lines = (REPO / name).read_text(encoding="utf-8").split("\n")
     ragged = []
     fenced = False
     for number, (line, after) in enumerate(itertools.pairwise(lines), start=1):
@@ -1930,7 +1932,7 @@ def test_plan_breaks_no_line_mid_sentence_far_short_of_its_wrap() -> None:
         word = token.match(rest)
         if word and len(line) + 1 + len(word.group(0)) <= 80:
             ragged.append(f"line {number}: {line.strip()!r}")
-    assert not ragged, f"PLAN.md stops these lines mid-sentence, far short of its wrap: {ragged}"
+    assert not ragged, f"{name} stops these lines mid-sentence, far short of its wrap: {ragged}"
 
 
 def test_the_release_note_names_the_frames_that_are_still_encoded_on_the_loop() -> None:
@@ -2266,3 +2268,282 @@ def test_every_licence_quackd_credits_says_where_it_was_read() -> None:
     assert named, "docs/policies.md's licence table names no checkpoint"
     unlinked = [row[:60] for row in named if "](https://" not in row]
     assert not unlinked, f"docs/policies.md's licence rows cite no page: {unlinked}"
+
+
+# ── what a version says, which RELEASING.md reads off the changelog's headings ─────────────
+
+#: The headings RELEASING.md's table names. The first four make a release a minor, so a
+#: released patch carries none of them. A heading outside the whole set files entries no rule
+#: weighs, which is how a feature under `### New` could reach a patch with nothing to stop it.
+_MAKES_A_MINOR = ("Added", "Changed", "Deprecated", "Removed")
+_CHANGELOG_HEADINGS = frozenset(
+    (*_MAKES_A_MINOR, "Fixed", "Security", "Documentation", "Known limitations")
+)
+_COMPARE = "https://github.com/rokbenko/quackd/compare/"
+
+
+def _changelog_sections(text: str) -> list[tuple[str, str]]:
+    """Each `## [...]` section of a changelog, as its bracketed name and its body, newest first.
+    The last body runs on into the link block, which holds no heading."""
+    parts = re.split(r"^## \[([^\]]+)\][^\n]*\n", text, flags=re.M)
+    return list(zip(parts[1::2], parts[2::2], strict=True))
+
+
+def _release_rule_breaches(text: str) -> list[str]:
+    """What a changelog does that RELEASING.md's rule for its headings forbids, a line apiece.
+
+    The rule reads both ways. A patch carries none of the headings that make a minor, and a
+    minor carries at least one, because a release of fixes alone is a patch whatever number it
+    was given. A heading at any level but the third is one no rule weighs, since `#### Added`
+    renders as a heading and a check that read only `###` would let it through."""
+    breaches = []
+    for name, body in _changelog_sections(text):
+        version = re.fullmatch(r"\d+\.\d+\.(\d+)", name)
+        if not version and name != "Unreleased":
+            breaches.append(f"[{name}] is neither Unreleased nor a version X.Y.Z")
+        marks = re.findall(r"^(#+) *(.*?)\s*$", body, flags=re.M)
+        other_levels = [f"{hashes} {title}" for hashes, title in marks if hashes != "###"]
+        if other_levels:
+            breaches.append(f"[{name}] has {other_levels}, at a level no rule weighs")
+        headings = [title for hashes, title in marks if hashes == "###"]
+        unknown = sorted(set(headings) - _CHANGELOG_HEADINGS)
+        if unknown:
+            breaches.append(f"[{name}] files entries under {unknown}, which no rule weighs")
+        twice = sorted({h for h in headings if headings.count(h) > 1})
+        if twice:
+            breaches.append(f"[{name}] carries {twice} twice")
+        minor = [h for h in headings if h in _MAKES_A_MINOR]
+        if version and int(version.group(1)) > 0 and minor:
+            breaches.append(f"[{name}] is a patch and carries {minor}, which make a minor")
+        if version and int(version.group(1)) == 0 and not minor:
+            breaches.append(f"[{name}] is a minor and carries none of {list(_MAKES_A_MINOR)}")
+    return breaches
+
+
+def test_a_released_patch_carries_nothing_that_makes_a_minor() -> None:
+    """RELEASING.md: while quackd is 0.x a patch changes nothing a user has to act on and adds
+    nothing to learn, and the changelog's headings say which a release is. So a released
+    section whose version has a patch number above zero carries none of the four headings that
+    make a minor, and documentation has a heading of its own so that it never needs one. Every
+    section, `[Unreleased]` included, keeps to the headings the rule names, each at most once:
+    an entry under any other is one nothing weighs, and a heading that appears twice in a
+    section is how 0.12.0's audit found one release's `Fixed` pasted into two shipped ones."""
+    breaches = _release_rule_breaches((REPO / "CHANGELOG.md").read_text(encoding="utf-8"))
+    assert not breaches, "CHANGELOG.md breaks RELEASING.md's rule:\n" + "\n".join(breaches)
+
+
+def test_the_patch_rule_catches_each_way_round_it() -> None:
+    """Until 0.16.1 ships, no released section has a patch number above zero, so the guard
+    above passes on a changelog it has never had to refuse. It proves itself here instead, on
+    synthetic sections: a patch of fixes and documentation passes, and each heading that makes
+    a minor, the same heading one level down, a heading no rule names, a heading pasted in
+    twice, a bracket that is not a version and a release of fixes alone numbered as a minor are
+    each caught."""
+
+    def changelog(*sections: str) -> str:
+        return "# Changelog\n\n" + "\n".join(sections)
+
+    patch = (
+        "## [0.3.1] — 2026-01-02\n\nOne fix.\n\n"
+        "### Fixed\n\n- a fix\n\n### Documentation\n\n- a page\n"
+    )
+    minor = "## [0.3.0] — 2026-01-01\n\n### Added\n\n- a verb\n\n### Known limitations\n\n- one\n"
+    assert _release_rule_breaches(changelog(patch, minor)) == []
+    for heading in _MAKES_A_MINOR:
+        feature = patch.replace("### Documentation", f"### {heading}")
+        assert _release_rule_breaches(changelog(feature, minor)), f"a patch under {heading}"
+        deeper = patch.replace("### Documentation", f"#### {heading}")
+        assert _release_rule_breaches(changelog(deeper, minor)), f"a patch under #### {heading}"
+    assert _release_rule_breaches(changelog(patch.replace("### Fixed", "## Fixed"), minor))
+    assert _release_rule_breaches(changelog(patch.replace("### Fixed", "### New"), minor))
+    assert _release_rule_breaches(changelog(patch + "\n### Fixed\n\n- pasted\n", minor))
+    assert _release_rule_breaches(changelog("## [Unreleased]\n\n### Features\n\n- x\n", minor))
+    assert _release_rule_breaches(changelog("## [0.3]\n\n### Fixed\n\n- x\n", minor))
+    fixes_as_a_minor = patch.replace("[0.3.1]", "[0.4.0]")
+    assert _release_rule_breaches(changelog(fixes_as_a_minor, minor)), "fixes alone as a minor"
+
+
+def test_every_release_links_the_compare_the_procedure_writes() -> None:
+    """Step 4 of RELEASING.md: `[Unreleased]:` compares the newest tag with HEAD, and each
+    release compares the tag before it with its own, newest first, down to 0.1.0, which links
+    its own tag. A patch is the first release to compare within one minor, and nothing else
+    reads these lines, so a link that skipped a release or pointed at the wrong one would ship."""
+    text = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    versions = [name for name, _ in _changelog_sections(text) if name != "Unreleased"]
+    order = [tuple(int(n) for n in v.split(".")) for v in versions]
+    assert order == sorted(order, reverse=True), (
+        f"CHANGELOG.md's releases are out of order: {versions}"
+    )
+    lines = set(text.splitlines())
+    wanted = [f"[Unreleased]: {_COMPARE}v{versions[0]}...HEAD"]
+    wanted += [f"[{new}]: {_COMPARE}v{old}...v{new}" for new, old in itertools.pairwise(versions)]
+    first = versions[-1]
+    wanted.append(f"[{first}]: https://github.com/rokbenko/quackd/releases/tag/v{first}")
+    missing = [line for line in wanted if line not in lines]
+    assert not missing, "CHANGELOG.md's link block does not say:\n" + "\n".join(missing)
+
+
+def test_the_release_order_lives_in_releasing_md_and_every_page_that_names_it_links_there() -> None:
+    """The release checklist was PLAN.md's last section until 0.16.1 moved it into RELEASING.md,
+    beside the rules for which release is which. PLAN.md keeps one line pointing there and no
+    step of its own, since a step added back would be a second list that drifts. The README,
+    LAUNCH.md and CONTRIBUTING.md each say something RELEASING.md decides, so each links it,
+    and ADR-0037, whose Consequences put the order in PLAN.md, carries a note that does. No
+    living document sends a reader to PLAN.md for a release any more, except RELEASING.md's own
+    procedure, which says what a release does to PLAN.md's open items: every release commit
+    from 0.13.0 to 0.16.0 edited them, and the checklist that moved never said so."""
+    plan = (REPO / "PLAN.md").read_text(encoding="utf-8")
+    checklist = plan.split("\n## Release checklist\n", 1)[1].split("\n## ", 1)[0]
+    assert "](RELEASING.md)" in checklist, "PLAN.md's release checklist does not point on"
+    assert not re.search(r"^\s*\d+\. ", checklist, flags=re.M), "PLAN.md has release steps again"
+    for name in ("README.md", "LAUNCH.md", "CONTRIBUTING.md"):
+        assert "](RELEASING.md)" in (REPO / name).read_text(encoding="utf-8"), (
+            f"{name} does not link RELEASING.md"
+        )
+    adr = (REPO / "docs" / "adr" / "0037-adapters-are-their-own-packages.md").read_text(
+        encoding="utf-8"
+    )
+    assert "](../../RELEASING.md)" in adr.split("\n## Context\n", 1)[0], (
+        "ADR-0037's note above its Context does not link RELEASING.md"
+    )
+    steps = _one_line(_releasing_section("Cutting a release"))
+    assert "plan.md's open items" in steps, (
+        "RELEASING.md's procedure no longer says what a release does to PLAN.md's open items"
+    )
+    stale = [
+        f"{path.relative_to(REPO)}: {sentence[:100]}"
+        for path in _living_docs()
+        if path.name != "RELEASING.md"
+        for sentence in re.split(r"(?<=\.)\s", _one_line(_prose(path.read_text(encoding="utf-8"))))
+        if "plan.md" in sentence and re.search(r"releas|set_version|pypi|the full order", sentence)
+    ]
+    assert not stale, "these still send a reader to PLAN.md for a release:\n" + "\n".join(stale)
+
+
+def _releasing_section(heading: str) -> str:
+    """One `## ` section of RELEASING.md, up to the next."""
+    text = (REPO / "RELEASING.md").read_text(encoding="utf-8")
+    return text.split(f"\n## {heading}\n", 1)[1].split("\n## ", 1)[0]
+
+
+#: What RELEASING.md lets a patch carry that a reader could take for a minor's. The patch rule
+#: names each, and a row of its table and CONTRIBUTING.md's list for `Fixed` have to file each
+#: under a heading that keeps the release a patch.
+_A_PATCH_CARRIES = ("catalogue data", "dependency", "safety fix", "refusal of what never did")
+
+
+def test_releasing_md_contributing_md_and_the_guard_file_every_entry_alike() -> None:
+    """The guard above, RELEASING.md's table, the command its step 1 decides the number with,
+    and the list CONTRIBUTING.md gives a contributor are four copies of one rule. They
+    disagreed in the first draft. CONTRIBUTING.md filed a field a fix adds to a record, and a
+    refusal a fix tightens, under the headings that make a minor, where RELEASING.md files both
+    under `Fixed`, so a contributor who followed it would have turned 0.16.1 into 0.17.0. And
+    the patch rule named catalogue data and dependency fixes as a patch's while no row of the
+    table let them stay one."""
+    rules = _releasing_section("While quackd is 0.x")
+    rows = re.findall(r"^\| `([^`]+)` \| (.+?) \| (.+?) \|$", rules, flags=re.M)
+    table = {heading: (what, release) for heading, what, release in rows}
+    assert set(table) == _CHANGELOG_HEADINGS, f"RELEASING.md's table names {sorted(table)}"
+    minors = {heading for heading, (_, release) in table.items() if release == "a minor"}
+    assert minors == set(_MAKES_A_MINOR), f"RELEASING.md's table makes a minor of {minors}"
+    patches = {heading for heading, (_, release) in table.items() if release == "a patch"}
+    assert patches == {"Fixed", "Security"}, f"RELEASING.md's table makes a patch of {patches}"
+
+    rule = _one_line(rules.split("**A patch, 0.Y.Z+1,", 1)[1].split("\n\n", 1)[0])
+    kept = _one_line(" ".join(what for heading, (what, _) in table.items() if heading in patches))
+    for kind in _A_PATCH_CARRIES:
+        assert kind in kept, f"no row of RELEASING.md's table keeps a patch for {kind}"
+    for kind in _A_PATCH_CARRIES[:3]:
+        assert kind in rule, f"RELEASING.md's rule for a patch no longer names {kind}"
+
+    step_one = re.search(r"\^### \(([A-Za-z|]+)\)\$", _releasing_section("Cutting a release"))
+    assert step_one, "RELEASING.md's step 1 has no command that prints the headings of a minor"
+    assert set(step_one.group(1).split("|")) == set(_MAKES_A_MINOR), (
+        f"RELEASING.md's step 1 reads {step_one.group(1)} as the headings of a minor"
+    )
+
+    contributing = (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    versions = contributing.split("\n## Versions and releases\n", 1)[1].split("\n## ", 1)[0]
+    bullets = [item.split("\n\n", 1)[0] for item in versions.split("\n- ")[1:]]
+    filed = {}
+    for bullet in bullets:
+        headings = {word for word in re.findall(r"`([^`]+)`", bullet) if word in table}
+        said = _one_line(bullet)
+        release = "a minor" if "a minor" in said else "a patch" if "a patch" in said else None
+        filed[frozenset(headings)] = (release, said)
+    assert filed.get(frozenset(_MAKES_A_MINOR), ("",))[0] == "a minor", (
+        "CONTRIBUTING.md has no bullet that files the four minor headings as a minor"
+    )
+    release, fixed = filed.get(frozenset(patches), (None, ""))
+    assert release == "a patch", "CONTRIBUTING.md has no bullet that files Fixed as a patch"
+    for kind in (*_A_PATCH_CARRIES, "field a fix adds"):
+        assert kind in fixed, f"CONTRIBUTING.md files {kind} under a heading that makes a minor"
+
+
+def test_the_surface_releasing_md_lists_holds_what_quackd_prints_for_a_script() -> None:
+    """`--json` is the one output quackd's own help says is for a script rather than a person,
+    and eleven commands take it. The surface RELEASING.md lists first left it out, so its rules
+    could not say whether a patch may rename a key a script reads."""
+    cli = (REPO / "quackd" / "cli.py").read_text(encoding="utf-8")
+    assert '"--json"' in cli and "for a script" in cli, "quackd/cli.py has no `--json` for scripts"
+    surface = _releasing_section("What a version number speaks about")
+    assert "`--json`" in surface, "RELEASING.md's surface does not name what `--json` prints"
+
+
+def test_the_release_procedure_writes_outside_the_checkout_and_tags_only_what_ci_ran() -> None:
+    """Step 10 builds from `git archive` because a file the checkout has and no commit does
+    would ship, and the first draft then wrote the tag message, the release body and three
+    hash lists into the checkout, where nothing ignores them and a root `body.md` is a living
+    document the guards read. Every file a step writes goes under the scratch directory the
+    setup line makes. And a patch cut from the last tag is never merged into `main` before its
+    tag, so without CI on its release branch the `packaging`, `physics` and `policy` jobs would
+    first run on a tag already public. The tag and the release body keep the maintainer's voice
+    rules but not the length rule, which is for a reply to one person."""
+    steps = _releasing_section("Cutting a release")
+    fences = re.findall(r"```bash\n(.*?)```", steps, flags=re.S)
+    assert re.search(r'\bout="\$\(mktemp -d\)"', fences[0]), (
+        "RELEASING.md makes no scratch directory before step 1"
+    )
+    written = [
+        target
+        for fence in fences
+        for target in re.findall(r'(?:(?<![0-9&])>|-F|--notes-file)\s+("?[^\s|;&)]+)', fence)
+        if target != "/dev/null" and not target.startswith('"$out/')
+    ]
+    assert not written, f"RELEASING.md's steps write these into the checkout: {written}"
+
+    import yaml
+
+    ci = yaml.safe_load((REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    push = ci.get("on", ci.get(True))["push"]  # YAML 1.1 reads a bare `on:` key as true
+    assert "release/**" in push["branches"], "ci.yml does not run on a push to a release branch"
+    assert "git push -u origin release/$v" in steps, "RELEASING.md never pushes a release branch"
+
+    voice = _one_line(steps)
+    assert "contributing.md#how-the-reply-is-written" in voice
+    assert "rule on length is for a reply to one person" in voice, (
+        "RELEASING.md holds a minor's release body to the length rule for a reply"
+    )
+
+
+def test_releasing_md_runs_no_line_past_its_wrap() -> None:
+    """RELEASING.md is read as source with a release in progress, and wraps at about 96
+    columns. A prose line past 100 is one a sentence was spliced into and nobody reflowed,
+    which is how its first draft left the registry's 1.0.0 condition at 136. A line that is one
+    link or one code span too long to break is a break somebody chose, and so are tables and
+    fenced commands."""
+    name = "RELEASING.md"
+    lines = (REPO / name).read_text(encoding="utf-8").split("\n")
+    fenced = False
+    long = []
+    for number, line in enumerate(lines, start=1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or len(line) <= 100 or line.lstrip().startswith("|"):
+            continue
+        words = re.findall(r"\(?\[[^\]]*\]\([^)]*\)\S*|`[^`]*`\S*|\S+", line)
+        if any(len(word) > 60 for word in words):
+            continue  # one link or code span too long to break
+        long.append(f"line {number}: {len(line)} columns")
+    assert not long, f"{name} runs these lines past its wrap: {long}"

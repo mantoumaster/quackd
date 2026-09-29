@@ -315,27 +315,4 @@ Things no commit in this repository can finish.
 
 ## Release checklist
 
-The one reusable thing the shipped milestones left behind. Every release since 0.1.0 has run
-this, and the per-release detail is in [CHANGELOG.md](CHANGELOG.md).
-
-1. All five CI gates green on `main`: `uv lock --check`, `ruff check`, `ruff format --check`,
-   `mypy` on 3.11 and 3.12, `pytest` with `QUACKD_STRICT_SEEDS=1`, plus
-   `quackd validate ducks/*.duck` and the `packaging` job, which proves a bare core install
-   brings no robot and says what to install.
-2. `uv run python scripts/set_version.py X.Y.Z` and then `uv lock`. Eight packages carry a
-   version and they are released together, so none of them may drift.
-3. Read the release note against the code before it ships. Every release so far has found
-   claims that had gone stale between writing and tagging.
-4. Annotated tag on the merge commit, pushed once `main`'s own run is green. Pushing the
-   tag re-runs the same workflow on the same commit, which is informational: a red run
-   behind a tag that is already public is the thing this ordering avoids.
-5. `uv build --all-packages --out-dir dist`: eight wheels and eight sdists. GitHub Release on
-   `main` with all sixteen attached.
-6. Publish to PyPI **core first**, because every adapter depends on it and a resolver that
-   meets `quackd-lerobot` before `quackd` has nothing to resolve against. Then check the
-   SHA256 of all sixteen files is identical in both places.
-7. `uvx --from "quackd[microduck]==<version>" quackd run find-and-kick --robot microduck:sim2d
-   --llm fake` from a clean install, twice, so the second run reads the first one's
-   episode. Then `uvx quackd run find-and-kick` with no extra, which must refuse and name what
-   to install rather than running anything.
-8. Update the About description (GitHub's cap is 350 characters) and Topics (cap 20).
+Moved to [RELEASING.md](RELEASING.md), beside the rules for which release is which.

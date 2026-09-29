@@ -4,7 +4,13 @@ The core and each adapter carry their own `__version__`, because an adapter's sd
 only its own source and cannot read the core's. They are released together and must not
 drift, so this writes all of them and the dependency windows that tie them together.
 
-    uv run python scripts/set_version.py 0.10.0
+A window is written from the major and the minor alone, `>=X.Y,<X.Y+1`. So a patch keeps
+every window where it was and changes the eight versions and nothing else, and a minor or a
+major moves them all. That is what lets any two packages of one minor install together, and
+why a patch to one of them may not need anything another gained in the same patch
+(RELEASING.md).
+
+    uv run python scripts/set_version.py 0.16.1
 """
 
 from __future__ import annotations

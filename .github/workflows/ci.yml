@@ -2,7 +2,10 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # A patch cut from the last tag is never merged into main before it is tagged, since main
+    # holds work it leaves out. Pushing its release branch is what runs every job below on the
+    # commit the tag will name, before the tag is public (RELEASING.md, step 8).
+    branches: [main, "release/**"]
     tags: ["v*"]
   pull_request:
 
