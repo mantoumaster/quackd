@@ -54,20 +54,26 @@ before.
   2026-09-23 when its rest pose was recorded; and that checklist's *What to report*, six things
   still chosen against Feetech's documentation rather than measured
   ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
-- ⬜ **The SO-101 again, for everything in 0.14.0, 0.15.0 and 0.16.0.** The arm last ran a build
-  of the code that became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the
-  travel, `quackd robot release`, the Enter offer at the end of a run whose rest move missed, the
-  `--by-hand` refusal over a joint past its travel, the paced `move_joints` and the connect
-  retries have run only against a fake arm, `lerobot:mock` and the test suite, and what 0.15.0
-  changes in `lerobot:real`, the follower that keeps torque on a disconnect quackd did not ask
-  for among it, only against a fake arm or the simulator. What 0.16.0 changes there has run only
-  against those too, and most of it is the policy segment the learned-policy item below takes to
-  the arm. The seven bench steps that would settle 0.14.0's, in order, are under
-  *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for 0.14.0, and the one for 0.15.0's
-  follower, a second Ctrl-C during the fold back to the rest pose, is under 0.15.0's, which
-  names the six changes nobody has written a bench step for.
-  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to take
-  the arm through, with a hand on the switch.
+- ⬜ **The SO-101 again, for everything in 0.14.0, 0.15.0, 0.16.0 and 0.16.1.** The arm last ran
+  a build of the code that became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped
+  into the travel, `quackd robot release`, the Enter offer at the end of a run whose rest move
+  missed, the `--by-hand` refusal over a joint past its travel, the paced `move_joints` and the
+  connect retries have run only against a fake arm, `lerobot:mock` and the test suite, and what
+  0.15.0 changes in `lerobot:real`, the follower that keeps torque on a disconnect quackd did
+  not ask for among it, only against a fake arm or the simulator. What 0.16.0 changes there has
+  run only against those too, and most of it is the policy segment the learned-policy item below
+  takes to the arm. So has what 0.16.1 changes there: the connect refusing a policy server whose
+  declared latency no chunk can carry, the tick a segment asks for its next chunk on, the tick
+  its time runs out on, and the travel row of `quackd doctor`. The seven bench steps that would
+  settle 0.14.0's, in order, are under *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for
+  0.14.0, and the one for 0.15.0's follower, a second Ctrl-C during the fold back to the rest
+  pose, is under 0.15.0's. The six other changes that release made in `lerobot:real` have bench
+  steps now, and none has run: a connect quackd refuses letting go of the arm (step 6 of
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)), the deadline a call
+  spends only while the bus is busy (steps 9 and 13), a connect that fails once the arm is
+  energised keeping its torque (step 13), the close reading its flag back and saying a stalled
+  shortfall once (step 14), and the heartbeat's reads kept out of the trace a grasp is judged by
+  (step 17). That checklist is the order to take the arm through, with a hand on the switch.
 - ⬜ **The SO-101 against its simulator.** `lerobot:mujoco` runs the arm's real backend over the
   maker's model, and what it assumes about the arm only the arm can settle
   ([ADR-0047](docs/adr/0047-the-arms-simulator-runs-the-real-backend.md)). Each of these is a
@@ -160,10 +166,13 @@ before.
   choice, and the stepper is offered it and never takes it, in `--decision-mode on` as in
   shadow, because under `--yes` nobody is asked at its confirm gate
   ([ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md)). Every turn that offered one
-  writes a `decision_shadow` record beside the model's choice, and there are none yet outside
-  the test suite: no real run has had a decision LLM and a policy server at once. Promoting it
-  needs an agreement rate measured from those records on real runs, and a decision of its own,
-  not a floor.
+  writes a `decision_shadow` record beside the model's choice. The only ones outside the test
+  suite come from runs by hand on the arm's twin, on 2026-09-28 and on the released 0.16.0 on
+  2026-09-29, with the trained ACT served, `gpt-6-sol` piloting and a stub decision LLM loaded
+  as a plugin. A stub that always picks `manipulate` chose it on every turn that offered it and
+  ended on `gate: shadow_only` each time, with the model taking the turn. No real decision LLM
+  has run beside a policy, so those records hold no agreement rate. Promoting it needs one
+  measured from real runs, and a decision of its own, not a floor.
 - ⬜ **`load_policy()` still builds a policy beside the arm's bus.** 0.16.0 moved checkpoints
   into a policy server of their own and left this helper in the arm's `real.py`, where it
   loads a LeRobot checkpoint in the arm's own process with none of the server's reading before
@@ -282,15 +291,6 @@ before.
   twelve runs on the arm on 2026-09-15, for five distinct notes, and the last run of that
   afternoon read all five back out of its own prompt. Still open in a simulator, where the scripted pilot has no
   script for it, so `--llm fake` writes episodes and never a note.
-- ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
-  for it, so it is the one asset a commit here cannot ship, and it is now a version behind: the
-  card was rebuilt around the duck head the README and quackd.org both use, so the one GitHub
-  serves is still showing the flat biped and the two-colour wordmark that no longer exist
-  anywhere else. The card is otherwise current: it carries the one-liner
-  ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)) and its two panels are a real
-  three-robot `sim2d` arena. Regenerate it with
-  [`docs/assets/social_preview.py`](docs/assets/social_preview.py), which exists because the
-  original was drawn by hand and the script was never committed, so nobody could.
 - ⏸ **No asset shows a flock of pilots.** `flock.gif` is the coordinator: three identical ducks
   auctioning a kick. The kind of flock the README now leads with is two different bodies talking,
   and it has no recording, because a pilot flock writes no GIF (N members are N worlds).
@@ -317,27 +317,4 @@ Things no commit in this repository can finish.
 
 ## Release checklist
 
-The one reusable thing the shipped milestones left behind. Every release since 0.1.0 has run
-this, and the per-release detail is in [CHANGELOG.md](CHANGELOG.md).
-
-1. All five CI gates green on `main`: `uv lock --check`, `ruff check`, `ruff format --check`,
-   `mypy` on 3.11 and 3.12, `pytest` with `QUACKD_STRICT_SEEDS=1`, plus
-   `quackd validate ducks/*.duck` and the `packaging` job, which proves a bare core install
-   brings no robot and says what to install.
-2. `uv run python scripts/set_version.py X.Y.Z` and then `uv lock`. Eight packages carry a
-   version and they are released together, so none of them may drift.
-3. Read the release note against the code before it ships. Every release so far has found
-   claims that had gone stale between writing and tagging.
-4. Annotated tag on the merge commit, pushed once `main`'s own run is green. Pushing the
-   tag re-runs the same workflow on the same commit, which is informational: a red run
-   behind a tag that is already public is the thing this ordering avoids.
-5. `uv build --all-packages --out-dir dist`: eight wheels and eight sdists. GitHub Release on
-   `main` with all sixteen attached.
-6. Publish to PyPI **core first**, because every adapter depends on it and a resolver that
-   meets `quackd-lerobot` before `quackd` has nothing to resolve against. Then check the
-   SHA256 of all sixteen files is identical in both places.
-7. `uvx --from "quackd[microduck]==<version>" quackd run find-and-kick --robot microduck:sim2d
-   --llm fake` from a clean install, twice, so the second run reads the first one's
-   episode. Then `uvx quackd run find-and-kick` with no extra, which must refuse and name what
-   to install rather than running anything.
-8. Update the About description (GitHub's cap is 350 characters) and Topics (cap 20).
+Moved to [RELEASING.md](RELEASING.md), beside the rules for which release is which.

@@ -277,6 +277,11 @@ Its refs would get a table of their own, pinned at the LeRobot commit that added
   tick it is played at (`VLA_PIPELINE`).
 - The plan had `policy/flux_upstream_api.py` made in the spike. The spike has not run, so the
   module does not exist.
+- The plan had a policy asked every tick go through a delay line `k` ticks deep on the
+  simulator, as a chunk is held back `k` ticks. The code's line is a tick deep at most. Such a
+  policy is asked again only once it has answered, so one that declares more than a tick to
+  answer could never keep up on the arm, and the segment refuses it on either clock rather than
+  rehearse it on the simulator's (`PolicyLoop.start`).
 
 ## Why not
 
@@ -319,9 +324,15 @@ always was.
   no blue cap, since the simulator's table holds a red cube and a pen. That run proves the
   plumbing and nothing about the task. SmolVLA loaded on that laptop and took minutes a chunk on
   its CPU, so it never answered a step through the client, pi05 has not run, and an ACT asked
-  every tick needs a GPU the CPU job lacks (`VLA_PIPELINE`, `TICK_MODE`). `--controller vla`,
-  its judge prompt and `--decision-mode shadow` beside a policy have run in the test suite and
-  never with a trained checkpoint.
+  every tick needs a GPU the CPU job lacks (`VLA_PIPELINE`, `TICK_MODE`). `--controller vla`
+  and its judge prompt have run in the test suite and never with a trained checkpoint.
+  `--decision-mode shadow` has run beside one, by hand, on 2026-09-28 and again on the released
+  0.16.0 on 2026-09-29: `gpt-6-sol` flew the twin with that ACT served and a stub decision LLM
+  loaded as a plugin, which was asked on every turn, and a `decision_shadow` record set its
+  answer beside the model's on each. A second stub, one that always picks `manipulate`, chose
+  it on every turn that offered it, in shadow and in `on`, and each ended on
+  `gate: shadow_only` with the model taking the turn. No real decision LLM has run beside a
+  policy.
 - **Only the bench can say how fast the loop runs on the real bus with a server inferring on the
   same laptop.** Torch's threads and the bus's worker share one CPU there, and nothing timed on
   the simulator's lockstep clock is a rate. `quackd policy check --bench` measures the server

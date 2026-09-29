@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import itertools
 import math
 import sys
 import threading
-import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -33,16 +33,21 @@ from quackd.verbs.registry import registry_from_manifest
 from quackd_lerobot import LeRobotAdapter
 from quackd_lerobot.mock import LeRobotMock
 from quackd_lerobot.policy.loop import (
+    EXACT,
     FIRST_CHUNK_S,
     MAX_RATE_HZ,
     MIN_RATE_HZ,
+    REFILL_LATENCIES,
     STALL_S,
     STARVE_S,
     WORKER,
     PolicyLoop,
     latency_ticks,
+    longest_latency,
     rate_refusal,
+    refill_at,
     speed_cap,
+    starved_each_chunk,
 )
 from quackd_lerobot.policy.runner import Chunk, Features, Observation
 from quackd_lerobot.policy.scripted import ScriptedRunner
@@ -510,34 +515,111 @@ ENDINGS = [
 ]
 
 
+def _long(
+    swing: Callable[[Observation, Mapping[str, float]], list[dict[str, float]]],
+) -> Callable[[Observation, Mapping[str, float]], list[dict[str, float]]]:
+    """`swing` as a chunk `LONG` goals long, each the goal it gives for its own tick."""
+
+    def script(observation: Observation, sent: Mapping[str, float]) -> list[dict[str, float]]:
+        return [
+            swing(Observation(observation.tick + i, observation.reading), sent)[0]
+            for i in range(LONG)
+        ]
+
+    return script
+
+
+RUNNERS = ["one action a tick", "a long chunk"]
+"""The two ways a runner answers: one action a request, as a `PolicyLike` does, waited for in
+its tick, and a chunk `LONG` long that declares half a chunk of latency, the most `serve` takes,
+never waited for on the wall's kind of clock and asked for again as each lands."""
+
+
+def _parks(clock: SteppedClock, when: Callable[[], bool]) -> asyncio.Event:
+    """Make the first sleep on `clock` once `when()` says so last until it is cancelled, and
+    return the event set as that sleep begins. A segment asleep there can end on nothing of its
+    own, its time included, and has no call out on the bus meanwhile. Every sleep after it is
+    the clock's own."""
+    parked = asyncio.Event()
+    sleep = clock.sleep
+
+    async def parking(seconds: float) -> None:
+        if not parked.is_set() and when():
+            parked.set()
+            await asyncio.Event().wait()  # which only a cancel ends
+        await sleep(seconds)
+
+    clock.sleep = parking  # type: ignore[method-assign]
+    return parked
+
+
+def _loop_clock_on(seconds: float, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put the event loop's clock `seconds` on, so that every deadline set on it which falls
+    inside them is due at once: a timeout the test runs out, rather than one raced on the wall's
+    clock. The loop's clock runs with the wall's from there, for the worker threads that read it
+    as well, and is put back as it was once the test is over."""
+    loop = asyncio.get_running_loop()
+    wall = loop.time
+    monkeypatch.setattr(loop, "time", lambda: wall() + seconds)
+
+
+@pytest.mark.parametrize("kind", RUNNERS)
 @pytest.mark.parametrize("ending", ENDINGS)
 async def test_the_policy_s_cap_is_on_every_send_and_the_verbs_cap_is_back_after(
-    ending: str,
+    ending: str, kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The cap on the follower's config is the policy's own for every send of the segment, and
     the setting, `max_step_deg`, once it ends, however it ends. Never the cap it found: the arm
-    here was handed in with another, and a restore to that would be a saved value."""
+    here was handed in with another, and a restore to that would be a saved value. The same
+    whether the runner answers an action a tick, waited for in its tick, or long chunks, never
+    waited for.
+
+    The executor's timeout runs on the test's clocks, not the wall's, where it could run out
+    before the first send, or ticks on a clock that costs no wall time could outrun it: a long
+    chunk lands the `HALF` ticks in that it declares (`GateClock`), the segment parks on its
+    clock once three of the policy's goals have gone out (`_parks`), and the executor's own
+    timeout runs out when the test puts the event loop's clock past it (`_loop_clock_on`)."""
     arm = _segment_arm()
     found = STEP * 3
     arm.config.max_relative_target = found
     swing = _swing(arm)
+    long = kind == "a long chunk"
+    answer = _long(swing) if long else swing
+    timed_out = ending == "an executor timeout"
 
     def script(observation: Observation, sent: Mapping[str, float]) -> Any:
-        if ending == "an error" and observation.tick == 3:
+        # a long chunk's third request comes a chunk and more in, well past tick 3
+        if ending == "an error" and (runner.requests == 3 if long else observation.tick == 3):
             raise RuntimeError("the policy fell over")
-        if ending == "an executor timeout":
-            time.sleep(0.005)  # thinking, in its own thread, so the wall's clock runs
-        return swing(observation, sent)
+        return answer(observation, sent)
 
-    runner = ScriptedRunner(script, rate_hz=RATE)
+    runner = ScriptedRunner(script, rate_hz=RATE, latency_ticks=HALF if long else 0)
     clock = SteppedClock()
+    if timed_out and long:
+        runner = Gated(script, rate_hz=RATE, latency_ticks=HALF)
+        clock = GateClock(runner, HALF)
     _, transport, adapter, ex = await _backend(runner, clock=clock, arm=arm)
-    if ending == "an executor timeout":
-        ex.registry.get("manipulate").timeout_s = 0.2
+    timeout_s = ex.registry.get("manipulate").timeout_s
     sends = _recorded(arm, clock)
+    start = clock.t
+    if isinstance(clock, GateClock):
+        clock.loop = transport._policy_loop
+        clock.sleeps = 0
+    parked = None
+    if timed_out:
+        parked = _parks(clock, lambda: sum(not _whole_hold(a) for _, _, a in sends) >= 3)
     running = asyncio.create_task(ex.run_verb("manipulate", {"instruction": "stack"}))
     beat: Heartbeat | None = None
-    if ending not in ("an executor timeout", "an error"):
+    if parked is not None:
+        try:
+            await _until(parked.is_set)
+        finally:
+            if isinstance(runner, Gated):
+                runner.open.set()  # the request out as it parked is answered, never taken in
+        assert clock.t - start < MANIPULATE_S, "parked past the segment's own time"
+        assert transport._bus[1] is None, "the loop's clock would move under a call on the bus"
+        _loop_clock_on(timeout_s, monkeypatch)
+    elif ending != "an error":
         await _until(lambda: len(sends) >= 3)
         if ending == "an abort":
             ex.abort.set()
@@ -559,6 +641,10 @@ async def test_the_policy_s_cap_is_on_every_send_and_the_verbs_cap_is_back_after
     else:
         result = await running
         assert not result.ok, result.summary
+        if timed_out:
+            # the executor's own timeout, neither a cancel nor an abort
+            expected = f"manipulate timed out after {timeout_s:g}s; stopped"
+            assert result.summary.startswith(expected), result.summary
     if beat is not None:
         await beat.stop()
     assert not transport.policy_running
@@ -648,25 +734,181 @@ async def test_a_policy_s_cap_left_on_the_follower_is_taken_off_before_anything_
 
 
 async def test_a_chunk_s_played_ticks_are_dropped_and_the_rest_replaces_the_queue_s_tail() -> None:
-    """Chunks of six, held back two ticks each on a lockstep clock, asked for again once half
-    the last one is left. The chunk asked at tick 3 lands at tick 5: its goals for ticks 3 and 4
-    are dropped, and from tick 5 on it replaces what was left of the first, whose goal for tick
-    5 is never sent."""
+    """Chunks of eight, held back two ticks each on a lockstep clock, asked for again once
+    four are left, half the chunk and twice the latency both (`refill_at`). The chunk asked at
+    tick 4 lands at tick 6: its goals for ticks 4 and 5 are dropped, and from tick 6 on it
+    replaces what was left of the first, whose goals for ticks 6 and 7 are never sent."""
+    assert refill_at(2, 8) == 4, "the ticks below are worked out for four left"
     clock = LockstepClock()
-    runner = ScriptedRunner(_tagged(6), rate_hz=RATE, latency_ticks=2)
+    runner = ScriptedRunner(_tagged(8), rate_hz=RATE, latency_ticks=2)
     arm, transport, adapter, _ = await _backend(runner, clock=clock)
     sends = _recorded(arm, clock)
     start = clock.t
     ended = await _segment_end(transport, max_s=12 * PERIOD)
     assert ended.how == "time", ended.reason
     played = [_untag(pan) for pan in _pans(sends)]
-    assert played[:7] == [(0, 2), (0, 3), (0, 4), (3, 2), (3, 3), (3, 4), (6, 2)], played
-    assert (0, 5) not in played
+    assert played[:9] == [
+        (0, 2),
+        (0, 3),
+        (0, 4),
+        (0, 5),
+        (4, 2),
+        (4, 3),
+        (4, 4),
+        (4, 5),
+        (8, 2),
+    ], played
+    assert (0, 6) not in played and (0, 7) not in played
     for (at, _, _), (asked, index) in zip(sends, played, strict=True):
         tick = round((at - start) / PERIOD)
         assert asked + index == tick, "a goal went out on a tick it was not for"
         assert tick - asked >= 2, "a chunk was played before its latency had passed"
     await adapter.close()
+
+
+CHUNK_S = 2.0
+"""How long a long chunk lasts at the test's rate: long enough that half of it is many ticks."""
+LONG = round(CHUNK_S * RATE)
+HALF = LONG // 2
+LATENCIES = {
+    "under half a chunk": HALF - HALF // 3,
+    "half a chunk": HALF,
+    "over half a chunk": HALF + math.ceil(STARVE_S * RATE / 4),
+}
+"""Latencies in ticks, for a chunk of `LONG`. The one over half starves every chunk after the
+first for less than `STARVE_S`, so a segment of it runs to its time and its gaps can be counted."""
+
+
+def _gaps(sends: Sequence[tuple[float, float, dict[str, float]]], start: float) -> list[int]:
+    """The runs of ticks with nothing sent, between one send and the next."""
+    ticks = [round((at - start) / PERIOD) for at, _, action in sends if not _whole_hold(action)]
+    return [b - a - 1 for a, b in itertools.pairwise(ticks) if b - a > 1]
+
+
+@pytest.mark.parametrize("latency", list(LATENCIES))
+async def test_a_long_chunk_is_asked_for_again_before_it_runs_out(latency: str) -> None:
+    """A chunk `CHUNK_S` long, from a runner that declares a latency under half of it, exactly
+    half, or over half. It is asked again once what is left of it is down to half of it or twice
+    that latency, whichever is more, or as it lands where less is left, so up to half a chunk
+    an answer lands before the queue runs out, and the arm is starved only while a segment's
+    first chunk is on its way. Over half, no rule could keep it fed, since the next request
+    goes out no sooner than the last chunk lands: every chunk after the first starves what
+    `starved_each_chunk` says, which is what `quackd policy serve` refuses to declare. The
+    lockstep clock and the wall's kind play the same goals at the same times either way."""
+    k = LATENCIES[latency]
+    ticks = 5 * LONG
+    runs: list[tuple[list[tuple[float, float, dict[str, float]]], SegmentEnd]] = []
+    for lockstep in (True, False):
+        arm = _segment_arm()
+        swing = _swing(arm)
+
+        def script(o: Observation, s: Mapping[str, float], swing: Any = swing) -> list[Any]:
+            return [swing(Observation(o.tick + i, o.reading), s)[0] for i in range(LONG)]
+
+        if lockstep:
+            runner: ScriptedRunner = ScriptedRunner(script, rate_hz=RATE, latency_ticks=k)
+            clock: SteppedClock = LockstepClock()
+        else:
+            runner = Gated(script, rate_hz=RATE, latency_ticks=k)
+            clock = GateClock(runner, k)
+        _, transport, adapter, _ = await _backend(runner, clock=clock, arm=arm)
+        if isinstance(clock, GateClock):
+            clock.loop = transport._policy_loop
+            clock.sleeps = 0
+        sends = _recorded(arm, clock)
+        start = clock.t
+        try:
+            ended = await _segment_end(transport, max_s=ticks * PERIOD)
+        finally:
+            if isinstance(runner, Gated):
+                runner.open.set()
+        assert ended.how == "time", ended.reason
+        assert ended.stats.ticks == ticks, ended.stats
+        runs.append(([(at - start, cap, action) for at, cap, action in sends], ended))
+        await adapter.close()
+    (lockstep_sends, lockstep_end), (wall_sends, wall_end) = runs
+    assert lockstep_sends == wall_sends
+    assert lockstep_end.stats == wall_end.stats
+    stats = lockstep_end.stats
+    assert lockstep_sends[0][0] == pytest.approx(k * PERIOD), "the first chunk was not held back"
+    starved = starved_each_chunk(k, LONG)
+    gaps = _gaps(lockstep_sends, 0.0)
+    if k <= HALF:
+        assert starved == 0 and gaps == [], gaps
+        assert stats.starved == k, stats
+    else:
+        assert gaps and gaps == [starved] * len(gaps), gaps
+        assert len(gaps) == stats.chunks - 1, (gaps, stats)
+        assert stats.starved == k + sum(gaps) + (ticks - 1 - round(lockstep_sends[-1][0] / PERIOD))
+
+
+class LateClock(GateClock):
+    """A `GateClock` that answers each request `late` names, by its number from one, that many
+    ticks after it is asked, and every other `k` ticks after."""
+
+    def __init__(self, runner: Gated, k: int, late: Mapping[int, int]) -> None:
+        super().__init__(runner, k)
+        self.usual = k
+        self.late = late
+        self.asked: list[int] = []
+
+    async def sleep(self, seconds: float) -> None:
+        req = self.loop._inflight if self.loop is not None else None
+        if req is not None and req.tick not in self.asked:
+            self.asked.append(req.tick)
+        nth = self.asked.index(req.tick) + 1 if req is not None else 0
+        self.k = self.late.get(nth, self.usual)
+        await super().sleep(seconds)
+
+
+THIRD = LONG // 3
+LATE = {
+    "a tick declared, every answer in half a chunk": (1, HALF, {}),
+    "a third of half declared, every answer in half a chunk": (HALF // 3, HALF, {}),
+    "a third of a chunk declared, one answer in twice that": (
+        THIRD,
+        THIRD,
+        {2: REFILL_LATENCIES * THIRD},
+    ),
+}
+"""A declared latency in ticks, how many ticks an answer takes on the wall's kind of clock, and
+the answers, by number, that take longer, for a chunk of `LONG`."""
+
+
+@pytest.mark.parametrize("case", list(LATE))
+async def test_an_answer_slower_than_declared_still_lands_before_the_queue_runs_out(
+    case: str,
+) -> None:
+    """A policy's answers can take longer on the arm than the latency it declares, and one in
+    twenty does by the latency a bench suggests. Every answer within half a chunk still lands
+    with something queued, however short the latency declared, since the next is asked for once
+    half the chunk is left, if not sooner. And where twice the latency is more than half a
+    chunk and a chunk holds three of them, the next is asked for with twice the latency left,
+    so one answer that takes twice as long as declared lands in time too. The arm is starved
+    only while the segment's first chunk is on its way."""
+    declared, usual, late = LATE[case]
+    if late:
+        assert REFILL_LATENCIES * declared > longest_latency(LONG), "half a chunk would cover it"
+        assert (REFILL_LATENCIES + 1) * declared <= LONG, "the chunk does not hold it"
+    ticks = 5 * LONG
+    arm = _segment_arm()
+    runner = Gated(_long(_swing(arm)), rate_hz=RATE, latency_ticks=declared)
+    clock = LateClock(runner, usual, late)
+    _, transport, adapter, _ = await _backend(runner, clock=clock, arm=arm)
+    clock.loop = transport._policy_loop
+    clock.sleeps = 0
+    sends = _recorded(arm, clock)
+    start = clock.t
+    try:
+        ended = await _segment_end(transport, max_s=ticks * PERIOD)
+    finally:
+        runner.open.set()
+    await adapter.close()
+    assert ended.how == "time", ended.reason
+    assert ended.stats.ticks == ticks, ended.stats
+    assert len(clock.asked) > max(late, default=1), "the slow answer was never asked for"
+    assert _gaps([(at - start, cap, action) for at, cap, action in sends], 0.0) == []
+    assert ended.stats.starved == late.get(1, usual), ended.stats
 
 
 async def test_an_empty_queue_sends_nothing_and_ends_the_segment_after_the_starve_time() -> None:
@@ -822,10 +1064,11 @@ async def test_an_answer_that_lands_between_a_tick_s_look_and_its_ask_is_played(
     """The runner's thread answers whenever it likes, here right after a tick has looked for an
     answer and before it decides whether to ask again. That answer is still the one request
     out: it is taken in on the next tick and played, never asked over and lost."""
-    racing = 3
+    chunk, k = 6, 1
+    racing = chunk - refill_at(k, chunk)  # when what is left of the first chunk asks for more
     arm = _segment_arm()
-    runner = Gated(_tagged(6), rate_hz=RATE, latency_ticks=1)
-    clock = GateClock(runner, 1, leave=racing)
+    runner = Gated(_tagged(chunk), rate_hz=RATE, latency_ticks=k)
+    clock = GateClock(runner, k, leave=racing)
     _, transport, adapter, _ = await _backend(runner, clock=clock, arm=arm)
     loop = transport._policy_loop
     assert loop is not None
@@ -966,6 +1209,33 @@ async def test_a_runner_that_answers_at_once_but_does_not_starves_its_tick_and_i
         await adapter.close()
 
 
+class ShortClock(LockstepClock):
+    """A lockstep clock that wakes a hair short of what each sleep asked for, inside what the
+    pacer takes as due (`EXACT`), as the difference of two of the simulator's times can read."""
+
+    async def sleep(self, seconds: float) -> None:
+        await super().sleep(seconds - EXACT / 2)
+
+
+async def test_a_segment_plays_its_seconds_worth_of_ticks_and_the_record_counts_them() -> None:
+    """A segment given so many periods plays that many ticks and not one more, even where the
+    clock reads the tick its time runs out on a hair short of that time, and what each segment
+    says it counted is what the run's record adds up: the ticks, the seconds and the rate."""
+    periods, segments = 4 * round(RATE), 3
+    arm = _segment_arm()
+    runner = ScriptedRunner(_swing(arm), rate_hz=RATE)
+    _, transport, adapter, _ = await _backend(runner, clock=ShortClock(), arm=arm)
+    loop = transport._policy_loop
+    assert loop is not None
+    ends = [await _segment_end(transport, max_s=periods * PERIOD) for _ in range(segments)]
+    assert [(e.how, e.stats.ticks) for e in ends] == [("time", periods)] * segments, ends
+    record = loop.record()
+    assert record["segments"] == segments and record["ticks"] == segments * periods, record
+    assert record["seconds"] == pytest.approx(segments * periods * PERIOD, abs=0.01), record
+    assert all(e.stats.hz == record["hz"] == pytest.approx(RATE) for e in ends), (ends, record)
+    await adapter.close()
+
+
 # ── lockstep and the wall ───────────────────────────────────────────────────────────────
 
 
@@ -990,7 +1260,12 @@ async def test_a_runner_three_ticks_slow_plays_one_trajectory_in_lockstep_and_on
             clock.sleeps = 0
         sends = _recorded(arm, clock)
         start = clock.t
-        ended = await _segment_end(transport, max_s=ticks * PERIOD)
+        try:
+            ended = await _segment_end(transport, max_s=ticks * PERIOD)
+        finally:
+            # a request the segment's end left out would keep its gate, and the thread, shut
+            if isinstance(runner, Gated):
+                runner.open.set()
         assert ended.how == "time", ended.reason
         runs.append(([(at - start, cap, action) for at, cap, action in sends], ended))
         await adapter.close()
@@ -1222,6 +1497,41 @@ async def test_a_stall_against_something_in_the_way_holds_the_arm_and_is_still_o
     last = arm.actions[-1]
     assert _whole_hold(last) and last["elbow_flex.pos"] == pytest.approx(here), last
     assert not transport.policy_running
+    await adapter.close()
+
+
+@pytest.mark.parametrize("ending", ["starved", "guard"])
+async def test_a_long_chunk_s_segment_still_ends_on_starving_and_on_a_guard(ending: str) -> None:
+    """With the next chunk asked for as the last lands, half a chunk of latency calling for no
+    later, a runner that stops answering anything to play still starves the segment `STARVE_S`
+    after its last action, and a joint that runs hot mid chunk still ends it on the reading that
+    finds it hot, the arm held either way."""
+    arm = _segment_arm()
+    answer = _long(_swing(arm))
+
+    def script(observation: Observation, sent: Mapping[str, float]) -> list[dict[str, float]]:
+        if runner.requests > 1:
+            if ending == "starved":
+                return []
+            arm.temperature["elbow_flex"] = HOT_C + 5
+        return answer(observation, sent)
+
+    runner = ScriptedRunner(script, rate_hz=RATE, latency_ticks=HALF)
+    clock = LockstepClock()
+    _, transport, adapter, ex = await _backend(runner, clock=clock, arm=arm)
+    sends = _recorded(arm, clock)
+    ran = await ex.run_verb("manipulate", {"instruction": "wave"})
+    assert not ran.ok and ran.data["ended"] == ending, ran.summary
+    assert _whole_hold(arm.actions[-1]) and not transport.policy_running
+    played = [at for at, _, action in sends if not _whole_hold(action)]
+    if ending == "starved":
+        # the first chunk's last action, then `STARVE_S` with nothing, then the hold
+        assert len(played) == LONG - HALF, len(played)
+        assert sends[-1][0] - played[-1] == pytest.approx(STARVE_S, abs=2 * PERIOD)
+    else:
+        assert "elbow_flex reads" in ran.summary, ran.summary
+        # asked again half a chunk into the first, and ended before the first ran out
+        assert 0 < len(played) < LONG - HALF, len(played)
     await adapter.close()
 
 

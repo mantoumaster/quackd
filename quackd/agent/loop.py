@@ -63,7 +63,7 @@ from quackd.agent.transcript import Transcript, new_run_dir, png_bytes, run_labe
 from quackd.command import command_line, redacted_body, redacted_url
 from quackd.duckfile.narrow import narrow_policy_verb
 from quackd.duckfile.schema import DuckFile
-from quackd.log import EventLog, Sink, a_person_was_asked, fmt_params
+from quackd.log import A_PERSON, EventLog, Sink, a_person_was_asked, fmt_params, who_answered
 from quackd.memory import RobotMemory
 from quackd.perception import detector_for
 from quackd.perception.base import Detection, Detector, detect_off_loop, detect_times
@@ -414,6 +414,15 @@ class AgentLoop:
         """The question a `JudgedPilot`'s run put to a person about what the arm did, and the
         answer, as the pilot reads it under `JUDGE_FEATURE`, or None until it is put. Put once
         a run, and read again by the declare that ends it and by a budget that ends it first."""
+        self.answered_by: str | None = None
+        """What answered the doubt the last `assess_task` raised (`who_answered`), or None
+        where it raised none or nothing answered it. The `assess` event records it as
+        `answered_by` beside the `human` the gate reads, so the line drawn from it names what
+        said go or no."""
+        self.unanswered: str | None = None
+        """What the prompt put the last `assess_task`'s doubt raised, EOF or click's `Abort`,
+        where it went unanswered, or None. The gate reads that as no, and the `assess` event
+        records it as `raised` in place of an `answered_by`: nobody said no."""
 
     # ── narration ───────────────────────────────────────────────────────────────────
 
@@ -1297,19 +1306,25 @@ class AgentLoop:
             )
             return VerbResult.fail(f"invalid assess_task: {msgs}"), None
         asked = False  # whether a person answered the doubt, as against a standing answer
+        self.answered_by = self.unanswered = None
         if verdict.verdict == "uncertain":
             if self.cfg.decide is None:
                 self.executor.verdict = verdict  # recorded, and still not cleared
                 return VerbResult.fail(self.NOBODY_TO_ASK), None
             try:
                 answer = bool(self.cfg.decide(verdict.question()))
-            except Exception:
+            except Exception as e:
                 # a prompt that raised on Ctrl-C or EOF has not said yes, the same way the
-                # confirm gate reads it
+                # confirm gate reads it, and nobody said no either: it is recorded as the
+                # question unanswered, never as a no from whatever put it, and it leaves no
+                # `prompt` row, as a judge's question that raised leaves none
                 answer = False
+                self.unanswered = type(e).__name__
             verdict.human = "go" if answer else "no_go"
-            asked = a_person_was_asked(self.cfg.decide)
-            self._ask_recorded("decide", verdict.question(), answer, self.cfg.decide)
+            if self.unanswered is None:
+                self.answered_by = who_answered(self.cfg.decide)
+                asked = self.answered_by == A_PERSON
+                self._ask_recorded("decide", verdict.question(), answer, self.cfg.decide)
         if verdict.verdict == "feasible":
             # The coordinator already holds another robot's bid to its datasheet, and nothing
             # held a pilot's verdict about its OWN body to its own sheet, so a `needs` naming
@@ -1331,9 +1346,16 @@ class AgentLoop:
             hint = solo_hint(verdict.needs, self.executor.manifest)
             return VerbResult.fail(verdict.reason), " ".join(p for p in (verdict.reason, hint) if p)
         if verdict.human == "no_go":
+            if self.unanswered is not None:
+                unanswered = f"the question went unanswered: the prompt raised {self.unanswered}"
+                return (
+                    VerbResult.fail(unanswered),
+                    f"the pilot was unsure ({verdict.reason}) and {unanswered}",
+                )
+            # named as the record names it: a pipe says no as readily as a person does
             return (
-                VerbResult.fail("a human was asked and said no"),
-                f"the pilot was unsure ({verdict.reason}) and the human said no",
+                VerbResult.fail(f"{self.answered_by} was asked and said no"),
+                f"the pilot was unsure ({verdict.reason}) and {self.answered_by} said no",
             )
         if verdict.human == "go":
             # The pilot has to hear who cleared it. It used to be told only "recorded
@@ -2070,6 +2092,17 @@ class AgentLoop:
                             recorded.model_dump(mode="json")
                             if recorded is not None
                             else {"verdict": None, "reason": str(call.arguments.get("reason", ""))}
+                        ),
+                        # what said go or no, where this call's doubt was answered, or what
+                        # the prompt raised, where it went unanswered
+                        **(
+                            (
+                                {"raised": self.unanswered}
+                                if self.unanswered is not None
+                                else {"answered_by": self.answered_by}
+                            )
+                            if recorded is not None and recorded.human is not None
+                            else {}
                         ),
                     )
                     if ends_with is not None:

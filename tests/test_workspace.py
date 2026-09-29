@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import importlib.util
 import re
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -33,6 +35,36 @@ def _toml(path: Path) -> dict:
 def _dist(requirement: str) -> str:
     """The distribution a requirement names, without its extras or its version window."""
     return re.split(r"[\[><=]", requirement, maxsplit=1)[0]
+
+
+WINDOW = re.compile(
+    r"(?P<dist>quackd(?:-[a-z-]+)?)(?:\[[a-z]+\])?"
+    r">=(?P<floor>\d+\.\d+(?:\.\d+)?),<(?P<ceiling>\d+\.\d+)"
+)
+"""A window one of the eight packages pins another with, as `scripts/set_version.py` writes it."""
+
+
+def _release(text: str) -> tuple[int, ...]:
+    """A version's numbers, with the zeros PEP 440 reads into a shorter one: 0.16 is 0.16.0."""
+    numbers = tuple(int(n) for n in text.split("."))
+    return numbers + (0,) * (3 - len(numbers))
+
+
+def _window_breach(requirement: str, version: str) -> str | None:
+    """What is wrong with the window `requirement` pins for packages released as `version`, or
+    None. RELEASING.md: a window starts at the release it ships in and ends before the next
+    minor, `>=X.Y.Z,<X.Y+1`, so a patch raises every floor to itself and a minor moves the
+    whole window. A window written before 0.16.1, from the minor alone (`>=0.16`), starts at
+    the same release, since PEP 440 reads 0.16 as 0.16.0."""
+    window = WINDOW.fullmatch(requirement)
+    if window is None:
+        return f"{requirement} has no window scripts/set_version.py writes"
+    major, minor, _ = _release(version)
+    if _release(window["floor"]) != _release(version):
+        return f"{requirement} does not start at {version}, the release it ships in"
+    if _release(window["ceiling"]) != (major, minor + 1, 0):
+        return f"{requirement} does not end before {major}.{minor + 1}, the next minor"
+    return None
 
 
 def test_every_adapter_directory_is_a_workspace_member() -> None:
@@ -59,15 +91,15 @@ def test_an_adapter_carries_the_same_version_as_the_core(member: Path) -> None:
 
 
 @pytest.mark.parametrize("member", MEMBERS, ids=NAMES)
-def test_an_adapter_allows_the_core_it_is_released_with(member: Path) -> None:
+def test_an_adapter_allows_the_core_it_is_released_with_and_none_before_it(member: Path) -> None:
     """The window an adapter allows has to admit the core it ships beside, or the release
-    resolves to nothing on the day it is published."""
+    resolves to nothing on the day it is published. It admits no core from before it either,
+    so an adapter from a patch never installs beside a core that lacks what the patch gave it,
+    and it ends before the next minor, where the interface moves (RELEASING.md)."""
     data = _toml(member)
     pin = next(d for d in data["project"]["dependencies"] if d.startswith("quackd>="))
-    low, high = re.findall(r"\d+\.\d+", pin)
-    version = tuple(int(n) for n in quackd.__version__.split(".")[:2])
-    assert tuple(int(n) for n in low.split(".")) <= version, pin
-    assert version < tuple(int(n) for n in high.split(".")), pin
+    breach = _window_breach(pin, quackd.__version__)
+    assert breach is None, breach
 
 
 @pytest.mark.parametrize("member", MEMBERS, ids=NAMES)
@@ -99,23 +131,63 @@ def test_every_extra_pins_the_adapter_it_installs_to_this_release() -> None:
     adapter from another release, which for the first release that publishes them means a later
     one, and the only thing that rejects that is the adapter's own back-pin, which arrives as a
     resolver error rather than as the right version. Both windows are written by
-    `scripts/set_version.py` in one pass, so they have to agree. `dev` is exempt: it is resolved
-    from the workspace by `[tool.uv.sources]` and is never published to anybody."""
+    `scripts/set_version.py` in one pass, so they have to agree: each starts at this release and
+    ends before the next minor. `dev` is exempt: it is resolved from the workspace by
+    `[tool.uv.sources]` and is never published to anybody."""
     extras = _toml(REPO / "pyproject.toml")["project"]["optional-dependencies"]
-    version = tuple(int(n) for n in quackd.__version__.split(".")[:2])
+    breaches = []
     for key, requirements in extras.items():
         if key == "dev":
             continue
         for requirement in requirements:
             if not requirement.startswith("quackd-"):
                 continue
-            window = re.fullmatch(
-                r"quackd-[a-z-]+(?:\[[a-z]+\])?>=(\d+\.\d+),<(\d+\.\d+)", requirement
-            )
-            assert window, f"{key}: {requirement} names an adapter with no version window"
-            low, high = window.group(1), window.group(2)
-            assert tuple(int(n) for n in low.split(".")) <= version, requirement
-            assert version < tuple(int(n) for n in high.split(".")), requirement
+            if (breach := _window_breach(requirement, quackd.__version__)) is not None:
+                breaches.append(f"{key}: {breach}")
+    assert not breaches, breaches
+
+
+def _windows(root: Path) -> list[str]:
+    """Every window in the eight `pyproject.toml` files under `root`, as written."""
+    found = []
+    for path in [root / "pyproject.toml", *sorted(root.glob("adapters/*/pyproject.toml"))]:
+        found += re.findall(r'"(quackd[^"]*>=[^"]*)"', path.read_text(encoding="utf-8"))
+    return found
+
+
+def test_set_version_starts_every_window_at_the_release_for_a_patch_and_for_a_minor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`scripts/set_version.py`, run on a copy of the eight packages for the next patch and then
+    the next minor, writes every window this suite holds the eight to: a patch raises each
+    floor to itself, `>=X.Y.Z,<X.Y+1`, and a minor moves the whole window, `>=X.Y.0,<X.Y+1`. It
+    has to read the windows written before 0.16.1, from the minor alone, as well as the ones it
+    writes, or the release after would leave every window where it was."""
+    spec = importlib.util.spec_from_file_location(
+        "set_version", REPO / "scripts" / "set_version.py"
+    )
+    assert spec and spec.loader
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    kept = [REPO / "pyproject.toml", *MEMBERS, *script.version_files()]
+    for path in kept:
+        copy = tmp_path / path.relative_to(REPO)
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, copy)
+    monkeypatch.setattr(script, "REPO", tmp_path)
+    count = len(_windows(REPO))
+    assert count > len(MEMBERS), "the core's extras pin adapters too"
+    major, minor, patch = _release(quackd.__version__)
+    for version in (f"{major}.{minor}.{patch + 1}", f"{major}.{minor + 1}.0"):
+        assert script.main(["set_version.py", version]) == 0
+        windows = _windows(tmp_path)
+        assert len(windows) == count, windows
+        for window in windows:
+            assert f">={version},<" in window, window
+            breach = _window_breach(window, version)
+            assert breach is None, breach
+        for path in script.version_files():
+            assert f'__version__ = "{version}"' in path.read_text(encoding="utf-8"), path
 
 
 def test_the_catalogue_and_the_installed_adapter_agree_about_the_robot() -> None:

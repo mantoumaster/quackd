@@ -57,15 +57,16 @@ from quackd_lerobot.sim.model import (
     PLACE_FAR,
     PLACE_NEAR,
     ArmModel,
+    ModelError,
     SceneObject,
     generic_calibration,
     load,
 )
 from quackd_lerobot.sim.transport import GL_CHECK_SIZE
 from quackd_lerobot.sim.world import JAWS_CLEARANCE, LIFT_MIN_M, ArmWorld, WorldError
-from quackd_lerobot.verbs import GRIPPER_OPEN, JOINTS, MOVE_MIN_S, published_travel
+from quackd_lerobot.verbs import GRIPPER_OPEN, GRIPPER_S, JOINTS, MOVE_MIN_S, published_travel
 from tests.test_lerobot_adapter import _executor
-from tests.test_lerobot_sim import WALL_S, _camera, _needs_gl, _sim_arm
+from tests.test_lerobot_sim import JAWS_START, WALL_S, _camera, _closes_onto, _needs_gl, _sim_arm
 from tests.test_preflight import GRASP_TASK, LOOKOUT, _duck
 
 mujoco = pytest.importorskip("mujoco")
@@ -484,6 +485,64 @@ async def test_the_lookout_passes_preflight_seed_after_seed(
 BLOCK = SceneObject("block", "box", CUBE.size, CUBE.mass_kg, CUBE.rgba)
 """What the grasp task's sidecar lays between the jaws: the simulator's own cube, renamed, so
 the check names the object the task text does."""
+
+
+TILT_STEPS = 20
+"""How finely the jaws test below tilts the wrist, in steps of its travel's far end: fine
+enough that the few degrees where the moving finger swings clear of the block are stepped on."""
+
+
+def test_the_jaws_are_laid_only_where_a_close_brings_the_moving_finger_onto_the_block() -> None:
+    """`place: jaws` on the maker's model. With the fingers pointing straight down around the
+    block and the fingertips a block's half height up, the block is laid and the close brings
+    the moving finger onto it. Tilted at the wrist, a step at a time, with the fixed finger
+    still down at the block's side, the moving finger comes to swing past it, as it did from
+    the lab arm's fold with the gripper open, and that start is refused with the start that
+    works, until the fixed finger too is lifted clear and that refusal takes over. What each
+    says is what the physics does: from every start laid a close brings the moving finger onto
+    the block, and from every start refused as a miss it never does."""
+    model = _so101()
+    arm = load(model, seed=FIRST_SEED, objects=(BLOCK,))
+    travel = {
+        name: published_travel(*span)
+        for name, span in joint_ranges(generic_calibration(arm)).items()
+    }
+    ring = (PLACE_NEAR + PLACE_FAR) / 2 * arm.workspace.reach
+    cx, cy = arm.workspace.center
+    height = BLOCK.rest_height
+    path = _descent(
+        arm,
+        _grip(arm, BLOCK),
+        (cx + ring, cy, arm.workspace.table_top + 2 * height),
+        0.0,
+        0.0,
+        _radians(arm, travel),
+    )
+    assert path is not None, "no way down to the middle of the ring straight ahead is in reach"
+    down = {**_degrees(arm, path[-1]), JOINTS[-1]: GRIPPER_OPEN}
+    tilts = {
+        sign * travel["wrist_flex"][1] * k / TILT_STEPS
+        for k in range(TILT_STEPS)
+        for sign in (-1, 1)
+    }
+    laid: list[bool] = []
+    missed: list[tuple[str, bool]] = []
+    for tilt in sorted(tilts, key=abs):
+        world = ArmWorld(arm, rest_pose={**down, "wrist_flex": down["wrist_flex"] + tilt})
+        try:
+            try:
+                world.place_between_jaws(BLOCK.name)
+            except ModelError as e:
+                if "moving finger" in str(e):
+                    missed.append((str(e), _closes_onto(world, BLOCK.name, GRIPPER_S)))
+                continue
+            laid.append(_closes_onto(world, BLOCK.name, GRIPPER_S))
+        finally:
+            world.close()
+    assert laid and all(laid), laid
+    assert missed, "no tilt of the wrist swung the moving finger clear of the block"
+    for said, onto in missed:
+        assert JAWS_START.replace("block", BLOCK.name) in said and not onto, (said, onto)
 
 
 async def test_a_grasp_task_passes_preflight_on_the_truth_its_sidecar_checks(

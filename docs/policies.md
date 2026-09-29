@@ -128,10 +128,10 @@ latency     879.8 ms or less for 95% of the 19 steps timed, from the request to 
 A CPU that cannot keep up shows here, before an arm is involved: skipped ticks on the first
 bench, and starved ticks after the first chunk on the second. Torch gets one thread fewer than
 it would take, which leaves a core for the arm's process, and `--threads` says otherwise. A
-policy whose steps take longer than a segment waits for its first chunk, or longer than its
-chunk takes to play, is given no `--latency-s` at all, since `serve` would refuse any that
-covered them: the bench says it answers too slowly to drive an arm from that machine, and to
-serve it on a GPU.
+policy whose steps take longer than a segment waits for its first chunk, or longer than half
+its chunk's actions, rounded down, take to play, is given no `--latency-s` at all, since `serve`
+would refuse any that covered them: the bench says it answers too slowly to drive an arm from
+that machine, and to serve it on a GPU.
 
 Before it loads anything, the server reads the checkpoint's own files and refuses what it has
 not been told. Here is `lerobot/smolvla_base` at a commit, checked in LeRobot 0.6.1's

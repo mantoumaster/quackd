@@ -133,6 +133,33 @@ def a_person_was_asked(asker: object) -> bool:
     return bool(mark)
 
 
+A_PERSON = "a person"
+A_PIPE = "a pipe"
+STANDING = "a standing answer"
+"""What `who_answered` names beside `--yes` and a flock's standing answer, which each carry
+their own name (`answers_as`): a person really asked, the CLI's own question answered with no
+terminal under it, and any other callable that answers without asking anybody."""
+
+
+def who_answered(asker: object) -> str:
+    """What answered a question put to `asker`, in the words a record names it with.
+
+    `a person` only where `a_person_was_asked` says one was, so the name is held to the same
+    rule as a `prompt` row. Otherwise what said it without asking anybody: the name an asker
+    carries as `answers_as` (`--yes`, a flock's standing answer), `a pipe` for the CLI's own
+    question put where no person is at the terminal, since its mark is a check made at the
+    time of asking and it said nobody was there, and `a standing answer` for anything else,
+    which claims nobody. `assess.answered_by` is this, beside the `human` the gate reads."""
+    if a_person_was_asked(asker):
+        return A_PERSON
+    named = getattr(asker, "answers_as", None)
+    if isinstance(named, str) and named:
+        return named
+    if callable(getattr(asker, "asks_a_person", None)):
+        return A_PIPE
+    return STANDING
+
+
 def capture_sink(event: LogEvent) -> None:
     """An observer that appends to whatever `capturing()` is open in this context. The MCP
     server runs every tool call as its own task, and asyncio copies the context into a task
@@ -766,8 +793,20 @@ def render_events(
         if not word:
             return [LogLine("assess", f"invalid: {d.get('summary')}", "red", mark="fail")]
         text = f"{word}: {d.get('reason')}"
-        if d.get("human"):
-            text += " (the human said " + ("go" if d["human"] == "go" else "no") + ")"
+        if d.get("raised"):
+            # the prompt raised, on EOF or click's `Abort`: the gate read that as no, and
+            # nobody said it
+            text += f" (the question went unanswered: the prompt raised {d['raised']})"
+        elif d.get("human"):
+            # who said it as the record names it (`who_answered`), and never a person the
+            # record does not name: a run from before `answered_by` says only what was answered
+            said = "go" if d["human"] == "go" else "no"
+            who = d.get("answered_by")
+            text += (
+                f" ({who} said {said})"
+                if who
+                else f" (answered {said}, and the record does not say by whom)"
+            )
         if d.get("ends_run"):
             text += " [the run ends before any motion]"
         style, mark = {
@@ -1272,9 +1311,12 @@ def render_call(events: list[LogEvent]) -> list[str]:
 
 
 __all__ = [
+    "A_PERSON",
+    "A_PIPE",
     "MAX_BURST",
     "MCP_LOG_MAX_LINES",
     "PROGRESS_S",
+    "STANDING",
     "ConsoleLog",
     "EventLog",
     "LineLog",
@@ -1300,4 +1342,5 @@ __all__ = [
     "render_lines",
     "thinking_limit_default",
     "unless_capturing",
+    "who_answered",
 ]

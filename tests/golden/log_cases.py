@@ -479,6 +479,7 @@ def events() -> list[tuple[str, LogEvent]]:
                 needs={"payload_kg": 3.0, "manipulator": "gripper"},
             ),
         ),
+        # a record from before `answered_by`, which names nobody
         (
             "assess_uncertain_human_no",
             _e(
@@ -489,6 +490,50 @@ def events() -> list[tuple[str, LogEvent]]:
                 human="no_go",
                 ends_run=True,
             ),
+        ),
+        (
+            "assess_uncertain_a_person_no",
+            _e(
+                "assess",
+                0.4,
+                verdict="uncertain",
+                reason="the basket is out of frame",
+                human="no_go",
+                answered_by="a person",
+                ends_run=True,
+            ),
+        ),
+        # the prompt raised: nobody said no, and the gate read it as no
+        (
+            "assess_uncertain_unanswered",
+            _e(
+                "assess",
+                0.4,
+                verdict="uncertain",
+                reason="the basket is out of frame",
+                human="no_go",
+                raised="EOFError",
+                ends_run=True,
+            ),
+        ),
+        *(
+            (
+                f"assess_uncertain_{label}_go",
+                _e(
+                    "assess",
+                    0.4,
+                    verdict="uncertain",
+                    reason="the basket is out of frame",
+                    human="go",
+                    answered_by=who,
+                ),
+            )
+            for label, who in (
+                ("a_person", "a person"),
+                ("yes", "--yes"),
+                ("flock", "a flock's standing answer"),
+                ("pipe", "a pipe"),
+            )
         ),
         ("assess_invalid", _e("assess", 0.4, verdict=None, summary="invalid: verdict: maybe")),
         # ── declare, memory, note ──

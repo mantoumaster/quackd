@@ -1057,6 +1057,10 @@ def _yes_to_go(_why: str) -> bool:
     return True
 
 
+_yes_to_go.answers_as = "--yes"  # type: ignore[attr-defined]
+"""What the record names as having said go (`quackd.log.who_answered`), and never a person."""
+
+
 class _TerminalHandOff:
     """The person at the robot, as a terminal.
 
@@ -3989,8 +3993,9 @@ _POLICY_LATENCY = typer.Option(
     "--latency-s",
     help="How long the policy takes to answer a step, declared. The simulator holds each "
     "chunk back that long, and quackd policy check --bench measures the real one. It has to "
-    "be shorter than the 5 s a segment waits for its first chunk, and than one chunk takes "
-    "to play.",
+    "be shorter than the 5 s a segment waits for its first chunk, and no longer than half a "
+    "chunk's actions, rounded down, take to play, since the next chunk is asked for only once "
+    "the last has landed.",
 )
 _POLICY_THREADS = typer.Option(None, "--threads", help="The threads the policy may use.")
 _POLICY_JPEG = typer.Option(

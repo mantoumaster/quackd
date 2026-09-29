@@ -57,7 +57,7 @@ from quackd_lerobot.verbs import (
     worth_saying,
 )
 
-__version__ = "0.16.0"
+__version__ = "0.16.1"
 """Kept in step with quackd's own version by scripts/set_version.py. It lives here rather
 than being read from the core, because this file is all an adapter's sdist contains."""
 
@@ -367,12 +367,14 @@ class LeRobotAdapter:
         if temperatures:
             extras["hottest_c"] = round(max(temperatures))
         # what doctor is the first place to show: which calibration file the arm answered
-        # with, and the travel that file gives each joint
+        # with, and the travel that file gives each joint, as the manifest publishes it and the
+        # pilot is told it, to a tenth rounded inward, and never rounded out to a whole degree
+        # the arm refuses a goal at
         if path := getattr(self.transport, "calibration_file", None):
             extras["calibration_file"] = path
         if ranges := getattr(self.transport, "joint_range_deg", None):
             extras["joint_range_deg"] = {
-                j: [round(lo), round(hi)] for j, (lo, hi) in ranges.items()
+                j: published_travel(lo, hi) for j, (lo, hi) in ranges.items()
             }
         return Health(ok=True, battery_percent=None, extras=extras)
 

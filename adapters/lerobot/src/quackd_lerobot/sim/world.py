@@ -39,7 +39,7 @@ from typing import Any
 import numpy as np
 
 from quackd.transport.base import TransportError
-from quackd_lerobot.real import ENCODER_TICKS, MAX_STEP_DEG
+from quackd_lerobot.real import ENCODER_TICKS, GRIPPER_SETTLE, MAX_STEP_DEG, SETTLE_GAP_S
 from quackd_lerobot.sim import upstream_api as so
 from quackd_lerobot.sim.model import (
     LABEL,
@@ -52,6 +52,7 @@ from quackd_lerobot.sim.model import (
     table_spot,
 )
 from quackd_lerobot.verbs import (
+    GRIPPER_S,
     JOINTS,
     TICK_S,
     TOL_DEG,
@@ -103,6 +104,15 @@ def _pinched(flags: int) -> bool:
 
 def _lifted(flags: int, lift: float) -> bool:
     return not flags & _TABLE and bool(flags & _GRIPPER) and lift >= LIFT_MIN_M
+
+
+def _jaws_start(name: str) -> str:
+    """What a refusal to lay `name` between the jaws says to do about it: the start that works,
+    which a gripper merely left open does not give."""
+    return (
+        f"Give the robot a rest pose whose open jaws point down at the table around where {name} "
+        f"goes, or lay {name} on the table instead."
+    )
 
 
 def _listed(items: list[str]) -> str:
@@ -757,8 +767,12 @@ class ArmWorld:
         the fingers and a capsule lying across them, so that closing the gripper swings the
         moving finger onto it and presses it into the fixed one. It is refused, saying why,
         where the fixed finger ends above the top of the object, which is not between the jaws
-        at all, and where the object laid there would touch the gripper, which is jaws open
-        narrower than it: the first step of physics would throw it."""
+        at all, where the object laid there would touch the gripper, which is jaws open
+        narrower than it: the first step of physics would throw it, and where closing the
+        gripper never brings the moving finger onto it (`_closing_miss`): jaws that do not
+        point down around it, the moving finger swinging over it or past it, which no close
+        would ever pick up. Each refusal says the start that works, an arm whose open jaws
+        point down at the table around the object."""
         names = [obj.name for obj in self.arm.objects]
         if name not in names:
             raise ValueError(
@@ -782,9 +796,8 @@ class ArmWorld:
                 raise ModelError(
                     f"{LABEL} the scene lays {name} between the jaws, and as the arm starts its "
                     f"fixed finger ends {(lowest - table) * 1000:.0f} mm above the table, over "
-                    f"the top of {name}, which stands {tall * 1000:.0f} mm tall. Give the robot "
-                    f"a rest pose with its jaws down at the table, or lay {name} on the table "
-                    "instead."
+                    f"the top of {name}, which stands {tall * 1000:.0f} mm tall. "
+                    + _jaws_start(name)
                 )
             u = across / span if span > 0 else np.array([1.0, 0.0, 0.0])
             half = obj.size[0]  # a box's half size along u, a capsule's radius across it
@@ -806,9 +819,60 @@ class ArmWorld:
             if span == 0 or self._flags[i] & _GRIPPER:
                 raise ModelError(
                     f"{LABEL} the scene lays {name} between the jaws, and as the arm starts they "
-                    f"are open narrower than {name}, which would start inside a finger. Give the "
-                    f"robot a rest pose with the gripper open, or lay {name} on the table instead."
+                    f"are open narrower than {name}, which would start inside a finger. "
+                    + _jaws_start(name)
                 )
+            if (miss := self._closing_miss(i)) is not None:
+                raise ModelError(
+                    f"{LABEL} the scene lays {name} between the jaws, and as the arm starts, "
+                    f"closing the gripper stops its moving finger {miss * 1000:.1f} mm clear of "
+                    f"{name}, which it never touches on the way. " + _jaws_start(name)
+                )
+
+    def _closing_miss(self, i: int) -> float | None:
+        """How near the moving finger comes to object `i` when the gripper closes from where
+        the arm starts, in metres, where it never touches it, or None where it does. Under the
+        lock, after a forward pass.
+
+        The close is rehearsed in the physics, on a copy of the state, so nothing in the world
+        moves, and with the object alone on the table. The gripper is driven to closed with
+        every other goal held, as the `gripper` verb drives it, and stepped until the moving
+        finger's pad touches the object, or until the gripper has moved and stopped, two
+        readings `SETTLE_GAP_S` apart within `GRIPPER_SETTLE` of each other as the backend
+        judges a gripper at rest, and for no longer than the verb gives it (`GRIPPER_S`).
+        Physics and not the pad's path swept at the start pose, since the hand gives a little
+        under a closing grip: a path that passes a millimetre clear can still pinch, and one
+        that passes closer can still miss. The distance said is the pad's from the object as the
+        rehearsal stopped, off the model's own collision geometry."""
+        mj, model = self._mj, self._model
+        gripper = self.arm.gripper
+        pad, geoms = self.arm.moving_pad, self.arm.object_geoms[i]
+        data = copy.copy(self._data)
+        # the jaws and this object alone: the table is laid out clear of both after this
+        # (`lay_clear`), so whatever else the seed laid is put out of reach on this copy, each
+        # a few of the model's own extents off along x, where nothing of the arm can meet it
+        extent, centre = float(model.stat.extent), np.asarray(model.stat.center, dtype=float)
+        for j, (q, v) in enumerate(zip(self.arm.object_qpos, self.arm.object_dofs, strict=True)):
+            if j != i:
+                data.qpos[q : q + 3] = centre + np.array([4 * extent * (j + 1), 0.0, 0.0])
+                data.qvel[v : v + 6] = 0.0
+        mj.mj_forward(model, data)
+        data.ctrl[gripper.actuator] = gripper.closed
+        gap = max(1, round(SETTLE_GAP_S / self.timestep))
+        first = last = gripper.to_lerobot(float(data.qpos[gripper.qpos]))
+        for _ in range(max(1, math.ceil(GRIPPER_S / (gap * self.timestep)))):
+            for _ in range(gap):
+                mj.mj_step(model, data)
+                pairs = data.contact.geom[: data.ncon].tolist()
+                if any(pad in pair and bool(geoms & set(pair)) for pair in pairs):
+                    return None
+            now = gripper.to_lerobot(float(data.qpos[gripper.qpos]))
+            # at rest once it has moved, so a slow start is not taken for a stop
+            if abs(now - first) >= GRIPPER_SETTLE and abs(now - last) < GRIPPER_SETTLE:
+                break
+            last = now
+        far = float(model.stat.extent)  # no reading is cut short: the model's own size
+        return min(float(mj.mj_geomDistance(model, data, pad, g, far, None)) for g in geoms)
 
     def lay_clear(self, seed: int, *, keep: str | None = None) -> None:
         """Lay again, drawn from `seed`, each object that as the arm starts touches anything but

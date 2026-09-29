@@ -112,6 +112,7 @@ from quackd_lerobot.sim.world import (
 from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
+    GRIPPER_S,
     JOINTS,
     MOVE_MIN_S,
     PICK_POLL_S,
@@ -804,6 +805,71 @@ def test_the_jaws_are_refused_where_nothing_on_the_table_is_between_them(mjcf: s
         ArmWorld(arm, rest_pose={**down, JOINTS[-1]: GRIPPER_CLOSED}).place_between_jaws("block")
     with pytest.raises(ValueError, match="no object 'cube'"):
         ArmWorld(arm, rest_pose=down).place_between_jaws("cube")
+
+
+JAWS_START = "open jaws point down at the table around where block goes"
+"""What every refusal to lay the block between the jaws says to do: the start that works."""
+
+
+def _closes_onto(world: ArmWorld, name: str, seconds: float) -> bool:
+    """Close the gripper for `seconds` of physics, a step at a time, and say whether the
+    moving finger's pad touched `name` on any step."""
+    arm = world.arm
+    geoms = arm.object_geoms[[o.name for o in arm.objects].index(name)]
+    world.set_goal(JOINTS[-1], arm.gripper.to_model(GRIPPER_CLOSED))
+    for _ in range(math.ceil(seconds / world.timestep)):
+        world.step(world.timestep)
+        with world.locked() as (_, data):
+            pairs = data.contact.geom[: data.ncon].tolist()
+        if any(arm.moving_pad in pair and geoms & set(pair) for pair in pairs):
+            return True
+    return False
+
+
+def test_the_jaws_are_refused_where_closing_them_never_reaches_what_is_between_them(
+    mjcf: str,
+) -> None:
+    """The fixed finger down at the block's side and the jaws open wider than it is not enough:
+    closing the gripper has to bring the moving finger onto it. Here the stand-in's moving
+    finger is cut short from its tip by more than the block is tall, so it closes over the top
+    of a block the fixed finger stands beside, which a close would never pick up. That start is
+    refused, with how near the moving finger comes, and the physics agrees: closing from there
+    never brings that finger onto the block. The same hand with its finger whole is laid out,
+    and its close does.
+    Every refusal says the start that works, which a gripper merely left open does not give."""
+    half = CUBE.size[0]
+    outcomes = {}
+    for cut in (False, True):
+        arm = load(mjcf, seed=0, objects=parse_scene(_jaws_scene()).objects)
+        if cut:
+            # the pad runs from the jaw's hinge along its body's z: keep the hinge end, and
+            # cut the tip back past the block's top by as much again as its half size
+            model, pad = arm.model, arm.moving_pad
+            length = 2 * float(model.geom_size[pad][2]) - 3 * half
+            assert length > 0, "the stand-in's finger is too short to cut"
+            model.geom_size[pad][2] = length / 2
+            model.geom_pos[pad][2] = length / 2
+        down = _pointing_down(arm, (PLACE_NEAR + PLACE_FAR) / 2, half / 2)
+        world = ArmWorld(arm, rest_pose={**down, JOINTS[-1]: GRIPPER_OPEN})
+        try:
+            try:
+                world.place_between_jaws("block")
+                said = None
+            except ModelError as e:
+                said = str(e)
+            outcomes[cut] = (said, _closes_onto(world, "block", GRIPPER_S))
+        finally:
+            world.close()
+    assert outcomes[False] == (None, True), outcomes[False]
+    said, onto = outcomes[True]
+    assert said is not None and "closing the gripper stops its moving finger" in said, said
+    assert re.search(r"\d+\.\d mm clear of block, which it never touches", said), said
+    assert JAWS_START in said, said
+    assert not onto, "the physics closed the finger onto what the refusal said it never would"
+    arm = load(mjcf, seed=0, objects=parse_scene(_jaws_scene()).objects)
+    for pose in (None, {**down, JOINTS[-1]: GRIPPER_CLOSED}):
+        with pytest.raises(ModelError, match=JAWS_START):
+            ArmWorld(arm, rest_pose=pose).place_between_jaws("block")
 
 
 CLEAR_SEEDS = 10
@@ -2171,7 +2237,10 @@ async def test_manipulates_timeout_covers_the_thinking_the_simulators_clock_wait
     it declares, it thinks for as long as the segment runs, so with the headroom taken away a
     timeout sized for the segment alone would end the verb early. The narrowed timeout adds what
     the backend says its clock stands still for, from the latency the policy declares, and the
-    segment runs out on its own time."""
+    segment runs out on its own time. Each answer takes what is left of a tick for every answer
+    so far, counted as the loop counts its thinking, so a busy machine that wakes one late has
+    it made up by the next, as the pacer makes up a late tick, and never adds up to a policy
+    slower than it declares, while the answers together still take the segment's length."""
     import time as wall
 
     from quackd.duckfile import narrow
@@ -2183,7 +2252,9 @@ async def test_manipulates_timeout_covers_the_thinking_the_simulators_clock_wait
     swing: dict[str, float] = {}
 
     def thinks(observation: Observation, _sent: Any) -> list[dict[str, float]]:
-        wall.sleep(1 / rate)
+        loop = transport._policy_loop
+        assert loop is not None
+        wall.sleep(max(0.0, (loop.waited + 1) / rate - loop.thinking_s))
         # this tick's goal and the next, since the answer is let go a tick later
         return [{PAN: swing[PAN] * ((observation.tick + i) % 2)} for i in range(2)]
 
@@ -2372,6 +2443,59 @@ async def test_a_policy_whose_period_is_no_whole_number_of_steps_still_sends_onc
         periods = [math.floor((at - first) / period + 1e-9) for at in sent_at]
         assert periods == list(range(len(sent_at))), periods
         assert len(sent_at) == ticks
+    finally:
+        await adapter.close()
+
+
+LONG_CHUNK_S = 2.0
+"""How long a long chunk lasts, at the rate the test below plays it at."""
+
+
+async def test_a_long_chunk_lands_as_the_last_runs_out_and_a_segment_plays_its_own_ticks(
+    mjcf: str,
+) -> None:
+    """On the simulator's own clock, a runner of chunks `LONG_CHUNK_S` long at a named rate that
+    declares half a chunk of latency, the most `quackd policy serve` takes. It is asked again as
+    each chunk runs down to that half, so every chunk after the first lands as the last runs
+    out and the arm is starved only while a segment's first is on its way. Two segments each
+    play exactly the ticks their seconds hold, at a period that is no whole number of the
+    clock's steps, and the run's record adds up what they said they played."""
+    from quackd.transport.base import Intent
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 3 / TICK_S
+    chunk = round(LONG_CHUNK_S * rate)
+    k = chunk // 2
+    swing: dict[str, float] = {}
+
+    def script(observation: Any, _sent: Any) -> list[dict[str, float]]:
+        return [{PAN: swing[PAN] * ((observation.tick + i) % 2)} for i in range(chunk)]
+
+    runner = ScriptedRunner(script, rate_hz=rate, latency_ticks=k)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+    dt = transport.sim_dt
+    assert dt is not None and abs(1 / rate / dt - round(1 / rate / dt)) > 1e-6
+    periods = 3 * chunk
+    try:
+        ends = []
+        for _ in range(2):
+            ack = await transport.send_intent(
+                Intent(kind="do", params={"skill": "policy:pick:wave", "max_s": periods / rate})
+            )
+            assert ack.accepted, ack.reason
+            segment = transport.policy_segment
+            assert segment is not None
+            await asyncio.wait_for(asyncio.wait({segment}), WALL_S)
+            ends.append(segment.result())
+        assert [(e.how, e.stats.ticks, e.stats.starved) for e in ends] == [
+            ("time", periods, k)
+        ] * 2, ends
+        loop = transport._policy_loop
+        assert loop is not None
+        record = loop.record()
+        assert record["ticks"] == 2 * periods and record["starved_ticks"] == 2 * k, record
+        assert record["seconds"] == pytest.approx(2 * periods / rate, abs=0.01), record
     finally:
         await adapter.close()
 

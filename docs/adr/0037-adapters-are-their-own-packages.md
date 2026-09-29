@@ -1,6 +1,13 @@
 # ADR-0037: An adapter is its own package, and quackd ships no robot
 
-**Status:** accepted · **Date:** 2026-09-16 · Extends [ADR-0017](0017-robot-adapters-and-manifest.md) (a robot is an adapter that declares a manifest) and [ADR-0022](0022-per-adapter-upstream-refs.md) (each adapter owns its upstream refs) · Amends [ADR-0034](0034-registered-robots-and-pilot-flocks.md), which assumed there was always a body to fall back to · Documented in the README's install section and [CONTRIBUTING.md](../../CONTRIBUTING.md)
+**Status:** accepted, amended · **Date:** 2026-09-16 · Extends [ADR-0017](0017-robot-adapters-and-manifest.md) (a robot is an adapter that declares a manifest) and [ADR-0022](0022-per-adapter-upstream-refs.md) (each adapter owns its upstream refs) · Amends [ADR-0034](0034-registered-robots-and-pilot-flocks.md), which assumed there was always a body to fall back to · Documented in the README's install section and [CONTRIBUTING.md](../../CONTRIBUTING.md)
+
+**Amended 2026-09-29 by [ADR-0049](0049-a-version-says-what-changed.md):** the eight still carry
+one version and are still released together, and a release is now a patch, a minor or a major by
+what it changes. `scripts/set_version.py` starts each window this ADR describes at the release
+itself, `>=X.Y.Z,<X.Y+1`, so a patch raises every floor to itself and a minor moves the whole
+window. The order a release is cut in, which the Consequences below put in PLAN.md, is in
+[RELEASING.md](../../RELEASING.md).
 
 ## Context
 
@@ -39,7 +46,7 @@ becomes its own package under `adapters/<name>/`, with its own `pyproject.toml`,
 `quackd-rosbridge`, `quackd-open-duck`, `quackd-xlerobot`, `quackd-alohamini`,
 `quackd-toddlerbot`. `[tool.uv.workspace]` and `[tool.uv.sources]` make them members, so one
 checkout, one lock and one test suite still cover all eight. An adapter depends on the core with
-a narrow window (`quackd>=0.16,<0.17`), and the core never imports an adapter.
+a narrow window (`quackd>=0.16.1,<0.17`), and the core never imports an adapter.
 
 **The extras are still the front door, and they now buy the robot.** `quackd[microduck]`,
 `quackd[lerobot]`, `quackd[rosbridge]`, `quackd[open_duck]`, `quackd[xlerobot]`,

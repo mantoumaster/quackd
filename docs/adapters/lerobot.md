@@ -768,8 +768,12 @@ it sooner, while a verb that sends a goal meanwhile is refused, as on the arm.
 - **A chunk replaces what was queued.** A policy that answers with a chunk of goals, one a tick
   from the tick its observation was read at, has the goals for ticks already played dropped
   when it arrives, and the rest replaces what was queued rather than being added after it. It
-  is asked again once half its last chunk is left, and never while it has not answered. A tick
-  with nothing queued sends nothing, the arm holding its last goal, and 1 s of that ends the
+  is asked again once what is queued is down to half the chunk, or to twice the ticks its
+  declared latency comes to where that is more, so any answer within half a chunk lands with
+  something still queued, and never while it has not answered. The next can be asked for no
+  sooner than the last lands, so a chunk has to last while it lands and while the next one
+  does, twice the latency, and `serve` refuses a latency past half a chunk (below). A tick with
+  nothing queued sends nothing, the arm holding its last goal, and 1 s of that ends the
   segment, with 5 s of grace for the first chunk.
 - **The policy has a thread of its own.** Every call on it runs on a worker of its own, never
   on the threads the bus's calls use, so a policy that stops answering cannot hold up a read,
@@ -818,7 +822,7 @@ quackd policy check --policy-url http://127.0.0.1:9875 --bench --seconds 3
 
 ```text
   http://127.0.0.1:9875
-policy           scripted:sweep (quackd-policy 1, quackd 0.16.0)
+policy           scripted:sweep (quackd-policy 1, quackd 0.16.1)
 features         whatever the arm has (a scripted policy)
 rate             10 Hz, from scripted:sweep's own, the verbs' tick
 chunks           10 actions, 10 played from each
@@ -832,9 +836,9 @@ action q01..q99  not reported
 loaded           nothing, a scripted policy loads no repository
 achieved    10.0 Hz of 10: 30 of the 30 ticks in 3.0 s sent an action
 starved     0 ticks with nothing to send
-round trip  median 1.2 ms, p99 1.4 ms, max 1.4 ms over 6 requests
+round trip  median 2.5 ms, p99 3.0 ms, max 3.0 ms over 6 requests
 inference   median 0.1 ms on the server
-latency     1.4 ms or less for 95% of the 7 steps timed, from the request to
+latency     3.0 ms or less for 95% of the 7 steps timed, from the request to
             its chunk back: serve with --latency-s 0.01, so the simulator holds
             each chunk back as long, and bench again with it
 ```
@@ -851,17 +855,26 @@ tick that asked for it, and the ticks that pass meanwhile are skipped, so bench 
 with the latency the first bench suggests
 ([policies.md](../policies.md#on-the-laptop-alone) has both benches of a trained ACT, and what a
 good second one looks like). A policy whose steps take longer than a segment waits for its first
-chunk, or longer than a chunk takes to play (`chunk_outrun`), is given no latency, since `serve`
-would refuse any that covered them: the bench says it answers too slowly to drive an arm from
-that machine, and to serve it on a GPU. `--bench` is one of the two places a rate is measured,
-the other being the bench with the arm. `quackd policy check --policy NAME` serves the policy in its own process for
-the length of the check, with a token that lives only that long.
+chunk, or longer than half a chunk's actions, rounded down, take to play (`latency_too_long`),
+is given no latency, since `serve` would refuse any that covered them: the bench says it answers
+too slowly to drive an arm from that machine, and to serve it on a GPU. `--bench` is one of the
+two places a rate is measured, the other being the bench with the arm.
+`quackd policy check --policy NAME` serves the policy in its own process for the length of the
+check, with a token that lives only that long.
 
 `--latency-s` declares how long the policy takes to answer a step, which the simulator holds
 each chunk back by, and `--bench` is where the number comes from. `serve` and `check` refuse one
-of 5 s or more, since a segment gives up waiting for its first chunk after that, and one as long
-as a chunk takes to play, since every chunk would then land after its last action's tick and
-none would play.
+of 5 s or more, since a segment gives up waiting for its first chunk after that, and one longer
+than half a chunk's actions, rounded down, take to play. A segment asks for the next chunk only
+once the last has landed, so past half a chunk the arm has nothing to play for part of every
+chunk, on the simulator as on the arm, and as long as a chunk every chunk lands after its last
+action's tick and none plays. Each refusal says the longest latency the policy's chunk allows.
+`check` of a server started with such a latency by an earlier quackd says so in its latency row,
+its bench says so rather than that the latency covers what it timed, and the arm refuses to
+connect to it, before any torque ([below](#whether-the-policy-fits-the-arm)). Where the latency
+a server declares covers what a bench timed but the slowest step took longer than half a chunk,
+the bench says a step that slow can leave the arm holding still, since no answer later than that
+is sure to land before the queue runs out.
 
 - **A token, always.** With no `--token-file` the server writes one to `~/.quackd/policy.token`
   the first time, readable by you alone where the OS allows, and reads it after that. The
@@ -986,7 +999,7 @@ quackd policy check --policy quackd-test/tiny-act@v1 --bench --seconds 3
 
 ```text
   served here for the check, at http://127.0.0.1:53804
-policy           quackd-test/tiny-act@v1 (quackd-policy 1, quackd 0.16.0)
+policy           quackd-test/tiny-act@v1 (quackd-policy 1, quackd 0.16.1)
 features         state 6, action 6, images observation.images.front 64x48
 rate             10 Hz, from
                  quackd-test/tiny-data@ed2440c0bf574309f37e0a639e02d7b34cb2939c
@@ -1041,6 +1054,12 @@ each camera's size is a frame it just gave, and the travel is the calibration fi
   goals that pin this one at its limits, so it is refused, naming each joint with its
   percentiles and its travel. A checkpoint that reports no percentiles is let through, and the
   record says it was not checked.
+- **The latency** the server declares. `quackd policy serve` refuses one longer than half a
+  chunk's actions, rounded down, take to play
+  ([above](#a-policy-in-a-process-of-its-own-quackd-policy-serve)), and a server an earlier
+  quackd started may still declare one. The connect refuses it, saying how many ticks of every
+  chunk the arm would have nothing to play for and the longest `--latency-s` to start the server
+  again with. Nothing overrides it.
 
 **`--accept-other-frame`** overrides the frame of reference, on `quackd run`, `quackd preflight`
 and `quackd serve-mcp`, beside `--policy-url`, and is refused without it. It lets a policy
@@ -1406,9 +1425,11 @@ checks:
 `scene` replaces the simulator's own cube and pen. An object is a `box`, three half sizes in
 metres, or a `capsule`, its radius and half length, laid on the table where the seed puts it.
 `place: jaws` lays it on the table between the gripper's fingers as the arm starts instead,
-which needs a rest pose with the jaws open down at the table. On a robot whose arm starts
-anywhere else, the generic arm included, the connect is refused
-([below](#when-the-simulator-will-not-start)). `mass_kg` and `rgba` are optional. `checks` are
+which needs a rest pose whose open jaws point down at the table around it: a close from there
+has to bring the moving finger onto it, and the connect rehearses that close in the physics,
+on a copy, as it lays the object out. On a robot whose arm starts anywhere else, the generic
+arm included, the connect is refused ([below](#when-the-simulator-will-not-start)). `mass_kg`
+and `rgba` are optional. `checks` are
 `at_rest` (true: the close has to end at the rest pose, so a robot with none fails it, false:
 the task leaves the arm where its rest move is refused, so a rest move that is made has to be
 refused, since one that stalls or runs out of time fails the run whatever the sidecar says,
@@ -1456,7 +1477,9 @@ settle is listed in [PLAN.md](../../PLAN.md).
 | `lerobot mujoco: --camera-url '...' names '...', and the scene has no camera by that name; its cameras are front, top, wrist.` | a `?name=` the scene has no mount for | name `front`, `top` or `wrist` |
 | `lerobot mujoco: the rest pose puts ... on the model, and 1 s of settling still leaves ..., so the simulated arm cannot start there` | the rest pose puts the model into its table or into itself, and a second of settling leaves a part more than a millimetre in, held there by a stop or by a joint that cannot move. An arm started there would stall on its first move | give the robot a rest pose the model can start at: `quackd robot rest-pose NAME` records the model's zero, where the simulated arm starts without one. A twin's rest pose is its own, so the arm it copies keeps its pose |
 | `lerobot mujoco: with shoulder_lift at the edge of the travel its calibration recorded, where the close's rest move parks the arm, the rest pose puts ... on the model, and 1 s of settling leaves ..., so the simulated arm could not come back to rest` | with a joint recorded past its travel parked at the edge of it, as every close after a move of that joint parks it, the model is in its table or in itself, and a second of settling leaves that joint pushed back into its travel further than a reached pose may miss by, or the arm's start in the table or in itself | the same: give the robot a rest pose the model can start at, or calibrate again with the arm folded so the fold is inside the travel ([A pose past the travel](#a-pose-past-the-travel)) |
-| `lerobot mujoco: the scene lays block between the jaws, and as the arm starts its fixed finger ends ... above the table, over the top of block, ...` | a sidecar placed an object between the jaws, and the rest pose holds the jaws above it | give the robot a rest pose with its jaws down at the table, or lay the object on the table instead |
+| `lerobot mujoco: the scene lays block between the jaws, and as the arm starts its fixed finger ends ... above the table, over the top of block, ...` | a sidecar placed an object between the jaws, and the rest pose holds the jaws above it | give the robot a rest pose whose open jaws point down at the table around the object, or lay the object on the table instead |
+| `lerobot mujoco: the scene lays block between the jaws, and as the arm starts they are open narrower than block, ...` | the rest pose's jaws are shut, or open narrower than the object, which would start inside a finger | the same: a rest pose whose open jaws point down at the table around the object. A gripper merely left open is not enough, as the next row says |
+| `lerobot mujoco: the scene lays block between the jaws, and as the arm starts, closing the gripper stops its moving finger ... mm clear of block, which it never touches on the way. ...` | the fixed finger stands at the object's side, but closing the gripper swings the moving finger past it, over its top from a hand tilted at the wrist: the connect closes the gripper on a copy of the physics as it lays the object out, and the moving finger never touched it | the same: a rest pose whose open jaws point down at the table around the object, or lay the object on the table instead |
 | `QUACKD_LEROBOT_SIM_ASSETS=... has no so101_new_calib_camera.xml.` | the variable points somewhere without the model | point it at the `Simulation/SO101` directory of an SO-ARM100 checkout, or unset it to let quackd fetch the pinned model |
 
 ## Which of this arm's verbs are a choice
@@ -2833,7 +2856,10 @@ which the nightly `lerobot-sim-assets` job is there to repeat. On that model a g
 through the real backend's own verbs lifts a cube clear of the table between both finger pads on
 ten seeds of ten, judged by the world's truth, and `quackd preflight` passes the bundled
 `lerobot-lookout` on the generic arm, which has no rest pose to return to, and a grasp task
-with a sidecar from a rest pose its close has to reach, each on ten seeds of ten. That is the
+with a sidecar from a rest pose its close has to reach, each on ten seeds of ten. The job's
+first run on GitHub, dispatched on `main` on 2026-09-29 at the commit tagged `v0.16.0`, passed
+all three ten of ten
+([run 36523568197](https://github.com/rokbenko/quackd/actions/runs/36523568197)). That is the
 simulator doing what it says, and nothing about the arm: no run on the simulator has been
 compared against one, and the ✅ it carries never raises `lerobot:real`'s.
 

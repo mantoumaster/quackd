@@ -23,6 +23,8 @@ fresh look, with the policy served from a process of its own while quackd keeps 
 pace and the stops, and that a trained policy has driven the arm's simulator this way and not
 yet the arm.**
 
+A patch has no story of its own, so it gets no sentence here ([RELEASING.md](RELEASING.md)).
+
 **The one sentence:** One CLI for all your robots. Connect them, command them, and let them
 work together, each with an LLM for a brain.
 

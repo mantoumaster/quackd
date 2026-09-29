@@ -2,8 +2,194 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with two
+headings of its own, Documentation and Known limitations, and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). What a patch, a minor and a major
+mean while quackd is 0.x, and which headings make which, is in [RELEASING.md](RELEASING.md).
+
+## [0.16.1] — 2026-09-29
+
+0.16.1 is quackd's first patch: it carries fixes, not yet run on the arm, for five faults that
+reruns of 0.16.0 on the arm's twin found on 2026-09-29, among them a policy latency its chunks
+cannot carry, which `quackd policy serve` and the arm's connect now refuse, and it starts every
+window between the eight packages at the release it ships in. The rest is documentation and a
+refresh of `uv.lock`: bench steps for 0.15.0's arm changes that nobody has taken yet, two grasp
+sidecars, the pages those reruns corrected, a README with no logo, and RELEASING.md, which says
+what a version promises and how one ships.
+
+### Fixed
+
+- **A policy served with a latency past half its chunk starved the arm every chunk, and
+  `quackd policy serve` took it.** A segment asks for the next chunk only once the last has
+  landed, one request out at most, so a chunk that lands some ticks after it was asked for has
+  that many fewer ticks of it left to play while the next is on its way. Past half a chunk the
+  arm had nothing to play for part of every chunk, twice the latency less the chunk, and no rule
+  for when to ask again can close that gap with one request out. The trained ACT, 100 actions at
+  30 Hz, starved 86 of 300 ticks in every 10 s segment on the arm's twin served with
+  `--latency-s 1.78`, and served with 2.5 its segment ended after 4.4 s, while
+  `quackd policy check --bench` said the latency covered what it timed. `serve` and `check` now
+  refuse a latency past half a chunk, as they refused one as long as a chunk, with the ticks of
+  every chunk it would starve and the longest latency they would take: serve the policy with
+  that or less, or where it answers faster. A server an earlier quackd started with such a
+  latency still declares it, so `check` of one says so in its latency row, its bench says so
+  rather than that the latency covers what it timed, and the arm refuses to connect to it,
+  before any torque, with the same ticks and the longest latency to start it again with. Nothing
+  overrides that refusal. The next chunk is still asked for once what is queued is down to half
+  the last chunk, so any answer within half a chunk lands with something queued whatever latency
+  was declared, and now sooner where twice the declared latency in ticks is more than that,
+  which gives a step that runs past a longer latency what room the chunk has, up to twice that
+  latency where a chunk holds three. The bench paces by the same rule, and where the latency
+  the server declares covers what it timed but the slowest step took longer than half a chunk,
+  it says a step that slow can leave the arm holding still.
+- **The line for a verdict nobody was asked about said `(the human said go)`.** `--yes`, a
+  flock's standing answer and a pipe on stdin answer the pilot's doubt without asking anybody,
+  and the `assess` line said a human had, in a run whose own observation told the pilot nobody
+  was asked. The event now names what answered as `answered_by`: `a person` only where a
+  `prompt` row says one was asked, and otherwise `--yes`, `a flock's standing answer`, `a pipe`
+  or `a standing answer`. The line says that, `(--yes said go)`, and a run recorded before reads
+  `(answered go, and the record does not say by whom)`. A doubt answered no ends the run naming
+  the same. A prompt that raised, at the end of its input or with click's `Abort`, answered
+  nothing, yet the line and the run's reason said the human said no, and a person's prompt left
+  a `prompt` row saying they had. The event now carries `raised` in place of `answered_by`, the
+  line says `(the question went unanswered: the prompt raised EOFError)`, and no `prompt` row is
+  written. `human` is still the gate's state, which is why ADR-0042 left it alone.
+- **A segment could play one tick past its time.** The tick a segment's time runs out on is due
+  at its end, and where the simulator's clock read that tick a hair short of the end, as the
+  difference of two of its times can, it was played: a 10 s segment at 30 Hz could play 301
+  ticks, three of them were recorded as 902 ticks over 30.08 s, and the run's box said 30.1 s.
+  The loop now reads a segment's end within the same tolerance it reads a tick as due, so a
+  segment plays exactly the ticks its seconds hold, and what it says it played is what the
+  run's record adds up.
+- **`place: jaws` laid a cube a close would never touch.** From the lab arm's fold with the
+  gripper open, the fixed finger stood at the cube's side and the connect laid it out, but
+  closing the gripper stopped the moving finger clear of the cube's top, and the refusal for
+  jaws shut had advised exactly that start. The connect now closes the gripper on a copy of the
+  physics, with the object alone on the table, and refuses where the moving finger never touches
+  it, saying how near it came:
+  `closing the gripper stops its moving finger 0.4 mm clear of cube, which it never touches on the way`.
+  Each refusal of the arm's start for an object between the jaws now says the start that works,
+  a rest pose whose open jaws point down at the table around the object.
+- **`quackd doctor`'s `joint_range_deg` row printed each joint's travel rounded to whole
+  degrees**, so an end could read up to half a degree wider than the travel the pilot is told
+  and the arm takes a goal at. It prints the travel as the pilot is told it, to a tenth of a
+  degree rounded inward. The advice after the table, for a rest pose past a joint's travel,
+  still names the end that joint parks at to the nearest whole degree.
+- **An adapter from a patch would have installed beside a core from before it.** Every window
+  between the eight packages admitted its whole minor, `quackd>=0.16,<0.17`, and
+  `scripts/set_version.py` kept it for a patch, so `quackd-lerobot` 0.16.1 would have installed
+  beside `quackd` 0.16.0, without the core's half of any fix that needed both. Every window now
+  starts at the release it ships in: `quackd-lerobot` 0.16.1 needs `quackd` 0.16.1 or a later
+  0.16, and each extra of `quackd` 0.16.1 installs its adapter from 0.16.1 or a later 0.16. An
+  installer that upgrades an adapter upgrades the core with it, so this asks nothing of you, and
+  `quackd` 0.16.1 upgraded on its own still installs beside an adapter from 0.16.0, whose window
+  admits it.
+
+### Documentation
+
+- **RELEASING.md says when a release is a patch, a minor or a major, and how one ships.**
+  Sixteen releases were minors whatever they held. A patch now changes nothing a user has to act
+  on and adds nothing to learn, a minor is everything else, and 1.0.0 waits for four things the
+  file names ([ADR-0049](docs/adr/0049-a-version-says-what-changed.md)). This file's headings
+  decide which: an entry under Added, Changed, Deprecated or Removed makes a minor, and Fixed,
+  Security and the new Documentation heading alone make a patch. A fix may refuse what the
+  release before accepted when that never did what quackd said it would, and a fix that tightens
+  what could move a body in a way the docs never promised ships as a patch even when a script
+  relied on the looser behaviour. `tests/test_docs.py` fails when a released patch carries a
+  heading that makes a minor or a minor carries none, when any section uses a heading the rule
+  does not name or one twice, and when a release's compare link breaks the file's pattern. The
+  release checklist moved there from PLAN.md, with the order 0.15.0 and 0.16.0 were cut in, and
+  CI now runs on a push to a `release/` branch too, so a patch cut from the last tag has every
+  job green before its tag. A refresh of `uv.lock` goes under Documentation, as a nightly job
+  does, since the lock is what a checkout and CI install and a refresh changes no requirement a
+  user installs against. CONTRIBUTING.md says which heading a pull request files its entry under
+  and that it never bumps a version.
+- **The README opens with its name, and the duck head and the social preview card are gone.** A
+  duck's head over the title made quackd look like a toy rather than a tool that drives a real
+  arm, so the README carries no logo. `docs/assets/social-preview.png` and
+  `docs/assets/social_preview.py`, which built the card around the same head, are deleted rather
+  than redrawn, and so are the test in `tests/test_pypi_readme.py` that held the card and the
+  README to one file and PLAN.md's item about uploading the card. GitHub serves its own
+  generated preview for the repository rather than an uploaded one, so nothing needs taking down
+  there. The browser demo keeps its icon: `web/assets/duck-mark.png` is still the mark in its
+  header, with its favicon and touch icon beside it, and nothing outside `web/` shows it now.
+  `tests/test_docs.py` holds that: it fails when the README has anything above its title, or
+  when a living document names a file in `web/assets/`.
+- **A bench step for each of the six changes 0.15.0 made in `lerobot:real` without one.**
+  0.15.0's Known limitations named them and wrote a step for one other, the follower keeping
+  torque through an exit that skips the close. The other six are now in
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md), each in the step
+  that meets the same moment and each saying what to do at the arm, what to watch for and what
+  to report. A connect quackd refuses letting go of the arm is step 6, on a second name that
+  nothing was calibrated as, taken before the fold. The deadline a call spends only while the
+  bus is busy is step 9's dry run, given a camera because its detector still runs on the event
+  loop's thread, and the line step 13's pulled cable ends on. A connect that fails once the arm
+  is energised keeping its torque is step 13, which says it cannot be timed by hand and what to
+  check if it ever happens. The close reading back the flag it wrote, and saying a stalled
+  shortfall once, is step 14, with the fold back to the rest pose held back by hand. The
+  heartbeat's reads kept out of the trace a grasp is judged by is step 17. PLAN.md's item for
+  the SO-101 names them where it said nobody had written them.
+- **Sidecars for the two grasp examples that start with a cube between the jaws and lift it.**
+  `docs/examples/lerobot/e162/first-grasp.sim.yaml` and
+  `docs/examples/lerobot/e165/place.sim.yaml` lay that cube between the open jaws, the size of
+  the simulator's own since neither task names one, and check that it was lifted as the task
+  says: two centimetres for `e162`, and for `e165`, whose task says a little, the least the
+  simulator counts as a lift. Setting it back down is nothing a sidecar can check, and each
+  says so. `e163` starts the same way and asks only whether the gripper holds the cube, which no
+  sidecar check measures, so it has none. Neither sidecar lays out on the lab arm's twin.
+  `arm-01`'s fold puts the jaws down at the table with the gripper shut, and `quackd preflight`
+  of each on `arm-01-sim`, with `--llm fake` and `--seeds 2`, was refused at every connect:
+  `the scene lays cube between the jaws, and as the arm starts they are open narrower than cube`.
+  The same fold with the gripper open is refused too, since a close from there never brings the
+  moving finger onto the cube (Fixed, above). The generic arm starts with its hand far above the
+  table and is refused as well, and laying the cube on the table instead would rehearse another
+  task, so each sidecar says at its top what it needs: an arm that starts with its open jaws
+  pointing down at the table around the cube, which neither the twin nor the generic arm does.
+- **`--decision-mode shadow` has run beside a policy, with a stub.** README.md's row for the
+  learned policy and ADR-0048's Consequences said it had never run beside a trained checkpoint,
+  and PLAN.md that no `decision_shadow` record existed outside the test suite. It ran by hand on
+  the arm's twin on 2026-09-28, and on the released 0.16.0 on 2026-09-29, with `gpt-6-sol`
+  piloting beside the trained ACT and a stub decision LLM loaded as a plugin. A stub that always
+  picks `manipulate` chose it on every turn that offered it and ended on `gate: shadow_only` each
+  time, with the model taking the turn. The pages say so now, and that no real decision LLM has
+  run beside a policy.
+- **The arm simulator's sweeps cite the nightly job's first run.** Dispatched on `main` on
+  2026-09-29, at the commit tagged `v0.16.0`, `lerobot-sim-assets` fetched the maker's model and
+  passed the grasp sweep, `lerobot-lookout`'s rehearsal and the grasp task's rehearsal ten of
+  ten each ([run 36523568197](https://github.com/rokbenko/quackd/actions/runs/36523568197)).
+  README.md, docs/adapter-status.md and the arm's page cited only the sweeps run by hand on
+  2026-09-27.
+- **ADR-0048 records one more place the code settled differently from the plan.** The plan had
+  a policy asked every tick go through a delay line `k` ticks deep on the simulator. The code's
+  line is a tick deep at most: such a policy is asked again only once it has answered, so one
+  that declares more than a tick to answer could never keep up on the arm, and a segment refuses
+  it on either clock.
+- **The examples README says what rehearsing `e001` to `e005` showed.** Its one line passed all
+  12 files on the lab arm's twin on 2026-09-29, 24 runs for $1.06 of `gpt-6-sol`, and the page
+  says a pass is the code surviving the file: the simulator's table holds a red cube and a pen,
+  so the drawing tasks found the pen lying on the table and no paper, and declared failure,
+  while the switch task's pilots said they saw a switch the table does not have and looked
+  until their steps ran out.
+- **What `quackd robot twin` prints for an arm with a rest pose and no pilot or camera**, as
+  the lab's `arm-01` is, is in the first-run guide and docs/registry.md beside the example that
+  copies all three.
+- **The examples README's rehearsal line rehearsed `e001/duck-picture` without its picture.**
+  `--image` would go to every file the pattern matches, so the page says to rehearse that one on
+  its own with the `--image` in its header.
+- **The first-run guide quoted two of the three lines `quackd doctor --robot arm-01-sim` prints
+  after its table for the lab arm's twin.** The third, the advice for a fold past what the
+  calibration lets `shoulder_lift` be driven to, is quoted with them.
+- **`uv.lock` takes Dependabot's grouped update, and the weekly job that made it skips what it
+  cannot move.** The lock now holds anthropic 1.8.0, openai 3.19.2, google-genai 2.25.0,
+  typesafe-sdk 0.7.1, laya 0.3.20, ruff 0.16.9 and mujoco 3.14.0 (#31). The lock is what a
+  checkout and CI install, and a wheel's requirements are its `pyproject.toml`'s, so no
+  requirement a user installs against moved. The job had failed every week since 2026-09-11 on
+  five packages uv cannot move in every split of the lock at once, the way Dependabot asks it
+  to, because something else in the lock holds each back: numpy and opencv-python-headless by
+  lerobot 0.6's pins, ultralytics by the numpy it wants on macOS against lerobot's, websockets
+  by google-genai and av by aiortc. Since 2026-09-25 it had also stopped on hatchling 1.32.4,
+  which uv moves and Dependabot's updater did not write. `.github/dependabot.yml` now ignores the
+  versions each hold rules out, and that one hatchling release, with a comment saying why for
+  each, so a release inside a hold, and hatchling's next, still comes in the group.
 
 ## [0.16.0] — 2026-09-29
 
@@ -5584,7 +5770,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/rokbenko/quackd/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/rokbenko/quackd/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rokbenko/quackd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/rokbenko/quackd/compare/v0.13.0...v0.14.0
