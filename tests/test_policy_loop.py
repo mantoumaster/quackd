@@ -21,7 +21,6 @@ import itertools
 import math
 import sys
 import threading
-import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -536,50 +535,91 @@ its tick, and a chunk `LONG` long that declares half a chunk of latency, the mos
 never waited for on the wall's kind of clock and asked for again as each lands."""
 
 
+def _parks(clock: SteppedClock, when: Callable[[], bool]) -> asyncio.Event:
+    """Make the first sleep on `clock` once `when()` says so last until it is cancelled, and
+    return the event set as that sleep begins. A segment asleep there can end on nothing of its
+    own, its time included, and has no call out on the bus meanwhile. Every sleep after it is
+    the clock's own."""
+    parked = asyncio.Event()
+    sleep = clock.sleep
+
+    async def parking(seconds: float) -> None:
+        if not parked.is_set() and when():
+            parked.set()
+            await asyncio.Event().wait()  # which only a cancel ends
+        await sleep(seconds)
+
+    clock.sleep = parking  # type: ignore[method-assign]
+    return parked
+
+
+def _loop_clock_on(seconds: float, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put the event loop's clock `seconds` on, so that every deadline set on it which falls
+    inside them is due at once: a timeout the test runs out, rather than one raced on the wall's
+    clock. The loop's clock runs with the wall's from there, for the worker threads that read it
+    as well, and is put back as it was once the test is over."""
+    loop = asyncio.get_running_loop()
+    wall = loop.time
+    monkeypatch.setattr(loop, "time", lambda: wall() + seconds)
+
+
 @pytest.mark.parametrize("kind", RUNNERS)
 @pytest.mark.parametrize("ending", ENDINGS)
 async def test_the_policy_s_cap_is_on_every_send_and_the_verbs_cap_is_back_after(
-    ending: str, kind: str
+    ending: str, kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The cap on the follower's config is the policy's own for every send of the segment, and
     the setting, `max_step_deg`, once it ends, however it ends. Never the cap it found: the arm
     here was handed in with another, and a restore to that would be a saved value. The same
     whether the runner answers an action a tick, waited for in its tick, or long chunks, never
-    waited for."""
+    waited for.
+
+    The executor's timeout runs on the test's clocks, not the wall's, where it could run out
+    before the first send, or ticks on a clock that costs no wall time could outrun it: a long
+    chunk lands the `HALF` ticks in that it declares (`GateClock`), the segment parks on its
+    clock once three of the policy's goals have gone out (`_parks`), and the executor's own
+    timeout runs out when the test puts the event loop's clock past it (`_loop_clock_on`)."""
     arm = _segment_arm()
     found = STEP * 3
     arm.config.max_relative_target = found
     swing = _swing(arm)
     long = kind == "a long chunk"
     answer = _long(swing) if long else swing
+    timed_out = ending == "an executor timeout"
 
     def script(observation: Observation, sent: Mapping[str, float]) -> Any:
         # a long chunk's third request comes a chunk and more in, well past tick 3
         if ending == "an error" and (runner.requests == 3 if long else observation.tick == 3):
             raise RuntimeError("the policy fell over")
-        if ending == "an executor timeout":
-            time.sleep(0.005)  # thinking, in its own thread, so the wall's clock runs
         return answer(observation, sent)
 
     runner = ScriptedRunner(script, rate_hz=RATE, latency_ticks=HALF if long else 0)
-    if long and ending == "an executor timeout":
-        # a chunk is never waited for, so the ticks would outrun the timeout: each read of
-        # the arm takes the wall's time instead
-        read = arm.get_observation
-
-        def slow() -> dict[str, Any]:
-            time.sleep(0.005)
-            return read()
-
-        arm.get_observation = slow  # type: ignore[method-assign]
     clock = SteppedClock()
+    if timed_out and long:
+        runner = Gated(script, rate_hz=RATE, latency_ticks=HALF)
+        clock = GateClock(runner, HALF)
     _, transport, adapter, ex = await _backend(runner, clock=clock, arm=arm)
-    if ending == "an executor timeout":
-        ex.registry.get("manipulate").timeout_s = 0.2
+    timeout_s = ex.registry.get("manipulate").timeout_s
     sends = _recorded(arm, clock)
+    start = clock.t
+    if isinstance(clock, GateClock):
+        clock.loop = transport._policy_loop
+        clock.sleeps = 0
+    parked = None
+    if timed_out:
+        parked = _parks(clock, lambda: sum(not _whole_hold(a) for _, _, a in sends) >= 3)
     running = asyncio.create_task(ex.run_verb("manipulate", {"instruction": "stack"}))
     beat: Heartbeat | None = None
-    if ending not in ("an executor timeout", "an error"):
+    if parked is not None:
+        try:
+            await _until(parked.is_set)
+        finally:
+            if isinstance(runner, Gated):
+                runner.open.set()  # the request out as it parked is answered, never taken in
+        assert clock.t - start < MANIPULATE_S, "parked past the segment's own time"
+        assert transport._bus[1] is None, "the loop's clock would move under a call on the bus"
+        _loop_clock_on(timeout_s, monkeypatch)
+    elif ending != "an error":
         await _until(lambda: len(sends) >= 3)
         if ending == "an abort":
             ex.abort.set()
@@ -601,6 +641,10 @@ async def test_the_policy_s_cap_is_on_every_send_and_the_verbs_cap_is_back_after
     else:
         result = await running
         assert not result.ok, result.summary
+        if timed_out:
+            # the executor's own timeout, neither a cancel nor an abort
+            expected = f"manipulate timed out after {timeout_s:g}s; stopped"
+            assert result.summary.startswith(expected), result.summary
     if beat is not None:
         await beat.stop()
     assert not transport.policy_running
