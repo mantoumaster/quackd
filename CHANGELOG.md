@@ -7,6 +7,18 @@ headings of its own, Documentation and Known limitations, and this project adher
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). What a patch, a minor and a major
 mean while quackd is 0.x, and which headings make which, is in [RELEASING.md](RELEASING.md).
 
+## [Unreleased]
+
+### Documentation
+
+- **Dependabot ignores every hatchling version.** 0.16.1 ignored only hatchling 1.32.4 and
+  said the next release would still come in the group. On 2026-09-29 Dependabot's uv job tried
+  1.32.3 instead and stopped the same way, with No files have changed! before it ran uv, so the
+  job was still red. hatchling is the build backend, which that updater cannot move, and
+  `.github/dependabot.yml` now ignores it whole. A person moves it with
+  `uv lock --upgrade-package hatchling`. The five packages 0.16.1 held back no longer fail the
+  job. The configuration ships in no package, so this needs no release.
+
 ## [0.16.1] — 2026-09-29
 
 0.16.1 is quackd's first patch: it carries fixes, not yet run on the arm, for five faults that
