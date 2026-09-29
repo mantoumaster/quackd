@@ -85,6 +85,20 @@ GitHub, showed on 2026-09-29. None of the bench steps has been taken.
   after its table for the lab arm's twin.** The third, the advice for a fold past what the
   calibration lets `shoulder_lift` be driven to, is quoted with them.
 
+### Removed
+
+- **The duck head the README opened with, and the social preview card and its script.** A
+  duck's head over the title made quackd look like a toy rather than a tool that drives a real
+  arm, so the README opens with its name now and carries no logo. `docs/assets/social-preview.png`
+  and `docs/assets/social_preview.py`, which built the card around the same head, are deleted
+  rather than redrawn, and so are the test in `tests/test_pypi_readme.py` that held the card and
+  the README to one file and PLAN.md's item about uploading the card. GitHub serves its own
+  generated preview for the repository rather than an uploaded one, so nothing needs taking down
+  there. The browser demo keeps its icon: `web/assets/duck-mark.png` is still the mark in its
+  header, with its favicon and touch icon beside it, and nothing outside `web/` shows it now.
+  `tests/test_docs.py` holds that: it fails when the README has anything above its title, or
+  when a living document names a file in `web/assets/`.
+
 ## [0.16.0] — 2026-09-29
 
 This release gives the SO-101's pilot a learned policy to hand the arm to. The model plans the

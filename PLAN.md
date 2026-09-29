@@ -289,15 +289,6 @@ before.
   twelve runs on the arm on 2026-09-15, for five distinct notes, and the last run of that
   afternoon read all five back out of its own prompt. Still open in a simulator, where the scripted pilot has no
   script for it, so `--llm fake` writes episodes and never a note.
-- ⏸ Upload `docs/assets/social-preview.png` under Settings → Social preview. There is no API
-  for it, so it is the one asset a commit here cannot ship, and it is now a version behind: the
-  card was rebuilt around the duck head the README and quackd.org both use, so the one GitHub
-  serves is still showing the flat biped and the two-colour wordmark that no longer exist
-  anywhere else. The card is otherwise current: it carries the one-liner
-  ([ADR-0035](docs/adr/0035-one-cli-for-all-your-robots.md)) and its two panels are a real
-  three-robot `sim2d` arena. Regenerate it with
-  [`docs/assets/social_preview.py`](docs/assets/social_preview.py), which exists because the
-  original was drawn by hand and the script was never committed, so nobody could.
 - ⏸ **No asset shows a flock of pilots.** `flock.gif` is the coordinator: three identical ducks
   auctioning a kick. The kind of flock the README now leads with is two different bodies talking,
   and it has no recording, because a pilot flock writes no GIF (N members are N worlds).

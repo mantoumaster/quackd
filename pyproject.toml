@@ -240,8 +240,7 @@ ignore = ["RUF012", "B008"]
 "quackd/cli.py" = ["T20"]
 "quackd/mcp_server.py" = ["T20"]
 "tests/**" = ["T20"]
-# The scripts that build the README's assets and the social card are run by hand and
-# report as they go.
+# The scripts that build the README's assets are run by hand and report as they go.
 "docs/assets/*.py" = ["T20"]
 # Run by hand at a release and reports which of the eight files it rewrote, which is the
 # whole of its user interface.

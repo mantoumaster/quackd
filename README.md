@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/rokbenko/quackd/main/web/assets/duck-mark.png" alt="" width="128">
-</p>
-
 <h1 align="center">quackd</h1>
 
 <p align="center"><strong>One CLI for all your robots. Connect them, command them, and let them work together, each with an LLM for a brain.</strong><br>
