@@ -26,8 +26,14 @@ config for the length of the segment.
 **Chunks.** A request is stamped with the tick it was read at, and the chunk that answers it
 holds one action per tick from that tick. When it arrives, the actions for ticks already played
 are dropped and the rest replaces the queue's tail, never appended to it, because the newer
-chunk saw a newer arm. At most one request is outstanding. A tick with nothing queued sends
-nothing (the arm holds its last goal), counts as starved, and `STARVE_S` of that ends the
+chunk saw a newer arm. At most one request is outstanding, and the next is asked for once what
+is queued is down to half the last chunk or twice the ticks an answer takes to land, whichever
+is more (`refill_due`), so any answer within half a chunk lands with something still queued.
+What a chunk can carry is set by the one request out: the next goes out no sooner than the last
+chunk lands, so a chunk has to hold twice the latency, and what it falls short by is starved
+every chunk (`starved_each_chunk`), whenever it is asked for, which is why `quackd policy
+serve` refuses such a latency. A tick with nothing queued
+sends nothing (the arm holds its last goal), counts as starved, and `STARVE_S` of that ends the
 segment, with `FIRST_CHUNK_S` of grace for a segment's first chunk. Each segment has an epoch,
 and a chunk from an earlier one is thrown away.
 
@@ -123,10 +129,17 @@ is sending, before `manipulate`'s segment ends on it, with the arm held: an arm 
 moving under a policy that is still sending is a policy that has done what it will do, or one
 pressing the arm on something it cannot move, whose last goal must not be left pushing a servo.
 Only ticks that sent count, so a policy starved of chunks is starving and not stalled."""
-REFILL_SHARE = 0.5
-"""A chunked runner is asked again once what is left of its last chunk is this share of it or
-less: early enough that the next chunk lands before the queue runs dry, late enough that most of
-each chunk is played."""
+REFILL_LATENCIES = 2
+"""How many of a chunked runner's declared latencies before its queue runs dry it is asked for
+its next chunk, where that is sooner than half the chunk (`refill_at`): one for the answer to
+land in, and one more to spare. The latency a bench suggests is the 95th percentile of the steps
+it timed, so one step in twenty takes longer, and the arm would hold still through the ticks
+such a step ran over. Half a chunk already gives any step up to half a chunk slow the time to
+land, and asking at twice a latency longer than a quarter chunk gives a step that runs past it
+what room the chunk has: up to twice the latency where a chunk holds three of them, and
+otherwise all that is left of the last chunk as it lands. The cost is a stretch of each chunk
+replaced rather than played, so a policy that answers fast still plays half of each chunk
+before it asks."""
 WORKER = "quackd-policy"
 """The name of the runner's own worker thread, which is never one of the bus's."""
 EXACT = 1e-9
@@ -205,6 +218,46 @@ def latency_ticks(latency_s: float, rate_hz: float) -> int:
     """How many ticks a chunk is held back on a lockstep clock: the declared latency in ticks,
     rounded up, since a chunk cannot be played before it would have arrived."""
     return max(0, math.ceil(latency_s * rate_hz - EXACT))
+
+
+def longest_latency(chunk: int) -> int:
+    """The most ticks every answer of a chunked runner whose chunks hold `chunk` actions can
+    take to land, and the arm still never be left with nothing to play after the first: half
+    the chunk, rounded down, the most `starved_each_chunk` counts none for. `quackd policy
+    serve` refuses a latency longer."""
+    return chunk // 2
+
+
+def refill_at(latency: int, chunk: int) -> int:
+    """How few actions of its last chunk, of `chunk`, are left to play when a chunked runner
+    whose answers land `latency` ticks after it is asked (`latency_ticks`) is asked for the
+    next: half the chunk (`longest_latency`), so any answer up to that slow lands before the
+    last of them is played, whatever latency was declared, or `REFILL_LATENCIES` of the
+    latency, where that is more, to leave a slow step more room than that."""
+    return max(REFILL_LATENCIES * latency, longest_latency(chunk))
+
+
+def refill_due(left: int, latency: int, chunk: int) -> bool:
+    """Whether a chunked runner is asked for its next chunk, with `left` actions of the last,
+    which held `chunk`, still to play from this tick on, and `latency` ticks for an answer to
+    land: once they are down to `refill_at`. An empty queue always asks, a segment's first
+    request among them."""
+    return left <= refill_at(latency, chunk)
+
+
+def starved_each_chunk(latency: int, chunk: int) -> int:
+    """How many ticks of every chunk after a segment's first have nothing to play, for a
+    chunked runner whose chunks hold `chunk` actions and land `latency` ticks after they are
+    asked for: none while a chunk holds twice the latency, and otherwise what it falls short.
+
+    At most one request is out at a time, so the next can go no sooner than the tick the last
+    chunk lands, `latency` ticks into it, and lands `latency` ticks after that, while all the
+    arm has to play meanwhile is the `chunk - latency` actions left of the last one. No
+    threshold for `refill_at` can help: the next is asked for the tick the last lands, and
+    cannot be asked sooner. So a latency this gives a number above zero for starves the arm
+    every chunk, on the simulator's delay line as on the arm, and `quackd policy serve` refuses
+    to declare one."""
+    return max(0, 2 * latency - chunk)
 
 
 def clipped_too_long(
@@ -533,7 +586,10 @@ class PolicyLoop:
         while not arm._closed:
             ticked = time.perf_counter()
             now = arm.now()
-            if segment.max_s is not None and now - started >= segment.max_s:
+            # within `EXACT`, as a tick is due within it (`_pace`): the tick a segment's time
+            # runs out on is due at its end, and a clock that reads a hair short of that there,
+            # as the difference of two floats can, would play one tick past its time
+            if segment.max_s is not None and now - started >= segment.max_s - EXACT:
                 return self._end(arm, run, "time", f"its {segment.max_s:g} s ran out")
             registers = now - run.registers_at >= REGISTER_PERIOD_S
             try:
@@ -694,10 +750,11 @@ class PolicyLoop:
     def _wants(self, run: _Run, tick: int, plan: Plan, segment: Segment) -> bool:
         """Whether this tick asks the runner for more: never after it said it was done or once
         the segment has played its chunks, never with a request of its own outstanding, every
-        tick in tick mode, and otherwise once the queue is down to `REFILL_SHARE` of the last
-        chunk. A chunk is one that had something to play (`_merge`), so an answer thrown away
-        is asked over rather than counted, and a runner whose answers never play ends on the
-        grace or `STARVE_S` rather than on its chunks."""
+        tick in tick mode, and otherwise once the queue is down to `refill_at` of the last
+        chunk's length and the runner's latency (`refill_due`). A chunk is one that had
+        something to play (`_merge`), so an answer thrown away is asked over rather than
+        counted, and a runner whose answers never play ends on the grace or `STARVE_S` rather
+        than on its chunks."""
         if run.done or self._outstanding():
             return False
         if segment.max_chunks is not None and run.chunks >= segment.max_chunks:
@@ -707,7 +764,7 @@ class PolicyLoop:
         if run.held_back:
             return False  # a request held back on its way is the one outstanding
         left = sum(1 for at, _ in run.queue if at >= tick)
-        return left == 0 or left <= REFILL_SHARE * run.last_len
+        return refill_due(left, plan.latency_ticks, run.last_len)
 
     async def _request(
         self, arm: LeRobotReal, run: _Run, observation: Observation, plan: Plan, lockstep: bool
@@ -896,6 +953,7 @@ __all__ = [
     "FIRST_CHUNK_S",
     "MAX_RATE_HZ",
     "MIN_RATE_HZ",
+    "REFILL_LATENCIES",
     "REGISTER_PERIOD_S",
     "RESET_S",
     "STALL_S",
@@ -906,6 +964,10 @@ __all__ = [
     "Tally",
     "clipped_too_long",
     "latency_ticks",
+    "longest_latency",
     "rate_refusal",
+    "refill_at",
+    "refill_due",
     "speed_cap",
+    "starved_each_chunk",
 ]

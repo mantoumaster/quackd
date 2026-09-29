@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-So far this is documentation. The six changes 0.15.0 made in `lerobot:real` without a bench step
-have one each in the hardware checklist, the two grasp examples that lift a cube have sidecars,
-and the pages say what reruns of 0.16.0 on the arm's twin, and the simulator's nightly job on
-GitHub, showed on 2026-09-29. None of the bench steps has been taken.
+A candidate 0.16.1. Reruns of 0.16.0 on the arm's twin on 2026-09-29 found five faults, and
+each is fixed below: a policy served with a latency its chunks cannot carry starved the arm
+every chunk and was taken, the line for a verdict nobody was asked about named a human, a
+segment played a tick past its time, `place: jaws` laid a cube a close would never touch, and
+`quackd doctor` rounded the travel outward. The rest is documentation. The six changes 0.15.0
+made in `lerobot:real` without a bench step have one each in the hardware checklist, the two
+grasp examples that lift a cube have sidecars, and the pages say what those reruns, and the
+simulator's nightly job on GitHub, showed. None of the bench steps has been taken, and none of
+the fixes has run on the arm.
 
 ### Added
 
@@ -39,11 +44,11 @@ GitHub, showed on 2026-09-29. None of the bench steps has been taken.
   `arm-01`'s fold puts the jaws down at the table with the gripper shut, and `quackd preflight`
   of each on `arm-01-sim`, with `--llm fake` and `--seeds 2`, was refused at every connect:
   `the scene lays cube between the jaws, and as the arm starts they are open narrower than cube`.
-  The same fold with the gripper open lays the cube out, but the moving finger then starts above
-  it, and a close from there never touches it. The generic arm starts with its hand far above
-  the table and is refused too, and laying the cube on the table instead would rehearse another
+  The same fold with the gripper open is refused too, since a close from there never brings the
+  moving finger onto the cube (Fixed, below). The generic arm starts with its hand far above the
+  table and is refused as well, and laying the cube on the table instead would rehearse another
   task, so each sidecar says at its top what it needs: an arm that starts with its open jaws
-  pointing down around the cube, which neither the twin nor the generic arm does.
+  pointing down at the table around the cube, which neither the twin nor the generic arm does.
 
 ### Changed
 
@@ -78,6 +83,56 @@ GitHub, showed on 2026-09-29. None of the bench steps has been taken.
 
 ### Fixed
 
+- **A policy served with a latency past half its chunk starved the arm every chunk, and
+  `quackd policy serve` took it.** A segment asks for the next chunk only once the last has
+  landed, one request out at most, so a chunk that lands some ticks after it was asked for has
+  that many fewer ticks of it left to play while the next is on its way. Past half a chunk the
+  arm had nothing to play for part of every chunk, twice the latency less the chunk, and no rule
+  for when to ask again can close that gap with one request out. The trained ACT, 100 actions
+  at 30 Hz, starved 86 of 300 ticks in every 10 s segment on the arm's twin served with
+  `--latency-s 1.78`, and served with 2.5 its segment ended after 4.4 s, while
+  `quackd policy check --bench` said the latency covered what it timed. `serve` and `check` now
+  refuse a latency past half a chunk, as they refused one as long as a chunk, with the ticks of
+  every chunk it would starve and the longest latency they would take. `check` of a server an
+  earlier quackd started with one says so in its latency row, and its bench says so rather than
+  that the latency covers what it timed. The next chunk is still asked for once what is queued
+  is down to half the last chunk, so any answer within half a chunk lands with something queued
+  whatever latency was declared, and now sooner where twice the declared latency in ticks is
+  more than that, which gives a step that runs past a longer latency what room the chunk has,
+  up to twice that latency where a chunk holds three. The bench paces by the same rule, and
+  where the slowest step it timed took longer than half a chunk it says a step that slow can
+  leave the arm holding still, even where the latency covers the rest.
+- **The line for a verdict nobody was asked about said `(the human said go)`.** `--yes`, a
+  flock's standing answer and a pipe on stdin answer the pilot's doubt without asking anybody,
+  and the `assess` line said a human had, in a run whose own observation told the pilot nobody
+  was asked. The event now names what answered as `answered_by`: `a person` only where a
+  `prompt` row says one was asked, and otherwise `--yes`, `a flock's standing answer`, `a pipe`
+  or `a standing answer`. The line says that, `(--yes said go)`, and a run recorded before reads
+  `(answered go, and the record does not say by whom)`. A doubt answered no ends the run naming
+  the same. A prompt that raised, at the end of its input or with click's `Abort`, answered
+  nothing, yet the line and the run's reason said the human said no, and a person's prompt left
+  a `prompt` row saying they had. The event now carries `raised` in place of `answered_by`, the
+  line says `(the question went unanswered: the prompt raised EOFError)`, and no `prompt` row is
+  written. `human` is still the gate's state, which is why ADR-0042 left it alone.
+- **A segment could play one tick past its time.** The tick a segment's time runs out on is due
+  at its end, and where the simulator's clock read that tick a hair short of the end, as the
+  difference of two of its times can, it was played: a 10 s segment at 30 Hz could play 301
+  ticks, three of them were recorded as 902 ticks over 30.08 s, and the run's box said 30.1 s.
+  The loop now reads a segment's end within the same tolerance it reads a tick as due, so a
+  segment plays exactly the ticks its seconds hold, and what it says it played is what the
+  run's record adds up.
+- **`place: jaws` laid a cube a close would never touch.** From the lab arm's fold with the
+  gripper open, the fixed finger stood at the cube's side and the connect laid it out, but
+  closing the gripper stopped the moving finger clear of the cube's top, and the refusal for
+  jaws shut had advised exactly that start. The connect now closes the gripper on a copy of the
+  physics, with the object alone on the table, and refuses where the moving finger never touches
+  it, saying how near it came:
+  `closing the gripper stops its moving finger 0.4 mm clear of cube, which it never touches on the way`.
+  Every refusal of the jaws now says the start that works, a rest pose whose open jaws point
+  down at the table around the object.
+- **`quackd doctor` printed each joint's travel rounded out to whole degrees**, so an end could
+  read nearly a degree wider than the travel the pilot is told and the arm takes a goal at. It
+  prints the travel as the pilot is told it, to a tenth of a degree rounded inward.
 - **The examples README's rehearsal line rehearsed `e001/duck-picture` without its picture.**
   `--image` would go to every file the pattern matches, so the page says to rehearse that one on
   its own with the `--image` in its header.

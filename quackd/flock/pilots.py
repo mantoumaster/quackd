@@ -63,6 +63,15 @@ something. When a person really does press something, every member aborts and no
 so `aborted` is still what that says."""
 
 
+def _standing_go(_why: str) -> bool:
+    """A flock member's answer to its pilot's doubt under `--yes`: go, asked of nobody."""
+    return True
+
+
+_standing_go.answers_as = "a flock's standing answer"  # type: ignore[attr-defined]
+"""What the record names as having said go (`quackd.log.who_answered`), and never a person."""
+
+
 class RosterEntry(Protocol):
     """What this needs of a registered robot (`quackd.registry.RobotEntry`).
 
@@ -292,7 +301,7 @@ async def run_pilot_flock(
                 # answer for all of them is `--yes` or nothing, exactly as it is over MCP
                 confirm=allow_all if yes else deny_all,
                 acknowledge=None,
-                decide=(lambda _q: True) if yes else None,
+                decide=_standing_go if yes else None,
                 memory=(memories or {}).get(name),
                 fov_deg=fov_deg,
                 log=lambda m, who=name: log(f"{who}: {m}"),

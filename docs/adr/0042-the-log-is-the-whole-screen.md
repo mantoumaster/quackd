@@ -15,6 +15,15 @@ read, which lifts the limit the "Two spellings of six things" bullet under Conse
 describes. The reader still takes `trace_dropped` out of a `summary.json`, because a run
 directory outlives the release that wrote it. Nothing else in this ADR changes.
 
+**Amended 2026-09-29:** the new key that "One field is not held to that" below leaves to
+whoever next opens the `assess` event is there. `answered_by` names what answered the pilot's
+doubt, a person, `--yes`, a flock's standing answer, a pipe or any other standing answer, held
+to the rule a `prompt` row is (`quackd.log.who_answered`), and `human` stays the gate's state.
+The line drawn from the event names `answered_by` and no longer says `(the human said go)`. A
+run recorded before the key existed is drawn as `(answered go, and the record does not say by
+whom)`. A prompt that raised answered nothing, and the event carries `raised`, what it raised,
+in place of `answered_by`, drawn as the question gone unanswered.
+
 ## Context
 
 Two things were wrong here and only one of them is a name.

@@ -53,7 +53,14 @@ from quackd_lerobot.policy.client import (
     policy_address,
 )
 from quackd_lerobot.policy.fit import PolicyMisfit, fit
-from quackd_lerobot.policy.loop import FIRST_CHUNK_S, STARVE_S, Plan
+from quackd_lerobot.policy.loop import (
+    FIRST_CHUNK_S,
+    STARVE_S,
+    Plan,
+    latency_ticks,
+    longest_latency,
+    starved_each_chunk,
+)
 from quackd_lerobot.policy.runner import Chunk, Observation
 from quackd_lerobot.policy.scripted import SCRIPTED_HZ, SCRIPTS, SWEEP_DEG, SWEEP_JOINT
 from quackd_lerobot.real import (
@@ -1256,32 +1263,118 @@ def test_a_server_not_worth_starting_says_why(options: S.ServeOptions, needle: s
 def test_a_latency_the_arm_could_never_play_a_chunk_under_is_refused() -> None:
     """The protocol and the server both hold a declared latency under the loop's grace for a
     first chunk, and the server refuses one as long as a chunk's span: every chunk would land
-    after its last action's tick."""
+    after its last action's tick. It says the longest it would take, which is half a chunk."""
     assert wire.MAX_LATENCY_S == FIRST_CHUNK_S
     _, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
     with pytest.raises(wire.ProtocolError, match="latency_s"):
         wire.validate(wire.PolicyInfo, {**info.model_dump(), "latency_s": FIRST_CHUNK_S})
-    span = info.n_action_steps / info.rate_hz
+    rate, chunk = info.rate_hz, info.n_action_steps
+    span = chunk / rate
     with pytest.raises(S.ServeRefused, match="none would play") as refused:
         S.served_policy(S.ServeOptions(policy="scripted:sweep", latency_s=span))
-    assert f"under {span:g} s" in str(refused.value)
+    assert f"at most {S.longest_latency_s(rate, chunk):g} s" in str(refused.value)
     result = CliRunner().invoke(
         app, ["policy", "check", "--policy", "scripted:sweep", "--latency-s", f"{span:g}"]
     )
     assert result.exit_code == 1 and "none would play" in " ".join(result.output.split())
 
 
-async def test_the_longest_latency_the_server_takes_still_plays_on_the_simulators_clock() -> None:
-    """One tick under a chunk's span, on a lockstep clock, which holds each chunk back its
-    declared latency as the simulator does: chunks land with an action still to play, and the
-    segment ends on its chunks, not starved."""
+def test_a_latency_past_half_a_chunk_is_refused_by_the_loop_s_own_rule() -> None:
+    """A segment asks for the next chunk only once the last has landed, so a chunk has to hold
+    twice the latency. Half a chunk is served, and a tick more is refused, by serve and by check
+    alike, with the ticks of every chunk the arm would have nothing to play for, which is the
+    loop's own count (`starved_each_chunk`)."""
     _, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
-    latest = (info.n_action_steps - 1) / info.rate_hz
+    rate, chunk = info.rate_hz, info.n_action_steps
+    half = chunk // 2
+    longest = S.longest_latency_s(rate, chunk)
+    assert (
+        latency_ticks(longest, rate) == half and S.chunk_starved(longest, rate, chunk, False) == 0
+    )
+    _, served = S.served_policy(S.ServeOptions(policy="scripted:sweep", latency_s=longest))
+    assert served.latency_s == longest
+    over = (half + 1) / rate
+    starved = starved_each_chunk(half + 1, chunk)
+    assert 0 < starved == S.chunk_starved(over, rate, chunk, False)
+    with pytest.raises(S.ServeRefused, match="nothing to play") as refused:
+        S.served_policy(S.ServeOptions(policy="scripted:sweep", latency_s=over))
+    said = str(refused.value)
+    assert f"nothing to play for {starved} ticks of every chunk" in said, said
+    assert f"at most {longest:g} s" in said, said
+    result = CliRunner().invoke(
+        app, ["policy", "check", "--policy", "scripted:sweep", "--latency-s", f"{over:g}"]
+    )
+    printed = " ".join(result.output.split())
+    assert result.exit_code == 1 and f"for {starved} ticks of every chunk" in printed, printed
+    # a policy asked every tick is held to a tick by the loop, and never to half a chunk
+    assert S.chunk_starved(over, rate, chunk, True) == 0
+
+
+def test_check_says_a_server_declares_a_latency_no_segment_could_play() -> None:
+    """A server started before `serve` refused a latency past half a chunk still declares one.
+    `check` of it says so in its latency row, and a bench of it says so rather than that the
+    latency covers what it timed."""
+    _, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    rate, chunk = info.rate_hz, info.n_action_steps
+    over = (chunk // 2 + 1) / rate
+    starved = starved_each_chunk(chunk // 2 + 1, chunk)
+    old = wire.validate(wire.PolicyInfo, {**info.model_dump(), "latency_s": over})
+    row = dict(S.describe(old))["latency"]
+    assert f"nothing to play for {starved} ticks of every chunk" in row, row
+    assert "quackd policy serve refuses it" in row, row
+    fine = dict(S.describe(info))["latency"]
+    assert fine == f"{info.latency_s:g} s declared", fine
+    quick = 1 / rate  # synthetic: every step timed at a tick
+    result = S.BenchResult(
+        1.0, rate, 1, 1, 0, 0, rtt_s=(quick,), latency_s=quick, declared_s=over, chunk=chunk
+    )
+    said = dict(S.describe_bench(result))["latency"]
+    assert "covers that" not in said, said
+    assert f"nothing to play for {starved} ticks of every chunk" in said, said
+    assert result.declare_s is not None and f"--latency-s {result.declare_s:.2f}" in said, said
+
+
+def test_a_bench_says_a_step_slower_than_half_a_chunk_can_leave_the_arm_waiting() -> None:
+    """A server declares the longest latency `serve` takes, and a bench times it covering all
+    its steps but one, the step in twenty past the quantile it suggests from. That one step is
+    within half a chunk, and the bench says the latency covers what it timed and nothing more.
+    Or it is a tick past, which no refill lands before the arm has nothing to play, since the
+    one request out goes no sooner than the last chunk lands: the bench says so after it says
+    the latency covers the rest."""
+    _, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    rate, chunk = info.rate_hz, info.n_action_steps
+    half = longest_latency(chunk)
+    declared = S.longest_latency_s(rate, chunk)
+    for slowest, outran in ((half, False), (half + 1, True)):
+        steps = (declared,) * 19 + (slowest / rate,)  # synthetic: one step in twenty slow
+        result = S.BenchResult(1.0, rate, 1, 1, 0, 0, rtt_s=steps, declared_s=declared, chunk=chunk)
+        assert result.declare_s == pytest.approx(declared), "the quantile is not the declared"
+        said = dict(S.describe_bench(result))["latency"]
+        assert said.endswith(f"--latency-s {declared:g} it is served with covers that") is (
+            not outran
+        ), said
+        if outran:
+            assert f"covers that, but its slowest step took {1000 * slowest / rate:.1f} ms, " in (
+                said
+            ), said
+            assert f"{half + 1} ticks at {rate:g} Hz" in said, said
+            assert f"half a chunk of {chunk} actions, {half} ticks, is sure" in said, said
+            assert said.endswith("serve the policy where it answers faster"), said
+
+
+async def test_the_longest_latency_the_server_takes_still_plays_on_the_simulators_clock() -> None:
+    """Half a chunk, on a lockstep clock, which holds each chunk back its declared latency as
+    the simulator does: every chunk after the first lands as the one before runs out, so the
+    arm is starved only while the first is on its way, and the segment ends on its chunks."""
+    _, info = S.served_policy(S.ServeOptions(policy="scripted:sweep"))
+    rate, chunk = info.rate_hz, info.n_action_steps
+    latest = S.longest_latency_s(rate, chunk)
     serving = _serving(S.ServeOptions(policy="scripted:sweep", latency_s=latest))
     transport, adapter, _ = await _arm_on(serving.client(), clock=LockstepClock())
     try:
-        ended = await _segment_end(transport, max_s=1e6, max_chunks=2)
-        assert ended.how == "chunks" and ended.stats.chunks == 2, ended
+        ended = await _segment_end(transport, max_s=1e6, max_chunks=3)
+        assert ended.how == "chunks" and ended.stats.chunks == 3, ended
+        assert ended.stats.starved == latency_ticks(latest, rate), ended.stats
     finally:
         await adapter.close()
         serving.http.shutdown()
@@ -1372,18 +1465,20 @@ def test_a_bench_says_what_its_skipped_ticks_were_and_whether_its_latency_covers
 
 
 def test_a_bench_suggests_no_latency_the_server_would_refuse() -> None:
-    """A step slower than a segment waits for its first chunk, or slower than a chunk takes to
+    """A step slower than a segment waits for its first chunk, or than half a chunk takes to
     play, still completes a bench, since the client waits longer for a step than either. The
     bench then says the policy answers too slowly to serve from this machine, and never
-    suggests a --latency-s that `quackd policy serve` refuses. One under both bounds it
+    suggests a --latency-s that `quackd policy serve` refuses. One inside every bound it
     suggests, and the server takes."""
     _, info = S.served_policy(S.ServeOptions(policy="scripted:hold"))
     rate, chunk = float(info.rate_hz), info.n_action_steps
+    past_half = (chunk // 2 + 1) / rate
     past_chunk = (chunk + 1) / rate
     past_wait = (wire.MAX_LATENCY_S + STEP_TIMEOUT_S) / 2
-    fits = (chunk - 1) / rate
-    assert fits < past_chunk < wire.MAX_LATENCY_S < past_wait < STEP_TIMEOUT_S
-    for trip, too_slow in ((past_chunk, True), (past_wait, True), (fits, False)):
+    fits = S.longest_latency_s(rate, chunk)
+    assert fits < past_half < past_chunk < wire.MAX_LATENCY_S < past_wait < STEP_TIMEOUT_S
+    cases = ((past_half, True), (past_chunk, True), (past_wait, True), (fits, False))
+    for trip, too_slow in cases:
         result = S.BenchResult(
             1.0,
             rate,

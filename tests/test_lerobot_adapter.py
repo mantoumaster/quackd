@@ -1909,6 +1909,25 @@ async def test_the_pilot_is_told_the_calibrated_travel_and_not_the_schema_bound(
     assert health.extras["joint_range_deg"]["elbow_flex"] == [-100, 100]
 
 
+async def test_doctor_shows_each_joint_s_travel_as_the_pilot_is_told_it() -> None:
+    """`doctor` printed the travel rounded outward to whole degrees, a degree wider at either
+    end than the pilot is told and the arm accepts. It prints what the manifest publishes: to a
+    tenth, rounded inward, from the calibration the arm answered with."""
+    from quackd.agent.prompts import body_lines
+
+    adapter = LeRobotAdapter(LeRobotReal("COM5", robot=_spanned()))
+    manifest = await adapter.connect()
+    published = manifest.extras["joint_range_deg"]
+    shown = (await adapter.health()).extras["joint_range_deg"]
+    assert shown == published, (shown, published)
+    ends = [end for joint in SPANS for end in shown[joint]]
+    assert any(end != round(end) for end in ends), "the synthetic travel has no fraction to show"
+    text = "\n".join(body_lines(manifest))
+    for joint in SPANS:
+        lo, hi = shown[joint]
+        assert f"{joint} {lo:g} to {hi:g}" in text, (joint, lo, hi)
+
+
 async def test_a_reading_past_the_travel_is_explained_to_the_pilot_in_this_arm_s_numbers() -> None:
     """On the bench a model was handed a joint reading well past the travel line in its prompt,
     with nothing to explain it, and refused to move "on this inconsistent state". It was right

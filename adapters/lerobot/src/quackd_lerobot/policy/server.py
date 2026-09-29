@@ -81,7 +81,14 @@ from quackd_lerobot import __version__
 from quackd_lerobot.policy import pipeline
 from quackd_lerobot.policy import protocol as wire
 from quackd_lerobot.policy.client import STEP_TIMEOUT_S
-from quackd_lerobot.policy.loop import FIRST_CHUNK_S, REFILL_SHARE, latency_ticks, rate_refusal
+from quackd_lerobot.policy.loop import (
+    FIRST_CHUNK_S,
+    latency_ticks,
+    longest_latency,
+    rate_refusal,
+    refill_due,
+    starved_each_chunk,
+)
 from quackd_lerobot.policy.runner import Chunk, Features, Observation, PolicyRunner
 from quackd_lerobot.policy.scripted import SCRIPTS, named
 
@@ -210,6 +217,42 @@ def chunk_outrun(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -
     return not per_tick and latency_ticks(latency_s, rate_hz) >= chunk
 
 
+def chunk_starved(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> int:
+    """How many ticks of every chunk after a segment's first the arm would have nothing to play
+    for, for a policy whose chunks play `chunk` actions and that takes `latency_s` to answer:
+    the loop's own rule (`loop.starved_each_chunk`), so what is refused here is what a segment
+    would starve on. A policy that answers one action a tick is asked every tick and has to
+    answer within one, which the loop holds it to itself."""
+    if per_tick:
+        return 0
+    return starved_each_chunk(latency_ticks(latency_s, rate_hz), chunk)
+
+
+def longest_latency_s(rate_hz: float, chunk: int) -> float:
+    """The longest `--latency-s` a policy whose chunks play `chunk` actions can be served with
+    at `rate_hz`: half a chunk, in whole ticks, the most the loop plays without starving
+    (`loop.longest_latency`), rounded down to the `LATENCY_STEP_S` a bench suggests one in."""
+    return math.floor(longest_latency(chunk) / rate_hz / LATENCY_STEP_S + 1e-9) * LATENCY_STEP_S
+
+
+def latency_too_long(latency_s: float, rate_hz: float, chunk: int, per_tick: bool) -> str | None:
+    """Why a policy whose chunks play `chunk` actions cannot be played with `latency_s` to
+    answer, said as what would happen to its chunks, or None where the loop plays it without
+    starving. `quackd policy serve` refuses such a latency, and `quackd policy check` says so
+    of a server started with one and of any latency its bench would suggest."""
+    late = latency_ticks(latency_s, rate_hz)
+    if chunk_outrun(latency_s, rate_hz, chunk, per_tick):
+        return "every chunk would land after its last action's tick and none would play"
+    if starved := chunk_starved(latency_s, rate_hz, chunk, per_tick):
+        return (
+            f"a segment asks for the next chunk only once the last has landed, "
+            f"{_ticks(late)} into it, so what is left of it lasts {chunk - late} of the "
+            f"{_ticks(late)} the next one takes to land, and the arm would have nothing to play "
+            f"for {_ticks(starved)} of every chunk"
+        )
+    return None
+
+
 def bind_refusal(bind: str, behind_tls: bool) -> str | None:
     """Why the server must not listen on `bind`, or None. `127.0.0.1` and `::1`, the two
     addresses the client sends plain http to (`protocol.LOOPBACK`), need nothing; any other
@@ -314,14 +357,14 @@ def served_policy(options: ServeOptions) -> tuple[PolicyRunner, wire.PolicyInfo]
     if (refusal := rate_refusal(features)) is not None:
         runner.close()
         raise ServeRefused(refusal.replace("the policy was not started", "not serving"))
-    late = latency_ticks(latency, float(features.rate_hz))
-    if chunk_outrun(latency, float(features.rate_hz), chunk, features.per_tick):
+    rate = float(features.rate_hz)
+    if (why := latency_too_long(latency, rate, chunk, features.per_tick)) is not None:
         runner.close()
         raise ServeRefused(
-            f"--latency-s {latency:g} is {late} ticks at {features.rate_hz:g} Hz, and each "
-            f"chunk of {spec} holds {chunk} actions, one a tick, so every chunk would land "
-            f"after its last action's tick and none would play. Give a --latency-s under "
-            f"{chunk / features.rate_hz:g} s"
+            f"--latency-s {latency:g} is {_ticks(latency_ticks(latency, rate))} at {rate:g} "
+            f"Hz, and each chunk of {spec} holds {chunk} actions, one a tick, so {why}. Give a "
+            f"--latency-s of at most {longest_latency_s(rate, chunk):g} s, or serve the policy "
+            "where it answers faster"
         )
     info = wire.PolicyInfo(
         protocol=wire.PROTOCOL,
@@ -1192,7 +1235,7 @@ def describe(info: wire.PolicyInfo) -> list[tuple[str, str]]:
             if info.per_tick
             else f"{info.chunk_size} actions, {info.n_action_steps} played from each",
         ),
-        ("latency", f"{info.latency_s:g} s declared"),
+        ("latency", _declared(info)),
         ("gpu", "yes" if info.gpu else "no"),
         ("threads", str(info.threads) if info.threads is not None else "not set"),
         (
@@ -1204,6 +1247,21 @@ def describe(info: wire.PolicyInfo) -> list[tuple[str, str]]:
         ("action q01..q99", quantiles(info.action_quantiles)),
         ("loaded", "; ".join(info.loaded) or "nothing, a scripted policy loads no repository"),
     ]
+
+
+def _declared(info: wire.PolicyInfo) -> str:
+    """The latency a server declares, and why a segment could not play it where it could not:
+    a server started before `quackd policy serve` refused such a latency still serves one."""
+    said = f"{info.latency_s:g} s declared"
+    why = latency_too_long(info.latency_s, info.rate_hz, info.n_action_steps, info.per_tick)
+    if why is None:
+        return said
+    return (
+        f"{said}, which is {_ticks(latency_ticks(info.latency_s, info.rate_hz))} at "
+        f"{info.rate_hz:g} Hz, and each chunk plays {info.n_action_steps} actions, one a tick, "
+        f"so {why}. quackd policy serve refuses it: serve with a --latency-s of at most "
+        f"{longest_latency_s(info.rate_hz, info.n_action_steps):g} s"
+    )
 
 
 # ── the bench ───────────────────────────────────────────────────────────────────────────
@@ -1221,7 +1279,7 @@ class BenchResult:
     chunk in the tick that asked for it, as a segment waits for a policy that declares none.
     `chunk` is how many actions a chunk the server answers plays, and `per_tick` whether it
     answers one action a tick, which bound the `--latency-s` it can be served with
-    (`chunk_outrun`)."""
+    (`latency_too_long`)."""
 
     seconds: float
     rate_hz: float
@@ -1326,10 +1384,14 @@ def describe_bench(result: BenchResult) -> list[tuple[str, str]]:
             f"{1000 * measured:.1f} ms or less for {100 * LATENCY_QUANTILE:g}% of the "
             f"{len(result.timed_s)} steps timed, from the request to its chunk back"
         )
-        if result.declared_s > 0 and result.declared_s >= declare - 1e-9:
-            said += f": the --latency-s {result.declared_s:g} it is served with covers that"
-        elif (too_slow := _too_slow(declare, result)) is not None:
+        if (too_slow := _too_slow(declare, result)) is not None:
             said += f": {too_slow}"
+        elif (unplayable := _unplayable(result)) is not None:
+            said += f": {unplayable}. Serve it with --latency-s {declare:.2f}, and bench again"
+        elif result.declared_s > 0 and result.declared_s >= declare - 1e-9:
+            said += f": the --latency-s {result.declared_s:g} it is served with covers that"
+            if (outran := _outran(result)) is not None:
+                said += f", but {outran}"
         else:
             said += (
                 f": serve with --latency-s {declare:.2f}, so the simulator holds each chunk "
@@ -1350,17 +1412,54 @@ def _too_slow(declare_s: float, result: BenchResult) -> str | None:
             "waits for its first chunk, and quackd policy serve refuses it. This policy answers "
             "too slowly to drive an arm from this machine: serve it on a GPU"
         )
-    if result.chunk is not None and chunk_outrun(
-        declare_s, result.rate_hz, result.chunk, result.per_tick
+    if result.chunk is not None and (
+        why := latency_too_long(declare_s, result.rate_hz, result.chunk, result.per_tick)
     ):
         return (
-            f"a --latency-s of {declare_s:.2f} is {latency_ticks(declare_s, result.rate_hz)} "
-            f"ticks at {result.rate_hz:g} Hz, and each chunk plays {result.chunk} actions, one a "
-            "tick, so every chunk would land after its last action's tick, and quackd policy "
+            f"a --latency-s of {declare_s:.2f} is "
+            f"{_ticks(latency_ticks(declare_s, result.rate_hz))} at {result.rate_hz:g} Hz, and "
+            f"each chunk plays {result.chunk} actions, one a tick, so {why}, and quackd policy "
             "serve refuses it. This policy answers too slowly to drive an arm from this "
             "machine: serve it on a GPU"
         )
     return None
+
+
+def _outran(result: BenchResult) -> str | None:
+    """Why a latency that covers most of the steps a bench timed still does not keep the arm
+    fed, or None. However early the loop asks, the one request out goes no sooner than the last
+    chunk lands, so only an answer within half a chunk (`loop.longest_latency`) is sure to land
+    with something still queued, and the slowest step timed is judged against that: the one
+    step in twenty a declared latency does not cover is the one that runs past it."""
+    if result.chunk is None or result.per_tick or not result.timed_s:
+        return None
+    slowest = max(result.timed_s)
+    late, room = latency_ticks(slowest, result.rate_hz), longest_latency(result.chunk)
+    if late <= room:
+        return None
+    return (
+        f"its slowest step took {1000 * slowest:.1f} ms, {_ticks(late)} at "
+        f"{result.rate_hz:g} Hz, and only an answer within half a chunk of {result.chunk} "
+        f"actions, {_ticks(room)}, is sure to land before the arm has nothing to play. A step "
+        "that slow can leave it holding still while it runs over: serve the policy where it "
+        "answers faster"
+    )
+
+
+def _unplayable(result: BenchResult) -> str | None:
+    """Why the `--latency-s` the benched server was started with is one a segment could not
+    play, or None. `quackd policy serve` refuses one, and a server an older quackd started may
+    still declare it, whatever the bench measures."""
+    if result.chunk is None or result.declared_s <= 0:
+        return None
+    why = latency_too_long(result.declared_s, result.rate_hz, result.chunk, result.per_tick)
+    if why is None:
+        return None
+    return (
+        f"the --latency-s {result.declared_s:g} it is served with is "
+        f"{_ticks(latency_ticks(result.declared_s, result.rate_hz))} at {result.rate_hz:g} Hz, "
+        f"and each chunk plays {result.chunk} actions, one a tick, so {why}"
+    )
 
 
 def _synthetic_cameras(info: wire.PolicyInfo) -> list[wire.CameraInfo]:
@@ -1386,14 +1485,15 @@ def bench(
     """Stream synthetic observations through `runner` (a `RemoteRunner`) at the rate its server
     declares, for `seconds` of the wall's clock, paced and queued as the policy loop paces and
     queues a segment (`loop.py`): a tick every period from the start, a request when what is
-    left of the last chunk is down to `REFILL_SHARE` of it, one request out at most, and a
-    chunk's actions for ticks already played dropped as it lands. A policy that declares no
-    latency is waited for in the tick that asked, as the loop waits for it, and any other is
-    left to land while the ticks go on. The observation is every motor at 0 and a frame of
-    seeded noise per camera the server maps, which JPEG compresses worst, so a round trip
-    measured here is not flattered by an easy picture. Before the stream one warm step is timed
-    on its own (`BenchResult.latency_s`), and the latency the bench suggests is read over it and
-    every step of the stream (`BenchResult.declare_s`)."""
+    left of the last chunk is down to half of it or to twice the ticks the declared latency
+    comes to, whichever is more (`refill_due`), one request out at most, and a chunk's actions
+    for ticks already played dropped as it lands. A policy that declares no latency is waited
+    for in the tick that asked, as the loop waits for it, and any other is left to land while
+    the ticks go on. The observation is every motor at 0 and a frame of seeded noise per camera
+    the server maps, which JPEG compresses worst, so a round trip measured here is not
+    flattered by an easy picture. Before the stream one warm step is timed on its own
+    (`BenchResult.latency_s`), and the latency the bench suggests is read over it and every
+    step of the stream (`BenchResult.declare_s`)."""
     info = runner.policy()
     runner.cameras = tuple(_synthetic_cameras(info))
     if info.features.state is not None and len(runner.motors) != info.features.state:
@@ -1408,7 +1508,8 @@ def bench(
     rate = float(features.rate_hz)
     period = 1.0 / rate
     declared = float(runner.latency_s())
-    waits = latency_ticks(declared, rate) == 0
+    late = latency_ticks(declared, rate)
+    waits = late == 0
     noise = np.random.default_rng(0)
     frames = {
         camera.name: noise.integers(0, 256, (camera.height, camera.width, 3), dtype=np.uint8)
@@ -1465,7 +1566,7 @@ def bench(
             if (
                 inflight is None
                 and not done
-                and (features.per_tick or left == 0 or left <= REFILL_SHARE * last_len)
+                and (features.per_tick or refill_due(left, late, last_len))
             ):
                 inflight = (tick, worker.submit(ask, tick, dict(sent)))
                 if waits:
@@ -1527,8 +1628,11 @@ __all__ = [
     "bench",
     "bind_refusal",
     "chunk_outrun",
+    "chunk_starved",
     "describe",
     "describe_bench",
+    "latency_too_long",
+    "longest_latency_s",
     "open_server",
     "parse_cameras",
     "serve",

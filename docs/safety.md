@@ -83,11 +83,18 @@ whose whole job is to put a human in front of a verb. It fails the other way on 
 asker that reaches a person and is not marked as one writes nothing, so the record under-claims
 rather than inventing somebody.
 
-One field is less careful than that, and it is worth knowing which. A verdict cleared by
-`--yes`, by a flock's standing answer or by a pipe is recorded as `assess.human: go` all the
-same, because that field holds the answer the run was given rather than who gave it. The
-`prompt` events are the ones that say a person was there, so read a `human` against them and
-not on its own.
+The verdict's own record is held to the same rule. `assess.human` is the answer the run was
+given, `go` or `no_go`, which is what the gate reads, whoever gave it. Beside it
+`assess.answered_by` says who gave it: `a person` only where a `prompt` event would say so too,
+and otherwise `--yes`, `a flock's standing answer`, `a pipe`, or `a standing answer` for anything
+else that answers without asking. The line the terminal and `quackd log` draw from it names the
+same, `(--yes said go)` where a run was started with `--yes`, and a run recorded before
+`answered_by` existed is drawn as `(answered go, and the record does not say by whom)`. A pilot
+whose doubt was answered no ends the run with the same name in its reason. A prompt that raised,
+on the end of its input or with click's `Abort`, answered nothing: the gate reads it as no, and
+the event records what it raised as `raised` in place of an `answered_by`, drawn as
+`(the question went unanswered: the prompt raised EOFError)`, and no `prompt` event says
+anybody answered.
 
 The questions and the answers are in `terminal.txt` too, and that file is the only place the
 answer survives in the words it was typed in. Neither half of the exchange goes through the

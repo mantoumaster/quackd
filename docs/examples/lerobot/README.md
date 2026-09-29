@@ -67,10 +67,12 @@ which no sidecar check measures, so it has none. Neither sidecar lays out on `ar
 `arm-01`'s fold puts the jaws down at the table with the gripper shut, so every connect is
 refused:
 `the scene lays cube between the jaws, and as the arm starts they are open narrower than cube`.
-The same fold with the gripper open lays the cube out, but the moving finger then starts above
-it, and a close from there never touches it. Each sidecar says at its top what it needs: an arm
-that starts with its open jaws pointing down around the cube, which neither the twin nor the
-generic arm does.
+The same fold with the gripper open is refused as well, since closing the gripper from there
+never brings the moving finger onto the cube:
+`closing the gripper stops its moving finger 0.4 mm clear of cube, which it never touches on the way`.
+Each sidecar says at its top what it needs, and each refusal says it too: an arm that starts with
+its open jaws pointing down at the table around the cube, which neither the twin nor the generic
+arm does.
 
 `e145` and `e152` are the two exceptions: an MCP session loads them from the chat with
 `robot_load_duckfile`, which is how their longer budgets reach a session that would otherwise

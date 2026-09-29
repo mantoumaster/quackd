@@ -1026,6 +1026,8 @@ async def test_an_uncertain_verdict_asks_the_person_in_the_room(
         asked.append(why)
         return False
 
+    no.asks_a_person = True  # type: ignore[attr-defined]
+
     transport = MockTransport()
     result = await run_duck(
         RunConfig(
@@ -1046,13 +1048,14 @@ async def test_an_uncertain_verdict_asks_the_person_in_the_room(
         )
     )
     assert result.outcome == "aborted", "a person stopping the run is the kill switch's kind"
-    assert "the human said no" in result.reason
+    assert "and a person said no" in result.reason
     assert "out of frame" in result.reason
     assert [i.kind for i in transport.intents if i.kind != "stop"] == []
     assert len(asked) == 1
     assert "payload_kg=2" in asked[0] and "not sure" in asked[0]
     events = Transcript.read(result.run_dir / "transcript.jsonl")
-    assert next(e for e in events if e["kind"] == "assess")["human"] == "no_go"
+    assessed = next(e for e in events if e["kind"] == "assess")
+    assert assessed["human"] == "no_go" and assessed["answered_by"] == "a person", assessed
 
 
 async def test_a_person_who_says_go_clears_the_gate(hello_duck: DuckFile, tmp_path: Path) -> None:
@@ -4077,6 +4080,158 @@ async def test_a_callable_mark_that_says_yes_records_as_much_as_a_flat_one(
         ("hand_off", AgentLoop.PLACE_IT, True),
         ("hand_off", AgentLoop.HAND_IT_BACK, True),
     ]
+
+
+def _a_pipe() -> Callable[[str], bool]:
+    """An asker marked as the CLI marks its own, whose mark says nobody is at the terminal:
+    the CLI's question answered by whatever was piped in."""
+
+    def says_go(_why: str) -> bool:
+        return True
+
+    says_go.asks_a_person = lambda: False  # type: ignore[attr-defined]
+    return says_go
+
+
+def _a_person() -> Callable[[str], bool]:
+    def says_go(_why: str) -> bool:
+        return True
+
+    says_go.asks_a_person = lambda: True  # type: ignore[attr-defined]
+    return says_go
+
+
+def test_what_answered_is_named_by_the_mark_it_carries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A person only where one was really asked, as a `prompt` row is written, and otherwise
+    what said it: `--yes`, a flock's standing answer, a pipe on the CLI's own question, or a
+    standing answer that names nothing more. The CLI's question is a person or a pipe by
+    whether a terminal is there when it is put."""
+    from quackd import cli
+    from quackd.flock.pilots import _standing_go
+    from quackd.log import who_answered
+
+    assert who_answered(cli._yes_to_go) == "--yes"
+    assert who_answered(_standing_go) == "a flock's standing answer"
+    assert who_answered(lambda _why: True) == "a standing answer"
+    assert who_answered(_a_pipe()) == "a pipe" and who_answered(_a_person()) == "a person"
+    for there, named in ((True, "a person"), (False, "a pipe")):
+        monkeypatch.setattr(cli, "_can_prompt", lambda there=there: there)
+        assert who_answered(cli._decide_prompt) == named
+
+
+@pytest.mark.parametrize(
+    ("who", "decide"),
+    [
+        ("a person", _a_person()),
+        ("--yes", None),
+        ("a flock's standing answer", None),
+        ("a pipe", _a_pipe()),
+    ],
+)
+async def test_the_record_and_the_line_name_what_said_go(
+    who: str, decide: Callable[[str], bool] | None, hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """`assess.human` is the gate's state, `go` whoever said it, and it is still that. Beside
+    it the event names what said it, `answered_by`, and the line drawn from the event says
+    that and never a person nobody asked: only a person's go leaves a `prompt` row too."""
+    from quackd import cli
+    from quackd.flock.pilots import _standing_go
+    from quackd.log import LogEvent, render_lines
+
+    if decide is None:
+        decide = cli._yes_to_go if who == "--yes" else _standing_go
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see the thing from here"),
+                    ToolCall(name="declare_success", arguments={"reason": "looked"}),
+                ]
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+            decide=decide,
+        )
+    )
+    assert result.outcome == "success", result.reason
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = next(e for e in events if e["kind"] == "assess")
+    assert assessed["human"] == "go" and assessed["answered_by"] == who, assessed
+    data = {k: v for k, v in assessed.items() if k not in ("kind", "t")}
+    [line] = [text for text, _style in render_lines(LogEvent("assess", 0.0, data))]
+    assert line.endswith(f"({who} said go)"), line
+    assert "human" not in line, line
+    assert bool(_prompts(events)) == (who == "a person"), _prompts(events)
+
+
+async def test_a_feasible_verdict_names_nobody(hello_duck: DuckFile, tmp_path: Path) -> None:
+    """Nobody is asked about a verdict the pilot was sure of, and its event names nobody."""
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("feasible", "a short walk"),
+                    ToolCall(name="declare_success", arguments={"reason": "looked"}),
+                ]
+            ),
+            transport=MockTransport(),
+            runs_dir=tmp_path,
+            decide=_a_person(),
+        )
+    )
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = next(e for e in events if e["kind"] == "assess")
+    assert assessed["human"] is None and "answered_by" not in assessed, assessed
+
+
+@pytest.mark.parametrize("raised", ["EOFError", "Abort"])
+@pytest.mark.parametrize("marked", ["a person", "a pipe"])
+async def test_a_doubt_whose_prompt_raised_went_unanswered(
+    raised: str, marked: str, hello_duck: DuckFile, tmp_path: Path
+) -> None:
+    """A prompt that read the end of its input, or that click turned into its `Abort`, said
+    neither go nor no. The gate reads it as no and the run ends before any motion, as it always
+    has, and the record says the question went unanswered, where it used to name whatever put
+    it, a person or a pipe, as having said no. No `prompt` row says anybody answered."""
+    import click
+
+    from quackd.log import LogEvent, render_lines
+
+    error = EOFError() if raised == "EOFError" else click.exceptions.Abort()
+
+    def says_nothing(_why: str) -> bool:
+        raise error
+
+    says_nothing.asks_a_person = lambda: marked == "a person"  # type: ignore[attr-defined]
+    transport = MockTransport()
+    result = await run_duck(
+        RunConfig(
+            duck=hello_duck,
+            provider=FakeProvider(
+                script=[
+                    _verdict_call("uncertain", "cannot see the thing from here"),
+                    ToolCall(name="walk", arguments={"vx": 0.1, "duration_s": 1.0}),
+                ]
+            ),
+            transport=transport,
+            runs_dir=tmp_path,
+            decide=says_nothing,
+        )
+    )
+    unanswered = f"the question went unanswered: the prompt raised {raised}"
+    assert result.outcome == "aborted", result.reason
+    assert result.reason.endswith(f"and {unanswered}") and "said" not in result.reason
+    assert [i.kind for i in transport.intents if i.kind != "stop"] == []
+    events = Transcript.read(result.run_dir / "transcript.jsonl")
+    assessed = next(e for e in events if e["kind"] == "assess")
+    assert assessed["human"] == "no_go" and assessed["raised"] == raised, assessed
+    assert "answered_by" not in assessed and assessed["summary"] == unanswered, assessed
+    data = {k: v for k, v in assessed.items() if k not in ("kind", "t")}
+    [line] = [text for text, _style in render_lines(LogEvent("assess", 0.0, data))]
+    assert f"({unanswered}) [the run ends" in line and "said" not in line, line
+    assert _prompts(events) == []
 
 
 # ── the clocks, the money and the name a run was given ──────────────────────────────────
