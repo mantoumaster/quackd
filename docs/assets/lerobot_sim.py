@@ -130,8 +130,8 @@ OPENING = "the arm as it starts, before the first verb"
 OPEN_HOLD_MS = 1200  # the arm as it starts, before anything has moved
 FINAL_HOLD_MS = 2000  # the arm where the pilot left it, before the loop restarts
 
-#: Regular face, first readable path wins, the table `lerobot_hero.py` and `social_preview.py`
-#: use. DejaVu is last because Pillow vendors it and it is the one that is always there.
+#: Regular face, first readable path wins, the same table as `lerobot_hero.py`: Windows first,
+#: then macOS, then the usual Linux packages.
 _FACES: tuple[str, ...] = (
     "C:/Windows/Fonts/segoeui.ttf",
     "C:/Windows/Fonts/arial.ttf",

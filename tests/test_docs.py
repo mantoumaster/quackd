@@ -953,6 +953,29 @@ def test_every_file_in_docs_assets_has_a_row_in_its_catalogue() -> None:
         )
 
 
+def test_the_readme_opens_with_its_name_and_only_the_browser_demo_shows_its_mark() -> None:
+    """Until 2026-09-29 the README opened with a duck's head over its title, and a social card
+    was built around the same head. It made quackd look like a toy rather than a tool that
+    drives a real arm, so both went. The browser demo keeps the head as its own header mark and
+    icons in `web/assets/`, and a living document that names one of those files is pointing a
+    reader at a logo the project no longer shows anywhere else.
+
+    The names are read from that directory rather than spelled here, so an icon added beside
+    them is covered too. The history files may still name them: they record what was true."""
+    assert README.startswith("<h1"), (
+        "README.md has something above its title. It opens with its name and carries no logo."
+    )
+    icons = sorted(path.name for path in (REPO / "web" / "assets").iterdir() if path.is_file())
+    assert icons, "web/assets has no files, so this test would check nothing."
+    for path in _living_docs():
+        text = path.read_text(encoding="utf-8")
+        for icon in icons:
+            assert icon not in text, (
+                f"{path.relative_to(REPO).as_posix()} names web/assets/{icon}, the browser "
+                "demo's own mark. The README and docs/assets carry no logo: leave it to the demo."
+            )
+
+
 #: Sentences that were true until 2026-09-28, when OpenAI's `gpt-6-sol` flew the arm's
 #: simulator on film (`docs/assets/lerobot-sim.gif`). The README carried three of them, in its
 #: status table, its limitations and its help wanted, and the change that embedded the film in

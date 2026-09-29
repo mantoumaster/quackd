@@ -74,8 +74,8 @@ CAPTION_H = 34
 BACKDROP = (22, 24, 28)
 INK = (238, 238, 238)
 
-#: Regular face, first readable path wins, the table `social_preview.py` uses. DejaVu is last
-#: because Pillow vendors it and it is the one that is always there.
+#: Regular face, first readable path wins: Windows first, then macOS, then the usual Linux
+#: packages. `font` names every path it tried when none of them is on this machine.
 _FACES: tuple[str, ...] = (
     "C:/Windows/Fonts/segoeui.ttf",
     "C:/Windows/Fonts/arial.ttf",
