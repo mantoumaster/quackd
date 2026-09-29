@@ -482,8 +482,17 @@ write says nothing about what that write did.
   ([adapters/lerobot.md](adapters/lerobot.md#the-manifest)).
 - **`pick` and `manipulate` hand the whole arm to a learned policy** for one segment, `pick`
   for up to a minute and `manipulate` for 10 s unless a task file says otherwise, up to 60. Both
-  are confirm-gated for that reason. Watch every segment, and keep `stop` within reach: a stop
-  from anywhere, the heartbeat's included, ends a segment before it holds the arm.
+  are confirm-gated for that reason, a `--goal` run's `manipulate` included, so a person at a
+  terminal is asked before each segment unless `--yes`, or a pipe or file on stdin, answers for
+  them. **Under `--yes`, and under `yes | quackd run` or `quackd run < answers.txt`, nobody is
+  asked:** a segment the pilot calls goes ahead on the pilot's word and a yes nobody said, and
+  the record says the gate was allowed without naming anybody
+  ([above](#who-the-record-says-was-asked)). Over MCP both verbs need `serve-mcp --yes`, so
+  quackd asks nobody before any segment there, and `quackd preflight` clears every segment of a
+  rehearsal the same way, on the simulator alone. `--controller vla` refuses `--yes`, and a run
+  with no terminal to ask on, since its verdict is a person's. Watch every segment, and keep
+  `stop` within reach: a stop from anywhere, the heartbeat's included, ends a segment before it
+  holds the arm.
 - **A policy moves no joint faster than a verb may.** Its step cap is the verbs' speed, 50
   degrees a second at the default step, divided by the policy's rate, so a policy at 30 Hz takes
   steps of about 1.7 degrees and never more than one verb step. The cap is on the follower for
@@ -497,11 +506,15 @@ write says nothing about what that write did.
   segment will not start with one more than 2 degrees outside. That keeps a policy from starting
   a rise out of a fold. It cannot halt one a move had already started, which the servo finishes
   at its own speed, so the power switch is still the only stop for that stretch.
-- **The policy runs in a server of its own**, `quackd policy serve`, never in the process that
-  holds the serial bus, because a checkpoint's processors can name code to import. Its answers
-  move the arm, so it wants a token on every request and binds loopback unless a TLS proxy
-  stands in front of it, and the arm checks at connect, before any torque, that the policy fits
-  this arm's motors, cameras and calibrated travel ([policies.md](policies.md),
+- **The policy runs in a server of its own**, `quackd policy serve`, and no quackd command loads
+  a checkpoint in the process that holds the serial bus, because a checkpoint's processors can
+  name code to import. `load_policy()` in the arm's backend, an older Python helper that nothing
+  in quackd calls, still would, with none of the server's checks and no check at connect that
+  what it built fits the arm (the `LOAD_POLICY` row in
+  [adapters/lerobot.md](adapters/lerobot.md#the-policies-upstream-lerobot-061)). The server's
+  answers move the arm, so it wants a token on every request and binds loopback unless a TLS
+  proxy stands in front of it, and the arm checks at connect, before any torque, that the policy
+  fits this arm's motors, cameras and calibrated travel ([policies.md](policies.md),
   [SECURITY.md](../SECURITY.md)). A server that stops answering ends the segment with the arm
   held, starved on the arm and on the client's own deadline on the simulator. What no bench has
   measured yet is how fast its loop runs on the real bus while the same laptop infers.

@@ -1,6 +1,6 @@
 """The policy server's wire protocol: four calls, their messages, and how a number is read.
 
-A policy runs in a process of its own, never in the one that owns the arm's serial bus
+A served policy runs in a process of its own, never in the one that owns the arm's serial bus
 (`upstream_api.PROCESSOR_CLASS_IMPORT`: loading a checkpoint can run code it names). The arm's
 process reaches it over HTTP with this protocol, the client in `client.py` and the server in
 `server.py`, and this module is the one place either of them spells it. A change here is a

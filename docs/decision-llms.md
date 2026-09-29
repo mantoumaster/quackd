@@ -604,7 +604,7 @@ says which is which because a number nobody published is a number nobody has cal
 | `stop` | **0.50** | **theirs.** Below 0.5 is "genuinely unsure" in TypeSafe's words and the point where their own example routes to a human. quackd puts the brake exactly there instead, because that is where an unsure stepper should still be allowed to reach for it: a wrong `stop` costs one step, a wrong anything-else costs a move nobody chose |
 | a read (`report_state`, `observe`, `introspect`) | **0.60** | **quackd's.** Sends no intent at all, so it sits just above their 0.5: a read that is wrong costs a wasted turn and nothing else. TypeSafe publish no number here |
 | anything that sends an intent | **0.85** | **quackd's.** Below the 0.9 they pair with "proceed with confirmation", because quackd expresses confirmation separately, and well above their 0.5. Nothing published sits between the two, so this is an appetite for risk rather than a calibration |
-| a confirm-gated verb | **0.90** | **theirs,** literally their ">0.9, high stakes, proceed with confirmation" -- and quackd's own confirm gate still asks a person on top of it |
+| a confirm-gated verb | **0.90** | **theirs,** literally their ">0.9, high stakes, proceed with confirmation" -- and quackd's own confirm gate still asks a person at a terminal on top of it, unless `--yes`, or a pipe or file on stdin, answers for them |
 | a `dangerous` verb | never offered | not a floor, a refusal |
 
 > [!WARNING]

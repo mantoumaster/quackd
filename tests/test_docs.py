@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 from pathlib import Path
@@ -1878,6 +1879,37 @@ def test_the_simulators_bench_steps_are_one_list_in_plan_and_the_release_note() 
     )
 
 
+def test_plan_breaks_no_line_mid_sentence_far_short_of_its_wrap() -> None:
+    """PLAN.md is edited by hand at every release, and a clause spliced into an item that
+    nobody reflows leaves a line that stops halfway across in the middle of a sentence. The
+    0.16.0 work left two: one where the rest pose item gained a clause about `pick`, and one
+    where the release added what 0.16.0 changes to the SO-101 item. Markdown renders them the
+    same, but PLAN is read as source at every release, and a line that stops short there reads
+    as though something was cut out of it.
+
+    A line that ends a sentence, or that stops before a code span, emphasis or link too long to
+    fit, is a break somebody chose. So a line counts only when the next word would have fitted
+    on it inside 80 columns. The file wraps at about 96, and what a wrap leaves over at the end
+    of a line never comes to 16."""
+    token = re.compile(r"\(?\[[^\]]*\]\([^)]*\)\S*|`[^`]*`\S*|\*{1,2}[^*]+\*{1,2}\S*|\S+")
+    lines = (REPO / "PLAN.md").read_text(encoding="utf-8").split("\n")
+    ragged = []
+    fenced = False
+    for number, (line, after) in enumerate(itertools.pairwise(lines), start=1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        rest = after.strip()
+        if fenced or not line.strip() or not rest or line.rstrip().endswith((".", ":", "?", "!")):
+            continue
+        if line.lstrip().startswith(("#", "|")) or re.match(r"#|\||[-*] |\d+\. ", rest):
+            continue  # a heading, a table row, or the next line starts an item of its own
+        word = token.match(rest)
+        if word and len(line) + 1 + len(word.group(0)) <= 80:
+            ragged.append(f"line {number}: {line.strip()!r}")
+    assert not ragged, f"PLAN.md stops these lines mid-sentence, far short of its wrap: {ragged}"
+
+
 def test_the_release_note_names_the_frames_that_are_still_encoded_on_the_loop() -> None:
     """0.15.0 moved the PNGs of a turn's own observation into a worker thread, because a
     heartbeat waiting on the loop's thread was held up by them. The `observe` verb's frames
@@ -1924,6 +1956,173 @@ def test_no_page_says_an_mcp_sessions_minutes_start_at_the_spawn() -> None:
                     f"{path.relative_to(REPO).as_posix()} says {found.group(0)!r}: an MCP "
                     "session's minutes count from when its robot connected"
                 )
+
+
+_NOBODY_ASKED = (
+    "under --yes nobody is asked, and without it the confirm reads stdin, so `yes | quackd run` "
+    "and `quackd run < answers.txt` open the gate too (cli.py's `_confirm_prompt`): say a person "
+    "at a terminal is asked unless --yes, or a pipe or file on stdin, answers for them"
+)
+_LOAD_POLICY_STILL_WOULD = (
+    "`load_policy()` in real.py builds a LeRobot policy in the arm's own process, and nothing in "
+    "quackd calls it: say that no quackd command loads a checkpoint there"
+)
+
+#: What the pages and the source said about who clears a policy segment and where a checkpoint
+#: loads, until 0.16.0's fact check. Each read well and none was ever true, so no record, the
+#: CHANGELOG's included, has a reason to keep one. The first correction wrote two more of its
+#: own, the two that name `--yes` as all that answers, which is why a correction is guarded too.
+_POLICY_CLAIMS_THE_CODE_NEVER_MADE = (
+    ("so a person says yes to each segment", _NOBODY_ASKED),
+    ("a person confirms each segment", _NOBODY_ASKED),
+    ("only behind a person's yes, asked before each call", _NOBODY_ASKED),
+    ("unless `--yes` answers for them", _NOBODY_ASKED),
+    ("unless you pass `--yes`, which starts every segment", _NOBODY_ASKED),
+    ("confirm gate still asks a person on top of it", _NOBODY_ASKED),
+    ("a checkpoint never runs in the process that owns the serial bus", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint and no inference ever run in the process", _LOAD_POLICY_STILL_WOULD),
+    ("this is why no checkpoint is loaded in the process", _LOAD_POLICY_STILL_WOULD),
+    ("why a policy never runs beside the arm's bus", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint ever loads beside", _LOAD_POLICY_STILL_WOULD),
+    ("a policy never runs in the process that owns the arm's", _LOAD_POLICY_STILL_WOULD),
+    ("never in the process that owns the serial bus", _LOAD_POLICY_STILL_WOULD),
+    ("never in the process that holds the", _LOAD_POLICY_STILL_WOULD),
+    ("never by the process that owns the arm's bus", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint is loaded beside", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint is ever loaded beside", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint runs in the process", _LOAD_POLICY_STILL_WOULD),
+    ("a checkpoint runs in a process of its own, never in the one", _LOAD_POLICY_STILL_WOULD),
+    ("a policy runs in a process of its own, never in the one", _LOAD_POLICY_STILL_WOULD),
+    (
+        "imported only in the server's own process, never in the one that drives the arm",
+        _LOAD_POLICY_STILL_WOULD,
+    ),
+)
+
+
+def test_no_page_repeats_a_claim_about_a_policy_run_the_code_never_made() -> None:
+    """Sentences about a policy segment that read well and were wrong: that a person says yes to
+    each one, when `--yes` and a pipe on stdin both clear it with nobody asked, and that no
+    checkpoint ever loads in the process that owns the arm's bus, when `load_policy()` still
+    would. The CHANGELOG, ADR-0048 and the source carried them, the source in docstrings, a
+    comment and an upstream ref's note, so they are read along with the living documents, and
+    so is the arm's own README, which says where its policy server runs."""
+    sources = [
+        REPO / "CHANGELOG.md",
+        REPO / "adapters" / "lerobot" / "README.md",
+        *sorted((REPO / "docs" / "adr").glob("0048-*.md")),
+        *sorted((REPO / "quackd").rglob("*.py")),
+        *sorted((REPO / "adapters" / "lerobot" / "src").rglob("*.py")),
+    ]
+    for path in _living_docs() + sources:
+        text = _one_line(path.read_text(encoding="utf-8"), seams=path.suffix == ".py")
+        for wrong, true in _POLICY_CLAIMS_THE_CODE_NEVER_MADE:
+            # pytest.fail rather than assert, for the reason the host claims above give
+            if wrong in text:
+                pytest.fail(f"{path.relative_to(REPO).as_posix()} says {wrong!r}: {true}")
+
+
+def test_nothing_in_quackd_calls_load_policy_as_the_pages_say() -> None:
+    """The README, the release note, ADR-0048, SECURITY.md and the pages that explain the policy
+    server say no quackd command loads a checkpoint in the process that owns the arm's bus,
+    because nothing in quackd calls `load_policy()`. A command that called it would make every
+    one of them false without a word of them changing, so the calls are counted in the syntax
+    tree, where a docstring that names the function is not a call."""
+    import ast
+
+    callers = []
+    for path in [
+        *sorted((REPO / "quackd").rglob("*.py")),
+        *sorted((REPO / "adapters").glob("*/src/**/*.py")),
+        *sorted((REPO / "bridge").rglob("*.py")),
+    ]:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            named = (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", getattr(node.func, "attr", None)) == "load_policy"
+            ) or (
+                isinstance(node, ast.ImportFrom)
+                and any(alias.name == "load_policy" for alias in node.names)
+            )
+            if named:
+                callers.append(f"{path.relative_to(REPO).as_posix()}:{node.lineno}")
+    assert not callers, (
+        f"load_policy() is reached from {callers}: the pages that say no quackd command loads a "
+        "checkpoint beside the arm's bus are wrong now, so correct them with the code"
+    )
+
+
+def _release_note(version: str) -> str:
+    """One release's section of the CHANGELOG, from its heading to the next one."""
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    return changelog.split(f"\n## [{version}]", 1)[1].split("\n## [", 1)[0]
+
+
+def test_the_policy_release_names_every_bench_step_the_arm_still_owes() -> None:
+    """0.16.0's note first said the arm owed 0.14.0's seven bench steps and one of 0.15.0's, the
+    second Ctrl-C, and left out the ones 0.15.0 listed for comparing its simulator against the
+    arm, and with them that nobody has. The one trained policy that release ran drove a twin on
+    that simulator, so those steps are what its one result rests on. Written again once 0.15.0
+    had shipped, it still counted three of them, when 0.15.0 had made the rest move pressing
+    the gripper into the table a step of its own. The note names all of them now, its opening
+    and its last Known limitations bullet alike, the opening says the simulator was never
+    compared, and PLAN still carries them."""
+    release = _release_note("0.16.0")
+    opening = _one_line(release.split("\n### ", 1)[0])
+    assert "nothing has compared the simulator against the arm" in opening, (
+        "CHANGELOG.md's 0.16.0 opening no longer says nothing has compared the simulator "
+        "against the arm"
+    )
+    owed = _one_line(release.split("**The arm has not run quackd since", 1)[1])
+    plan = _one_line((REPO / "PLAN.md").read_text(encoding="utf-8"))
+    for step in (
+        "a second ctrl-c during the fold back to the rest pose",
+        "joint signs and zero offsets",
+        "the rest move pressing the gripper into the table",
+        "the gripper on a real pen",
+        "the front and wrist cameras' placement and field of view",
+    ):
+        assert step in opening, f"CHANGELOG.md's 0.16.0 opening no longer owes {step!r}"
+        assert step in owed, f"CHANGELOG.md's 0.16.0 bullet on the bench no longer owes {step!r}"
+        assert step in plan, f"PLAN.md no longer carries the bench step {step!r}"
+
+
+def test_the_policy_releases_opening_claims_no_more_than_was_done() -> None:
+    """0.16.0's note first opened by saying the release hands the SO-101 to a learned policy,
+    when no policy has driven one, and named pi05 among the checkpoints its server loads with
+    nothing above its bullets saying pi05 has never run. The opening says what the release
+    gives the arm's pilot now, and keeps every item nobody has done beside what it claims,
+    what a policy does on the simulator among them."""
+    opening = _one_line(_release_note("0.16.0").split("\n### ", 1)[0])
+    assert "hands the so-101 to" not in opening, (
+        "CHANGELOG.md's 0.16.0 opening says the release hands the SO-101 to a policy, and no "
+        "policy has driven one: say what it gives the arm's pilot instead"
+    )
+    for never_done in (
+        "no policy has driven the real arm",
+        "and its judge have not run with a trained checkpoint",
+        "pi05 has not run",
+        "flux 3 action has not run anywhere",
+        "runs on the real bus is unmeasured",
+        "what a policy does on the simulator says nothing about the arm",
+    ):
+        assert never_done in opening, f"CHANGELOG.md's 0.16.0 opening no longer says {never_done!r}"
+
+
+def test_the_policy_release_claims_no_fix_that_shipped_in_0_15_0() -> None:
+    """0.16.0's note was first written before 0.15.0 shipped, and 0.15.0 was held back for the
+    fixes the first real pilot on the simulator found, an MCP session's minutes counted from its
+    connect among them. The note went on naming that one among its own fixes, in its opening
+    and under Fixed. 0.15.0's note carries it, and 0.16.0's does not."""
+    shipped = _one_line(_release_note("0.15.0"))
+    assert "an mcp session's minutes count from its connect" in shipped, (
+        "CHANGELOG.md's 0.15.0 section no longer carries the MCP session's minutes"
+    )
+    release = _one_line(_release_note("0.16.0"))
+    for claim in ("minutes ran negative", "counts its minutes below zero", "-27495.5/5 min"):
+        assert claim not in release, (
+            f"CHANGELOG.md's 0.16.0 section says {claim!r}, and 0.15.0 shipped that fix"
+        )
 
 
 def test_every_step_of_the_arms_first_run_has_a_mirror_or_a_reason() -> None:
@@ -2004,13 +2203,12 @@ def test_what_never_ran_with_a_trained_checkpoint_leaves_out_the_model_that_flew
     checkpoint, and all three went on counting a model flying with a policy in it after that run,
     because nothing read them against it. Each now names the run, and no sentence of theirs that
     says never with a trained checkpoint names a model flying."""
-    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = changelog.split("\n## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    release = _release_note("0.16.0")
     adr = (REPO / "docs" / "adr" / "0048-policies-are-the-arms-executor.md").read_text(
         encoding="utf-8"
     )
     places = {
-        "CHANGELOG.md's Known limitations": unreleased.split("\n### Known limitations\n", 1)[1],
+        "CHANGELOG.md's 0.16.0 Known limitations": release.split("\n### Known limitations\n", 1)[1],
         "README.md's status row for a learned policy": next(
             line for line in README.splitlines() if line.startswith("| A learned policy as the")
         ),

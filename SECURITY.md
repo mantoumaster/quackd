@@ -253,7 +253,11 @@ Also in scope:
   token making the server keep what it sent or a thread past its bounds, a checkpoint getting
   code imported by a path it chose or a repository's own code trusted, a model a checkpoint
   names loading at a revision nobody pinned, or a policy the arm's connect did not check
-  starting a segment.
+  starting a segment. No quackd command loads a checkpoint in the arm's own process.
+  `load_policy()` in the arm's backend, an older Python helper that nothing in quackd calls,
+  still would, with none of the checks above and no check at connect, as the `LOAD_POLICY` row
+  in [docs/adapters/lerobot.md](docs/adapters/lerobot.md#the-policies-upstream-lerobot-061)
+  says. Whether to remove it is an open item in PLAN.md.
 - **The bridge daemon** (`bridge/open_duck/quackd_duck_bridge.py`), a TCP listener on port
   9871 that walks a 42 cm biped. It binds loopback by default and compares a token with
   `hmac.compare_digest`, but a token is only required if one is configured, and binding it

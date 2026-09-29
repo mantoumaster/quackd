@@ -99,24 +99,25 @@ still past it, so the servo clamps it to the limit and drives there at its own s
 why such a joint is left out of every action: a policy never starts that rise. It cannot halt
 one a move had already started, and the power switch is still the only stop for that stretch.
 
-**No checkpoint runs in the process that owns the serial bus.** A checkpoint is code, so the
-policy runs in a server of its own, `quackd policy serve`, which the user starts in a terminal
-of its own, on the laptop beside the arm or on a rented GPU reached through `ssh -L`, the way
-the Jetson's daemon is started ([ADR-0046](0046-the-jetson-is-reached-not-run-on.md)). The
-arm's process reaches it with `RemoteRunner`, a client made of `http.client` and PIL that needs
-no torch and no LeRobot, so `lerobot:mujoco` on Python 3.11 reaches a server as `lerobot:real`
-does. The server reads before it builds: `config.json` and both processor JSONs first, at the
-revision named, refusing a policy type other than ACT, SmolVLA and pi05, a step named by a
-`class` key and any registry name outside the ones those three processors use, before any
-weights are fetched. It tells a step that could trust a repository's code not to. A model the
-checkpoint names inside itself is refused unless `--pin REPO@REVISION` fixes it at a whole
-commit or a tag, and is fetched with no `.py` and no pickle, and its cache directory is refused
-if it holds any other kind of file or a config that maps a class to code. Every weight is loaded
-strictly, since LeRobot's loader only logs a missing one and pi05's returns a random network
-when its weights do not load. The rate is `--fps`, or the fps of the dataset the checkpoint's
-`train_config.json` names, taken only at a whole commit or a tag the Hub says is one, or the
-server refuses to start. `load_policy()` is still in `real.py`, with no caller, as the
-`LOAD_POLICY` row's reminder of the path not to take.
+**No quackd command loads a checkpoint in the process that owns the serial bus.** A checkpoint
+is code, so the policy runs in a server of its own, `quackd policy serve`, which the user
+starts in a terminal of its own, on the laptop beside the arm or on a rented GPU reached through
+`ssh -L`, the way the Jetson's daemon is started
+([ADR-0046](0046-the-jetson-is-reached-not-run-on.md)). The arm's process reaches it with
+`RemoteRunner`, a client made of `http.client` and PIL that needs no torch and no LeRobot, so
+`lerobot:mujoco` on Python 3.11 reaches a server as `lerobot:real` does. The server reads
+before it builds: `config.json` and both processor JSONs first, at the revision named, refusing
+a policy type other than ACT, SmolVLA and pi05, a step named by a `class` key and any registry
+name outside the ones those three processors use, before any weights are fetched. It tells a
+step that could trust a repository's code not to. A model the checkpoint names inside itself is
+refused unless `--pin REPO@REVISION` fixes it at a whole commit or a tag, and is fetched with no
+`.py` and no pickle, and its cache directory is refused if it holds any other kind of file or a
+config that maps a class to code. Every weight is loaded strictly, since LeRobot's loader only
+logs a missing one and pi05's returns a random network when its weights do not load. The rate
+is `--fps`, or the fps of the dataset the checkpoint's `train_config.json` names, taken only at
+a whole commit or a tag the Hub says is one, or the server refuses to start. The one path in
+quackd past all of this is `load_policy()`, still in `real.py`, which no command reaches, and
+Consequences says what that gap is.
 
 **The server is quackd's, not a daemon under `bridge/`.** It shares the pipeline and the
 protocol with `quackd policy check`, which serves a policy for the length of a check and
@@ -168,7 +169,22 @@ allows them is judged before anything connects. Over MCP both need `serve-mcp --
 **A goal run given a policy allows `manipulate`, behind a confirm.** A goal's contract allows
 the safe verbs and nothing else (`duck_from_goal`), and `manipulate` is not safe, so a goal
 could never have used a policy. With `--policy-url` the goal duck allows it and lists it under
-`confirm`, so a person says yes to each segment. Without one a goal is what it was.
+`confirm`, so a person at a terminal is asked before each segment unless `--yes`, or a pipe or
+file on stdin, answers for them. Without a policy server a goal is what it was.
+
+**`--yes`, or a pipe on stdin, takes the person out of a policy run.** `quackd run --yes` builds
+the executor with `allow_all` as its confirm, as it always has. Without `--yes` the confirm is a
+y/N question read from stdin, so `yes | quackd run` and `quackd run < answers.txt` answer it
+too, as they always have ([safety.md](../safety.md#who-the-record-says-was-asked)). Either way
+nobody is asked before a `pick` or a `manipulate` the pilot calls, a goal run's included, and
+the pilot's word and a yes nobody said are all that start a learned policy driving the arm. The
+record says so: the gate's reason is `the confirm gate was allowed`, and no `prompt` event names
+a person. Over MCP both verbs need `serve-mcp --yes`, so there quackd asks nobody before any
+segment, and `quackd preflight` clears every segment the same way, on the simulator alone.
+`--controller vla` refuses `--yes`, and a run with no terminal to ask on, since its verdict is a
+person's. What such a run keeps is every rule that asks nobody: the allowlist, the narrowed
+instruction, the segment gate, `policy.total_s`, the step cap, the guards each tick and every
+stop.
 
 **A task file holds `manipulate` to its own words and seconds.** A `duck: 3` file's `policy`
 section lists the instructions the policy may be told, at most 12 lines of at most 200
@@ -325,6 +341,13 @@ always was.
   pi05's base card says Gemma where LeRobot's page says Apache 2.0 ([policies.md](../policies.md)).
 - **A second terminal is part of running a policy.** Starting the server is the user's step,
   and a run without one is refused before anything connects, with a sentence saying so.
+- **`load_policy()` is a known gap.** It is a Python helper in `real.py` from before this
+  decision, and it still builds a LeRobot policy in the arm's own process, beside the serial
+  bus, with none of the server's reading before it builds and no check at connect that the
+  policy fits the arm. Nothing in quackd calls it and no command reaches it, so only somebody's
+  own Python can, and the `LOAD_POLICY` row on
+  [the arm's page](../adapters/lerobot.md#the-policies-upstream-lerobot-061) says so. Whether it
+  goes, with its test and its row, is not decided, and PLAN.md carries it as an open item.
 - [ADR-0003](0003-three-loops.md), [ADR-0004](0004-verb-registry.md),
   [ADR-0017](0017-robot-adapters-and-manifest.md), [ADR-0018](0018-core-verbs-extensions-aliases.md),
   [ADR-0036](0036-what-the-arm-does-not-say.md) and

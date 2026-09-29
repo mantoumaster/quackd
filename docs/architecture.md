@@ -32,9 +32,11 @@ not. `pick` and `manipulate` hand the arm to a LeRobot policy for one segment, w
 paces on the arm's clock at the policy's own rate, capped at the verbs' speed and judged tick by
 tick before each goal is sent. The policy itself runs in `quackd policy serve`, a process the
 user starts, on the laptop or on a rented GPU, because a checkpoint's processors are code and
-no checkpoint is ever loaded beside the serial bus. The arm's process reaches it over HTTP with
-a client that needs no torch. The model plans, one subtask per `manipulate`, and judges each
-from a fresh look ([policies.md](policies.md),
+no quackd command loads one beside the serial bus. Only `load_policy()`, an older Python helper
+in the arm's backend that nothing in quackd calls, still would
+([the `LOAD_POLICY` row](adapters/lerobot.md#the-policies-upstream-lerobot-061)). The arm's
+process reaches the server over HTTP with a client that needs no torch. The model plans, one
+subtask per `manipulate`, and judges each from a fresh look ([policies.md](policies.md),
 [ADR-0048](adr/0048-policies-are-the-arms-executor.md)).
 
 None of this needs to run on the robot's own computer. The only quackd code that *has to*

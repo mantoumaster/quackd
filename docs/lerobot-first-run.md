@@ -1759,10 +1759,10 @@ under the model rather than in its place: the model hands it one short subtask a
 > in the test suite and on the simulator. Rehearse everything below on the twin from section 16
 > first, and on the arm keep a hand on the power switch.
 
-The policy runs in a server of its own, never in the process that holds the serial bus, because
-a checkpoint is code ([policies.md](policies.md#a-checkpoint-is-code)). So this takes two
-terminals. **Install the server's extra** into a Python 3.12 environment, the arm's own or
-another:
+The policy runs in a server of its own, and no quackd command loads a checkpoint in the process
+that holds the serial bus, because a checkpoint is code
+([policies.md](policies.md#a-checkpoint-is-code)). So this takes two terminals.
+**Install the server's extra** into a Python 3.12 environment, the arm's own or another:
 
 ```bash
 uv pip install "quackd[lerobot-vla]"
@@ -1799,7 +1799,8 @@ The server was asked what it serves before anything connected, and the header an
 name it. The scripted pilot never calls `manipulate`, so that is all this run proves. To see a
 segment, give the run a model, `--llm openai` and so on, whose prompt then has a section on its
 executor: one short subtask a call, and a fresh look after each. A `--goal` run allows
-`manipulate` only behind a confirm, so you are asked before every segment.
+`manipulate` only behind a confirm, so you are asked before every segment when you run it from
+a terminal. `--yes`, or a pipe or file on stdin, answers in your place, and nobody is asked.
 
 **On the twin, the first segment is refused until `shoulder_lift` is moved in.** A segment starts
 only with every joint inside its calibrated travel, and the twin starts where the arm's rest pose

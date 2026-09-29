@@ -25,8 +25,8 @@ shaped this way is [ADR-0048](adr/0048-policies-are-the-arms-executor.md).
 
 ## Two processes, two terminals
 
-A policy never runs in the process that owns the arm's serial bus, because a checkpoint is code
-([below](#a-checkpoint-is-code)). So there are two:
+No quackd command loads a checkpoint in the process that owns the arm's serial bus, because a
+checkpoint is code ([below](#a-checkpoint-is-code)). So there are two:
 
 | | The arm's process | The policy server |
 |---|---|---|
@@ -232,9 +232,10 @@ each of the arm's stops.
 A task file that means to use the policy allows `manipulate`, and a `duck: 3` file can list the
 subtasks it may be told, how long each segment runs and how long they run in all
 ([duck-spec.md](duck-spec.md#policy-v3)). A `--goal` run given `--policy-url` allows
-`manipulate` too, and asks you before each segment. With `--controller vla` no model is
-involved at all: a scripted pilot hands the policy each listed instruction in turn and then asks
-you whether the arm did it ([the arm's page](adapters/lerobot.md#a-scripted-pilot-that-a-person-judges---controller-vla)).
+`manipulate` too, and asks you before each segment when it runs at a terminal. `--yes`, or a
+pipe or file on stdin, answers in your place, and nobody is asked. With `--controller vla` no
+model is involved at all: a scripted pilot hands the policy each listed instruction in turn
+and then asks you whether the arm did it ([the arm's page](adapters/lerobot.md#a-scripted-pilot-that-a-person-judges---controller-vla)).
 
 **What only the arm can tell you** is how fast the policy loop runs on the real bus while the
 same laptop's CPU is inferring. Nothing timed on the simulator is a rate, because its clock is
@@ -409,8 +410,8 @@ the range to plan for. Four things make a recording one quackd can serve on this
 
 Loading a LeRobot checkpoint imports whatever class its processor files name, a tokenizer step
 can be asked to trust a repository's own code, and SmolVLA loads its backbone by name. That is
-why no checkpoint runs in the process that holds the serial bus, and why the server reads before
-it builds:
+why no quackd command loads a checkpoint in the process that holds the serial bus, and why the
+server reads before it builds:
 
 - `config.json` and both processor files are fetched first, at the revision named, and a step
   named by a `class` key or by any name outside the ones ACT's, SmolVLA's and pi05's processors
@@ -428,6 +429,14 @@ None of that makes a checkpoint safe to serve because somebody sent it to you. S
 checkpoint at a revision you have read, from a Hub cache you control, on a machine that holds
 nothing you would mind it reading. [SECURITY.md](../SECURITY.md) lists what would be a security
 issue in the server itself.
+
+One path in quackd skips all of it. `load_policy()` in the arm's backend is an older Python
+helper that builds a LeRobot policy in the arm's own process, beside the serial bus, with none
+of the reading above. Nothing in quackd calls it and no command reaches it, so it runs only if
+your own Python calls it. The `LOAD_POLICY` row on
+[the arm's page](adapters/lerobot.md#the-policies-upstream-lerobot-061) describes it, and
+whether it goes is an open item
+([ADR-0048](adr/0048-policies-are-the-arms-executor.md#consequences)).
 
 ## What a segment says
 

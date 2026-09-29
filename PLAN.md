@@ -50,20 +50,22 @@ before.
   lay past the calibrated travel
   ([ADR-0045](docs/adr/0045-a-rest-pose-the-calibration-cannot-reach.md)); `pick`, because
   no policy was loaded, which the learned-policy item below carries now; the registry path,
-  because the arm was
-  reached by `--address` and never by a registered name, which it was on 2026-09-23 when its
-  rest pose was recorded; and that checklist's *What to report*, six things still chosen against
-  Feetech's documentation rather than measured ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
-- ⬜ **The SO-101 again, for everything in 0.14.0 and 0.15.0.** The arm last ran a build of the
-  code that became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the travel,
-  `quackd robot release`, the Enter offer at the end of a run whose rest move missed, the
+  because the arm was reached by `--address` and never by a registered name, which it was on
+  2026-09-23 when its rest pose was recorded; and that checklist's *What to report*, six things
+  still chosen against Feetech's documentation rather than measured
+  ([ADR-0036](docs/adr/0036-what-the-arm-does-not-say.md)).
+- ⬜ **The SO-101 again, for everything in 0.14.0, 0.15.0 and 0.16.0.** The arm last ran a build
+  of the code that became quackd 0.13.0, still numbered 0.12.0. The rest pose clipped into the
+  travel, `quackd robot release`, the Enter offer at the end of a run whose rest move missed, the
   `--by-hand` refusal over a joint past its travel, the paced `move_joints` and the connect
   retries have run only against a fake arm, `lerobot:mock` and the test suite, and what 0.15.0
   changes in `lerobot:real`, the follower that keeps torque on a disconnect quackd did not ask
-  for among it, only against a fake arm or the simulator. The seven bench steps that would
-  settle 0.14.0's, in order, are under *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for
-  0.14.0, and the one for 0.15.0's follower, a second Ctrl-C during the fold back to the rest
-  pose, is under 0.15.0's, which names the six changes nobody has written a bench step for.
+  for among it, only against a fake arm or the simulator. What 0.16.0 changes there has run only
+  against those too, and most of it is the policy segment the learned-policy item below takes to
+  the arm. The seven bench steps that would settle 0.14.0's, in order, are under
+  *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for 0.14.0, and the one for 0.15.0's
+  follower, a second Ctrl-C during the fold back to the rest pose, is under 0.15.0's, which
+  names the six changes nobody has written a bench step for.
   [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to take
   the arm through, with a hand on the switch.
 - ⬜ **The SO-101 against its simulator.** `lerobot:mujoco` runs the arm's real backend over the
@@ -162,6 +164,14 @@ before.
   the test suite: no real run has had a decision LLM and a policy server at once. Promoting it
   needs an agreement rate measured from those records on real runs, and a decision of its own,
   not a floor.
+- ⬜ **`load_policy()` still builds a policy beside the arm's bus.** 0.16.0 moved checkpoints
+  into a policy server of their own and left this helper in the arm's `real.py`, where it
+  loads a LeRobot checkpoint in the arm's own process with none of the server's reading before
+  it builds and no check at connect that the policy fits. Nothing in quackd calls it and no
+  command reaches it, and nothing else keeps it off the bus. Removing it takes its test, its
+  `LOAD_POLICY` row and the lines in the docs that name it along, and the release that does it
+  says so in its notes
+  ([ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md#consequences)).
 - ⬜ **No `cost_usd` quackd reports has been checked against an invoice.** Every rate in
   `quackd/agent/providers/catalogue.py` was read off a vendor's pricing page by hand, most
   recently on 2026-09-23, and a rate read by hand is wrong from the day the vendor edits the

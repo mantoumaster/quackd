@@ -789,12 +789,14 @@ it sooner, while a verb that sends a goal meanwhile is refused, as on the arm.
 ### A policy in a process of its own: `quackd policy serve`
 
 A checkpoint's processors are code: loading one imports whatever class its JSON names
-(`PROCESSOR_CLASS_IMPORT` in [the policies' table](#the-policies-upstream-lerobot-061)). So a
-policy never runs in the process that owns the arm's serial bus
+(`PROCESSOR_CLASS_IMPORT` in [the policies' table](#the-policies-upstream-lerobot-061)). So no
+quackd command loads a checkpoint in the process that owns the arm's serial bus
 ([ADR-0048](../adr/0048-policies-are-the-arms-executor.md)), and [policies.md](../policies.md)
-is how to set one up, with the licences of the ones there are. It runs in a server you start,
-in a terminal of its own, on the laptop or on a rented GPU you reach through `ssh -L`, and the
-arm's side reaches it over HTTP on port 9875, with a client that needs no torch and no LeRobot.
+is how to set one up, with the licences of the ones there are. The one thing in quackd that
+would is `load_policy()`, an older Python helper that nothing in quackd calls (`LOAD_POLICY`,
+in the same table). The policy runs in a server you start, in a terminal of its own, on the
+laptop or on a rented GPU you reach through `ssh -L`, and the arm's side reaches it over HTTP on
+port 9875, with a client that needs no torch and no LeRobot.
 It serves a LeRobot checkpoint named as `REPO@REVISION`
 ([below](#serving-a-checkpoint)), and two scripted policies that need no torch either:
 `scripted:hold` holds the arm where it reads, so a `manipulate` of it ends on a stall, and
@@ -816,7 +818,7 @@ quackd policy check --policy-url http://127.0.0.1:9875 --bench --seconds 3
 
 ```text
   http://127.0.0.1:9875
-policy           scripted:sweep (quackd-policy 1, quackd 0.15.0)
+policy           scripted:sweep (quackd-policy 1, quackd 0.16.0)
 features         whatever the arm has (a scripted policy)
 rate             10 Hz, from scripted:sweep's own, the verbs' tick
 chunks           10 actions, 10 played from each
@@ -984,7 +986,7 @@ quackd policy check --policy quackd-test/tiny-act@v1 --bench --seconds 3
 
 ```text
   served here for the check, at http://127.0.0.1:53804
-policy           quackd-test/tiny-act@v1 (quackd-policy 1, quackd 0.15.0)
+policy           quackd-test/tiny-act@v1 (quackd-policy 1, quackd 0.16.0)
 features         state 6, action 6, images observation.images.front 64x48
 rate             10 Hz, from
                  quackd-test/tiny-data@ed2440c0bf574309f37e0a639e02d7b34cb2939c
@@ -1081,10 +1083,13 @@ quackd run --goal "put the block in the bowl" --robot lerobot:mujoco --policy-ur
   connects, so a server that is not there is one sentence with nothing energised, and the run
   header names the server and its checkpoint. The connect then checks the policy against the
   arm before any torque ([above](#whether-the-policy-fits-the-arm)).
-- **A goal run asks about each segment.** A `--goal` allows only verbs that are safe, and
-  `manipulate` is not one. With a policy server it is allowed all the same, behind a confirm, so
-  a person says yes to each segment, and without one a goal is what it was. `--yes` answers
-  every confirm, as it does for every other gated verb.
+- **A goal run asks at a terminal before each segment.** A `--goal` allows only verbs that are
+  safe, and `manipulate` is not one. With a policy server it is allowed all the same, behind a
+  confirm, so a person at a terminal is asked before each segment, and without one a goal is
+  what it was. Under `--yes`, or with a pipe or file on stdin, a segment starts without
+  anybody being asked, as any other gated verb does
+  ([safety.md](../safety.md#who-the-record-says-was-asked)), and `--controller vla` refuses
+  both.
 - **The pilot is told what executes.** A run whose verbs include `manipulate` has a
   `Your executor` section in its prompt: hand the policy one short subtask per call, look again
   after each, and never read the verb's ok as the subtask done. With a camera and a pilot that
@@ -1630,8 +1635,11 @@ quackd, side by side, is [safety.md](../safety.md).
   ([What `pick` needs](#what-pick-needs-and-what-it-does-not-have)). A joint that reads past
   its travel is left out of every goal a policy sends, because the servo would take any goal
   for it as the end of the travel and drive there at its own speed, which no cap slows, and
-  quackd cannot halt that rise once a move has started it. The policy itself runs in a server of
-  its own, never in the process that holds the bus ([policies.md](../policies.md)).
+  quackd cannot halt that rise once a move has started it. Under `--yes`, or with a pipe or file
+  on stdin, the gate asks nobody, so a segment the pilot calls goes ahead without anybody
+  being asked, and over MCP both verbs need `--yes`. The policy itself runs in a server of its
+  own, and no quackd command loads a checkpoint in the process that holds the bus
+  ([policies.md](../policies.md)).
 
 ## The rest pose
 
@@ -2737,10 +2745,12 @@ Line endings in the model do not count, because Git for Windows checks it out wi
 
 ## The policies' upstream: LeRobot 0.6.1
 
-`pick` and `manipulate` hand the arm to a learned policy, and a LeRobot checkpoint is loaded by
-[a policy server](#a-policy-in-a-process-of-its-own-quackd-policy-serve), never by the process
-that owns the arm's bus. The names it relies on are read against lerobot 0.6.1, the version the
-laptop that drives the lab arm runs, at the commit its tag names,
+`pick` and `manipulate` hand the arm to a learned policy, and a quackd command loads a LeRobot
+checkpoint only in [a policy server](#a-policy-in-a-process-of-its-own-quackd-policy-serve),
+never in the process that owns the arm's bus. Only `load_policy()`, which nothing in quackd
+calls, would load one there (`LOAD_POLICY`, below). The names quackd relies on here are read
+against lerobot 0.6.1, the version the laptop that drives the lab arm runs, at the commit its
+tag names,
 [`7e241bd`](https://github.com/huggingface/lerobot/tree/7e241bd630a3719a56157a497ce5d08f244784f1)
 (`v0.6.1`), and were read on 2026-09-27, rather than at the `main` commit
 [the arm's own table](#upstream-api) is pinned to. The installed 0.6.1 wheel and the tag were
@@ -2772,7 +2782,7 @@ at all.
 | `lerobot.policies.utils.make_robot_action(action_tensor, ds_features)` | one action row to a dict by name, so a chunk is turned into actions a row at a time |
 | `ACTConfig.chunk_size and n_action_steps` | how many actions one inference predicts and how many of them are played, 100 and 100 for ACT and 50 and 50 for SmolVLA. The server reports both |
 | `ACTConfig.temporal_ensemble_coeff` | set, ACT is asked every step with `n_action_steps` 1, which is the loop's tick mode |
-| `a processor step named by class is imported by its module path` | a step without a registry name is imported from whatever module its `class` key names, so loading a checkpoint's processors can run any code the checkpoint points at: why no checkpoint is loaded beside the arm's bus |
+| `a processor step named by class is imported by its module path` | a step without a registry name is imported from whatever module its `class` key names, so loading a checkpoint's processors can run any code the checkpoint points at: why no quackd command loads a checkpoint beside the arm's bus. Only `load_policy()` would (`LOAD_POLICY`), and nothing in quackd calls it |
 | `ActionTokenizerProcessorStep.trust_remote_code defaults to True` | the action tokenizer trusts a repository's code unless told not to, the observation tokenizer loads one by name at no revision, and SmolVLA names its backbone by an unpinned Hub name. The server allows no action tokenizer, tells any step that could trust remote code not to, and pins every such name at a commit or a tag or refuses it. A SmolVLA config with no backbone gets LeRobot's default, so it is refused. SmolVLA's build asks transformers for its backbone without saying `trust_remote_code` either way, so a pinned model whose files map a class to code, or whose cached directory holds anything but configs, tokenizer files and safetensors, is refused |
 | `config.json, model.safetensors, policy_preprocessor.json, policy_postprocessor.json, train_config.json` | the files a checkpoint is read from, each fetched at the revision named, the config and the processors before anything else, and nothing else of the repository |
 | `train_config.json's dataset.repo_id and dataset.revision; meta/info.json's fps` | where a checkpoint's rate is read when the server is given no `--fps`, and only at a commit or a tag, since the checkpoint chose that revision and a branch would give a rate that could change between two serves |

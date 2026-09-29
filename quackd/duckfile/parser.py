@@ -112,12 +112,14 @@ def duck_from_goal(goal: str, allow: list[str], *, confirm: Sequence[str] = ()) 
     """An ad-hoc duck for `quackd run --goal "..."`: the goal is the body, the contract is
     permissive-but-safe (the given allowlist, default budgets, the standard abort rules).
 
-    `confirm` is verbs the goal allows only behind a person's yes, asked before each call.
+    `confirm` is verbs the goal allows only behind the confirm gate, which asks a person at a
+    terminal before each call unless `--yes`, or a pipe or file on stdin, answers for them.
     `quackd run --goal` passes `manipulate` there when the arm has a policy server to hand it
     to (`--policy-url`), and nothing otherwise. A learned policy driving the arm for a segment
-    is no safe verb, and without this a goal run given a policy could never use it: so a
-    person confirms each segment instead, a deliberate exception to the rule that a goal allows
-    safe verbs alone. Empty is every goal run without a policy, whose contract is what it was."""
+    is no safe verb, and without this a goal run given a policy could never use it: so each
+    segment goes through the confirm gate instead, a deliberate exception to the rule that a
+    goal allows safe verbs alone. Empty is every goal run without a policy, whose contract is
+    what it was."""
     goal = goal.strip()
     if not goal:
         raise DuckParseError("--goal must not be empty", "<goal>")

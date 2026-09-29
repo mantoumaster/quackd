@@ -1,12 +1,14 @@
 """`quackd policy serve` and `quackd policy check`: a policy in a process of its own.
 
 **This is the first network service whose replies move an arm.** A checkpoint's processors are
-code (`upstream_api.PROCESSOR_CLASS_IMPORT`), so no checkpoint and no inference ever run in the
-process that owns the serial bus. The user starts this server, in a terminal of its own on the
-laptop or on a rented GPU reached through `ssh -L`, the way a board's daemon is started, and
-`client.py` reaches it with the protocol in `protocol.py`. It serves a LeRobot checkpoint named
-`--policy REPO@REVISION`, loaded and run by `pipeline.py` (`upstream_api.POLICY_PIPELINE`), and
-scripted policies (`--policy scripted:NAME`, `scripted.py`), which need no torch.
+code (`upstream_api.PROCESSOR_CLASS_IMPORT`), so no quackd command loads a checkpoint or runs
+its inference in the process that owns the serial bus. Only `real.load_policy()` would, and
+nothing in quackd calls it (`upstream_api.LOAD_POLICY`). The user starts this server, in a
+terminal of its own on the laptop or on a rented GPU reached through `ssh -L`, the way a board's
+daemon is started, and `client.py` reaches it with the protocol in `protocol.py`. It serves a
+LeRobot checkpoint named `--policy REPO@REVISION`, loaded and run by `pipeline.py`
+(`upstream_api.POLICY_PIPELINE`), and scripted policies (`--policy scripted:NAME`,
+`scripted.py`), which need no torch.
 
 It is a standard library `ThreadingHTTPServer` in the shape of the Jetson host daemon
 (`bridge/jetson/quackd_jetson_hostd.py`), and its bounds are that daemon's, copied here as

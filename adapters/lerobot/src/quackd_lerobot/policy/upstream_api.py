@@ -160,7 +160,7 @@ TEMPORAL_ENSEMBLE = UpstreamRef(
     "which is a policy asked every tick: the loop's tick mode",
 )
 
-# ── a checkpoint is code (why a policy never runs beside the arm's bus) ─────────────────
+# ── a checkpoint is code (why no quackd command loads one beside the arm's bus) ─────────
 
 PROCESSOR_CLASS_IMPORT = UpstreamRef(
     "a processor step named by class is imported by its module path",
@@ -169,7 +169,8 @@ PROCESSOR_CLASS_IMPORT = UpstreamRef(
     "PolicyProcessorPipeline.from_pretrained resolves each step of a processor's JSON by its "
     "`registry_name`, or else imports whatever `module.Class` its `class` key names with "
     "importlib, so loading a checkpoint's processors can run any code the checkpoint points "
-    "at. This is why no checkpoint is loaded in the process that owns the serial bus",
+    "at. This is why no quackd command loads a checkpoint in the process that owns the serial "
+    "bus. Only `load_policy()` would (LOAD_POLICY), and nothing in quackd calls it",
 )
 TOKENIZER_TRUSTS_REMOTE_CODE = UpstreamRef(
     "ActionTokenizerProcessorStep.trust_remote_code defaults to True",

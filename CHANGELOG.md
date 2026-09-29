@@ -5,26 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.0] — 2026-09-29
 
-The SO-101 gets a second loop under its pilot. A learned policy drives the arm one short segment
-at a time, through `manipulate(instruction)`, and `pick` now runs its policy the same way, while
-the model plans the subtasks and judges each from a fresh look at the arm
-([ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md), [docs/policies.md](docs/policies.md)).
-The segment's loop is quackd's: paced on the arm's clock at the policy's own rate, capped at the
-verbs' own speed, and judged tick by tick before each goal goes out. The policy is not quackd's.
-A checkpoint is code, so it runs in `quackd policy serve`, a server of its own that the arm
-reaches over HTTP, and never in the process that owns the serial bus. That server loads an ACT,
-a SmolVLA or a pi05 checkpoint it has read before building, and the arm checks at connect,
-before any torque, that the policy fits it. `--policy-url` points `quackd run`, `preflight` and
-`serve-mcp` at a server, a `duck: 3` task file holds `manipulate` to its own instructions and
-seconds, a decision LLM is shown each subtask and never starts one, and `--controller vla` flies
-the arm with no model at all and asks a person whether it did the task. Nothing here has driven
-the arm. It was exercised against the test suite's fake arm and on the simulator, where a trained
-ACT from the Hub, `natsuki0000/act-so101-bluecap` at commit
-`82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, drove a twin of the lab's arm through `quackd policy
-serve` and `quackd serve-mcp`. SmolVLA did not run on the laptop's CPU, and FLUX 3 Action is not
-served. Known limitations, below, says what only the bench can settle.
+This release gives the SO-101's pilot a learned policy to hand the arm to. The model plans the
+subtasks and judges each from a fresh look at the arm, and between those looks a policy drives
+the arm one short segment at a time, from a server of its own.
+
+`manipulate(instruction)` is one segment of the arm's learned policy, and `pick` now runs its
+policy the same way ([ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md),
+[docs/policies.md](docs/policies.md)). The segment's loop is quackd's: paced on the arm's clock
+at the policy's own rate, capped at the verbs' own speed, and judged tick by tick before each
+goal goes out. The policy is not quackd's. A checkpoint is code, so it runs in
+`quackd policy serve`, a server of its own that the arm reaches over HTTP, and no quackd
+command loads one in the process that owns the serial bus. That server loads an ACT, a SmolVLA
+or a pi05 checkpoint it has read before building, `quackd policy check` asks a server what it
+serves and times it, and the arm checks at connect, before any torque, that the policy fits it.
+
+`--policy-url` points `quackd run`, `preflight` and `serve-mcp` at a server. A `duck: 3` task
+file holds `manipulate` to its own instructions and seconds, a decision LLM is shown each
+subtask and never starts one, and `--controller vla` flies the arm with no model at all and asks
+a person whether it did the task.
+
+Among this release's fixes, a stop during `pick` no longer refuses its own hold. It waits for
+the one call the stop cut short, and no longer than that call's own deadline, which is judged by
+the bus's stamps as every call's has been since 0.15.0. And a pick cancelled as the one before
+it ended no longer drives the arm anyway. No policy has driven the real arm. Every segment ran
+against the test suite's fake arm or on the simulator. There a trained ACT from the Hub drove a
+twin of the lab's arm through `quackd policy serve` and `quackd serve-mcp`, and again under
+`quackd run --goal`, where OpenAI's `gpt-6-sol` piloted, handed it two segments and declared
+failure, since the twin's table holds no blue cap. What a policy does on the simulator says
+nothing about the arm, and nothing has compared the simulator against the arm. SmolVLA took 169
+to 188 s a chunk on the laptop's CPU and never answered through the client, and pi05 has not
+run. `--controller vla` and its judge have not run with a trained checkpoint, FLUX 3 Action has
+not run anywhere, and how fast the policy loop runs on the real bus is unmeasured. And the arm
+has not run quackd since 2026-09-23, so the seven bench steps 0.14.0 owes are still owed, and so
+are 0.15.0's: a second Ctrl-C during the fold back to the rest pose, and the four that would
+compare its simulator against the arm, for joint signs and zero offsets, the rest move pressing
+the gripper into the table, the gripper on a real pen, and the front and wrist cameras'
+placement and field of view. Known limitations, below, lists what only the hardware can settle.
 
 ### Added
 
@@ -68,8 +86,8 @@ served. Known limitations, below, says what only the bench can settle.
   reading and its travel. The loop reads the joints every tick, and torque and temperature
   every 0.5 s (`REGISTER_PERIOD_S`).
 - **`quackd policy serve` and `quackd policy check`: a policy in a process of its own.** A
-  LeRobot checkpoint's processors can import any code their JSON names, so a policy never runs
-  in the process that owns the arm's bus. It runs in a server you start, on port 9875 on
+  LeRobot checkpoint's processors can import any code their JSON names, so no quackd command
+  runs one in the process that owns the arm's bus. It runs in a server you start, on port 9875 on
   loopback, and the arm's side reaches it with `RemoteRunner`, a client that needs no torch and
   no LeRobot, over a protocol of four calls (`GET /v1/policy`, `POST /v1/reset`,
   `POST /v1/step`, `POST /v1/end`). It serves a LeRobot checkpoint and two scripted policies,
@@ -109,8 +127,9 @@ served. Known limitations, below, says what only the bench can settle.
   reset is refused only until that step has outlived its client's patience (`ABANDONED_S`),
   since nobody waits for it after that. Stopping the server refuses every request after it,
   waits a second at most for a step still inferring (`CLOSE_WAIT_S`), and closes a checkpoint's
-  runner without waiting for torch, which begins no session and answers no step after it. A declared `--latency-s` of 5 s or more, or as long as a
-  chunk takes to play, is refused, since no chunk would ever play under it.
+  runner without waiting for torch, which begins no session and answers no step after it. A
+  declared `--latency-s` of 5 s or more, or as long as a chunk takes to play, is refused, since
+  no chunk would ever play under it.
 - **The policy server loads a LeRobot checkpoint.** `quackd policy serve --policy
   OWNER/NAME@REVISION` serves an ACT, a SmolVLA or a pi05 checkpoint through LeRobot's own
   loop (`policy/pipeline.py`): the arm's reading through `build_inference_frame` and the
@@ -193,15 +212,16 @@ served. Known limitations, below, says what only the bench can settle.
   without it. The connect refuses a policy whose learned state's percentiles lie outside this
   arm's calibrated travel, and on the lab arm's calibration it refused 55 of the 68 servable
   SO-100 and SO-101 ACT checkpoints on the Hub, every one on `shoulder_lift`, whose recorded
-  travel there does not reach the arm's fold while theirs did. The refusal named the override
-  and only Python could reach it: it now names the flag. Every goal such a policy answers is
-  still clipped to this arm's travel, so the flag changes what drives the arm and never where
-  the arm may go, which its help, docs/safety.md and ADR-0048 say. `run_start` and the `policy`
-  block of `summary.json` carry `accept_other_frame`.
+  travel there does not reach the arm's fold while theirs did. The refusal names the flag.
+  Every goal such a policy answers is still clipped to this arm's travel, so the flag changes
+  what drives the arm and never where the arm may go, which its help, docs/safety.md and
+  ADR-0048 say. `run_start` and the `policy` block of `summary.json` carry `accept_other_frame`.
 - **A `--goal` run with a policy server allows `manipulate`, behind a confirm.** A goal's
   contract allows safe verbs alone, and `manipulate` is not one, so a goal could never have
-  used a policy. With `--policy-url` it is allowed and listed under `confirm`, so a person says
-  yes to each segment. Without one a goal is what it was.
+  used a policy. With `--policy-url` it is allowed and listed under `confirm`, so a person at a
+  terminal is asked before each segment unless `--yes`, or a pipe or file on stdin, answers for
+  them. Answered that way, a segment starts without anybody being asked, as any gated verb
+  does, and `--controller vla` refuses both. Without a policy server a goal is what it was.
 - **The pilot is told what executes.** A run whose verbs include `manipulate` has a
   `Your executor` section in its system prompt: one short subtask per call, a fresh look after
   each, and never success on the verb's ok alone, since it says only that the segment ran. The
@@ -337,27 +357,26 @@ served. Known limitations, below, says what only the bench can settle.
 ### Fixed
 
 - **`quackd serve-mcp` printed a traceback when the connect refused.** A refusal raised as the
-  server starts, a policy that does not fit the arm or an arm that cannot reach its rest pose,
-  arrives inside the task group the MCP SDK serves in, and only a bare refusal was caught, so
-  the sentence was buried in a traceback on stderr and the client saw a closed connection. It is
-  now said as `quackd run` says it, and the server exits 1. Anything else in the group is still
-  a traceback.
+  server starts, an arm that cannot reach its rest pose among them, arrives inside the task
+  group the MCP SDK serves in, and only a bare refusal was caught, so the sentence was buried in
+  a traceback on stderr and the client saw a closed connection. It is now said as `quackd run`
+  says it, a policy that does not fit the arm included, and the server exits 1. Anything else in
+  the group is still a traceback.
 - **`quackd doctor`'s header ended in `duck-ipc-proto API v` with nothing after it** on a
   machine without the Microduck's adapter, which is where that number comes from. The header
   leaves it out there.
 - **A plain `quackd validate` checked a task file against the Microduck's verbs.** With no
   robot named, a file is meant to be checked against every body installed here, and
   `installed_vocabulary()` has built that union since 0.10, but the command still passed the
-  Microduck's list, so an arm's task that allows `move_joints` or `manipulate` failed with
-  `unknown verbs`. It now checks the union, which also holds what each body offers a policy
-  server, so the `duck: 3` example in duck-spec.md validates as the page quotes it.
-  `validate --robot NAME` checks that body as it is registered, as before.
+  Microduck's list, so an arm's task that allows `move_joints` failed with `unknown verbs`. It
+  now checks the union, which also holds what each body offers a policy server, so the
+  `duck: 3` example in duck-spec.md validates as the page quotes it. `validate --robot NAME`
+  checks that body as it is registered, as before.
 - **On Windows, input from NUL counted as a person at a terminal.** NUL is a character device,
   so `isatty` says yes to it, and a script started with its input from NUL, or from Git Bash's
   `/dev/null`, was put the questions meant for a person, answered them with end-of-input, and
-  had its record name a person. A `--controller vla` run started that way was not refused, and
-  recorded a person's no to its verdict question. quackd now asks Windows whether its input is
-  a console as well, so NUL is nobody there, as a pipe already was.
+  had its record name a person. quackd now asks Windows whether its input is a console as
+  well, so NUL is nobody there, as a pipe already was.
 - **A stop during `pick` could refuse its own hold.** A stop cancels the policy loop first, and
   a loop cancelled in the middle of a bus call leaves that call's thread on the wire, which
   quackd files as a wedge and refuses every call behind until it comes back. The hold the stop
@@ -382,25 +401,24 @@ served. Known limitations, below, says what only the bench can settle.
 - **The docs said a policy's goal past the travel is refused.** It is clipped and counted, as
   ADR-0036 decided, and the hardware checklist, the arm's page and the `LOAD_POLICY` row now
   say so.
-- **The ref that says a tokenizer trusts remote code named the wrong step.** It is the action
-  tokenizer, `ActionTokenizerProcessorStep`, whose `trust_remote_code` defaults to True, and
-  the observation tokenizer SmolVLA and pi05 use loads its tokenizer by name at no revision.
-  The ref and the arm's page now say which, and what the server does about each.
 
 ### Known limitations
 
 - **No learned policy has driven the arm.** Every segment, `pick`'s and `manipulate`'s, ran
   against the test suite's fake arm or on the arm's simulator, served by the scripted policies,
-  by the tiny random ACT CI builds, or by one trained ACT from the Hub on a laptop's CPU, which
-  drove the arm's twin through two segments over `serve-mcp`. On 2026-09-29 OpenAI's
-  `gpt-6-sol` flew that twin with `quackd run --goal` and `--policy-url`, handed the same ACT
-  two `manipulate` segments and declared failure on seeing no blue cap, since the simulator's
-  table holds a red cube and a pen. That run proves the plumbing and nothing about the task.
-  `--controller vla`, its judge prompt and `--decision-mode shadow` beside a policy have run in
-  the test suite and never with a trained checkpoint. pi05 has not run (`VLA_PIPELINE`), and an
-  ACT asked every tick needs a GPU the CI job lacks (`TICK_MODE`). What this release changes in
-  `lerobot:real`, the segment's task, the step cap written for it and put back, the loop's own
-  reads and the waits for a call a stop cut short, has run only there. Step 18 of
+  by the tiny random ACT CI builds, or by one trained ACT from the Hub,
+  `natsuki0000/act-so101-bluecap` at commit `82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, on a
+  laptop's CPU, which drove the arm's twin through two segments over `serve-mcp`. On
+  2026-09-29 OpenAI's `gpt-6-sol` flew that twin with `quackd run --goal` and `--policy-url`,
+  handed the same ACT two `manipulate` segments and declared failure on seeing no blue cap,
+  since the simulator's table holds a red cube and a pen. That run proves the plumbing and
+  nothing about the task. `--controller vla`, its judge prompt and `--decision-mode shadow`
+  beside a policy have run in the test suite and never with a trained checkpoint. pi05 has not
+  run (`VLA_PIPELINE`), and an ACT asked every tick needs a GPU the CI job lacks
+  (`TICK_MODE`). What this release changes in `lerobot:real`, the segment's task, the step cap
+  written for it and put back, the loop's own reads, the check at connect that a policy fits,
+  the waits for a call a stop cut short and the wall clock on `perf_counter` among it, has run
+  only there. Step 18 of
   [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to find
   out in on an arm.
 - **SmolVLA did not run on the laptop's CPU.** On an Intel Core i5-10210U,
@@ -431,6 +449,12 @@ served. Known limitations, below, says what only the bench can settle.
 - **A frame of another size can be accepted only from Python**, with `RemoteRunner`'s
   `accept_frame_size`. From the command line it refuses the connect with the size to give the
   camera.
+- **`load_policy()` still builds a policy in the arm's own process.** It is a Python helper in
+  the arm's backend from before this release, and nothing in quackd calls it, so no command
+  reaches it. A caller of its own would load a LeRobot checkpoint beside the serial bus, with
+  none of the reading the server does before it builds, as the `LOAD_POLICY` row on
+  [the arm's page](docs/adapters/lerobot.md#the-policies-upstream-lerobot-061) says. Whether to
+  remove it is not decided, and PLAN.md carries it as an open item.
 - **The lab arm's twin cannot start a segment where it starts.** A segment starts only with
   every joint inside its travel, and a twin starts where its rest pose puts it, settled clear of
   its table. The lab arm's fold lies past `shoulder_lift`'s travel and past the model's stop, so
@@ -447,6 +471,18 @@ served. Known limitations, below, says what only the bench can settle.
   budget below that ends the run on its budget before the declare. While it asks whether the arm
   did it, as while any question at the terminal waits, the heartbeat does not beat. The arm
   holds where its last segment left it.
+- **The arm has not run quackd since 2026-09-23, so 0.14.0's and 0.15.0's bench steps are still
+  owed.** Nobody has taken the seven under 0.14.0's Known limitations or any under 0.15.0's. One
+  would settle 0.15.0's follower, a second Ctrl-C during the fold back to the rest pose, and
+  that release names six more of its changes nobody has written a bench step for. Four would
+  compare 0.15.0's simulator against the arm: joint signs and zero offsets, the rest move
+  pressing the gripper into the table, the gripper on a real pen, and the front and wrist
+  cameras' placement and field of view. The fifth it lists is the policy loop's rate on the real
+  bus, above. Until they are taken, the twin the trained ACT drove is a model nobody has checked
+  against an arm. What those releases changed in `lerobot:real` has run only in the test suite
+  and on the simulator. Step 18 of
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md), which hands the arm
+  to a policy, comes only after every step above it. PLAN.md carries them.
 
 ## [0.15.0] — 2026-09-29
 
@@ -5548,7 +5584,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/rokbenko/quackd/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rokbenko/quackd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/rokbenko/quackd/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rokbenko/quackd/compare/v0.12.0...v0.13.0
