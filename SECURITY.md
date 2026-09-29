@@ -31,7 +31,9 @@ quackd also ships code that runs **on a robot**, or on the board beside one, whi
 different kind of surface from everything above. Everything under `bridge/` is in scope in
 its own right: two daemons for an Open Duck Mini v2's Raspberry Pi, a host wrapper for an
 AlohaMini, a daemon that walks a ToddlerBot, and a daemon for an NVIDIA Jetson that quackd
-reaches with `--host` and never runs on.
+reaches with `--host` and never runs on. So is `quackd policy serve`, which is not under
+`bridge/` and is the first network service whose answers move an arm: it serves a learned
+policy's goals to a LeRobot arm, from a checkpoint that is code.
 
 Also in scope:
 
@@ -46,26 +48,26 @@ Also in scope:
   `summary.json`, and the first line of `terminal.txt`. A flock root has no `run_start`, so
   both flock runners write `command` and `version` into the root `summary.json` themselves,
   and the root `terminal.txt` opens with the same line; a pilot flock's members each keep a
-  `run_start` of their own besides. The values of `--api-key`, `--token` and `--host-token`
-  are replaced with `***` everywhere that line is written, so a reader sees that a key was
-  passed and never what it was. The four flags that take a URL, `--base-url`, `--address`,
-  `--camera-url` and `--decision-url`, keep the half a reader needs and lose the half that has
-  to be rotated: the scheme, the host, the port, the path and the username stay, a password in
-  the URL becomes `***`, and so does any query parameter named like a credential (`api_key`,
-  `token`, `sig` and the rest of `SECRET_QUERY_KEYS`). `--extra-body`, and `QUACKD_EXTRA_BODY`
-  behind it, is a JSON object a vendor asked for and quackd never reads, which makes it
-  exactly where an `authorization` header ends up; it reaches the transcript's `run_start` as
-  `extra_body`, and it is walked to the bottom on the way in with every credential-named key
-  replaced. All of that is redaction **by name**, of flag names and of key names and nothing
-  cleverer, which is worth stating plainly because it decides what is safe to paste into an
-  issue. A secret typed as the value of some **other** flag is written down in full, and so is
-  a credential a vendor asked for under a name these lists do not carry. A key handed to the
-  provider through its own environment variable, which is the normal way and the right one, is
-  in no part of the record, and `QUACKD_EXTRA_BODY` is the one environment variable that
-  reaches it at all. What would be a security issue: the value of any of the three secret flags
-  reaching any of the places above, a password or a named credential surviving a URL flag, a
-  credential-named key surviving `extra_body`, or a new flag that takes a secret and is in
-  neither `SECRET_FLAGS` nor `URL_FLAGS` (`quackd/command.py`).
+  `run_start` of their own besides. The values of `--api-key`, `--token`, `--host-token` and
+  `--policy-token` are replaced with `***` everywhere that line is written, so a reader sees
+  that a key was passed and never what it was. The five flags that take a URL, `--base-url`,
+  `--address`, `--camera-url`, `--decision-url` and `--policy-url`, keep the half a reader
+  needs and lose the half that has to be rotated: the scheme, the host, the port, the path and
+  the username stay, a password in the URL becomes `***`, and so does any query parameter named
+  like a credential (`api_key`, `token`, `sig` and the rest of `SECRET_QUERY_KEYS`).
+  `--extra-body`, and `QUACKD_EXTRA_BODY` behind it, is a JSON object a vendor asked for and
+  quackd never reads, which makes it exactly where an `authorization` header ends up; it reaches
+  the transcript's `run_start` as `extra_body`, and it is walked to the bottom on the way in
+  with every credential-named key replaced. All of that is redaction **by name**, of flag names
+  and of key names and nothing cleverer, which is worth stating plainly because it decides what
+  is safe to paste into an issue. A secret typed as the value of some **other** flag is written
+  down in full, and so is a credential a vendor asked for under a name these lists do not carry.
+  A key handed to the provider through its own environment variable, which is the normal way and
+  the right one, is in no part of the record, and `QUACKD_EXTRA_BODY` is the one environment
+  variable that reaches it at all. What would be a security issue: the value of any of the four
+  secret flags reaching any of the places above, a password or a named credential surviving a
+  URL flag, a credential-named key surviving `extra_body`, or a new flag that takes a secret and
+  is in neither `SECRET_FLAGS` nor `URL_FLAGS` (`quackd/command.py`).
 - **What the discrete stepper is sent** (`quackd run --decision-llm`, off unless you name one,
   [docs/decision-llms.md](docs/decision-llms.md)). Whichever one answers is sent the same
   thing, once a turn: the task's goal, the robot's own description of itself and its last few
@@ -212,6 +214,50 @@ Also in scope:
   record on the laptop, or a password in a camera pipeline reaching a reply or a log. None of
   it has been run on a Jetson by this project, so treat the arrangement as reviewed rather
   than proven.
+- **The policy server** (`quackd policy serve`, `adapters/lerobot/src/quackd_lerobot/policy/`,
+  [docs/policies.md](docs/policies.md)), an HTTP server on port 9875 whose answers move an
+  arm: it serves the goals a learned policy chooses, and the arm's process sends them. It runs
+  as a process of its own, never the one that owns the arm's serial bus, because a LeRobot
+  checkpoint's processors can name code to import. It binds `127.0.0.1` or `::1`, and refuses
+  any other address, the rest of 127/8 included, unless `--behind-tls` says a TLS proxy stands
+  in front of it. A token is always required: with no `--token-file` it writes one to
+  `~/.quackd/policy.token`, readable by its owner alone where the OS allows, and a named file
+  that is missing, unreadable or empty refuses to start. The token is read from the
+  `X-Quackd-Token` header only and compared with `hmac.compare_digest`, a request without it is
+  refused on its headers alone, and what a client can make it hold is bounded as the Jetson host
+  daemon bounds it, plus a cap on a request's body. Both ends refuse a token shorter than 16
+  characters or with whitespace inside it, without quoting it. Every number in a message is
+  checked to be finite on both sides, what a server says about itself in words is printable
+  ASCII or refused, a reset from a second client is refused while another client's session is in
+  use, and a step for an ended session is refused. The client, in the arm's process, sends plain
+  HTTP only to `127.0.0.1` and `::1`, so a policy on another machine is reached through
+  `ssh -L 9875:127.0.0.1:9875` or over `https://` with the certificate verified. It follows no
+  proxy and no redirect, keeps the token out of every error, and holds every reply to a deadline
+  however slowly it arrives, then caps and validates it before a goal in it reaches the arm. It
+  loads a LeRobot checkpoint (`policy/pipeline.py`), whose processors can name code to import,
+  so it fetches `config.json` and both processor JSONs first, at the revision named, and refuses
+  a step named by a `class` key or by any registry name outside the ones ACT's, SmolVLA's and
+  pi05's processors use, before any weights are fetched. It tells a step that could trust a
+  repository's own code not to, and refuses a model the checkpoint names inside itself unless
+  `--pin REPO@REVISION` fixes its revision at a whole commit or a tag, fetching it with no `.py`
+  and no pickle, and refusing it if its directory in the Hub's cache holds anything but configs,
+  tokenizer files and safetensors all the same, or maps a class to code (`auto_map`). A SmolVLA
+  that names no backbone is refused, since LeRobot would load a default of its own, and every
+  weight is loaded strictly, so a checkpoint is never served as a random network. Only a tiny
+  random ACT has been loaded by it, in CI. The arm checks at connect, before any torque, that
+  what the server says it serves fits the arm, and again as every segment starts, so a server
+  started again with another policy drives nothing. What would be a security issue: a goal
+  reaching the arm from anything but the server the arm was pointed at, a request served without
+  the token, a number that is not finite getting through, the token reaching a URL or any
+  record, a server's words reaching a terminal with an escape in them, a client without the
+  token making the server keep what it sent or a thread past its bounds, a checkpoint getting
+  code imported by a path it chose or a repository's own code trusted, a model a checkpoint
+  names loading at a revision nobody pinned, or a policy the arm's connect did not check
+  starting a segment. No quackd command loads a checkpoint in the arm's own process.
+  `load_policy()` in the arm's backend, an older Python helper that nothing in quackd calls,
+  still would, with none of the checks above and no check at connect, as the `LOAD_POLICY` row
+  in [docs/adapters/lerobot.md](docs/adapters/lerobot.md#the-policies-upstream-lerobot-061)
+  says. Whether to remove it is an open item in PLAN.md.
 - **The bridge daemon** (`bridge/open_duck/quackd_duck_bridge.py`), a TCP listener on port
   9871 that walks a 42 cm biped. It binds loopback by default and compares a token with
   `hmac.compare_digest`, but a token is only required if one is configured, and binding it
@@ -233,8 +279,9 @@ Also in scope:
   going limp is unreachable by construction and must stay that way, and here it matters
   more: torque off on this body means the robot falls over.
 - The recommended deployment for all of them is an ssh tunnel
-  (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 -L 9873:127.0.0.1:9873 -L 9874:127.0.0.1:9874`)
-  rather than exposing any of these ports.
+  (`ssh -L 9871:127.0.0.1:9871 -L 9872:127.0.0.1:9872 -L 9873:127.0.0.1:9873 -L 9874:127.0.0.1:9874`,
+  and `-L 9875:127.0.0.1:9875` for a policy server on another machine) rather than exposing
+  any of these ports.
 
 ## Supported versions
 

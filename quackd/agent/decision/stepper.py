@@ -36,6 +36,7 @@ from quackd.agent.providers.base import ToolCall
 from quackd.agent.providers.catalogue import Price
 from quackd.agent.providers.pricing import SELF_HOSTED, cost_usd
 from quackd.command import redacted_url
+from quackd.duckfile.schema import POLICY_VERB
 from quackd.verbs.registry import Verb
 from quackd.verdict import BEFORE_VERDICT, MOVES_THE_BODY
 
@@ -52,7 +53,23 @@ MAX_CALLS_PER_VERB = 12
 """Past this a verb stops being a choice. TypeSafe's own guidance is that a question should be
 a gut-check a knowledgeable person could make in a few seconds, and picking one of thirteen
 shapes of the same verb is not that. The widest verb quackd ships is six (`gripper` on a
-two-armed body: three sides times open or shut), so this is headroom rather than a limit."""
+two-armed body: three sides times open or shut), so this is headroom rather than a limit. A
+task file lists at most this many instructions for `manipulate` (`MAX_INSTRUCTIONS`), so each
+of them is one choice."""
+
+SHADOW_ONLY = frozenset({POLICY_VERB})
+"""Verbs the stepper is offered and compared on, and never takes, whatever the mode.
+
+`manipulate` narrowed to a task file's instructions is a closed set like any other, and which
+subtask to hand the policy next is exactly the between-segment choice a decision LLM might one
+day make. It answers to the confirm floor, and under `--yes` nobody is asked at that gate, so a
+stepper that cleared the floor would start a segment of a learned policy driving the arm with
+no person and no model involved. So it is offered, its answer is recorded beside the model's
+(`shadow_event`), and the model takes the turn. Promoting it needs a measured agreement rate
+and a decision of its own, not a floor."""
+SHADOW_GATE = "shadow_only"
+"""The gate a choice of a `SHADOW_ONLY` verb ends on: it cleared every other gate, and the turn
+went to the model all the same."""
 
 # The confidence a Choice must clear before the stepper acts on it, by what the verb does.
 # TypeSafe's confidence page publishes exactly two numbers, 0.5 and 0.9, and both are here.
@@ -560,6 +577,8 @@ class Stepper:
     """Label to the verb's own one-line description: what each option is said to mean."""
     early: set[str] = field(default_factory=set)
     """Labels whose verb may run before the pilot has judged the task."""
+    shadow: set[str] = field(default_factory=set)
+    """Labels whose verb is `SHADOW_ONLY`: offered, compared, never taken."""
     tried: Counter[str] = field(default_factory=Counter)
     last_call: str | None = None
     """The label it authored on the previous turn, or None when the model took that turn."""
@@ -637,6 +656,8 @@ class Stepper:
                 stepper.what[call.label] = described
                 if runs_early:
                     stepper.early.add(call.label)
+                if canonical in SHADOW_ONLY:
+                    stepper.shadow.add(call.label)
         return stepper
 
     # ── what is on offer this turn ──
@@ -937,6 +958,10 @@ class Stepper:
         record.update({"class": kind, "floor": floor})
         if confidence < floor:
             return self._hand_back({**record, "gate": "below_floor"})
+        if choice in self.shadow:
+            # last, so the record says this answer cleared every gate a taken one clears, which
+            # is the number that would ever promote it
+            return self._hand_back({**record, "gate": SHADOW_GATE})
         call = self.calls[choice]
         self.taken += 1
         self.tried[call.name] += 1
@@ -957,6 +982,14 @@ class Stepper:
         self.last_call = None
         self.in_a_row = 0
         return Advice(None, record)
+
+    def compares(self, advice: Advice) -> bool:
+        """Whether the model's answer to this turn is recorded beside the stepper's in
+        `--decision-mode on` as it is in shadow: a turn that offered a `SHADOW_ONLY` call,
+        which is every between-segment choice, whatever the stepper answered. Only those, so
+        the agreement they measure is on the choices it is never let make, and not only on the
+        ones it happened to answer confidently."""
+        return any(label in self.shadow for label in advice.record.get("labels") or ())
 
     def shadow_event(
         self, advice: Advice, call: ToolCall, llm: Mapping[str, Any] | None = None

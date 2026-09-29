@@ -63,6 +63,7 @@ MOVES_THE_BODY = frozenset(
         "grip",
         "place",
         "pick",
+        "manipulate",
         "lift",
         "home_arms",
         "perform",

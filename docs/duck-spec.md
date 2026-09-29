@@ -1,4 +1,4 @@
-# The `.duck` file — spec v0, v1 and v2 (normative)
+# The `.duck` file — spec v0, v1, v2 and v3 (normative)
 
 A `.duck` file is a task for an LLM-piloted robot, or for a flock of them. It is
 deliberately **SKILL.md-shaped**: YAML frontmatter between `---` fences, then a Markdown
@@ -8,7 +8,9 @@ is never trusted to self-police.**
 too. `duck: 1` (quackd 0.4) adds what a multi-robot task needs, and `duck: 2` adds what a
 task says about the *body*: a correction to the robot's own datasheet, and what a flock role
 physically needs ([ADR-0019](adr/0019-duck-spec-v1.md),
-[ADR-0032](adr/0032-datasheets-and-the-verdict.md)). `duck: 0` files parse and run unchanged.
+[ADR-0032](adr/0032-datasheets-and-the-verdict.md)). `duck: 3` adds what a task lets the
+body's learned policy be told, and for how long ([`policy`](#policy-v3)). `duck: 0` files parse
+and run unchanged.
 
 Machine-readable schema: [`../quackd/duckfile/schema.json`](../quackd/duckfile/schema.json)
 (generated from `quackd/duckfile/schema.py`; a test keeps them in sync).
@@ -29,7 +31,7 @@ Encoding UTF-8. The first non-blank, non-comment line must be `---`.
 
 | Field | Type | Required | Enforced by | Meaning |
 |---|---|---|---|---|
-| `duck` | `0`, `1` or `2` | yes | parser | Spec version. `1` unlocks `requires`, `robots`, `flock.roles`, `flock.frame_hints` and `flock.allocation.method: pilots`; `2` unlocks `datasheet` and `flock.roles.<role>.needs`. Using a key under too low a version is an error that names the fix. |
+| `duck` | `0`, `1`, `2` or `3` | yes | parser | Spec version. `1` unlocks `requires`, `robots`, `flock.roles`, `flock.frame_hints` and `flock.allocation.method: pilots`; `2` unlocks `datasheet` and `flock.roles.<role>.needs`; `3` unlocks `policy`. Using a key under too low a version is an error that names the fix. |
 | `name` | slug `^[a-z0-9][a-z0-9-]{0,63}$` | yes | parser | Identifier; run directories and the fake pilot's strategies key on it. |
 | `description` | string | yes | — | One human-facing line. Shown in the system prompt. |
 | `author` | string | no | — | Credit. |
@@ -47,6 +49,7 @@ Encoding UTF-8. The first non-blank, non-comment line must be `---`.
 | `requires` | list of verb names ⊆ `allow` (v1) | no (default `[]`) | `validate --robot` | The verbs the task *needs*. Checked against each robot's manifest. For a v0 file every allowed verb is required. |
 | `datasheet` (v2) | mapping, see below | no | loop and MCP session | Corrections and additions to the robot's own datasheet, for the build in front of you. Rendered in the prompt as coming from the task file. |
 | `robots` | `<adapter>[:<backend>]`, or a mapping member → spec (v1) | no | CLI | The default robot(s), so `quackd run <duck>` needs no `--robot`. Flags win over the file. |
+| `policy` (v3) | mapping, see below | no | **executor** and the robot | The instructions `manipulate` may give the robot's learned policy, how long each segment runs and how long they may run in all ([`policy`](#policy-v3)). Needs `manipulate` in `verbs.allow`. |
 
 ### `requires` and `robots` (v1)
 
@@ -179,11 +182,15 @@ is refused at runtime and the LLM is told so.
 ## Validation
 
 `quackd validate <files or globs or bundled names>` prints a table and exits 1 on any
-failure, with a path and a field-level reason. Checks: parse, schema, unknown verbs,
-`learned_verbs` empty, no `confirm` in an auction flock. With `--robot <adapter>:<backend>` (one or
+failure, with a path and a field-level reason. Checks: parse, schema (a `policy` section's
+bounds, `manipulate` allowed beside it, no `pick` beside a list of instructions, and no
+`policy` in a flock duck among them), unknown verbs, `learned_verbs` empty, no `confirm` in
+an auction flock. With `--robot <adapter>:<backend>` (one or
 more) or `--robots name=spec,...`, the file is also checked against those robots' manifests:
 `requires` (or, for v0, `allow`) per robot, and every flock role fillable by at least one
-robot. Without a flag, the duck's own `robots:` default is used, then the Microduck.
+robot. Without a flag, the duck's own `robots:` default is used, and a file that names no
+robot is checked against every body installed here, with what each offers a policy server:
+a task is coherent when something here can keep it.
 
 ## Resolution
 
@@ -196,11 +203,11 @@ robot. Without a flag, the duck's own `robots:` default is used, then the Microd
 adds `requires`, `robots`, `flock.roles`, `flock.frame_hints` and, since 0.9,
 `flock.allocation.method: pilots` ([ADR-0019](adr/0019-duck-spec-v1.md),
 [ADR-0034](adr/0034-registered-robots-and-pilot-flocks.md)); `duck: 2` adds `datasheet` and
-`flock.roles.<role>.needs` ([ADR-0032](adr/0032-datasheets-and-the-verdict.md)). Older
-files keep parsing because the version is explicit and the parser is strict; the only new
-rejections a v0 file can hit are two contradictions no shipped file contains (a verb listed
-next to its alias, `stop` in `confirm`). Older quackd versions refuse newer files, which is
-the correct failure.
+`flock.roles.<role>.needs` ([ADR-0032](adr/0032-datasheets-and-the-verdict.md)); `duck: 3`
+(0.16) adds `policy`. Older files keep parsing because the version is explicit and the parser
+is strict; the only new rejections a v0 file can hit are two contradictions no shipped file
+contains (a verb listed next to its alias, `stop` in `confirm`). Older quackd versions refuse
+newer files, which is the correct failure.
 
 ### `datasheet` (v2)
 
@@ -227,3 +234,88 @@ stay under 300 characters, so the leading `-`, `` ` `` or `*` that a list invite
 at parse time: the prompt bullets these itself, and a backtick is how it spells a verb. A correction the body contradicts, a
 payload on a robot with nothing to hold with, is refused by `validate` before the run starts. A flock
 duck cannot carry one, because it describes one body.
+
+### `policy` (v3)
+
+`manipulate` hands an arm to its learned policy for one segment, told one short subtask in
+the words the policy was trained on ([adapters/lerobot.md](adapters/lerobot.md)). A v3 task
+file says which words those may be and how long the policy may drive:
+
+| Field | Type | Default | Enforced by | Meaning |
+|---|---|---|---|---|
+| `policy.instructions` | list of unique one-line strings, at most 12, each at most 200 characters | `[]` | **executor** | The only instructions `manipulate` takes, word for word. They become an enum in the verb's own schema, so the pilot is shown exactly these, the executor refuses any other words, and a decision LLM can be offered each one. Empty lets the pilot word each subtask itself, held to the same one line and the same length, as the target the pilot gives `pick` is. A list refuses `pick` in `verbs.allow`, because `pick` tells the policy a target of the pilot's own. |
+| `policy.segment_s` | number > 0, at most 60 | 10 | robot and **executor** | How long one segment runs in the robot's time, unless it ends sooner. The robot is told it before the first segment, and the executor's timeout for `manipulate` is this plus 10 s, plus, on the simulator, the wall time its clock stands still while the policy thinks, at most ten minutes of it. |
+| `policy.total_s` | number > 0, at most 3600, and at least `segment_s` | 120 | **executor** | The seconds of segments the run may spend in all, `pick`'s as well as `manipulate`'s, each charged the seconds its verb said it ran, or the robot's clock across the call when it said none, a call cancelled or aborted mid-segment among them. A segment the robot refused before it began says it ran 0 s. One segment runs at a time, and a `pick` or `manipulate` sent while one runs is refused. Checked before each segment, so the last may run past it by at most its own length, and once it is spent the next `pick` or `manipulate` is refused as a budget. |
+
+`manipulate` must be in `verbs.allow`, and a flock duck cannot carry a `policy`, because it
+hands one arm to its policy. Each segment is still one step against `budgets.max_steps`. A run
+whose task has none of this, a `--goal` run, a v2 file, or an MCP session with no task
+loaded, gets the defaults above and any instruction. A second task file loaded over MCP is
+held to its own section, narrowed from the arm's own verb rather than from the first file's
+list, and the seconds of segments the session has run still count, those it ran before any
+task file was loaded among them. A decision LLM is offered each listed
+instruction and never takes one, whatever `--decision-mode` says: its answer is recorded beside
+the pilot's, and the pilot starts every segment ([decision-llms.md](decision-llms.md)).
+
+```yaml
+---
+duck: 3
+name: stack-blocks
+description: Stack the red block on the blue one with the arm's learned policy
+verbs:
+  allow: [report_state, manipulate, stop]
+  confirm: [manipulate]
+requires: [manipulate]
+budgets:
+  max_steps: 12
+policy:
+  instructions:
+    - pick up the red block
+    - place it on the blue block
+    - open the gripper
+  segment_s: 8
+  total_s: 48
+success:
+  - The red block rests on top of the blue block, seen from the camera.
+abort_when:
+  - Same verb fails 3 times in a row
+---
+# Task
+Stack the red block on the blue one.
+
+## Strategy
+1. Find both blocks in the camera frame your observation brings. Without a frame,
+   `report_state` reads the arm, which cannot show where a block is.
+2. `manipulate` with `pick up the red block`, then judge from the frame the next observation
+   brings whether the arm holds it.
+3. `manipulate` with `place it on the blue block`, then `open the gripper`.
+4. Judge the stack from the frame after the last segment before you declare anything.
+```
+
+The file allows no `observe`. `quackd run` checks a task file against the arm as it describes
+itself before it connects, which is without one, and refuses a file that allows it. The look
+comes from the frame every observation brings the pilot on an arm with a camera.
+
+A plain `quackd validate` checks a v3 file with no policy server running: the arm offers
+`manipulate` to one, so the file is coherent wherever the arm is installed. `--robot NAME`
+checks it against that body as it is registered, and a registration holds no policy server.
+So on `lerobot:real` or `lerobot:mujoco`, or a robot registered as either, it refuses
+`manipulate`, and says to start a server with `quackd policy serve` and give `quackd run` its
+address with `--policy-url`. `--robot lerobot:mock` checks the file against an arm that has a
+policy of its own. `quackd preflight` and `quackd run` with `--policy-url` check it against the
+arm itself.
+
+```console
+$ quackd validate stack-blocks.duck
+quackd validate
++----------------------------------------------------+
+| file              | name         | verbs | result  |
+|-------------------+--------------+-------+---------|
+| stack-blocks.duck | stack-blocks |     3 | + valid |
++----------------------------------------------------+
++ 1 file valid
+```
+
+`quackd run stack-blocks.duck --controller vla --policy-url ...` hands the policy these three
+instructions in order and then asks you whether the arm stacked the block
+([adapters/lerobot.md](adapters/lerobot.md#a-scripted-pilot-that-a-person-judges---controller-vla)).

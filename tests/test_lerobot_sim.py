@@ -24,6 +24,7 @@ import asyncio
 import colorsys
 import contextlib
 import gc
+import itertools
 import json
 import math
 import os
@@ -44,13 +45,14 @@ from PIL import Image
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, RestResult
 from quackd.perception.color_blob import DEFAULT_FOV_DEG, DEFAULT_TARGETS, ColorBlobDetector
 from quackd.preflight import load_sidecar
-from quackd.safety import Heartbeat
+from quackd.safety import Heartbeat, allow_all
 from quackd.transport.base import HeartbeatError, TransportError
 from quackd_lerobot import REACH, LeRobotAdapter, lerobot_manifest, make
 from quackd_lerobot import upstream_api as lr
 from quackd_lerobot.real import (
     ENCODER_TICKS,
     MAX_STEP_DEG,
+    POLICY_HZ,
     TORQUE_RETRIES,
     joint_ranges,
     may_have_written_torque,
@@ -111,13 +113,14 @@ from quackd_lerobot.verbs import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     JOINTS,
+    MOVE_MIN_S,
     PICK_POLL_S,
     TICK_S,
     TOL_DEG,
     shortfall,
 )
 from tests.gl import REQUIRE_ENV
-from tests.test_lerobot_adapter import _executor
+from tests.test_lerobot_adapter import Scripted, _executor
 from tests.test_robot_twin import PORTS, guard_ports
 
 mujoco = pytest.importorskip("mujoco")
@@ -2019,6 +2022,358 @@ async def test_a_twin_the_settle_cannot_clear_is_refused_at_connect(mjcf: str) -
     assert "so the simulated arm cannot start there" in said, said
     assert "quackd robot rest-pose NAME" in said, said
     assert transport.sim_world is None
+
+
+async def test_a_pick_ends_on_the_grasp_its_own_loop_reads_and_stops_the_policy(
+    mjcf: str,
+) -> None:
+    """The jaws start down at the table around a block, and the policy closes them and never
+    says it is done. Only `holding`, judged on the loop's own reads mid segment, can end the
+    pick, and it stops the policy there, so the next move is not refused. The verb waits on the
+    segment and sleeps on no clock, so the loop's ticks are all the time that passed."""
+    down = _pointing_down(_arm(mjcf), (PLACE_NEAR + PLACE_FAR) / 2, CUBE.size[0] / 2)
+    policy = Scripted(lambda n: {JOINTS[-1]: GRIPPER_CLOSED})
+    adapter, transport = await _sim_arm(
+        mjcf, scene=_jaws_scene(), rest_pose={**dict.fromkeys(BODY, 0.0), **down}, policy=policy
+    )
+    try:
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest, confirm=allow_all)
+        start = transport.now()
+        picked = await asyncio.wait_for(
+            executor.run_verb("pick", {"target": "block", "max_s": 10}), WALL_S
+        )
+        assert picked.ok and picked.data["ended"] == "holding", picked.summary
+        assert transport.now() - start == pytest.approx(policy.n / POLICY_HZ)
+        assert not transport.policy_running
+        # every tick's read fed the gripper's trace, not the registers' reads alone, which is
+        # what let the grasp be seen on the tick it settled
+        stamps = sorted({round(at, 6) for at, _ in transport._gripper_trace if at >= start})
+        gaps = {round(later - at, 6) for at, later in itertools.pairwise(stamps)}
+        assert gaps == {round(1.0 / POLICY_HZ, 6)}, stamps
+        world = transport.sim_world
+        assert world is not None and world.truth().objects["block"].pinched
+        acted = policy.n
+        lift = JOINTS[1]
+        moved = await executor.run_verb(
+            "move_joints",
+            {"positions": {lift: down[lift] - TOL_DEG}, "duration_s": MOVE_MIN_S},
+        )
+        assert moved.ok, moved.summary
+        assert policy.n == acted, "the policy was asked for another goal after the pick"
+    finally:
+        await adapter.close()
+
+
+async def test_a_pick_on_the_simulator_ends_on_its_time_or_on_a_stop_from_another_task(
+    mjcf: str,
+) -> None:
+    """The loop keeps `max_s` on the simulator's clock, which runs for it because it is the one
+    sleeper. A stop from a task that sleeps on the same clock meanwhile ends the pick as
+    stopped, with the stop named."""
+    swing: dict[str, float] = {}
+    policy = Scripted(lambda n: {PAN: swing[PAN] * (n % 2)})
+    adapter, transport = await _sim_arm(mjcf, policy=policy)
+    swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+    try:
+        assert adapter.manifest is not None
+        executor = _executor(adapter, adapter.manifest, confirm=allow_all)
+        start = transport.now()
+        max_s = 20 * TICK_S
+        timed = await asyncio.wait_for(
+            executor.run_verb("pick", {"target": "cup", "max_s": max_s}), WALL_S
+        )
+        assert timed.data["ended"] == "time", timed.summary
+        # to within half a step of the clock, which the float sum of its steps can miss by
+        half = (transport.sim_dt or TICK_S) / 2
+        assert max_s - half < transport.now() - start < max_s + 2 * TICK_S
+
+        async def stops_later() -> Any:
+            await transport.sleep(10 * TICK_S)
+            return await executor.run_verb("stop")
+
+        start = transport.now()
+        picked, stopped = await asyncio.wait_for(
+            asyncio.gather(
+                executor.run_verb("pick", {"target": "cup", "max_s": 60}), stops_later()
+            ),
+            WALL_S,
+        )
+        assert stopped.ok, stopped.summary
+        assert picked.summary == "pick 'cup' stopped: a stop was sent to the arm", picked.summary
+        assert 10 * TICK_S - half < transport.now() - start < 60
+        assert not transport.policy_running
+    finally:
+        await adapter.close()
+
+
+async def test_a_policy_thinks_in_no_sim_time_and_its_chunk_lands_its_latency_later(
+    mjcf: str,
+) -> None:
+    """The simulator's clock is lockstep: while a runner thinks, in its own thread and for as
+    long as the wall likes, no sim time passes, and the chunk it computed at a tick is played the
+    runner's declared latency later, where it would have landed on the arm."""
+    import time as wall
+
+    from quackd.transport.base import Intent
+    from quackd_lerobot.policy.runner import Observation
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 2 / TICK_S  # a whole number of the clock's steps a tick
+    k = 3
+    swing: dict[str, float] = {}
+    thought: list[tuple[float, float]] = []
+    clock: list[Any] = []
+
+    def thinks(observation: Observation, _sent: Any) -> list[dict[str, float]]:
+        before = clock[0].now()
+        wall.sleep(0.02)
+        thought.append((before, clock[0].now()))
+        return [{PAN: swing[PAN] * ((observation.tick + i) % 2)} for i in range(2 * k)]
+
+    runner = ScriptedRunner(thinks, rate_hz=rate, latency_ticks=k)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+    clock.append(transport.clock)
+    assert isinstance(transport.clock, SimClock) and transport.clock.lockstep
+    robot = transport._robot
+    sent_at: list[float] = []
+    send = robot.send_action
+
+    def stamped(action: dict[str, float]) -> Any:
+        sent_at.append(transport.now())
+        return send(action)
+
+    robot.send_action = stamped
+    try:
+        start = transport.now()
+        ack = await transport.send_intent(
+            Intent(kind="do", params={"skill": "policy:manipulate:wave", "max_s": 20 / rate})
+        )
+        assert ack.accepted, ack.reason
+        segment = transport.policy_segment
+        assert segment is not None
+        await asyncio.wait_for(asyncio.wait({segment}), WALL_S)
+        ended = segment.result()
+        assert ended.how == "time", ended.reason
+        assert thought and all(before == after for before, after in thought), thought
+        half = (transport.sim_dt or TICK_S) / 2
+        assert sent_at[0] - start == pytest.approx(k / rate, abs=half), sent_at[0] - start
+    finally:
+        await adapter.close()
+
+
+async def test_manipulates_timeout_covers_the_thinking_the_simulators_clock_waits_for(
+    mjcf: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow policy on the simulator: its thinking costs no sim time and all of the executor's,
+    which runs on the wall's clock. Asked every tick and taking a tick of wall time to answer, as
+    it declares, it thinks for as long as the segment runs, so with the headroom taken away a
+    timeout sized for the segment alone would end the verb early. The narrowed timeout adds what
+    the backend says its clock stands still for, from the latency the policy declares, and the
+    segment runs out on its own time."""
+    import time as wall
+
+    from quackd.duckfile import narrow
+    from quackd.duckfile.schema import DuckFrontmatter
+    from quackd_lerobot.policy.runner import Observation
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 1 / TICK_S
+    swing: dict[str, float] = {}
+
+    def thinks(observation: Observation, _sent: Any) -> list[dict[str, float]]:
+        wall.sleep(1 / rate)
+        # this tick's goal and the next, since the answer is let go a tick later
+        return [{PAN: swing[PAN] * ((observation.tick + i) % 2)} for i in range(2)]
+
+    runner = ScriptedRunner(thinks, rate_hz=rate, latency_ticks=1, per_tick=True)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    try:
+        swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+        segment_s = 10 / rate
+        contract = DuckFrontmatter.model_validate(
+            {
+                "duck": 3,
+                "name": "slow",
+                "description": "d",
+                "verbs": {"allow": ["manipulate"]},
+                "success": ["x"],
+                "policy": {"segment_s": segment_s, "total_s": segment_s},
+            }
+        )
+        monkeypatch.setattr(narrow, "SEGMENT_HEADROOM_S", 0.0)
+        assert adapter.manifest is not None
+        ex = _executor(adapter, adapter.manifest, confirm=allow_all)
+        narrowed = narrow.narrow_policy_verb(ex.registry, contract, adapter)
+        frozen = transport.frozen_inference_s(segment_s)
+        assert frozen >= segment_s, "a tick of thinking every tick is the segment's length"
+        assert narrowed is not None and narrowed.timeout_s == pytest.approx(segment_s + frozen)
+        started = wall.perf_counter()
+        ran = await asyncio.wait_for(ex.run_verb("manipulate", {"instruction": "wave"}), WALL_S)
+        took = wall.perf_counter() - started
+        assert ran.ok and ran.data["ended"] == "time", ran.summary
+        assert ran.data["seconds"] == pytest.approx(segment_s, abs=TICK_S)
+        assert took > segment_s, "the thinking never outlasted the segment, so this proves nothing"
+        assert adapter.slow_policy() is None, "a policy as fast as it declares is no reason"
+    finally:
+        await adapter.close()
+
+
+async def test_a_policy_slower_than_it_declares_is_named_when_manipulate_times_out(
+    mjcf: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of that timeout: a policy that answers more slowly on the wall than the
+    latency it declares outruns what the simulator counted for its thinking, and the executor's
+    timeout ends the segment. That used to say only that `manipulate` timed out, which reads as
+    a simulator that hung. It says the policy answered slower than it declared, with the time
+    one request took and the latency declared, and to bench it."""
+    import time as wall
+
+    from quackd.duckfile import narrow
+    from quackd.duckfile.schema import DuckFrontmatter
+    from quackd_lerobot.policy.runner import Observation
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 1 / TICK_S
+    slower = 3  # times the latency it declares
+    swing: dict[str, float] = {}
+
+    def thinks(observation: Observation, _sent: Any) -> list[dict[str, float]]:
+        wall.sleep(slower / rate)
+        return [{PAN: swing[PAN] * ((observation.tick + i) % 2)} for i in range(2)]
+
+    runner = ScriptedRunner(thinks, rate_hz=rate, latency_ticks=1, per_tick=True)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    try:
+        swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+        segment_s = 10 / rate
+        contract = DuckFrontmatter.model_validate(
+            {
+                "duck": 3,
+                "name": "slow",
+                "description": "d",
+                "verbs": {"allow": ["manipulate"]},
+                "success": ["x"],
+                "policy": {"segment_s": segment_s, "total_s": segment_s},
+            }
+        )
+        monkeypatch.setattr(narrow, "SEGMENT_HEADROOM_S", 0.0)
+        assert adapter.manifest is not None
+        ex = _executor(adapter, adapter.manifest, confirm=allow_all)
+        narrowed = narrow.narrow_policy_verb(ex.registry, contract, adapter)
+        assert narrowed is not None
+        ran = await asyncio.wait_for(ex.run_verb("manipulate", {"instruction": "wave"}), WALL_S)
+        said = ran.summary
+        assert not ran.ok and said.startswith(
+            f"manipulate timed out after {narrowed.timeout_s:g}s; stopped. The policy answered "
+            "slower than the latency it declared"
+        ), said
+        took = re.search(r"one request took (\d+\.\d+) s on the wall's clock", said)
+        assert took and float(took[1]) >= slower / rate - TICK_S / 2, said
+        assert f"against the {runner.latency_s():g} s it declares" in said, said
+        assert "quackd policy check --bench" in said, said
+    finally:
+        await adapter.close()
+
+
+async def test_a_rate_or_a_latency_the_loop_would_not_run_leaves_no_thinking_to_wait_for(
+    mjcf: str,
+) -> None:
+    """A runner whose declared rate the loop refuses has its segments refused at their start, and
+    one whose declared latency is `FIRST_CHUNK_S` or more has them starve before a chunk lands,
+    so neither has thinking the timeout must cover. Their numbers are left out of the bound,
+    which a rate past any policy's made too large to count requests in, and which raised out of
+    the narrowing, at connect over MCP or after a task file was adopted."""
+    from quackd.duckfile.narrow import (
+        FROZEN_INFERENCE_MAX_S,
+        frozen_inference_s,
+        narrow_policy_verb,
+    )
+    from quackd.duckfile.schema import SEGMENT_HEADROOM_S, SEGMENT_MAX_S, DuckFrontmatter
+    from quackd_lerobot.policy.loop import FIRST_CHUNK_S
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 1 / TICK_S
+    runner = ScriptedRunner(lambda _o, _s: None, rate_hz=rate, latency_ticks=1)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    try:
+        assert transport.frozen_inference_s(SEGMENT_MAX_S) > 0, "nothing to take away"
+        # a segment too long to count its ticks in is bounded by nothing, and says so
+        assert transport.frozen_inference_s(sys.float_info.max) == math.inf
+        assert frozen_inference_s(adapter, sys.float_info.max) == FROZEN_INFERENCE_MAX_S
+        contract = DuckFrontmatter.model_validate(
+            {
+                "duck": 3,
+                "name": "long",
+                "description": "d",
+                "verbs": {"allow": ["manipulate"]},
+                "success": ["x"],
+                "policy": {"segment_s": SEGMENT_MAX_S, "total_s": SEGMENT_MAX_S},
+            }
+        )
+        assert adapter.manifest is not None
+        registry = _executor(adapter, adapter.manifest).registry
+        slow = math.ceil(FIRST_CHUNK_S * rate)
+        for declared in ({"rate_hz": sys.float_info.max}, {"latency_ticks": slow}):
+            for key, value in declared.items():
+                setattr(runner, key, value)
+            await transport._time_thinking()
+            assert transport.frozen_inference_s(SEGMENT_MAX_S) == 0.0, declared
+            narrowed = narrow_policy_verb(registry, contract, adapter)
+            assert narrowed is not None
+            assert narrowed.timeout_s == SEGMENT_MAX_S + SEGMENT_HEADROOM_S, declared
+            runner.rate_hz, runner.latency_ticks = rate, 1
+    finally:
+        await adapter.close()
+
+
+async def test_a_policy_whose_period_is_no_whole_number_of_steps_still_sends_once_a_period(
+    mjcf: str,
+) -> None:
+    """The simulator's clock wakes on its own steps, the nearest number of them to what a sleep
+    asks for, and a policy's period need not be a whole number of them. Every tick is still sent
+    inside its own period, never before its deadline and never two to a period."""
+    from quackd.transport.base import Intent
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 3 / TICK_S
+    swing: dict[str, float] = {}
+    runner = ScriptedRunner(
+        lambda o, _s: [{PAN: swing[PAN] if o.tick % 2 else -swing[PAN]}], rate_hz=rate
+    )
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+    period, dt = 1 / rate, transport.sim_dt
+    assert dt is not None and dt < period
+    steps = period / dt
+    assert abs(steps - round(steps)) > 1e-6, "a period of whole steps tests nothing here"
+    robot = transport._robot
+    sent_at: list[float] = []
+    send = robot.send_action
+
+    def stamped(action: dict[str, float]) -> Any:
+        sent_at.append(transport.now())
+        return send(action)
+
+    robot.send_action = stamped
+    ticks = 20
+    try:
+        ack = await transport.send_intent(
+            Intent(kind="do", params={"skill": "policy:pick:wave", "max_s": ticks * period})
+        )
+        assert ack.accepted, ack.reason
+        segment = transport.policy_segment
+        assert segment is not None
+        await asyncio.wait_for(asyncio.wait({segment}), WALL_S)
+        ended = segment.result()
+        assert ended.how == "time" and ended.stats.skipped == 0, ended
+        first = sent_at[0]
+        periods = [math.floor((at - first) / period + 1e-9) for at in sent_at]
+        assert periods == list(range(len(sent_at))), periods
+        assert len(sent_at) == ticks
+    finally:
+        await adapter.close()
 
 
 async def test_a_released_arm_falls_before_it_is_taken_hold_of(mjcf: str) -> None:

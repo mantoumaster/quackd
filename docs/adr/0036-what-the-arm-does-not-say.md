@@ -93,6 +93,20 @@ reaches the arm itself. The heartbeat's reads no longer feed the gripper trace `
 so a grasp is noticed on the loop's own reads, up to one poll later. Nothing else below
 changes, and nothing in it is settled by the simulator.
 
+**Amended 2026-09-28 by [ADR-0048](0048-policies-are-the-arms-executor.md):** a policy's step cap is no longer the verbs' step per
+send. A policy segment runs at the policy's own rate, from 1 to 60 Hz, and the verbs' step sent
+thirty times a second is three times the speed this ADR set, so the cap is set per second
+instead: the verbs' speed, `max_step_deg / TICK_S`, over the policy's rate, and never more
+than one verb step. It is written on the follower for the segment and put back to the verbs'
+step however the segment ends, and written again before every hold, rest move and verb's send.
+The decision below that clips a policy's goal past the travel stands, with two guards beside
+it: a goal held clipped for a second ends the segment, and an action that is not a finite
+number ends it rather than being clipped into the joint's floor, which it was. What no cap
+covers is a joint that reads past its travel, which the servo drives to its limit at its own
+speed whatever quackd sends. So a policy's action leaves such a joint out, as a stop does, a
+segment will not start with one more than 2 degrees outside, and the power switch is still the
+only stop for a rise already under way.
+
 ## Context
 
 The LeRobot adapter drives an SO-101 follower through the `Robot` interface of

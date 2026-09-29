@@ -39,7 +39,8 @@ the log and the transcript print, so a refusal tells you which row you are on.
 | `verdict` | the pilot has judged the task feasible against the datasheet. `stop`, `observe`, `report_state`, `say`, `quack`, `express`, `gaze`, `look` and `introspect` run before it, and so does any verb its adapter declared `read_only`, because a pilot has to look at a thing before judging whether it can lift it | nothing: the model calls `assess_task` |
 | `params` | the arguments fit the verb's schema | the call. This is feedback to the model, not a crash |
 | `confirm` | `verbs.confirm`, or a `safety_class` of `confirm` or `dangerous`. y/N in the terminal; over MCP it refuses unless `--yes` | answer y, or pass `--yes` |
-| `budget` | `max_steps` and `max_minutes`. These cap an MCP session too, which has no loop of its own; `max_llm_calls` is the loop's | the `.duck`'s `budgets`, or `--max-steps` |
+| `segment` | one segment of a body's learned policy at a time: a `pick` or a `manipulate` sent while another one's segment runs is refused rather than queued. Over MCP every call is a task of its own, and without this two calls could each be checked against seconds not yet charged | wait for the segment to end, or send `stop` |
+| `budget` | `max_steps` and `max_minutes`. These cap an MCP session too, which has no loop of its own; `max_llm_calls` is the loop's. A `pick` or a `manipulate` is also checked against the seconds of policy segments the task allows (`policy.total_s`, 120 s unless a `duck: 3` file says), each segment charged the seconds it ran however it ended, so the last may overrun by its own length and no more | the `.duck`'s `budgets` and `policy` section, or `--max-steps` |
 | `abort_when` | the battery threshold, and consecutive failures once the result is in | the `.duck`'s `abort_when`, or the robot |
 | `precondition` | what the manifest says this verb needs: not fallen, not sitting, torque on | the robot's state |
 | `dry_run` | `--dry-run` is on, so nothing is sent | drop `--dry-run` |
@@ -55,12 +56,14 @@ the legs moving with nothing to halt them, which is the failure this page exists
 ## Who the record says was asked
 
 The `confirm` row above records what the gate decided. The run also records the exchange
-itself: a `prompt` event carrying `what` (`confirm`, `decide`, `acknowledge` or `hand_off`),
-the question in the words it was put in, and the answer. Those four are the confirm gate, the
-pilot's own question when it is unsure (below), the acknowledgement that somebody is watching
-a fall-blind robot, and each half of a `--by-hand` handover. What an answer *caused* was always
-written down by whoever acted on it, in `gate.answer` here, `assess.human` for a verdict and
-the `hand_off` stages for an arm. What was asked, and what somebody said back, was not.
+itself: a `prompt` event carrying `what` (`confirm`, `decide`, `acknowledge`, `hand_off`,
+`release` or `judge`), the question in the words it was put in, and the answer. Those six are
+the confirm gate, the pilot's own question when it is unsure (below), the acknowledgement that
+somebody is watching a fall-blind robot, each half of a `--by-hand` handover, the offer to
+release an arm whose rest move missed (below), and the question a `--controller vla` run ends
+on, whether the arm did the task (below). What an answer *caused* was always written down by
+whoever acted on it, in `gate.answer` here, `assess.human` for a verdict and the `hand_off`
+and `release` stages for an arm. What was asked, and what somebody said back, was not.
 
 **It is written only where a person was really asked.** `--yes`, a flock's standing answer and
 the MCP server all answer without asking anybody, and none of them leaves a `prompt` event: the
@@ -185,6 +188,31 @@ anybody, and, as after a person's go, that the verbs that move the body now run 
 not assess the same doubt again.
 Over MCP there is no terminal and nothing clears it, so the verdict stays pending and the
 model is told to ask the person it is chatting with ([mcp.md](mcp.md)).
+
+## A pilot that cannot judge: `--controller vla`
+
+`quackd run --controller vla` flies a LeRobot arm with a scripted pilot that hands its learned
+policy one instruction at a time ([adapters/lerobot.md](adapters/lerobot.md#a-scripted-pilot-that-a-person-judges---controller-vla)).
+Neither the script nor the policy can tell whether the task was done, so a person is its whole
+verdict, twice. Its answer to `assess_task` is always `uncertain`, so the question above is put
+before anything moves. After the last segment it asks whether the arm did it, and the run is a
+success only on a yes from a person really asked: a `judge` prompt in the record. A no, a pipe
+on stdin, or nobody there is a failure. The loop holds any pilot that says it cannot judge to
+that rule, whatever the pilot declares. A budget that ends the list early still asks about the
+segments that ran, and the run ends on its budget either way.
+
+The seconds you take to answer are yours and not the run's: they come off `max_minutes`, the
+way a `--by-hand` handover's do, so a long look at the arm never turns your yes into a spent
+budget. A prompt that ends without an answer, at the end of its input or with click's `Abort`,
+is nobody answering and not a no. The run fails, no `judge` row is written, and the reason says
+what the prompt raised. While it waits, as while the confirm gate and the verdict's question
+wait, the run's heartbeat does not beat, since all three are asked on the thread the heartbeat
+runs on. Nothing is driving the arm then: its last segment has ended, and the arm holds where
+that segment left it, as a servo holds the last goal it was sent.
+
+So a vla run is refused, before anything connects, wherever nobody could answer: with `--yes`,
+with no terminal under it, and over MCP, where `serve-mcp` refuses `--controller` in words. It
+is refused with `--dry-run` too, which moves nothing for anybody to judge.
 
 ## When a feasible verdict contradicts itself
 
@@ -452,8 +480,53 @@ write says nothing about what that write did.
   its travel first rises to the edge of it at the servo's own speed, before any pacing starts.
   Keep the hand near the switch for the whole of a slow move, not only its start
   ([adapters/lerobot.md](adapters/lerobot.md#the-manifest)).
-- `pick` hands the whole arm to a learned policy for up to a minute. It is confirm-gated
-  for that reason. Watch it, and keep `stop` within reach.
+- **`pick` and `manipulate` hand the whole arm to a learned policy** for one segment, `pick`
+  for up to a minute and `manipulate` for 10 s unless a task file says otherwise, up to 60. Both
+  are confirm-gated for that reason, a `--goal` run's `manipulate` included, so a person at a
+  terminal is asked before each segment unless `--yes`, or a pipe or file on stdin, answers for
+  them. **Under `--yes`, and under `yes | quackd run` or `quackd run < answers.txt`, nobody is
+  asked:** a segment the pilot calls goes ahead on the pilot's word and a yes nobody said, and
+  the record says the gate was allowed without naming anybody
+  ([above](#who-the-record-says-was-asked)). Over MCP both verbs need `serve-mcp --yes`, so
+  quackd asks nobody before any segment there, and `quackd preflight` clears every segment of a
+  rehearsal the same way, on the simulator alone. `--controller vla` refuses `--yes`, and a run
+  with no terminal to ask on, since its verdict is a person's. Watch every segment, and keep
+  `stop` within reach: a stop from anywhere, the heartbeat's included, ends a segment before it
+  holds the arm.
+- **A policy moves no joint faster than a verb may.** Its step cap is the verbs' speed, 50
+  degrees a second at the default step, divided by the policy's rate, so a policy at 30 Hz takes
+  steps of about 1.7 degrees and never more than one verb step. The cap is on the follower for
+  the length of a segment and put back to the verbs' step however the segment ends. A goal past
+  the travel is clipped to it and counted, and one held there for a second ends the segment. So
+  does a hot joint, torque off, a camera that gave no frame, an action that is not a finite
+  number, three failed sends in a row, a read the arm did not answer, and a policy that stops
+  answering, each with the arm held.
+- **The stretch past the travel is the one a policy's cap does not cover.** A joint that reads
+  past its travel is left out of every goal a policy sends, as a stop leaves it out, and a
+  segment will not start with one more than 2 degrees outside. That keeps a policy from starting
+  a rise out of a fold. It cannot halt one a move had already started, which the servo finishes
+  at its own speed, so the power switch is still the only stop for that stretch.
+- **The policy runs in a server of its own**, `quackd policy serve`, and no quackd command loads
+  a checkpoint in the process that holds the serial bus, because a checkpoint's processors can
+  name code to import. `load_policy()` in the arm's backend, an older Python helper that nothing
+  in quackd calls, still would, with none of the server's checks and no check at connect that
+  what it built fits the arm (the `LOAD_POLICY` row in
+  [adapters/lerobot.md](adapters/lerobot.md#the-policies-upstream-lerobot-061)). The server's
+  answers move the arm, so it wants a token on every request and binds loopback unless a TLS
+  proxy stands in front of it, and the arm checks at connect, before any torque, that the policy
+  fits this arm's motors, cameras and calibrated travel ([policies.md](policies.md),
+  [SECURITY.md](../SECURITY.md)). A server that stops answering ends the segment with the arm
+  held, starved on the arm and on the client's own deadline on the simulator. What no bench has
+  measured yet is how fast its loop runs on the real bus while the same laptop infers.
+- **`--accept-other-frame` changes what drives the arm, never where it may go.** Given beside
+  `--policy-url`, it lets a policy connect whose learned readings lie outside this arm's
+  calibrated travel, one trained on an arm calibrated another way, which the connect otherwise
+  refuses. Every goal that policy answers is still clipped to this arm's travel and counted, a
+  goal held there for a second still ends the segment, and the step cap is the same, so the
+  arm goes nowhere it could not go without the flag. What changes is that a policy whose frame
+  may not be this arm's is the one choosing the goals inside it, so it may pin a joint at the
+  edge of its travel. Give it only when you know the two frames match, and the run's record
+  says it was given.
 - `stop` holds position and never releases, and it leaves the gripper's goal alone so a failed
   verb never drops what is held. It also writes no goal for a joint that reads past its
   calibrated travel, because the servo would clamp "stay here" to its limit and drive the joint

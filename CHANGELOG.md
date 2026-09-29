@@ -5,6 +5,485 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] — 2026-09-29
+
+This release gives the SO-101's pilot a learned policy to hand the arm to. The model plans the
+subtasks and judges each from a fresh look at the arm, and between those looks a policy drives
+the arm one short segment at a time, from a server of its own.
+
+`manipulate(instruction)` is one segment of the arm's learned policy, and `pick` now runs its
+policy the same way ([ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md),
+[docs/policies.md](docs/policies.md)). The segment's loop is quackd's: paced on the arm's clock
+at the policy's own rate, capped at the verbs' own speed, and judged tick by tick before each
+goal goes out. The policy is not quackd's. A checkpoint is code, so it runs in
+`quackd policy serve`, a server of its own that the arm reaches over HTTP, and no quackd
+command loads one in the process that owns the serial bus. That server loads an ACT, a SmolVLA
+or a pi05 checkpoint it has read before building, `quackd policy check` asks a server what it
+serves and times it, and the arm checks at connect, before any torque, that the policy fits it.
+
+`--policy-url` points `quackd run`, `preflight` and `serve-mcp` at a server. A `duck: 3` task
+file holds `manipulate` to its own instructions and seconds, a decision LLM is shown each
+subtask and never starts one, and `--controller vla` flies the arm with no model at all and asks
+a person whether it did the task.
+
+Among this release's fixes, a stop during `pick` no longer refuses its own hold. It waits for
+the one call the stop cut short, and no longer than that call's own deadline, which is judged by
+the bus's stamps as every call's has been since 0.15.0. And a pick cancelled as the one before
+it ended no longer drives the arm anyway. No policy has driven the real arm. Every segment ran
+against the test suite's fake arm or on the simulator. There a trained ACT from the Hub drove a
+twin of the lab's arm through `quackd policy serve` and `quackd serve-mcp`, and again under
+`quackd run --goal`, where OpenAI's `gpt-6-sol` piloted, handed it two segments and declared
+failure, since the twin's table holds no blue cap. What a policy does on the simulator says
+nothing about the arm, and nothing has compared the simulator against the arm. SmolVLA took 169
+to 188 s a chunk on the laptop's CPU and never answered through the client, and pi05 has not
+run. `--controller vla` and its judge have not run with a trained checkpoint, FLUX 3 Action has
+not run anywhere, and how fast the policy loop runs on the real bus is unmeasured. And the arm
+has not run quackd since 2026-09-23, so the seven bench steps 0.14.0 owes are still owed, and so
+are 0.15.0's: a second Ctrl-C during the fold back to the rest pose, and the four that would
+compare its simulator against the arm, for joint signs and zero offsets, the rest move pressing
+the gripper into the table, the gripper on a real pen, and the front and wrist cameras'
+placement and field of view. Known limitations, below, lists what only the hardware can settle.
+
+### Added
+
+- **`manipulate(instruction)`, one segment of the arm's learned policy.** Present beside `pick`
+  whenever the arm has a policy, confirm-gated, with `pick`'s preconditions. The segment runs
+  for 10 s (`MANIPULATE_S`), or what the task file's `policy.segment_s` says, unless it ends
+  sooner, on its chunks played or on the arm no longer moving under it (`STALL_S`), which holds
+  the arm where it stopped in case something is in its way, and the verb holds it again after,
+  failing if that hold did not reach the arm. The verb is ok on those three endings and on
+  nothing else, and its summary says why it ended, how long it ran, the chunks, the clips and
+  the ticks a second it achieved, and never that the task is done: the pilot judges that from a
+  fresh look. A starved policy, a guard, an error or a stop end it with the arm held and the
+  verb failed. The mock scripts it, moving part of the way to its object and ending on its time
+  unless a stop, a release, a rest move or the next segment ends it first, and refuses, in the
+  arm's own words, a verb's goal sent while it runs and an instruction of blanks.
+- **The policy loop (`policy/loop.py`), with a rate, a pace and a queue.** A policy is asked
+  through a runner (`policy/runner.py`), and a policy object with one `act` a call is wrapped in
+  a `ScriptedRunner`, so it runs as it always did, one `act` a tick at 10 Hz. The rate is the
+  runner's own, from a source it names, and one that is not a finite number between 1 and 60 Hz
+  refuses the segment. Tick `k` is due at the start plus `k` periods, counted from the tick's
+  number, and a tick that overruns skips to the next whole period, counts what it skipped, and
+  never sends twice in one period, nor before its deadline on the simulator's stepped clock. A
+  chunk's goals for ticks already played are dropped as it arrives and the rest replaces the
+  queue's tail. A tick with nothing to send sends nothing, and a second of that (`STARVE_S`)
+  ends the segment, with five (`FIRST_CHUNK_S`) for a first chunk that can be played. Each
+  segment has an epoch, and an answer from an earlier one is thrown away. On the simulator a
+  runner's inference costs no sim time, and its answer is taken in and judged its declared
+  latency later, where the arm would first see it, one thrown away or raising included. A
+  runner asked every tick has to answer within one, and one that declares longer is refused.
+- **A policy's calls have a thread of their own.** They used to share the default pool with the
+  bus's calls. A policy that stops answering now holds up no read, stop or heartbeat, and a
+  segment after it is refused rather than started beside it (`RESET_S`).
+- **A policy segment ends on what it reads, before it sends.** Each tick of `pick`'s loop reads
+  the arm and judges that reading first. A hot joint, torque off, a camera that gave no frame,
+  an action that is not a finite number or names no motor of this arm, a goal held past the
+  travel for a second (`CLIP_SUSTAIN_S`), three sends in a row that did not reach the arm
+  (`FAILED_SENDS`) or a read the arm did not answer each stop the policy and hold the arm where
+  it is, and `pick` says which. A NaN used to be clipped into the joint's floor and counted
+  nowhere. A joint reading outside its travel is left out of every action, as a stop leaves it
+  out, and a pick refuses to start with one more than `OUT_OF_RANGE_DEG` outside, naming its
+  reading and its travel. The loop reads the joints every tick, and torque and temperature
+  every 0.5 s (`REGISTER_PERIOD_S`).
+- **`quackd policy serve` and `quackd policy check`: a policy in a process of its own.** A
+  LeRobot checkpoint's processors can import any code their JSON names, so no quackd command
+  runs one in the process that owns the arm's bus. It runs in a server you start, on port 9875 on
+  loopback, and the arm's side reaches it with `RemoteRunner`, a client that needs no torch and
+  no LeRobot, over a protocol of four calls (`GET /v1/policy`, `POST /v1/reset`,
+  `POST /v1/step`, `POST /v1/end`). It serves a LeRobot checkpoint and two scripted policies,
+  `scripted:hold` and `scripted:sweep`. `check` asks a server what it serves, or serves
+  `--policy` itself for the check, and `--bench` times one warm step, then streams synthetic
+  observations through the real client at the policy's rate and says the rate it achieved, the
+  ticks with nothing to send, the ticks skipped while it waited for a chunk and what they would
+  have been on the arm, the round trip, and the `--latency-s` to declare, read at the 95th
+  percentile of every step it timed (`LATENCY_QUANTILE`) rather than off one step, and says
+  whether the latency it was served with covers that. It suggests no latency `serve` would
+  refuse: a policy slower than that is said to answer too slowly to drive an arm from that
+  machine, with a GPU to serve it on. docs/policies.md says to bench twice,
+  the second time served with that latency, and what a good second bench looks like.
+- **The policy server is hardened as the Jetson host daemon is, and more.** A token is always
+  required: with no `--token-file` it writes one to `~/.quackd/policy.token`, readable by its
+  owner alone where the OS allows, and the client reads it there, or `--policy-token`, or
+  `QUACKD_POLICY_TOKEN`. It is compared in constant time, read from a header only, and a request
+  without it is answered on its headers alone. Both ends refuse a token shorter than 16
+  characters or with a space or a line break inside it, and never quote it. The daemon's bounds
+  on connections, headers and a request's time are copied as named constants, with a cap on a
+  body besides, and a bind to anything but `127.0.0.1` or `::1` is refused without
+  `--behind-tls`. Every number in a message is checked to be finite on both sides, JSON's `NaN`
+  and `Infinity` included, and what a server says about itself in words is printable ASCII or
+  refused, so `check` never prints an escape a server sent. A reset from a second client is
+  refused while another client's session is in use, so a check run against a server an arm is
+  driving through never ends the arm's segment, a reset whose reply was lost leaves the
+  session to the client that asked for it, and a step for an ended session is refused. The
+  client sends plain HTTP to `127.0.0.1` and `::1` and nowhere else, refuses `localhost` with a
+  sentence saying to write `127.0.0.1`, follows no proxy and no redirect, keeps the token out of
+  every error, holds the URL redacted, holds every reply to a deadline however slowly it
+  trickles in, caps every reply, sends a request once more on a new socket when the server has
+  closed the kept-alive one, drops a reply for another session or sequence, and ends its
+  session when it closes. A step sent again is answered from its first answer, never inferred
+  twice. A reset is answered at once while a step is still inferring, one its client gave up
+  waiting for above all: the policy's own reset runs before the new session's first step, and
+  the old step's chunk is dropped as it ends, never answered as a chunk. Another client's
+  reset is refused only until that step has outlived its client's patience (`ABANDONED_S`),
+  since nobody waits for it after that. Stopping the server refuses every request after it,
+  waits a second at most for a step still inferring (`CLOSE_WAIT_S`), and closes a checkpoint's
+  runner without waiting for torch, which begins no session and answers no step after it. A
+  declared `--latency-s` of 5 s or more, or as long as a chunk takes to play, is refused, since
+  no chunk would ever play under it.
+- **The policy server loads a LeRobot checkpoint.** `quackd policy serve --policy
+  OWNER/NAME@REVISION` serves an ACT, a SmolVLA or a pi05 checkpoint through LeRobot's own
+  loop (`policy/pipeline.py`): the arm's reading through `build_inference_frame` and the
+  pre-processor, `predict_action_chunk` cut to `n_action_steps`, the post-processor over the
+  whole chunk, and `make_robot_action` a row at a time, each row a goal per motor named by the
+  bus's own motors in the bus's order. One lock holds the three together and every session's
+  reset resets the policy and both processors. The rate is `--fps`, or else the fps of the
+  dataset its `train_config.json` names, at the whole commit or the tag it names, or the server
+  refuses to start. A branch is refused there, since the checkpoint chose it and it moves, and
+  so is a tag while `HF_HUB_OFFLINE` is set, when the Hub cannot say it is one. It loads on the
+  device LeRobot picks, gives torch one thread fewer than it would take unless `--threads` says,
+  and names each camera's image by the camera's own name unless `--cameras` maps it. An ACT that
+  ensembles its chunks over time is asked every tick, and is refused without a GPU. A pi05 that
+  learned relative actions is served in chunks, the whole chunk made absolute against the state
+  it was predicted from, as its training made it relative, where LeRobot's own loop makes each
+  one absolute against the state of the tick it is played at. CI runs a tiny random ACT
+  through it, and a trained ACT from the Hub ran through it on a laptop's CPU. SmolVLA loaded
+  there and took minutes a chunk, and pi05 has not run.
+- **A checkpoint is read before it is built, and refused rather than guessed at.** Its
+  `config.json` and both processor JSONs are fetched first, at the revision named, and nothing
+  else. A policy type other than those three, a feature an arm cannot give, a processor step
+  named by a `class` key, and a step outside the registry names ACT's, SmolVLA's and pi05's
+  processors use are all refused before a byte of weights is fetched, since a step named by
+  class is imported from wherever it says. A step that could trust a repository's own code is
+  told not to. A model the checkpoint names inside itself, SmolVLA's backbone or a tokenizer,
+  is refused unless `--pin REPO@REVISION` fixes its revision at a whole commit or a tag, never a
+  branch, and is fetched with no `.py` and no pickle in what comes down. Its directory in the
+  Hub's cache is refused if it holds any other kind of file, left there by an earlier fetch, or
+  a config that maps a class to code (`auto_map`). A SmolVLA whose config names no backbone is
+  refused too, since LeRobot would fill in a default of its own at no revision. An ACT's
+  ImageNet backbone is never fetched. Every weight in `model.safetensors` is loaded or the
+  server refuses to start: LeRobot's loader only logs a missing one and pi05's hands back a
+  random network when its weights do not load, so the one is asked to be strict and the other's
+  are loaded by quackd. Every repository loaded, with its revision, is in `/v1/policy`, which
+  `serve` and `check` print.
+- **The arm checks at connect that the policy fits it, before any torque.** Once its cameras
+  are open and before its motors are energised, the arm asks the server what it serves and
+  refuses the connect, with the arm untouched, over a policy whose state or action is not as
+  long as the bus has motors, whose action names are not the bus's motors in the bus's order,
+  that looks at an image no camera is mapped to (a SmolVLA or a pi05 runs with it padded, and
+  the record says so), that learned at another frame size than a camera gives, or whose
+  learned state's 1st and 99th percentiles lie outside this arm's calibrated travel. Every
+  limit is read: the motors from the bus, each size from a frame, the travel from the
+  calibration file, and the slack from the backend's own. A frame of another size is refused
+  with the size to give the camera with `--camera-url`'s `width=` and `height=`, and can be
+  accepted from Python with `RemoteRunner`'s `accept_frame_size`. The other frame is
+  `--accept-other-frame`, below. The record says when either was taken. What the policy is and
+  every repository the server loaded go into the run's record. The check is made again as every
+  segment starts, so a server started again with another policy since the connect starts no
+  segment, and says to connect again.
+- **`quackd[lerobot-vla]`, the policy server's extra.** It is `quackd-lerobot[vla]`, which is
+  `lerobot[smolvla]` on Python 3.12 and no `[feetech]`, since the server never opens a serial
+  port. `quackd doctor` has a row for it, read from the installer's metadata. On Python 3.12 the
+  lock now resolves transformers inside LeRobot's window for every extra that pulls it.
+- **CI's `policy` job loads a checkpoint.** On Python 3.12, with torch from its CPU wheel index
+  and LeRobot 0.6.1, it builds a tiny random ACT with no pretrained backbone and saves it
+  naming LeRobot's default one, puts it in a Hub cache of its own at a commit and a tag, and
+  serves it with the Hub and torchvision offline through the real server to the real client
+  and an arm behind it (`tests/test_policy_pipeline.py`), so a backbone fetched fails it. Every
+  action of a chunk is checked, in order, against what LeRobot's own `select_action` plays
+  from the same files, and the same files with weights that are not the model's are refused.
+  It fails rather than skips when torch did not install.
+- **`--policy-url` and `--policy-token` point the arm at a policy server.** On `quackd run`,
+  `quackd preflight` and `quackd serve-mcp`. `lerobot:real` and `lerobot:mujoco` build the
+  server's client from them (`RemoteRunner`) and take it as their policy, so `pick` and
+  `manipulate` are in the arm's static manifest and a task that allows them is judged before
+  anything connects. Only the flag names the address: no variable and no registered robot does,
+  so a policy drives the arm only on a command that says so. The token is the flag, then
+  `QUACKD_POLICY_TOKEN`, then the file the server wrote. The server is asked what it serves
+  before anything connects, and the run header names it, redacted, and its checkpoint. The
+  mock, which runs its own script, refuses one, and so does a flock and every other body, in
+  words naming the arm: `make_adapter` and `describe` pass `policy=` only when one was given,
+  and refuse an adapter whose `make()` or `describe()` has no parameter by that name rather
+  than handing it a keyword it would drop or raise on. Over MCP both verbs need `--yes`. A
+  task refused on the arm for allowing either verb without the flag says to start a server and
+  give the command `--policy-url`, and an address redaction cannot read is refused without
+  being quoted, since it may hold a password.
+- **`--accept-other-frame` lets a policy learned on an arm calibrated another way connect.** On
+  `quackd run`, `quackd preflight` and `quackd serve-mcp`, beside `--policy-url`, and refused
+  without it. The connect refuses a policy whose learned state's percentiles lie outside this
+  arm's calibrated travel, and on the lab arm's calibration it refused 55 of the 68 servable
+  SO-100 and SO-101 ACT checkpoints on the Hub, every one on `shoulder_lift`, whose recorded
+  travel there does not reach the arm's fold while theirs did. The refusal names the flag.
+  Every goal such a policy answers is still clipped to this arm's travel, so the flag changes
+  what drives the arm and never where the arm may go, which its help, docs/safety.md and
+  ADR-0048 say. `run_start` and the `policy` block of `summary.json` carry `accept_other_frame`.
+- **A `--goal` run with a policy server allows `manipulate`, behind a confirm.** A goal's
+  contract allows safe verbs alone, and `manipulate` is not one, so a goal could never have
+  used a policy. With `--policy-url` it is allowed and listed under `confirm`, so a person at a
+  terminal is asked before each segment unless `--yes`, or a pipe or file on stdin, answers for
+  them. Answered that way, a segment starts without anybody being asked, as any gated verb
+  does, and `--controller vla` refuses both. Without a policy server a goal is what it was.
+- **The pilot is told what executes.** A run whose verbs include `manipulate` has a
+  `Your executor` section in its system prompt: one short subtask per call, a fresh look after
+  each, and never success on the verb's ok alone, since it says only that the segment ran. The
+  fresh look is the frame the next observation brings when the arm has a camera and the pilot
+  can see, and a reading of the arm otherwise.
+- **`duck: 3`, and a `policy` section that holds `manipulate` to the task.** A task file lists
+  the instructions the arm's learned policy may be told (at most 12, the stepper's own limit,
+  each one line of at most 200 characters), how long each segment runs (`segment_s`, at most
+  60 s) and how long they may run in all (`total_s`, at most an hour). A `.duck` is untrusted
+  input, so every bound is checked as it is parsed, `manipulate` must be allowed beside it, a
+  flock duck cannot carry one, and a list refuses `pick` beside it, since `pick` tells the
+  policy a target of the pilot's own. The pilot's own instruction, when a task lists none, is
+  held to the same one line and the same length, and so is any target given `pick` that says
+  something. One helper (`quackd.duckfile.narrow`) rebuilds `manipulate` from the arm's own
+  verb every time, never from the last narrowing: its instruction becomes an inline enum of the
+  list, which the executor enforces and the stepper can read (an enum of one for a list of
+  one, since Gemini refuses the `const` pydantic would write), its segment reaches the backend
+  through `set_segment_s`, and its timeout becomes the segment plus 10 s.
+  On the simulator the timeout also covers the wall time the clock stands still while the
+  policy thinks, bounded from the latency the policy declares and a frame from each camera
+  timed at connect, and held to ten minutes (`FROZEN_INFERENCE_MAX_S`). A rate the loop would
+  not pace, or a latency that starves every segment, adds nothing. A policy that answers more
+  slowly than it declares can still run the verb out of time there, and the timeout then says
+  so, with the longest a request took and the latency declared, and says to bench the policy
+  with `quackd policy check --bench`. The loop calls the helper
+  once the allowlist is final and before the tools are built, and an MCP session calls it at
+  connect and on each task file it loads, before it adopts the file, so the model, the stepper
+  and the executor read one verb, and a file its body's `manipulate` cannot be held to is
+  refused before anything of the last task changes. The executor charges each segment, a
+  `pick`'s as well as a `manipulate`'s, the seconds it said it ran, or the robot's clock across
+  the call when it said none or ended with no result, cancelled or aborted mid-segment
+  (`Budget.policy_s`). A `do` refused before its segment began says it ran 0 s. The executor
+  refuses the next segment once `total_s` is spent, and a second while one runs (a `segment`
+  gate), so concurrent MCP calls are never each checked against seconds not yet charged, and
+  the last segment overruns `total_s` by its own length at most. An MCP session carries the
+  seconds across every task file it loads, the first included, since a session with no task
+  spends its own default total. A run with no section, a `--goal` run, a v2 file or an MCP
+  session with no task, gets 10 s segments and 120 s of them, and the budget line in each
+  observation names the seconds once one has run. The arm registers the verb with a 70 s
+  timeout (`MANIPULATE_TIMEOUT_S`), past the longest segment a task may ask for and its
+  headroom.
+- **The discrete stepper is shown `manipulate` and never takes it.** With a task file's list it
+  is a closed set, and which subtask comes next is exactly a between-segment choice, but it is
+  confirm-gated, and under `--yes` nobody is asked at that gate, so a stepper that cleared the
+  confirm floor would start a learned policy driving the arm with no person and no model
+  involved. It is offered, an answer that clears every other gate ends on `gate: shadow_only`,
+  the model takes the turn, and in `--decision-mode on` as in shadow a `decision_shadow` record
+  sets the two answers side by side on every turn that offered one, which is the agreement rate
+  promoting it would need.
+- **`--controller vla`, a scripted pilot whose success a person judges.** `quackd run
+  --controller vla` flies a LeRobot arm with `--policy-url` and no model at all. It answers
+  `assess_task` with `uncertain`, so a person decides whether the arm should try, hands the
+  policy each of the task file's `policy.instructions` in order, or the `--goal` as the only
+  one, with one `manipulate` apiece through the same narrowed verb, confirm gate and budget as
+  any pilot's, and then the run asks `Did the arm do it?`. The pilot declares from that answer,
+  which the loop asks through `RunConfig.judge`, records as a `judge` prompt and hands back on
+  the next observation, and only a yes from a person really asked is a success: a no, a pipe
+  on stdin or nobody there is a failure, and the loop holds any pilot that says it cannot judge
+  to the same rule. A prompt that ends without an answer is a failure too, and not a no: no
+  `judge` row is written, and the reason says what the prompt raised. The time a person takes
+  to answer is not charged to `max_minutes`. A segment that does not end ok ends the list with
+  a failure in the verb's own words, and a budget that ends it early still asks about the
+  segments that ran and ends on the budget. It reads the verb's result and the answer and
+  nothing else, never the simulator's truth, and it costs nothing (`tokens 0+0`, `cost $0`).
+  It is refused before anything connects without a policy server, with `--yes`, with no
+  terminal to ask on, with `--dry-run`, beside a decision LLM, with a flag for a model or a
+  picture it would ignore, for a task file that lists no instruction and for a `--goal` that
+  is not one short line. `serve-mcp` refuses `--controller` in words, since over MCP the
+  client is the pilot.
+- **A run's record keeps what its policy did.** `run_start` names the server and the
+  checkpoint, and `summary.json` has a `policy` block, beside the stepper's `decision` block
+  and by the same rule, only when there was one: the server, the policy, its rate and where
+  that came from, every repository the server loaded at its revision, the JPEG quality, the
+  segments, their seconds on the arm's clock and on the wall's, ticks, late ticks, chunks,
+  starved ticks and clipped goals, the rate the ticks were achieved at, and the mean and
+  longest round trip. On the simulator the arm's clock is the simulator's own, which the block
+  says (`clock: sim`). The time counter under the verdict gains the policy's wall seconds, and
+  a `policy` counter says the rest. The counts come from the policy loop (`PolicyLoop.tally`),
+  a segment stopped from outside included, and no action goes into a verb's result or the
+  record.
+- **`extras.timing`, how long the bus and a policy's ticks take.** The arm's state carries a
+  count, a median, a 99th percentile and the longest for every bus call, the wait for the bus
+  included, and for every tick of a policy segment, measured on `perf_counter`. A pick's
+  result carries it too. Nothing acts on it: it is for a bench session to measure.
+- **[docs/policies.md](docs/policies.md): a policy on the laptop or on a rented GPU.** How to
+  check a checkpoint and serve it in a second terminal, how to reach a server on a rented GPU
+  through `ssh -L` and hand the laptop its token, which policies there are and what each needs,
+  SmolVLA's pinned backbone and Pi0.5's gated tokenizer among them, their licences in one
+  table, and why FLUX 3 Action is not served. Recording the 50 to 200 episodes a policy for your
+  own task learns from is LeRobot's own tools, documented and not wrapped, and a checkpoint is
+  code, which the page says what to do about.
+  [ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md) records why a policy is the arm's
+  executor while quackd keeps the bus, and six earlier ADRs carry a note pointing to it. The
+  arm's first-run guide gains a section on handing the arm to a policy, rehearsed on its twin,
+  and step 18 of its hardware checklist is how to bring one up on the arm and the number to
+  measure there. `docs/licenses.md` and `NOTICE` say that no policy's weights ship with quackd,
+  and `.gitignore` keeps `*.safetensors` out of a commit.
+
+### Changed
+
+- **LeRobot's policy names have a table of their own, read at 0.6.1.** They moved out of the
+  arm's own refs, which are pinned to a `main` commit, into `policy/upstream_api.py`, read
+  against the `v0.6.1` tag, the version the laptop that drives the arm runs, with the async
+  inference facts that are why quackd's policy server is its own. `quackd doctor` prints its pin
+  as `LeRobot policies`, and the arm's page has the table. `POLICY_PIPELINE` is VERIFIED for
+  what CI's `policy` job runs, ACT on the CPU, and `VLA_PIPELINE`, `TICK_MODE` and
+  `LOAD_POLICY` say what has not run.
+- **A policy's step cap is the verbs' speed at the policy's rate.** Per send it is
+  `max_step_deg / TICK_S` over the rate, and never more than one verb step, so
+  `QUACKD_LEROBOT_MAX_STEP_DEG` governs both, and a policy faster than the verbs' tick takes a
+  smaller step rather than moving faster. It is written on the follower as the segment starts
+  and the verbs' step put back as it ends, however it ends, once any send still on the wire is
+  back, cancelled or run out of its time, and a stop, a rest move or a verb's goal writes it
+  again where a segment's cap may still be on the follower.
+- **`pick` stops its policy the moment something is held.** It used to return and leave the
+  policy driving the arm through the pilot's thinking, so the next arm verb was refused once
+  as `pick is running`. `holding` is now judged on the policy loop's own reads, each tick,
+  and the segment ends there. The verb waits for the segment rather than polling on the
+  arm's clock, so on the simulator it no longer takes part in time while the loop runs.
+- **A stop from elsewhere ends `pick` as stopped, and says what stopped it.** The heartbeat's
+  stop, an MCP `stop` or a verb refused while the pick ran used to show up as a pick that
+  ended without a grasp, followed by a stop of its own. It is now `stopped:` with the stop
+  named, and no second stop follows it. A stop that lands while a pick is still starting,
+  before its policy has been asked for anything, keeps the policy from starting, and the pick
+  is refused with the stop named. So does a stop still under way when the pick begins, such as
+  the heartbeat's landing while the executor reads the arm before the pick. It used to hold
+  the arm and return, with the policy started behind it.
+- **The arm's wall clock is `perf_counter`, and its sleeps never end early.** `time.monotonic`
+  ticks every 15.6 ms on Windows before Python 3.13 (gh-88494), and the event loop's timer
+  wakes a sleep up to one of those ticks early. Every sleep now finishes its last millisecond
+  on `perf_counter`.
+
+### Fixed
+
+- **`quackd serve-mcp` printed a traceback when the connect refused.** A refusal raised as the
+  server starts, an arm that cannot reach its rest pose among them, arrives inside the task
+  group the MCP SDK serves in, and only a bare refusal was caught, so the sentence was buried in
+  a traceback on stderr and the client saw a closed connection. It is now said as `quackd run`
+  says it, a policy that does not fit the arm included, and the server exits 1. Anything else in
+  the group is still a traceback.
+- **`quackd doctor`'s header ended in `duck-ipc-proto API v` with nothing after it** on a
+  machine without the Microduck's adapter, which is where that number comes from. The header
+  leaves it out there.
+- **A plain `quackd validate` checked a task file against the Microduck's verbs.** With no
+  robot named, a file is meant to be checked against every body installed here, and
+  `installed_vocabulary()` has built that union since 0.10, but the command still passed the
+  Microduck's list, so an arm's task that allows `move_joints` failed with `unknown verbs`. It
+  now checks the union, which also holds what each body offers a policy server, so the
+  `duck: 3` example in duck-spec.md validates as the page quotes it. `validate --robot NAME`
+  checks that body as it is registered, as before.
+- **On Windows, input from NUL counted as a person at a terminal.** NUL is a character device,
+  so `isatty` says yes to it, and a script started with its input from NUL, or from Git Bash's
+  `/dev/null`, was put the questions meant for a person, answered them with end-of-input, and
+  had its record name a person. quackd now asks Windows whether its input is a console as
+  well, so NUL is nobody there, as a pipe already was.
+- **A stop during `pick` could refuse its own hold.** A stop cancels the policy loop first, and
+  a loop cancelled in the middle of a bus call leaves that call's thread on the wire, which
+  quackd files as a wedge and refuses every call behind until it comes back. The hold the stop
+  was about to write was the first call refused, so the stop said it could not be delivered and
+  the arm kept the policy's last goal. A rest move, a release, a take-hold or a close that
+  landed there was refused the same way, and a heartbeat that landed there failed and aborted
+  the run over an arm that was answering. Each now waits for that one call to come back before
+  it reads or writes the arm, and no longer than the call's own deadline, which is when it
+  would have been refused had nothing cancelled the loop. That deadline is judged by the bus's
+  own stamps, as every call's budget has been since 0.15.0, so a call the arm answered in time
+  is waited for however late a busy loop marks it done. Found in the test suite, where every
+  stop that landed mid call was refused. On the arm it happens as often as a stop lands while
+  one of the loop's calls is on the bus.
+- **A pick abandoned as it ended the one before could run anyway.** A pick waits for the
+  policy loop before it to end, and an abort or a dropped MCP call that cancelled the pick
+  right then was passed on to that loop and lost there. The pick went on as if nothing had
+  cancelled it, and its policy drove the arm for up to its whole `max_s`. The cancellation now
+  ends it.
+- **A second `pick` could replay the first one's queued actions.** A LeRobot policy keeps the
+  actions its last chunk predicted, and nothing cleared them between picks. The policy is now
+  reset at the start of every pick, where it has a `reset()`, and `load_policy()`'s does.
+- **The docs said a policy's goal past the travel is refused.** It is clipped and counted, as
+  ADR-0036 decided, and the hardware checklist, the arm's page and the `LOAD_POLICY` row now
+  say so.
+
+### Known limitations
+
+- **No learned policy has driven the arm.** Every segment, `pick`'s and `manipulate`'s, ran
+  against the test suite's fake arm or on the arm's simulator, served by the scripted policies,
+  by the tiny random ACT CI builds, or by one trained ACT from the Hub,
+  `natsuki0000/act-so101-bluecap` at commit `82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, on a
+  laptop's CPU, which drove the arm's twin through two segments over `serve-mcp`. On
+  2026-09-29 OpenAI's `gpt-6-sol` flew that twin with `quackd run --goal` and `--policy-url`,
+  handed the same ACT two `manipulate` segments and declared failure on seeing no blue cap,
+  since the simulator's table holds a red cube and a pen. That run proves the plumbing and
+  nothing about the task. `--controller vla`, its judge prompt and `--decision-mode shadow`
+  beside a policy have run in the test suite and never with a trained checkpoint. pi05 has not
+  run (`VLA_PIPELINE`), and an ACT asked every tick needs a GPU the CI job lacks
+  (`TICK_MODE`). What this release changes in `lerobot:real`, the segment's task, the step cap
+  written for it and put back, the loop's own reads, the check at connect that a policy fits,
+  the waits for a call a stop cut short and the wall clock on `perf_counter` among it, has run
+  only there. Step 18 of
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to find
+  out in on an arm.
+- **SmolVLA did not run on the laptop's CPU.** On an Intel Core i5-10210U,
+  `lerobot/smolvla_base` took 169 to 188 s a chunk, 474 of its 500 parameter tensors being
+  bfloat16, which that CPU has no native arithmetic for, and about 18 s cast to float32, past the
+  10 s the client waits for a step, so it never answered one through the client. It wants a GPU
+  ([docs/policies.md](docs/policies.md#smolvla-and-act)).
+- **FLUX 3 Action has not run anywhere.** The server refuses its policy type. What would change
+  that is a spike on a rented Linux GPU, which has not happened, showing that `quackd policy
+  check --bench` holds the checkpoint's rate through the tunnel, that its actions stay anchored
+  when quackd clips a goal, and that the official SO-101 checkpoint drives the simulator end to
+  end. It needs LeRobot's main branch, which is not on PyPI, a NATTEN built for the machine, and
+  about 32 GB of GPU memory by its makers' report. PLAN.md carries it.
+- **How fast the policy loop runs on the real bus is unmeasured.** With the server inferring on
+  the laptop that drives the arm, torch's threads and the bus's worker share one CPU, and only
+  the bench can say what the loop achieves then. The simulator's clock is lockstep, so nothing
+  timed on it is a rate, and `quackd policy check --bench` measures the server and the wire
+  without an arm. A run's `summary.json` has the number in its `policy` block. PLAN.md carries
+  it.
+- **What a policy does on the simulator says nothing about the arm.** The simulator's frames
+  are renders of quackd's own scene from default mounts, and a policy trained on a real camera's
+  frames sees pictures it never saw, so it can fail there and work on the arm, or the other way
+  round. A rehearsal proves the plumbing, the clips, the stops, the guards and the budgets, and
+  never a rate or a grasp. The ticks a second a segment reports there are the simulator's.
+- **The stepper only shadows `manipulate`**, in `--decision-mode on` as in shadow. It is offered
+  each listed instruction, its answer is recorded beside the model's, and the model takes the
+  turn. Promoting it needs a measured agreement rate and a decision of its own.
+- **A frame of another size can be accepted only from Python**, with `RemoteRunner`'s
+  `accept_frame_size`. From the command line it refuses the connect with the size to give the
+  camera.
+- **`load_policy()` still builds a policy in the arm's own process.** It is a Python helper in
+  the arm's backend from before this release, and nothing in quackd calls it, so no command
+  reaches it. A caller of its own would load a LeRobot checkpoint beside the serial bus, with
+  none of the reading the server does before it builds, as the `LOAD_POLICY` row on
+  [the arm's page](docs/adapters/lerobot.md#the-policies-upstream-lerobot-061) says. Whether to
+  remove it is not decided, and PLAN.md carries it as an open item.
+- **The lab arm's twin cannot start a segment where it starts.** A segment starts only with
+  every joint inside its travel, and a twin starts where its rest pose puts it, settled clear of
+  its table. The lab arm's fold lies past `shoulder_lift`'s travel and past the model's stop, so
+  its twin starts with that joint settled just off the stop, and its first `manipulate` is
+  refused until the joint is moved in. `--controller vla` only calls `manipulate`, so it cannot
+  recover. The lasting fix is to calibrate the arm again folded
+  ([docs/policies.md](docs/policies.md#on-the-laptop-alone)).
+- **A policy takes a second terminal.** The server is a process you start, on the laptop or on a
+  rented GPU, and `quackd run` never spawns one. It gives torch one thread fewer than it would
+  take and does not lower its own priority, and the run's record does not keep the thread count
+  `/v1/policy` reports.
+- **A `--controller vla` run counts its calls as the model's are counted.** A task file listing
+  N instructions takes N + 2 of `max_llm_calls`, the verdict, the segments and the declare, and a
+  budget below that ends the run on its budget before the declare. While it asks whether the arm
+  did it, as while any question at the terminal waits, the heartbeat does not beat. The arm
+  holds where its last segment left it.
+- **The arm has not run quackd since 2026-09-23, so 0.14.0's and 0.15.0's bench steps are still
+  owed.** Nobody has taken the seven under 0.14.0's Known limitations or any under 0.15.0's. One
+  would settle 0.15.0's follower, a second Ctrl-C during the fold back to the rest pose, and
+  that release names six more of its changes nobody has written a bench step for. Four would
+  compare 0.15.0's simulator against the arm: joint signs and zero offsets, the rest move
+  pressing the gripper into the table, the gripper on a real pen, and the front and wrist
+  cameras' placement and field of view. The fifth it lists is the policy loop's rate on the real
+  bus, above. Until they are taken, the twin the trained ACT drove is a model nobody has checked
+  against an arm. What those releases changed in `lerobot:real` has run only in the test suite
+  and on the simulator. Step 18 of
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md), which hands the arm
+  to a policy, comes only after every step above it. PLAN.md carries them.
+
 ## [0.15.0] — 2026-09-29
 
 This release is two pieces of work. quackd reaches an NVIDIA Jetson from the laptop, and the
@@ -5105,7 +5584,8 @@ First release: sim-first, honest about hardware.
 - The README hero is a scripted-pilot recording; a real-model recording needs an API key.
 - Non-Anthropic default model IDs are unverified; override with `QUACKD_MODEL`.
 
-[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/rokbenko/quackd/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/rokbenko/quackd/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rokbenko/quackd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/rokbenko/quackd/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rokbenko/quackd/compare/v0.12.0...v0.13.0

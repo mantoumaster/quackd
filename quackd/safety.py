@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import queue
 import signal
 import sys
@@ -24,7 +25,12 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import ValidationError
 
 from quackd.adapters.base import backend_name
-from quackd.duckfile.schema import Budgets, DuckFrontmatter
+from quackd.duckfile.schema import (
+    DEFAULT_POLICY_TOTAL_S,
+    POLICY_VERBS,
+    Budgets,
+    DuckFrontmatter,
+)
 from quackd.log import (
     EventLog,
     LoggedTransport,
@@ -94,6 +100,13 @@ class Budget:
     would bound nothing the first two do not. This exists so `status()` can say where the
     turns went."""
     started_at: float | None = None
+    policy_total_s: float = DEFAULT_POLICY_TOTAL_S
+    """How many seconds of policy segments, `pick`'s and `manipulate`'s alike
+    (`POLICY_VERBS`), the run may spend: the task file's `policy.total_s`, or the named default
+    for a task with none and a session with no task."""
+    policy_s: float = 0.0
+    """The seconds of segments spent so far, each as its verb said it ran. A segment is one
+    step against `max_steps` like any verb; this is the other half of its cost."""
 
     def start(self) -> None:
         self.started_at = self.now()
@@ -129,6 +142,21 @@ class Budget:
         self.check_time()
         self.stepper_calls += 1
 
+    def check_policy(self) -> None:
+        """Before a `pick` or a `manipulate`: refuse it once the segments have spent
+        `policy_total_s`.
+        Checked before each segment rather than inside one, so the last may run past the
+        total by at most its own seconds, and never starts with nothing left."""
+        if self.policy_s >= self.policy_total_s:
+            raise BudgetExceeded(
+                f"policy total_s ({self.policy_total_s:g} s of segments) spent: "
+                f"{self.policy_s:.1f} s have run"
+            )
+
+    def note_policy(self, seconds: float) -> None:
+        """After a `pick` or a `manipulate`: charge the seconds its segment ran."""
+        self.policy_s += seconds
+
     def status(self) -> str:
         return (
             f"step {self.steps}/{self.limits.max_steps}, "
@@ -137,8 +165,26 @@ class Budget:
             # exactly as it always has: this string is in every observation the model is
             # handed, and `quackd log` parses it back out
             + (f"{self.stepper_calls} by the stepper, " if self.stepper_calls else "")
+            # the same rule, for the seconds a policy has driven the body
+            + (f"policy {self.policy_s:.1f}/{self.policy_total_s:g} s, " if self.policy_s else "")
             + f"{self.elapsed_s / 60:.1f}/{self.limits.max_minutes:g} min"
         )
+
+
+def _segment_seconds(result: VerbResult | None, before: float | None, after: float | None) -> float:
+    """What one policy segment charges against `policy_total_s`: the seconds its result says it
+    ran. A result that does not say, or a call that ended with none, is charged the robot's
+    clock across the call (`before` to `after`), since its segment may have run all of it: a
+    call the executor ended itself, a timeout, a verb that raised, a cancellation or an abort,
+    and the mock's `pick` that ends with nothing held. A `do` refused before its segment began
+    says it ran 0 s, however long the refusal took on the wall. A call nobody could time
+    charges nothing, and a number that is not one, a bool or a NaN, is never believed as one."""
+    said = None if result is None else result.data.get("seconds")
+    if isinstance(said, int | float) and not isinstance(said, bool) and math.isfinite(said):
+        return max(0.0, float(said))
+    if before is not None and after is not None and math.isfinite(after - before):
+        return max(0.0, after - before)
+    return 0.0
 
 
 ConfirmFn = Callable[[str, dict[str, Any]], bool]
@@ -182,6 +228,9 @@ class Executor:
     event_log: EventLog | None = None
     """Where the executor narrates itself: `verb_start`, every `gate` that fires, every
     `intent` a verb sends, `verb_end`. None is silent, which is what tests get."""
+    segment: str | None = field(default=None, init=False)
+    """The policy verb (`POLICY_VERBS`), as it was called, whose segment is between its check
+    against `policy_total_s` and its charge, or None. Another is refused meanwhile."""
 
     # ── narration ───────────────────────────────────────────────────────────────────
 
@@ -201,6 +250,20 @@ class Executor:
         with contextlib.suppress(Exception):
             return float(self.transport.now())
         return None
+
+    def _timed_out(self, name: str, verb: Verb, *, timed: bool) -> str:
+        """What a verb this executor's own timeout ended says, asked after the stop that follows
+        it. A policy segment's adds why, where the robot can tell (`slow_policy`): a simulator's
+        clock stands still while its policy thinks, so a policy slower than the latency it
+        declared outruns a timeout sized from that latency, and the bare timeout read as a
+        simulator that had hung. Never a reason to lose the result."""
+        said = f"{name} timed out after {verb.timeout_s:g}s; stopped"
+        why = None
+        if timed:
+            with contextlib.suppress(Exception):
+                ask = getattr(self.transport, "slow_policy", None)
+                why = ask() if callable(ask) else None
+        return f"{said}. {why}" if isinstance(why, str) and why else said
 
     def _clock(self) -> str | None:
         """What to call the robot's clock when it is not the wall clock. A free-running
@@ -456,13 +519,57 @@ class Executor:
             if not answer:
                 raise ConfirmDenied(f"human declined {name}")
 
-        if self.budget is not None and not nested:
+        # A segment of the body's learned policy has a budget of its own seconds as well as
+        # its step, checked first so a segment refused for time charges no step. Nested or
+        # not: the seconds are the body's, whoever asked for them. `pick` hands the arm to the
+        # same policy as `manipulate` does, so its seconds are the same budget's.
+        timed = canonical in POLICY_VERBS
+        if timed and self.segment is not None:
+            # One segment at a time, from its check to its charge. Over MCP every call is a
+            # task of its own, and a second one let in while the first ran was checked against
+            # seconds nobody had charged yet, then cancelled the first on the arm and ran its
+            # own, so the arm could run past `total_s` by as many segments as calls came in.
+            # Refused rather than queued, so the pilot hears it now and decides.
+            reason = (
+                f"{self.segment} is still running a segment of the body's learned policy: wait "
+                f"for it to end, or send stop, before {name}"
+            )
+            self._emit("gate", name=name, gate="segment", outcome="refused", reason=reason)
+            raise VerbNotAllowed(reason)
+        if self.budget is not None and (timed or not nested):
             try:
-                self.budget.note_step()
+                if timed:
+                    self.budget.check_policy()
+                if not nested:
+                    self.budget.note_step()
             except BudgetExceeded as e:
                 self._emit("gate", name=name, gate="budget", outcome="exceeded", reason=str(e))
                 raise
+        if not timed:
+            return await self._run_admitted(name, canonical, params, verb, parsed, source=source)
+        # held from the check above, with nothing awaited since it, to the segment's charge
+        self.segment = name
+        try:
+            return await self._run_admitted(
+                name, canonical, params, verb, parsed, source=source, timed=True
+            )
+        finally:
+            self.segment = None
 
+    async def _run_admitted(
+        self,
+        name: str,
+        canonical: str,
+        params: dict[str, Any],
+        verb: Verb,
+        parsed: Any,
+        *,
+        source: Source,
+        timed: bool = False,
+    ) -> VerbResult:
+        """A verb every gate has let through: its state, its abort conditions and its
+        preconditions, then the verb itself, or the dry run's word for it. `timed` is a policy
+        segment's, whose seconds are charged on every way out."""
         try:
             state = await self.transport.get_state()
         except Exception:
@@ -511,18 +618,27 @@ class Executor:
             )
 
         self.log(f"→ {name}({parsed.model_dump()})")
+        robot_before = self._robot_now() if timed else None
+        result: VerbResult | None = None
         try:
             result = await self._execute(
                 verb, parsed, interruptible=canonical != "stop", source=source, name=name
             )
         except TimeoutError:
             await self.logged_transport().stop()
-            result = VerbResult.fail(f"{name} timed out after {verb.timeout_s:g}s; stopped")
+            result = VerbResult.fail(self._timed_out(name, verb, timed=timed))
         except SafetyStop:
             raise
         except Exception as e:  # a buggy verb must not take the run down un-stopped
             await self.logged_transport().stop()
             result = VerbResult.fail(f"{name} raised {type(e).__name__}: {e}; stopped")
+        finally:
+            # Charged however the call ends. A call cancelled from outside, an MCP client that
+            # went, or one aborted mid-segment leaves with no result, and its segment ran all
+            # the while: without this a client that cancelled every call just short of its end
+            # ran the policy for as long as it liked with nothing charged.
+            if timed and self.budget is not None:
+                self.budget.note_policy(_segment_seconds(result, robot_before, self._robot_now()))
         self.log(f"← {name}: {'ok' if result.ok else 'FAIL'} {result.summary}")
         return self._record(name, params, result)
 

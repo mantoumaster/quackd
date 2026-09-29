@@ -15,6 +15,10 @@ First run against an arm on 2026-09-15, on lerobot 0.6.1 (Windows 11, Python 3.1
 connect, `get_observation`, `send_action`, the two register reads and `disconnect` behaved
 as the rows below say. The rows still carry the status they were read with, because one
 afternoon on one arm confirms what was exercised and says nothing about the rest.
+
+A policy's names are not here. They live in `policy/upstream_api.py`, read against 0.6.1, the
+version a policy server runs, because a checkpoint is loaded there and never beside the arm's
+bus.
 """
 
 from __future__ import annotations
@@ -40,9 +44,6 @@ _BUS = "src/lerobot/motors/motors_bus.py"
 _FEETECH = "src/lerobot/motors/feetech/feetech.py"
 _TABLES = "src/lerobot/motors/feetech/tables.py"
 _CONSTANTS = "src/lerobot/utils/constants.py"
-_POLICY = "src/lerobot/policies/pretrained.py"
-_FACTORY = "src/lerobot/policies/factory.py"
-_POLICY_CFG = "src/lerobot/configs/policies.py"
 _CAMERA = "src/lerobot/cameras/camera.py"
 _OPENCV = "src/lerobot/cameras/opencv/camera_opencv.py"
 _OPENCV_CFG = "src/lerobot/cameras/opencv/configuration_opencv.py"
@@ -287,7 +288,9 @@ SO_ACTION_CLAMP = UpstreamRef(
     src(_SO, 223),
     "ensure_safe_goal_position (utils.py line 93) clips a goal to present +/- the cap and "
     "logs a warning when it does; None, which is upstream's default, means no cap. Setting "
-    "it costs one extra sync_read of the present position per send_action",
+    "it costs one extra sync_read of the present position per send_action. send_action reads "
+    "it off self.config on every call (lines 223 and 226), so a cap written between two sends "
+    "caps the next, which is how a policy segment gets its own",
 )
 SO_ACTION_CLAMP_IS_FLOAT = UpstreamRef(
     "max_relative_target must be a float or a dict per motor",
@@ -824,60 +827,8 @@ FIND_CAMERAS = UpstreamRef(
     "which index is which. Off Linux it scans indices 0 to 59",
 )
 
-# ── policies (pick is a LeRobot policy, never a quackd control law) ─────────────────────
-
-POLICY_BASE = UpstreamRef(
-    "lerobot.policies.pretrained.PreTrainedPolicy", "VERIFIED", src(_POLICY, 61)
-)
-PRETRAINED_CONFIG = UpstreamRef(
-    "lerobot.configs.policies.PreTrainedConfig",
-    "VERIFIED",
-    src(_POLICY_CFG),
-    "`class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC)`, with "
-    "`from_pretrained(pretrained_name_or_path, *, ...)`, a `device` field and a `type` "
-    "property. `load_policy()` reads a checkpoint's config through it before building the "
-    "policy class, so it is the one policy name that is not in the factory",
-)
-POLICY_FROM_PRETRAINED = UpstreamRef(
-    "PreTrainedPolicy.from_pretrained(path, *, config=None, local_files_only=False, "
-    "revision=None, strict=False)",
-    "VERIFIED",
-    src(_POLICY, 147),
-    "a local directory or a Hub repo id; sets eval mode",
-)
-POLICY_SELECT_ACTION = UpstreamRef(
-    "PreTrainedPolicy.select_action(batch: dict[str, Tensor]) -> Tensor",
-    "VERIFIED",
-    src(_POLICY, 292),
-    "one action per call, the policy handles its own action-chunk cache",
-)
-POLICY_RESET = UpstreamRef("PreTrainedPolicy.reset()", "VERIFIED", src(_POLICY, 223))
-GET_POLICY_CLASS = UpstreamRef(
-    "lerobot.policies.factory.get_policy_class(name)", "VERIFIED", src(_FACTORY, 80)
-)
-MAKE_PRE_POST_PROCESSORS = UpstreamRef(
-    "lerobot.policies.factory.make_pre_post_processors(policy_cfg, pretrained_path)",
-    "VERIFIED",
-    src(_FACTORY, 151),
-    "a raw observation goes through the pre-processor and the action tensor through the "
-    "post-processor before it is a RobotAction",
-)
-MAKE_POLICY = UpstreamRef(
-    "lerobot.policies.factory.make_policy(cfg)", "VERIFIED", src(_FACTORY, 260)
-)
-
 # ── UNVERIFIED: our assumptions, and what quackd does about each ────────────────────────
 
-POLICY_PIPELINE = UpstreamRef(
-    "POLICY_PIPELINE",
-    "UNVERIFIED",
-    src(_FACTORY, 151),
-    "wiring a PreTrainedPolicy end to end (pre-processor, select_action, post-processor, "
-    "device) has never been run by us. The real backend takes an injected policy with "
-    "act(observation, task=...) -> action; load_policy() builds one from the verified names "
-    "and is untested. A policy's actions go through the same step cap and the same range "
-    "refusal as a verb's, which is quackd's rule and not upstream's",
-)
 TORQUE_ENABLE_HOLDS_PRESENT = UpstreamRef(
     "TORQUE_ENABLE_HOLDS_PRESENT",
     "UNVERIFIED",

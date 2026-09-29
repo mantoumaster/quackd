@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 from pathlib import Path
@@ -108,6 +109,35 @@ def test_adapter_doc_lists_every_simulator_upstream_ref() -> None:
     assert so_arm100.PIN[:7] in section and so_arm100.READ_ON in section
     assert "fetched at run time and never shipped" in section  # the honesty label
     assert "QUACKD_LEROBOT_SIM_ASSETS" in section
+
+
+def test_adapter_doc_lists_every_policy_upstream_ref() -> None:
+    """LeRobot's policy names are read at another pin than the arm's, the release a policy
+    server installs, in `quackd_lerobot.policy.upstream_api`, and the arm's page carries them
+    in a section of their own. As with the simulator's, each ref needs a row of its own in the
+    table for its status, because a name found anywhere on the page is not enough: the moved
+    rows used to sit in the arm's own tables, and a leftover there would keep a looser check
+    green."""
+    from quackd_lerobot.policy import upstream_api as policies
+
+    doc = (REPO / "docs" / "adapters" / "lerobot.md").read_text(encoding="utf-8")
+    heading = f"\n## The policies' upstream: LeRobot {policies.VERSION}\n"
+    section = doc.split(heading, 1)[1].split("\n## ", 1)[0]
+    verified, unverified = section.split("\n### UNVERIFIED (", 1)
+    tables = {"VERIFIED": verified.split("\n### VERIFIED (", 1)[1], "UNVERIFIED": unverified}
+    missing = [
+        f"{ref.status} {ref.name}"
+        for ref in policies.all_refs()
+        if f"\n| `{ref.name}` |" not in tables[ref.status]
+    ]
+    assert not missing, f"docs/adapters/lerobot.md has no row for these policy refs: {missing}"
+    assert policies.PIN[:7] in section and policies.READ_ON in section
+    # The honesty label. It went on saying no trained checkpoint had ever been loaded after the
+    # laptop's server had loaded trained ones, so it says where none has been loaded instead.
+    assert "No trained checkpoint has been loaded by quackd in CI or on a GPU" in section
+    arm = doc.split("\n## Upstream API\n", 1)[1].split("\n## ", 1)[0]
+    stale = [ref.name for ref in policies.all_refs() if f"\n| `{ref.name}` |" in arm]
+    assert not stale, f"the arm's own tables still carry policy rows: {stale}"
 
 
 def test_readme_promises() -> None:
@@ -418,6 +448,130 @@ def test_task_pictures_are_documented_where_they_are_configured() -> None:
         text = (REPO / path).read_text(encoding="utf-8")
         for needle in needles:
             assert needle in text, f"{path} does not mention {needle!r}"
+
+
+def test_the_policy_server_flags_are_documented_where_they_are_configured() -> None:
+    """`--policy-url` names the server a LeRobot arm hands its segments to, on `run`,
+    `preflight` and `serve-mcp`, and a flag nobody can find is a policy nobody points the arm at.
+    The front page names both flags, in the usage rows of all three commands and in the
+    Configuration table, the MCP page names them for `serve-mcp`, the arm's page says what a run
+    does with one, and `.env.example` names the one variable there is. That is the token's: the
+    address has none on purpose, so the file must never grow a line for it. `--accept-other-frame`
+    goes with them on all three, and every page that names it, the safety page among them, says
+    the goals of the policy it lets in are still clipped to the arm's travel."""
+    from quackd.cli import app
+
+    callbacks = {
+        (c.name or c.callback.__name__).replace("_", "-"): c.callback
+        for c in app.registered_commands
+        if c.callback is not None
+    }
+    for name in ("run", "preflight", "serve-mcp"):
+        params = callbacks[name].__code__.co_varnames
+        assert "policy_url" in params and "policy_token" in params, name
+        assert "accept_other_frame" in params, name
+    rows = [line for line in README.splitlines() if line.startswith("| `quackd ")]
+    for name in ("run", "preflight", "serve-mcp"):
+        row = next(line for line in rows if line.startswith(f"| `quackd {name}"))
+        assert "--policy-url" in row, f"the README's {name} row does not name --policy-url"
+        assert "--accept-other-frame" in row, f"the README's {name} row does not name it"
+    frame = "--accept-other-frame"
+    for path, needles in (
+        ("README.md", ("| Policy |", "--policy-token", "QUACKD_POLICY_TOKEN", frame)),
+        ("docs/mcp.md", ("--policy-url", "--policy-token", "QUACKD_POLICY_TOKEN", "--yes", frame)),
+        (
+            "docs/adapters/lerobot.md",
+            ("--policy-url", "--policy-token", "QUACKD_POLICY_TOKEN", frame),
+        ),
+        ("docs/safety.md", (frame, "clipped")),
+        ("docs/adr/0048-policies-are-the-arms-executor.md", (frame,)),
+        (".env.example", ("QUACKD_POLICY_TOKEN=",)),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+    env_example = (REPO / ".env.example").read_text(encoding="utf-8")
+    assert "QUACKD_POLICY_URL" not in env_example, "the policy server's address has no variable"
+
+
+def test_the_controller_is_documented_where_it_is_configured() -> None:
+    """`--controller vla` takes the model out of a run and leaves its success to a person, so
+    somebody choosing it has to find what it asks of them: the front page's `run` row and its
+    Policy row, the arm's page where the policy server is, the safety page that says who the
+    record says was asked (a `judge` prompt), the page that draws the record, and the MCP page,
+    which says why `serve-mcp` refuses it."""
+    from quackd.cli import app
+
+    callbacks = {
+        (c.name or c.callback.__name__).replace("_", "-"): c.callback
+        for c in app.registered_commands
+        if c.callback is not None
+    }
+    assert "controller" in callbacks["run"].__code__.co_varnames
+    rows = [line for line in README.splitlines() if line.startswith("| `quackd ")]
+    for name in ("run", "serve-mcp"):
+        row = next(line for line in rows if line.startswith(f"| `quackd {name}"))
+        assert "--controller" in row, f"the README's {name} row does not name --controller"
+    policy_row = next(line for line in README.splitlines() if line.startswith("| Policy |"))
+    assert "--controller vla" in policy_row
+    for path, needles in (
+        ("docs/adapters/lerobot.md", ("--controller vla", "Did the arm do it?", "`judge`")),
+        ("docs/safety.md", ("--controller vla", "`judge`")),
+        ("docs/architecture.md", ("`judge`", "providers/vla.py")),
+        ("docs/mcp.md", ("--controller",)),
+    ):
+        text = (REPO / path).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{path} does not mention {needle!r}"
+
+
+def test_every_question_the_record_keeps_is_named_where_the_record_is_explained() -> None:
+    """A `prompt` event's `what` is one of the questions the loop puts through
+    `_ask_recorded`, or the confirm gate's, which the executor writes itself. The safety page
+    lists them and counts them, and the architecture page's `prompt` row lists them. A kind the
+    code gained and the pages did not tells a reader the record holds fewer questions than it
+    does: `release` went missing from the safety page's list this way, and its count with it."""
+    code = (REPO / "quackd" / "agent" / "loop.py").read_text(encoding="utf-8")
+    gate = (REPO / "quackd" / "safety.py").read_text(encoding="utf-8")
+    kinds = set(re.findall(r'_ask_recorded\(\s*"(\w+)"', code)) | set(
+        re.findall(r'"prompt",\s*what="(\w+)"', gate)
+    )
+    assert {"confirm", "decide", "release", "judge"} <= kinds, kinds
+    safety = (REPO / "docs" / "safety.md").read_text(encoding="utf-8")
+    listed = safety.split("## Who the record says was asked\n\n", 1)[1].split("\n\n", 1)[0]
+    counted = {4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}[len(kinds)]
+    assert f"Those {counted} are" in " ".join(listed.split()), "safety.md counts them wrong"
+    row = next(
+        line
+        for line in (REPO / "docs" / "architecture.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `prompt` |")
+    )
+    for kind in sorted(kinds):
+        assert f"`{kind}`" in listed, f"docs/safety.md's list of prompts leaves out {kind!r}"
+        assert f"`{kind}`" in row, f"docs/architecture.md's prompt row leaves out {kind!r}"
+
+
+def test_every_key_a_runs_policy_block_holds_is_named_where_the_record_is_explained() -> None:
+    """`run_start`'s `policy` block is what `RemoteRunner.record()` says about the server, and
+    the summary's block starts with it, so the architecture page's `run_start` row names each
+    of its keys. `accept_other_frame` went missing from that row when `--accept-other-frame`
+    added it, and a reader of a run taken under the override would have met a key no page
+    explained."""
+    from quackd_lerobot.policy import server
+    from quackd_lerobot.policy.client import RemoteRunner
+    from quackd_lerobot.verbs import JOINTS
+
+    _, info = server.served_policy(server.ServeOptions(policy="scripted:hold"))
+    runner = RemoteRunner("http://127.0.0.1:1", token="0" * 64, motors=JOINTS)
+    runner.info = info  # as the connect heard it, with nothing asked
+    row = next(
+        line
+        for line in (REPO / "docs" / "architecture.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `run_start` |")
+    )
+    said = row.split("A run with `--policy-url` adds `policy`:", 1)[1]
+    for key in sorted(runner.record()):
+        assert f"`{key}`" in said, f"docs/architecture.md's run_start row leaves out {key!r}"
 
 
 def test_the_hand_placed_start_is_documented_where_it_is_configured() -> None:
@@ -1725,6 +1879,37 @@ def test_the_simulators_bench_steps_are_one_list_in_plan_and_the_release_note() 
     )
 
 
+def test_plan_breaks_no_line_mid_sentence_far_short_of_its_wrap() -> None:
+    """PLAN.md is edited by hand at every release, and a clause spliced into an item that
+    nobody reflows leaves a line that stops halfway across in the middle of a sentence. The
+    0.16.0 work left two: one where the rest pose item gained a clause about `pick`, and one
+    where the release added what 0.16.0 changes to the SO-101 item. Markdown renders them the
+    same, but PLAN is read as source at every release, and a line that stops short there reads
+    as though something was cut out of it.
+
+    A line that ends a sentence, or that stops before a code span, emphasis or link too long to
+    fit, is a break somebody chose. So a line counts only when the next word would have fitted
+    on it inside 80 columns. The file wraps at about 96, and what a wrap leaves over at the end
+    of a line never comes to 16."""
+    token = re.compile(r"\(?\[[^\]]*\]\([^)]*\)\S*|`[^`]*`\S*|\*{1,2}[^*]+\*{1,2}\S*|\S+")
+    lines = (REPO / "PLAN.md").read_text(encoding="utf-8").split("\n")
+    ragged = []
+    fenced = False
+    for number, (line, after) in enumerate(itertools.pairwise(lines), start=1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        rest = after.strip()
+        if fenced or not line.strip() or not rest or line.rstrip().endswith((".", ":", "?", "!")):
+            continue
+        if line.lstrip().startswith(("#", "|")) or re.match(r"#|\||[-*] |\d+\. ", rest):
+            continue  # a heading, a table row, or the next line starts an item of its own
+        word = token.match(rest)
+        if word and len(line) + 1 + len(word.group(0)) <= 80:
+            ragged.append(f"line {number}: {line.strip()!r}")
+    assert not ragged, f"PLAN.md stops these lines mid-sentence, far short of its wrap: {ragged}"
+
+
 def test_the_release_note_names_the_frames_that_are_still_encoded_on_the_loop() -> None:
     """0.15.0 moved the PNGs of a turn's own observation into a worker thread, because a
     heartbeat waiting on the loop's thread was held up by them. The `observe` verb's frames
@@ -1773,6 +1958,173 @@ def test_no_page_says_an_mcp_sessions_minutes_start_at_the_spawn() -> None:
                 )
 
 
+_NOBODY_ASKED = (
+    "under --yes nobody is asked, and without it the confirm reads stdin, so `yes | quackd run` "
+    "and `quackd run < answers.txt` open the gate too (cli.py's `_confirm_prompt`): say a person "
+    "at a terminal is asked unless --yes, or a pipe or file on stdin, answers for them"
+)
+_LOAD_POLICY_STILL_WOULD = (
+    "`load_policy()` in real.py builds a LeRobot policy in the arm's own process, and nothing in "
+    "quackd calls it: say that no quackd command loads a checkpoint there"
+)
+
+#: What the pages and the source said about who clears a policy segment and where a checkpoint
+#: loads, until 0.16.0's fact check. Each read well and none was ever true, so no record, the
+#: CHANGELOG's included, has a reason to keep one. The first correction wrote two more of its
+#: own, the two that name `--yes` as all that answers, which is why a correction is guarded too.
+_POLICY_CLAIMS_THE_CODE_NEVER_MADE = (
+    ("so a person says yes to each segment", _NOBODY_ASKED),
+    ("a person confirms each segment", _NOBODY_ASKED),
+    ("only behind a person's yes, asked before each call", _NOBODY_ASKED),
+    ("unless `--yes` answers for them", _NOBODY_ASKED),
+    ("unless you pass `--yes`, which starts every segment", _NOBODY_ASKED),
+    ("confirm gate still asks a person on top of it", _NOBODY_ASKED),
+    ("a checkpoint never runs in the process that owns the serial bus", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint and no inference ever run in the process", _LOAD_POLICY_STILL_WOULD),
+    ("this is why no checkpoint is loaded in the process", _LOAD_POLICY_STILL_WOULD),
+    ("why a policy never runs beside the arm's bus", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint ever loads beside", _LOAD_POLICY_STILL_WOULD),
+    ("a policy never runs in the process that owns the arm's", _LOAD_POLICY_STILL_WOULD),
+    ("never in the process that owns the serial bus", _LOAD_POLICY_STILL_WOULD),
+    ("never in the process that holds the", _LOAD_POLICY_STILL_WOULD),
+    ("never by the process that owns the arm's bus", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint is loaded beside", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint is ever loaded beside", _LOAD_POLICY_STILL_WOULD),
+    ("no checkpoint runs in the process", _LOAD_POLICY_STILL_WOULD),
+    ("a checkpoint runs in a process of its own, never in the one", _LOAD_POLICY_STILL_WOULD),
+    ("a policy runs in a process of its own, never in the one", _LOAD_POLICY_STILL_WOULD),
+    (
+        "imported only in the server's own process, never in the one that drives the arm",
+        _LOAD_POLICY_STILL_WOULD,
+    ),
+)
+
+
+def test_no_page_repeats_a_claim_about_a_policy_run_the_code_never_made() -> None:
+    """Sentences about a policy segment that read well and were wrong: that a person says yes to
+    each one, when `--yes` and a pipe on stdin both clear it with nobody asked, and that no
+    checkpoint ever loads in the process that owns the arm's bus, when `load_policy()` still
+    would. The CHANGELOG, ADR-0048 and the source carried them, the source in docstrings, a
+    comment and an upstream ref's note, so they are read along with the living documents, and
+    so is the arm's own README, which says where its policy server runs."""
+    sources = [
+        REPO / "CHANGELOG.md",
+        REPO / "adapters" / "lerobot" / "README.md",
+        *sorted((REPO / "docs" / "adr").glob("0048-*.md")),
+        *sorted((REPO / "quackd").rglob("*.py")),
+        *sorted((REPO / "adapters" / "lerobot" / "src").rglob("*.py")),
+    ]
+    for path in _living_docs() + sources:
+        text = _one_line(path.read_text(encoding="utf-8"), seams=path.suffix == ".py")
+        for wrong, true in _POLICY_CLAIMS_THE_CODE_NEVER_MADE:
+            # pytest.fail rather than assert, for the reason the host claims above give
+            if wrong in text:
+                pytest.fail(f"{path.relative_to(REPO).as_posix()} says {wrong!r}: {true}")
+
+
+def test_nothing_in_quackd_calls_load_policy_as_the_pages_say() -> None:
+    """The README, the release note, ADR-0048, SECURITY.md and the pages that explain the policy
+    server say no quackd command loads a checkpoint in the process that owns the arm's bus,
+    because nothing in quackd calls `load_policy()`. A command that called it would make every
+    one of them false without a word of them changing, so the calls are counted in the syntax
+    tree, where a docstring that names the function is not a call."""
+    import ast
+
+    callers = []
+    for path in [
+        *sorted((REPO / "quackd").rglob("*.py")),
+        *sorted((REPO / "adapters").glob("*/src/**/*.py")),
+        *sorted((REPO / "bridge").rglob("*.py")),
+    ]:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            named = (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", getattr(node.func, "attr", None)) == "load_policy"
+            ) or (
+                isinstance(node, ast.ImportFrom)
+                and any(alias.name == "load_policy" for alias in node.names)
+            )
+            if named:
+                callers.append(f"{path.relative_to(REPO).as_posix()}:{node.lineno}")
+    assert not callers, (
+        f"load_policy() is reached from {callers}: the pages that say no quackd command loads a "
+        "checkpoint beside the arm's bus are wrong now, so correct them with the code"
+    )
+
+
+def _release_note(version: str) -> str:
+    """One release's section of the CHANGELOG, from its heading to the next one."""
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    return changelog.split(f"\n## [{version}]", 1)[1].split("\n## [", 1)[0]
+
+
+def test_the_policy_release_names_every_bench_step_the_arm_still_owes() -> None:
+    """0.16.0's note first said the arm owed 0.14.0's seven bench steps and one of 0.15.0's, the
+    second Ctrl-C, and left out the ones 0.15.0 listed for comparing its simulator against the
+    arm, and with them that nobody has. The one trained policy that release ran drove a twin on
+    that simulator, so those steps are what its one result rests on. Written again once 0.15.0
+    had shipped, it still counted three of them, when 0.15.0 had made the rest move pressing
+    the gripper into the table a step of its own. The note names all of them now, its opening
+    and its last Known limitations bullet alike, the opening says the simulator was never
+    compared, and PLAN still carries them."""
+    release = _release_note("0.16.0")
+    opening = _one_line(release.split("\n### ", 1)[0])
+    assert "nothing has compared the simulator against the arm" in opening, (
+        "CHANGELOG.md's 0.16.0 opening no longer says nothing has compared the simulator "
+        "against the arm"
+    )
+    owed = _one_line(release.split("**The arm has not run quackd since", 1)[1])
+    plan = _one_line((REPO / "PLAN.md").read_text(encoding="utf-8"))
+    for step in (
+        "a second ctrl-c during the fold back to the rest pose",
+        "joint signs and zero offsets",
+        "the rest move pressing the gripper into the table",
+        "the gripper on a real pen",
+        "the front and wrist cameras' placement and field of view",
+    ):
+        assert step in opening, f"CHANGELOG.md's 0.16.0 opening no longer owes {step!r}"
+        assert step in owed, f"CHANGELOG.md's 0.16.0 bullet on the bench no longer owes {step!r}"
+        assert step in plan, f"PLAN.md no longer carries the bench step {step!r}"
+
+
+def test_the_policy_releases_opening_claims_no_more_than_was_done() -> None:
+    """0.16.0's note first opened by saying the release hands the SO-101 to a learned policy,
+    when no policy has driven one, and named pi05 among the checkpoints its server loads with
+    nothing above its bullets saying pi05 has never run. The opening says what the release
+    gives the arm's pilot now, and keeps every item nobody has done beside what it claims,
+    what a policy does on the simulator among them."""
+    opening = _one_line(_release_note("0.16.0").split("\n### ", 1)[0])
+    assert "hands the so-101 to" not in opening, (
+        "CHANGELOG.md's 0.16.0 opening says the release hands the SO-101 to a policy, and no "
+        "policy has driven one: say what it gives the arm's pilot instead"
+    )
+    for never_done in (
+        "no policy has driven the real arm",
+        "and its judge have not run with a trained checkpoint",
+        "pi05 has not run",
+        "flux 3 action has not run anywhere",
+        "runs on the real bus is unmeasured",
+        "what a policy does on the simulator says nothing about the arm",
+    ):
+        assert never_done in opening, f"CHANGELOG.md's 0.16.0 opening no longer says {never_done!r}"
+
+
+def test_the_policy_release_claims_no_fix_that_shipped_in_0_15_0() -> None:
+    """0.16.0's note was first written before 0.15.0 shipped, and 0.15.0 was held back for the
+    fixes the first real pilot on the simulator found, an MCP session's minutes counted from its
+    connect among them. The note went on naming that one among its own fixes, in its opening
+    and under Fixed. 0.15.0's note carries it, and 0.16.0's does not."""
+    shipped = _one_line(_release_note("0.15.0"))
+    assert "an mcp session's minutes count from its connect" in shipped, (
+        "CHANGELOG.md's 0.15.0 section no longer carries the MCP session's minutes"
+    )
+    release = _one_line(_release_note("0.16.0"))
+    for claim in ("minutes ran negative", "counts its minutes below zero", "-27495.5/5 min"):
+        assert claim not in release, (
+            f"CHANGELOG.md's 0.16.0 section says {claim!r}, and 0.15.0 shipped that fix"
+        )
+
+
 def test_every_step_of_the_arms_first_run_has_a_mirror_or_a_reason() -> None:
     """Part 2 of the arm's first-run guide mirrors Part 1 step for step, `M07` for `07`, and a
     Part 1 section with no mirror is linked from the note that opens Part 2, with the reason.
@@ -1788,3 +2140,106 @@ def test_every_step_of_the_arms_first_run_has_a_mirror_or_a_reason() -> None:
                 f"docs/lerobot-first-run.md: Part 1's section {number} has no M{number} in "
                 "Part 2, and the note that opens Part 2 does not say why"
             )
+
+
+def test_the_arms_page_gives_a_policy_segment_s_limits_as_the_code_keeps_them() -> None:
+    """Each limit a policy segment's loop keeps is a constant in `real.py`, `policy/loop.py` or
+    `verbs.py`, and the arm's page says each as a number, so a change to one that leaves the page
+    behind fails here. The page's example of the speed cap is worked from the same constants."""
+    from quackd_lerobot import real, verbs
+    from quackd_lerobot.policy import loop
+
+    page = (REPO / "docs" / "adapters" / "lerobot.md").read_text(encoding="utf-8")
+    section = _one_line(page.split("\n### What `pick` needs", 1)[1].split("\n## ", 1)[0])
+    fast = 3 / verbs.TICK_S
+    said = [
+        f"at {real.POLICY_HZ:g} hz",
+        f"past the travel for {real.CLIP_SUSTAIN_S:g} s",
+        f"{real.FAILED_SENDS} sends in a row",
+        f"read every {real.REGISTER_PERIOD_S:g} s",
+        f"more than {real.OUT_OF_RANGE_DEG:g} degrees outside its travel",
+        f"runs for {verbs.MANIPULATE_S:g} s unless it ends sooner",
+        f"within {verbs.STALL_DEG:g} degrees of where it was for {loop.STALL_S:g} s of goals",
+        f"between {loop.MIN_RATE_HZ:g} and {loop.MAX_RATE_HZ:g} hz",
+        f"a tick of {verbs.TICK_S:g} s",
+        f"at the default {real.MAX_STEP_DEG:g} degrees a policy at {fast:g} hz is capped at "
+        f"{loop.speed_cap(real.MAX_STEP_DEG, fast):.1f} degrees a send",
+        f"{loop.STARVE_S:g} s of that ends the segment",
+        f"{loop.FIRST_CHUNK_S:g} s of grace for the first chunk",
+        f"waiting up to {loop.RESET_S:g} s",
+    ]
+    for words in said:
+        assert words in section, f"docs/adapters/lerobot.md's pick section no longer says {words!r}"
+
+
+def test_the_policy_page_quotes_both_sentences_a_missing_server_gets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed port refuses at once on Linux and macOS, and Windows retries it for longer than
+    the client waits, so the same missing server is one of two sentences depending on the OS.
+    The page once quoted only the Windows one, which the rented GPU's Linux never prints. Both
+    are taken from the client here, so a sentence reworded there fails here too."""
+    from quackd_lerobot.policy import client
+    from quackd_lerobot.verbs import JOINTS
+
+    page = _one_line((REPO / "docs" / "policies.md").read_text(encoding="utf-8"))
+    for error in (TimeoutError, ConnectionRefusedError):
+        runner = client.RemoteRunner("http://127.0.0.1:9875", token="t" * 32, motors=JOINTS)
+
+        def connect(timeout_s: float, error: type[OSError] = error) -> object:
+            raise error
+
+        monkeypatch.setattr(runner, "_connection", connect)
+        with pytest.raises(client.PolicyServerError) as said:
+            runner.policy()
+        sentence = _one_line(str(said.value))
+        assert sentence in page, f"docs/policies.md does not quote what {error.__name__} says"
+
+
+def test_what_never_ran_with_a_trained_checkpoint_leaves_out_the_model_that_flew_one() -> None:
+    """On 2026-09-29 OpenAI's `gpt-6-sol` flew the lab arm's twin with `quackd run --goal` and
+    `--policy-url`, and handed a trained ACT two `manipulate` segments. The release note, the
+    README's status row and ADR-0048 each say in one sentence what has never run with a trained
+    checkpoint, and all three went on counting a model flying with a policy in it after that run,
+    because nothing read them against it. Each now names the run, and no sentence of theirs that
+    says never with a trained checkpoint names a model flying."""
+    release = _release_note("0.16.0")
+    adr = (REPO / "docs" / "adr" / "0048-policies-are-the-arms-executor.md").read_text(
+        encoding="utf-8"
+    )
+    places = {
+        "CHANGELOG.md's 0.16.0 Known limitations": release.split("\n### Known limitations\n", 1)[1],
+        "README.md's status row for a learned policy": next(
+            line for line in README.splitlines() if line.startswith("| A learned policy as the")
+        ),
+        "ADR-0048's Consequences": adr.split("\n## Consequences\n", 1)[1].split("\n## ", 1)[0],
+    }
+    for name, text in places.items():
+        sentences = re.split(r"(?<=\.) ", _one_line(text))
+        never = [s for s in sentences if "never" in s and "trained checkpoint" in s]
+        assert never, f"{name} no longer says what has never run with a trained checkpoint"
+        flown = [s for s in never if "flying" in s or "flew" in s]
+        assert not flown, f"{name} says a model flying with a policy never had one: {flown}"
+        assert "2026-09-29" in text and "`quackd run --goal`" in _one_line(text), (
+            f"{name} does not name the goal run in which a model flew a trained ACT"
+        )
+
+
+def test_every_licence_quackd_credits_says_where_it_was_read() -> None:
+    """A licence is a claim about somebody else's page, and the page is how a reader checks it.
+
+    Every entry in NOTICE ends on the address of the thing it credits, and every row of the
+    policy page's licence table that names a checkpoint links the page its licence was read on,
+    because that table says it is what each page said on the day. The learned policies' entry
+    once had neither, beside a licence summary that turned out to need its source's own words."""
+    notice = (REPO / "NOTICE").read_text(encoding="utf-8")
+    entries = re.split(r"\n  \* ", notice.split("\n  * ", 1)[1])
+    bare = [entry.split("\n", 1)[0] for entry in entries if "https://" not in entry]
+    assert not bare, f"NOTICE credits these with no address: {bare}"
+    page = (REPO / "docs" / "policies.md").read_text(encoding="utf-8")
+    table = page.split("\n## Licences\n", 1)[1].split("\n## ", 1)[0]
+    rows = [line for line in table.splitlines() if line.startswith("| ") and "/" in line]
+    named = [row for row in rows if re.search(r"`[\w.-]+/[\w.-]+`", row)]
+    assert named, "docs/policies.md's licence table names no checkpoint"
+    unlinked = [row[:60] for row in named if "](https://" not in row]
+    assert not unlinked, f"docs/policies.md's licence rows cite no page: {unlinked}"

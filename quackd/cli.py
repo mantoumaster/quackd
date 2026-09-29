@@ -334,8 +334,15 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
             spent.append(f"model {fmt_duration(llm)}")
         if (stepper := _number((end.get("decision") or {}).get("latency_s"))) is not None:
             spent.append(f"stepper {fmt_duration(stepper)}")
+        # and the seconds the arm's policy drove it, when it had one and it ran, on the wall's
+        # clock as the rest of the split is: on the simulator the policy's own `seconds` are
+        # the simulator's, and a split can never be larger than the whole
+        if policy_s := _number(_block(end, "policy").get("wall_s")):
+            spent.append(f"policy {fmt_duration(policy_s)}")
         where = f" ({', '.join(spent)})" if spent else ""
         counters.append(f"time {fmt_duration(wall)}{where}")
+    if (policy := _policy_counter(end.get("policy"))) is not None:
+        counters.append(policy)
     decision_block = end.get("decision") or {}
     decision_cost = _number(decision_block.get("cost_usd"))
     # On a cost KEY, not on the presence of a stepper block. A stepper block recorded before
@@ -358,6 +365,52 @@ def run_counters(end: Mapping[str, Any]) -> list[str]:
             total = model_cost + (decision_cost or 0.0)
             counters.append(f"cost {'~' if estimated else ''}{fmt_usd(total)}")
     return counters
+
+
+def _block(end: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    """A block of a record, or an empty one where it is missing or is not a block at all: a
+    `quackd log` of a hand-edited file is a counter line short, never a traceback."""
+    block = end.get(key)
+    return block if isinstance(block, Mapping) else {}
+
+
+def _policy_counter(block: Any) -> str | None:
+    """What the arm's policy did in a run, as one counter: its segments, the chunks it sent and
+    the rate its ticks were achieved at, the ticks that went wrong and the goals clipped when
+    there were any, and the mean round trip to its server. None for a run with no policy block,
+    which is every run whose arm had no policy, so their counters are what they were, and the
+    segments alone for a run whose policy was never handed the arm.
+
+    On the simulator the rate is the simulator clock's, which the ticks were paced on, so it is
+    said with the simulator's seconds and the clock's name (`20.1 s sim at 10 Hz`), as a verb's
+    seconds are (`quackd.log`), and the wall's share of them is in the time split."""
+    from quackd.log import fmt_duration
+
+    if not isinstance(block, Mapping):
+        return None
+    segments = int(_number(block.get("segments")) or 0)
+    parts = [f"policy {_plural(segments, 'segment')}"]
+    if not segments:
+        return parts[0]
+    if (chunks := _number(block.get("chunks"))) is not None:
+        parts.append(_plural(int(chunks), "chunk"))
+    if (hz := _number(block.get("hz"))) is not None:
+        clock, seconds = block.get("clock"), _number(block.get("seconds"))
+        if isinstance(clock, str) and clock and seconds is not None:
+            parts.append(f"{fmt_duration(seconds)} {clock} at {hz:g} Hz")
+        else:
+            parts.append(f"{hz:g} Hz")
+    for key, noun, how in (
+        ("starved_ticks", "tick", "starved"),
+        ("late_ticks", "tick", "late"),
+        ("clips", "goal", "clipped"),
+    ):
+        if n := int(_number(block.get(key)) or 0):
+            parts.append(f"{_plural(n, noun)} {how}")
+    trips = block.get("round_trip_ms")
+    if isinstance(trips, Mapping) and (mean := _number(trips.get("mean"))) is not None:
+        parts.append(f"round trip {mean:g} ms")
+    return ", ".join(parts)
 
 
 def _detector_row(detector: Any, hello: Any, backend: str | None, *, sees: bool = True) -> str:
@@ -491,9 +544,13 @@ def _header_rows(
     backend: str | None = None,
     host_camera: dict[str, Any] | None = None,
     sees: bool = True,
+    policy: Mapping[str, Any] | None = None,
 ) -> list[tuple[str, Any]]:
     """The things worth knowing before a run starts, and nothing else: who pilots, which body,
-    what reads its frames, and the board when there is one."""
+    what reads its frames, the board when there is one, and the policy server the arm hands its
+    segments to when there is one, with the checkpoint it said it serves when it was asked."""
+    from quackd.log import policy_row
+
     rows: list[tuple[str, Any]] = [
         ("provider", f"{provider.name} ({provider.model or 'the first model it serves'})"),
         ("robot", robot + (f"  seed {seed}" if seed is not None else "")),
@@ -501,6 +558,8 @@ def _header_rows(
     rows.append(("detector", _detector_row(detector, hello, backend, sees=sees)))
     if board is not None and hello is not None:
         rows.append(("host", _host_row(board, hello, host_camera)))
+    if policy is not None:
+        rows.append(("policy", policy_row(policy)))
     if dry_run:
         rows.append(
             (
@@ -532,6 +591,24 @@ def _fail(msg: str, code: int = 1, *, hint: str | None = None) -> None:
     it travels as text rather than as markup Rich would eat."""
     ui.err_console.print(ui.fail_line(msg, hint=hint))
     raise typer.Exit(code=code)
+
+
+def _refusals(
+    group: BaseExceptionGroup[Any], kinds: tuple[type[BaseException], ...]
+) -> list[BaseException] | None:
+    """Every exception in `group`, the groups inside it opened, when each is one of `kinds`,
+    and None when any is not: a group holding a fault quackd never words is a traceback worth
+    keeping, and one holding only refusals is the sentences they already are."""
+    found: list[BaseException] = []
+    for e in group.exceptions:
+        inner = _refusals(e, kinds) if isinstance(e, BaseExceptionGroup) else None
+        if inner is not None:
+            found.extend(inner)
+        elif isinstance(e, kinds):
+            found.append(e)
+        else:
+            return None
+    return found
 
 
 def _robot_specs(
@@ -583,16 +660,19 @@ def validate(
     registry_dir: str | None = _REGISTRY_DIR,
 ) -> None:
     """Validate .duck files against the spec and a robot's verbs. Exits 1 on any failure."""
-    from quackd.adapters.base import AdapterError
-    from quackd.adapters.factory import describe
+    from quackd.adapters.base import AdapterError, policy_hint
+    from quackd.adapters.factory import describe, installed_vocabulary
     from quackd.duckfile.parser import DuckParseError, load_duck
     from quackd.duckfile.validate import validate_duck
     from quackd.registry import Registry, RegistryError, resolve_robot_ref
-    from quackd.verbs.registry import default_registry
+    from quackd.verbs.registry import VerbRegistry
 
     registry_ref = Registry(registry_dir)
 
-    registry = default_registry()
+    # What a file that names no robot is checked against: every body installed here, with what
+    # each offers a policy server, built once for all of them. It was the Microduck's list,
+    # which refused an arm's task for verbs the arm has.
+    vocabulary: VerbRegistry | None = None
     rows: list[dict[str, Any]] = []
     for path in _expand(duckfiles):
         row: dict[str, Any] = {"file": path, "name": None, "verbs": None, "robots": [], "ok": True}
@@ -623,7 +703,9 @@ def validate(
             row.update(ok=False, problems=[str(e)], summary=[str(e)])
             continue
         row["robots"] = [m.id for m in manifests]
-        problems = validate_duck(duck, manifests, registry=registry)
+        if not manifests and vocabulary is None:
+            vocabulary = installed_vocabulary()
+        problems = validate_duck(duck, manifests, registry=vocabulary)
         if problems:
             # `str(p)` names the field it came from and is what the plain lines under the
             # table carry; `p.message` is the sentence, which is what fits in a cell
@@ -632,11 +714,23 @@ def validate(
                 problems=[str(p) for p in problems],
                 summary=[p.message for p in problems],
             )
-            # one body, as `run` has a board only for one: a fleet takes none
+            # one body, as `run` has a board only for one: a fleet takes none, and no policy
+            # server either, which is the only way an arm has pick and manipulate
             if len(resolved) == 1 and not robots and duck.frontmatter.flock is None:
-                note = _board_not_asked(resolved[0], manifests[0], "validate")
-                if note is not None:
-                    row["notes"] = [note]
+                notes = [
+                    note
+                    for note in (
+                        _board_not_asked(resolved[0], manifests[0], "validate"),
+                        policy_hint(
+                            [p.verb for p in problems if p.verb],
+                            [resolved[0].spec.key],
+                            "quackd run",
+                        ),
+                    )
+                    if note is not None
+                ]
+                if notes:
+                    row["notes"] = notes
 
     failures = [row for row in rows if not row["ok"]]
     if as_json:
@@ -1096,6 +1190,14 @@ def _acknowledge_prompt(why: str) -> bool:
         return _ask("Are you watching the robot right now?")
 
 
+def _judge_prompt(why: str) -> bool:
+    """Asked once, after the last segment of a `--controller vla` run: its pilot cannot tell
+    whether the task was done, so the person who watched the arm says."""
+    with ui.pause_status():
+        ui.err_console.print(Text(why, style=ui.STYLES["warn"]))
+        return _ask("Did the arm do it?")
+
+
 def _a_person_is_there() -> bool:
     """`_can_prompt` looked up now rather than bound now, because it is the seam the tests
     replace and a reference taken at import would not see the replacement."""
@@ -1105,13 +1207,70 @@ def _a_person_is_there() -> bool:
 _confirm_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
 _decide_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
 _acknowledge_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
-"""These three are the ones that reach a terminal, and `allow_all`, `deny_all`, `_yes_to_go`
+_judge_prompt.asks_a_person = _a_person_is_there  # type: ignore[attr-defined]
+"""These four are the ones that reach a terminal, and `allow_all`, `deny_all`, `_yes_to_go`
 and the flock's standing answers are not. The mark is `_can_prompt` rather than `True` because
 reaching a terminal is a thing to check at the moment of asking and not a property of the
-function: these same three run under `yes | quackd run` and under `quackd run < answers.txt`,
+function: these same four run under `yes | quackd run` and under `quackd run < answers.txt`,
 where `input()` reads the pipe and returns a yes nobody said. The gate still opens, because
 that is what the pipe asked for and it is what quackd has always done; what must not happen is
-the record then testifying that a person cleared it."""
+the record then testifying that a person cleared it. A judgement from a pipe is not even
+believed: a `--controller vla` run succeeds only on a person's yes."""
+
+
+def _vla_refusal(
+    *, yes: bool, dry_run: bool, has_policy: bool, goal: str | None, ignored: Sequence[str]
+) -> tuple[str, str] | None:
+    """Why `--controller vla` cannot fly this run, as a sentence and a hint, or None.
+
+    Its pilot has no judgement of its own, so a person is its whole verdict: asked before the
+    first segment whether the body should try, and after the last whether it did. Every flag
+    that would take that person away, or leave them nothing real to judge, is refused here,
+    before anything is built, connected or written down. `ignored` are the flags given for a
+    model that this pilot would drop without a word."""
+    from quackd.duckfile.schema import instruction_line
+
+    if yes:
+        return (
+            "--controller vla leaves the verdict on the task to a person who watched the arm, "
+            "and --yes answers every question without asking anybody",
+            "drop --yes: a vla run asks you before its first segment and after its last",
+        )
+    if not _can_prompt():
+        return (
+            "--controller vla asks a person whether the arm did the task, and there is no "
+            "terminal to ask on",
+            "run it from a terminal, not through a pipe or a script",
+        )
+    if dry_run:
+        return (
+            "--controller vla asks whether the arm did the task, and --dry-run moves nothing "
+            "for anybody to judge",
+            "rehearse it on the arm's simulator instead: --robot lerobot:mujoco",
+        )
+    if ignored:
+        return (
+            "--controller vla is a scripted pilot that asks no model and sees no picture, so "
+            f"{_and(list(ignored))} would do nothing",
+            "drop it, or fly the run with --controller llm",
+        )
+    if not has_policy:
+        return (
+            "--controller vla hands each instruction to the arm's learned policy, and this run "
+            "names no policy server",
+            "start one with quackd policy serve, and give quackd run its address with --policy-url",
+        )
+    if goal is not None:
+        try:
+            instruction_line(goal)
+        except ValueError as e:
+            return (
+                "--controller vla tells the arm's policy the goal word for word, as its one "
+                f"instruction, and {e}",
+                "give one short subtask as --goal, or list the subtasks under "
+                "policy.instructions in a duck: 3 task file",
+            )
+    return None
 
 
 def _parse_flock_flag(flock: str | None, registry_dir: str | None) -> tuple[int | None, Any]:
@@ -1175,12 +1334,18 @@ def _run_impl(
     host: str | None = None,
     host_token: str | None = None,
     detector_choice: str | None = None,
+    policy_url: str | None = None,
+    policy_token: str | None = None,
+    accept_other_frame: bool = False,
+    controller: str | None = None,
 ) -> None:
     from quackd.adapters.base import AdapterError as _AdapterError
+    from quackd.adapters.base import policy_choice, policy_hint
     from quackd.adapters.factory import describe, make_adapter, registry_for
     from quackd.adapters.host_camera import EXTRAS_KEY as HOST_CAMERA_EXTRAS
     from quackd.adapters.host_camera import with_host_camera
     from quackd.agent.decision.base import DecisionError
+    from quackd.agent.decision.factory import ENV_LLM as DECISION_LLM_ENV
     from quackd.agent.decision.factory import PRICE_ENV as DECISION_PRICE_ENV
     from quackd.agent.decision.factory import (
         decision_llm_is_available,
@@ -1191,7 +1356,7 @@ def _run_impl(
     )
     from quackd.agent.images import TaskImageError, load_task_images
     from quackd.agent.loop import RunConfig, run_duck
-    from quackd.agent.providers.base import ProviderError
+    from quackd.agent.providers.base import LLMProvider, ProviderError
     from quackd.agent.providers.factory import make_provider, resolve_llm
     from quackd.agent.providers.pricing import parse_price as _parse_price
     from quackd.agent.transcript import run_label
@@ -1252,6 +1417,44 @@ def _run_impl(
     if detector_choice is not None and detector_choice not in DETECTOR_CHOICES:
         _fail(f"--detector is one of {', '.join(DETECTOR_CHOICES)}, not {detector_choice!r}")
         return
+    try:
+        # the policy server the arm hands its segments to, from the flags alone: no variable
+        # names one, so a policy drives the arm only on a run that says so
+        policy = policy_choice(policy_url, policy_token, accept_other_frame=accept_other_frame)
+    except ValueError as e:
+        _fail(str(e))
+        return
+    # passed to `describe` and `make_adapter` only when there is one, so every other body is
+    # asked exactly as it always was
+    policy_kw: dict[str, Any] = {} if policy is None else {"policy": policy}
+    # any spelling of nothing is the default, as a blank --detector is
+    flown_by = (controller or "").strip().lower() or CONTROLLERS[0]
+    if flown_by not in CONTROLLERS:
+        _fail(f"--controller is {' or '.join(CONTROLLERS)}, not {controller!r}")
+        return
+    vla = flown_by == "vla"
+    if vla:
+        refused = _vla_refusal(
+            yes=yes,
+            dry_run=dry_run,
+            has_policy=policy is not None,
+            goal=goal,
+            ignored=[
+                flag
+                for flag, given in (
+                    ("--llm", llm is not None),
+                    ("--base-url", base_url is not None),
+                    ("--api-key", api_key is not None),
+                    ("--extra-body", extra_body is not None),
+                    ("--vision", vision is not None),
+                    ("--image", bool(images)),
+                )
+                if given
+            ],
+        )
+        if refused is not None:
+            _fail(refused[0], hint=refused[1])
+            return
     flock_n, roster = _parse_flock_flag(flock, registry_dir)
     flock_name = flock if roster is not None else None
     if roster is not None and (robot or robots):
@@ -1276,6 +1479,15 @@ def _run_impl(
         spec = here.spec
     except (DuckParseError, TransportError, RegistryError) as e:
         _fail(str(e))
+        return
+    if vla and duck is not None and not duck.frontmatter.effective_policy.instructions:
+        # a goal is its own one instruction, and was held to the rule for one above
+        _fail(
+            "--controller vla tells the arm's policy the instructions a task file lists, and "
+            f"{duck.name} lists none",
+            hint="list them under policy.instructions in a duck: 3 task file "
+            "(docs/duck-spec.md), or give --goal",
+        )
         return
     # Before the dispatch below, because a flock takes neither of the two flags and dropping
     # one silently is the failure both of them exist to prevent: a task about a picture that
@@ -1316,6 +1528,14 @@ def _run_impl(
             hint="drop --host-token, or run the task on one body at a time",
         )
         return
+    if fleet and policy is not None:
+        # one server, one session at a time, and one arm's calibration it was checked against:
+        # every flock path builds its own members, so it would be dropped without a word
+        _fail(
+            "--policy-url is one arm's policy server, and a fleet has several bodies",
+            hint="drop --policy-url, or run the task on one arm at a time",
+        )
+        return
     # The one place this run's board is settled, so everything that uses the board reads this
     # value rather than deriving its own. A fleet has none, whatever the environment says.
     stored = here.host_kwargs()
@@ -1351,24 +1571,35 @@ def _run_impl(
         if goal is not None:
             # the union across the flock, so a goal run on mixed bodies allows what any of
             # them can do; each member is then trimmed to its own half of that. With a board,
-            # the one body's vocabulary includes what the board's camera lets it do.
+            # the one body's vocabulary includes what the board's camera lets it do, and with a
+            # policy server what the arm's policy does.
+            vocabularies = []
+            for one in specs:
+                body = describe(one, **policy_kw)
+                vocabularies.append(
+                    registry_for(one, with_host_camera(body, hello) if hello is not None else body)
+                )
             safe = sorted(
                 {
                     v.name
-                    for one in specs
-                    for v in registry_for(
-                        one,
-                        with_host_camera(describe(one), hello) if hello is not None else None,
-                    ).verbs()
+                    for vocabulary in vocabularies
+                    for v in vocabulary.verbs()
                     if v.safety_class == "safe"
                 }
             )
-            duck = duck_from_goal(goal, safe)
+            # and `manipulate` with a policy server, which is no safe verb: allowed, and asked
+            # about before each segment rather than left out, or a goal could never use it
+            gated = (
+                ["manipulate"]
+                if policy is not None and any("manipulate" in v for v in vocabularies)
+                else []
+            )
+            duck = duck_from_goal(goal, safe, confirm=gated)
         assert duck is not None
         # Refuse before connecting, with the validator's words. `serve-mcp` has always done
         # this; `run` never did, and reached the loop's tool_schemas and died on a raw
         # VerbNotFound with the robot already connected and a run directory already made.
-        manifests = [describe(s) for s in specs]
+        manifests = [describe(s, **policy_kw) for s in specs]
         # the body as its adapter describes it, before the board's camera joins it: all a
         # detector built before connect may know about the lens (below)
         described = manifests[0]
@@ -1395,7 +1626,13 @@ def _run_impl(
     if problems:
         _fail(
             f"{duck.name} cannot run on {', '.join(s.key for s in specs)}: "
-            + "; ".join(p.message for p in problems)
+            + "; ".join(p.message for p in problems),
+            # an arm's pick and manipulate come only from --policy-url, which a fleet refuses
+            hint=None
+            if fleet or policy is not None
+            else policy_hint(
+                [p.verb for p in problems if p.verb], [s.key for s in specs], "quackd run"
+            ),
         )
         return
     if flock_n is not None and not 2 <= flock_n <= 4:
@@ -1462,6 +1699,15 @@ def _run_impl(
         )
     except DecisionError as e:
         _fail(str(e))
+        return
+    if vla and named_decision is not None and decision != "off":
+        # a stepper answers the turns a model would have been asked, and this pilot is no model:
+        # it would take the scripted pilot's turns with nobody having asked it to
+        _fail(
+            "--controller vla runs no model for a decision LLM to step in front of, and "
+            f"{'--decision-llm' if decision_llm is not None else DECISION_LLM_ENV} names one",
+            hint="drop it, or pass --decision-llm off for this run",
+        )
         return
     if flock_n is not None or roster is not None or duck.frontmatter.flock is not None:
         if decision != "off" and named_decision is not None:
@@ -1609,27 +1855,42 @@ def _run_impl(
         _fail(str(e))
         return
     try:
-        # a registered robot may name the pilot that drives it; a flag on the line still wins,
-        # and `QUACKD_LLM` sits behind both. One spec carries the vendor and the model
-        # together, so there is no longer any way for half an answer to come from each place:
-        # `--llm gemini` on a robot registered against OpenAI is Gemini's default, full stop.
-        vendor, model_id, llm_source = resolve_llm(
-            llm, here.llm, robot=here.entry.name if here.entry is not None else None
-        )
-        pilot = make_provider(
-            vendor,
-            model=model_id,
-            source=llm_source,
-            duck_name=duck.name,
-            goal=goal,
-            base_url=base_url,
-            api_key=api_key,
-            vision=vision,
-            extra_body=extra_body,
-            # only a host a person named for this run or this robot: QUACKD_HOST sits below
-            # QUACKD_BASE_URL, and the local provider reads it there for itself
-            host=host_choice.explicit,
-        )
+        pilot: LLMProvider
+        if vla:
+            from quackd.agent.providers.vla import VlaProvider
+
+            # the task file's instructions, or the goal as the one, and a task file's own words
+            # for done, which the person is shown when asked whether the arm did it. A goal's
+            # are written for a model, and the goal itself is the question. The robot's
+            # registered pilot and `QUACKD_LLM` name a model this run never asks.
+            pilot = VlaProvider(
+                [goal] if goal is not None else duck.frontmatter.effective_policy.instructions,
+                success=duck.frontmatter.success if goal is None else (),
+                label=duck.name,
+            )
+        else:
+            # a registered robot may name the pilot that drives it; a flag on the line still
+            # wins, and `QUACKD_LLM` sits behind both. One spec carries the vendor and the
+            # model together, so there is no longer any way for half an answer to come from
+            # each place: `--llm gemini` on a robot registered against OpenAI is Gemini's
+            # default, full stop.
+            vendor, model_id, llm_source = resolve_llm(
+                llm, here.llm, robot=here.entry.name if here.entry is not None else None
+            )
+            pilot = make_provider(
+                vendor,
+                model=model_id,
+                source=llm_source,
+                duck_name=duck.name,
+                goal=goal,
+                base_url=base_url,
+                api_key=api_key,
+                vision=vision,
+                extra_body=extra_body,
+                # only a host a person named for this run or this robot: QUACKD_HOST sits
+                # below QUACKD_BASE_URL, and the local provider reads it there for itself
+                host=host_choice.explicit,
+            )
         duck_transport = make_adapter(
             spec,
             seed=seed,
@@ -1638,10 +1899,28 @@ def _run_impl(
             # its hello already, so building this asks it nothing
             host=board,
             **here.adapter_kwargs(address=address, camera_url=camera_url, token=token),
+            **policy_kw,
         )
     except (ProviderError, TransportError, ImportError) as e:
         _fail(str(e))
         return
+    # The policy server is asked what it serves before anything connects, as the board is:
+    # the header names the checkpoint, and a server that is not there is a sentence now rather
+    # than a connect refused after the cameras opened. The connect asks again, and checks what
+    # it hears against the arm before any torque.
+    served: dict[str, Any] | None = None
+    if policy is not None:
+        ask = getattr(duck_transport, "ask_policy", None)
+        try:
+            served = ask() if callable(ask) else None
+        except RuntimeError as e:
+            _fail(
+                str(e),
+                hint=f"quackd policy check --policy-url {policy.url} asks it what it serves",
+            )
+            return
+        if served is None:
+            served = {"server": policy.url}
     if by_hand:
         if not getattr(duck_transport, "supports_hand_off", False):
             _fail(
@@ -1795,6 +2074,8 @@ def _run_impl(
         fov_deg=fov_deg,
         acknowledge=None if yes else _acknowledge_prompt,
         decide=_yes_to_go if yes else _decide_prompt,
+        # only the vla pilot asks, and it never runs with --yes, so there is no standing answer
+        judge=_judge_prompt if vla else None,
         view=fan_out(console_log, status.sink),
         task_images=task_images,
         hand_off=hand_off,
@@ -1819,6 +2100,7 @@ def _run_impl(
                 backend=spec.backend,
                 host_camera=manifests[0].extras.get(HOST_CAMERA_EXTRAS),
                 sees="camera" in manifests[0].sensors,
+                policy=served,
             ),
             hint="Ctrl-C or q stops the duck. Press it twice to quit at once.",
         )
@@ -2579,6 +2861,21 @@ _DECISION_MODE = typer.Option(
     "as it has always been. QUACKD_DECISION_MODE does the same.",
     rich_help_panel="Model",
 )
+CONTROLLERS = ("llm", "vla")
+"""What `--controller` takes: the model `--llm` names, or the scripted pilot of
+`quackd.agent.providers.vla`."""
+_CONTROLLER = typer.Option(
+    None,
+    "--controller",
+    metavar="llm|vla",
+    help="Who flies the run. llm, the default, is the model --llm names, and with --policy-url "
+    "it hands the arm's learned policy one short subtask at a time. vla is a scripted pilot for "
+    "a LeRobot arm with --policy-url: it tells the policy each instruction the task file lists, "
+    "or the --goal as the only one, one segment each, then asks you whether the arm did it, and "
+    "only your yes makes the run a success. It needs a terminal to ask on, and takes no --yes, "
+    "--dry-run, --decision-llm or model flag.",
+    rich_help_panel="Model",
+)
 _ROBOT = typer.Option(
     None,
     "--robot",
@@ -2679,6 +2976,33 @@ _BY_HAND = typer.Option(
     "gripper opens. Needs a LeRobot arm with a rest pose recorded, and a terminal to ask on.",
     rich_help_panel="Robot",
 )
+_POLICY_URL = typer.Option(
+    None,
+    "--policy-url",
+    help="The policy server the arm hands pick and manipulate to, as http://127.0.0.1:PORT, or "
+    "https:// for one behind TLS: the address quackd policy serve printed. A LeRobot arm only, "
+    "lerobot:real or lerobot:mujoco, and one robot only. It is asked what it serves before the "
+    "arm connects, and the connect checks that the policy fits the arm before any torque. No "
+    "variable sets it, so a policy drives the arm only when a command names one.",
+    rich_help_panel="Robot",
+)
+_POLICY_TOKEN = typer.Option(
+    None,
+    "--policy-token",
+    help="The token the --policy-url server wants. Without it, QUACKD_POLICY_TOKEN, then the "
+    "one quackd policy serve wrote to ~/.quackd/policy.token.",
+    rich_help_panel="Robot",
+)
+_ACCEPT_OTHER_FRAME = typer.Option(
+    False,
+    "--accept-other-frame",
+    help="Let the --policy-url policy drive this arm although it learned from an arm calibrated "
+    "another way, whose readings lie outside this arm's calibrated travel. It only lets the "
+    "policy connect: every goal it answers is still clipped to this arm's travel, so it "
+    "changes what drives the arm and never where the arm may go. Give it only if you know the "
+    "two arms' frames match, and the run's record says it was given.",
+    rich_help_panel="Robot",
+)
 _FOV = typer.Option(
     None,
     "--fov-deg",
@@ -2744,6 +3068,9 @@ def run(
     host: str | None = _HOST,
     host_token: str | None = _HOST_TOKEN,
     detector: str | None = _DETECTOR,
+    policy_url: str | None = _POLICY_URL,
+    policy_token: str | None = _POLICY_TOKEN,
+    accept_other_frame: bool = _ACCEPT_OTHER_FRAME,
     gif: bool = typer.Option(
         True,
         "--gif/--no-gif",
@@ -2760,6 +3087,7 @@ def run(
     decision_llm: str | None = _DECISION_LLM,
     decision_url: str | None = _DECISION_URL,
     decision_mode: str | None = _DECISION_MODE,
+    controller: str | None = _CONTROLLER,
     flock: str | None = _FLOCK,
     run_name: str | None = _RUN_NAME,
     price: str | None = _PRICE,
@@ -2810,6 +3138,10 @@ def run(
             host=host,
             host_token=host_token,
             detector_choice=detector,
+            policy_url=policy_url,
+            policy_token=policy_token,
+            accept_other_frame=accept_other_frame,
+            controller=controller,
         )
 
 
@@ -2945,6 +3277,9 @@ def preflight(
         "the cycles meet no faults.",
         rich_help_panel="Task",
     ),
+    policy_url: str | None = _POLICY_URL,
+    policy_token: str | None = _POLICY_TOKEN,
+    accept_other_frame: bool = _ACCEPT_OTHER_FRAME,
     runs_dir: str = _RUNS,
     registry_dir: str | None = _REGISTRY_DIR,
     as_json: bool = _JSON,
@@ -2963,6 +3298,9 @@ def preflight(
         runs_dir=runs_dir,
         registry_dir=registry_dir,
         as_json=as_json,
+        policy_url=policy_url,
+        policy_token=policy_token,
+        accept_other_frame=accept_other_frame,
     )
 
 
@@ -2980,8 +3318,11 @@ def _preflight_impl(
     runs_dir: str,
     registry_dir: str | None,
     as_json: bool,
+    policy_url: str | None = None,
+    policy_token: str | None = None,
+    accept_other_frame: bool = False,
 ) -> None:
-    from quackd.adapters.base import AdapterError
+    from quackd.adapters.base import AdapterError, policy_choice
     from quackd.adapters.factory import describe, make_adapter
     from quackd.agent.images import TaskImageError, load_task_images
     from quackd.agent.providers.base import ProviderError
@@ -2990,6 +3331,11 @@ def _preflight_impl(
     from quackd.registry import Registry, RegistryError, resolve_robot_ref
     from quackd.transport.base import TransportError
 
+    try:
+        policy = policy_choice(policy_url, policy_token, accept_other_frame=accept_other_frame)
+    except ValueError as e:
+        _fail(str(e))
+        return
     # Which robot, and that it is a simulator, before anything is built: a real arm refused
     # after it was made would already have had its port opened by somebody's typo.
     try:
@@ -3027,14 +3373,29 @@ def _preflight_impl(
             )
             return
     kwargs = here.adapter_kwargs(camera_url=camera_url)
+    if policy is not None:
+        # every connect cycle and every run is built with it, and checks it at connect
+        kwargs["policy"] = policy
     try:
         # built once and never connected, so a camera, a fault spec or a stored field the
         # simulator refuses is one sentence now rather than a failed connect on every file
-        make_adapter(here.spec, seed=0, faults=faults, **kwargs)
-        manifest = describe(here.spec)
+        built = make_adapter(here.spec, seed=0, faults=faults, **kwargs)
+        manifest = describe(here.spec, **({} if policy is None else {"policy": policy}))
     except (AdapterError, TransportError, ImportError, ValueError) as e:
         _fail(str(e))
         return
+    if policy is not None:
+        # and a policy server that is not there is one sentence now too, as it is for a run
+        ask = getattr(built, "ask_policy", None)
+        try:
+            if callable(ask):
+                ask()
+        except RuntimeError as e:
+            _fail(
+                str(e),
+                hint=f"quackd policy check --policy-url {policy.url} asks it what it serves",
+            )
+            return
 
     def pilot(duck: Any) -> Any:
         return make_provider(vendor, model=model_id, source=source, duck_name=duck.name)
@@ -3518,6 +3879,9 @@ def serve_mcp(
     host: str | None = _HOST,
     host_token: str | None = _HOST_TOKEN,
     detector: str | None = _DETECTOR,
+    policy_url: str | None = _POLICY_URL,
+    policy_token: str | None = _POLICY_TOKEN,
+    accept_other_frame: bool = _ACCEPT_OTHER_FRAME,
     dry_run: bool = _DRY,
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Allow confirm-gated verbs (there is no terminal to ask)."
@@ -3525,13 +3889,27 @@ def serve_mcp(
     memory: bool = _MEMORY,
     memory_dir: str | None = _MEMORY_DIR,
     log: bool | None = _LOG_MCP,
+    controller: str | None = typer.Option(
+        None,
+        "--controller",
+        hidden=True,
+        help="Refused: over MCP the client is the pilot. quackd run takes it.",
+    ),
 ) -> None:
     """Expose a robot, or a flock of them, as MCP tools over stdio (Claude Code /
     Claude Desktop)."""
-    from quackd.adapters.base import AdapterError
     from quackd.mcp_server import serve
     from quackd.registry import RegistryError
+    from quackd.transport.base import TransportError
 
+    if controller is not None:
+        # parsed only to be refused in words, since a flag Typer does not know is refused in
+        # its own, which say nothing about why or where it belongs
+        _fail(
+            "--controller picks who flies a quackd run, and over MCP the client flies, with no "
+            "terminal for a vla run to ask whether the arm did the task",
+            hint="quackd run --controller vla, from a terminal",
+        )
     try:
         serve(
             robot=robot,
@@ -3551,9 +3929,287 @@ def serve_mcp(
             memory=memory,
             memory_dir=memory_dir,
             log=log,
+            policy_url=policy_url,
+            policy_token=policy_token,
+            accept_other_frame=accept_other_frame,
         )
-    except (AdapterError, RegistryError) as e:
+    except (TransportError, RegistryError) as e:
         _fail(str(e))
+    except BaseExceptionGroup as group:
+        # A refusal raised as the server starts, by a connect in its lifespan, reaches here
+        # inside the task group the MCP SDK serves in. Left there it printed as a traceback
+        # with the sentence buried in it, and the client saw only a closed connection: it is
+        # said as `quackd run` says the same refusal, and anything else stays a traceback.
+        refused = _refusals(group, (TransportError, RegistryError))
+        if not refused:
+            raise
+        _fail("; ".join(dict.fromkeys(str(e) for e in refused)))
+
+
+# ── policy (a policy server the user starts) ────────────────────────────────────────────
+
+policy_app = typer.Typer(
+    name="policy",
+    help="A learned policy for the arm, in a process of its own: quackd policy serve starts "
+    "one, and quackd policy check asks one what it serves.",
+    no_args_is_help=True,
+)
+app.add_typer(policy_app, name="policy", rich_help_panel="Serve")
+
+_POLICY_HELP = (
+    "What to serve: REPO@REVISION for a LeRobot checkpoint (ACT, SmolVLA or pi05, which need "
+    # the backslash is Rich's escape, as in the app's epilog: Typer renders help as markup, and
+    # an unescaped [lerobot-vla] is a style tag it drops, leaving "which need quackd)"
+    r"quackd\[lerobot-vla]), or scripted:NAME for a scripted policy that needs no torch "
+    "(scripted:hold holds the arm where it is, scripted:sweep swings its wrist)."
+)
+_POLICY_FPS = typer.Option(
+    None,
+    "--fps",
+    help="The rate the policy runs at, in Hz. Without it a checkpoint's is the fps of the "
+    "dataset its train_config.json names, at the commit or the tag it names, and a scripted one "
+    "has its own.",
+)
+_POLICY_PINS = typer.Option(
+    None,
+    "--pin",
+    help="REPO@REVISION of a model the checkpoint names inside itself, such as SmolVLA's "
+    "backbone, fetched at that revision and never at whatever the Hub has that day. The "
+    "revision is a whole commit or a tag, and never a branch, which moves. Once per model. A "
+    "checkpoint that names one without a pin is refused.",
+)
+_POLICY_CAMERAS = typer.Option(
+    None,
+    "--cameras",
+    help="Which of the arm's cameras is which of the policy's images: "
+    "NAME=KEY,... such as front=observation.images.front.",
+)
+_POLICY_LATENCY = typer.Option(
+    None,
+    "--latency-s",
+    help="How long the policy takes to answer a step, declared. The simulator holds each "
+    "chunk back that long, and quackd policy check --bench measures the real one. It has to "
+    "be shorter than the 5 s a segment waits for its first chunk, and than one chunk takes "
+    "to play.",
+)
+_POLICY_THREADS = typer.Option(None, "--threads", help="The threads the policy may use.")
+_POLICY_JPEG = typer.Option(
+    None,
+    "--jpeg-quality",
+    help="Ask for frames as JPEG at this quality (50 to 100) rather than raw. Raw is the "
+    "default on loopback. A tunnel looks like loopback to both ends, so give it one for a "
+    "server reached through ssh -L.",
+)
+
+
+def _policy_server() -> Any:
+    """`quackd_lerobot.policy.server`, imported only when a policy command runs, or a failure
+    that names the extra that installs it."""
+    try:
+        from quackd_lerobot.policy import server
+    except ImportError:
+        from quackd.adapters.base import AdapterNotInstalled
+
+        _fail(str(AdapterNotInstalled("lerobot", "quackd[lerobot]")))
+    return server
+
+
+@policy_app.command("serve")
+def policy_serve(
+    policy: str = typer.Option(..., "--policy", help=_POLICY_HELP),
+    fps: float | None = _POLICY_FPS,
+    cameras: str | None = _POLICY_CAMERAS,
+    latency_s: float | None = _POLICY_LATENCY,
+    bind: str = typer.Option(
+        "127.0.0.1",
+        "--bind",
+        help="The address to listen on: 127.0.0.1 or ::1, the addresses the client sends plain "
+        "HTTP to, unless --behind-tls says a TLS proxy stands in front of it. Reach a server on "
+        "another machine through ssh -L.",
+    ),
+    port: int | None = typer.Option(
+        None, "--port", help="The port to listen on (default 9875, the one after 9874)."
+    ),
+    token_file: str | None = typer.Option(
+        None,
+        "--token-file",
+        help="A file holding the token clients must send. Without it, the token in "
+        "~/.quackd/policy.token, written there the first time.",
+    ),
+    behind_tls: bool = typer.Option(
+        False,
+        "--behind-tls",
+        help="A TLS proxy stands in front of this server, so it may bind beyond loopback, and "
+        "it asks for JPEG frames unless --jpeg-quality says otherwise.",
+    ),
+    threads: int | None = _POLICY_THREADS,
+    jpeg_quality: int | None = _POLICY_JPEG,
+    pins: list[str] | None = _POLICY_PINS,
+) -> None:
+    """Serve a policy for the arm, in this terminal, until Ctrl+C."""
+    server = _policy_server()
+    options = server.ServeOptions(
+        policy=policy,
+        fps=fps,
+        cameras=cameras,
+        latency_s=latency_s,
+        bind=bind,
+        port=server.wire.DEFAULT_PORT if port is None else port,
+        token_file=token_file,
+        behind_tls=behind_tls,
+        threads=threads,
+        jpeg_quality=jpeg_quality,
+        pins=tuple(pins or ()),
+    )
+    try:
+        served = server.open_server(options)
+    except server.ServeRefused as e:
+        _fail(str(e))
+        return
+    how = "written now" if served.token_written else "read"
+    info = served.app.info
+    rows = [
+        ("serving", f"{info.policy} at {served.url}"),
+        ("token", f"{served.token_path} ({how})"),
+        ("rate", f"{info.rate_hz:g} Hz, from {info.rate_source}"),
+    ]
+    if info.loaded:
+        # every repository the server fetched, at the revision it fetched it at
+        rows.append(("loaded", "; ".join(info.loaded)))
+    ui.console.print(ui.kv_grid(rows), soft_wrap=True)
+    # the client sends plain http to loopback alone, so the hint names a loopback address,
+    # never the 0.0.0.0 a server behind a TLS proxy may bind
+    local = served.local_url
+    if local is not None:
+        check = f"quackd policy check --policy-url {local} asks it what it serves."
+    else:
+        check = (
+            "quackd policy check --policy-url https://PROXY asks it what it serves, through the "
+            "TLS proxy in front of it."
+        )
+    if behind_tls and local is not None:
+        check += " From another machine, give it the TLS proxy's https:// address."
+    ui.console.print(
+        Text(f"  {check} Ctrl+C stops it.", style=ui.STYLES["muted"]),
+        soft_wrap=True,
+    )
+    try:
+        served.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        served.close()
+
+
+@policy_app.command("check")
+def policy_check(
+    policy: str | None = typer.Option(None, "--policy", help=_POLICY_HELP),
+    policy_url: str | None = typer.Option(
+        None,
+        "--policy-url",
+        help="A policy server that is running, as http://127.0.0.1:PORT, or https:// for one "
+        "behind TLS. Instead of --policy.",
+    ),
+    policy_token: str | None = typer.Option(
+        None,
+        "--policy-token",
+        help="The token the --policy-url server wants. Without it, QUACKD_POLICY_TOKEN, then "
+        "the one quackd policy serve wrote to ~/.quackd/policy.token.",
+    ),
+    bench: bool = typer.Option(
+        False,
+        "--bench",
+        help="Time one warm step, then stream synthetic observations at the policy's rate "
+        "through the client, and say the rate it achieved, the ticks with nothing to send, the "
+        "round trip, and the --latency-s to serve it with, read over every step it timed. "
+        "Bench again served with that --latency-s.",
+    ),
+    seconds: float | None = typer.Option(
+        None, "--seconds", help="How long --bench streams for (default 10)."
+    ),
+    fps: float | None = _POLICY_FPS,
+    cameras: str | None = _POLICY_CAMERAS,
+    latency_s: float | None = _POLICY_LATENCY,
+    threads: int | None = _POLICY_THREADS,
+    jpeg_quality: int | None = _POLICY_JPEG,
+    pins: list[str] | None = _POLICY_PINS,
+) -> None:
+    """Ask a policy what it serves, and with --bench how well it keeps up."""
+    if (policy is None) == (policy_url is None):
+        _fail(
+            "give --policy to check a policy served here for the check, or --policy-url to "
+            "check a server that is running, and not both",
+            hint="quackd policy check --policy scripted:hold",
+        )
+        return
+    given = {
+        "--fps": fps,
+        "--cameras": cameras,
+        "--latency-s": latency_s,
+        "--threads": threads,
+        "--jpeg-quality": jpeg_quality,
+        "--pin": pins or None,
+    }
+    if policy_url is not None and (named := [k for k, v in given.items() if v is not None]):
+        _fail(
+            f"{', '.join(named)} set how a policy is served, and the server at --policy-url "
+            "was started with its own: give them to its quackd policy serve"
+        )
+        return
+    if policy is not None and policy_token is not None:
+        _fail("--policy-token goes with --policy-url: a policy served here gets its own token")
+        return
+    if seconds is not None and not (seconds > 0 and seconds < float("inf")):
+        _fail(f"--seconds {seconds!r} is not a number of seconds to bench for")
+        return
+    server = _policy_server()
+    from quackd_lerobot.policy.client import (
+        PolicyServerError,
+        RemoteRunner,
+        client_token,
+        policy_address,
+    )
+    from quackd_lerobot.verbs import JOINTS
+
+    served: Any = None
+    runner: Any = None
+    try:
+        if policy is not None:
+            import secrets
+
+            served = server.open_server(
+                server.ServeOptions(
+                    policy=policy,
+                    fps=fps,
+                    cameras=cameras,
+                    latency_s=latency_s,
+                    port=0,
+                    threads=threads,
+                    jpeg_quality=jpeg_quality,
+                    pins=tuple(pins or ()),
+                ),
+                token=secrets.token_hex(32),
+            )
+            url, token = served.url, served.token
+        else:
+            url = str(policy_url)
+            policy_address(url)  # a URL that will be refused is said before a missing token
+            token = client_token(policy_token)
+        runner = RemoteRunner(url, token=token, motors=JOINTS)
+        info = runner.policy()
+        where = f"served here for the check, at {url}" if served is not None else runner.url
+        ui.console.print(Text(f"  {where}", style=ui.STYLES["muted"]), soft_wrap=True)
+        ui.console.print(ui.kv_grid(server.describe(info)), soft_wrap=True)
+        if bench:
+            result = server.bench(runner, seconds=server.BENCH_S if seconds is None else seconds)
+            ui.console.print(ui.kv_grid(server.describe_bench(result)), soft_wrap=True)
+    except (server.ServeRefused, PolicyServerError, ValueError) as e:
+        _fail(str(e))
+    finally:
+        if runner is not None:
+            runner.close()
+        if served is not None:
+            served.close()
 
 
 # ── robot (the registry) ────────────────────────────────────────────────────────────────
@@ -3581,8 +4237,26 @@ def _registry_fail(e: Exception) -> None:
 
 
 def _can_prompt() -> bool:
-    """Whether there is a person at a terminal to ask. The seam tests replace."""
-    return bool(sys.stdin is not None and sys.stdin.isatty())
+    """Whether there is a person at a terminal to ask. The seam tests replace.
+
+    `isatty` alone is not that on Windows, where it says yes to NUL, because NUL is a character
+    device: a script or a scheduled task started with its input from NUL was asked every
+    question, answered each with end-of-input, and had its record name a person who answered.
+    Only a console has a console mode, so on Windows that is asked as well."""
+    stdin = sys.stdin
+    if stdin is None or not stdin.isatty():
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        import msvcrt
+
+        try:
+            handle = msvcrt.get_osfhandle(stdin.fileno())
+        except (OSError, ValueError):
+            return False
+        mode = ctypes.c_ulong()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    return True
 
 
 def _rest_pose_text(pose: dict[str, float]) -> Any:

@@ -112,6 +112,41 @@ import quackd_lerobot.sim.transport
 import quackd_lerobot.sim.upstream_api
 import quackd_lerobot.sim.world
 quackd_lerobot.sim.standin.mjcf()
+# a policy server, its client and their protocol need no torch either: a checkpoint is loaded
+# in the server's own process when it starts, never when any of them is imported, and a
+# scripted policy is served with nothing loaded at all
+import quackd_lerobot.policy.client
+import quackd_lerobot.policy.protocol
+import quackd_lerobot.policy.server
+import quackd_lerobot.policy.upstream_api
+quackd_lerobot.policy.server.served_policy(
+    quackd_lerobot.policy.server.ServeOptions(policy="scripted:sweep")
+)
+# the pipeline a checkpoint loads through imports torch, LeRobot and huggingface_hub only when
+# it loads one, so its checks of a checkpoint's JSON run with none of them, and a checkpoint
+# named without them is refused in words that name the extra, before anything is fetched
+import quackd_lerobot.policy.fit
+import quackd_lerobot.policy.pipeline
+quackd_lerobot.policy.pipeline.check_processor(
+    {{"steps": [{{"registry_name": "device_processor", "config": {{"device": "cpu"}}}}]}},
+    "policy_preprocessor.json",
+    "owner/policy@main",
+)
+try:
+    quackd_lerobot.policy.server.served_policy(
+        quackd_lerobot.policy.server.ServeOptions(policy="owner/policy@main", fps=10.0)
+    )
+except quackd_lerobot.policy.server.ServeRefused as e:
+    assert "quackd[lerobot-vla]" in str(e), e
+else:
+    raise AssertionError("a checkpoint was served with no torch installed")
+# and an arm handed a policy server builds the server's client and asks it nothing until it
+# is asked, so naming one on the command line needs no torch and no LeRobot either
+from quackd.adapters.base import PolicyChoice
+_policy = PolicyChoice("http://127.0.0.1:9875", "0123456789abcdef0123456789abcdef")
+make_adapter("lerobot:real", address="COM5", policy=_policy)
+make_adapter("lerobot:mujoco", policy=_policy)
+assert describe(RobotSpec("lerobot", "mujoco"), policy=_policy).provides("manipulate")
 # and connecting it says which extra installs the physics, before it fetches a model to load
 import asyncio
 from quackd.adapters.base import AdapterNotInstalled

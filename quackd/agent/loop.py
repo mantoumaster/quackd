@@ -47,8 +47,10 @@ from quackd.agent.prompts import (
     observation_features,
 )
 from quackd.agent.providers.base import (
+    JUDGE_FEATURE,
     Decision,
     Exchange,
+    JudgedPilot,
     LLMProvider,
     NamedPng,
     Observation,
@@ -59,6 +61,7 @@ from quackd.agent.providers.catalogue import Price
 from quackd.agent.providers.pricing import cost_usd, resolve_price
 from quackd.agent.transcript import Transcript, new_run_dir, png_bytes, run_label
 from quackd.command import command_line, redacted_body, redacted_url
+from quackd.duckfile.narrow import narrow_policy_verb
 from quackd.duckfile.schema import DuckFile
 from quackd.log import EventLog, Sink, a_person_was_asked, fmt_params
 from quackd.memory import RobotMemory
@@ -202,6 +205,13 @@ class RunConfig:
     """Asked when the pilot says it is not sure this body can do the task, so a person makes
     the call. None means nobody is there (MCP, tests), and the pilot is told to decide itself
     rather than being cleared by default."""
+    judge: Callable[[str], bool] | None = None
+    """Asked once, when a pilot that cannot tell whether its task was done says it is time
+    (`JudgedPilot`, `--controller vla`), whether the arm did it: after its last segment, or
+    about the segments that ran when a budget ends the run first. The answer goes to the pilot
+    on its next observation, and only a yes from a person really asked lets it succeed. None
+    means nobody is there, and such a pilot's run can then only fail. Every other pilot is
+    never asked about, whether or not this is set."""
     view: Sink | None = None
     """Where to show the run as it happens (the CLI passes a `ConsoleLog`). The transcript
     gets every event whether this is set or not; this is a second reader of the same stream."""
@@ -324,7 +334,11 @@ class AgentLoop:
             record=self.transcript.sink,
             observers=[cfg.view] if cfg.view is not None else [],
         )
-        self.budget = Budget(self.fm.budgets, now=cfg.transport.now)
+        self.budget = Budget(
+            self.fm.budgets,
+            now=cfg.transport.now,
+            policy_total_s=self.fm.effective_policy.total_s,
+        )
         self.registry = cfg.registry or default_registry()
         self.executor = Executor(
             registry=self.registry,
@@ -396,6 +410,10 @@ class AgentLoop:
         now, empty while the detector answers, so a board that stops answering is one note
         when it stops and one when it answers again, rather than one on every frame in
         between (`_detector_said`)."""
+        self.judged: dict[str, Any] | None = None
+        """The question a `JudgedPilot`'s run put to a person about what the arm did, and the
+        answer, as the pilot reads it under `JUDGE_FEATURE`, or None until it is put. Put once
+        a run, and read again by the declare that ends it and by a budget that ends it first."""
 
     # ── narration ───────────────────────────────────────────────────────────────────
 
@@ -424,7 +442,8 @@ class AgentLoop:
 
         The consequence of the answer is already written down elsewhere (`gate.answer` for a
         confirm, `assess.human` for a verdict, the `hand_off` stages for an arm, the `release`
-        stages for the end-of-run offer). This is the exchange itself, which nothing held."""
+        stages for the end-of-run offer, the `declare` a judged pilot makes of a `judge`). This
+        is the exchange itself, which nothing held."""
         if not a_person_was_asked(asker):
             return
         self._emit("prompt", what=what, question=question, answer=answer)
@@ -1222,6 +1241,17 @@ class AgentLoop:
             return record
         return {**record, "camera_role": "primary" if placed.get("primary") else "extra view"}
 
+    def _policy(self, name: str) -> dict[str, Any] | None:
+        """What the body says about the policy it hands segments to, `policy_served` for
+        `run_start` or `policy_record` for the summary, or None for a body with none, which is
+        every body but an arm given one. Asked of whatever the transport is, so a body quackd
+        never shipped is left alone, and never allowed to fail a run over its record."""
+        try:
+            said = getattr(self.cfg.transport, name, None)
+        except Exception:
+            return None
+        return dict(said) if isinstance(said, Mapping) else None
+
     def _attachments(self) -> list[NamedPng]:
         """The task's own pictures, on the first observation and on no other.
 
@@ -1335,6 +1365,81 @@ class AgentLoop:
             VerbResult.success(f"recorded {verdict.summary()}; verbs that move the body now run"),
             None,
         )
+
+    # ── a person's word on the task, for a pilot that cannot tell ─────────────────────────
+
+    def _judgement(self, question: str) -> dict[str, Any]:
+        """Put `question` to whoever `RunConfig.judge` reaches, record the exchange, and keep
+        what the pilot is handed back.
+
+        `asked` is the test that decides whether a `prompt` row is written: a pipe and a
+        standing answer can both say yes, and neither is a person who watched the arm. An
+        asker that raised, on EOF or with click's `Abort`, said neither yes nor no. Its answer
+        stays None, `raised` names what it raised, and no `prompt` row says somebody answered,
+        the way the confirm gate records a prompt that raised.
+
+        The seconds the question takes are the person's and not the run's. They come off
+        `max_minutes` the way a `--by-hand` handover's do, so a yes given after a long look at
+        the arm is still the answer the run ends on, and not a spent budget."""
+        judge = self.cfg.judge
+        judged: dict[str, Any] = {"question": question, "answer": None, "asked": False}
+        if judge is not None:
+            put_at = self.budget.now()
+            try:
+                judged["answer"] = bool(judge(question))
+            except Exception as e:
+                judged["raised"] = type(e).__name__
+            finally:
+                if self.budget.started_at is not None:
+                    self.budget.started_at += max(0.0, self.budget.now() - put_at)
+            judged["asked"] = a_person_was_asked(judge)
+            if "raised" not in judged:
+                self._ask_recorded("judge", question, judged["answer"], judge)
+        self.judged = judged
+        return judged
+
+    def _judged_observation(self, obs: Observation) -> Observation:
+        """`obs` with a person's answer on it, where the pilot is one that cannot tell whether
+        its task was done and says it is time to ask. Every other turn, and every other pilot,
+        gets `obs` as it was."""
+        pilot = self.cfg.provider
+        if self.judged is not None or not isinstance(pilot, JudgedPilot):
+            return obs
+        question = pilot.judge_question([*self.history, Exchange(observation=obs)])
+        if question is None:
+            return obs
+        features = {**obs.features, JUDGE_FEATURE: self._judgement(question)}
+        return obs.model_copy(update={"features": features})
+
+    def _a_person_said_yes(self) -> bool:
+        """Whether a person really asked said the arm did it: the only thing that lets a
+        `JudgedPilot`'s run end in success."""
+        judged = self.judged
+        return judged is not None and judged["asked"] is True and judged["answer"] is True
+
+    def _cut_short(self, reason: str) -> str:
+        """Why a budget ended a `JudgedPilot`'s run, with what a person said about the segments
+        that ran before it did. They are asked now if they were not yet, so a run that spent its
+        seconds on two subtasks of three still has somebody's word on those two. The outcome
+        stays the budget's: a yes about part of a task is not the task done."""
+        pilot = self.cfg.provider
+        if not isinstance(pilot, JudgedPilot):
+            return reason
+        judged = self.judged
+        if judged is None:
+            question = pilot.judge_question(self.history, cut_short=reason)
+            if question is None:
+                return reason
+            judged = self._judgement(question)
+        if not judged["asked"]:
+            return f"{reason}; no person was asked whether the arm did what ran"
+        if "raised" in judged:
+            return (
+                f"{reason}; a person was asked whether the arm did what ran, and the prompt "
+                f"raised {judged['raised']} before they answered"
+            )
+        said = "the arm did it" if judged["answer"] else "it did not"
+        return f"{reason}; a person watched what ran and said {said}"
 
     def _remember(self, arguments: dict[str, Any]) -> VerbResult:
         memory = self.cfg.memory
@@ -1565,6 +1670,12 @@ class AgentLoop:
                         raise Aborted(
                             "nobody confirmed they were watching a robot that cannot see a fall"
                         )
+            # The task file's word on the body's learned policy, made into the verb itself: its
+            # listed instructions the only ones `manipulate` takes, its segment the one the
+            # verb runs and its timeout covers. Here, between the allowlist becoming final and
+            # the tools being built, because the model's tools, the stepper's choices and the
+            # executor's check are all read off this one registry from now on.
+            narrow_policy_verb(registry, self.fm, cfg.transport)
             tools = registry.tool_schemas(allow) + META_TOOLS
             if cfg.link is not None:
                 tools = [*tools, TELL]
@@ -1611,6 +1722,8 @@ class AgentLoop:
                 task_images=[p.name for p in cfg.task_images] or None,
                 by_hand=cfg.hand_off is not None and not cfg.dry_run,
                 adapter=adapter_name(cfg.transport),
+                # as `_observe` decides whether an observation carries the frames it read
+                sees=bool(cfg.provider.supports_vision),
             )
             system += getattr(cfg.provider, "prompt_hint", "") or ""  # e.g. the local JSON fallback
             # before `run_start`, so a reader of the record meets the pictures the task is
@@ -1653,8 +1766,8 @@ class AgentLoop:
                 # What was asked for, and by what. Every flag is half the story of a run
                 # (which robot, which model, which budget, whether it was a dry run), and
                 # reading a transcript a month later used to mean guessing at them. The
-                # values of `--api-key`, `--token` and `--host-token` never appear
-                # (`quackd.command`).
+                # values of `--api-key`, `--token`, `--host-token` and `--policy-token` never
+                # appear (`quackd.command`).
                 command=command_line(),
                 version=__version__,
                 started_at=self.transcript.started_at_iso,
@@ -1680,6 +1793,10 @@ class AgentLoop:
                     if stepper is not None
                     else {}
                 ),
+                # The policy the arm hands its segments to, when it has one: the server's
+                # address, redacted, and the checkpoint it serves, as the connect heard it.
+                # Only when there is one, so every other run's record stays what it was.
+                **({"policy": served} if (served := self._policy("policy_served")) else {}),
             )
             outcome: Outcome = "error"
             reason = "loop exited unexpectedly"
@@ -1728,13 +1845,18 @@ class AgentLoop:
                 obs, _ = await self._observe(
                     last_verb, last_result, self.stepped, mine=(mine_verb, mine_result)
                 )
+                observed_s = round(time.perf_counter() - observe_started, 3)
+                # before the observation is recorded, so the record of the turn carries the
+                # person's answer the pilot is about to read, and after its clock stops, so
+                # the seconds they took to answer are not counted as the observation's
+                obs = self._judged_observation(obs)
                 self._emit(
                     "observation",
                     step=self.budget.steps,
                     text=obs.text,
                     has_image=bool(obs.images),
                     features=obs.features,
-                    elapsed_s=round(time.perf_counter() - observe_started, 3),
+                    elapsed_s=observed_s,
                     **detect_times(self.cfg.detector),
                 )
 
@@ -1881,9 +2003,13 @@ class AgentLoop:
                     self.history[-1].decision = Decision(
                         tool_call=call, text=turn.text, raw=turn.raw
                     )
-                    if advice is not None and cfg.decision == "shadow":
+                    if advice is not None and (
+                        cfg.decision == "shadow" or stepper.compares(advice)  # type: ignore[union-attr]
+                    ):
                         # Shadow mode's whole point: what the stepper would have done, beside
-                        # what the model did, on the same reading, in one record.
+                        # what the model did, on the same reading, in one record. And in `on`
+                        # for a turn that offered a call the stepper may never take, which is
+                        # how its answers on those turns are ever measured.
                         self._emit(
                             "decision_shadow",
                             step=self.budget.steps,
@@ -1956,6 +2082,19 @@ class AgentLoop:
                 if call.name in DECLARE_NAMES:
                     outcome = "success" if call.name == "declare_success" else "failure"
                     reason = str(call.arguments.get("reason", ""))
+                    if (
+                        outcome == "success"
+                        and isinstance(cfg.provider, JudgedPilot)
+                        and not self._a_person_said_yes()
+                    ):
+                        # A pilot that cannot tell whether its task was done does not get to
+                        # say it was. `providers.vla` never tries; this holds any pilot that
+                        # says it cannot judge to the same rule, whatever it declares.
+                        outcome = "failure"
+                        reason = (
+                            f"{reason or 'the pilot declared success'}, and no person asked "
+                            "said the arm did it, which only a person can say for this pilot"
+                        )
                     self._emit("declare", step=self.budget.steps, outcome=outcome, reason=reason)
                     break
 
@@ -2001,6 +2140,19 @@ class AgentLoop:
                     mine_verb, mine_result = call.name, last_result
         except BudgetExceeded as e:
             outcome, reason = "budget", str(e)
+            # a question to a person, and a pilot's code, inside a handler: neither may lose
+            # the budget's own reason or keep the teardown below from stopping the robot
+            try:
+                with contextlib.suppress(Exception):
+                    reason = self._cut_short(reason)
+            except BaseException as interrupted:
+                # the CLI's second Ctrl-C, or a cancel, while that question waits. The handler
+                # for an interrupt below never sees one raised in here, so this one says it:
+                # the budget still ended the run, and the record names the question it cut off
+                what = type(interrupted).__name__
+                reason = f"{reason}; the question about what ran was interrupted ({what})"
+                self._emit("note", text=f"run interrupted: {what}")
+                raise
         except Aborted as e:
             outcome, reason = "aborted", str(e)
         except SafetyStop as e:
@@ -2096,6 +2248,9 @@ class AgentLoop:
                 # existed, and every run that does not ask for one, stays byte for byte
                 # what it was
                 **({"decision": stepper.summary()} if stepper is not None else {}),
+                # and the arm's policy by the same rule: what it is, what its segments
+                # counted and the round trips to its server, never an action it sent
+                **({"policy": block} if (block := self._policy("policy_record")) else {}),
             }
             # the only unguarded statements in this teardown used to be these three, so a
             # disk that filled at `run_end` skipped summary.json, leaked the file handle,

@@ -33,6 +33,7 @@ from quackd.agent.providers.catalogue import PRICES_CHECKED, Price
 from quackd.agent.providers.pricing import (
     FAKE,
     PRICE_ENV,
+    SCRIPTED,
     SELF_HOSTED,
     cost_usd,
     fmt_usd,
@@ -165,6 +166,19 @@ def test_the_scripted_pilot_is_free_rather_than_unpriced() -> None:
     assert price == FAKE
     assert price is not None and (price.input, price.output) == (0.0, 0.0)
     assert price.source == "fake"
+
+
+def test_the_vla_pilot_is_free_as_the_scripted_one_is() -> None:
+    """`--controller vla` asks no model: a rule hands the policy its instructions and a person
+    judges the arm, so it is priced as `--llm fake` is and prints `$0`. The pricing module may
+    not import the pilot, which imports pydantic, so the name is spelled in both places and
+    held together here."""
+    from quackd.agent.providers import vla
+
+    assert vla.NAME in SCRIPTED
+    assert price_for(vla.NAME, "scripted:stack-blocks") == FAKE
+    assert resolve_price(vla.NAME, "scripted:goal") == FAKE
+    assert fmt_usd(cost_usd({"input_tokens": 0, "output_tokens": 0}, FAKE)) == "$0"
 
 
 def test_every_local_preset_is_free_whatever_model_it_serves() -> None:

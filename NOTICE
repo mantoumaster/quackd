@@ -50,8 +50,26 @@ This project builds on, interoperates with, and is grateful to:
     learned-verbs roadmap. https://eureka-research.github.io/dr-eureka/
 
   * LeRobot (huggingface/lerobot) — the robot and policy interfaces the
-    lerobot adapter targets. Apache-2.0. Optional extra quackd[lerobot].
+    lerobot adapter targets. Apache-2.0. Optional extras quackd[lerobot] and,
+    for the policy server (quackd policy serve), quackd[lerobot-vla], which
+    also pulls transformers (huggingface/transformers, Apache-2.0).
     https://github.com/huggingface/lerobot
+
+  * Learned policies for the SO-101 arm (ACT, SmolVLA, pi05) - quackd policy
+    serve loads a LeRobot checkpoint that you name, at the revision you name,
+    into your own Hugging Face cache. NO policy weights are included in this
+    project, and each checkpoint is under its own licence: SmolVLA's base is
+    Apache-2.0, lerobot/pi05_base is tagged gemma on its card while LeRobot's
+    documentation says Apache 2.0, and its tokenizer
+    (google/paligemma-3b-pt-224) is gated behind a licence of its own. FLUX 3
+    Action (black-forest-labs), which quackd does not serve, is under the FLUX
+    Kommunity License, which grants robot control, a Robotics Use in its
+    words, for non-commercial purposes; its carve-out for Qualifying Users
+    covers commercial use of the model's Outputs, on conditions, and does not
+    say it reaches a Robotics Use. docs/policies.md links where each licence
+    was read.
+    https://huggingface.co/lerobot
+    https://huggingface.co/black-forest-labs/flux-3-action-so101
 
   * SO-ARM100 (TheRobotStudio/SO-ARM100) - the repository of the SO-101
     arm's designers, and the source of the MuJoCo model the lerobot

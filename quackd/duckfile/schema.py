@@ -22,7 +22,7 @@ from quackd.adapters.manifest import (
 from quackd.verbs.aliases import canonical
 from quackd.verdict import check_needs
 
-DUCK_SPEC_VERSION = 2
+DUCK_SPEC_VERSION = 3
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _ROBOT_SPEC_RE = re.compile(r"^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)?$")
@@ -43,6 +43,63 @@ PILOTS_MAX_MEMBERS = 8
 # passed to the LLM as an instruction, which is honest about what is and is not policed.
 BATTERY_ABORT_RE = re.compile(r"battery\s+(?:below|under|<)\s*(\d+(?:\.\d+)?)\s*%", re.I)
 REPEAT_FAIL_ABORT_RE = re.compile(r"same\s+verb\s+fails\s+(\d+)\s+times?\s+in\s+a\s+row", re.I)
+
+# What a v3 `policy:` section may say, and what a run that has none gets. The verb it governs is
+# the one that hands a body to its learned policy for a segment (`quackd_lerobot.verbs`), named
+# here rather than imported because this module parses files and imports no body.
+POLICY_VERB = "manipulate"
+POLICY_VERBS = ("pick", POLICY_VERB)
+"""Every verb that hands a body to its learned policy for a segment, and tells the policy what
+to do in words: `pick` its target, `manipulate` an instruction. The executor charges the
+seconds of each against the section's `total_s`, and a section that lists instructions refuses
+`pick` beside it, since the target `pick` would tell the policy is words the list never held."""
+MAX_INSTRUCTIONS = 12
+"""The most instructions a task may list. The stepper's `MAX_CALLS_PER_VERB`, so that every
+listed instruction is one choice a decision LLM can be offered; spelled here rather than
+imported because the stepper imports half the agent, and a test holds the two together."""
+INSTRUCTION_MAX_CHARS = 200
+"""How long one instruction may be. A policy is told one short subtask in the words it was
+trained on, which is a line and not a paragraph."""
+DEFAULT_SEGMENT_S = 10.0
+"""How long one `manipulate` segment runs, in the body's time, when the task says nothing: a
+goal run, a v2 file, an MCP session with no task loaded. Long enough for a learned policy to do
+one short subtask, short enough that the pilot looks at the arm again before the next."""
+SEGMENT_MAX_S = 60.0
+"""The longest segment a task may ask for. A minute of a learned policy driving the arm with
+nobody asked is already long, and every segment ends `SEGMENT_HEADROOM_S` inside the executor's
+timeout for `manipulate` before any task narrows it, which a test holds against the arm's own
+(`quackd_lerobot.verbs.MANIPULATE_TIMEOUT_S`), as `MOVE_MAX_S` is held inside the timeout of
+`move_joints`."""
+SEGMENT_HEADROOM_S = 10.0
+"""How far past a segment's own seconds the executor's timeout for `manipulate` lies. The
+segment's time starts once the policy is reset and the step cap written, and a guard's hold and
+the verb's stop follow its end; all of that has to land before the executor's clock does."""
+DEFAULT_POLICY_TOTAL_S = 120.0
+"""How many seconds of segments a run may spend in all when the task says nothing: twelve
+default segments, as many as a task may list instructions."""
+POLICY_TOTAL_MAX_S = 3600.0
+"""The most seconds of segments a task may allow in all: an hour of a learned policy driving
+the arm, which is past what a person watching a run would stand beside it for."""
+
+
+def instruction_line(value: str, what: str = "instruction") -> str:
+    """`value` as one instruction a learned policy may be told, stripped, or a ValueError that
+    says why it is not one: something said, one line of plain text, and at most
+    `INSTRUCTION_MAX_CHARS`. A task file's list is held to it, and so are the words a pilot gives
+    `manipulate` itself when the list is empty (`quackd_lerobot.verbs.ManipulateParams`) and the
+    target it gives `pick` (`PickParams`, whose `what` is `target`), so a policy is never told a
+    paragraph or a control character any way."""
+    line = value.strip()
+    if not line:
+        raise ValueError(f"each {what} must say something: remove the blank one")
+    if not line.isprintable():
+        raise ValueError(f"{what} {line[:40]!r} must be one line of plain text")
+    if len(line) > INSTRUCTION_MAX_CHARS:
+        raise ValueError(
+            f"{what} {line[:40]!r}... is {len(line)} characters, and one is at most "
+            f"{INSTRUCTION_MAX_CHARS}: a policy is told one short subtask"
+        )
+    return line
 
 
 def _verb_list(names: list[str]) -> list[str]:
@@ -174,6 +231,66 @@ class DatasheetOverride(BaseModel):
     @classmethod
     def _prose(cls, values: list[str]) -> list[str]:
         return datasheet_sentences(values)
+
+
+class PolicySection(BaseModel):
+    """v3: what the body's learned policy may be told through `manipulate`, and for how long.
+
+    A `.duck` is untrusted input, so every number here is bounded and every instruction is a
+    short line. The run narrows `manipulate` to it (`quackd.duckfile.narrow`): the listed
+    instructions become the only words the verb takes, and each segment runs `segment_s`. The
+    executor refuses the next segment, a `pick` as well as a `manipulate`, once `total_s` of
+    them have run. A run whose task has no section, a goal run or a v2 file, gets the defaults
+    and takes any instruction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instructions: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_INSTRUCTIONS,
+        description=f"The subtasks the policy may be told, word for word, at most "
+        f"{MAX_INSTRUCTIONS}, each one line of at most {INSTRUCTION_MAX_CHARS} characters. "
+        "Empty lets the pilot word each subtask itself. A list refuses pick in verbs.allow, "
+        "whose target would be words of the pilot's own.",
+    )
+    segment_s: float = Field(
+        default=DEFAULT_SEGMENT_S,
+        gt=0,
+        le=SEGMENT_MAX_S,
+        allow_inf_nan=False,
+        description="How long one manipulate segment runs, in the robot's time, unless "
+        "something ends it sooner.",
+    )
+    total_s: float = Field(
+        default=DEFAULT_POLICY_TOTAL_S,
+        gt=0,
+        le=POLICY_TOTAL_MAX_S,
+        allow_inf_nan=False,
+        description="How many seconds of segments the run may spend in all, pick's as well "
+        "as manipulate's. The executor refuses the next one once they are spent.",
+    )
+
+    @field_validator("instructions")
+    @classmethod
+    def _short_lines(cls, values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        lines: list[str] = []
+        for value in values:
+            line = instruction_line(value)
+            if line in seen:
+                raise ValueError(f"duplicate instruction {line!r}")
+            seen.add(line)
+            lines.append(line)
+        return lines
+
+    @model_validator(mode="after")
+    def _total_holds_a_segment(self) -> PolicySection:
+        if self.total_s < self.segment_s:
+            raise ValueError(
+                f"total_s ({self.total_s:g}) is shorter than one segment ({self.segment_s:g}): "
+                "give total_s at least segment_s"
+            )
+        return self
 
 
 class LearnedVerbRef(BaseModel):
@@ -371,13 +488,13 @@ class FlockSection(BaseModel):
 class DuckFrontmatter(BaseModel):
     """The contract. This is what `schema.json` describes and what the executor enforces."""
 
-    model_config = ConfigDict(extra="forbid", title="quackd .duck frontmatter (v0, v1, v2)")
+    model_config = ConfigDict(extra="forbid", title="quackd .duck frontmatter (v0, v1, v2, v3)")
 
-    duck: Literal[0, 1, 2] = Field(
+    duck: Literal[0, 1, 2, 3] = Field(
         ...,
         description="Spec version: 0 (quackd 0.1 to 0.3), 1 (0.4: requires, robots, "
-        "flock.roles, flock.frame_hints; 0.9: flock.allocation.method: pilots) or 2 (0.9: "
-        "datasheet, flock.roles.needs). Older files parse unchanged.",
+        "flock.roles, flock.frame_hints; 0.9: flock.allocation.method: pilots), 2 (0.9: "
+        "datasheet, flock.roles.needs) or 3 (0.16: policy). Older files parse unchanged.",
     )
     name: str = Field(..., description="Slug: lowercase letters, digits, hyphens.")
     description: str = Field(..., min_length=1, description="One line, human-facing.")
@@ -421,6 +538,11 @@ class DuckFrontmatter(BaseModel):
         description="v1: default robot as <adapter>[:<backend>], or a mapping from flock "
         "member name to such a spec, so `quackd run <duck>` needs no --robot flag.",
     )
+    policy: PolicySection | None = Field(
+        default=None,
+        description="v3: the instructions manipulate may give the robot's learned policy, how "
+        "long each segment runs and how long they may run in all. Needs manipulate allowed.",
+    )
 
     @field_validator("name")
     @classmethod
@@ -459,6 +581,28 @@ class DuckFrontmatter(BaseModel):
                     raise ValueError(f"flock.roles.{role}.needs needs duck: 2")
         if self.datasheet is not None and self.flock is not None:
             raise ValueError("datasheet describes one body; a flock duck cannot carry one")
+        if self.duck < 3 and self.policy is not None:
+            raise ValueError("policy needs duck: 3")
+        if self.policy is not None and self.flock is not None:
+            raise ValueError(
+                "policy hands one arm to its learned policy; a flock duck cannot carry one"
+            )
+        if self.policy is not None and POLICY_VERB not in {canonical(v) for v in self.verbs.allow}:
+            raise ValueError(
+                f"policy governs {POLICY_VERB}, which verbs.allow does not list: allow "
+                f"{POLICY_VERB}, or remove the policy section"
+            )
+        told = [
+            v
+            for v in self.verbs.allow
+            if canonical(v) in POLICY_VERBS and canonical(v) != POLICY_VERB
+        ]
+        if self.policy is not None and self.policy.instructions and told:
+            raise ValueError(
+                f"policy.instructions are the only words the robot's learned policy may be "
+                f"told, and {told[0]} tells it a target of the pilot's own: remove {told[0]} "
+                "from verbs.allow, or leave policy.instructions empty"
+            )
         if self.duck == 0:
             v1_keys = {
                 "requires": bool(self.requires),
@@ -491,6 +635,12 @@ class DuckFrontmatter(BaseModel):
     def effective_requires(self) -> list[str]:
         """What `validate --robot` checks: v1 says it; a v0 task needs everything it allows."""
         return list(self.requires) if self.duck >= 1 else list(self.verbs.allow)
+
+    @property
+    def effective_policy(self) -> PolicySection:
+        """What the run holds `manipulate` to: the file's `policy:`, or the named defaults for
+        a task that has none, a goal run and every v2 file among them."""
+        return self.policy if self.policy is not None else PolicySection()
 
     # ── derived, machine-enforced abort thresholds ──────────────────────────────────
 

@@ -466,6 +466,39 @@
       "title": "LearnedVerbRef",
       "type": "object"
     },
+    "PolicySection": {
+      "additionalProperties": false,
+      "description": "v3: what the body's learned policy may be told through `manipulate`, and for how long.\n\nA `.duck` is untrusted input, so every number here is bounded and every instruction is a\nshort line. The run narrows `manipulate` to it (`quackd.duckfile.narrow`): the listed\ninstructions become the only words the verb takes, and each segment runs `segment_s`. The\nexecutor refuses the next segment, a `pick` as well as a `manipulate`, once `total_s` of\nthem have run. A run whose task has no section, a goal run or a v2 file, gets the defaults\nand takes any instruction.",
+      "properties": {
+        "instructions": {
+          "description": "The subtasks the policy may be told, word for word, at most 12, each one line of at most 200 characters. Empty lets the pilot word each subtask itself. A list refuses pick in verbs.allow, whose target would be words of the pilot's own.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 12,
+          "title": "Instructions",
+          "type": "array"
+        },
+        "segment_s": {
+          "default": 10.0,
+          "description": "How long one manipulate segment runs, in the robot's time, unless something ends it sooner.",
+          "exclusiveMinimum": 0,
+          "maximum": 60.0,
+          "title": "Segment S",
+          "type": "number"
+        },
+        "total_s": {
+          "default": 120.0,
+          "description": "How many seconds of segments the run may spend in all, pick's as well as manipulate's. The executor refuses the next one once they are spent.",
+          "exclusiveMinimum": 0,
+          "maximum": 3600.0,
+          "title": "Total S",
+          "type": "number"
+        }
+      },
+      "title": "PolicySection",
+      "type": "object"
+    },
     "SpanOverride": {
       "additionalProperties": false,
       "description": "A band the task file asserts, the same way.",
@@ -541,11 +574,12 @@
   "description": "The contract. This is what `schema.json` describes and what the executor enforces.",
   "properties": {
     "duck": {
-      "description": "Spec version: 0 (quackd 0.1 to 0.3), 1 (0.4: requires, robots, flock.roles, flock.frame_hints; 0.9: flock.allocation.method: pilots) or 2 (0.9: datasheet, flock.roles.needs). Older files parse unchanged.",
+      "description": "Spec version: 0 (quackd 0.1 to 0.3), 1 (0.4: requires, robots, flock.roles, flock.frame_hints; 0.9: flock.allocation.method: pilots), 2 (0.9: datasheet, flock.roles.needs) or 3 (0.16: policy). Older files parse unchanged.",
       "enum": [
         0,
         1,
-        2
+        2,
+        3
       ],
       "title": "Duck",
       "type": "integer"
@@ -680,6 +714,18 @@
       "default": null,
       "description": "v1: default robot as <adapter>[:<backend>], or a mapping from flock member name to such a spec, so `quackd run <duck>` needs no --robot flag.",
       "title": "Robots"
+    },
+    "policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PolicySection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "v3: the instructions manipulate may give the robot's learned policy, how long each segment runs and how long they may run in all. Needs manipulate allowed."
     }
   },
   "required": [
@@ -689,6 +735,6 @@
     "verbs",
     "success"
   ],
-  "title": "quackd .duck frontmatter (v0, v1, v2)",
+  "title": "quackd .duck frontmatter (v0, v1, v2, v3)",
   "type": "object"
 }

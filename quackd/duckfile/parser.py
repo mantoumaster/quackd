@@ -7,6 +7,7 @@ Leading `#` comment lines above the first fence are allowed (see `ducks/fetch.du
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from importlib import resources
 from pathlib import Path
 
@@ -107,19 +108,30 @@ def list_bundled_ducks() -> list[Path]:
     return sorted(bundled.glob("*.duck")) if bundled else []
 
 
-def duck_from_goal(goal: str, allow: list[str]) -> DuckFile:
+def duck_from_goal(goal: str, allow: list[str], *, confirm: Sequence[str] = ()) -> DuckFile:
     """An ad-hoc duck for `quackd run --goal "..."`: the goal is the body, the contract is
-    permissive-but-safe (the given allowlist, default budgets, the standard abort rules)."""
+    permissive-but-safe (the given allowlist, default budgets, the standard abort rules).
+
+    `confirm` is verbs the goal allows only behind the confirm gate, which asks a person at a
+    terminal before each call unless `--yes`, or a pipe or file on stdin, answers for them.
+    `quackd run --goal` passes `manipulate` there when the arm has a policy server to hand it
+    to (`--policy-url`), and nothing otherwise. A learned policy driving the arm for a segment
+    is no safe verb, and without this a goal run given a policy could never use it: so each
+    segment goes through the confirm gate instead, a deliberate exception to the rule that a
+    goal allows safe verbs alone. Empty is every goal run without a policy, whose contract is
+    what it was."""
     goal = goal.strip()
     if not goal:
         raise DuckParseError("--goal must not be empty", "<goal>")
     if "stop" not in allow:
         allow = [*allow, "stop"]
+    gated = [verb for verb in dict.fromkeys(confirm) if verb]
+    allow = [*allow, *(verb for verb in gated if verb not in allow)]
     frontmatter = DuckFrontmatter(
         duck=0,
         name="goal",
         description=goal[:80],
-        verbs={"allow": allow, "confirm": []},  # type: ignore[arg-type]
+        verbs={"allow": allow, "confirm": gated},  # type: ignore[arg-type]
         success=[
             "The goal as stated is achieved, as best you can verify from the camera and state."
         ],

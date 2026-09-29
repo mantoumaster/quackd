@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -50,7 +52,15 @@ from typing import Any
 from quackd.adapters.base import AdapterError, AdapterNotInstalled, HandResult, RestResult
 from quackd.perception.color_blob import DEFAULT_FOV_DEG
 from quackd.transport.base import DuckState, HeartbeatError, TransportError
-from quackd_lerobot.real import MAX_STEP_DEG, CameraSpec, LeRobotReal, joint_ranges
+from quackd_lerobot.policy.loop import FIRST_CHUNK_S, latency_ticks, rate_refusal
+from quackd_lerobot.real import (
+    MAX_STEP_DEG,
+    CameraSpec,
+    LeRobotReal,
+    PolicyLike,
+    PolicyRunner,
+    joint_ranges,
+)
 from quackd_lerobot.sim import SIM_EXTRA
 from quackd_lerobot.sim import upstream_api as so
 from quackd_lerobot.sim.camera import SimCamera, open_renderer, render
@@ -182,7 +192,9 @@ class LeRobotSim(LeRobotReal):
     text, and None for the SO-101's own (`default_model`). A camera url must name one of the
     scene's mounts. `scene` is the objects to lay on the table in place of the default ones, as
     `quackd preflight` reads them from a task's sidecar (`model.parse_scene`), and None for the
-    default ones."""
+    default ones. `policy` is what `pick` and `manipulate` run, as for the real backend, a policy
+    object or a runner such as the client of a policy server (`--policy-url`), and None leaves
+    the arm without either."""
 
     name = "mujoco"
     label = "mujoco"
@@ -202,6 +214,7 @@ class LeRobotSim(LeRobotReal):
         model: str | Path | None = None,
         scene: Sequence[Mapping[str, Any]] | None = None,
         timeout_s: float = 1.0,
+        policy: PolicyLike | PolicyRunner | None = None,
     ) -> None:
         if address and names_a_port(address):
             # for every other lerobot robot --address is the port, so this is an easy slip
@@ -221,6 +234,7 @@ class LeRobotSim(LeRobotReal):
         )
         super().__init__(
             None,
+            policy=policy,
             robot_id=robot_id,
             timeout_s=timeout_s,
             max_step_deg=max_step_deg,
@@ -243,6 +257,11 @@ class LeRobotSim(LeRobotReal):
         self._calibration: tuple[dict[str, MotorCalibration], Path | None] = ({}, None)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._viewer: LiveViewer | None = None
+        self._thinking: tuple[float, float, int] = (0.0, 0.0, 1)
+        """The policy's rate, the wall seconds one of its requests stands the clock still for,
+        and the fewest ticks between two of its requests, as the last connect found them
+        (`_time_thinking`), or zeros for an arm with no policy, or one whose policy could not
+        say."""
 
     # ── the world ───────────────────────────────────────────────────────────────────────
 
@@ -363,6 +382,83 @@ class LeRobotSim(LeRobotReal):
         if views := default_views(self.camera_keys):
             notes.append(views)
         self.connect_notes.extend(notes)
+        await self._time_thinking()
+
+    async def _time_thinking(self) -> None:
+        """What a request of this arm's policy costs on the wall's clock while the simulator's
+        stands still: the latency the runner declares, asked on the runner's own worker as every
+        call on it is, and one frame from every open camera, drawn and timed here, since a
+        request carries one from each. Kept with the runner's rate for `frozen_inference_s`,
+        and with how far apart its requests come: every tick for a runner asked every tick, and
+        otherwise no closer than the ticks its answer is held back, since the loop asks again
+        only once the last answer is let go (`PolicyLoop._wants`). A runner that cannot say
+        leaves the zeros, and its segments are refused at their start for the same reason
+        (`PolicyLoop.start`).
+
+        So does a rate the loop will not pace (`rate_refusal`), whose segments are refused at
+        their start too, and a latency of `FIRST_CHUNK_S` or more, whose segments starve before
+        their first chunk lands: neither has thinking to wait for, and a rate or a latency past
+        any a policy has made a bound too large to be a number of requests."""
+        self._thinking = (0.0, 0.0, 1)
+        loop = self._policy_loop
+        if loop is None:
+            return
+        try:
+            features = await loop.call(loop.runner.features)
+            latency = float(await loop.call(loop.runner.latency_s))
+            refused = rate_refusal(features)
+            rate, per_tick = float(features.rate_hz), bool(features.per_tick)
+        except Exception:
+            return
+        if refused is not None or not (math.isfinite(latency) and 0 <= latency < FIRST_CHUNK_S):
+            return
+        apart = 1 if per_tick else max(1, latency_ticks(latency, rate))
+        started = time.perf_counter()
+        for name in self.camera_keys:
+            camera = self._cameras.get(name)
+            if camera is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(camera.read_latest)
+        self._thinking = (rate, latency + time.perf_counter() - started, apart)
+
+    def frozen_inference_s(self, segment_s: float) -> float:
+        """The wall seconds this simulator's clock stands still over a segment of `segment_s`
+        while its policy thinks, which the executor's timeout for `manipulate` has to cover on
+        top of the segment's own seconds (`quackd.duckfile.narrow`). A lockstep clock waits for
+        every request, so it is a request's cost (`_time_thinking`) for as many requests as the
+        segment's ticks can hold, one every so many ticks, and one more: a bound on what the
+        policy declared, never an estimate. A policy slower than it declares can still outrun
+        it, as it would outrun its own delay line, and the timeout then says so
+        (`slow_policy`). `--live` paces the clock on the wall's and it still waits, so it is the
+        same there. A segment too long to count its ticks is bounded by nothing, which the
+        narrowing holds to its own maximum."""
+        rate, per_request, apart = self._thinking
+        clock = self._sim_clock()
+        if clock is None or not clock.lockstep or rate <= 0 or per_request <= 0:
+            return 0.0
+        ticks = segment_s * rate
+        if not math.isfinite(ticks):
+            return math.inf if ticks > 0 else 0.0
+        return (math.ceil(math.ceil(ticks) / apart) + 1) * per_request
+
+    def slow_policy(self) -> str | None:
+        """Why the executor's own timeout ended the last segment, when its policy is why: its
+        answers kept the simulator's clock standing still, on the wall's, for longer than the
+        latency it declares allows as many requests and one more, which is how the timeout
+        counts its thinking (`frozen_inference_s`), so a request took longer than it declares
+        (`PolicyLoop.slowest_s`). A timeout that said no more than that `manipulate` timed out
+        read as a simulator that had hung. None for a policy inside what it declares, a request
+        that ran a little long among them, and before any segment has run."""
+        loop = self._policy_loop
+        if loop is None or loop.thinking_s <= (loop.waited + 1) * loop.declared_s:
+            return None
+        return (
+            "The policy answered slower than the latency it declared: one request took "
+            f"{loop.slowest_s:.2f} s on the wall's clock against the {loop.declared_s:g} s it "
+            "declares, and the simulator's clock stands still while it thinks, so the timeout, "
+            "sized from what it declares, ran out first. Bench it with quackd policy check "
+            "--bench and serve it with the --latency-s that bench says covers it"
+        )
 
     def _build_robot(self) -> SimFollower:
         calibration, path = self._calibration

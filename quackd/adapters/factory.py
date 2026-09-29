@@ -10,13 +10,21 @@ import contextlib
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-from quackd.adapters.base import AdapterError, AdapterNotInstalled, RobotAdapter, camera_urls
+from quackd.adapters.base import (
+    POLICY_SPECS,
+    AdapterError,
+    AdapterNotInstalled,
+    PolicyChoice,
+    RobotAdapter,
+    camera_urls,
+)
 from quackd.adapters.catalogue import BY_NAME, ENTRY_POINT_GROUP, OFFICIAL, AdapterInfo
 from quackd.adapters.manifest import RobotManifest
 from quackd.verbs.registry import VerbRegistry, core_registry, registry_from_manifest
@@ -216,9 +224,35 @@ def _module(adapter: str) -> Any:
     return importlib.import_module(where)
 
 
-def describe(spec: RobotSpec) -> RobotManifest:
-    """The static manifest: no SDK import, no socket. What `validate` and `announce` use."""
-    return _module(spec.adapter).describe(spec.backend, spec.robot_id)
+def describe(spec: RobotSpec, *, policy: PolicyChoice | None = None) -> RobotManifest:
+    """The static manifest: no SDK import, no socket. What `validate` and `announce` use.
+
+    `policy` is the server a run hands the arm's segments to (`--policy-url`), passed only when
+    one was given, so a body described without one is described exactly as it always was. With
+    one, the arm's static manifest carries `manipulate` and `pick`, which its connect would
+    otherwise be the first to claim, so a task that allows them is judged before anything
+    connects. A body that runs no policy is refused (`_takes_policy`)."""
+    module = _module(spec.adapter)
+    if policy is None:
+        return module.describe(spec.backend, spec.robot_id)
+    _takes_policy(spec, module.describe)
+    return module.describe(spec.backend, spec.robot_id, policy=policy)
+
+
+def _takes_policy(spec: RobotSpec, fn: Any) -> None:
+    """Refuse a policy for a body whose adapter has no `policy` parameter where it is asked for
+    one, rather than calling it with a keyword it does not know. By name, never through
+    `**kwargs`: an adapter that swallows every keyword would take a policy and drop it, and a
+    run told a policy drives the arm would then be driving it with nothing but the pilot."""
+    try:
+        takes = "policy" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        takes = False
+    if not takes:
+        raise AdapterError(
+            f"{spec.key} runs no policy, so --policy-url has nothing to hand it: only the "
+            f"LeRobot arm does ({' and '.join(POLICY_SPECS)})"
+        )
 
 
 def is_simulator(spec: RobotSpec | str) -> bool:
@@ -258,6 +292,7 @@ def make_adapter(
     host: HostClient | None = None,
     faults: str | None = None,
     scene: Sequence[Mapping[str, Any]] | None = None,
+    policy: PolicyChoice | None = None,
 ) -> RobotAdapter:
     """Build a robot. `camera_url` may name several cameras; every `make()` is handed the
     tuple and decides whether this body reads more than one (`MULTI_CAMERA_SPECS`), and a
@@ -271,13 +306,22 @@ def make_adapter(
     `faults` is a spec of faults for a simulator to meet, and `scene` the objects it lays out
     in place of its own (`quackd preflight` reads them from a task's sidecar). Each is passed to
     `make()` only when given, so every adapter that has no simulator is called exactly as it
+    always was.
+
+    `policy` is the policy server `--policy-url` names, passed by the same rule, and refused for
+    a body whose `make()` has no `policy` parameter (`_takes_policy`): only the LeRobot arm
+    hands a segment to one, and a third party's adapter built without the flag is called as it
     always was."""
     if isinstance(spec, str):
         spec = parse_robot_spec(spec)
+    module = _module(spec.adapter)
     extra: dict[str, Any] = {} if faults is None else {"faults": faults}
     if scene is not None:
         extra["scene"] = [dict(item) for item in scene]
-    adapter: RobotAdapter = _module(spec.adapter).make(
+    if policy is not None:
+        _takes_policy(spec, module.make)
+        extra["policy"] = policy
+    adapter: RobotAdapter = module.make(
         spec.backend,
         robot_id=spec.robot_id,
         seed=seed,
@@ -334,17 +378,37 @@ def installed_vocabulary() -> VerbRegistry:
 
     The union rather than the Microduck's list, which is what it used to be. On a machine with
     only an arm installed, a duck that allows `kick` should be told nothing here kicks, rather
-    than being checked against a duck that is not present."""
+    than being checked against a duck that is not present.
+
+    A body's verbs include what it offers with a policy server, `pick` and `manipulate` on the
+    arm, which its description holds only when it is given one (`describe(policy=...)`), so a
+    `duck: 3` task file is coherent here whichever of the arm's backends is described first.
+    Each backend is asked through the factory's own `policy` parameter, which refuses a body
+    that runs no policy, with an address nothing is ever sent to: a description is static, so
+    this reaches no server and imports no torch."""
     registry = core_registry()
+    offered = PolicyChoice("http://127.0.0.1")
     for name in adapter_names():
         if not is_installed(name):
             continue
+        try:
+            backends = info(name).backends
+        except (AdapterError, ImportError):
+            continue
         with contextlib.suppress(AdapterError, ImportError):
-            body = registry_for(RobotSpec(name, info(name).backends[0]))
-            for verb_name in body.names():
-                if verb_name not in registry:
-                    registry.register(body.get(verb_name))
+            _union(registry, registry_for(RobotSpec(name, backends[0])))
+        for backend in backends:
+            spec = RobotSpec(name, backend)
+            with contextlib.suppress(AdapterError, ImportError):
+                _union(registry, registry_for(spec, describe(spec, policy=offered)))
     return registry
+
+
+def _union(registry: VerbRegistry, body: VerbRegistry) -> None:
+    """Add to `registry` every verb of `body` it does not have yet, the first body's kept."""
+    for verb_name in body.names():
+        if verb_name not in registry:
+            registry.register(body.get(verb_name))
 
 
 def installed_manifests() -> list[tuple[str, RobotManifest]]:

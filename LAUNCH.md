@@ -15,9 +15,13 @@ now run Claude Opus 5.5 and GPT-6 Sol. 0.14's was that a real SO-101 ran ten of 
 written for it, the second afternoon quackd has spent on an arm, and that each of the five
 faults that afternoon found has an answer: the arm parks where its servos can reach, lets go
 when a person asks, connects again after a bad packet, moves at the pace it is given and can
-say that its task goes nowhere. **0.15's is that quackd reaches an NVIDIA Jetson from the
+say that its task goes nowhere. 0.15's was that quackd reaches an NVIDIA Jetson from the
 laptop and never runs on one, and that a task for an SO-101 is rehearsed at home, through the
-arm's own backend on the maker's model of it, before a trip to the lab.**
+arm's own backend on the maker's model of it, before a trip to the lab. **0.16's is that the
+arm's pilot hands it to a learned policy one short segment at a time and judges each from a
+fresh look, with the policy served from a process of its own while quackd keeps the bus, the
+pace and the stops, and that a trained policy has driven the arm's simulator this way and not
+yet the arm.**
 
 **The one sentence:** One CLI for all your robots. Connect them, command them, and let them
 work together, each with an LLM for a brain.

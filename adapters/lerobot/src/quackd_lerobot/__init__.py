@@ -2,11 +2,11 @@
 
 An arm has no legs, no head and no voice, so its manifest lists none of that: `move`,
 `go_to`, `search_scan`, `say` and `gaze` do not exist here. What it has is joints, a
-gripper, `place`, and, when a policy is available, `pick` as one skill intent that the
-arm's own learned controller executes (the thesis, unchanged). Three backends: `mock`
-(offline, scripted), `real` (LeRobot behind `quackd[lerobot]`, Python 3.12 or newer,
-first driven on an arm on 2026-09-15) and `mujoco` (the real backend's own code over a
-physics model of the SO-101, behind `quackd[lerobot-sim]`, for rehearsing a task at home).
+gripper, `place`, and, when a policy is available, `pick` and `manipulate`, each one skill
+intent that the arm's own learned controller executes (the thesis, unchanged). Three
+backends: `mock` (offline, scripted), `real` (LeRobot behind `quackd[lerobot]`, Python 3.12
+or newer, first driven on an arm on 2026-09-15) and `mujoco` (the real backend's own code over
+a physics model of the SO-101, behind `quackd[lerobot-sim]`, for rehearsing a task at home).
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from PIL import Image
 from quackd.adapters.base import (
     AdapterError,
     HandResult,
+    PolicyChoice,
     RestResult,
     camera_urls,
     go_to_rest_if_any,
@@ -56,7 +57,7 @@ from quackd_lerobot.verbs import (
     worth_saying,
 )
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 """Kept in step with quackd's own version by scripts/set_version.py. It lives here rather
 than being read from the core, because this file is all an adapter's sdist contains."""
 
@@ -181,7 +182,9 @@ def lerobot_manifest(
     preconditions = {"move_joints": ["torque_on", "not_hot"], "place": ["holding"]}
     if policy:
         verbs.append(verb_spec(own["pick"], core=False, safety_class="confirm"))
+        verbs.append(verb_spec(own["manipulate"], core=False, safety_class="confirm"))
         preconditions["pick"] = ["torque_on", "not_hot"]
+        preconditions["manipulate"] = ["torque_on", "not_hot"]
     intents: list[Any] = ["joint", "gripper"] + (["skill"] if policy else [])
     sensors: list[Any] = ["joint_state"] + (["camera"] if camera else [])
     limits = {"joint_deg": 180.0, "gripper": 100.0}
@@ -439,6 +442,85 @@ class LeRobotAdapter:
         handed, which is this adapter, and says which joints the hold left alone."""
         return tuple(str(j) for j in getattr(self.transport, "stop_skipped", ()) or ())
 
+    @property
+    def policy_segment(self) -> Any:
+        """The policy segment the backend's last `do` started, for `pick` or `manipulate` to
+        wait on, or None on a backend that runs none, the mock. Proxied for `stop_error`'s
+        reason: a verb's `ctx.transport` is this adapter."""
+        return getattr(self.transport, "policy_segment", None)
+
+    @property
+    def policy_stopped_by(self) -> str | None:
+        """What stopped the backend's last segment from outside, which `pick` and
+        `manipulate` say after `stopped:`. Proxied for `stop_error`'s reason."""
+        by = getattr(self.transport, "policy_stopped_by", None)
+        return str(by) if by else None
+
+    @property
+    def segment_s(self) -> float | None:
+        """How long the backend runs a `manipulate` segment, which the verb reads off whatever
+        it was handed, and that is this adapter. Proxied for `stop_error`'s reason."""
+        seconds = getattr(self.transport, "segment_s", None)
+        return None if seconds is None else float(seconds)
+
+    def set_segment_s(self, seconds: float) -> None:
+        """Tell the backend how long each `manipulate` segment runs from now on: the task
+        file's `policy.segment_s`, as the run narrows the verb to it
+        (`quackd.duckfile.narrow`). The run holds this adapter, so it is passed on here."""
+        forward = getattr(self.transport, "set_segment_s", None)
+        if not callable(forward):
+            raise TypeError(f"the {self.backend} backend cannot be told a segment's length")
+        forward(seconds)
+
+    def frozen_inference_s(self, segment_s: float) -> float:
+        """The wall seconds the backend's clock stands still over a segment that long while its
+        policy thinks: the simulator's, and nothing on any other. Passed on for
+        `set_segment_s`'s reason."""
+        ask = getattr(self.transport, "frozen_inference_s", None)
+        return float(ask(segment_s)) if callable(ask) else 0.0
+
+    def slow_policy(self) -> str | None:
+        """Why the executor's timeout ended the last segment, when the backend can tell that
+        its policy answered slower than it declared: the simulator's, and nothing on any other,
+        whose clock does not stand still while the policy thinks. Passed on for
+        `set_segment_s`'s reason."""
+        ask = getattr(self.transport, "slow_policy", None)
+        said = ask() if callable(ask) else None
+        return said if isinstance(said, str) and said else None
+
+    def ask_policy(self) -> dict[str, Any] | None:
+        """Ask the policy server what it serves, now, and say it as the record names it
+        (`RemoteRunner.record`), or None for an arm whose policy is not served by another
+        process. It blocks for as long as the client's own timeouts let a call take, and raises
+        the client's sentence when the server does not answer. `quackd run` asks this before the
+        arm connects, so its header can name the checkpoint and a server that is not there is a
+        run refused with nothing energised. The connect asks again, and checks what it hears
+        against the arm (`LeRobotReal._fit_policy`)."""
+        loop = getattr(self.transport, "policy_loop", None)
+        runner = getattr(loop, "runner", None)
+        ask, record = getattr(runner, "policy", None), getattr(runner, "record", None)
+        if not callable(ask) or not callable(record):
+            return None
+        ask()
+        return dict(record())
+
+    @property
+    def policy_served(self) -> dict[str, Any] | None:
+        """What the arm's policy is, as it was last heard and with nothing asked now: the
+        server's address, redacted, and what it serves, for a policy served by another process
+        (`PolicyLoop.served`), an empty dict for one in this process, and None for an arm with
+        no policy, the mock included, whose policy is its own script."""
+        loop = getattr(self.transport, "policy_loop", None)
+        return None if loop is None else loop.served()
+
+    @property
+    def policy_record(self) -> dict[str, Any] | None:
+        """The policy block of the run's record (`PolicyLoop.record`): what the policy is,
+        what its segments counted and the round trips to its server, or None for an arm with no
+        policy. The run reads it once, as it ends, and writes it into `summary.json`."""
+        loop = getattr(self.transport, "policy_loop", None)
+        return None if loop is None else loop.record()
+
     async def heartbeat(self) -> None:
         await self.transport.heartbeat()
 
@@ -484,13 +566,23 @@ class LeRobotAdapter:
 # ── what the factory calls ──────────────────────────────────────────────────────────────
 
 
-def describe(backend: str, robot_id: str | None = None) -> RobotManifest:
+def describe(
+    backend: str, robot_id: str | None = None, *, policy: PolicyChoice | None = None
+) -> RobotManifest:
     """Static: the mock always has its camera and its scripted policy; the real backend
     claims neither until connect() finds them, and claims no joint ranges either, because
     they are read off the arm's calibration file. The simulator is the real backend's code and
-    describes itself as the real backend does."""
+    describes itself as the real backend does.
+
+    With `policy`, the policy server a run hands its segments to, the real backend and the
+    simulator claim `pick` and `manipulate` before they connect, since the connect that would
+    find the policy is the one given it here: a task that allows them validates before anything
+    connects, as it would once connected. The mock runs its own scripted policy and refuses one
+    (`_refuse_policy`)."""
     offline = backend == "mock"
-    return lerobot_manifest(backend, robot_id, camera=offline, policy=offline)
+    if policy is not None:
+        _refuse_policy(backend)
+    return lerobot_manifest(backend, robot_id, camera=offline, policy=offline or policy is not None)
 
 
 def implementations() -> dict[str, Verb]:
@@ -518,6 +610,42 @@ def _check_rest_pose(rest_pose: dict[str, float] | None) -> None:
         )
 
 
+def _refuse_policy(backend: str) -> None:
+    """The mock's policy is its own, scripted and in process, and it reaches no server: one
+    given to it would be dropped without a word, and a rehearsal against the mock would pass
+    where the arm's server was never asked."""
+    if backend == "mock":
+        raise AdapterError(
+            "lerobot:mock runs its own scripted policy and reaches no policy server: "
+            "--policy-url is for lerobot:real and lerobot:mujoco"
+        )
+
+
+def _policy_runner(policy: PolicyChoice | None) -> Any:
+    """The client a policy server is reached through, `RemoteRunner`, built from the address
+    and the token `--policy-url` and `--policy-token` gave, or None without a server. A token
+    that was not typed is `QUACKD_POLICY_TOKEN`, then the file the server writes, by the
+    client's own rule (`policy.client.client_token`). An address the client would refuse, and a
+    token found nowhere, are refused here, before anything connects. Its motors are the arm's
+    joints until the connect's fit hands it the bus's own (`LeRobotReal._fit_policy`), and
+    `--accept-other-frame` is the fit's override of the same name (`policy.fit.fit`)."""
+    if policy is None:
+        return None
+    from quackd_lerobot.policy.client import RemoteRunner, client_token, policy_address
+
+    url, token = policy.reach()
+    try:
+        policy_address(url)  # an address that will be refused is said before a missing token
+        return RemoteRunner(
+            url,
+            token=client_token(token),
+            motors=JOINTS,
+            accept_other_frame=policy.accept_other_frame,
+        )
+    except ValueError as e:
+        raise AdapterError(str(e)) from None
+
+
 def make(
     backend: str,
     *,
@@ -530,13 +658,21 @@ def make(
     rest_pose: dict[str, float] | None = None,
     faults: str | None = None,
     scene: Sequence[Mapping[str, Any]] | None = None,
+    policy: PolicyChoice | None = None,
 ) -> LeRobotAdapter:
     """`faults` is a spec of bus faults for the simulator to meet (`sim.faults.FaultPlan`),
     seeded by `seed`, and refused on any other backend: an arm on a desk has the faults it
     has. `scene` is the objects the simulator lays on its table in place of its default ones
     (`sim.model.parse_scene`), refused on any other backend for the same reason: the table in
-    front of a real arm has on it what somebody put there."""
+    front of a real arm has on it what somebody put there.
+
+    `policy` is the policy server the arm hands its `pick` and `manipulate` segments to
+    (`--policy-url`), reached through a `RemoteRunner` (`_policy_runner`), which the real
+    backend and the simulator both take as their policy and check against the arm at connect,
+    before torque (`LeRobotReal._fit_policy`). The mock refuses one (`_refuse_policy`)."""
     _check_rest_pose(rest_pose)
+    if policy is not None:
+        _refuse_policy(backend)
     if faults is not None and backend != "mujoco":
         raise AdapterError(
             f"lerobot:{backend} has no faults to be told of: only the simulator, "
@@ -581,6 +717,7 @@ def make(
                 rest_pose=rest_pose,
                 registered_name=registered_name,
                 scene=scene,
+                policy=_policy_runner(policy),
             ),
             robot_id=robot_id,
         )
@@ -595,6 +732,7 @@ def make(
                 cameras=parse_camera_urls(camera_urls(camera_url)),
                 rest_pose=rest_pose,
                 registered_name=registered_name,
+                policy=_policy_runner(policy),
             ),
             robot_id=robot_id,
         )
@@ -622,12 +760,14 @@ __all__ = [
 # import is deferred so that naming the upstream costs nothing until doctor asks.
 def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
     from quackd_lerobot import upstream_api
+    from quackd_lerobot.policy import upstream_api as policies
     from quackd_lerobot.sim import upstream_api as so_arm100
 
     # The first row is the one in this table that is not a list of what nobody has tried. An
     # SO-101 ran the real backend on 2026-09-15, so the column says what that run did and did
     # not cover. The second is the arm's simulator model, which lerobot:mujoco loads and no arm
-    # has been compared against.
+    # has been compared against. The third is LeRobot's policies, read at the version the
+    # laptop runs, which the policy server loads, and has loaded a tiny random ACT alone.
     return (
         (
             "lerobot",
@@ -640,6 +780,13 @@ def _upstream_rows() -> tuple[tuple[str, object, str, str], ...]:
             so_arm100,
             "docs/adapters/lerobot.md",
             "anything against an arm: lerobot:mujoco loads it, and nobody has compared the two",
+        ),
+        (
+            "LeRobot policies",
+            policies,
+            "docs/adapters/lerobot.md",
+            f"a trained checkpoint: read at lerobot {policies.VERSION}, and CI's policy job serves "
+            "a tiny random ACT alone, so SmolVLA, pi05 and tick mode have never run",
         ),
     )
 

@@ -17,6 +17,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from PIL import Image
 
 from quackd.adapters.manifest import Health, RobotManifest
+from quackd.command import readable_url, redacted_url
+from quackd.duckfile.schema import POLICY_VERBS
 from quackd.transport.base import Ack, DuckState, Intent, TransportError
 from quackd.verbs.registry import Precondition, Verb
 
@@ -278,6 +280,100 @@ def one_camera_url(value: str | Sequence[str] | None, *, spec: str) -> str | Non
             f"{spec} takes one --camera-url and {len(urls)} were given; {who_takes_several()}"
         )
     return urls[0] if urls else None
+
+
+# ── a policy server ─────────────────────────────────────────────────────────────────────
+
+POLICY_SPECS = ("lerobot:real", "lerobot:mujoco")
+"""The bodies that hand a segment to a policy served by `quackd policy serve`. Named here for
+the refusal every other body gives `--policy-url` (`quackd.adapters.factory`), as
+`MULTI_CAMERA_SPECS` is for a second camera: an adapter whose `make()` takes no `policy` is
+refused rather than handed one it would drop."""
+
+
+class PolicyChoice:
+    """The policy server a run's arm hands its segments to: `--policy-url`, and `--policy-token`
+    when one was typed.
+
+    The address comes from the flag alone, never from the environment or the registry, because
+    one line in a `.env` would otherwise put a policy in charge of every run. The token may come
+    from `QUACKD_POLICY_TOKEN` or the file the server writes, which the arm's client reads when
+    none was typed. `url` is held redacted from the moment it is given, as the client holds it
+    (`quackd.command.redacted_url`), so every header, record and refusal that names the server
+    says what argv redaction would have said. An address redaction cannot read is refused
+    without being quoted, since it would otherwise be held as typed. The address as typed and
+    the token go only to the adapter that builds the client (`reach`).
+
+    `accept_other_frame` is `--accept-other-frame`: the arm connects over a policy that learned
+    from an arm calibrated another way, whose state percentiles lie outside this arm's travel,
+    which the connect otherwise refuses. Its goals are clipped to this arm's travel either way,
+    so it changes what drives the arm and never where the arm may go, and the record says so."""
+
+    def __init__(
+        self, url: str, token: str | None = None, *, accept_other_frame: bool = False
+    ) -> None:
+        given = url.strip()
+        if not given:
+            raise ValueError(
+                "--policy-url is empty: give the policy server as http://127.0.0.1:PORT"
+            )
+        if not readable_url(given):
+            # unquoted: redaction reads only a URL with a scheme and a host, and this one may
+            # hold a password typed before a host it could not find
+            raise ValueError(
+                "--policy-url is not a URL: give the policy server as http://127.0.0.1:PORT"
+            )
+        self._given = given
+        self._token = token.strip() if token is not None and token.strip() else None
+        self.url = redacted_url(given)
+        self.accept_other_frame = accept_other_frame
+
+    def reach(self) -> tuple[str, str | None]:
+        """The address as it was typed and the token, or None where none was typed, for the one
+        caller that sends anything to the server: the arm's policy client."""
+        return self._given, self._token
+
+    def __repr__(self) -> str:
+        return f"PolicyChoice({self.url!r})"
+
+
+def policy_choice(
+    url: str | None, token: str | None = None, *, accept_other_frame: bool = False
+) -> PolicyChoice | None:
+    """`--policy-url`, `--policy-token` and `--accept-other-frame` as a command takes them, or
+    None when none was given. A token or an override with no address is refused rather than
+    dropped: neither has a server to go to."""
+    if url is None:
+        if token is not None and token.strip():
+            raise ValueError(
+                "--policy-token goes with --policy-url: give the server's address as well, or "
+                "drop the token"
+            )
+        if accept_other_frame:
+            raise ValueError(
+                "--accept-other-frame goes with --policy-url: it lets the policy that server "
+                "serves drive an arm calibrated another way, so give the server's address as "
+                "well, or drop the flag"
+            )
+        return None
+    return PolicyChoice(url, token, accept_other_frame=accept_other_frame)
+
+
+def policy_hint(verbs: Sequence[str], specs: Sequence[str], command: str) -> str | None:
+    """What to do about a task refused for allowing `pick` or `manipulate` on an arm with no
+    policy server, or None for any other refusal. `verbs` are the verbs refused, `specs` the
+    bodies as `adapter:backend`, and `command` the one that takes `--policy-url`. Said because
+    the flag is the only way that arm gets either verb, and a refusal that names the verb alone
+    sends the person to `quackd list-verbs`, which never lists them."""
+    wanted = [verb for verb in POLICY_VERBS if verb in verbs]
+    arm = next((spec for spec in specs if spec in POLICY_SPECS), None)
+    if not wanted or arm is None:
+        return None
+    come = "comes" if len(wanted) == 1 else "come"
+    return (
+        f"{' and '.join(wanted)} on {arm} {come} from a policy server: start one with quackd "
+        f"policy serve, and give {command} its address with --policy-url"
+    )
 
 
 @runtime_checkable

@@ -269,3 +269,31 @@ class LLMProvider(Protocol):
     async def step(
         self, system: str, history: list[Exchange], tools: list[dict[str, Any]]
     ) -> ProviderTurn: ...
+
+
+JUDGE_FEATURE = "judge"
+"""Where the loop puts a person's word on whether the arm did the task, on the observation a
+`JudgedPilot` reads next: `question`, `answer` (True, False, or None when there was nobody to
+put it to or the prompt raised), `asked` (`quackd.log.a_person_was_asked` of whoever was
+asked) and, only when the prompt raised before anybody answered, `raised`, the name of what it
+raised."""
+
+
+@runtime_checkable
+class JudgedPilot(Protocol):
+    """A pilot that cannot tell whether its task was done, so a person says (`--controller vla`,
+    `providers.vla`).
+
+    The loop asks `judge_question` before each turn, puts the question to `RunConfig.judge`
+    once it names one, and hands the answer back under `JUDGE_FEATURE`. It also holds the
+    pilot's `declare_success` to a yes from a person really asked, whatever the pilot says."""
+
+    def judge_question(
+        self, history: Sequence[Exchange], *, cut_short: str | None = None
+    ) -> str | None:
+        """The question to put to a person now, or None when it is not yet time.
+
+        `history` ends with the observation about to be shown. `cut_short` is why the run is
+        ending before the pilot finished, a spent budget, and the question is then about what
+        did run, or None when nothing did."""
+        ...

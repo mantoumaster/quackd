@@ -3,8 +3,9 @@
 A six-joint desktop arm with a parallel gripper, driven through
 [LeRobot](https://github.com/huggingface/lerobot). No legs, no head, no voice, so its
 manifest lists none of that: `move`, `go_to`, `search_scan`, `say` and `gaze` do not exist
-on this robot. What it has is joints, a gripper, `place`, and, when a policy is available,
-`pick` as one skill intent that the arm's own learned policy executes. The thesis holds:
+on this robot. What it has is joints, a gripper, `place`, and, when a run names a policy
+server, or on the mock, which scripts its own, `pick` and `manipulate`, each one skill intent
+that the arm's own learned policy executes ([policies.md](../policies.md)). The thesis holds:
 the LLM picks the verb, LeRobot moves the arm, quackd enforces the contract. (With the optional `--decision-llm`, some of the verbs that are a choice rather than a number can be picked by a decision LLM instead; every angle is still the model's, and it is off unless you name one: [decision-llms.md](../decision-llms.md).)
 
 Upstream pinned at
@@ -52,8 +53,9 @@ model cannot exceed.
 
 | What you want | What does it |
 |---|---|
-| drive the follower from a leader arm, record a dataset, train or run a policy | LeRobot's own tools. quackd never calls them and never writes to your datasets |
+| drive the follower from a leader arm, record a dataset, train a policy | LeRobot's own tools. quackd never calls them and never writes to your datasets |
 | have a model choose the next verb, inside limits you wrote down, with every refusal recorded | quackd |
+| hand the arm to a policy you trained, one short subtask at a time, under the model and inside those limits | quackd's policy server, `quackd policy serve`, which loads a LeRobot checkpoint in a process of its own ([policies.md](../policies.md)) |
 | run one verb by hand, right now | quackd over MCP (`robot_run_verb`), or LeRobot's own Python API |
 
 The contract is a `.duck` file: the verbs the model may use, the budget in steps and minutes,
@@ -112,7 +114,7 @@ drive the arm.
 
 | `--robot` | Status | What it is |
 |---|---|---|
-| `lerobot:mock` | ✅ | an arm in memory: goals land instantly, the gripper stops on the object, a scripted policy answers `pick`, and it refuses an out-of-range goal in the same words the real one does |
+| `lerobot:mock` | ✅ | an arm in memory: goals land instantly, the gripper stops on the object, a scripted policy answers `pick` and `manipulate`, and it refuses an out-of-range goal in the same words the real one does |
 | `lerobot:real` | ✅ | an SO-101 follower through LeRobot (extra `quackd[lerobot]`, Python 3.12 or newer, torch), and as many USB webcams as `--camera-url` names; every name VERIFIED at the pin, exercised against a fake arm and a fake camera, and run on one real arm on two afternoons, 2026-09-15 on quackd 0.9.0 and 2026-09-23 on quackd 0.12.0, with lerobot 0.6.1 and no policy. What changed after 2026-09-23 has not run on an arm yet |
 | `lerobot:mujoco` | ✅ | [the arm's simulator](#the-simulator-lerobotmujoco): `lerobot:real`'s own code over a physics model of the SO-101 in MuJoCo, the maker's model fetched at a pinned commit, with the cameras rendered from the scene (extra `quackd[lerobot-sim]`, Python 3.11 or newer, no LeRobot and no torch). A seeded grasp sweep and `quackd preflight` sweeps pass on the maker's model, and nothing has compared it against an arm, so it never raises `lerobot:real`'s status ([adapter-status.md](../adapter-status.md)) |
 
@@ -187,6 +189,17 @@ in the cache yet:
 |                |               | fetches it                                                               |
 ```
 
+The policy server is a fourth, installed where a policy runs, on the laptop beside the arm or
+on a rented GPU, and never needed by the process that drives the arm:
+
+```bash
+uv pip install "quackd[lerobot-vla]"   # LeRobot, torch and transformers, on Python 3.12
+```
+
+It is `quackd-lerobot[vla]`, which is `lerobot[smolvla]` with no `[feetech]`, since the server
+never opens a serial port. `doctor` gives it the row `lerobot-vla (transformers)`, read from the
+installer's metadata so that asking costs no import of transformers.
+
 ## The name you give the arm is its calibration id
 
 This catches people once, and the symptom is an arm that refuses to connect after a
@@ -224,8 +237,8 @@ port ([registry.md](../registry.md)). It is also the only place a
   "manifest": 1, "id": "arm-01", "vendor": "huggingface", "model": "lerobot-so101",
   "embodiment": "arm", "mobility": "none",
   "intents": ["joint", "gripper", "skill"], "sensors": ["joint_state", "camera"],
-  "verbs": ["observe", "report_state", "stop", "move_joints", "gripper", "place", "pick"],
-  "preconditions": {"move_joints": ["torque_on", "not_hot"], "place": ["holding"], "pick": ["torque_on", "not_hot"]},
+  "verbs": ["observe", "report_state", "stop", "move_joints", "gripper", "place", "pick", "manipulate"],
+  "preconditions": {"move_joints": ["torque_on", "not_hot"], "place": ["holding"], "pick": ["torque_on", "not_hot"], "manipulate": ["torque_on", "not_hot"]},
   "safety_authority": {"native": "torque_limit", "deadman": false, "heartbeat_hz": 2.0},
   "frame": {"reference": "base", "note": "joint space in degrees (gripper 0..100); no camera-to-base calibration"},
   "limits": {"joint_deg": 180.0, "gripper": 100.0},
@@ -233,10 +246,12 @@ port ([registry.md](../registry.md)). It is also the only place a
 }
 ```
 
-That is the mock's static manifest. The static manifest of `lerobot:real` claims neither a
-camera nor a policy; `connect()` adds `observe` when `--camera-url` named a camera and it
-opened, and `pick` when a policy object was injected. It also adds what cannot be known until
-the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
+That is the mock's static manifest. The static manifest of `lerobot:real` claims no camera, and
+claims `pick` and `manipulate` only when `--policy-url` names a policy server
+([below](#a-run-with-a-policy-server)), so a task that allows them is judged before anything
+connects. `connect()` adds `observe` when `--camera-url` named a camera and it opened, and `pick`
+and `manipulate` when a policy object was injected in code. It also adds what cannot be known
+until the arm has answered: `extras.joint_range_deg`, every joint's travel in degrees read out of
 the calibration file, to a tenth of a degree rounded inward so that every angle it names is one
 the arm accepts (`wrist_roll` included, where that travel is the whole turn upstream
 records rather than anything swept, see Safety), `extras.calibration_file`, the path that came
@@ -257,7 +272,8 @@ naming it in sentences nobody needs.
 | `move_joints(positions, duration_s)` | extension | goal angles for one or more of the six joints, walked there across `duration_s` seconds one goal a tick at 10 Hz, then re-sent until the measurement arrives; the step cap is the ceiling on speed, and a joint that stops short is a failure |
 | `gripper(open)` | extension | open or close the gripper, and report where it stopped |
 | `place` | extension | open the gripper where the arm is; needs `holding` |
-| `pick(target, max_s)` | extension, **confirm** | one skill intent; the arm's learned policy runs its own observe/act loop at its own rate until something is held or the time is up |
+| `pick(target, max_s)` | extension, **confirm** | one skill intent; the arm's learned policy runs its own observe/act loop at its own rate until something is held or the time is up, told a target held to the one line of plain text `manipulate`'s instruction is |
+| `manipulate(instruction)` | extension, **confirm** | one skill intent. The arm's learned policy is told one short subtask and runs for one segment, which ends on its time, its chunks or the arm no longer moving. It never says the task is done: the pilot looks at the arm to judge |
 
 Joints are named, not numbered, and a `move_joints` call may name any subset of them:
 
@@ -392,7 +408,7 @@ What that means at the bench:
   `--camera-url`.
 - A camera that stops delivering later is **not** a refusal. `observe` fails with what the
   camera said (`the camera gave no frame: TimeoutError: ... too old`), and a `pick` running
-  at that moment ends as a policy error, because the policy is handed the frame. The moving
+  at that moment is stopped with the arm held, because the policy sees through it. The moving
   verbs carry on. `report_state` keeps working and gains a `CAMERA DOWN:` clause with the
   reason, and the health goes into the arm's state, which is what puts a dead webcam in the
   transcript on a run that has no `observe` to call. `quackd doctor` shows the same thing
@@ -655,15 +671,478 @@ task file on seed after seed.
 
 ### What `pick` needs, and what it does not have
 
-`pick` hands the whole arm to a learned policy, and it is confirm-gated for that reason. On
-`lerobot:real` it is **absent from the manifest unless a policy object was injected in
-Python**, and there is no CLI flag that loads one today. `real.py` has `load_policy(path)`,
-built entirely from verified upstream names, but nothing has run it end to end: it is the
-`POLICY_PIPELINE` row in the UNVERIFIED table below. So a trained ACT checkpoint reaches this
-arm only through code you write around the adapter, and `quackd run --robot lerobot:real`
-will not offer `pick` at all. Every other verb is fully reachable from the CLI. If you get a
-policy running this way, the policy's own actions still pass the step cap and the range
-refusal, which is quackd's rule and not LeRobot's.
+`pick` and `manipulate` hand the whole arm to a learned policy, and both are confirm-gated for
+that reason. On `lerobot:real` and `lerobot:mujoco` they are **in the manifest only when the run
+names a policy server** with `--policy-url` ([below](#a-run-with-a-policy-server)), or when a
+policy object is handed to the backend in Python. A checkpoint loads in
+[a policy server of its own](#a-policy-in-a-process-of-its-own-quackd-policy-serve), and the arm
+reaches it through `RemoteRunner`, the server's client. `real.py` still has `load_policy(path)`,
+which would load one in the arm's own process and which nothing calls or has run: it is the
+`LOAD_POLICY` row in [the policies' table](#the-policies-upstream-lerobot-061) below. Setting a
+server up, on the laptop or on a rented GPU, is [policies.md](../policies.md).
+
+`pick` runs its policy as a segment, a loop of its own on the arm's clock that reads the arm,
+judges the reading, takes the policy's goal and sends it, and the verb waits for that loop to
+end. A policy object with one `act` a call runs at 10 Hz, one `act` a tick, as `pick` always ran
+it:
+
+- **It ends as soon as something is held.** `holding` is judged on the loop's own reads, each
+  tick, so the policy stops the moment a grasp settles and the next verb is not refused as
+  `pick is running`. The policy is reset at the start of every pick, where it has a `reset()`,
+  so a second pick does not play out the first one's queued actions.
+- **A goal past the travel is clipped and counted, not refused.** A verb's goal there is
+  refused, and a policy's is clipped to the edge and counted in `extras.range_clips`, because
+  one a tick over should not abort a grasp ([ADR-0036](../adr/0036-what-the-arm-does-not-say.md)).
+  Its actions are capped at the verbs' own speed ([below](#manipulate-and-the-loop-a-policy-runs-in)).
+  A joint reading outside its travel is left out of every action, as a stop leaves it out.
+- **It stops the policy and holds the arm** on a hot joint, torque off, a camera that gave no
+  frame, a goal that is not a finite number or names no motor of this arm, a goal held past the
+  travel for 1 s, 3 sends in a row that did not reach the arm, or a read the arm did not
+  answer. Torque and temperature are read every 0.5 s rather than every tick. A pick refuses to
+  start with a joint more than 2 degrees outside its travel, with the same reading and travel a
+  take-hold would name.
+- **A stop from anywhere ends it and says so.** The heartbeat's stop, a `stop` from an MCP
+  client, and a verb refused while the pick runs, which stops the arm, all end the pick as
+  `stopped:` with what stopped it. A stop that lands while the pick is still starting, before
+  the policy has been asked for anything, keeps it from starting, and the pick is refused
+  with the stop named. So does a stop still under way when the pick begins. A stop that lands
+  while the loop is on the bus waits for that call to come back, no longer than the call's own
+  deadline, and then holds the arm. The heartbeat and the executor's read before a verb wait
+  for it the same way, rather than take the loop's own call for a bus that stopped answering.
+
+The arm's state carries `extras.timing`: how long each bus call took, the wait for the bus
+included, and each of a policy's ticks, as a count, a median, a 99th percentile and the
+longest, measured on the wall's clock. A pick's result carries the same. Nothing acts on it,
+and it is there for a bench session to say how fast this arm's bus and a policy's loop are.
+
+### `manipulate`, and the loop a policy runs in
+
+`manipulate(instruction)` has one parameter, the subtask in a few words, and hands the arm to
+the policy for one segment. Its preconditions are `pick`'s, torque on and nothing hot, and it
+is confirm-gated like `pick`. An instruction of nothing but blanks is refused on every
+backend, the mock included, in the same words, and the verb takes one line of plain text no
+longer than a task file may list, whether a task lists any or not. On the mock the segment
+runs its time on the mock's clock, and a stop, a release, a rest move or the next segment ends
+it sooner, while a verb that sends a goal meanwhile is refused, as on the arm.
+
+- **A task file can hold it to its own words and its own time.** A v3 file's `policy` section
+  ([duck-spec.md](../duck-spec.md#policy-v3)) lists the instructions `manipulate` may give, and
+  the verb then takes those and no others. It sets `segment_s`, which the run tells the backend
+  before the first segment (`set_segment_s`), and the executor's timeout for the verb becomes
+  that plus 10 s. On the simulator it adds the wall time the clock stands still while the
+  policy thinks, which it bounds from the latency the policy declares and one frame from each
+  camera, timed at connect, and holds to ten minutes (`FROZEN_INFERENCE_MAX_S`). A policy whose
+  rate the loop would refuse, or whose latency starves every segment before its first chunk,
+  adds nothing, since its segments end at their start. And it sets `total_s`, the seconds of segments the run may spend,
+  `pick`'s among them, after which the next `pick` or `manipulate` is refused. A file that
+  lists instructions cannot allow `pick` as well, since `pick` tells the policy a target of the
+  pilot's own.
+- **It runs for 10 s unless it ends sooner,** when the task file says nothing else. Its chunks
+  played, or a policy that says it is done, end it, and so does the arm no longer moving under
+  it: every joint within 0.5 degrees of where it was for 1 s of goals. That stall holds the
+  arm where it stopped, because what stopped it may be in its way, and the policy's last goal
+  would leave the servo pushing on.
+  The verb then holds it again, as it does after every ending that held, since a bus can lose
+  a hold's packet, and a stall whose last hold did not reach the arm is a failure that says
+  so. Otherwise those three are a segment that ran, and the verb is ok on them and on nothing
+  else. Its summary says why it ended, how long it ran, the chunks, the goals clipped to the
+  travel and the ticks a second it achieved, and never that the task is done: nothing on this
+  arm can tell, and the pilot judges it from a fresh look at the arm.
+- **Anything else is a failure, with the arm held.** A policy that gives nothing to send, a
+  guard from the list above, a policy that raises and a stop from anywhere end it that way, so
+  the executor's rule for verbs that keep failing still stops a run that does.
+- **The rate is the policy's own.** A policy declares its rate and where the number came from,
+  and a rate that is not a finite number between 1 and 60 Hz refuses the segment before
+  anything is sent. quackd never measures one.
+- **The pace is the arm's clock.** Tick `k` is due at the segment's start plus `k` periods,
+  counted from the tick's number rather than summed, so a tick that runs long costs only its
+  own time. A tick that runs past the next one's deadline skips to the next whole period,
+  counts what it skipped, and never sends twice in one period. Nor does a tick start before
+  its deadline, on the simulator's clock either, which wakes only on whole steps of its own.
+- **The speed cap is the verbs'.** A verb moves a joint at most `limits.step_deg` a tick of
+  0.1 s, and a policy moves it no faster: per send that speed over the policy's rate, and never
+  more than one verb step, so `QUACKD_LEROBOT_MAX_STEP_DEG` governs both. At the default 5
+  degrees a policy at 30 Hz is capped at 1.7 degrees a send. The cap is written on the
+  follower for the segment and put back to the verbs' step when the segment ends, however it
+  ends, and written again before every stop, rest move and verb's goal.
+- **A chunk replaces what was queued.** A policy that answers with a chunk of goals, one a tick
+  from the tick its observation was read at, has the goals for ticks already played dropped
+  when it arrives, and the rest replaces what was queued rather than being added after it. It
+  is asked again once half its last chunk is left, and never while it has not answered. A tick
+  with nothing queued sends nothing, the arm holding its last goal, and 1 s of that ends the
+  segment, with 5 s of grace for the first chunk.
+- **The policy has a thread of its own.** Every call on it runs on a worker of its own, never
+  on the threads the bus's calls use, so a policy that stops answering cannot hold up a read,
+  a stop or the heartbeat. A segment starts only once the policy has finished whatever the last
+  segment left it doing, waiting up to 5 s and refusing after, and an answer from an earlier
+  segment is thrown away.
+- **On the simulator** time stands still while the policy thinks, and its answer is taken in
+  the policy's declared latency after it was asked for, which is where it would have landed on
+  the arm, and only then judged, so an answer thrown away and an error land there too. A
+  rehearsal plays the trajectory the arm would, and proves nothing about a rate.
+- **A policy asked every tick** is one that carries state from tick to tick. A tick it never
+  saw, skipped by the pacer or not answered before the next, ends the segment with the arm held
+  and resets the policy. It is asked again only once it has answered, so it has to answer
+  within a tick, and one that declares a longer latency is refused before anything is sent,
+  on the simulator as on the arm.
+
+### A policy in a process of its own: `quackd policy serve`
+
+A checkpoint's processors are code: loading one imports whatever class its JSON names
+(`PROCESSOR_CLASS_IMPORT` in [the policies' table](#the-policies-upstream-lerobot-061)). So no
+quackd command loads a checkpoint in the process that owns the arm's serial bus
+([ADR-0048](../adr/0048-policies-are-the-arms-executor.md)), and [policies.md](../policies.md)
+is how to set one up, with the licences of the ones there are. The one thing in quackd that
+would is `load_policy()`, an older Python helper that nothing in quackd calls (`LOAD_POLICY`,
+in the same table). The policy runs in a server you start, in a terminal of its own, on the
+laptop or on a rented GPU you reach through `ssh -L`, and the arm's side reaches it over HTTP on
+port 9875, with a client that needs no torch and no LeRobot.
+It serves a LeRobot checkpoint named as `REPO@REVISION`
+([below](#serving-a-checkpoint)), and two scripted policies that need no torch either:
+`scripted:hold` holds the arm where it reads, so a `manipulate` of it ends on a stall, and
+`scripted:sweep` swings `wrist_flex` 5 degrees either side of where it started, one swing every
+2 s. `quackd run`, `quackd preflight` and `quackd serve-mcp` point the arm at a server with
+`--policy-url` ([below](#a-run-with-a-policy-server)), and `quackd policy check` asks one what it
+serves.
+
+```bash
+quackd policy serve --policy scripted:sweep
+```
+
+It prints where it serves, the token file it wrote or read and the rate, and serves until
+Ctrl+C. In a second terminal on the same machine:
+
+```bash
+quackd policy check --policy-url http://127.0.0.1:9875 --bench --seconds 3
+```
+
+```text
+  http://127.0.0.1:9875
+policy           scripted:sweep (quackd-policy 1, quackd 0.16.0)
+features         whatever the arm has (a scripted policy)
+rate             10 Hz, from scripted:sweep's own, the verbs' tick
+chunks           10 actions, 10 played from each
+latency          0 s declared
+gpu              no
+threads          not set
+frames           raw
+cameras          none mapped
+state q01..q99   not reported
+action q01..q99  not reported
+loaded           nothing, a scripted policy loads no repository
+achieved    10.0 Hz of 10: 30 of the 30 ticks in 3.0 s sent an action
+starved     0 ticks with nothing to send
+round trip  median 1.2 ms, p99 1.4 ms, max 1.4 ms over 6 requests
+inference   median 0.1 ms on the server
+latency     1.4 ms or less for 95% of the 7 steps timed, from the request to
+            its chunk back: serve with --latency-s 0.01, so the simulator holds
+            each chunk back as long, and bench again with it
+```
+
+`--bench` first times one warm step on its own, the whole wait for a chunk, both ways of the
+wire and the inference. Then it streams synthetic observations through the real client at the
+policy's rate, paced and queued as a segment is, for 10 s unless `--seconds` says otherwise, and
+says the `--latency-s` to give: the 95th percentile of every step it timed, the warm one and the
+stream's (`LATENCY_QUANTILE`), rounded up to the hundredth of a second. One step timed on its
+own is one draw, and two benches of one checkpoint on one laptop suggested latencies too far
+apart to serve with either. A tick the pacer skipped sent nothing, as a starved one did, and is
+not counted as starved: with no `--latency-s` declared, a segment waits for each chunk in the
+tick that asked for it, and the ticks that pass meanwhile are skipped, so bench again served
+with the latency the first bench suggests
+([policies.md](../policies.md#on-the-laptop-alone) has both benches of a trained ACT, and what a
+good second one looks like). A policy whose steps take longer than a segment waits for its first
+chunk, or longer than a chunk takes to play (`chunk_outrun`), is given no latency, since `serve`
+would refuse any that covered them: the bench says it answers too slowly to drive an arm from
+that machine, and to serve it on a GPU. `--bench` is one of the two places a rate is measured,
+the other being the bench with the arm. `quackd policy check --policy NAME` serves the policy in its own process for
+the length of the check, with a token that lives only that long.
+
+`--latency-s` declares how long the policy takes to answer a step, which the simulator holds
+each chunk back by, and `--bench` is where the number comes from. `serve` and `check` refuse one
+of 5 s or more, since a segment gives up waiting for its first chunk after that, and one as long
+as a chunk takes to play, since every chunk would then land after its last action's tick and
+none would play.
+
+- **A token, always.** With no `--token-file` the server writes one to `~/.quackd/policy.token`
+  the first time, readable by you alone where the OS allows, and reads it after that. The
+  client reads `--policy-token`, then `QUACKD_POLICY_TOKEN`, then that file. It rides in one
+  header, never in a URL, and is compared in constant time. Both ends refuse a token shorter
+  than 16 characters, or with a space or a line break inside it, and say where it came from
+  without quoting it: `openssl rand -hex 32` makes one.
+- **Loopback, unless you say otherwise.** The server binds `127.0.0.1`, or `::1` when told, and
+  refuses any other address, the rest of 127/8 included, unless `--behind-tls` says a TLS proxy
+  stands in front of it. The client sends plain HTTP only to `127.0.0.1` and `::1`, and refuses
+  `localhost` with a sentence saying to write `127.0.0.1`, because looking that name up costs
+  about two seconds a call on some machines. A server on another machine is reached through
+  `ssh -L 9875:127.0.0.1:9875`, or over `https://` with its certificate verified. It follows no
+  proxy and no redirect.
+- **Frames travel raw on loopback** and as JPEG at `--jpeg-quality` when the server asks for it,
+  which one behind TLS does at 90 unless told otherwise. A tunnel looks like loopback to both
+  ends, so give a server you reach through `ssh -L` a `--jpeg-quality`.
+- **Every number is checked on both sides.** A `NaN` or an infinity, in JSON or out of a
+  policy, is refused before it goes anywhere, and so is a body, a reply or a chunk past its
+  bound. What a server says about itself in words, the policy, its version and where its rate
+  came from, is printable ASCII or refused, so nothing `check` prints can move your terminal's
+  cursor or write to its clipboard.
+- **One session at a time.** Each segment's reset starts a session in place of the client's
+  last, and a step for an ended session is refused. A reset from another client, such as
+  `check --bench` against a server an arm is driving through, is refused while the arm's
+  session is in use, so it never ends the arm's segment. A session is in use until it has been
+  quiet for one chunk's span and the 5 s a first chunk may take, 6 s for the scripted
+  policies, or until its client closes it, which it does when it is done. A reset whose reply
+  never reached its client still leaves the session to that client, whose next reset or close
+  is served at once. A step the client sends again, when a kept-alive connection turns out
+  closed, is answered from the first answer rather than inferred twice.
+- **A server that stops answering ends the segment with the arm held.** On the arm the client
+  waits longer for a step than the loop's patience, so the loop ends the segment starved and
+  says so, and `manipulate` fails. On the simulator the loop's patience is on the simulator's
+  clock, which stands still while it waits for a chunk, so the client's own deadline, 10 s of
+  the wall's, ends it instead, and the segment says the policy raised `PolicyServerError`. A
+  reply that trickles in is cut off at the same deadline, however slowly each byte comes.
+- **A slow step holds up nothing but the next step.** A reset is answered at once, even while a
+  step its client gave up waiting for is still inferring: the policy's own reset waits for that
+  step and runs before the new session's first one, and the old step's chunk is dropped as it
+  ends. Another client's reset is refused only until that step has outlived its client's
+  patience (`ABANDONED_S`, the client's 10 s), since nobody waits for it after that, and the
+  refusal says how long it has been inferring and when to try again. Stopping the server
+  refuses every request after it, a step waiting its turn behind the slow one too, and waits a
+  second at most for a step still inferring (`CLOSE_WAIT_S`), since a step on a CPU can take
+  minutes.
+
+### Serving a checkpoint
+
+A LeRobot checkpoint is served by name and revision, in a Python 3.12 environment with the
+server's extra, which is LeRobot, torch and transformers and nothing the arm's own process
+imports:
+
+```bash
+uv pip install "quackd[lerobot-vla]"
+quackd policy serve --policy OWNER/NAME@REVISION --fps 30
+```
+
+It serves ACT, SmolVLA and pi05 checkpoints, the three whose processors quackd has read at
+LeRobot 0.6.1. CI's `policy` job builds a tiny random ACT, puts it in a Hub cache of its own and
+serves it offline through the real server to the real client and an arm behind it
+(`POLICY_PIPELINE` in [the policies' table](#the-policies-upstream-lerobot-061)). On 2026-09-28 a
+trained ACT from the Hub, `natsuki0000/act-so101-bluecap` at commit
+`82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, was served on a laptop's CPU and drove a twin of the
+lab's arm on the simulator, and `lerobot/smolvla_base` loaded there and took minutes a chunk, so
+it never answered a step through the client ([policies.md](../policies.md#smolvla-and-act)).
+pi05 has not run (`VLA_PIPELINE`). Pi0.5 also wants LeRobot's `[pi]` extra and a Hub token that
+has been granted its gated tokenizer.
+
+Loading one reads before it builds, and refuses rather than guesses:
+
+- **The JSON first.** `config.json` and both processor JSONs are fetched at the revision named,
+  and nothing else of the repository. A policy type other than those three is refused, so is a
+  feature that is neither the state, an image nor the action, and so is a processor step named
+  by a `class` key or by any registry name outside the ones those three policies' processors
+  use. A step named by class is imported from wherever it says, which is code the checkpoint
+  chose, so the weights are never fetched for one.
+- **No repository's own code.** A step that could trust a repository's code is told not to. A
+  model a checkpoint names inside itself, SmolVLA's backbone or a tokenizer, would load at
+  whatever revision the Hub has that day, so it is refused unless `--pin REPO@REVISION` names
+  the revision, once per model. That is a whole commit, or a tag the Hub says is one, and never
+  a branch or a pull request, which name whatever was last pushed to them. A SmolVLA whose
+  `config.json` names no backbone is refused as well, since LeRobot would fill in a default of
+  its own at no revision. The pinned model is fetched with its configs, tokenizer files and
+  safetensors and no `.py` and no pickle, and handed over as that directory. The Hub's cache
+  keeps one directory per commit, holding whatever was fetched at that commit before, so a
+  pinned model whose directory holds any other kind of file, or whose configs map a class to
+  code of their own (`auto_map`), is refused, with a sentence saying to point `HF_HUB_CACHE`
+  at a fresh cache.
+- **The rate.** No checkpoint carries one (`CONFIG_HAS_NO_RATE`), so it is `--fps`, or else the
+  fps in `meta/info.json` of the dataset `train_config.json` names, at the revision it names.
+  That revision is the checkpoint's choice, so it is taken only when it is a whole commit, or a
+  tag the Hub says is one, which it cannot say while `HF_HUB_OFFLINE` is set. Any other
+  revision, none, or no `train_config.json` refuses the server with a sentence saying to give
+  `--fps`.
+- **Then the weights,** the processors' state and the pinned models, and the build on the
+  device LeRobot picks, a GPU where there is one. Every weight in `model.safetensors` is loaded
+  into the model and none is left as it was built, or the server refuses to start: LeRobot's
+  loader only logs a weight it did not find, and pi05's hands back a random network when its
+  weights do not load, so quackd asks the one to be strict and loads the other's itself. An
+  ACT's ImageNet backbone is never fetched, since the checkpoint's own weights replace it, and
+  torch gets one thread fewer than it would take, unless `--threads` says how many. An ACT
+  that ensembles its chunks over time is asked every tick and is refused without a GPU
+  (`TICK_MODE`). A pi05 that learned relative actions is not: its whole chunk is made absolute
+  against the state it was predicted from, which is how its training made it relative, where
+  LeRobot's own loop makes each action absolute against the state of the tick it is played
+  at (`VLA_PIPELINE`).
+
+Each camera the arm has is the image of its own name, `observation.images.front` from the camera
+called `front`, unless `--cameras NAME=KEY` maps it, and a key that is not one of the
+checkpoint's images is refused. A step goes through LeRobot's own loop: the arm's reading, named
+by its bus's motors in the bus's order, through `build_inference_frame` and the pre-processor,
+the chunk from `predict_action_chunk` cut to `n_action_steps`, the post-processor over the whole
+chunk, and each row a goal per motor. One lock holds the three together, and every session's
+reset resets the policy and both processors. `check` says all of it, here of the tiny random
+ACT CI's job builds, put in a Hub cache on a laptop's CPU the way that job puts it, with
+`HF_HUB_OFFLINE=1` and `HF_HUB_CACHE` pointing at it:
+
+```bash
+quackd policy check --policy quackd-test/tiny-act@v1 --bench --seconds 3
+```
+
+```text
+  served here for the check, at http://127.0.0.1:53804
+policy           quackd-test/tiny-act@v1 (quackd-policy 1, quackd 0.16.0)
+features         state 6, action 6, images observation.images.front 64x48
+rate             10 Hz, from
+                 quackd-test/tiny-data@ed2440c0bf574309f37e0a639e02d7b34cb2939c
+                 meta/info.json
+chunks           8 actions, 4 played from each
+latency          0 s declared
+gpu              no
+threads          3
+frames           raw
+cameras          front=observation.images.front
+state q01..q99   -32.4835..32.4835, -47.5165..47.5165, 25..75,
+                 -42.5055..42.5055, -62.5055..62.5055, -37.4945..37.4945
+action q01..q99  -32.4835..32.4835, -47.5165..47.5165, 25..75,
+                 -42.5055..42.5055, -62.5055..62.5055, -37.4945..37.4945
+loaded           checkpoint quackd-test/tiny-act@v1, commit 0b812cabb86d;
+                 dataset
+                 quackd-test/tiny-data@ed2440c0bf574309f37e0a639e02d7b34cb2939c
+                 , its fps
+achieved    10.0 Hz of 10: 30 of the 30 ticks in 3.0 s sent an action
+starved     0 ticks with nothing to send
+round trip  median 21.6 ms, p99 70.6 ms, max 70.6 ms over 15 requests
+inference   median 19.7 ms on the server
+latency     70.6 ms or less for 95% of the 16 steps timed, from the request to
+            its chunk back: serve with --latency-s 0.08, so the simulator holds
+            each chunk back as long, and bench again with it
+```
+
+Every repository the server loaded, with the revision it loaded it at and, for a tag or a
+branch, the commit that was that day, is in `/v1/policy`, and the arm's connect writes it into
+the run's record. LeRobot says a line or two of its own as it loads, about the device and the
+weights, before any of this.
+
+### Whether the policy fits the arm
+
+The arm asks the server what it serves as it connects, once its cameras are open and before
+any motor is energised, and a policy that could not drive it refuses the connect, with the arm
+never touched. Every limit is read and none is typed: the motors are the bus's, in its order,
+each camera's size is a frame it just gave, and the travel is the calibration file's.
+
+- **The state and the action** are as long as the bus has motors. Where a checkpoint names its
+  action's dimensions, as a pi05 does, they are the bus's motors in the bus's order. Where it
+  does not, the order is trusted and not checked: the policy is taken to have learned from a
+  bus that lists its motors as this one does, which is how LeRobot records one.
+- **The cameras.** An ACT needs a camera for every image it looks at. A SmolVLA or a pi05 runs
+  with some of its images missing, and the ones that are go into the record as padded.
+- **A frame of another size** than the checkpoint's image is refused, with the size to give the
+  camera with `--camera-url`'s `width=` and `height=`, which the real arm's cameras and the
+  simulator's both take.
+- **The frame of reference.** The 1st and 99th percentiles of the state the policy learned from
+  have to lie inside this arm's calibrated travel, 2 degrees of slack included, the same slack
+  a reading gets everywhere else. A policy trained on an arm calibrated another way asks for
+  goals that pin this one at its limits, so it is refused, naming each joint with its
+  percentiles and its travel. A checkpoint that reports no percentiles is let through, and the
+  record says it was not checked.
+
+**`--accept-other-frame`** overrides the frame of reference, on `quackd run`, `quackd preflight`
+and `quackd serve-mcp`, beside `--policy-url`, and is refused without it. It lets a policy
+learned on an arm calibrated another way connect, and nothing else: every goal it answers is
+still clipped to this arm's calibrated travel before it is sent, so it changes what drives the
+arm and never where the arm may go. Give it when you know the two arms' frames match. The
+connect's note says the percentiles were accepted, and the `policy` block of the run's
+`summary.json` and `run_start` carry `accept_other_frame`. On the lab arm's calibration, 55 of
+the 68 servable SO-100 and SO-101 ACT checkpoints on the Hub were refused on `shoulder_lift`,
+whose recorded travel there does not reach the arm's own fold
+([ADR-0045](../adr/0045-a-rest-pose-the-calibration-cannot-reach.md)) while theirs did. A frame of
+another size can be accepted from Python alone, with `RemoteRunner`'s `accept_frame_size=True`,
+and the record says when it was.
+
+The check is made again as every segment starts, on what the server says then. The arm's
+process lives as long as a pilot's session, and a server can be started again on the same
+port and token in that time. A policy other than the one the connect checked starts no
+segment, with a sentence saying to connect the arm again so the new one is checked and named
+in the record, and the same policy starts none once it no longer fits.
+
+### A run with a policy server
+
+`--policy-url` hands the arm's `pick` and `manipulate` to a server that is running, on
+`quackd run`, `quackd preflight` and `quackd serve-mcp`:
+
+```bash
+quackd run --goal "put the block in the bowl" --robot lerobot:mujoco --policy-url http://127.0.0.1:9875
+```
+
+- **Only the flag names it.** No variable and no registered robot carries the address, so a
+  policy drives the arm only on a command that says so. The token is `--policy-token`, else
+  `QUACKD_POLICY_TOKEN`, else the file `quackd policy serve` wrote, and an address the client
+  refuses, or a token found nowhere, is refused as the arm is built, before anything connects.
+  A task that allows `pick` or `manipulate` on the arm, run without the flag, is refused with a
+  line saying to start a server and give the command its address.
+- **One arm.** `lerobot:real` and `lerobot:mujoco` take it. The mock runs its own scripted
+  policy and refuses one, every other body refuses it naming these two, and a flock refuses it,
+  because one server drives one arm.
+- **Asked before the arm connects.** The server is asked what it serves before anything
+  connects, so a server that is not there is one sentence with nothing energised, and the run
+  header names the server and its checkpoint. The connect then checks the policy against the
+  arm before any torque ([above](#whether-the-policy-fits-the-arm)).
+- **A goal run asks at a terminal before each segment.** A `--goal` allows only verbs that are
+  safe, and `manipulate` is not one. With a policy server it is allowed all the same, behind a
+  confirm, so a person at a terminal is asked before each segment, and without one a goal is
+  what it was. Under `--yes`, or with a pipe or file on stdin, a segment starts without
+  anybody being asked, as any other gated verb does
+  ([safety.md](../safety.md#who-the-record-says-was-asked)), and `--controller vla` refuses
+  both.
+- **The pilot is told what executes.** A run whose verbs include `manipulate` has a
+  `Your executor` section in its prompt: hand the policy one short subtask per call, look again
+  after each, and never read the verb's ok as the subtask done. With a camera and a pilot that
+  can see, the look is the frame the next observation brings, and otherwise a reading of the
+  arm with `report_state`, which cannot show where a block went.
+- **The record keeps what the policy did.** `run_start` names the server and the checkpoint,
+  and `summary.json` has a `policy` block: the server, the policy, its rate, every repository
+  its server loaded at the revision it loaded, the JPEG quality, the segments and their
+  seconds, ticks, late ticks, chunks, starved ticks and clipped goals, the rate the ticks were
+  achieved at, and the mean and longest round trip to the server. The seconds and the rate are
+  on the arm's clock, which the ticks were paced on, and on the simulator that clock is the
+  simulator's own and runs as fast as it steps, so the block says `clock: sim` there and keeps
+  the segments' seconds on the wall's clock beside them (`wall_s`). The line under the verdict
+  says the same in one counter, and the time it splits gains the policy's wall seconds. No
+  action goes into a verb's result or the record.
+- **Over MCP** both verbs are confirm gated, so a client reaches them only on a server started
+  with `--yes`.
+
+### A scripted pilot that a person judges: `--controller vla`
+
+`--controller llm`, the default, is the model `--llm` names deciding each subtask. With
+`--controller vla` there is no model at all. A scripted pilot hands the policy each instruction
+the task file lists under `policy.instructions` (a `duck: 3` file,
+[duck-spec.md](../duck-spec.md#policy-v3)), in order, one `manipulate` segment each, or the
+`--goal` text as the only one:
+
+```bash
+quackd run stack-blocks.duck --robot lerobot:mujoco --policy-url http://127.0.0.1:9875 --controller vla
+```
+
+- **You are its verdict, twice.** Its `assess_task` is always `uncertain`, so you are asked
+  before the first segment whether the arm should try, and after the last one
+  `Did the arm do it?`, with the instructions it ran and the task file's `success` lines in
+  front of you. Only your yes makes the run a success. The question and your answer are a
+  `judge` prompt in the record
+  ([safety.md](../safety.md#a-pilot-that-cannot-judge---controller-vla)). The time you take to
+  look is not charged to `max_minutes`, and a prompt that ends without an answer is not a no:
+  the run fails saying what the prompt raised, and no `judge` row is written.
+- **A segment that does not end ok ends the list.** A confirm you decline, a guard, a starved
+  policy: the pilot starts no other segment and fails the run in the verb's own words, without
+  asking whether the task was done.
+- **The task file's budget holds.** Each segment is a `manipulate` like any pilot's, through the
+  same narrowed verb, confirm gate and `policy.total_s`. A budget that runs out before the last
+  instruction ends the run on its budget, and you are still asked about the segments that ran.
+- **It reads nothing but the verb's result and your answer.** The simulator's own truth about
+  the table never reaches it: `quackd preflight` judges a rehearsal on its own.
+- **It costs nothing.** No model is asked, so the counter line reads `tokens 0+0` and `cost $0`.
+- **It is refused before anything connects** without `--policy-url`, with `--yes`, with no
+  terminal to ask on, with `--dry-run`, beside `--decision-llm` or a decision LLM
+  `QUACKD_DECISION_LLM` names, with a flag for a model or a picture it would ignore (`--llm`,
+  `--base-url`, `--api-key`, `--extra-body`, `--vision`, `--image`), and for a task file whose
+  `policy.instructions` is empty. A `--goal` has to be one short subtask, as a listed
+  instruction is. `serve-mcp` refuses `--controller`, because over MCP the client is the pilot.
 
 ## The simulator: `lerobot:mujoco`
 
@@ -992,6 +1471,7 @@ split falls like this:
 | **A choice** | `report_state`, `stop`, `place`, `gripper`, `observe` (when a camera is configured) | `report_state`, `stop`, `place`, `gripper(open=true)`, `gripper(open=false)`, `observe` |
 | **A number** | `move_joints`, `pick` | none, ever |
 | **A sentence** | `assess_task`, `declare_success`, `declare_failure`, `remember` | none, ever |
+| **A segment** | `manipulate`, when a task file lists its instructions | one per instruction, offered and compared and never taken |
 
 `gripper` is a choice because its only parameter is a boolean. `move_joints` is not, for two
 reasons that hold independently. Its `positions` is a required object, which is enough on its
@@ -999,9 +1479,15 @@ own. And the joint names are nowhere in the schema: they are enforced by a `fiel
 against `JOINTS`, so there is nothing for a decision LLM to enumerate even in principle, and no
 version of this could be talked into offering one.
 
-`pick` is out on both counts, being a free string and confirm gated. The step cap, the range
-refusal and the hot-servo precondition apply to a stepper-authored call exactly as they apply
-to a model's, because both go through the same executor.
+`pick` is out on both counts, being a free string and confirm gated. `manipulate` is a free
+string too, unless a `duck: 3` task file lists its instructions, which makes it one choice per
+instruction. The stepper is then shown each of them and never takes one, in either mode: under
+`--yes` nobody is asked at a confirm gate, so a stepper that cleared its floor would start the
+arm's policy with no person and no model involved. Its answer is recorded beside the model's
+(`gate: shadow_only`), which is the agreement rate promoting it would need
+([ADR-0048](../adr/0048-policies-are-the-arms-executor.md)). The step cap, the range refusal and
+the hot-servo precondition apply to a stepper-authored call exactly as they apply to a model's,
+because both go through the same executor.
 
 [`ducks/arm-grip-check.duck`](../../ducks/arm-grip-check.duck) is the task built out of the
 first row alone, and it is the worked example on that page.
@@ -1014,7 +1500,10 @@ quackd, side by side, is [safety.md](../safety.md).
 
 - **The heartbeat reads the arm.** `is_connected` is the serial port's open flag and stays
   `True` with the cable pulled, so the heartbeat is a round trip to the motors, and a dead arm
-  ends the run.
+  ends the run. It reads the arm itself while a `pick` is running too, queued behind the
+  loop's read. The loop's reads would do for a round trip, but each went out before the beat
+  asked, and an arm that died as one came back would pass the beat and end the run a whole
+  period later. So a beat costs a running pick one read of the arm.
 - **Torque and temperature are measured.** `get_observation()` reads positions only, so
   `Torque_Enable` and `Present_Temperature` are read off the bus. A body joint at or above
   60 °C refuses `move_joints` and `pick`; the servo's own cut-off is 70 °C.
@@ -1139,8 +1628,18 @@ quackd, side by side, is [safety.md](../safety.md).
   quackd lowers the flag when it closes the port between attempts, in the same call and once
   the port has shut, so never under another call's packet. Upstream's own disconnect lowers it
   too, and lowering it writes nothing to a motor (`up.BUS_DISCONNECT`).
-- **`pick` is confirm-gated**: a learned policy moves the whole arm. Its actions go through
-  the same step cap and range check as a verb's.
+- **`pick` and `manipulate` are confirm-gated**: a learned policy moves the whole arm. Its
+  actions are capped at the verbs' own speed, per second rather than per send, so a policy
+  faster than the verbs' tick takes smaller steps rather than moving faster, and a goal past the
+  travel is clipped and counted rather than refused
+  ([What `pick` needs](#what-pick-needs-and-what-it-does-not-have)). A joint that reads past
+  its travel is left out of every goal a policy sends, because the servo would take any goal
+  for it as the end of the travel and drive there at its own speed, which no cap slows, and
+  quackd cannot halt that rise once a move has started it. Under `--yes`, or with a pipe or file
+  on stdin, the gate asks nobody, so a segment the pilot calls goes ahead without anybody
+  being asked, and over MCP both verbs need `--yes`. The policy itself runs in a server of its
+  own, and no quackd command loads a checkpoint in the process that holds the bus
+  ([policies.md](../policies.md)).
 
 ## The rest pose
 
@@ -2105,7 +2604,7 @@ If you hit one of these, or fail to, that is exactly what the
 | `'<motor>.pos'` | the observation and action keys |
 | `get_observation() reads Present_Position and nothing else` | no torque, current, temperature or fault: why quackd reads registers |
 | `camera name -> array` | `cam.read_latest()` under each configured camera's name |
-| `max_relative_target caps each step` | clips a goal to present +/- the cap per send_action |
+| `max_relative_target caps each step` | clips a goal to present +/- the cap per send_action, reading the cap off the config on every call, which is where a policy segment writes its own |
 | `max_relative_target must be a float or a dict per motor` | an int raises; a dict must name exactly the action's joints |
 | `ensure_safe_goal_position(goal_present_pos, max_relative_target)` | the whole step cap: a float caps every motor, a dict with other keys than the goal's raises ValueError and anything else raises TypeError, and each goal is clipped to the cap either side of the present reading, which `send_action()` reads just before. A NaN cap caps nothing. The arm simulator reimplements it rather than importing LeRobot, which needs Python 3.12 and torch |
 | `send_action() returns the goal actually sent` | the clipped goal, not the measured position |
@@ -2161,20 +2660,15 @@ If you hit one of these, or fail to, that is exactly what the
 | `a follower's cameras are part of its connected state` | `is_connected`, `send_action` and `disconnect()` all include them, which is why quackd's camera is not the follower's |
 | `lerobot-find-cameras opencv` | how an owner learns which index is which: it saves a frame per camera |
 | `lerobot-find-port` | upstream's own port finder: it names the port that disappears when you unplug the arm, which is the only way to be sure which one it is |
-| `lerobot.policies.pretrained.PreTrainedPolicy` | |
-| `lerobot.configs.policies.PreTrainedConfig` | a checkpoint's own config, read before the policy class is built; the one policy name that is not in the factory |
-| `PreTrainedPolicy.from_pretrained(path, *, config=None, local_files_only=False, revision=None, strict=False)` | a local directory or a Hub repo id |
-| `PreTrainedPolicy.select_action(batch: dict[str, Tensor]) -> Tensor` | one action per call |
-| `PreTrainedPolicy.reset()` | |
-| `lerobot.policies.factory.get_policy_class(name)` | |
-| `lerobot.policies.factory.make_pre_post_processors(policy_cfg, pretrained_path)` | the observation and the action tensor each go through one |
-| `lerobot.policies.factory.make_policy(cfg)` | |
 
 ### UNVERIFIED (our assumptions, and what quackd does about each)
 
+A policy's names, and the one assumption about running one, are in
+[the policies' table](#the-policies-upstream-lerobot-061) below, read at the version a policy
+server runs.
+
 | Name | What quackd does |
 |---|---|
-| `POLICY_PIPELINE` | `pick` runs an injected policy object; `load_policy()` builds one from verified names and is untested. A policy's actions get the same step cap and range check as a verb's |
 | `TORQUE_ENABLE_HOLDS_PRESENT` | what a servo does with the goal it was last told when torque comes back on. `enable_torque()` writes `Torque_Enable` and then `Lock` on each motor, neither of them a goal, so whether the motor then holds where it is or drives to that stale goal is the firmware's business and is documented nowhere quackd can read. It matters because the goal last written before a hand-off is the rest pose the arm has since been lifted out of by hand, so a snap back to it would happen with somebody's fingers in the way. `take_hold()` writes the present position as the goal **before** enabling torque, writes it again after, and reads the arm back to check it stayed, so the assumption is never relied on in either direction. A joint placed past its calibrated travel is where that cannot work: a goal written there is clamped to the limit (`POSITION_LIMITS_CLAMP_GOALS`), and no goal leaves the servo the last one it had, the rest move's, which only this row could say it ignores. So `take_hold()` leaves torque off and refuses while any body joint reads outside its travel |
 | `GRIPPER_OPEN_VALUE` | 100 is assumed open; which end is open is how the arm was calibrated, and the checklist asks for it by hand |
 | `HOLDING_INFERRED` | holding is the gripper told to close, settled, and short of shut; listed in `extras.assumptions`. A gripper a person closed by hand is a position and not a grip, so an arm placed with `--by-hand` reports nothing held until the pilot closes the gripper itself |
@@ -2249,6 +2743,77 @@ Line endings in the model do not count, because Git for Windows checks it out wi
 | `GRIPPER_MAP` | LeRobot's 0..100 is mapped linearly over the model's gripper hinge, with the closed end found from the loaded model rather than assumed, and a reading is clipped to 0..100 |
 | `WRIST_CAMERA_POSE` | whether upstream's printed mount sits where your wrist camera sits. quackd renders the wrist view from the mount as the model places it and never claims it is your camera's view |
 
+## The policies' upstream: LeRobot 0.6.1
+
+`pick` and `manipulate` hand the arm to a learned policy, and a quackd command loads a LeRobot
+checkpoint only in [a policy server](#a-policy-in-a-process-of-its-own-quackd-policy-serve),
+never in the process that owns the arm's bus. Only `load_policy()`, which nothing in quackd
+calls, would load one there (`LOAD_POLICY`, below). The names quackd relies on here are read
+against lerobot 0.6.1, the version the laptop that drives the lab arm runs, at the commit its
+tag names,
+[`7e241bd`](https://github.com/huggingface/lerobot/tree/7e241bd630a3719a56157a497ce5d08f244784f1)
+(`v0.6.1`), and were read on 2026-09-27, rather than at the `main` commit
+[the arm's own table](#upstream-api) is pinned to. The installed 0.6.1 wheel and the tag were
+compared file by file that day, and every file these rows cite was the same. Every name lives in
+[`adapters/lerobot/src/quackd_lerobot/policy/upstream_api.py`](../../adapters/lerobot/src/quackd_lerobot/policy/upstream_api.py).
+
+**No trained checkpoint has been loaded by quackd in CI or on a GPU.** CI's `policy` job loads a
+tiny random ACT through the real server, on the CPU and offline, which is what `POLICY_PIPELINE`
+below rests on. Trained checkpoints have been loaded only on one laptop's CPU, where an ACT from
+the Hub drove a twin of the lab's arm on the simulator and `lerobot/smolvla_base` never answered
+a step in time ([policies.md](../policies.md#smolvla-and-act)). pi05 and tick mode have not run
+at all.
+
+### VERIFIED (read from source at the v0.6.1 tag)
+
+| Name | Why quackd relies on it |
+|---|---|
+| `lerobot.policies.pretrained.PreTrainedPolicy` | |
+| `lerobot.configs.policies.PreTrainedConfig` | a checkpoint's own config, read before the policy class is built; the one policy name that is not in the factory |
+| `a policy's config carries no fps` | the rate a policy runs at is the fps of the data it learned from, so the server takes a rate it is given and never guesses one, and the rate travels with where it came from |
+| `PreTrainedPolicy.from_pretrained(path, *, config=None, local_files_only=False, revision=None, strict=False)` | a local directory or a Hub repo id, at a revision, and the policy comes back in eval mode. Left lenient, a weight the file lacks is only logged and the model keeps what it was built with, so the server asks for `strict=True` and refuses a checkpoint whose weights are not its model's |
+| `PreTrainedPolicy.select_action(batch: dict[str, Tensor]) -> Tensor` | one action per call |
+| `PreTrainedPolicy.predict_action_chunk(batch: dict[str, Tensor]) -> Tensor` | the whole chunk for one observation, which is what a step is answered with |
+| `PreTrainedPolicy.reset()` | |
+| `lerobot.policies.factory.get_policy_class(name)` | |
+| `lerobot.policies.factory.make_pre_post_processors(policy_cfg, pretrained_path=None, pretrained_revision=None)` | the observation and the action tensor each go through one, loaded at the revision given |
+| `lerobot.policies.factory.make_policy(cfg)` | |
+| `lerobot.policies.utils.build_inference_frame(observation, device, ds_features, task, robot_type)` | picks the keys `ds_features` names out of a raw observation, which is why a reset declares the motors in the bus's order and each camera |
+| `lerobot.policies.utils.make_robot_action(action_tensor, ds_features)` | one action row to a dict by name, so a chunk is turned into actions a row at a time |
+| `ACTConfig.chunk_size and n_action_steps` | how many actions one inference predicts and how many of them are played, 100 and 100 for ACT and 50 and 50 for SmolVLA. The server reports both |
+| `ACTConfig.temporal_ensemble_coeff` | set, ACT is asked every step with `n_action_steps` 1, which is the loop's tick mode |
+| `a processor step named by class is imported by its module path` | a step without a registry name is imported from whatever module its `class` key names, so loading a checkpoint's processors can run any code the checkpoint points at: why no quackd command loads a checkpoint beside the arm's bus. Only `load_policy()` would (`LOAD_POLICY`), and nothing in quackd calls it |
+| `ActionTokenizerProcessorStep.trust_remote_code defaults to True` | the action tokenizer trusts a repository's code unless told not to, the observation tokenizer loads one by name at no revision, and SmolVLA names its backbone by an unpinned Hub name. The server allows no action tokenizer, tells any step that could trust remote code not to, and pins every such name at a commit or a tag or refuses it. A SmolVLA config with no backbone gets LeRobot's default, so it is refused. SmolVLA's build asks transformers for its backbone without saying `trust_remote_code` either way, so a pinned model whose files map a class to code, or whose cached directory holds anything but configs, tokenizer files and safetensors, is refused |
+| `config.json, model.safetensors, policy_preprocessor.json, policy_postprocessor.json, train_config.json` | the files a checkpoint is read from, each fetched at the revision named, the config and the processors before anything else, and nothing else of the repository |
+| `train_config.json's dataset.repo_id and dataset.revision; meta/info.json's fps` | where a checkpoint's rate is read when the server is given no `--fps`, and only at a commit or a tag, since the checkpoint chose that revision and a branch would give a rate that could change between two serves |
+| `observation.state, observation.images.<name>, action` | the keys a policy's state, images and action go by. An image's frame is handed over under its key with `observation.images.` cut off, which is why each camera is the image of its own name |
+| `FeatureType: "STATE", "VISUAL", "ENV", "ACTION", "REWARD", "LANGUAGE"` | a checkpoint whose inputs are anything but one state and some images, or whose output is anything but one action, is refused, since an arm has nothing to give the rest from |
+| `"act", "smolvla", "pi05"` | the types whose processors the allowlist was read from, and any other is refused before its weights are fetched |
+| `rename_observations_processor, to_batch_processor, device_processor, normalizer_processor, unnormalizer_processor` | the steps every policy's processors are built from, and all of ACT's |
+| `smolvla_new_line_processor, tokenizer_processor, pi05_prepare_state_tokenizer_processor_step, relative_actions_processor, absolute_actions_processor` | the steps SmolVLA's and pi05's pre-processors add. With the row above, the only steps a checkpoint may name |
+| `overrides={"device_processor": {"device": device}}` | how upstream's own loops put a loaded pre-processor on their device. The server does the same and puts the post-processor's on the CPU, where the answers are read |
+| `lerobot.utils.device_utils.auto_select_torch_device()` | the device a checkpoint is loaded on, and whether the server says it has a GPU |
+| `DataProcessorPipeline.reset()` | the policy and both processors are reset at every session's reset, as upstream's own loop does |
+| `NormalizerProcessorStep.state_dict() -> {'<feature>.<stat>': Tensor}` | where the state's and the action's 1st and 99th percentiles are read, which the arm holds against its travel |
+| `PI05Config.action_feature_names, a list of names or None` | the action's dimensions by name, where a checkpoint has them, which the arm checks against its bus |
+| `SmolVLA and pi05 run with some of their images missing` | an ACT takes every image it names, so the arm refuses one with an image no camera is mapped to, and says which of a SmolVLA's or a pi05's go padded |
+| `ACTConfig.pretrained_backbone_weights = "ResNet18_Weights.IMAGENET1K_V1"` | torchvision would fetch these as ACT is built, before the checkpoint's own weights replace them, so the server sets it to None |
+| `RelativeActionsProcessorStep caches the state each time the pre-processor runs` | training makes a chunk relative to one state, and the absolute step adds back the state cached last. LeRobot's own loop runs the pre-processor every tick, so each action it plays from its queue is made absolute against the state of the tick it is played at. The server makes a whole chunk absolute against the state it was predicted from, as OpenPI does, and serves such a pi05 in chunks |
+| `PI05Policy.from_pretrained returns the model without its weights when they do not load` | pi05's own loader catches a load that fails, prints a line and hands back the model as it was built, a random network. The server loads a pi05's weights the way that loader does, its key fixes and a `model.` prefix, strictly and with nothing caught |
+| `async inference unpickles what it is sent` | LeRobot's own policy server and robot client `pickle.loads` what they receive, over an insecure port, which is why quackd has a protocol of its own |
+| `the async robot client imports torch` | and the arm's process is the one quackd keeps free of torch |
+| `observations_similar(obs1, obs2, lerobot_features, atol=1)` | the async server skips an observation near the last one it ran, and quackd's runs every step it is asked |
+| `SUPPORTED_POLICIES = ["act", "smolvla", "diffusion", "tdmpc", "vqbet", "pi0", "pi05", "groot"]` | the policies the async server will load, and anything else is refused there |
+| `POLICY_PIPELINE: build_inference_frame, the pre-processor, predict_action_chunk, the post-processor over the chunk, make_robot_action a row at a time` | exercised, not only read: CI's `policy` job serves a tiny random ACT from a Hub cache at a commit and a tag, offline and with torchvision unable to fetch the backbone its config names, through the real server and client and an arm behind them, and checks every action of a chunk against what LeRobot's own `select_action` plays from the same files (`tests/test_policy_pipeline.py`). ACT on the CPU and nothing else, and a random one, so nothing about what a trained policy does to an arm follows from it |
+
+### UNVERIFIED (our assumptions about policies, and what quackd does about each)
+
+| Name | What quackd does |
+|---|---|
+| `VLA_PIPELINE` | that SmolVLA and pi05 run through the same pipeline as ACT: their tokenizer step, the nested models pinned with `--pin`, the missing images padded, their weights loaded strictly (a SmolVLA's by LeRobot's own loader, a pi05's by quackd's copy of its loader), so a checkpoint saved with weights its model does not have would be refused, and pi05's relative actions made absolute over a whole chunk, against the state it was predicted from. That last one is not what LeRobot's own loop does (`RelativeActionsProcessorStep caches the state each time the pre-processor runs`), and it is how training made the chunk relative, so a trained pi05 is taken to want it. No job runs them, since neither the lab's environment nor CI installs transformers. They load through the same allowlist, pins and refusals as ACT, and a first run belongs on the simulator after `quackd policy check --bench` |
+| `TICK_MODE` | that an ACT with temporal ensembling, asked through `select_action` every tick, answers what upstream's own loop would play. The server refuses one without a GPU, so CI's CPU job cannot run it, and no bench has |
+| `LOAD_POLICY` | `load_policy()` in the arm's backend builds a policy in the arm's own process, the one no checkpoint is to load in, and hands the pre-processor a raw observation `build_inference_frame` would have shaped first. Nothing calls it and nothing has run it. What reaches the arm from any policy is quackd's rule: the verbs' step cap, and a goal outside the travel clipped and counted, unlike a verb's goal, which is refused |
+
 ## Status
 
 `lerobot:mock` runs every arm verb through the executor in the test suite, including the
@@ -2319,7 +2884,8 @@ What nobody measured, and what this page therefore still cannot tell you:
 - whether 5 degrees an action felt right in the room, which is the one number on this page that
   only a person standing next to the arm can judge
 
-`pick` and `load_policy()` are still untried on hardware: no policy was loaded that afternoon.
+No policy was loaded that afternoon, or on 2026-09-23. `pick`, `manipulate` and the policy
+server postdate both, and none of them has driven an arm.
 
 ## How to help
 

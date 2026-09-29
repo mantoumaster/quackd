@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -983,6 +984,15 @@ def test_the_help_groups_the_flags_and_keeps_the_brackets_of_an_extra() -> None:
     # the same markup trap, one level up: the core installs no robot, so the first command the
     # epilog offers has to carry the extra that makes it work, and Rich would eat the brackets
     assert "quackd[microduck]" in root, "the epilog's install line lost its extra to markup"
+
+
+@pytest.mark.parametrize("command", ["serve", "check"])
+def test_the_policy_help_keeps_the_extra_a_checkpoint_needs(command: str) -> None:
+    """The same trap in `--policy`'s help, which `serve` and `check` share: it names the extra a
+    LeRobot checkpoint needs, and an unescaped `[lerobot-vla]` printed as `which need quackd)`,
+    an install line with nothing to install."""
+    out = _help(["policy", command, "--help"])
+    assert "quackd[lerobot-vla]" in out, "--policy's help lost its extra to markup"
 
 
 def test_dash_h_is_the_same_as_help() -> None:
@@ -2359,6 +2369,24 @@ def test_a_pipe_on_stdin_opens_the_gate_and_is_not_written_down_as_a_person(
     assert gate["outcome"] == "allowed" and gate["answer"] is True
     assert "human" not in gate["reason"], gate["reason"]
     assert [e for e in events if e["kind"] == "prompt"] == []
+
+
+def test_input_from_the_null_device_is_nobody_at_a_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seam the two tests above replace, on the input that fooled it. Windows' NUL is a
+    character device, so `isatty` says yes to it, and a script started with its input from NUL
+    was asked every question, answered each with end-of-input, and had its record name a
+    person; `--controller vla` went on to ask one instead of refusing. `/dev/null` is no
+    terminal elsewhere either, and a pipe is none anywhere, so this holds on every OS."""
+    with open(os.devnull, encoding="utf-8") as null:
+        monkeypatch.setattr(sys, "stdin", null)
+        assert cli_mod._can_prompt() is False
+    read, write = os.pipe()
+    os.close(write)
+    with os.fdopen(read, encoding="utf-8") as pipe:
+        monkeypatch.setattr(sys, "stdin", pipe)
+        assert cli_mod._can_prompt() is False
 
 
 def test_a_yes_run_leaves_no_claim_that_anybody_was_asked(
