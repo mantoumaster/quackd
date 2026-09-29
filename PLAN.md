@@ -64,10 +64,14 @@ before.
   against those too, and most of it is the policy segment the learned-policy item below takes to
   the arm. The seven bench steps that would settle 0.14.0's, in order, are under
   *Known limitations* in [CHANGELOG.md](CHANGELOG.md) for 0.14.0, and the one for 0.15.0's
-  follower, a second Ctrl-C during the fold back to the rest pose, is under 0.15.0's, which
-  names the six changes nobody has written a bench step for.
-  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to take
-  the arm through, with a hand on the switch.
+  follower, a second Ctrl-C during the fold back to the rest pose, is under 0.15.0's. The six
+  other changes that release made in `lerobot:real` have bench steps now, and none has run: a
+  connect quackd refuses letting go of the arm (step 6 of
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md)), the deadline a call
+  spends only while the bus is busy (steps 9 and 13), a connect that fails once the arm is
+  energised keeping its torque (step 13), the close reading its flag back and saying a stalled
+  shortfall once (step 14), and the heartbeat's reads kept out of the trace a grasp is judged by
+  (step 17). That checklist is the order to take the arm through, with a hand on the switch.
 - ⬜ **The SO-101 against its simulator.** `lerobot:mujoco` runs the arm's real backend over the
   maker's model, and what it assumes about the arm only the arm can settle
   ([ADR-0047](docs/adr/0047-the-arms-simulator-runs-the-real-backend.md)). Each of these is a
@@ -160,10 +164,13 @@ before.
   choice, and the stepper is offered it and never takes it, in `--decision-mode on` as in
   shadow, because under `--yes` nobody is asked at its confirm gate
   ([ADR-0048](docs/adr/0048-policies-are-the-arms-executor.md)). Every turn that offered one
-  writes a `decision_shadow` record beside the model's choice, and there are none yet outside
-  the test suite: no real run has had a decision LLM and a policy server at once. Promoting it
-  needs an agreement rate measured from those records on real runs, and a decision of its own,
-  not a floor.
+  writes a `decision_shadow` record beside the model's choice. The only ones outside the test
+  suite come from runs by hand on the arm's twin, on 2026-09-28 and on the released 0.16.0 on
+  2026-09-29, with the trained ACT served, `gpt-6-sol` piloting and a stub decision LLM loaded
+  as a plugin. A stub that always picks `manipulate` chose it on every turn that offered it and
+  ended on `gate: shadow_only` each time, with the model taking the turn. No real decision LLM
+  has run beside a policy, so those records hold no agreement rate. Promoting it needs one
+  measured from real runs, and a decision of its own, not a floor.
 - ⬜ **`load_policy()` still builds a policy beside the arm's bus.** 0.16.0 moved checkpoints
   into a policy server of their own and left this helper in the arm's `real.py`, where it
   loads a LeRobot checkpoint in the arm's own process with none of the server's reading before

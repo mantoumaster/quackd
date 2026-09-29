@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+So far this is documentation. The six changes 0.15.0 made in `lerobot:real` without a bench step
+have one each in the hardware checklist, the two grasp examples that lift a cube have sidecars,
+and the pages say what reruns of 0.16.0 on the arm's twin, and the simulator's nightly job on
+GitHub, showed on 2026-09-29. None of the bench steps has been taken.
+
+### Added
+
+- **A bench step for each of the six changes 0.15.0 made in `lerobot:real` without one.**
+  0.15.0's Known limitations named them and wrote a step for one other, the follower keeping
+  torque through an exit that skips the close. The other six are now in
+  [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md), each in the step
+  that meets the same moment and each saying what to do at the arm, what to watch for and what
+  to report. A connect quackd refuses letting go of the arm is step 6, on a second name that
+  nothing was calibrated as, taken before the fold. The deadline a call spends only while the
+  bus is busy is step 9's dry run, given a camera because its detector still runs on the event
+  loop's thread, and the line step 13's pulled cable ends on. A connect that fails once the arm
+  is energised keeping its torque is step 13, which says it cannot be timed by hand and what to
+  check if it ever happens. The close reading back the flag it wrote, and saying a stalled
+  shortfall once, is step 14, with the fold back to the rest pose held back by hand. The
+  heartbeat's reads kept out of the trace a grasp is judged by is step 17. PLAN.md's item for
+  the SO-101 names them where it said nobody had written them.
+- **Sidecars for the two grasp examples that start with a cube between the jaws and lift it.**
+  `docs/examples/lerobot/e162/first-grasp.sim.yaml` and
+  `docs/examples/lerobot/e165/place.sim.yaml` lay that cube between the open jaws, the size of
+  the simulator's own since neither task names one, and check that it was lifted as the task
+  says: two centimetres for `e162`, and for `e165`, whose task says a little, the least the
+  simulator counts as a lift. Setting it back down is nothing a sidecar can check, and each
+  says so. `e163` starts the same way and asks only whether the gripper holds the cube, which no
+  sidecar check measures, so it has none. Neither sidecar lays out on the lab arm's twin.
+  `arm-01`'s fold puts the jaws down at the table with the gripper shut, and `quackd preflight`
+  of each on `arm-01-sim`, with `--llm fake` and `--seeds 2`, was refused at every connect:
+  `the scene lays cube between the jaws, and as the arm starts they are open narrower than cube`.
+  The same fold with the gripper open lays the cube out, but the moving finger then starts above
+  it, and a close from there never touches it. The generic arm starts with its hand far above
+  the table and is refused too, and laying the cube on the table instead would rehearse another
+  task, so each sidecar says at its top what it needs: an arm that starts with its open jaws
+  pointing down around the cube, which neither the twin nor the generic arm does.
+
+### Changed
+
+- **`--decision-mode shadow` has run beside a policy, with a stub.** README.md's row for the
+  learned policy and ADR-0048's Consequences said it had never run beside a trained checkpoint,
+  and PLAN.md that no `decision_shadow` record existed outside the test suite. It ran by hand on
+  the arm's twin on 2026-09-28, and on the released 0.16.0 on 2026-09-29, with `gpt-6-sol`
+  piloting beside the trained ACT and a stub decision LLM loaded as a plugin. A stub that always
+  picks `manipulate` chose it on every turn that offered it and ended on `gate: shadow_only` each
+  time, with the model taking the turn. The pages say so now, and that no real decision LLM has
+  run beside a policy.
+- **The arm simulator's sweeps cite the nightly job's first run.** Dispatched on `main` on
+  2026-09-29, at the commit tagged `v0.16.0`, `lerobot-sim-assets` fetched the maker's model and
+  passed the grasp sweep, `lerobot-lookout`'s rehearsal and the grasp task's rehearsal ten of
+  ten each ([run 36523568197](https://github.com/rokbenko/quackd/actions/runs/36523568197)).
+  README.md, docs/adapter-status.md and the arm's page cited only the sweeps run by hand on
+  2026-09-27.
+- **ADR-0048 records one more place the code settled differently from the plan.** The plan had
+  a policy asked every tick go through a delay line `k` ticks deep on the simulator. The code's
+  line is a tick deep at most: such a policy is asked again only once it has answered, so one
+  that declares more than a tick to answer could never keep up on the arm, and a segment refuses
+  it on either clock.
+- **The examples README says what rehearsing `e001` to `e005` showed.** Its one line passed all
+  12 files on the lab arm's twin on 2026-09-29, 24 runs for $1.06 of `gpt-6-sol`, and the page
+  says a pass is the code surviving the file: the simulator's table holds a red cube and a pen,
+  so the drawing tasks found the pen lying on the table and no paper, and declared failure,
+  while the switch task's pilots said they saw a switch the table does not have and looked
+  until their steps ran out.
+- **What `quackd robot twin` prints for an arm with a rest pose and no pilot or camera**, as
+  the lab's `arm-01` is, is in the first-run guide and docs/registry.md beside the example that
+  copies all three.
+
+### Fixed
+
+- **The examples README's rehearsal line rehearsed `e001/duck-picture` without its picture.**
+  `--image` would go to every file the pattern matches, so the page says to rehearse that one on
+  its own with the `--image` in its header.
+- **The first-run guide quoted two of the three lines `quackd doctor --robot arm-01-sim` prints
+  after its table for the lab arm's twin.** The third, the advice for a fold past what the
+  calibration lets `shoulder_lift` be driven to, is quoted with them.
+
 ## [0.16.0] — 2026-09-29
 
 This release gives the SO-101's pilot a learned policy to hand the arm to. The model plans the

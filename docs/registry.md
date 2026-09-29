@@ -349,6 +349,11 @@ $ quackd robot twin arm-01
   quackd preflight <duck> --robot arm-01-sim
 ```
 
+An arm registered with a rest pose and neither a pilot nor a camera, as the lab's `arm-01` is,
+gets `copied from arm-01: rest pose` and then `arm-01 has no pilot or camera to copy`, and a
+hint that ends `--llm VENDOR[:MODEL]`, since its twin has no pilot to rehearse with until you
+name one.
+
 That warning is the one cost of a twin. quackd 0.14 and earlier check every robot in the file
 against the backends they know, and `lerobot:mujoco` is not one of them, so one of those
 installs sharing `~/.quackd` refuses every command that reads the registry until every

@@ -2833,7 +2833,10 @@ which the nightly `lerobot-sim-assets` job is there to repeat. On that model a g
 through the real backend's own verbs lifts a cube clear of the table between both finger pads on
 ten seeds of ten, judged by the world's truth, and `quackd preflight` passes the bundled
 `lerobot-lookout` on the generic arm, which has no rest pose to return to, and a grasp task
-with a sidecar from a rest pose its close has to reach, each on ten seeds of ten. That is the
+with a sidecar from a rest pose its close has to reach, each on ten seeds of ten. The job's
+first run on GitHub, dispatched on `main` on 2026-09-29 at the commit tagged `v0.16.0`, passed
+all three ten of ten
+([run 36523568197](https://github.com/rokbenko/quackd/actions/runs/36523568197)). That is the
 simulator doing what it says, and nothing about the arm: no run on the simulator has been
 compared against one, and the ✅ it carries never raises `lerobot:real`'s.
 

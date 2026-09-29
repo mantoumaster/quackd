@@ -42,13 +42,35 @@ And rehearse them at home first, on the arm's simulator, which runs a file throu
 drives the arm without the arm: `quackd robot twin arm-01` registers `arm-01-sim` on the arm's
 own calibration, and `quackd preflight` runs each file on it once per seed
 ([lerobot-first-run.md](../../lerobot-first-run.md#16-between-visits-rehearse-on-the-simulator)).
-With a real pilot every seed costs what a run costs. None of these files has a `<task>.sim.yaml`
-beside it yet, so each run is judged on whether nothing escaped it and its close reached the
-rest pose.
+With a real pilot every seed costs what a run costs. Only `e162` and `e165` have a
+`<task>.sim.yaml` beside them, so every other run is judged on whether nothing escaped it and its
+close reached the rest pose.
 
 ```bash
 quackd preflight "docs/examples/lerobot/e00[1-5]/*.duck" --robot arm-01-sim --llm openai:gpt-6-sol --camera-url "opencv://1?name=front" --seeds 2
 ```
+
+On 29 September that line passed all 12 files on the lab arm's twin, 24 runs for $1.06 of
+`gpt-6-sol`. A pass says the code survived the file, not that the task was done. The simulator's
+table holds a red cube and a pen and nothing else, so the `e001` drawings found no marker in the
+gripper and no paper and their pilots declared failure. Both `e002` pilots said a switch sat
+right below the gripper, where the table has none, and kept looking until their fourteen steps
+ran out, which is how that task says to end. `e005/do-nothing` ends on its budget every time,
+since its ten steps are the whole of it. And `e001/duck-picture` needs its picture: `--image`
+would hand it to every file the pattern matches, so rehearse that one on its own, with the
+`--image` in its header.
+
+The two sidecars lay the cube their tasks start with between the open jaws, and check that it
+was lifted as far as the task says, two centimetres for `e162` and a little for `e165`. `e163`
+starts with the jaws open around a cube as well, but asks only whether the gripper holds it,
+which no sidecar check measures, so it has none. Neither sidecar lays out on `arm-01-sim`.
+`arm-01`'s fold puts the jaws down at the table with the gripper shut, so every connect is
+refused:
+`the scene lays cube between the jaws, and as the arm starts they are open narrower than cube`.
+The same fold with the gripper open lays the cube out, but the moving finger then starts above
+it, and a close from there never touches it. Each sidecar says at its top what it needs: an arm
+that starts with its open jaws pointing down around the cube, which neither the twin nor the
+generic arm does.
 
 `e145` and `e152` are the two exceptions: an MCP session loads them from the chat with
 `robot_load_duckfile`, which is how their longer budgets reach a session that would otherwise

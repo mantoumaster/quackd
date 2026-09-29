@@ -130,6 +130,25 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    that starts mattering here: a rest pose is recorded against a name, so the spec form has
    none and goes on letting go of the arm wherever it stops.
 
+   **Then check that a connect quackd refuses lets go of the arm.** Register the same port once
+   more, under a name nothing was calibrated as, point `doctor` at it, and remove the name again:
+
+   ```bash
+   uv run quackd robot add arm-uncalibrated lerobot:real --address /dev/ttyACM0
+   uv run quackd doctor --robot arm-uncalibrated
+   uv run quackd robot remove arm-uncalibrated --yes
+   ```
+
+   LeRobot has no calibration under that id, so its connect goes through and switches torque on,
+   as every connect does, and quackd then refuses the arm: `the arm is not calibrated`. A refusal
+   of quackd's own lets go of the arm on its way out. Since 0.15.0 it has to ask for that, by
+   writing the flag LeRobot's disconnect reads just before it disconnects, because the arm is
+   otherwise built to keep torque on any disconnect quackd did not ask for. Keep a hand under
+   the arm while it energises for a moment, then press gently on the forearm once the refusal is
+   printed: it should give, limp, as it did after the first `doctor` above. Report which it did.
+   An arm that still resists is the refusal keeping it energised with nothing said: hold it and
+   cut its power. This comes before the fold, because pressing on the arm moves it.
+
    **Then fold it by hand and record where it rests.** Nothing is connected now, so the arm is
    limp. Fold it into the shape you want it to end every run in: low, resting on its own stops
    or on the desk, a shape it holds with torque off and cannot topple out of. Then:
@@ -359,6 +378,21 @@ clear and the switch from step 3 has to be fitted and within reach before you st
    because the pilot answered `uncertain` to the feasibility question and the human at the
    keyboard said no.
 
+   One way that heartbeat failure could have happened was found on the simulator afterwards and
+   closed in 0.15.0: a call to the arm spent its deadline on whatever the event loop's thread was
+   doing, a pilot's SDK parsing its first response or a frame being encoded among it, so a
+   heartbeat the arm had answered in time could stop the run. Now only time the bus is busy
+   spends it. Nothing says it is the one that happened, so give this dry run the camera from
+   step 8, since the detector that reads its pictures still runs on that thread, as the pilot's
+   SDK does, and watch for the run ending on a heartbeat. If one does, the line names the call
+   and its budget, as `a LeRobot call (...) has not come back within 1 s`,
+   `came back after its 1 s were spent` or `waited 1 s for the bus and never went out`, and
+   never ends at a bare `TimeoutError:`. Report that line word for word, and either way the
+   `bus_call` row of `final_state.extras.timing` in the run's `summary.json`, its `p99_ms` and
+   `max_ms`. That row times each call from when it was asked for until the run saw it end, the
+   wait for the bus included, so it counts time the loop's thread spent elsewhere as well as the
+   bus's own, and is not how long the bus alone took.
+
    A dry run never moves the arm, and that includes the rest pose: it neither drives the arm
    there at the start nor puts it back at the end. So an arm that was away from its rest pose
    when you started is still away from it when the dry run finishes, and quackd keeps torque on
@@ -416,6 +450,19 @@ means, and which moments move the arm without anybody asking for it.
     torque off every motor for a moment. Either cut its power with your hand under it, or hold
     it and run `quackd robot release arm-01`, or `quackd doctor --robot arm-01` to park it,
     before the next step.
+
+    Report the line the run ended on word for word. Since 0.15.0 a call that ran out of time
+    names itself and its budget, as in step 9, and one that failed says what failed.
+
+    The reconnect is where the other half of 0.15.0's change to the connect would show, if it
+    shows at all. A connect can fail after LeRobot's own connect has switched torque on and
+    before quackd has read the arm, when that first read is not answered. Such a connect used to
+    be left to a later disconnect, which took torque off wherever the arm stood. It now closes
+    the port with torque kept and says so, `connect failed once the arm was energised`, ending
+    `hold the arm, and cut its power`. The window is the few reads between the two, too short to
+    time a pull into by hand, and this step does not ask you to try. If it ever happens, here or
+    at any later connect, keep your hand under the arm, check that it is still holding once
+    quackd has exited, and report the line and whether it held.
 14. **Ctrl-C mid-move.** quackd's kill switch sends `stop`, which re-sends the present
     position as the goal. The arm should freeze where it is rather than sag, and rather than
     finish the motion it was in the middle of. Then, with a rest pose recorded in step 6, the
@@ -432,6 +479,25 @@ means, and which moments move the arm without anybody asking for it.
     quackd has exited, rather than fall when the process lets go of it. Before 0.15.0 that exit
     could take torque off and drop it, which is why the hand goes under it first. Hold it and run
     `quackd robot release arm-01`, or cut its power, before the next step.
+
+    Then a third time, one Ctrl-C, and this time let the fold back to the rest pose stall: as it
+    folds, lay a flat hand on the forearm and hold it back gently, the other hand on the switch.
+    The rest move should stop where your hand stops it and hold the arm there. At a terminal the
+    run offers the release (step 6). Let its 60 s run out, so torque stays on, and take your
+    hand away: the arm should stay where it stopped. The close's line then says the arm is not
+    at its rest pose, names the joint furthest from it with where it reads and its goal, says it
+    has stopped moving, or that the time ran out, and goes on
+    `so torque was left on and it will not fall as it stands`. Until 0.15.0 it said that joint
+    and its angles twice. Once is right, and so is twice with two different angles, which is the
+    close's own read finding the joint somewhere other than where the move stopped it. Report
+    the line as it came, and whether the arm moved after your hand left it.
+
+    That line is also the close reading back what it asked the disconnect to do, where it used
+    to assume it. The arm should still be holding once quackd has exited. A line that says
+    instead that quackd `could not keep torque on, so the arm was released where it stood` means
+    the disconnect let go after all, which an arm quackd built should never do: report it, and
+    whether the arm dropped. Then hold it and run `quackd robot release arm-01`, or cut its
+    power.
 
 ## Handing the arm over, and taking it back
 
@@ -564,6 +630,17 @@ recorded
 17. **Close the gripper on something soft and forgiving.** A foam block, not a cup. It should
     stop short of shut, `report_state` should say it is holding, and `stop` should not drop
     it: a hold deliberately leaves the gripper's goal alone. Then `place` to let go.
+
+    Since 0.15.0 that holding is judged on the reads the verbs make and on none of the
+    heartbeat's, which reads the arm twice a second whether or not anything is moving, because
+    where its reads land among a verb's is chance. The `gripper` verb should say
+    `gripper closed on something`. Then call `report_state` straight away, and again after ten
+    seconds with nothing sent, and report what the verb said and what each read said about
+    holding, with the gripper's value. A grip that stopped between 8 and 90, the band at the foot
+    of this page, and still ended the verb on
+    `gripper did not close: gripper is at ... with a goal of 0, and it has stopped moving`, or a
+    read after it that said it was not holding, is the verbs' own reads being too few to call
+    the gripper settled, which is the one thing this change could have broken here: report it.
 18. **Hand the arm to a learned policy, and only after every step above.** `pick` and
     `manipulate` reach this arm through a policy server, a process of its own that no
     checkpoint ever leaves: `quackd policy serve` in a second terminal, with
