@@ -428,9 +428,10 @@ class LeRobotSim(LeRobotReal):
         every request, so it is a request's cost (`_time_thinking`) for as many requests as the
         segment's ticks can hold, one every so many ticks, and one more: a bound on what the
         policy declared, never an estimate. A policy slower than it declares can still outrun
-        it, as it would outrun its own delay line. `--live` paces the clock on the wall's and it
-        still waits, so it is the same there. A segment too long to count its ticks is bounded
-        by nothing, which the narrowing holds to its own maximum."""
+        it, as it would outrun its own delay line, and the timeout then says so
+        (`slow_policy`). `--live` paces the clock on the wall's and it still waits, so it is the
+        same there. A segment too long to count its ticks is bounded by nothing, which the
+        narrowing holds to its own maximum."""
         rate, per_request, apart = self._thinking
         clock = self._sim_clock()
         if clock is None or not clock.lockstep or rate <= 0 or per_request <= 0:
@@ -439,6 +440,25 @@ class LeRobotSim(LeRobotReal):
         if not math.isfinite(ticks):
             return math.inf if ticks > 0 else 0.0
         return (math.ceil(math.ceil(ticks) / apart) + 1) * per_request
+
+    def slow_policy(self) -> str | None:
+        """Why the executor's own timeout ended the last segment, when its policy is why: its
+        answers kept the simulator's clock standing still, on the wall's, for longer than the
+        latency it declares allows as many requests and one more, which is how the timeout
+        counts its thinking (`frozen_inference_s`), so a request took longer than it declares
+        (`PolicyLoop.slowest_s`). A timeout that said no more than that `manipulate` timed out
+        read as a simulator that had hung. None for a policy inside what it declares, a request
+        that ran a little long among them, and before any segment has run."""
+        loop = self._policy_loop
+        if loop is None or loop.thinking_s <= (loop.waited + 1) * loop.declared_s:
+            return None
+        return (
+            "The policy answered slower than the latency it declared: one request took "
+            f"{loop.slowest_s:.2f} s on the wall's clock against the {loop.declared_s:g} s it "
+            "declares, and the simulator's clock stands still while it thinks, so the timeout, "
+            "sized from what it declares, ran out first. Bench it with quackd policy check "
+            "--bench and serve it with the --latency-s that bench says covers it"
+        )
 
     def _build_robot(self) -> SimFollower:
         calibration, path = self._calibration

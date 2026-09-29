@@ -131,7 +131,9 @@ def test_adapter_doc_lists_every_policy_upstream_ref() -> None:
     ]
     assert not missing, f"docs/adapters/lerobot.md has no row for these policy refs: {missing}"
     assert policies.PIN[:7] in section and policies.READ_ON in section
-    assert "No trained checkpoint has ever been loaded by quackd" in section  # the honesty label
+    # The honesty label. It went on saying no trained checkpoint had ever been loaded after the
+    # laptop's server had loaded trained ones, so it says where none has been loaded instead.
+    assert "No trained checkpoint has been loaded by quackd in CI or on a GPU" in section
     arm = doc.split("\n## Upstream API\n", 1)[1].split("\n## ", 1)[0]
     stale = [ref.name for ref in policies.all_refs() if f"\n| `{ref.name}` |" in arm]
     assert not stale, f"the arm's own tables still carry policy rows: {stale}"
@@ -1993,6 +1995,36 @@ def test_the_policy_page_quotes_both_sentences_a_missing_server_gets(
             runner.policy()
         sentence = _one_line(str(said.value))
         assert sentence in page, f"docs/policies.md does not quote what {error.__name__} says"
+
+
+def test_what_never_ran_with_a_trained_checkpoint_leaves_out_the_model_that_flew_one() -> None:
+    """On 2026-09-29 OpenAI's `gpt-6-sol` flew the lab arm's twin with `quackd run --goal` and
+    `--policy-url`, and handed a trained ACT two `manipulate` segments. The release note, the
+    README's status row and ADR-0048 each say in one sentence what has never run with a trained
+    checkpoint, and all three went on counting a model flying with a policy in it after that run,
+    because nothing read them against it. Each now names the run, and no sentence of theirs that
+    says never with a trained checkpoint names a model flying."""
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = changelog.split("\n## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    adr = (REPO / "docs" / "adr" / "0048-policies-are-the-arms-executor.md").read_text(
+        encoding="utf-8"
+    )
+    places = {
+        "CHANGELOG.md's Known limitations": unreleased.split("\n### Known limitations\n", 1)[1],
+        "README.md's status row for a learned policy": next(
+            line for line in README.splitlines() if line.startswith("| A learned policy as the")
+        ),
+        "ADR-0048's Consequences": adr.split("\n## Consequences\n", 1)[1].split("\n## ", 1)[0],
+    }
+    for name, text in places.items():
+        sentences = re.split(r"(?<=\.) ", _one_line(text))
+        never = [s for s in sentences if "never" in s and "trained checkpoint" in s]
+        assert never, f"{name} no longer says what has never run with a trained checkpoint"
+        flown = [s for s in never if "flying" in s or "flew" in s]
+        assert not flown, f"{name} says a model flying with a policy never had one: {flown}"
+        assert "2026-09-29" in text and "`quackd run --goal`" in _one_line(text), (
+            f"{name} does not name the goal run in which a model flew a trained ACT"
+        )
 
 
 def test_every_licence_quackd_credits_says_where_it_was_read() -> None:

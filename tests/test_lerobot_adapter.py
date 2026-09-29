@@ -7224,6 +7224,226 @@ async def test_a_call_whose_budget_a_segment_s_call_spent_never_goes_out() -> No
         answer.set()
 
 
+async def _cancelled_segment_call(
+    transport: LeRobotReal,
+) -> tuple[asyncio.Future[Any], threading.Event]:
+    """File a policy segment's call the way a stop's cancel leaves one: a read made in the
+    segment's own task and cancelled there while it is out on the bus, where it stays until
+    the test sets the event this returns. Returns that call's future and the event."""
+    from quackd_lerobot.real import POLICY_TASK
+
+    on_bus, answer = threading.Event(), threading.Event()
+
+    def segment_read() -> str:
+        on_bus.set()
+        answer.wait(10.0)
+        return "read"
+
+    segment = asyncio.create_task(transport._call(segment_read), name=POLICY_TASK)
+    await _until(on_bus.is_set)
+    segment.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await segment
+    left = transport._segment_call()
+    assert left is not None, "the cancel left no segment's call out"
+    return left, answer
+
+
+def _back_then_busy(transport: LeRobotReal, answer: threading.Event, seconds: float) -> None:
+    """The loop's thread as a stall finds it: the arm answers the segment's call at once, and
+    the loop stays busy for `seconds` after that call's worker has stamped the bus free, so the
+    loop marks its future done only after whatever was queued behind the stall has run."""
+    answer.set()
+    for _ in range(5000):
+        if transport._bus[1] is None:
+            break
+        time.sleep(0.001)
+    time.sleep(seconds)
+
+
+def _live_timers(loop: asyncio.AbstractEventLoop) -> list[asyncio.TimerHandle]:
+    """The timers still set on `loop`. Every deadline a call sets is cancelled however the
+    call ends, a cancellation included, and a cancelled one is left in the heap until its time."""
+    return [timer for timer in loop._scheduled if not timer.cancelled()]  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("behind", ["a call", "a heartbeat", "a stop", "a call already waiting"])
+async def test_a_segment_s_call_back_in_time_is_waited_for_however_late_the_loop_looks(
+    behind: str,
+) -> None:
+    """A stop cancels a segment with its read on the bus, the arm answers that read at once,
+    and the loop's thread is then busy past the read's whole budget, a pilot's SDK or a frame
+    being encoded, before it marks the read done. Whatever was queued behind that stall found
+    the read neither done nor inside its time by the loop's clock and was refused on it: a
+    heartbeat ended the run, and a stop's hold never reached the arm, over an answer the bus
+    gave in time. The worker stamped the bus as it came back, and the stamp is what is judged,
+    so each of them waits the turn the loop owes the read and goes on."""
+    arm = _segment_arm()
+    _, transport, adapter, _ = await _segment(Scripted(_pan), arm, timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    sent: list[str] = []
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    left, answer = await _cancelled_segment_call(transport)
+    out = loop.time()
+    try:
+        waiting: asyncio.Task[Any] | None = None
+        if behind == "a call already waiting":
+            waiting = asyncio.create_task(transport._call(beat))
+            await asyncio.sleep(budget / 10)  # it waits for the segment's call
+        loop.call_soon(_back_then_busy, transport, answer, 2 * budget)
+        actions = len(arm.actions)
+        if waiting is None:
+            # queued behind the stall in the same turn of the loop, so its first step runs
+            # before the loop has marked the segment's call done
+            waiting = asyncio.create_task(
+                transport._call(beat)
+                if behind == "a call"
+                else adapter.heartbeat()
+                if behind == "a heartbeat"
+                else adapter.stop()
+            )
+        said = await asyncio.wait_for(waiting, 10.0)
+        assert loop.time() - out > budget, "the loop looked inside the read's budget"
+        if behind == "a stop":
+            assert any(_whole_hold(action) for action in arm.actions[actions:]), arm.actions
+        elif behind != "a heartbeat":
+            assert said == "beat" and sent == ["beat"]
+        assert left.done() and transport._wedged is None, "the read was left filed as a wedge"
+        assert transport.stop_error is None, transport.stop_error
+        assert _live_timers(loop) == []
+    finally:
+        answer.set()
+        await adapter.close()
+
+
+@pytest.mark.parametrize("behind", ["a call", "a heartbeat", "a call already waiting"])
+async def test_a_segment_s_call_still_out_past_its_budget_is_refused_however_late_the_loop_looks(
+    behind: str,
+) -> None:
+    """The other side of the same stamps: a read the arm never answers is still out when the
+    bus has been busy for its budget, and whatever lands behind it, before or after a stall
+    past that budget, is refused on it as a bus that stopped answering is, and nothing of its
+    goes out. The read stays filed until it comes back, and then the bus is free again."""
+    arm = _segment_arm()
+    _, transport, adapter, _ = await _segment(Scripted(_pan), arm, timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    sent: list[str] = []
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    left, answer = await _cancelled_segment_call(transport)
+    try:
+        waiting: asyncio.Task[Any] | None = None
+        if behind == "a call already waiting":
+            waiting = asyncio.create_task(transport._call(beat))
+            await asyncio.sleep(budget / 10)
+        loop.call_soon(time.sleep, 2 * budget)  # the read stays out through the whole stall
+        if waiting is None:
+            waiting = asyncio.create_task(
+                adapter.heartbeat() if behind == "a heartbeat" else transport._call(beat)
+            )
+        refused = HeartbeatError if behind == "a heartbeat" else TransportError
+        with pytest.raises(refused, match="has not come back"):
+            await asyncio.wait_for(waiting, 10.0)
+        assert sent == []
+        assert transport._wedged is left and not left.done()
+        assert transport.stop_error is not None and "(segment_read)" in transport.stop_error
+        assert _live_timers(loop) == []
+    finally:
+        answer.set()
+    await _until(left.done)
+    assert await transport._call(beat) == "beat", "the read's return left the bus refused"
+    assert transport._wedged is None and transport.stop_error is None
+    await adapter.close()
+
+
+@pytest.mark.parametrize(
+    "where", ["before the lock", "on the lock", "for its future's turn", "a heartbeat", "a stop"]
+)
+async def test_a_wait_for_a_segment_s_call_that_is_cancelled_goes_up_and_leaves_it_filed(
+    where: str,
+) -> None:
+    """Ctrl-C, or the executor's own timeout, can land on anything waiting for a segment's
+    call: a call before the lock or holding it, one waiting the turn the loop owes a call that
+    is back, a heartbeat or a stop. The cancellation goes up from each as it does from any
+    other wait, sends nothing, leaves the segment's call filed for whatever comes next, and
+    leaves no deadline of its own set on the loop."""
+    from quackd_lerobot.real import POLICY_TASK
+
+    arm = _segment_arm()
+    _, transport, adapter, _ = await _segment(Scripted(_pan), arm, timeout_s=ANSWERED_S)
+    loop = asyncio.get_running_loop()
+    budget = transport.timeout_s
+    sent: list[str] = []
+    actions = len(arm.actions)
+
+    def beat() -> str:
+        sent.append("beat")
+        return "beat"
+
+    if where == "on the lock":
+        # the call waits on the lock behind the segment's own, which the cancel then files,
+        # so the lock's release hands it the lock with that call still out
+        on_bus, answer = threading.Event(), threading.Event()
+
+        def segment_read() -> str:
+            on_bus.set()
+            answer.wait(10.0)
+            return "read"
+
+        segment = asyncio.create_task(transport._call(segment_read), name=POLICY_TASK)
+        await _until(on_bus.is_set)
+        waiting = asyncio.create_task(transport._call(beat))
+        await asyncio.sleep(budget / 10)
+        segment.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await segment
+        left = transport._segment_call()
+        assert left is not None
+    else:
+        left, answer = await _cancelled_segment_call(transport)
+    try:
+        if where == "for its future's turn":
+            # its first step runs after the call is back and before the loop marks it done,
+            # and the cancel lands while it waits for that
+            loop.call_soon(_back_then_busy, transport, answer, 2 * budget)
+            waiting = asyncio.create_task(transport._call(beat))
+            loop.call_soon(waiting.cancel)
+        else:
+            if where != "on the lock":
+                waiting = asyncio.create_task(
+                    transport._call(beat)
+                    if where == "before the lock"
+                    else adapter.heartbeat()
+                    if where == "a heartbeat"
+                    else adapter.stop()
+                )
+            await asyncio.sleep(budget / 10)
+            assert not waiting.done(), waiting
+            if where == "on the lock":
+                assert transport._lock.locked(), "the call is not holding the lock"
+            waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert sent == [] and len(arm.actions) == actions
+        assert transport._wedged is left and not transport._lock.locked()
+        assert _live_timers(loop) == []
+    finally:
+        answer.set()
+    await _until(left.done)
+    assert await transport._call(beat) == "beat"
+    assert transport._stops_in_flight == 0
+    await adapter.close()
+
+
 async def test_a_call_that_ran_out_its_time_fails_the_beat_at_once_and_so_does_a_close() -> None:
     """A wedge a timeout left is a bus that stopped answering, and nothing waits for it."""
     release = threading.Event()

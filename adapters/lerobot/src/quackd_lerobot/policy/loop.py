@@ -346,6 +346,17 @@ class PolicyLoop:
         self.instruction = ""
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._inflight: _Request | None = None
+        self.declared_s = 0.0
+        """The latency the runner declared at the last segment's start, in seconds."""
+        self.waited = 0
+        self.thinking_s = 0.0
+        self.slowest_s = 0.0
+        """How many requests the last segment waited for with its lockstep clock standing
+        still, how long on the wall's clock in all, and the longest of them, a request still
+        out when the segment ended included. All 0 on any other clock, where nothing waits for
+        one. A simulator's timeout for `manipulate` covers only the thinking the runner
+        declares, and these tell a runner that outran it from one that did not
+        (`LeRobotSim.slow_policy`)."""
 
     # ── the runner's own thread ─────────────────────────────────────────────────────────
 
@@ -438,6 +449,8 @@ class PolicyLoop:
         the last segment left on the worker, which is how its answer is kept out of this one."""
         self.epoch += 1
         self.instruction = instruction
+        self.declared_s = self.thinking_s = self.slowest_s = 0.0
+        self.waited = 0
         reset = await self._ask(self.runner.reset, instruction)
         if isinstance(reset, str):
             return reset
@@ -461,6 +474,7 @@ class PolicyLoop:
                 f"the policy was not started: it declares a latency of {latency!r} s, and a "
                 "latency is a number of seconds, 0 or more, that comes to a number of ticks"
             )
+        self.declared_s = float(latency)
         ticks = latency_ticks(float(latency), rate)
         if features.per_tick and ticks > 1:
             return (
@@ -716,7 +730,18 @@ class PolicyLoop:
                 if run.got_first
                 else max(0.0, self.first_chunk_s - (arm.now() - run.started))
             )
-        if not await self._answered(future, patience):
+        asked = time.perf_counter()
+        try:
+            answered = await self._answered(future, patience)
+        finally:
+            # a request still out when the segment is cancelled, by the executor's timeout
+            # among others, counts for as long as it had been out
+            if lockstep:
+                took = time.perf_counter() - asked
+                self.waited += 1
+                self.thinking_s += took
+                self.slowest_s = max(self.slowest_s, took)
+        if not answered:
             return await self._starved(arm, run)
         self._inflight = None
         if lockstep and plan.latency_ticks > 0:

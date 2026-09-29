@@ -15,7 +15,8 @@ shaped this way is [ADR-0048](adr/0048-policies-are-the-arms-executor.md).
 > **Nothing on this page has driven the arm.** Every segment so far has run against the test
 > suite's fake arm and on the arm's simulator. On 2026-09-28 a trained ACT from the Hub,
 > `natsuki0000/act-so101-bluecap` at commit `82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, drove a
-> twin of the lab's arm on the simulator through `quackd policy serve` and `quackd serve-mcp`.
+> twin of the lab's arm on the simulator through `quackd policy serve` and `quackd serve-mcp`,
+> and on 2026-09-29 it drove the twin again under OpenAI's `gpt-6-sol` in a `quackd run --goal`.
 > SmolVLA loaded on the same laptop and never answered a step in time on its CPU
 > ([below](#smolvla-and-act)), pi05 has not run, and FLUX 3 Action is not served at all.
 > Rehearse on the simulator first, keep a hand on the arm's power switch the first time a policy
@@ -100,10 +101,10 @@ A first bench is served with no `--latency-s`, and a segment waits for each chun
 policy in the tick that asked for it. Every tick that passes while it waits is skipped, which on
 the arm is a tick that sends nothing while the arm holds still. Skipped ticks are not counted as
 starved: a starved tick is one with a chunk on its way and nothing left to play. **Bench it
-again**, served with the latency it suggests:
+again**, served with the latency it suggests and with the `--fps` the first bench needed:
 
 ```bash
-quackd policy check --policy OWNER/NAME@REVISION --bench --latency-s 0.66
+quackd policy check --policy natsuki0000/act-so101-bluecap@82f75fe40a311026b4f7cacdea7bf14cadc44ccd --fps 30 --bench --latency-s 0.66
 ```
 
 A good second bench skips no tick, starves only while its first chunk is on its way, which a
@@ -159,17 +160,22 @@ names is a whole commit or a tag. Anything else, a branch or no revision at all,
 refusal, and `--fps` is the rate you recorded the dataset at. `smolvla_base` is a base to
 fine-tune from, not a policy for your task: [SmolVLA and ACT](#smolvla-and-act) below.
 
-**3. Serve it in a second terminal**, with the `--latency-s` the last bench said covers it:
+**3. Serve it in a second terminal**, with the `--latency-s` the last bench said covers it, and
+the `--fps` its checks were given:
 
 ```bash
-quackd policy serve --policy OWNER/NAME@REVISION --latency-s 0.89
+quackd policy serve --policy natsuki0000/act-so101-bluecap@82f75fe40a311026b4f7cacdea7bf14cadc44ccd --fps 30 --latency-s 0.89
 ```
 
-It prints where it serves, `http://127.0.0.1:9875`, the token file it wrote or read, and the
-rate, and serves until Ctrl+C. The first time, it writes a token to `~/.quackd/policy.token`,
-readable by you alone where the OS allows, and every client on the same machine reads it from
-there. `--latency-s` matters on the simulator, whose clock stands still while the policy thinks,
-and which holds each chunk back that long so it lands where it would have on the arm.
+A checkpoint that took `--fps` to be checked takes it to be served, and without it `serve`
+refuses as the check did. It prints where it serves, `http://127.0.0.1:9875`, the token file it
+wrote or read, and the rate and where that came from, and serves until Ctrl+C. The first time,
+it writes a token to `~/.quackd/policy.token`, readable by you alone where the OS allows, and
+every client on the same machine reads it from there. `--latency-s` matters on the simulator,
+whose clock stands still while the policy thinks, and which holds each chunk back that long so
+it lands where it would have on the arm. The time `manipulate` is given there is sized from that
+latency, so a policy that answers more slowly than it declares can run the verb out of time,
+and the timeout then says so, with how long a request took and the latency declared.
 
 **4. Point a run at it**, in the first terminal:
 
@@ -249,10 +255,11 @@ uv pip install "quackd[lerobot-vla]"
 quackd policy serve --policy OWNER/NAME@REVISION --jpeg-quality 90
 ```
 
-A tunnel looks like loopback to both ends, so without `--jpeg-quality` the server takes raw
-frames, which cost far more bytes over a network than JPEG does. The server refuses to bind any
-address but `127.0.0.1` or `::1` unless `--behind-tls` says a TLS proxy stands in front of it,
-and then the laptop gives the proxy's `https://` address and the client checks its certificate.
+A checkpoint that took `--fps` on the laptop takes it here too. A tunnel looks like loopback to
+both ends, so without `--jpeg-quality` the server takes raw frames, which cost far more bytes
+over a network than JPEG does. The server refuses to bind any address but `127.0.0.1` or `::1`
+unless `--behind-tls` says a TLS proxy stands in front of it, and then the laptop gives the
+proxy's `https://` address and the client checks its certificate.
 
 **On the laptop**, the tunnel, in a terminal of its own:
 
@@ -296,8 +303,10 @@ a GPU, because it has to answer inside a tick. On 2026-09-28 an ACT trained on a
 published on the Hub, `natsuki0000/act-so101-bluecap` at commit
 `82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, answered a step in about two thirds of a second on
 this project's laptop, an Intel Core i5-10210U with no GPU (the benches above), and drove a twin
-of the lab's arm through two 10 s segments over `quackd serve-mcp`. That proves the plumbing, and
-nothing about whether it would do its task on an arm.
+of the lab's arm through two 10 s segments over `quackd serve-mcp`. On 2026-09-29 OpenAI's
+`gpt-6-sol` flew that twin with `quackd run --goal` and `--policy-url`, handed the same ACT two
+more and declared failure on seeing no blue cap, since the simulator's table holds a red cube and
+a pen. Those runs prove the plumbing, and nothing about whether it would do its task on an arm.
 
 **SmolVLA wants a GPU.** It is a small vision-language-action model, about 450M parameters by its
 authors' count, and `lerobot/smolvla_base` is the base you fine-tune on your own episodes. It is

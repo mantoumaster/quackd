@@ -873,11 +873,13 @@ class LeRobotReal:
         """The task a cancellation took off `_wedged`'s call, or None when the call ran out its
         time, so a stop can tell a policy segment's own call still on the wire from a bus that
         stopped answering (`_segment_call`)."""
-        self._wedged_until = 0.0
-        """When, on the event loop's clock, `_wedged`'s call would have run out its budget had
-        nothing cancelled it: the bus is that call's while it is out, so its budget runs out on
-        the loop's clock from there (`_call`). The longest anything waits for a segment's call
-        to come back."""
+        self._wedged_spent = 0.0
+        """The bus's reading (`_busy`) at which `_wedged`'s call would have spent its budget had
+        nothing cancelled it, which is how `_call` judges every call's. While that call is out
+        the bus is its own and the reading climbs with the loop's clock, so the stamps say
+        whether it is still inside its time however late the loop looks, and once its worker is
+        back its closed stamp says it is on no wire (`_segment_call`). The longest anything
+        waits for a segment's call still on the wire."""
         self._policy_task: asyncio.Task[SegmentEnd] | None = None
         self._policy_name = "idle"
         self._policy_error: str | None = None
@@ -1270,9 +1272,9 @@ class LeRobotReal:
                 self._wedged_by = (
                     asyncio.current_task() if isinstance(e, asyncio.CancelledError) else None
                 )
-                # the call is out on the bus, so the rest of its budget runs on the loop's
-                # clock from here: when it would have run out had nothing cancelled it
-                self._wedged_until = budget_end()
+                # where on the bus's clock it would have run out had nothing cancelled it,
+                # judged from its stamps as the deadline above judges it
+                self._wedged_spent = bus_asked + budget
                 self.stop_error = (
                     f"a LeRobot call ({_name_of(fn)}) has not come back; the "
                     "serial bus has one owner, so quackd refuses every call until it does"
@@ -1310,36 +1312,60 @@ class LeRobotReal:
         self.stop_error = None
 
     def _segment_call(self) -> asyncio.Future[Any] | None:
-        """The call a policy segment was cancelled in the middle of, while it is still on the
-        wire and inside its own time (`_wedged_until`), or None.
+        """The call a policy segment was cancelled in the middle of, while its future is not
+        yet done and the bus's stamps say it is inside its own time, or None.
 
         Cancelling a segment, by a stop, the verb waiting on it or the next `do`, leaves the
         call it was in on the wire, which `_call` files as a wedge. That thread is the
         segment's own (`_wedged_by`), and on an arm that answers it comes back at once, so
         whatever lands behind it, the stop's own hold, the executor's read before a verb or a
         heartbeat, waits for it as it would have waited for it on the lock
-        (`_outwait_segment_call`), rather than be refused. Past its own deadline it is what it
+        (`_outwait_segment_call`), rather than be refused. Past its own budget it is what it
         would have been had nothing cancelled it, a bus that stopped answering, and so is a
-        call that ran out its time or one anything else left: none of those is waited on."""
+        call that ran out its time or one anything else left: none of those is waited on.
+
+        Judged by the stamps `_call` judges every call by (`_bus`), never by when the loop
+        looks or by the future. The worker closes its call's stamp as it comes back, on the
+        loop's clock, but the future is only marked done on a later turn of the loop, and a
+        loop busy past the call's budget, a pilot's SDK or a frame being encoded, used to find
+        a call that had come back in time neither done nor inside its time, and refuse a
+        heartbeat on an answer the bus gave. A call whose worker is back is on no wire, and
+        nothing else goes out while it is filed here, so the closed stamp is its own. One
+        still out is inside its time until the bus has been busy for its budget
+        (`_wedged_spent`), which is when the loop's clock says it is, since the bus is its own
+        while it is out."""
         left, by = self._wedged, self._wedged_by
         if left is None or left.done() or by is None or by.get_name() != POLICY_TASK:
             return None
-        if asyncio.get_running_loop().time() >= self._wedged_until:
+        if self._bus[1] is None:
+            return left
+        if self._busy(asyncio.get_running_loop().time()) >= self._wedged_spent:
             return None
         return left
 
     async def _outwait_segment_call(self, until: float | None = None) -> None:
-        """Wait for `_segment_call` to come back, no longer than its own deadline, which is
-        when everything behind it would have been refused had nothing cancelled it, and no
-        longer than `until`, the waiting call's own, on the event loop's clock. So an arm
-        that stopped answering under it is found no later than it was."""
-        left = self._segment_call()
-        if left is None:
-            return
-        end = self._wedged_until if until is None else min(self._wedged_until, until)
-        remaining = end - asyncio.get_running_loop().time()
-        if remaining > 0:
-            await asyncio.wait({left}, timeout=remaining)
+        """Wait for `_segment_call` to come back, no longer than its own budget, which is when
+        everything behind it would have been refused had nothing cancelled it, and no longer
+        than `until`, the waiting call's own, on the event loop's clock. So an arm that stopped
+        answering under it is found no later than it was.
+
+        Every wake is judged again by the stamps (`_segment_call`), not by what ended the wait:
+        a wait the loop ran late, or woke early (gh-88494), finds a call that is back and waits
+        the turn its future needs, and finds one still out past its budget refused. A call
+        whose worker is back is waited for with no deadline, since its future is done on the
+        loop's next turn however late that turn comes."""
+        loop = asyncio.get_running_loop()
+        while (left := self._segment_call()) is not None:
+            if self._bus[1] is None:
+                await asyncio.wait({left})
+                return
+            now = loop.time()
+            end = now + self._wedged_spent - self._busy(now)
+            if until is not None:
+                end = min(end, until)
+            if end <= now:
+                return
+            await asyncio.wait({left}, timeout=end - now)
 
     def _config_kwargs(self) -> dict[str, Any]:
         """Every safety-shaped field of `up.SO_CONFIG`, spelled out.

@@ -223,7 +223,10 @@ served. Known limitations, below, says what only the bench can settle.
   On the simulator the timeout also covers the wall time the clock stands still while the
   policy thinks, bounded from the latency the policy declares and a frame from each camera
   timed at connect, and held to ten minutes (`FROZEN_INFERENCE_MAX_S`). A rate the loop would
-  not pace, or a latency that starves every segment, adds nothing. The loop calls the helper
+  not pace, or a latency that starves every segment, adds nothing. A policy that answers more
+  slowly than it declares can still run the verb out of time there, and the timeout then says
+  so, with the longest a request took and the latency declared, and says to bench the policy
+  with `quackd policy check --bench`. The loop calls the helper
   once the allowlist is final and before the tools are built, and an MCP session calls it at
   connect and on each task file it loads, before it adopts the file, so the model, the stepper
   and the executor read one verb, and a file its body's `manipulate` cannot be held to is
@@ -363,7 +366,9 @@ served. Known limitations, below, says what only the bench can settle.
   landed there was refused the same way, and a heartbeat that landed there failed and aborted
   the run over an arm that was answering. Each now waits for that one call to come back before
   it reads or writes the arm, and no longer than the call's own deadline, which is when it
-  would have been refused had nothing cancelled the loop. Found in the test suite, where every
+  would have been refused had nothing cancelled the loop. That deadline is judged by the bus's
+  own stamps, as every call's budget has been since 0.15.0, so a call the arm answered in time
+  is waited for however late a busy loop marks it done. Found in the test suite, where every
   stop that landed mid call was refused. On the arm it happens as often as a stop lands while
   one of the loop's calls is on the bus.
 - **A pick abandoned as it ended the one before could run anyway.** A pick waits for the
@@ -387,10 +392,13 @@ served. Known limitations, below, says what only the bench can settle.
 - **No learned policy has driven the arm.** Every segment, `pick`'s and `manipulate`'s, ran
   against the test suite's fake arm or on the arm's simulator, served by the scripted policies,
   by the tiny random ACT CI builds, or by one trained ACT from the Hub on a laptop's CPU, which
-  drove the arm's twin through two segments over `serve-mcp`. `--controller vla`, its judge
-  prompt, a model flying with a policy and `--decision-mode shadow` beside one have run in the
-  test suite and never with a trained checkpoint. pi05 has not run (`VLA_PIPELINE`), and an ACT
-  asked every tick needs a GPU the CI job lacks (`TICK_MODE`). What this release changes in
+  drove the arm's twin through two segments over `serve-mcp`. On 2026-09-29 OpenAI's
+  `gpt-6-sol` flew that twin with `quackd run --goal` and `--policy-url`, handed the same ACT
+  two `manipulate` segments and declared failure on seeing no blue cap, since the simulator's
+  table holds a red cube and a pen. That run proves the plumbing and nothing about the task.
+  `--controller vla`, its judge prompt and `--decision-mode shadow` beside a policy have run in
+  the test suite and never with a trained checkpoint. pi05 has not run (`VLA_PIPELINE`), and an
+  ACT asked every tick needs a GPU the CI job lacks (`TICK_MODE`). What this release changes in
   `lerobot:real`, the segment's task, the step cap written for it and put back, the loop's own
   reads and the waits for a call a stop cut short, has run only there. Step 18 of
   [docs/lerobot-hardware-checklist.md](docs/lerobot-hardware-checklist.md) is the order to find

@@ -479,6 +479,15 @@ class LeRobotAdapter:
         ask = getattr(self.transport, "frozen_inference_s", None)
         return float(ask(segment_s)) if callable(ask) else 0.0
 
+    def slow_policy(self) -> str | None:
+        """Why the executor's timeout ended the last segment, when the backend can tell that
+        its policy answered slower than it declared: the simulator's, and nothing on any other,
+        whose clock does not stand still while the policy thinks. Passed on for
+        `set_segment_s`'s reason."""
+        ask = getattr(self.transport, "slow_policy", None)
+        said = ask() if callable(ask) else None
+        return said if isinstance(said, str) and said else None
+
     def ask_policy(self) -> dict[str, Any] | None:
         """Ask the policy server what it serves, now, and say it as the record names it
         (`RemoteRunner.record`), or None for an arm whose policy is not served by another

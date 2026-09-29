@@ -2747,9 +2747,12 @@ laptop that drives the lab arm runs, at the commit its tag names,
 compared file by file that day, and every file these rows cite was the same. Every name lives in
 [`adapters/lerobot/src/quackd_lerobot/policy/upstream_api.py`](../../adapters/lerobot/src/quackd_lerobot/policy/upstream_api.py).
 
-**No trained checkpoint has ever been loaded by quackd.** CI's `policy` job loads a tiny random
-ACT through the real server, on the CPU and offline, which is what `POLICY_PIPELINE` below rests
-on, and SmolVLA, pi05 and tick mode have not run at all.
+**No trained checkpoint has been loaded by quackd in CI or on a GPU.** CI's `policy` job loads a
+tiny random ACT through the real server, on the CPU and offline, which is what `POLICY_PIPELINE`
+below rests on. Trained checkpoints have been loaded only on one laptop's CPU, where an ACT from
+the Hub drove a twin of the lab's arm on the simulator and `lerobot/smolvla_base` never answered
+a step in time ([policies.md](../policies.md#smolvla-and-act)). pi05 and tick mode have not run
+at all.
 
 ### VERIFIED (read from source at the v0.6.1 tag)
 

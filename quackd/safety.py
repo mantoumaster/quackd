@@ -251,6 +251,20 @@ class Executor:
             return float(self.transport.now())
         return None
 
+    def _timed_out(self, name: str, verb: Verb, *, timed: bool) -> str:
+        """What a verb this executor's own timeout ended says, asked after the stop that follows
+        it. A policy segment's adds why, where the robot can tell (`slow_policy`): a simulator's
+        clock stands still while its policy thinks, so a policy slower than the latency it
+        declared outruns a timeout sized from that latency, and the bare timeout read as a
+        simulator that had hung. Never a reason to lose the result."""
+        said = f"{name} timed out after {verb.timeout_s:g}s; stopped"
+        why = None
+        if timed:
+            with contextlib.suppress(Exception):
+                ask = getattr(self.transport, "slow_policy", None)
+                why = ask() if callable(ask) else None
+        return f"{said}. {why}" if isinstance(why, str) and why else said
+
     def _clock(self) -> str | None:
         """What to call the robot's clock when it is not the wall clock. A free-running
         simulator's seconds are the ones that mean something to a reader; on hardware `now()`
@@ -612,7 +626,7 @@ class Executor:
             )
         except TimeoutError:
             await self.logged_transport().stop()
-            result = VerbResult.fail(f"{name} timed out after {verb.timeout_s:g}s; stopped")
+            result = VerbResult.fail(self._timed_out(name, verb, timed=timed))
         except SafetyStop:
             raise
         except Exception as e:  # a buggy verb must not take the run down un-stopped

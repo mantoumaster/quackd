@@ -263,7 +263,7 @@ duck: 3
 name: stack-blocks
 description: Stack the red block on the blue one with the arm's learned policy
 verbs:
-  allow: [observe, report_state, manipulate, stop]
+  allow: [report_state, manipulate, stop]
   confirm: [manipulate]
 requires: [manipulate]
 budgets:
@@ -284,16 +284,26 @@ abort_when:
 Stack the red block on the blue one.
 
 ## Strategy
-1. `observe` to see where both blocks are.
-2. `manipulate` with `pick up the red block`, then `observe` again.
+1. Find both blocks in the camera frame your observation brings. Without a frame,
+   `report_state` reads the arm, which cannot show where a block is.
+2. `manipulate` with `pick up the red block`, then judge from the frame the next observation
+   brings whether the arm holds it.
 3. `manipulate` with `place it on the blue block`, then `open the gripper`.
-4. Judge the stack from a fresh frame before you declare anything.
+4. Judge the stack from the frame after the last segment before you declare anything.
 ```
+
+The file allows no `observe`. `quackd run` checks a task file against the arm as it describes
+itself before it connects, which is without one, and refuses a file that allows it. The look
+comes from the frame every observation brings the pilot on an arm with a camera.
 
 A plain `quackd validate` checks a v3 file with no policy server running: the arm offers
 `manipulate` to one, so the file is coherent wherever the arm is installed. `--robot NAME`
-checks it against that body as it is registered, and `quackd run` with `--policy-url` checks
-it against the arm itself before anything connects.
+checks it against that body as it is registered, and a registration holds no policy server.
+So on `lerobot:real` or `lerobot:mujoco`, or a robot registered as either, it refuses
+`manipulate`, and says to start a server with `quackd policy serve` and give `quackd run` its
+address with `--policy-url`. `--robot lerobot:mock` checks the file against an arm that has a
+policy of its own. `quackd preflight` and `quackd run` with `--policy-url` check it against the
+arm itself.
 
 ```console
 $ quackd validate stack-blocks.duck
@@ -301,7 +311,7 @@ quackd validate
 +----------------------------------------------------+
 | file              | name         | verbs | result  |
 |-------------------+--------------+-------+---------|
-| stack-blocks.duck | stack-blocks |     4 | + valid |
+| stack-blocks.duck | stack-blocks |     3 | + valid |
 +----------------------------------------------------+
 + 1 file valid
 ```

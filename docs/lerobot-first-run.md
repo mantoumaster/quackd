@@ -1656,13 +1656,23 @@ quackd run lerobot-lookout --robot arm-01-sim --llm fake
 
 The first connect fetches the SO-101's model from its makers at a pinned commit, about 16 MB,
 checking every file against a recorded hash, and says so once. After that a run reads like one
-on the arm, with two things the arm never gives: a paragraph in the pilot's prompt saying it is
-on a model of the arm, whose physics nobody measured on an SO-101, and a note naming whichever
-of the `front` and `top` cameras is open, since those views are quackd's rather than where your
-cameras stand. With both open:
+on the arm, with up to four things the arm never gives. Every run has a paragraph in the pilot's
+prompt saying it is on a model of the arm, whose physics nobody measured on an SO-101. A note
+names whichever of the `front` and `top` cameras is open, since those views are quackd's rather
+than where your cameras stand. With both open:
 
 ```
 ·  note    the front and top cameras are quackd's default views of the table, not where any real camera stands
+```
+
+The other two are notes the connect makes only where your rest pose calls for them, each saying
+where the simulated arm starts instead: one when the pose puts a joint past one of the model's
+stops, and one when it puts the model into its table or into itself. The lab arm's rest pose
+does both, and a connect of its twin, here `quackd doctor --robot arm-01-sim`, prints them:
+
+```
+the rest pose puts shoulder_lift at -104.7 degrees, past the model's stop at -100.0 degrees, so the simulated arm starts at the stop instead
+the rest pose puts gripper 21 mm into the table, moving_jaw_so101_v1 13 mm into the table, lower_arm 10 mm into shoulder and wrist 3 mm into shoulder on the model, and with shoulder_lift at the edge of its travel, where the close's rest move parks the arm, gripper 10 mm into the table, moving_jaw_so101_v1 8 mm into the table, wrist 6 mm into shoulder, gripper 5 mm into shoulder and wrist_camera_mount 1 mm into shoulder, so the simulated arm starts and rests where it settles against them instead, with elbow_flex at 82.9 degrees in place of 96.4 and wrist_flex at 81.9 degrees in place of 72.2. The model's joint zeros and signs are an assumption (JOINT_ZERO, JOINT_SIGN) until the bench checks them, so the pose may be right on the arm and the model's frame wrong
 ```
 
 **Then rehearse the task file properly.** `quackd preflight` connects and closes the twin a few

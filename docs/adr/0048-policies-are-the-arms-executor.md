@@ -298,10 +298,13 @@ always was.
   and on the simulator. CI loads a tiny random ACT, and on 2026-09-28 a trained ACT from the Hub,
   `natsuki0000/act-so101-bluecap` at commit `82f75fe40a311026b4f7cacdea7bf14cadc44ccd`, was
   served on a laptop's CPU and drove a twin of the lab's arm on the simulator over
-  `serve-mcp`. SmolVLA loaded on that laptop and took minutes a chunk on its CPU, so it never
-  answered a step through the client, pi05 has not run, and an ACT asked every tick needs a GPU
-  the CPU job lacks (`VLA_PIPELINE`, `TICK_MODE`). `--controller vla`, its judge prompt, a model
-  flying with a policy and `--decision-mode shadow` beside one have run in the test suite and
+  `serve-mcp`. On 2026-09-29 OpenAI's `gpt-6-sol` flew that twin with `quackd run --goal` and
+  `--policy-url`, handed the same ACT two `manipulate` segments and declared failure on seeing
+  no blue cap, since the simulator's table holds a red cube and a pen. That run proves the
+  plumbing and nothing about the task. SmolVLA loaded on that laptop and took minutes a chunk on
+  its CPU, so it never answered a step through the client, pi05 has not run, and an ACT asked
+  every tick needs a GPU the CPU job lacks (`VLA_PIPELINE`, `TICK_MODE`). `--controller vla`,
+  its judge prompt and `--decision-mode shadow` beside a policy have run in the test suite and
   never with a trained checkpoint.
 - **Only the bench can say how fast the loop runs on the real bus with a server inferring on the
   same laptop.** Torch's threads and the bus's worker share one CPU there, and nothing timed on

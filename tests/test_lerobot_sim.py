@@ -2215,6 +2215,64 @@ async def test_manipulates_timeout_covers_the_thinking_the_simulators_clock_wait
         assert ran.ok and ran.data["ended"] == "time", ran.summary
         assert ran.data["seconds"] == pytest.approx(segment_s, abs=TICK_S)
         assert took > segment_s, "the thinking never outlasted the segment, so this proves nothing"
+        assert adapter.slow_policy() is None, "a policy as fast as it declares is no reason"
+    finally:
+        await adapter.close()
+
+
+async def test_a_policy_slower_than_it_declares_is_named_when_manipulate_times_out(
+    mjcf: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of that timeout: a policy that answers more slowly on the wall than the
+    latency it declares outruns what the simulator counted for its thinking, and the executor's
+    timeout ends the segment. That used to say only that `manipulate` timed out, which reads as
+    a simulator that hung. It says the policy answered slower than it declared, with the time
+    one request took and the latency declared, and to bench it."""
+    import time as wall
+
+    from quackd.duckfile import narrow
+    from quackd.duckfile.schema import DuckFrontmatter
+    from quackd_lerobot.policy.runner import Observation
+    from quackd_lerobot.policy.scripted import ScriptedRunner
+
+    rate = 1 / TICK_S
+    slower = 3  # times the latency it declares
+    swing: dict[str, float] = {}
+
+    def thinks(observation: Observation, _sent: Any) -> list[dict[str, float]]:
+        wall.sleep(slower / rate)
+        return [{PAN: swing[PAN] * ((observation.tick + i) % 2)} for i in range(2)]
+
+    runner = ScriptedRunner(thinks, rate_hz=rate, latency_ticks=1, per_tick=True)
+    adapter, transport = await _sim_arm(mjcf, policy=runner)
+    try:
+        swing[PAN] = transport.joint_range_deg[PAN][1] / 8
+        segment_s = 10 / rate
+        contract = DuckFrontmatter.model_validate(
+            {
+                "duck": 3,
+                "name": "slow",
+                "description": "d",
+                "verbs": {"allow": ["manipulate"]},
+                "success": ["x"],
+                "policy": {"segment_s": segment_s, "total_s": segment_s},
+            }
+        )
+        monkeypatch.setattr(narrow, "SEGMENT_HEADROOM_S", 0.0)
+        assert adapter.manifest is not None
+        ex = _executor(adapter, adapter.manifest, confirm=allow_all)
+        narrowed = narrow.narrow_policy_verb(ex.registry, contract, adapter)
+        assert narrowed is not None
+        ran = await asyncio.wait_for(ex.run_verb("manipulate", {"instruction": "wave"}), WALL_S)
+        said = ran.summary
+        assert not ran.ok and said.startswith(
+            f"manipulate timed out after {narrowed.timeout_s:g}s; stopped. The policy answered "
+            "slower than the latency it declared"
+        ), said
+        took = re.search(r"one request took (\d+\.\d+) s on the wall's clock", said)
+        assert took and float(took[1]) >= slower / rate - TICK_S / 2, said
+        assert f"against the {runner.latency_s():g} s it declares" in said, said
+        assert "quackd policy check --bench" in said, said
     finally:
         await adapter.close()
 

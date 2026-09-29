@@ -219,9 +219,18 @@ def test_the_example_in_the_spec_validates_plainly_and_against_the_mock_arm(
     it shows has to pass it. The page quotes the plain command, with no robot named, which checks
     the file against every body installed here with what each offers a policy server: that is
     where an arm's `manipulate` is, and the Microduck's list, which the command used to check
-    against, refused it. Named, the mock arm keeps it as it is registered."""
+    against, refused it. Named, the mock arm keeps it as it is registered.
+
+    A plain validate would pass a verb that some other body provides, and the page's own run
+    of the file is on `lerobot:mujoco` with a policy server, which checks it against the arm as
+    it describes itself before it connects. So every verb the file allows is one that arm
+    provides: the file allowed `observe`, which it does not, and every run of it was refused.
+    Named as it is registered, the arm holds no server, and the refusal says where to give it
+    one, as the page says."""
     from typer.testing import CliRunner
 
+    from quackd.adapters import factory
+    from quackd.adapters.base import PolicyChoice
     from quackd.cli import app
 
     page = (Path(__file__).parents[1] / "docs" / "duck-spec.md").read_text(encoding="utf-8")
@@ -248,6 +257,16 @@ def test_the_example_in_the_spec_validates_plainly_and_against_the_mock_arm(
     assert "1 file valid" in plain.output and "1 file valid" in section
     result = CliRunner().invoke(app, ["validate", str(duck), "--robot", "lerobot:mock"])
     assert result.exit_code == 0, result.output
+    arm = factory.parse_robot_spec("lerobot:mujoco")
+    served = factory.describe(arm, policy=PolicyChoice("http://127.0.0.1"))
+    provided = set(factory.registry_for(arm, served).names())
+    missing = sorted(set(fm.verbs.allow) - provided)
+    assert not missing, f"lerobot:mujoco with a policy does not provide {missing}"
+    unserved = CliRunner().invoke(app, ["validate", str(duck), "--robot", "lerobot:mujoco"])
+    assert unserved.exit_code == 1, unserved.output
+    said = " ".join(unserved.output.split())
+    assert f"requires {POLICY_VERB}" in said and "quackd policy serve" in said, said
+    assert "--policy-url" in said, said
 
 
 def test_a_plain_validate_knows_what_a_body_offers_a_policy_server(
