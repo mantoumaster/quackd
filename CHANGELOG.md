@@ -2,18 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with two
+headings of its own, Documentation and Known limitations, and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). What a patch, a minor and a major
+mean while quackd is 0.x, and which headings make which, is in [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
 So far this is documentation. The six changes 0.15.0 made in `lerobot:real` without a bench step
 have one each in the hardware checklist, the two grasp examples that lift a cube have sidecars,
 and the pages say what reruns of 0.16.0 on the arm's twin, and the simulator's nightly job on
-GitHub, showed on 2026-09-29. None of the bench steps has been taken.
+GitHub, showed on 2026-09-29. None of the bench steps has been taken. And RELEASING.md now says
+when a release is a patch, a minor or a major.
 
-### Added
+### Documentation
 
+- **RELEASING.md says when a release is a patch, a minor or a major, and how one ships.**
+  Sixteen releases were minors whatever they held. A patch now changes nothing a user has to act
+  on and adds nothing to learn, a minor is everything else, and 1.0.0 waits for four things the
+  file names ([ADR-0049](docs/adr/0049-a-version-says-what-changed.md)). This file's headings
+  decide which: an entry under Added, Changed, Deprecated or Removed makes a minor, and Fixed,
+  Security and the new Documentation heading alone make a patch. A fix may refuse what the
+  release before accepted when that never did what quackd said it would, and a fix that
+  tightens what could move a body in a way the docs never promised ships as a patch even when a
+  script relied on the looser behaviour. `tests/test_docs.py` fails when a released patch
+  carries a heading that makes a minor or a minor carries none, when any section uses a heading
+  the rule does not name or one twice, and when a release's compare link breaks the file's
+  pattern. The release checklist moved there from PLAN.md, with the order 0.15.0 and 0.16.0
+  were cut in, and CI now runs on a push to a `release/` branch too, so a patch cut from the
+  last tag has every job green before its tag. CONTRIBUTING.md says which heading a pull
+  request files its entry under and that it never bumps a version.
 - **A bench step for each of the six changes 0.15.0 made in `lerobot:real` without one.**
   0.15.0's Known limitations named them and wrote a step for one other, the follower keeping
   torque through an exit that skips the close. The other six are now in
@@ -44,9 +62,6 @@ GitHub, showed on 2026-09-29. None of the bench steps has been taken.
   the table and is refused too, and laying the cube on the table instead would rehearse another
   task, so each sidecar says at its top what it needs: an arm that starts with its open jaws
   pointing down around the cube, which neither the twin nor the generic arm does.
-
-### Changed
-
 - **`--decision-mode shadow` has run beside a policy, with a stub.** README.md's row for the
   learned policy and ADR-0048's Consequences said it had never run beside a trained checkpoint,
   and PLAN.md that no `decision_shadow` record existed outside the test suite. It ran by hand on
@@ -75,9 +90,6 @@ GitHub, showed on 2026-09-29. None of the bench steps has been taken.
 - **What `quackd robot twin` prints for an arm with a rest pose and no pilot or camera**, as
   the lab's `arm-01` is, is in the first-run guide and docs/registry.md beside the example that
   copies all three.
-
-### Fixed
-
 - **The examples README's rehearsal line rehearsed `e001/duck-picture` without its picture.**
   `--image` would go to every file the pattern matches, so the page says to rehearse that one on
   its own with the `--image` in its header.

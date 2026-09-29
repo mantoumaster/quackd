@@ -39,11 +39,12 @@ extra once reached a release. Change a dependency anywhere, run `uv lock`, and c
 Versions move together. The core and each adapter carry their own `__version__`, because an
 adapter's sdist holds only its own source and cannot read the core's, and each one pins a
 window on the core (`quackd>=0.16,<0.17`). `uv run python scripts/set_version.py X.Y.Z`
-rewrites all eight and the windows that tie them together in `pyproject.toml`. It cannot reach
-prose, so the copies of that window quoted in this file and in the docs are the part a release
-still edits by hand. A
-release then builds eight wheels and eight sdists with `uv build --all-packages`, core first
-to PyPI because every adapter depends on it. The full order is in [PLAN.md](PLAN.md).
+rewrites all eight and the windows that tie them together in `pyproject.toml`: a patch leaves
+the windows where they are, and a minor moves them. It cannot reach prose, so at a minor the
+copies of that window quoted in this file and in the docs are the part a release still edits by
+hand. A release then builds eight wheels and eight sdists with `uv build --all-packages`, core
+first to PyPI because every adapter depends on it. [RELEASING.md](RELEASING.md) says when a
+release is a patch, a minor or a major, and the order it is cut in.
 
 `uv run mypy` checks with whatever interpreter your venv has. CI runs it twice,
 under 3.11 and 3.12, and `[tool.mypy]` pins no `python_version` on purpose (pinning 3.11
@@ -221,7 +222,7 @@ nothing in your `allow` list. Skip it for a smoke test, the way `hello-world` do
    `docs/adapters/` (the Microduck's table is in `docs/adapter-status.md`). Never invent
    one.
 6. Mention it in `docs/architecture.md`, the README verb table (a test checks every
-   registry name is backticked there) and `CHANGELOG.md` (Unreleased).
+   registry name is backticked there) and `CHANGELOG.md`, under `Added` in `[Unreleased]`.
 7. Nothing extra is needed for the log: every intent your verb sends is already an event,
    and `ctx.log(...)` is already a `note`. If you emit a new event *kind*, add a row for it
    to the table in `docs/architecture.md`, because a test reads the kinds out of the code
@@ -303,9 +304,9 @@ Four things a row needs, and a test reads the first three:
    compares them with the row, because a page nobody checks is a page that describes an older release.
 3. **Its row in the hub's table**, in `PRESET_NAMES` order, with the **Page** column linking
    the page and the install line quoted verbatim.
-4. **A line in `CHANGELOG.md`** under `## [Unreleased]`. No test reads this one: the
-   changelog is excluded from the living-document checks on purpose, because it records what
-   was true at a release rather than what is true now.
+4. **A line in `CHANGELOG.md`** under `Added` in `## [Unreleased]`. No test reads this one:
+   the changelog is excluded from the living-document checks on purpose, because it records
+   what was true at a release rather than what is true now.
 
 What a row does not need is a benchmark. Nobody has run any of these against a robot, so a page
 that says what it read and what it is assuming is worth more than one that quotes a number
@@ -341,6 +342,37 @@ and arrive 🧪 in the status tables until someone runs it against the real thin
   `.stl`, `robot_walk.xml` and the SO-101's `so101_*.xml` as well as `.onnx`, but do not rely
   on it.
 - Tone: confident, playful, honest about status.
+
+## Versions and releases
+
+You never bump a version. `scripts/set_version.py` runs once per release, on the release branch,
+so a pull request that edits a `__version__` or a window is asking for a release nobody has
+decided on yet.
+
+What a pull request does is add its entry to [CHANGELOG.md](CHANGELOG.md) under
+`## [Unreleased]`, beneath the heading that says what it changes, because those headings decide
+what the next release is:
+
+- `Added`, `Changed`, `Deprecated` or `Removed` for anything new, different or gone on the
+  public surface: a command, a flag or a default, a verb, a field of a task file, a field a
+  run's record gains other than for a fix, an MCP tool, the adapter interface, a protocol, an
+  extra, or a refusal of something that worked. Any one of those makes the next release a
+  minor.
+- `Fixed` for shipped behaviour brought back to what the docs or quackd's own output said it
+  would do, and `Security` for a vulnerability closed. Those alone make it a patch. `Fixed` also
+  takes a field a fix adds to a run's record or to what `--json` prints, when a reader that
+  does not know the field still works, and a refusal of what never did what quackd said it
+  would. It takes a safety fix that refuses or asks about what could move a body in a way the
+  docs never promised, whose entry says what is refused now and what to do instead. And it
+  takes catalogue data that changes no default, and a dependency or packaging fix nobody has to
+  act on.
+- `Documentation` for the README, the pages under `docs/`, the examples, the images and the web
+  demo, which never raise it.
+
+A test or a CI job goes in the entry of the change it checks, and one that stands on its own,
+such as a nightly, goes under `Documentation`. If you are not sure where yours goes, say so in
+the pull request and it will be filed for you. [RELEASING.md](RELEASING.md) has the whole rule,
+what the surface is, and the order a release is cut in.
 
 ## How your PR gets handled
 
