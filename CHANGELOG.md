@@ -18,6 +18,12 @@ mean while quackd is 0.x, and which headings make which, is in [RELEASING.md](RE
   `.github/dependabot.yml` now ignores it whole. A person moves it with
   `uv lock --upgrade-package hatchling`. The five packages 0.16.1 held back no longer fail the
   job. The configuration ships in no package, so this needs no release.
+- **uv.lock takes websockets 16.1.1, from Dependabot's #32.** The ignores above hold websockets
+  below 17 for google-genai, and 16.1.1 is the update that let through. google-genai,
+  mujoco and the Microduck's WebRTC camera use it, and the camera's call,
+  `websockets.asyncio.client.connect`, is the API 16 keeps. Every CI job passed on it, and a
+  round trip through that call and an import of google-genai's live client both ran on 16.1.1.
+  No requirement a user installs against moved.
 
 ## [0.16.1] — 2026-09-29
 
